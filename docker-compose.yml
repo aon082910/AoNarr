@@ -1,0 +1,32 @@
+services:
+  aonarr-server:
+    build:
+      context: ./server
+    container_name: aonarr-server
+    restart: unless-stopped
+    environment:
+      - PORT=8989
+      - AONARR_CONFIG_DIR=/config
+      - AONARR_DOWNLOADS_DIR=/downloads
+      - AONARR_SEARCH_INTERVAL_MINUTES=30
+      - AONARR_QUEUE_POLL_SECONDS=20
+      # Set these to your host's user/group so files created in bind mounts are owned correctly.
+      - PUID=99
+      - PGID=100
+    volumes:
+      - ./data/config:/config
+      # Point these at your actual Unraid shares, e.g. /mnt/user/media and /mnt/user/downloads.
+      - ./data/media:/media
+      - ./data/downloads:/downloads
+    ports:
+      - "8989:8989"
+
+  aonarr-web:
+    build:
+      context: ./web
+    container_name: aonarr-web
+    restart: unless-stopped
+    depends_on:
+      - aonarr-server
+    ports:
+      - "7878:7878"

@@ -1,0 +1,797 @@
+import { Fragment, useEffect, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { api } from "../api/client.js";
+import { useAuth } from "../context/AuthContext.js";
+import { useMediaTypes } from "../hooks/useMediaTypes.js";
+import type { Collection, MediaInfo, MediaItem, SearchResult, Tag, Track } from "../types.js";
+import { formatMediaInfo } from "../utils/format.js";
+import { useContentRatings } from "../hooks/useContentRatings.js";
+
+interface CastMember {
+  personId: number;
+  name: string;
+  character: string | null;
+  photoUrl: string | null;
+}
+
+interface Episode {
+  id: number;
+  seasonNumber: number;
+  episodeNumber: number;
+  title: string | null;
+  monitored: 0 | 1;
+  hasFile: 0 | 1;
+  quality: string | null;
+  mediaInfo: MediaInfo | null;
+}
+
+interface SubItem {
+  id: number;
+  title: string;
+  releaseDate: string | null;
+  externalId: string | null;
+  externalProvider: string | null;
+  monitored: 0 | 1;
+  hasFile: 0 | 1;
+  quality: string | null;
+  mediaInfo: MediaInfo | null;
+}
+
+type MediaDetailResponse = MediaItem & { children: Episode[] | SubItem[]; tags: Tag[] };
+
+type SearchTarget = { episodeId?: number; subItemId?: number; label: string } | null;
+
+interface BrowseEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  isMediaFile: boolean;
+  size: number | null;
+}
+
+interface ArtworkOptions {
+  posters: string[];
+  backgrounds: string[];
+  logos: string[];
+}
+
+export default function MediaDetail() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const { auth } = useAuth();
+  const isAdmin = auth.isAdmin;
+  const mediaTypes = useMediaTypes();
+  const contentRatings = useContentRatings();
+  const [item, setItem] = useState<MediaDetailResponse | null>(null);
+  const [target, setTarget] = useState<SearchTarget>(null);
+  const [results, setResults] = useState<SearchResult[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [showImport, setShowImport] = useState(false);
+  const [browsePath, setBrowsePath] = useState("");
+  const [browseEntries, setBrowseEntries] = useState<BrowseEntry[]>([]);
+  const [importEpisodeId, setImportEpisodeId] = useState<number | "">("");
+  const [importSubItemId, setImportSubItemId] = useState<number | "">("");
+
+  const [allTags, setAllTags] = useState<Tag[]>([]);
+  const [tagToAdd, setTagToAdd] = useState<number | "">("");
+
+  const [expandedAlbumId, setExpandedAlbumId] = useState<number | null>(null);
+  const [tracksByAlbum, setTracksByAlbum] = useState<Record<number, Track[]>>({});
+  const [loadingTracksFor, setLoadingTracksFor] = useState<number | null>(null);
+
+  const [showArtwork, setShowArtwork] = useState(false);
+  const [artworkOptions, setArtworkOptions] = useState<ArtworkOptions | null>(null);
+  const [loadingArtwork, setLoadingArtwork] = useState(false);
+  const [artworkError, setArtworkError] = useState<string | null>(null);
+
+  const [allCollections, setAllCollections] = useState<Collection[]>([]);
+  const [collectionToAdd, setCollectionToAdd] = useState<number | "">("");
+
+  const [cast, setCast] = useState<CastMember[] | null>(null);
+
+  function load() {
+    api.get<MediaDetailResponse>(`/media/${id}`).then(setItem);
+  }
+
+  useEffect(load, [id]);
+  useEffect(() => {
+    setCast(null);
+    api
+      .get<CastMember[]>(`/media/${id}/cast`)
+      .then(setCast)
+      .catch(() => setCast([]));
+  }, [id]);
+  useEffect(() => {
+    if (isAdmin) api.get<Tag[]>("/tags").then(setAllTags);
+    api.get<Collection[]>("/collections").then(setAllCollections);
+  }, [isAdmin]);
+
+  async function addToCollection() {
+    if (!item || !collectionToAdd) return;
+    await api.post(`/collections/${collectionToAdd}/items`, { mediaItemId: item.id });
+    setCollectionToAdd("");
+    alert("Added to collection.");
+  }
+
+  async function addTagToItem() {
+    if (!item || !tagToAdd) return;
+    const updatedTags = await api.post<Tag[]>(`/media/${item.id}/tags`, { tagId: tagToAdd });
+    setItem({ ...item, tags: updatedTags });
+    setTagToAdd("");
+  }
+
+  async function removeTagFromItem(tagId: number) {
+    if (!item) return;
+    await api.del(`/media/${item.id}/tags/${tagId}`);
+    setItem({ ...item, tags: item.tags.filter((t) => t.id !== tagId) });
+  }
+
+  async function toggleTracks(subItemId: number) {
+    if (expandedAlbumId === subItemId) {
+      setExpandedAlbumId(null);
+      return;
+    }
+    setExpandedAlbumId(subItemId);
+    if (!tracksByAlbum[subItemId]) {
+      setLoadingTracksFor(subItemId);
+      try {
+        const tracks = await api.post<Track[]>(`/media/subitems/${subItemId}/tracks/fetch`);
+        setTracksByAlbum((prev) => ({ ...prev, [subItemId]: tracks }));
+      } catch (e) {
+        alert((e as Error).message);
+      } finally {
+        setLoadingTracksFor(null);
+      }
+    }
+  }
+
+  async function toggleMonitored() {
+    if (!item) return;
+    const updated = await api.patch<MediaItem>(`/media/${item.id}`, { monitored: item.monitored ? 0 : 1 });
+    setItem({ ...item, monitored: updated.monitored });
+  }
+
+  async function toggleProtected() {
+    if (!item) return;
+    const updated = await api.patch<MediaItem>(`/media/${item.id}`, { protected: item.protected ? 0 : 1 });
+    setItem({ ...item, protected: updated.protected });
+  }
+
+  async function updateContentRating(rating: string | null) {
+    if (!item) return;
+    const updated = await api.patch<MediaItem>(`/media/${item.id}`, { contentRating: rating });
+    setItem({ ...item, contentRating: updated.contentRating });
+  }
+
+  async function remove() {
+    if (!item) return;
+    if (!confirm(`Remove "${item.title}" from AoNarr? This does not delete files on disk.`)) return;
+    await api.del(`/media/${item.id}`);
+    navigate("/");
+  }
+
+  async function toggleSeasonMonitor(seasonNumber: number, monitored: boolean) {
+    if (!item) return;
+    const updated = await api.patch<Episode[]>(`/media/${item.id}/season/${seasonNumber}/monitor`, { monitored });
+    setItem({
+      ...item,
+      children: (item.children as Episode[]).map((ep) => {
+        const replacement = updated.find((u) => u.id === ep.id);
+        return replacement ?? ep;
+      }),
+    });
+  }
+
+  async function runSearch(t: SearchTarget) {
+    setTarget(t);
+    setSearching(true);
+    setError(null);
+    setResults(null);
+    try {
+      const params = new URLSearchParams();
+      if (t?.episodeId) params.set("episodeId", String(t.episodeId));
+      if (t?.subItemId) params.set("subItemId", String(t.subItemId));
+      const qs = params.toString();
+      const res = await api.get<SearchResult[]>(`/search/${id}${qs ? `?${qs}` : ""}`);
+      setResults(res);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function grab(result: SearchResult) {
+    const clients = await api.get<{ id: number }[]>("/download-clients");
+    if (clients.length === 0) {
+      alert("Add a download client first.");
+      return;
+    }
+    await api.post(`/search/${id}/grab`, {
+      downloadUrl: result.downloadUrl,
+      indexerId: result.indexerId,
+      title: result.title,
+      size: result.size,
+      downloadClientId: clients[0].id,
+      episodeId: target?.episodeId ?? null,
+      subItemId: target?.subItemId ?? null,
+    });
+    alert(`Sent "${result.title}" to download client.`);
+    load();
+  }
+
+  async function downloadVideo(sub: SubItem) {
+    try {
+      await api.post(`/media/subitems/${sub.id}/download`, {});
+      alert(`Sent "${sub.title}" to yt-dlp.`);
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    }
+  }
+
+  async function blocklistResult(result: SearchResult) {
+    if (!item) return;
+    if (!confirm(`Blocklist "${result.title}"? It will never be auto-grabbed or shown as grabbable again for this item.`)) return;
+    await api.post("/blocklist", { mediaItemId: item.id, releaseTitle: result.title, indexerId: result.indexerId });
+    setResults((prev) => prev && prev.map((r) => (r.title === result.title ? { ...r, blocklisted: true } : r)));
+  }
+
+  async function toggleArtwork() {
+    if (!item) return;
+    const next = !showArtwork;
+    setShowArtwork(next);
+    if (!next) return;
+    setLoadingArtwork(true);
+    setArtworkError(null);
+    try {
+      const options = await api.get<ArtworkOptions>(`/media/${item.id}/artwork`);
+      setArtworkOptions(options);
+    } catch (e) {
+      setArtworkError((e as Error).message);
+    } finally {
+      setLoadingArtwork(false);
+    }
+  }
+
+  async function selectArtwork(posterUrl: string) {
+    if (!item) return;
+    const updated = await api.post<MediaItem>(`/media/${item.id}/artwork/select`, { posterUrl });
+    setItem({ ...item, posterUrl: updated.posterUrl });
+    setShowArtwork(false);
+  }
+
+  async function browse(nextPath: string) {
+    const res = await api.get<{ path: string; entries: BrowseEntry[] }>(
+      `/import/browse?path=${encodeURIComponent(nextPath)}`
+    );
+    setBrowsePath(res.path);
+    setBrowseEntries(res.entries);
+  }
+
+  function toggleImport() {
+    const next = !showImport;
+    setShowImport(next);
+    if (next) browse("");
+  }
+
+  async function manualImport(entry: BrowseEntry) {
+    if (!item) return;
+    try {
+      const typeInfo = mediaTypes.find((t) => t.key === item.type);
+      await api.post("/import/manual", {
+        mediaItemId: item.id,
+        episodeId: typeInfo?.shape === "episodic" ? importEpisodeId || null : null,
+        subItemId: typeInfo?.shape === "collection" ? importSubItemId || null : null,
+        sourcePath: entry.path,
+      });
+      alert(`Imported ${entry.name}`);
+      setShowImport(false);
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    }
+  }
+
+  if (!item) return <p className="empty">Loading...</p>;
+
+  const typeInfo = mediaTypes.find((t) => t.key === item.type);
+  const shape = typeInfo?.shape;
+  const childLabel = typeInfo?.childLabel ?? "Item";
+
+  return (
+    <div>
+      <h1>{item.title}</h1>
+      <p style={{ color: "var(--muted)" }}>
+        {item.year ?? ""} · {item.type} · {item.status}
+      </p>
+      {shape === "single" && (
+        <p>
+          <span className={`badge ${item.hasFile ? "ok" : ""}`}>{item.hasFile ? "Downloaded" : "Missing"}</span>
+          {item.quality && <span className="badge" style={{ marginLeft: 6 }}>{item.quality}</span>}
+          {formatMediaInfo(item.mediaInfo) && (
+            <span style={{ marginLeft: 8, color: "var(--muted)", fontSize: "0.85rem" }}>{formatMediaInfo(item.mediaInfo)}</span>
+          )}
+        </p>
+      )}
+      {item.overview && <p>{item.overview}</p>}
+
+      {cast && cast.length > 0 && (
+        <>
+          <h2>Cast</h2>
+          <div style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 8, marginBottom: 12 }}>
+            {cast.map((c) => (
+              <div
+                key={c.personId}
+                style={{ flex: "0 0 90px", cursor: "pointer", textAlign: "center" }}
+                onClick={() => navigate(`/people/${c.personId}`)}
+              >
+                <div
+                  className="poster"
+                  style={{
+                    width: 90,
+                    height: 120,
+                    ...(c.photoUrl ? { backgroundImage: `url(${c.photoUrl})` } : {}),
+                  }}
+                >
+                  {!c.photoUrl && "No photo"}
+                </div>
+                <div style={{ fontSize: "0.75rem", marginTop: 4 }}>{c.name}</div>
+                {c.character && <div style={{ fontSize: "0.7rem", color: "var(--muted)" }}>{c.character}</div>}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+        {item.tags.map((t) =>
+          isAdmin ? (
+            <span key={t.id} className="badge" style={{ cursor: "pointer" }} onClick={() => removeTagFromItem(t.id)}>
+              {t.name} &times;
+            </span>
+          ) : (
+            <span key={t.id} className="badge">
+              {t.name}
+            </span>
+          )
+        )}
+        {isAdmin && allTags.length > 0 && (
+          <>
+            <select
+              value={tagToAdd}
+              onChange={(e) => setTagToAdd(e.target.value ? Number(e.target.value) : "")}
+              style={{ maxWidth: 160, display: "inline-block" }}
+            >
+              <option value="">Add tag...</option>
+              {allTags
+                .filter((t) => !item.tags.some((it) => it.id === t.id))
+                .map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+            </select>
+            <button type="button" className="secondary" onClick={addTagToItem} disabled={!tagToAdd}>
+              Add
+            </button>
+          </>
+        )}
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <span style={{ color: "var(--muted)", fontSize: "0.85rem" }}>Content rating:</span>
+        {isAdmin ? (
+          <select
+            value={item.contentRating ?? ""}
+            onChange={(e) => updateContentRating(e.target.value || null)}
+            style={{ maxWidth: 160, display: "inline-block" }}
+          >
+            <option value="">Unrated</option>
+            {contentRatings.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="badge">{item.contentRating ?? "Unrated"}</span>
+        )}
+      </div>
+
+      {allCollections.length > 0 && (
+        <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 12 }}>
+          <select
+            value={collectionToAdd}
+            onChange={(e) => setCollectionToAdd(e.target.value ? Number(e.target.value) : "")}
+            style={{ maxWidth: 200, display: "inline-block" }}
+          >
+            <option value="">Add to collection...</option>
+            {allCollections.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+          <button type="button" className="secondary" onClick={addToCollection} disabled={!collectionToAdd}>
+            Add
+          </button>
+        </div>
+      )}
+
+      {isAdmin && (
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={toggleMonitored} className="secondary">
+            {item.monitored ? "Unmonitor" : "Monitor"}
+          </button>
+          <button onClick={toggleProtected} className="secondary" title="Protected items are skipped by watch-status auto-archival">
+            {item.protected ? "Unprotect" : "Protect from archival"}
+          </button>
+          {shape === "single" && (
+            <button onClick={() => runSearch(null)} disabled={searching}>
+              {searching && !target ? "Searching..." : "Search now"}
+            </button>
+          )}
+          <button onClick={toggleImport} className="secondary">
+            {showImport ? "Hide manual import" : "Manual Import"}
+          </button>
+          {/* Fanart.tv only supports lookup by a known TMDB/TVDB/MusicBrainz id, i.e. exactly these
+              three types — this isn't a UI simplification, it's a real capability limit. */}
+          {(item.type === "movie" || item.type === "series" || item.type === "artist") && (
+            <button onClick={toggleArtwork} className="secondary">
+              {showArtwork ? "Hide artwork" : "Artwork"}
+            </button>
+          )}
+          <button onClick={remove} className="danger">
+            Remove
+          </button>
+        </div>
+      )}
+
+      {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
+
+      {showArtwork && (
+        <>
+          <h2>Artwork (via Fanart.tv)</h2>
+          {loadingArtwork && <p className="empty">Loading...</p>}
+          {artworkError && <p style={{ color: "var(--danger)" }}>{artworkError}</p>}
+          {artworkOptions && !loadingArtwork && (
+            <>
+              {artworkOptions.posters.length === 0 && (
+                <p className="empty">No posters found on Fanart.tv for this item.</p>
+              )}
+              <div className="grid">
+                {artworkOptions.posters.map((url, idx) => (
+                  <div key={idx} className="card" onClick={() => selectArtwork(url)}>
+                    <div className="poster" style={{ backgroundImage: `url(${url})` }} />
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {showImport && (
+        <>
+          <h2>Manual Import</h2>
+          <div className="form-panel">
+            {shape === "episodic" && (
+              <>
+                <label>Target episode</label>
+                <select
+                  value={importEpisodeId}
+                  onChange={(e) => setImportEpisodeId(e.target.value ? Number(e.target.value) : "")}
+                >
+                  <option value="">Select an episode...</option>
+                  {(item.children as Episode[]).map((ep) => (
+                    <option key={ep.id} value={ep.id}>
+                      S{String(ep.seasonNumber).padStart(2, "0")}E{String(ep.episodeNumber).padStart(2, "0")}
+                      {ep.title ? ` - ${ep.title}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+            {shape === "collection" && (
+              <>
+                <label>Target {childLabel.toLowerCase()}</label>
+                <select
+                  value={importSubItemId}
+                  onChange={(e) => setImportSubItemId(e.target.value ? Number(e.target.value) : "")}
+                >
+                  <option value="">Select...</option>
+                  {(item.children as SubItem[]).map((si) => (
+                    <option key={si.id} value={si.id}>
+                      {si.title}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+
+            <p style={{ color: "var(--muted)", fontSize: "0.82rem", marginTop: 12 }}>
+              Browsing downloads: /{browsePath || ""}
+            </p>
+            {browsePath && (
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => browse(browsePath.split("/").slice(0, -1).join("/"))}
+              >
+                Up
+              </button>
+            )}
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Size</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {browseEntries.map((e) => (
+                  <tr key={e.path}>
+                    <td>{e.isDirectory ? "📁 " : ""}{e.name}</td>
+                    <td>{e.size ? `${(e.size / 1e6).toFixed(1)} MB` : "-"}</td>
+                    <td>
+                      {e.isDirectory && (
+                        <button type="button" className="secondary" onClick={() => browse(e.path)}>
+                          Open
+                        </button>
+                      )}
+                      {e.isMediaFile && <button onClick={() => manualImport(e)}>Import</button>}
+                    </td>
+                  </tr>
+                ))}
+                {browseEntries.length === 0 && (
+                  <tr>
+                    <td colSpan={3} className="empty">
+                      Empty.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {results && (
+        <>
+          <h2>Search results{target ? ` — ${target.label}` : ""}</h2>
+          {results.length === 0 && <p className="empty">No results found.</p>}
+          {results.length > 0 && (
+            <table>
+              <thead>
+                <tr>
+                  <th>Title</th>
+                  <th>Quality</th>
+                  <th>Format score</th>
+                  <th>Indexer</th>
+                  <th>Size</th>
+                  <th>Seeders</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {results.map((r, idx) => (
+                  <tr key={idx} style={{ opacity: r.matchesTarget && !r.blocklisted ? 1 : 0.55 }}>
+                    <td>
+                      {r.title}
+                      {r.blocklisted && (
+                        <span className="badge danger" style={{ marginLeft: 6 }}>
+                          blocklisted
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      <span className={`badge ${r.allowedByProfile ? "ok" : "danger"}`}>{r.parsedQuality}</span>
+                    </td>
+                    <td title={r.formatMatches.join(", ")}>{r.formatScore}</td>
+                    <td>{r.indexerName}</td>
+                    <td>
+                      {(r.size / 1e9).toFixed(2)} GB
+                      {!r.sizeAllowed && (
+                        <span className="badge danger" style={{ marginLeft: 6 }} title="Outside the configured size range for this quality">
+                          size?
+                        </span>
+                      )}
+                    </td>
+                    <td>{r.seeders ?? "-"}</td>
+                    <td style={{ display: "flex", gap: 6 }}>
+                      <button onClick={() => grab(r)} disabled={r.blocklisted}>
+                        Grab
+                      </button>
+                      {!r.blocklisted && (
+                        <button className="danger" onClick={() => blocklistResult(r)}>
+                          Blocklist
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
+
+      {shape === "episodic" && (item.children as Episode[]).length > 0 && (
+        <>
+          <h2>Episodes</h2>
+          {Array.from(new Set((item.children as Episode[]).map((ep) => ep.seasonNumber)))
+            .sort((a, b) => a - b)
+            .map((seasonNumber) => {
+              const seasonEpisodes = (item.children as Episode[]).filter((ep) => ep.seasonNumber === seasonNumber);
+              return (
+                <div key={seasonNumber} style={{ marginBottom: 20 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                    <h3 style={{ margin: 0 }}>Season {seasonNumber}</h3>
+                    {isAdmin && (
+                      <>
+                        <button className="secondary" onClick={() => toggleSeasonMonitor(seasonNumber, true)}>
+                          Monitor season
+                        </button>
+                        <button className="secondary" onClick={() => toggleSeasonMonitor(seasonNumber, false)}>
+                          Unmonitor season
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Episode</th>
+                        <th>Title</th>
+                        <th>Monitored</th>
+                        <th>File</th>
+                        <th>Quality</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {seasonEpisodes.map((ep) => (
+                        <tr key={ep.id}>
+                          <td>{ep.episodeNumber}</td>
+                          <td>{ep.title ?? "-"}</td>
+                          <td>{ep.monitored ? "Yes" : "No"}</td>
+                          <td>
+                            <span className={`badge ${ep.hasFile ? "ok" : ""}`}>{ep.hasFile ? "Downloaded" : "Missing"}</span>
+                          </td>
+                          <td>
+                            {ep.quality ?? "-"}
+                            {formatMediaInfo(ep.mediaInfo) && (
+                              <div style={{ color: "var(--muted)", fontSize: "0.75rem" }}>{formatMediaInfo(ep.mediaInfo)}</div>
+                            )}
+                          </td>
+                          <td>
+                            {isAdmin && (
+                              <button
+                                className="secondary"
+                                disabled={searching}
+                                onClick={() =>
+                                  runSearch({
+                                    episodeId: ep.id,
+                                    label: `S${String(ep.seasonNumber).padStart(2, "0")}E${String(ep.episodeNumber).padStart(2, "0")}`,
+                                  })
+                                }
+                              >
+                                Search
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })}
+        </>
+      )}
+
+      {shape === "collection" && (item.children as SubItem[]).length > 0 && (
+        <>
+          <h2>{childLabel}s</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Title</th>
+                <th>Release date</th>
+                <th>File</th>
+                <th>Quality</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {(item.children as SubItem[]).map((si) => (
+                <Fragment key={si.id}>
+                  <tr>
+                    <td>{si.title}</td>
+                    <td>{si.releaseDate ?? "-"}</td>
+                    <td>
+                      <span className={`badge ${si.hasFile ? "ok" : ""}`}>{si.hasFile ? "Downloaded" : "Missing"}</span>
+                    </td>
+                    <td>
+                      {si.quality ?? "-"}
+                      {formatMediaInfo(si.mediaInfo) && (
+                        <div style={{ color: "var(--muted)", fontSize: "0.75rem" }}>{formatMediaInfo(si.mediaInfo)}</div>
+                      )}
+                    </td>
+                    <td style={{ display: "flex", gap: 6 }}>
+                      {isAdmin && item.type === "video" && si.externalProvider === "youtube" && (
+                        <button className="secondary" onClick={() => downloadVideo(si)}>
+                          Download
+                        </button>
+                      )}
+                      {isAdmin && !(item.type === "video" && si.externalProvider === "youtube") && (
+                        <button
+                          className="secondary"
+                          disabled={searching}
+                          onClick={() => runSearch({ subItemId: si.id, label: si.title })}
+                        >
+                          Search
+                        </button>
+                      )}
+                      {typeInfo?.multiFilePerChild && (
+                        <button className="secondary" onClick={() => toggleTracks(si.id)}>
+                          {loadingTracksFor === si.id
+                            ? "Loading..."
+                            : expandedAlbumId === si.id
+                            ? "Hide tracks"
+                            : "Tracks"}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                  {typeInfo?.multiFilePerChild && expandedAlbumId === si.id && (
+                    <tr>
+                      <td colSpan={5} style={{ background: "rgba(255,255,255,0.02)" }}>
+                        {!tracksByAlbum[si.id] || tracksByAlbum[si.id].length === 0 ? (
+                          <p className="empty">No track data available.</p>
+                        ) : (
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>#</th>
+                                <th>Title</th>
+                                <th>Duration</th>
+                                <th>File</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {tracksByAlbum[si.id].map((t) => (
+                                <tr key={t.id}>
+                                  <td>{t.trackNumber}</td>
+                                  <td>{t.title}</td>
+                                  <td>
+                                    {t.durationSeconds
+                                      ? `${Math.floor(t.durationSeconds / 60)}:${String(t.durationSeconds % 60).padStart(2, "0")}`
+                                      : "-"}
+                                  </td>
+                                  <td>
+                                    <span className={`badge ${t.hasFile ? "ok" : ""}`}>
+                                      {t.hasFile ? "Downloaded" : "Missing"}
+                                    </span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </div>
+  );
+}

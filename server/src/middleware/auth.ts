@@ -1,0 +1,78 @@
+import type { NextFunction, Request, Response } from "express";
+import { getSetting } from "../services/settingsStore.js";
+import { getSessionUser, type SessionUser } from "../services/auth.js";
+import { checkRateLimit, recordFailure, recordSuccess } from "../services/rateLimiter.js";
+
+export interface AuthContext {
+  isAdmin: boolean;
+  user?: SessionUser;
+}
+
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
+  namespace Express {
+    interface Request {
+      auth?: AuthContext;
+    }
+  }
+}
+
+/**
+ * Two credential types are accepted: the instance-wide admin API key (`X-Api-Key`, same as every
+ * Starr app), or a per-user session token (`X-Session-Token`) for restricted household accounts
+ * created in Settings → Users. Whichever is present and valid populates `req.auth`; routes that
+ * need admin-only access additionally apply `requireAdmin`.
+ */
+export function requireAuth(req: Request, res: Response, next: NextFunction) {
+  if (
+    req.path === "/health" ||
+    req.path === "/auth/login" ||
+    req.path === "/metrics" ||
+    req.path === "/calendar.ics" ||
+    req.path === "/webhooks/media-server"
+  ) {
+    next();
+    return;
+  }
+
+  const rateLimitKey = `authkey:${req.ip}`;
+  const rateLimit = checkRateLimit(rateLimitKey);
+  if (!rateLimit.allowed) {
+    res.status(429).json({ error: "Too many failed attempts. Try again later.", retryAfterSeconds: rateLimit.retryAfterSeconds });
+    return;
+  }
+
+  const expectedApiKey = getSetting("apiKey");
+  const providedApiKey = (req.header("X-Api-Key") ?? (req.query.apikey as string | undefined)) ?? "";
+  if (expectedApiKey && providedApiKey === expectedApiKey) {
+    recordSuccess(rateLimitKey);
+    req.auth = { isAdmin: true };
+    next();
+    return;
+  }
+
+  const sessionToken = req.header("X-Session-Token");
+  if (sessionToken) {
+    const user = getSessionUser(sessionToken);
+    if (user) {
+      recordSuccess(rateLimitKey);
+      req.auth = { isAdmin: false, user };
+      next();
+      return;
+    }
+  }
+
+  // Only count it as a failed *credential-guessing* attempt when credentials were actually
+  // supplied — an unauthenticated client hitting the API with no header at all (e.g. a stray
+  // request) shouldn't burn down the same attempt budget as a wrong API key.
+  if (providedApiKey || sessionToken) recordFailure(rateLimitKey);
+  res.status(401).json({ error: "Invalid or missing credentials" });
+}
+
+export function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  if (!req.auth?.isAdmin) {
+    res.status(403).json({ error: "Admin access required" });
+    return;
+  }
+  next();
+}

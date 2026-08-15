@@ -1,0 +1,606 @@
+import { log } from "./logger.js";
+import cron from "node-cron";
+import { db } from "../db/client.js";
+import { config } from "../config.js";
+import { searchAllIndexers } from "./indexerClient.js";
+import { getDownloadClientAdapter } from "./downloadClient.js";
+import { parseReleaseTitle, releaseMatchesEpisode } from "./releaseParser.js";
+import { pickBestAllowedQuality, sizeWithinQualityBounds } from "./quality.js";
+import { scoreRelease } from "./customFormatScoring.js";
+import { getMediaTypeConfig } from "./mediaTypes.js";
+import {
+  downloadClientFromRow,
+  indexerFromRow,
+  mediaItemFromRow,
+  qualityProfileFromRow,
+  queueItemFromRow,
+} from "../db/mappers.js";
+import { importQueueItem, ImportSkippedError } from "./importer.js";
+import { notifyFailed, notifyGrabbed } from "./notifications.js";
+import { runAutoArchival } from "./archival.js";
+import { getBlocklistedTitles } from "./blocklist.js";
+import { runTraktSync } from "./traktSync.js";
+import { recordDiskUsageSamples } from "./storageForecast.js";
+import { runScheduledBackup } from "./scheduledBackup.js";
+import { getGroupReputation, recordGroupFailure } from "./releaseGroupStats.js";
+import { isRootFolderOverQuota } from "./rootFolderSelect.js";
+import { getSetting } from "./settingsStore.js";
+import type { DownloadClient, Indexer, MediaItem, QueueItem, SearchResult } from "../types/index.js";
+
+function rowsToIndexers(): Indexer[] {
+  return (db.prepare("SELECT * FROM indexers").all() as any[]).map(indexerFromRow);
+}
+
+function rowsToDownloadClients(): DownloadClient[] {
+  return (db.prepare("SELECT * FROM download_clients WHERE enabled = 1").all() as any[]).map(
+    downloadClientFromRow
+  );
+}
+
+function getQualityProfile(id: number | null) {
+  if (!id) return null;
+  const row = db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(id);
+  return row ? qualityProfileFromRow(row) : null;
+}
+
+function isAlreadyQueued(mediaItemId: number, episodeId: number | null, subItemId: number | null): boolean {
+  if (episodeId) {
+    return !!db
+      .prepare("SELECT id FROM queue WHERE episode_id = ? AND status NOT IN ('failed')")
+      .get(episodeId);
+  }
+  if (subItemId) {
+    return !!db
+      .prepare("SELECT id FROM queue WHERE sub_item_id = ? AND status NOT IN ('failed')")
+      .get(subItemId);
+  }
+  return !!db
+    .prepare(
+      "SELECT id FROM queue WHERE media_item_id = ? AND episode_id IS NULL AND sub_item_id IS NULL AND status NOT IN ('failed')"
+    )
+    .get(mediaItemId);
+}
+
+interface ChosenResult {
+  result: SearchResult;
+  quality: string;
+}
+
+/**
+ * Picks the best result for a target: filters to allowed qualities, prefers matching
+ * episode/season, ranks by quality first, then by custom-format score, then seeders. Releases
+ * scoring below the profile's minimum custom format score are rejected outright, mirroring
+ * Sonarr/Radarr's "minimum custom format score" gate.
+ */
+function chooseBestResult(
+  results: SearchResult[],
+  allowedQualities: string[],
+  cutoff: string,
+  qualityProfileId: number | null,
+  minFormatScore: number,
+  target: { season: number; episode: number } | null,
+  blocklisted: Set<string>
+): ChosenResult | null {
+  const notBlocklisted = results.filter((r) => !blocklisted.has(r.title));
+  const withParsed = notBlocklisted.map((r) => ({ result: r, parsed: parseReleaseTitle(r.title) }));
+
+  const episodeFiltered = target
+    ? withParsed.filter(({ parsed }) => releaseMatchesEpisode(parsed, target.season, target.episode))
+    : withParsed;
+
+  // Drop releases whose size doesn't fit their claimed quality's configured size range — usually
+  // a mislabeled or fake release (e.g. a 200MB file claiming to be 1080p).
+  const relevant = episodeFiltered.filter(({ result, parsed }) =>
+    sizeWithinQualityBounds(parsed.quality, result.size ?? null)
+  );
+  if (relevant.length === 0) return null;
+
+  const qualities = relevant.map(({ parsed }) => parsed.quality);
+  const best = allowedQualities.length > 0 ? pickBestAllowedQuality(qualities, allowedQualities, cutoff) : qualities[0];
+  if (!best) return null;
+
+  const candidates = relevant
+    .filter(({ parsed }) => parsed.quality === best)
+    .map(({ result }) => ({ result, ...scoreRelease(result.title, result.size ?? null, qualityProfileId) }))
+    .filter((c) => c.totalScore >= minFormatScore);
+  if (candidates.length === 0) return null;
+
+  candidates.sort(
+    (a, b) =>
+      b.totalScore - a.totalScore ||
+      (b.result.seeders ?? 0) - (a.result.seeders ?? 0) ||
+      getGroupReputation(parseReleaseTitle(b.result.title).releaseGroup) -
+        getGroupReputation(parseReleaseTitle(a.result.title).releaseGroup)
+  );
+  const winner = candidates[0]?.result;
+  return winner ? { result: winner, quality: best } : null;
+}
+
+async function grab(
+  client: DownloadClient,
+  mediaItem: MediaItem,
+  episodeId: number | null,
+  subItemId: number | null,
+  chosen: ChosenResult,
+  retryCount = 0
+): Promise<void> {
+  const { result: best, quality } = chosen;
+  const adapter = getDownloadClientAdapter(client.type);
+  const grabResult = await adapter.addDownload(client, best.downloadUrl, client.category, best.title);
+
+  db.prepare(
+    `INSERT INTO queue (media_item_id, episode_id, sub_item_id, title, indexer_id, download_client_id, download_id, size, quality, status, retry_count)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`
+  ).run(
+    mediaItem.id,
+    episodeId,
+    subItemId,
+    best.title,
+    best.indexerId,
+    client.id,
+    grabResult.downloadId,
+    best.size,
+    quality,
+    retryCount
+  );
+
+  db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
+    mediaItem.id,
+    JSON.stringify(best)
+  );
+
+  await notifyGrabbed(mediaItem.title, best.title);
+  log.info(`[scheduler] grabbed "${best.title}" for "${mediaItem.title}"`);
+}
+
+/** A grabbed release only works with a download client that speaks its protocol — picking
+ * `clients[0]` blindly (the old behavior) breaks the moment more than one client type is
+ * configured, which is now common since http/ytdlp clients coexist with qBittorrent/SABnzbd. */
+function pickClientForProtocol(clients: DownloadClient[], protocol: SearchResult["protocol"]): DownloadClient | null {
+  const typesForProtocol: Record<string, string[]> = {
+    torrent: ["qbittorrent"],
+    usenet: ["sabnzbd"],
+    http: ["http"],
+  };
+  const preferred = typesForProtocol[protocol] ?? [];
+  return clients.find((c) => preferred.includes(c.type)) ?? null;
+}
+
+/** Parses "HH:MM" into minutes-since-midnight and checks whether the current local time falls
+ * inside [start, end) — handles the common overnight case (e.g. 22:00–06:00) by treating
+ * start > end as wrapping past midnight. Returns null (caller decides the fallback) if the window
+ * is unparseable or zero-width. */
+function isWithinTimeWindow(start: string, end: string): boolean | null {
+  const toMinutes = (hhmm: string): number | null => {
+    const m = hhmm.match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) return null;
+    return Number(m[1]) * 60 + Number(m[2]);
+  };
+  const startMin = toMinutes(start);
+  const endMin = toMinutes(end);
+  if (startMin === null || endMin === null || startMin === endMin) return null;
+
+  const now = new Date();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+
+  if (startMin < endMin) return nowMin >= startMin && nowMin < endMin;
+  return nowMin >= startMin || nowMin < endMin; // wraps past midnight
+}
+
+function isWithinQuietHours(): boolean {
+  if (getSetting("quietHoursEnabled") !== "1") return false;
+  const start = getSetting("quietHoursStart");
+  const end = getSetting("quietHoursEnd");
+  if (!start || !end) return false;
+  return isWithinTimeWindow(start, end) ?? false;
+}
+
+/** Beyond quiet hours (which just pauses inside a window), this restricts auto-search to running
+ * only inside a configured daily window — e.g. "only between 2am and 6am" — instead of every
+ * `searchIntervalMinutes` around the clock. Independent of quiet hours; both can be configured
+ * together (though doing so is redundant, whichever is more restrictive wins). */
+function isOutsideSearchWindow(): boolean {
+  if (getSetting("searchWindowEnabled") !== "1") return false;
+  const start = getSetting("searchWindowStart");
+  const end = getSetting("searchWindowEnd");
+  if (!start || !end) return false;
+  const within = isWithinTimeWindow(start, end);
+  return within === null ? false : !within;
+}
+
+/** For each monitored, fileless target (movie / episode / album / book), search and grab the best release. */
+async function runAutoSearch() {
+  if (isWithinQuietHours()) {
+    log.info("[scheduler] skipping auto-search: within configured quiet hours");
+    return;
+  }
+  if (isOutsideSearchWindow()) {
+    log.info("[scheduler] skipping auto-search: outside the configured search window");
+    return;
+  }
+
+  // Not gated on indexers.length: a yt-dlp-only setup (Online Videos, no torrent/usenet indexer
+  // at all) is valid, and each searchAllIndexers() call below already no-ops cleanly on an empty
+  // indexer list.
+  const indexers = rowsToIndexers();
+
+  const clients = rowsToDownloadClients();
+  if (clients.length === 0) {
+    log.info("[scheduler] skipping auto-search: no enabled download clients configured");
+    return;
+  }
+
+  const monitoredItems = (
+    db.prepare("SELECT * FROM media_items WHERE monitored = 1").all() as any[]
+  ).map(mediaItemFromRow) as MediaItem[];
+
+  for (const item of monitoredItems) {
+    if (isRootFolderOverQuota(item.rootFolderId)) {
+      log.info(`[scheduler] skipping "${item.title}": its root folder is at/over its configured quota`);
+      continue;
+    }
+
+    const profile = getQualityProfile(item.qualityProfileId);
+    const allowedQualities = profile?.allowedQualities ?? [];
+    const cutoff = profile?.cutoff ?? "";
+    const minFormatScore = profile?.minFormatScore ?? 0;
+
+    try {
+      const shape = getMediaTypeConfig(item.type).shape;
+      const blocklisted = getBlocklistedTitles(item.id);
+
+      if (shape === "single") {
+        if (item.hasFile || isAlreadyQueued(item.id, null, null)) continue;
+        const query = item.year ? `${item.title} ${item.year}` : item.title;
+        const results = await searchAllIndexers(indexers, query, item.type);
+        const best = chooseBestResult(
+          results,
+          allowedQualities,
+          cutoff,
+          item.qualityProfileId,
+          minFormatScore,
+          null,
+          blocklisted
+        );
+        if (best) {
+          const targetClient = pickClientForProtocol(clients, best.result.protocol);
+          if (targetClient) await grab(targetClient, item, null, null, best);
+          else log.warn(`[scheduler] no "${best.result.protocol}" download client configured, skipping "${best.result.title}"`);
+        }
+      } else if (shape === "episodic") {
+        const episodes = db
+          .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND monitored = 1 AND has_file = 0")
+          .all(item.id) as any[];
+
+        for (const ep of episodes) {
+          if (isAlreadyQueued(item.id, ep.id, null)) continue;
+          const season = String(ep.season_number).padStart(2, "0");
+          const episode = String(ep.episode_number).padStart(2, "0");
+          const query = `${item.title} S${season}E${episode}`;
+          const results = await searchAllIndexers(indexers, query, item.type);
+          const best = chooseBestResult(
+            results,
+            allowedQualities,
+            cutoff,
+            item.qualityProfileId,
+            minFormatScore,
+            { season: ep.season_number, episode: ep.episode_number },
+            blocklisted
+          );
+          if (best) {
+            const targetClient = pickClientForProtocol(clients, best.result.protocol);
+            if (targetClient) await grab(targetClient, item, ep.id, null, best);
+            else log.warn(`[scheduler] no "${best.result.protocol}" download client configured, skipping "${best.result.title}"`);
+          }
+        }
+      } else {
+        // collection shape: albums / books / comic issues / videos / lessons
+        const subItems = db
+          .prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND monitored = 1 AND has_file = 0")
+          .all(item.id) as any[];
+
+        for (const sub of subItems) {
+          if (isAlreadyQueued(item.id, null, sub.id)) continue;
+
+          // Online Videos aren't on Torznab/Newznab indexers at all — a YouTube-sourced video is
+          // grabbed directly via yt-dlp using the video id already stored at import time.
+          if (item.type === "video" && sub.external_provider === "youtube" && sub.external_id) {
+            const ytClient = clients.find((c) => c.type === "ytdlp");
+            if (!ytClient) {
+              log.warn(`[scheduler] no yt-dlp download client configured, skipping "${sub.title}"`);
+              continue;
+            }
+            await grab(ytClient, item, null, sub.id, {
+              result: {
+                indexerId: null,
+                indexerName: "yt-dlp",
+                title: sub.title,
+                size: 0,
+                seeders: null,
+                leechers: null,
+                publishDate: null,
+                downloadUrl: `https://www.youtube.com/watch?v=${sub.external_id}`,
+                protocol: "http",
+                category: null,
+              },
+              quality: "",
+            });
+            continue;
+          }
+
+          const query = `${item.title} ${sub.title}`;
+          const results = await searchAllIndexers(indexers, query, item.type);
+          const best = chooseBestResult(
+            results,
+            allowedQualities,
+            cutoff,
+            item.qualityProfileId,
+            minFormatScore,
+            null,
+            blocklisted
+          );
+          if (best) {
+            const targetClient = pickClientForProtocol(clients, best.result.protocol);
+            if (targetClient) await grab(targetClient, item, null, sub.id, best);
+            else log.warn(`[scheduler] no "${best.result.protocol}" download client configured, skipping "${best.result.title}"`);
+          }
+        }
+      }
+    } catch (err) {
+      log.warn(`[scheduler] auto-search failed for "${item.title}":`, (err as Error).message);
+    }
+  }
+}
+
+export interface BulkSearchTarget {
+  mediaItemId: number;
+  episodeId?: number | null;
+  subItemId?: number | null;
+}
+
+export interface BulkSearchResult extends BulkSearchTarget {
+  grabbed: boolean;
+  error?: string;
+}
+
+/** Same search-and-grab logic as the scheduler's own auto-search, but scoped to an explicit list
+ * of targets and run on demand — backs the Library/Missing pages' "bulk search" action. Ignores
+ * `monitored`/`hasFile` (the caller already chose specifically what to search for). */
+export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise<BulkSearchResult[]> {
+  const indexers = rowsToIndexers();
+  const clients = rowsToDownloadClients();
+  const results: BulkSearchResult[] = [];
+
+  for (const t of targets) {
+    try {
+      const itemRow = db.prepare("SELECT * FROM media_items WHERE id = ?").get(t.mediaItemId) as any;
+      if (!itemRow) {
+        results.push({ ...t, grabbed: false, error: "Media item not found" });
+        continue;
+      }
+      const item = mediaItemFromRow(itemRow) as MediaItem;
+      const profile = getQualityProfile(item.qualityProfileId);
+      const allowedQualities = profile?.allowedQualities ?? [];
+      const cutoff = profile?.cutoff ?? "";
+      const minFormatScore = profile?.minFormatScore ?? 0;
+      const blocklisted = getBlocklistedTitles(item.id);
+
+      let query: string;
+      let episodeTarget: { season: number; episode: number } | null = null;
+      if (t.episodeId) {
+        const ep = db.prepare("SELECT * FROM episodes WHERE id = ?").get(t.episodeId) as any;
+        if (!ep) {
+          results.push({ ...t, grabbed: false, error: "Episode not found" });
+          continue;
+        }
+        episodeTarget = { season: ep.season_number, episode: ep.episode_number };
+        query = `${item.title} S${String(ep.season_number).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}`;
+      } else if (t.subItemId) {
+        const sub = db.prepare("SELECT * FROM sub_items WHERE id = ?").get(t.subItemId) as any;
+        if (!sub) {
+          results.push({ ...t, grabbed: false, error: "Sub-item not found" });
+          continue;
+        }
+        query = `${item.title} ${sub.title}`;
+      } else {
+        query = item.year ? `${item.title} ${item.year}` : item.title;
+      }
+
+      const searchResults = await searchAllIndexers(indexers, query, item.type);
+      const best = chooseBestResult(
+        searchResults,
+        allowedQualities,
+        cutoff,
+        item.qualityProfileId,
+        minFormatScore,
+        episodeTarget,
+        blocklisted
+      );
+      if (!best) {
+        results.push({ ...t, grabbed: false, error: "No matching results" });
+        continue;
+      }
+      const targetClient = pickClientForProtocol(clients, best.result.protocol);
+      if (!targetClient) {
+        results.push({ ...t, grabbed: false, error: `No "${best.result.protocol}" download client configured` });
+        continue;
+      }
+      await grab(targetClient, item, t.episodeId ?? null, t.subItemId ?? null, best);
+      results.push({ ...t, grabbed: true });
+    } catch (err) {
+      results.push({ ...t, grabbed: false, error: (err as Error).message });
+    }
+  }
+
+  return results;
+}
+
+const MAX_AUTO_RETRIES = 2;
+
+/**
+ * A failed grab (either the download client reported failure, or the file couldn't be imported
+ * afterward) blocklists the release that failed and tries the next-best result for the same
+ * target, up to MAX_AUTO_RETRIES times, before giving up and notifying like before. This mirrors
+ * what an admin would do by hand — a single bad release (fake, corrupt, wrong language) shouldn't
+ * need a person to notice and manually re-search.
+ */
+async function retryFailedGrab(match: QueueItem, reason: string): Promise<void> {
+  const mediaRow = db.prepare("SELECT * FROM media_items WHERE id = ?").get(match.mediaItemId) as any;
+  const mediaTitle = mediaRow?.title ?? match.title;
+
+  db.prepare("INSERT INTO blocklist (media_item_id, release_title, indexer_id, reason) VALUES (?, ?, ?, ?)").run(
+    match.mediaItemId,
+    match.title,
+    match.indexerId,
+    reason
+  );
+  recordGroupFailure(parseReleaseTitle(match.title).releaseGroup);
+
+  if (!mediaRow || match.retryCount >= MAX_AUTO_RETRIES) {
+    await notifyFailed(mediaTitle, reason);
+    return;
+  }
+
+  try {
+    const item = mediaItemFromRow(mediaRow) as MediaItem;
+    const profile = getQualityProfile(item.qualityProfileId);
+    const blocklisted = getBlocklistedTitles(item.id);
+
+    let episodeTarget: { season: number; episode: number } | null = null;
+    let query: string;
+    if (match.episodeId) {
+      const ep = db.prepare("SELECT * FROM episodes WHERE id = ?").get(match.episodeId) as any;
+      if (!ep) throw new Error("episode no longer exists");
+      episodeTarget = { season: ep.season_number, episode: ep.episode_number };
+      query = `${item.title} S${String(ep.season_number).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}`;
+    } else if (match.subItemId) {
+      const sub = db.prepare("SELECT * FROM sub_items WHERE id = ?").get(match.subItemId) as any;
+      if (!sub) throw new Error("sub-item no longer exists");
+      query = `${item.title} ${sub.title}`;
+    } else {
+      query = item.year ? `${item.title} ${item.year}` : item.title;
+    }
+
+    const indexers = rowsToIndexers();
+    const results = await searchAllIndexers(indexers, query, item.type);
+    const best = chooseBestResult(
+      results,
+      profile?.allowedQualities ?? [],
+      profile?.cutoff ?? "",
+      item.qualityProfileId,
+      profile?.minFormatScore ?? 0,
+      episodeTarget,
+      blocklisted
+    );
+    if (!best) {
+      log.info(`[scheduler] retry exhausted search results for "${mediaTitle}" — notifying instead`);
+      await notifyFailed(mediaTitle, `${reason} (retried, no other releases found)`);
+      return;
+    }
+
+    const clients = rowsToDownloadClients();
+    const targetClient = pickClientForProtocol(clients, best.result.protocol);
+    if (!targetClient) {
+      await notifyFailed(mediaTitle, `${reason} (retried, but no "${best.result.protocol}" download client configured)`);
+      return;
+    }
+
+    await grab(targetClient, item, match.episodeId, match.subItemId, best, match.retryCount + 1);
+    log.info(`[scheduler] retried failed grab for "${mediaTitle}" with "${best.result.title}"`);
+  } catch (err) {
+    log.warn(`[scheduler] retry failed for "${mediaTitle}":`, (err as Error).message);
+    await notifyFailed(mediaTitle, reason);
+  }
+}
+
+/** Poll download clients for progress on active queue items, and import completed ones. */
+async function pollQueue() {
+  const clients = rowsToDownloadClients();
+  const active = (
+    db.prepare("SELECT * FROM queue WHERE status IN ('queued','downloading')").all() as any[]
+  ).map(queueItemFromRow) as QueueItem[];
+  if (active.length === 0) return;
+
+  for (const client of clients) {
+    const adapter = getDownloadClientAdapter(client.type);
+    const relevant = active.filter((q) => q.downloadClientId === client.id);
+    if (relevant.length === 0) continue;
+
+    try {
+      const statuses = await adapter.getStatus(
+        client,
+        relevant.map((q) => q.downloadId!).filter(Boolean)
+      );
+      for (const status of statuses) {
+        const match = relevant.find((q) => q.downloadId === status.downloadId);
+        if (!match) continue;
+        db.prepare(
+          `UPDATE queue SET progress = ?, status = ?, updated_at = datetime('now') WHERE id = ?`
+        ).run(status.progress, status.status, match.id);
+
+        if (status.status === "completed") {
+          try {
+            await importQueueItem(match.id);
+          } catch (err) {
+            if (err instanceof ImportSkippedError) {
+              log.info(`[scheduler] import skipped for "${match.title}": ${err.message}`);
+            } else {
+              log.warn(`[scheduler] import failed for "${match.title}":`, (err as Error).message);
+              db.prepare("UPDATE queue SET status = 'failed', updated_at = datetime('now') WHERE id = ?").run(
+                match.id
+              );
+              await retryFailedGrab(match, (err as Error).message);
+            }
+          }
+        } else if (status.status === "failed") {
+          await retryFailedGrab(match, "Download failed at the download client");
+        }
+      }
+    } catch (err) {
+      log.warn(`[scheduler] queue poll failed for client "${client.name}":`, (err as Error).message);
+    }
+  }
+}
+
+let started = false;
+
+export function startScheduler() {
+  if (started) return;
+  started = true;
+
+  const searchCron = `*/${Math.max(1, config.searchIntervalMinutes)} * * * *`;
+  cron.schedule(searchCron, () => {
+    runAutoSearch().catch((err) => log.error("[scheduler] auto-search error:", err));
+  });
+
+  const pollSeconds = Math.max(5, config.queuePollIntervalSeconds);
+  setInterval(() => {
+    pollQueue().catch((err) => log.error("[scheduler] queue poll error:", err));
+  }, pollSeconds * 1000);
+
+  cron.schedule("0 */6 * * *", () => {
+    runAutoArchival().catch((err) => log.error("[scheduler] auto-archival error:", err));
+  });
+
+  cron.schedule("0 */12 * * *", () => {
+    runTraktSync()
+      .then((r) => r.added > 0 && log.info(`[scheduler] Trakt sync added ${r.added} item(s)`))
+      .catch((err) => log.error("[scheduler] Trakt sync error:", err));
+  });
+
+  cron.schedule("0 0 * * *", () => {
+    try {
+      recordDiskUsageSamples();
+    } catch (err) {
+      log.error("[scheduler] disk usage sampling error:", err);
+    }
+  });
+
+  cron.schedule("0 * * * *", () => {
+    runScheduledBackup().catch((err) => log.error("[scheduler] scheduled backup error:", err));
+  });
+
+  log.info(
+    `[scheduler] started: auto-search every ${config.searchIntervalMinutes}m, queue poll every ${pollSeconds}s`
+  );
+}
