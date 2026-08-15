@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>aonarr-web</Name>
+  <Repository>allornothing/aonarr:web</Repository>
+  <Registry>https://hub.docker.com/r/allornothing/aonarr</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/aon082910/AoNarr/issues</Support>
+  <Project>https://github.com/aon082910/AoNarr</Project>
+  <Overview>AoNarr is a self-hosted media manager that unifies Sonarr/Radarr/Lidarr/Readarr/Prowlarr/Bazarr/Whisparr-style functionality across 10 library types (Movies, TV Shows, Anime, Music, Books, Comics, ROMs, Online Videos, Courses, Adult) in one app.&#13;
+&#13;
+This is the browser UI container. It requires the "aonarr-server" container (same repo, "server" tag) to be installed and running — install that one first.&#13;
+&#13;
+By default this expects the backend container to be named "aonarr-server" and listening on port 8989. If you renamed the server container or changed its port, update the AONARR_SERVER_HOST / AONARR_SERVER_PORT variables below to match. On Unraid, containers on the default bridge network can reach each other by container name.</Overview>
+  <Category>MediaApp:Video MediaApp:Music MediaApp:Books</Category>
+  <WebUI>http://[IP]:[PORT:7878]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/aon082910/AoNarr/main/unraid-templates/aonarr-web.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/aon082910/AoNarr/main/web/public/icon.svg</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>Install "aonarr-server" first — this container proxies API calls to it.</Requires>
+  <Config Name="WebUI Port" Target="7878" Default="7878" Mode="tcp" Description="Port the browser UI is served on." Type="Port" Display="always" Required="true" Mask="false">7878</Config>
+  <Config Name="Backend Host" Target="AONARR_SERVER_HOST" Default="aonarr-server" Mode="" Description="Container name (or IP) of the aonarr-server container. Must match the Name you gave that container." Type="Variable" Display="always" Required="true" Mask="false">aonarr-server</Config>
+  <Config Name="Backend Port" Target="AONARR_SERVER_PORT" Default="8989" Mode="" Description="Port the aonarr-server container's API listens on." Type="Variable" Display="always" Required="true" Mask="false">8989</Config>
+</Container>
