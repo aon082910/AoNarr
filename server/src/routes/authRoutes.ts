@@ -1,13 +1,58 @@
 import { Router } from "express";
 import { db } from "../db/client.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { createSession, destroySession, verifyPassword } from "../services/auth.js";
+import { createSession, destroySession, hashPassword, verifyPassword } from "../services/auth.js";
 import { logAuditEvent } from "../services/audit.js";
 import { checkRateLimit, recordFailure, recordSuccess } from "../services/rateLimiter.js";
 
 export const authRouter = Router();
 
-/** Public — no session/API key required yet, since this is how a restricted user gets one. */
+/** Public — lets the web UI decide whether to show "create admin account" or the normal login form. */
+authRouter.get(
+  "/setup-status",
+  asyncHandler(async (_req, res) => {
+    const admin = db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
+    res.json({ needsSetup: !admin });
+  })
+);
+
+/**
+ * Public, but only does anything while no admin account exists yet — creates the first admin
+ * user and logs them in. Once an admin exists this always 403s, so it can't be used to mint a
+ * second admin account without already being authenticated (use Settings → Users for that).
+ */
+authRouter.post(
+  "/setup",
+  asyncHandler(async (req, res) => {
+    const existingAdmin = db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
+    if (existingAdmin) throw new HttpError(403, "An admin account already exists");
+
+    const { username, password } = req.body ?? {};
+    if (!username || typeof username !== "string" || username.trim().length < 1) {
+      throw new HttpError(400, "username is required");
+    }
+    if (!password || typeof password !== "string" || password.length < 8) {
+      throw new HttpError(400, "password must be at least 8 characters");
+    }
+
+    const passwordHash = hashPassword(password);
+    const result = db
+      .prepare("INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'admin')")
+      .run(username.trim(), passwordHash);
+    const userId = Number(result.lastInsertRowid);
+
+    logAuditEvent(userId, username.trim(), "admin_account_created");
+
+    const session = createSession(userId, req.header("User-Agent"));
+    res.status(201).json({
+      token: session.token,
+      expiresAt: session.expiresAt,
+      user: { id: userId, username: username.trim(), role: "admin", allowedTypes: [] },
+    });
+  })
+);
+
+/** Public — no session/API key required yet, since this is how a user gets one. */
 authRouter.post(
   "/login",
   asyncHandler(async (req, res) => {

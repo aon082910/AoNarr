@@ -204,13 +204,14 @@ CREATE TABLE IF NOT EXISTS collection_items (
   PRIMARY KEY (collection_id, media_item_id)
 );
 
--- Restricted user accounts (separate from the single admin API key). Admins keep using the
--- instance-wide API key; these are for household members with limited, per-library access.
+-- User accounts. 'admin' rows are created once via the first-run setup wizard (or promoted);
+-- the instance-wide API key (settings.apiKey) remains valid in parallel for automation/scripts.
+-- 'user' rows are household members with limited, per-library access.
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL, -- "scrypt$salt$hash", see services/auth.ts
-  role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user')), -- only non-admin roles live here
+  role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

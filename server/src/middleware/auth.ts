@@ -27,6 +27,8 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (
     req.path === "/health" ||
     req.path === "/auth/login" ||
+    req.path === "/auth/setup" ||
+    req.path === "/auth/setup-status" ||
     req.path === "/metrics" ||
     req.path === "/calendar.ics" ||
     req.path === "/webhooks/media-server"
@@ -56,7 +58,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     const user = getSessionUser(sessionToken);
     if (user) {
       recordSuccess(rateLimitKey);
-      req.auth = { isAdmin: false, user };
+      req.auth = { isAdmin: user.role === "admin", user };
       next();
       return;
     }

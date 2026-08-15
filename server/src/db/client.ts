@@ -163,6 +163,108 @@ repairDanglingReference(
    )`
 );
 
+/**
+ * users.role originally shipped CHECK'd to 'user' only. Unlike dropCheckConstraint (which drops
+ * the CHECK entirely and so can key off "does the CHECK clause still exist"), this widens it to
+ * also allow 'admin' — the rebuilt table still has a CHECK clause, so that same "still has CHECK"
+ * test would never be able to tell "already migrated" apart from "needs migrating" and would
+ * rebuild the table (harmlessly, but wastefully) on every single startup. Keying off whether
+ * 'admin' is already an allowed value avoids that.
+ */
+function ensureUsersAdminRole() {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'").get() as
+    | { sql: string }
+    | undefined;
+  if (!row || row.sql.includes("'admin'")) return;
+
+  const cols = (db.prepare(`PRAGMA table_info(users)`).all() as { name: string }[]).map((c) => c.name);
+  db.pragma("legacy_alter_table = ON");
+  db.transaction(() => {
+    db.exec(`ALTER TABLE users RENAME TO users_pre_migration`);
+    db.exec(`CREATE TABLE users (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       username TEXT NOT NULL UNIQUE,
+       password_hash TEXT NOT NULL,
+       role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+       created_at TEXT NOT NULL DEFAULT (datetime('now')),
+       max_pending_requests INTEGER,
+       auto_approve INTEGER NOT NULL DEFAULT 0,
+       max_content_rating TEXT
+     )`);
+    db.exec(`INSERT INTO users (${cols.join(", ")}) SELECT ${cols.join(", ")} FROM users_pre_migration`);
+    db.exec(`DROP TABLE users_pre_migration`);
+  })();
+  db.pragma("legacy_alter_table = OFF");
+}
+ensureUsersAdminRole();
+
+// Every table with a `REFERENCES users(...)` foreign key needs the same dangling-reference repair
+// as queue/blocklist above, in case an earlier run of this migration (or the indexers/download_clients
+// ones) already rewrote their FK text to point at a throwaway `_pre_migration` table.
+repairDanglingReference(
+  "user_library_access",
+  `CREATE TABLE user_library_access (
+     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     media_type TEXT NOT NULL,
+     PRIMARY KEY (user_id, media_type)
+   )`
+);
+
+repairDanglingReference(
+  "sessions",
+  `CREATE TABLE sessions (
+     token TEXT PRIMARY KEY,
+     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     created_at TEXT NOT NULL DEFAULT (datetime('now')),
+     expires_at TEXT NOT NULL,
+     last_used_at TEXT,
+     user_agent TEXT
+   )`
+);
+
+repairDanglingReference(
+  "requests",
+  `CREATE TABLE requests (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     type TEXT NOT NULL,
+     title TEXT NOT NULL,
+     year INTEGER,
+     overview TEXT,
+     poster_url TEXT,
+     external_ids TEXT,
+     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+     media_item_id INTEGER REFERENCES media_items(id) ON DELETE SET NULL,
+     note TEXT,
+     created_at TEXT NOT NULL DEFAULT (datetime('now')),
+     resolved_at TEXT
+   )`
+);
+
+repairDanglingReference(
+  "audit_log",
+  `CREATE TABLE audit_log (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+     username TEXT NOT NULL,
+     event_type TEXT NOT NULL,
+     detail TEXT,
+     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+   )`
+);
+
+repairDanglingReference(
+  "push_subscriptions",
+  `CREATE TABLE push_subscriptions (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     endpoint TEXT NOT NULL UNIQUE,
+     p256dh TEXT NOT NULL,
+     auth TEXT NOT NULL,
+     created_at TEXT NOT NULL DEFAULT (datetime('now')),
+     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE
+   )`
+);
+
 repairDanglingReference(
   "blocklist",
   `CREATE TABLE blocklist (
