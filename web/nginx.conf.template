@@ -1,0 +1,17 @@
+server {
+    listen 7878;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location /api/ {
+        proxy_pass http://${AONARR_SERVER_HOST}:${AONARR_SERVER_PORT}/api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_http_version 1.1;
+    }
+
+    location / {
+        try_files $uri /index.html;
+    }
+}
