@@ -1,0 +1,59 @@
+# Single-container build: nginx (UI) + node (API) in one image, for deployments
+# (e.g. Unraid CA) where running two linked containers is more setup than it's worth.
+# The split two-container images (web/Dockerfile, server/Dockerfile) remain the
+# docker-compose default since they scale/update independently.
+
+# ---- build web ----
+FROM node:20-bookworm-slim AS build-web
+WORKDIR /app
+COPY web/package.json ./
+RUN npm install
+COPY web/tsconfig.json web/vite.config.ts web/index.html ./
+COPY web/src ./src
+RUN npm run build
+
+# ---- build server ----
+FROM node:20-bookworm-slim AS build-server
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+COPY server/package.json ./
+RUN npm install
+COPY server/tsconfig.json ./
+COPY server/src ./src
+RUN npm run build
+RUN cp src/db/schema.sql dist/db/schema.sql
+
+# ---- final ----
+FROM node:20-bookworm-slim
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 make g++ ca-certificates curl ffmpeg nginx \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /etc/nginx/sites-enabled/default
+# yt-dlp is fetched as a standalone binary (not via pip) to avoid pulling in a whole Python
+# packaging toolchain just for one tool — used by the "ytdlp" download client type.
+RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+    && chmod +x /usr/local/bin/yt-dlp
+
+ENV NODE_ENV=production
+ENV PORT=8989
+ENV AONARR_CONFIG_DIR=/config
+ENV AONARR_DOWNLOADS_DIR=/downloads
+
+COPY server/package.json ./
+RUN npm install --omit=dev
+COPY --from=build-server /app/dist ./dist
+COPY server/CHANGELOG.md ./
+
+COPY --from=build-web /app/dist /usr/share/nginx/html
+COPY combined/nginx.conf /etc/nginx/conf.d/aonarr.conf
+COPY combined/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+VOLUME ["/config"]
+EXPOSE 7878
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD curl -f http://127.0.0.1:7878/api/health || exit 1
+
+ENTRYPOINT ["/entrypoint.sh"]
