@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api/client.js";
+import GroupPicker from "../components/GroupPicker.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { MediaItem, MediaType, QualityProfile, RootFolder } from "../types.js";
 import { formatBytes } from "../utils/format.js";
@@ -59,6 +60,7 @@ export default function AddMedia() {
   const [nfoPath, setNfoPath] = useState("");
   const [nfoLoading, setNfoLoading] = useState(false);
   const [nfoResult, setNfoResult] = useState<MetadataSearchResult | null>(null);
+  const [groupId, setGroupId] = useState<number | null>(null);
 
   const activeTypeInfo = mediaTypes.find((t) => t.key === type);
 
@@ -126,6 +128,7 @@ export default function AddMedia() {
             qualityProfileId: qualityProfileId || null,
             monitored: 1,
             confirmDuplicate,
+            groupId,
           }
         : {
             type,
@@ -138,6 +141,7 @@ export default function AddMedia() {
             qualityProfileId: qualityProfileId || null,
             monitored: 1,
             confirmDuplicate,
+            groupId,
           };
       const created = await api.post<MediaItem>(manual ? "/media" : "/metadata/import", payload);
       navigate(`/media/${created.id}`);
@@ -281,6 +285,10 @@ export default function AddMedia() {
 
           <label>Overview</label>
           <textarea value={overview} onChange={(e) => setOverview(e.target.value)} rows={3} />
+
+          {activeTypeInfo && activeTypeInfo.groupLevels.length > 0 && (
+            <GroupPicker type={type} groupLevels={activeTypeInfo.groupLevels} onChange={setGroupId} />
+          )}
 
           <label>Root folder</label>
           <select value={rootFolderId} onChange={(e) => setRootFolderId(e.target.value ? Number(e.target.value) : "")}>

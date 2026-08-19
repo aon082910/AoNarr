@@ -3,6 +3,13 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 21
+- Verified Adult's 3-level hierarchy (Site → Maker → Series) end-to-end, not just typechecked
+- Add Media now shows cascading group pickers (with inline "+ New" at every level) for grouped
+  types, so a new ROM/Adult/Online Video/Course item can be filed into its group on creation
+- Media detail pages for grouped types show their current location and a "Move to group..." panel
+  to refile an existing item
+
 ## Round 20
 - Nested library grouping (generic `library_groups` table + API) for the library types whose
   real-world organization goes deeper than one level: ROMs (System → Maker → Game), Adult

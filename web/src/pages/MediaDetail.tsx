@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client.js";
+import GroupPicker from "../components/GroupPicker.js";
+import type { LibraryGroup } from "../types.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { Collection, MediaInfo, MediaItem, SearchResult, Tag, Track } from "../types.js";
@@ -70,6 +72,9 @@ export default function MediaDetail() {
 
   const [showImport, setShowImport] = useState(false);
   const [browsePath, setBrowsePath] = useState("");
+  const [showMove, setShowMove] = useState(false);
+  const [groupBreadcrumb, setGroupBreadcrumb] = useState<string | null>(null);
+  const [pendingGroupId, setPendingGroupId] = useState<number | null>(null);
   const [browseEntries, setBrowseEntries] = useState<BrowseEntry[]>([]);
   const [importEpisodeId, setImportEpisodeId] = useState<number | "">("");
   const [importSubItemId, setImportSubItemId] = useState<number | "">("");
@@ -107,6 +112,16 @@ export default function MediaDetail() {
     if (isAdmin) api.get<Tag[]>("/tags").then(setAllTags);
     api.get<Collection[]>("/collections").then(setAllCollections);
   }, [isAdmin]);
+
+  useEffect(() => {
+    if (!item?.groupId) {
+      setGroupBreadcrumb(null);
+      return;
+    }
+    api
+      .get<{ breadcrumb: LibraryGroup[] }>(`/library-groups/${item.groupId}`)
+      .then((detail) => setGroupBreadcrumb(detail.breadcrumb.map((g) => g.name).join(" / ")));
+  }, [item?.groupId]);
 
   async function addToCollection() {
     if (!item || !collectionToAdd) return;
@@ -170,6 +185,13 @@ export default function MediaDetail() {
     if (!confirm(`Remove "${item.title}" from AoNarr? This does not delete files on disk.`)) return;
     await api.del(`/media/${item.id}`);
     navigate("/");
+  }
+
+  async function saveGroup() {
+    if (!item || !pendingGroupId) return;
+    const updated = await api.patch<{ groupId: number | null }>(`/media/${item.id}`, { groupId: pendingGroupId });
+    setItem({ ...item, groupId: updated.groupId });
+    setShowMove(false);
   }
 
   async function toggleSeasonMonitor(seasonNumber: number, monitored: boolean) {
@@ -456,6 +478,11 @@ export default function MediaDetail() {
           <button onClick={toggleImport} className="secondary">
             {showImport ? "Hide manual import" : "Manual Import"}
           </button>
+          {typeInfo && typeInfo.groupLevels.length > 0 && (
+            <button onClick={() => setShowMove((v) => !v)} className="secondary">
+              {showMove ? "Cancel move" : "Move to group..."}
+            </button>
+          )}
           {/* Fanart.tv only supports lookup by a known TMDB/TVDB/MusicBrainz id, i.e. exactly these
               three types — this isn't a UI simplification, it's a real capability limit. */}
           {(item.type === "movie" || item.type === "series" || item.type === "artist") && (
@@ -470,6 +497,19 @@ export default function MediaDetail() {
       )}
 
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
+
+      {typeInfo && typeInfo.groupLevels.length > 0 && groupBreadcrumb && !showMove && (
+        <p style={{ color: "var(--muted)" }}>Location: {groupBreadcrumb}</p>
+      )}
+
+      {showMove && typeInfo && (
+        <div className="form-panel">
+          <GroupPicker type={item.type} groupLevels={typeInfo.groupLevels} onChange={setPendingGroupId} />
+          <button type="button" onClick={saveGroup} disabled={!pendingGroupId} style={{ marginTop: 8 }}>
+            Save location
+          </button>
+        </div>
+      )}
 
       {showArtwork && (
         <>
