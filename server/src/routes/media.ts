@@ -12,6 +12,8 @@ import { CONTENT_RATING_ORDER, isRatingBlocked } from "../services/contentRating
 import { fetchCastFor, fetchTrailerFor, searchMetadata } from "../services/metadata.js";
 import { notifyGrabbed } from "../services/notifications.js";
 import { recycleFile } from "../services/recycleBin.js";
+import { buildCalibreOpf, buildJson, buildNfo, safeFileName, type ExportableItem } from "../services/metadataExport.js";
+import AdmZip from "adm-zip";
 import type { MediaType } from "../types/index.js";
 
 export const mediaRouter = Router();
@@ -227,6 +229,50 @@ mediaRouter.post(
   })
 );
 
+/** Bulk metadata export: a .zip of one file per item, scoped by ?type=. Registered before the
+ * "/:id" route below so "export-bulk.zip" isn't swallowed as an :id value. */
+mediaRouter.get(
+  "/export-bulk.zip",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const { type, format } = req.query as { type?: string; format?: string };
+    if (!type) throw new HttpError(400, "type is required");
+    const fmt = format === "json" ? "json" : "nfo";
+
+    const rows = db.prepare("SELECT * FROM media_items WHERE type = ?").all(type) as any[];
+    const zip = new AdmZip();
+    for (const row of rows) {
+      const item = toExportable(row);
+      const body = fmt === "json" ? buildJson(item) : buildNfo(item);
+      zip.addFile(`${safeFileName(item.title)}.${fmt}`, Buffer.from(body, "utf-8"));
+    }
+    res.setHeader("Content-Disposition", `attachment; filename="aonarr-${type}-metadata.zip"`);
+    res.setHeader("Content-Type", "application/zip");
+    res.send(zip.toBuffer());
+  })
+);
+
+/** Calibre-compatible bulk export (.opf per item) — for the book-shaped libraries. Same
+ * before-":id" registration note as above. */
+mediaRouter.get(
+  "/export-calibre.zip",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const { type } = req.query as { type?: string };
+    if (!type) throw new HttpError(400, "type is required");
+
+    const rows = db.prepare("SELECT * FROM media_items WHERE type = ?").all(type) as any[];
+    const zip = new AdmZip();
+    for (const row of rows) {
+      const item = toExportable(row);
+      zip.addFile(`${safeFileName(item.title)}/metadata.opf`, Buffer.from(buildCalibreOpf(item), "utf-8"));
+    }
+    res.setHeader("Content-Disposition", `attachment; filename="aonarr-${type}-calibre.zip"`);
+    res.setHeader("Content-Type", "application/zip");
+    res.send(zip.toBuffer());
+  })
+);
+
 mediaRouter.get(
   "/:id",
   asyncHandler(async (req, res) => {
@@ -254,6 +300,40 @@ mediaRouter.get(
     }
 
     res.json({ ...item, children, tags: getTagsForMediaItem(item.id) });
+  })
+);
+
+function toExportable(row: any): ExportableItem {
+  let externalIds: Record<string, string> = {};
+  try {
+    externalIds = row.external_ids ? JSON.parse(row.external_ids) : {};
+  } catch {
+    // malformed external_ids on an old row — export without ids rather than fail the whole export
+  }
+  return {
+    type: row.type,
+    title: row.title,
+    year: row.year,
+    overview: row.overview,
+    posterUrl: row.poster_url,
+    externalIds,
+  };
+}
+
+/** Individual metadata export — ?format=nfo (default, Kodi/Jellyfin/Emby-compatible sidecar,
+ * round-trips through Add Media's "Load NFO") or ?format=json. */
+mediaRouter.get(
+  "/:id/export",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    if (!row) throw new HttpError(404, "Media item not found");
+    const item = toExportable(row);
+    const format = req.query.format === "json" ? "json" : "nfo";
+    const body = format === "json" ? buildJson(item) : buildNfo(item);
+    res.setHeader("Content-Disposition", `attachment; filename="${safeFileName(item.title)}.${format}"`);
+    res.setHeader("Content-Type", format === "json" ? "application/json" : "application/xml");
+    res.send(body);
   })
 );
 

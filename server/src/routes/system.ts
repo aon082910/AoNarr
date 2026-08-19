@@ -24,6 +24,42 @@ import { getMediaServerConfig } from "../services/mediaServer.js";
 export const systemRouter = Router();
 systemRouter.use(requireAdmin);
 
+/**
+ * Aggregates the bandwidth/queue-throughput information AoNarr actually has — per-client
+ * upload/download totals and ratio (only qBittorrent's adapter implements getHealthStats today;
+ * others report as unavailable rather than being silently omitted) plus a queue status breakdown.
+ * AoNarr doesn't proxy traffic itself, so this is what every download client and the queue
+ * self-report, not a packet-level capture.
+ */
+systemRouter.get(
+  "/network-stats",
+  asyncHandler(async (_req, res) => {
+    const clients = (db.prepare("SELECT * FROM download_clients WHERE enabled = 1").all() as any[]).map(
+      downloadClientFromRow
+    );
+    const clientStats = await Promise.all(
+      clients.map(async (client) => {
+        const adapter = getDownloadClientAdapter(client.type);
+        if (!adapter.getHealthStats) {
+          return { id: client.id, name: client.name, type: client.type, available: false };
+        }
+        try {
+          const stats = await adapter.getHealthStats(client);
+          return { id: client.id, name: client.name, type: client.type, available: true, ...stats };
+        } catch (err) {
+          return { id: client.id, name: client.name, type: client.type, available: false, error: (err as Error).message };
+        }
+      })
+    );
+
+    const queueByStatus = db
+      .prepare("SELECT status, COUNT(*) AS count, COALESCE(SUM(size), 0) AS totalBytes FROM queue GROUP BY status")
+      .all() as { status: string; count: number; totalBytes: number }[];
+
+    res.json({ clients: clientStats, queueByStatus });
+  })
+);
+
 systemRouter.get(
   "/logs",
   asyncHandler(async (_req, res) => {

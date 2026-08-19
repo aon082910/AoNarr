@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { api } from "../api/client.js";
+import { api, downloadFile } from "../api/client.js";
 import GroupPicker from "../components/GroupPicker.js";
 import type { LibraryGroup } from "../types.js";
 import { useAuth } from "../context/AuthContext.js";
@@ -630,6 +630,12 @@ export default function MediaDetail() {
           )}
           <button onClick={toggleImport} className="secondary">
             {showImport ? "Hide manual import" : "Manual Import"}
+          </button>
+          <button
+            className="secondary"
+            onClick={() => downloadFile(`/media/${item.id}/export?format=nfo`, `${item.title}.nfo`)}
+          >
+            Export .nfo
           </button>
           {typeInfo && typeInfo.groupLevels.length > 0 && (
             <button onClick={() => setShowMove((v) => !v)} className="secondary">

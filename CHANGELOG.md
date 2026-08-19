@@ -3,6 +3,17 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 29
+- TRaSH-Guides custom format import — paste a TRaSH-Guides/Radarr/Sonarr custom format JSON
+  export and title/release-group/size conditions translate directly into a real custom format;
+  unsupported condition types (language, etc.) are reported as skipped rather than silently lost
+- Metadata export: individual (.nfo or JSON, from a media item's own page) and bulk (a .zip of one
+  file per item, from any library type's page)
+- Calibre export — a .zip of Calibre-compatible .opf sidecars for Books/Audiobooks/Comics/Manga
+- Network Stats page — per-download-client bandwidth totals plus a queue status/size breakdown
+
+This closes out the last of the originally-listed "straightforward" batch from a few rounds back.
+
 ## Round 28
 - Anime absolute-episode naming: new {absoluteEpisode} naming token (a running count across every
   season) as an alternative to {season}/{episode}, alongside the existing global numbering

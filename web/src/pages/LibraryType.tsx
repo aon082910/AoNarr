@@ -231,6 +231,14 @@ export function LibraryItemGrid({
     await downloadFile(`/media/export.csv?type=${type}`, `aonarr-${type}.csv`);
   }
 
+  async function exportMetadata(format: "nfo" | "json") {
+    await downloadFile(`/media/export-bulk.zip?type=${type}&format=${format}`, `aonarr-${type}-metadata.zip`);
+  }
+
+  async function exportCalibre() {
+    await downloadFile(`/media/export-calibre.zip?type=${type}`, `aonarr-${type}-calibre.zip`);
+  }
+
   async function importCsv(file: File) {
     setImportingCsv(true);
     try {
@@ -345,6 +353,21 @@ export function LibraryItemGrid({
         {auth.isAdmin && (
           <button className="secondary" onClick={exportCsv}>
             Export CSV
+          </button>
+        )}
+        {auth.isAdmin && (
+          <button className="secondary" onClick={() => exportMetadata("nfo")}>
+            Export metadata (.nfo)
+          </button>
+        )}
+        {auth.isAdmin && (
+          <button className="secondary" onClick={() => exportMetadata("json")}>
+            Export metadata (JSON)
+          </button>
+        )}
+        {auth.isAdmin && ["author", "audiobook", "comic", "manga"].includes(type) && (
+          <button className="secondary" onClick={exportCalibre}>
+            Export for Calibre
           </button>
         )}
         {auth.isAdmin && (

@@ -62,6 +62,8 @@ export default function Settings() {
   const [customFormats, setCustomFormats] = useState<CustomFormat[]>([]);
   const [formatName, setFormatName] = useState("");
   const [formatPatterns, setFormatPatterns] = useState("");
+  const [trashJson, setTrashJson] = useState("");
+  const [trashError, setTrashError] = useState<string | null>(null);
   const [scoreProfileId, setScoreProfileId] = useState<number | "">("");
   const [formatScores, setFormatScores] = useState<FormatScore[]>([]);
 
@@ -185,6 +187,23 @@ export default function Settings() {
   async function removeCustomFormat(id: number) {
     await api.del(`/custom-formats/${id}`);
     load();
+  }
+
+  async function importTrashFormat() {
+    if (!trashJson.trim()) return;
+    setTrashError(null);
+    try {
+      const result = await api.post<{ format: CustomFormat; skipped: string[] }>("/custom-formats/import-trash", {
+        json: trashJson,
+      });
+      setTrashJson("");
+      if (result.skipped.length > 0) {
+        alert(`Imported "${result.format.name}" — skipped unsupported condition type(s): ${result.skipped.join(", ")}`);
+      }
+      load();
+    } catch (e) {
+      setTrashError((e as Error).message);
+    }
   }
 
   async function removeBlocklistEntry(id: number) {
@@ -1449,6 +1468,22 @@ export default function Settings() {
         />
         <button type="submit">Add custom format</button>
       </form>
+
+      <div className="form-panel">
+        <label>Import from TRaSH-Guides (or a Radarr/Sonarr custom format export)</label>
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          Paste the format's JSON (from TRaSH-Guides' GitHub repo, or Radarr/Sonarr's own "Export"
+          on a custom format). Title/release-group/size conditions translate directly; language
+          and other condition types aren't supported and get skipped (reported after import) since
+          they use Radarr/Sonarr's own internal ids.
+        </p>
+        <textarea value={trashJson} onChange={(e) => setTrashJson(e.target.value)} rows={6} placeholder='{"name": "...", "specifications": [...]}' />
+        {trashError && <p style={{ color: "var(--danger)" }}>{trashError}</p>}
+        <button type="button" onClick={importTrashFormat}>
+          Import
+        </button>
+      </div>
+
       <table>
         <thead>
           <tr>

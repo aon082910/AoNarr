@@ -34,6 +34,7 @@ import RemoteLibrary from "./pages/RemoteLibrary.js";
 import Account from "./pages/Account.js";
 import Jobs from "./pages/Jobs.js";
 import RecycleBin from "./pages/RecycleBin.js";
+import NetworkStats from "./pages/NetworkStats.js";
 import { useMediaTypes } from "./hooks/useMediaTypes.js";
 
 function NavGroup({
@@ -125,6 +126,7 @@ export default function App() {
             <NavLink to="/system">Status &amp; Health</NavLink>
             <NavLink to="/jobs">Jobs</NavLink>
             <NavLink to="/recycle-bin">Recycle Bin</NavLink>
+            <NavLink to="/network-stats">Network Stats</NavLink>
             <NavLink to="/audit-log">Audit Log</NavLink>
             <NavLink to="/api-docs">API Docs</NavLink>
             <NavLink to="/remote-library">Remote Library</NavLink>
@@ -172,6 +174,7 @@ export default function App() {
           {isAdmin && <Route path="/system" element={<System />} />}
           {isAdmin && <Route path="/jobs" element={<Jobs />} />}
           {isAdmin && <Route path="/recycle-bin" element={<RecycleBin />} />}
+          {isAdmin && <Route path="/network-stats" element={<NetworkStats />} />}
           {isAdmin && <Route path="/api-docs" element={<ApiDocs />} />}
           {isAdmin && <Route path="/remote-library" element={<RemoteLibrary />} />}
         </Routes>

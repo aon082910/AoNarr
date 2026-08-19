@@ -79,6 +79,70 @@ customFormatsRouter.post(
   })
 );
 
+interface TrashSpecification {
+  implementation: string;
+  negate?: boolean;
+  fields?: { value?: string | number; min?: number; max?: number };
+}
+
+interface TrashCustomFormat {
+  name: string;
+  specifications?: TrashSpecification[];
+}
+
+/**
+ * Imports a custom format exported from TRaSH-Guides (or copy-pasted straight from Radarr/
+ * Sonarr's own custom format JSON export, since TRaSH publishes in that same shape) by mapping
+ * each `specifications` entry to one of AoNarr's condition group types. Only
+ * ReleaseTitleSpecification, ReleaseGroupSpecification, and SizeSpecification translate cleanly;
+ * anything else (LanguageSpecification's numeric ids are Radarr/Sonarr's own internal language
+ * table, IndexerFlagSpecification, etc.) is skipped and reported back rather than silently
+ * dropped, since a format missing a condition would otherwise match more releases than intended.
+ * Every mapped specification becomes its own AND'd group — a faithful translation of Radarr's
+ * "required" specifications; it does not replicate their separate "at least one optional
+ * specification must also match" OR-grouping, since AoNarr's model doesn't distinguish the two.
+ */
+customFormatsRouter.post(
+  "/import-trash",
+  asyncHandler(async (req, res) => {
+    const b = req.body ?? {};
+    const trash: TrashCustomFormat = typeof b.json === "string" ? JSON.parse(b.json) : b.json;
+    if (!trash?.name || !Array.isArray(trash.specifications)) {
+      throw new HttpError(400, "Doesn't look like a TRaSH-Guides/Radarr/Sonarr custom format export");
+    }
+
+    const groups: any[] = [];
+    const skipped: string[] = [];
+
+    for (const spec of trash.specifications) {
+      if (spec.implementation === "ReleaseTitleSpecification" && typeof spec.fields?.value === "string") {
+        groups.push({ type: "title", patterns: [spec.fields.value], negate: !!spec.negate });
+      } else if (spec.implementation === "ReleaseGroupSpecification" && typeof spec.fields?.value === "string") {
+        groups.push({ type: "releaseGroup", patterns: [spec.fields.value], negate: !!spec.negate });
+      } else if (spec.implementation === "SizeSpecification") {
+        groups.push({
+          type: "size",
+          minMb: spec.fields?.min != null ? spec.fields.min * 1000 : null,
+          maxMb: spec.fields?.max != null ? spec.fields.max * 1000 : null,
+          negate: !!spec.negate,
+        });
+      } else {
+        skipped.push(spec.implementation);
+      }
+    }
+
+    if (groups.length === 0) {
+      throw new HttpError(400, "None of this format's conditions are supported (only title/release-group/size specs translate)");
+    }
+
+    const result = db
+      .prepare("INSERT INTO custom_formats (name, patterns) VALUES (?, ?)")
+      .run(trash.name, JSON.stringify(groups));
+    const row = db.prepare("SELECT * FROM custom_formats WHERE id = ?").get(result.lastInsertRowid);
+    res.status(201).json({ format: customFormatFromRow(row), skipped });
+  })
+);
+
 customFormatsRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
