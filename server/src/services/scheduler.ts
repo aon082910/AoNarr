@@ -28,6 +28,7 @@ import { checkForCorruptMedia } from "./corruptMediaCheck.js";
 import { getGroupReputation, recordGroupFailure } from "./releaseGroupStats.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
 import { findUpgradeCandidates } from "./upgradeCandidates.js";
+import { fetchCollectionChildrenFor } from "./metadata.js";
 import { getSetting } from "./settingsStore.js";
 import { registerJob, startAllJobs } from "./jobRegistry.js";
 import type { DownloadClient, Indexer, MediaItem, QueueItem, SearchResult } from "../types/index.js";
@@ -467,6 +468,77 @@ async function runAutoUpgrade(): Promise<void> {
   if (grabbed > 0) log.info(`[scheduler] auto-upgrade: grabbed ${grabbed} of ${candidates.length} upgrade candidate(s)`);
 }
 
+/**
+ * Online Videos channels only ever get their video list populated once, at add time — there's no
+ * Sonarr-style "new episode appeared" concept for them since a channel keeps posting indefinitely.
+ * This re-lists every monitored channel's current uploads, inserts any video not already known as
+ * a new sub-item, and — if a yt-dlp download client is configured — immediately grabs it, the same
+ * way the manual per-video "Download" button does. Un-monitoring a channel (the same flag used
+ * everywhere else in the app) is how an admin opts a channel out of this.
+ */
+async function checkVideoChannels(): Promise<void> {
+  const channels = db.prepare("SELECT * FROM media_items WHERE type = 'video' AND monitored = 1").all() as any[];
+  if (channels.length === 0) return;
+
+  const ytClientRow = db.prepare("SELECT * FROM download_clients WHERE type = 'ytdlp' AND enabled = 1 LIMIT 1").get() as any;
+
+  let newVideos = 0;
+  for (const channel of channels) {
+    let externalIds: Record<string, string> = {};
+    try {
+      externalIds = JSON.parse(channel.external_ids || "{}");
+    } catch {
+      continue;
+    }
+    if (!externalIds.youtube) continue;
+
+    let children;
+    try {
+      children = (await fetchCollectionChildrenFor(externalIds)).children;
+    } catch (err) {
+      log.warn(`[scheduler] video channel check failed for "${channel.title}":`, (err as Error).message);
+      continue;
+    }
+
+    const existingIds = new Set(
+      (db.prepare("SELECT external_id FROM sub_items WHERE media_item_id = ?").all(channel.id) as { external_id: string | null }[])
+        .map((r) => r.external_id)
+        .filter((id): id is string => !!id)
+    );
+
+    for (const child of children) {
+      if (!child.externalId || existingIds.has(child.externalId)) continue;
+      const insertResult = db
+        .prepare(
+          `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored)
+           VALUES (?, ?, ?, ?, 'youtube', 1)`
+        )
+        .run(channel.id, child.title, child.releaseDate, child.externalId);
+      newVideos++;
+
+      if (ytClientRow) {
+        try {
+          const sourceUrl = `https://www.youtube.com/watch?v=${child.externalId}`;
+          const adapter = getDownloadClientAdapter(ytClientRow.type);
+          const grab = await adapter.addDownload(ytClientRow, sourceUrl, ytClientRow.category, child.title);
+          db.prepare(
+            `INSERT INTO queue (media_item_id, episode_id, sub_item_id, title, indexer_id, download_client_id, download_id, size, quality, status)
+             VALUES (?, NULL, ?, ?, NULL, ?, ?, 0, NULL, 'queued')`
+          ).run(channel.id, insertResult.lastInsertRowid, child.title, ytClientRow.id, grab.downloadId);
+          db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
+            channel.id,
+            JSON.stringify({ title: child.title, source: sourceUrl })
+          );
+          notifyGrabbed(channel.title, child.title).catch(() => {});
+        } catch (err) {
+          log.warn(`[scheduler] failed to auto-download new video "${child.title}":`, (err as Error).message);
+        }
+      }
+    }
+  }
+  if (newVideos > 0) log.info(`[scheduler] video channel check: found ${newVideos} new video(s)`);
+}
+
 const MAX_AUTO_RETRIES = 2;
 
 /**
@@ -731,6 +803,14 @@ export function startScheduler() {
     scheduleType: "cron",
     defaultSchedule: "0 */6 * * *",
     run: () => runAutoUpgrade(),
+  });
+
+  registerJob({
+    key: "videoChannelCheck",
+    name: "Video Channel Check",
+    scheduleType: "cron",
+    defaultSchedule: "0 */4 * * *",
+    run: () => checkVideoChannels(),
   });
 
   registerJob({

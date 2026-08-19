@@ -3,6 +3,13 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 34
+- Video Channel Check: a scheduled job that re-lists every monitored Online Videos channel's
+  current uploads, adds any video not already known as a new sub-item, and — if a yt-dlp download
+  client is configured — auto-grabs it immediately, closing the gap where channels previously
+  only ever got their video list populated once at add time with no way to pick up new uploads
+  short of manually re-adding the channel
+
 ## Round 33
 - Friend Libraries (Manage → Friend Libraries) — connect a friend's own Plex/Jellyfin/Emby server
   (shared with you, separate from the media server AoNarr manages its own library against) and
