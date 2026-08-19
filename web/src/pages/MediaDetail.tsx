@@ -5,9 +5,25 @@ import GroupPicker from "../components/GroupPicker.js";
 import type { LibraryGroup } from "../types.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
-import type { Collection, MediaInfo, MediaItem, SearchResult, Tag, Track } from "../types.js";
+import type { Collection, MediaInfo, MediaItem, QualityProfile, RootFolder, SearchResult, Tag, Track } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
 import { useContentRatings } from "../hooks/useContentRatings.js";
+
+/** Maps a recognized external-id provider key to a link builder — unrecognized providers still
+ * show as plain text, this is just a convenience for the common ones. */
+const EXTERNAL_ID_LINKS: Record<string, (id: string, type: string) => string> = {
+  tmdb: (id, type) => `https://www.themoviedb.org/${type === "series" || type === "anime" ? "tv" : "movie"}/${id}`,
+  imdb: (id) => `https://www.imdb.com/title/${id}/`,
+  tvdb: (id) => `https://thetvdb.com/?id=${id}&tab=series`,
+  tvmaze: (id) => `https://www.tvmaze.com/shows/${id}`,
+  anilist: (id) => `https://anilist.co/anime/${id}`,
+  musicbrainz: (id) => `https://musicbrainz.org/artist/${id}`,
+  discogs: (id) => `https://www.discogs.com/artist/${id}`,
+  openlibrary: (id) => `https://openlibrary.org${id.startsWith("/") ? id : `/${id}`}`,
+  comicvine: (id) => `https://comicvine.gamespot.com/-/${id}/`,
+  igdb: (id) => `https://www.igdb.com/games/${id}`,
+  trakt: (id, type) => `https://trakt.tv/${type === "series" || type === "anime" ? "shows" : "movies"}/${id}`,
+};
 
 interface CastMember {
   personId: number;
@@ -82,6 +98,8 @@ export default function MediaDetail() {
   const [importSubItemId, setImportSubItemId] = useState<number | "">("");
 
   const [allTags, setAllTags] = useState<Tag[]>([]);
+  const [rootFolders, setRootFolders] = useState<RootFolder[]>([]);
+  const [qualityProfiles, setQualityProfiles] = useState<QualityProfile[]>([]);
   const [tagToAdd, setTagToAdd] = useState<number | "">("");
 
   const [expandedAlbumId, setExpandedAlbumId] = useState<number | null>(null);
@@ -113,6 +131,8 @@ export default function MediaDetail() {
   useEffect(() => {
     if (isAdmin) api.get<Tag[]>("/tags").then(setAllTags);
     if (isAdmin) api.get<Record<string, string[]>>("/metadata/providers").then(setMetadataProviders);
+    if (isAdmin) api.get<RootFolder[]>("/root-folders").then(setRootFolders);
+    if (isAdmin) api.get<QualityProfile[]>("/quality-profiles").then(setQualityProfiles);
     api.get<Collection[]>("/collections").then(setAllCollections);
   }, [isAdmin]);
 
@@ -355,41 +375,122 @@ export default function MediaDetail() {
   const shape = typeInfo?.shape;
   const childLabel = typeInfo?.childLabel ?? "Item";
 
+  const rootFolder = rootFolders.find((f) => f.id === item.rootFolderId);
+  const qualityProfile = qualityProfiles.find((p) => p.id === item.qualityProfileId);
+  let externalIds: Record<string, string> = {};
+  try {
+    externalIds = item.externalIds ? JSON.parse(item.externalIds) : {};
+  } catch {
+    // malformed external_ids on an old row — just don't show links rather than crash the page
+  }
+
   return (
     <div>
-      <h1>{item.title}</h1>
-      <p style={{ color: "var(--muted)" }}>
-        {item.year ?? ""} · {item.type} · {item.status}
-        {isAdmin && (
-          <button
-            type="button"
-            className="secondary"
-            style={{ marginLeft: 10, fontSize: "0.8rem" }}
-            onClick={async () => {
-              const result = await api.post<{ token: string }>(`/media/${item.id}/share`, {});
-              const url = `${window.location.origin}/share/${result.token}`;
-              try {
-                await navigator.clipboard.writeText(url);
-                alert(`Share link copied to clipboard:\n${url}`);
-              } catch {
-                prompt("Share link (copy manually):", url);
-              }
-            }}
-          >
-            Share
-          </button>
+      <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
+        {item.posterUrl ? (
+          <img
+            src={item.posterUrl}
+            alt=""
+            style={{ width: 160, borderRadius: 8, flexShrink: 0, aspectRatio: "2 / 3", objectFit: "cover" }}
+          />
+        ) : (
+          <div className="poster" style={{ width: 160, flexShrink: 0, borderRadius: 8 }}>
+            No poster
+          </div>
         )}
-      </p>
-      {shape === "single" && (
-        <p>
-          <span className={`badge ${item.hasFile ? "ok" : ""}`}>{item.hasFile ? "Downloaded" : "Missing"}</span>
-          {item.quality && <span className="badge" style={{ marginLeft: 6 }}>{item.quality}</span>}
-          {formatMediaInfo(item.mediaInfo) && (
-            <span style={{ marginLeft: 8, color: "var(--muted)", fontSize: "0.85rem" }}>{formatMediaInfo(item.mediaInfo)}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h1 style={{ margin: "0 0 4px" }}>{item.title}</h1>
+          <p style={{ color: "var(--muted)" }}>
+            {item.year ?? ""} · {item.type} · {item.status}
+            {isAdmin && (
+              <button
+                type="button"
+                className="secondary"
+                style={{ marginLeft: 10, fontSize: "0.8rem" }}
+                onClick={async () => {
+                  const result = await api.post<{ token: string }>(`/media/${item.id}/share`, {});
+                  const url = `${window.location.origin}/share/${result.token}`;
+                  try {
+                    await navigator.clipboard.writeText(url);
+                    alert(`Share link copied to clipboard:\n${url}`);
+                  } catch {
+                    prompt("Share link (copy manually):", url);
+                  }
+                }}
+              >
+                Share
+              </button>
+            )}
+          </p>
+          {shape === "single" && (
+            <p>
+              <span className={`badge ${item.hasFile ? "ok" : ""}`}>{item.hasFile ? "Downloaded" : "Missing"}</span>
+              {item.quality && <span className="badge" style={{ marginLeft: 6 }}>{item.quality}</span>}
+              {formatMediaInfo(item.mediaInfo) && (
+                <span style={{ marginLeft: 8, color: "var(--muted)", fontSize: "0.85rem" }}>{formatMediaInfo(item.mediaInfo)}</span>
+              )}
+            </p>
           )}
-        </p>
-      )}
-      {item.overview && <p>{item.overview}</p>}
+          {item.overview && <p>{item.overview}</p>}
+
+          {isAdmin && (
+            <table style={{ marginTop: 8 }}>
+              <tbody>
+                <tr>
+                  <th>Added</th>
+                  <td>{new Date(item.addedAt).toLocaleDateString()}</td>
+                </tr>
+                {qualityProfile && (
+                  <tr>
+                    <th>Quality profile</th>
+                    <td>{qualityProfile.name}</td>
+                  </tr>
+                )}
+                {rootFolder && (
+                  <tr>
+                    <th>Root folder</th>
+                    <td>{rootFolder.path}</td>
+                  </tr>
+                )}
+                {item.path && (
+                  <tr>
+                    <th>Path</th>
+                    <td style={{ wordBreak: "break-all" }}>{item.path}</td>
+                  </tr>
+                )}
+                {Object.keys(externalIds).length > 0 && (
+                  <tr>
+                    <th>External IDs</th>
+                    <td>
+                      {Object.entries(externalIds).map(([provider, providerId], idx) => {
+                        const link = EXTERNAL_ID_LINKS[provider]?.(providerId, item.type);
+                        return (
+                          <span key={provider}>
+                            {idx > 0 && " · "}
+                            {link ? (
+                              <a href={link} target="_blank" rel="noreferrer">
+                                {provider}: {providerId}
+                              </a>
+                            ) : (
+                              `${provider}: ${providerId}`
+                            )}
+                          </span>
+                        );
+                      })}
+                    </td>
+                  </tr>
+                )}
+                {item.tags && item.tags.length > 0 && (
+                  <tr>
+                    <th>Tags</th>
+                    <td>{item.tags.map((t) => t.name).join(", ")}</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
 
       {cast && cast.length > 0 && (
         <>

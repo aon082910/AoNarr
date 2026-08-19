@@ -3,6 +3,14 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 24
+- Media detail pages now show the poster image (previously never rendered at all) alongside a
+  Details panel: added date, quality profile, root folder, file path, tags, and external IDs
+  rendered as links to TMDB/IMDb/TVDB/TVmaze/AniList/MusicBrainz/Discogs/Open Library/Comic
+  Vine/IGDB/Trakt where the provider is recognized
+- Fixed a frontend type gap: MediaItem was missing externalIds entirely, so it was never
+  accessible on the detail page despite the API always returning it
+
 ## Round 23
 - Poster size option (small/medium/large, persisted per browser) on every library type's poster view
 - Verified Online Videos' and Courses' group hierarchies live against the actual published image,

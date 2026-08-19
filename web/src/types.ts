@@ -36,6 +36,7 @@ export interface MediaItem {
   year: number | null;
   overview: string | null;
   posterUrl: string | null;
+  externalIds: string | null;
   path: string | null;
   rootFolderId: number | null;
   qualityProfileId: number | null;
