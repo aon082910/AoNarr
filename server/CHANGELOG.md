@@ -3,6 +3,15 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 25
+- Job scheduling system: every background job (auto-search, queue poll, auto-archival, Trakt
+  sync, import lists, disk usage sampling, recycle bin cleanup, scheduled backup) now has an
+  editable schedule, a manual "run now", and best-effort cancellation, all on a new Jobs page
+- Recycle bin: files removed via Media Detail's opt-in "delete files" or auto-archival's
+  permanent-delete option move into a type-namespaced recycle bin instead of being deleted
+  outright, with a scheduled cleanup job (editable via Jobs) purging entries past retention. New
+  Recycle Bin page groups entries by library type and can restore or permanently delete each one.
+
 ## Round 24
 - Media detail pages now show the poster image (previously never rendered at all) alongside a
   Details panel: added date, quality profile, root folder, file path, tags, and external IDs

@@ -205,8 +205,11 @@ export default function MediaDetail() {
 
   async function remove() {
     if (!item) return;
-    if (!confirm(`Remove "${item.title}" from AoNarr? This does not delete files on disk.`)) return;
-    await api.del(`/media/${item.id}`);
+    const deleteFiles = confirm(
+      `Remove "${item.title}" from AoNarr AND move its file(s) to the Recycle Bin?\n\nCancel, then OK on the next prompt, to untrack only and leave files on disk.`
+    );
+    if (!deleteFiles && !confirm(`Remove "${item.title}" from AoNarr? This leaves files on disk untouched.`)) return;
+    await api.del(`/media/${item.id}${deleteFiles ? "?deleteFiles=1" : ""}`);
     navigate("/");
   }
 

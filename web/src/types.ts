@@ -258,3 +258,26 @@ export interface ImportExclusion {
   reason: string | null;
   createdAt: string;
 }
+
+export interface JobStatus {
+  key: string;
+  name: string;
+  scheduleType: "cron" | "interval";
+  schedule: string;
+  running: boolean;
+  startedAt: string | null;
+  lastRunAt: string | null;
+  lastStatus: "success" | "error" | "cancelled" | null;
+  lastError: string | null;
+  lastDurationMs: number | null;
+}
+
+export interface RecycleBinEntry {
+  id: number;
+  mediaItemId: number | null;
+  mediaType: MediaType;
+  title: string;
+  originalPath: string;
+  sizeBytes: number | null;
+  deletedAt: string;
+}

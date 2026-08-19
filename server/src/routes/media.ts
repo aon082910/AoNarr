@@ -11,6 +11,7 @@ import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { CONTENT_RATING_ORDER, isRatingBlocked } from "../services/contentRatings.js";
 import { fetchCastFor, searchMetadata } from "../services/metadata.js";
 import { notifyGrabbed } from "../services/notifications.js";
+import { recycleFile } from "../services/recycleBin.js";
 import type { MediaType } from "../types/index.js";
 
 export const mediaRouter = Router();
@@ -427,6 +428,22 @@ mediaRouter.delete(
   "/:id",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id) as any;
+    if (!row) throw new HttpError(404, "Media item not found");
+
+    // Default behavior stays "untrack only, leave files on disk" — opt in with ?deleteFiles=1 to
+    // also recycle the item's file(s) (CASCADE drops episodes/sub_items too, so their
+    // file_paths need collecting before the row goes).
+    if (req.query.deleteFiles === "1") {
+      if (row.path) recycleFile(row.path, row.type, row.title, row.id);
+      const children = (
+        db.prepare("SELECT file_path FROM episodes WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id) as any[]
+      ).concat(
+        db.prepare("SELECT file_path FROM sub_items WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id) as any[]
+      );
+      for (const child of children) recycleFile(child.file_path, row.type, row.title, row.id);
+    }
+
     const result = db.prepare("DELETE FROM media_items WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Media item not found");
     res.status(204).send();

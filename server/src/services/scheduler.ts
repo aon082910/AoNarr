@@ -1,5 +1,4 @@
 import { log } from "./logger.js";
-import cron from "node-cron";
 import { db } from "../db/client.js";
 import { config } from "../config.js";
 import { searchAllIndexers } from "./indexerClient.js";
@@ -23,9 +22,11 @@ import { runTraktSync } from "./traktSync.js";
 import { runAllImportLists } from "./importLists.js";
 import { recordDiskUsageSamples } from "./storageForecast.js";
 import { runScheduledBackup } from "./scheduledBackup.js";
+import { purgeExpiredRecycleBinEntries } from "./recycleBin.js";
 import { getGroupReputation, recordGroupFailure } from "./releaseGroupStats.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
 import { getSetting } from "./settingsStore.js";
+import { registerJob, startAllJobs } from "./jobRegistry.js";
 import type { DownloadClient, Indexer, MediaItem, QueueItem, SearchResult } from "../types/index.js";
 
 function rowsToIndexers(): Indexer[] {
@@ -210,7 +211,7 @@ function isOutsideSearchWindow(): boolean {
 }
 
 /** For each monitored, fileless target (movie / episode / album / book), search and grab the best release. */
-async function runAutoSearch() {
+async function runAutoSearch(signal?: AbortSignal) {
   if (isWithinQuietHours()) {
     log.info("[scheduler] skipping auto-search: within configured quiet hours");
     return;
@@ -236,6 +237,10 @@ async function runAutoSearch() {
   ).map(mediaItemFromRow) as MediaItem[];
 
   for (const item of monitoredItems) {
+    if (signal?.aborted) {
+      log.info("[scheduler] auto-search cancelled");
+      return;
+    }
     if (isRootFolderOverQuota(item.rootFolderId)) {
       log.info(`[scheduler] skipping "${item.title}": its root folder is at/over its configured quota`);
       continue;
@@ -569,43 +574,76 @@ export function startScheduler() {
   if (started) return;
   started = true;
 
-  const searchCron = `*/${Math.max(1, config.searchIntervalMinutes)} * * * *`;
-  cron.schedule(searchCron, () => {
-    runAutoSearch().catch((err) => log.error("[scheduler] auto-search error:", err));
+  registerJob({
+    key: "autoSearch",
+    name: "Auto Search",
+    scheduleType: "cron",
+    defaultSchedule: `*/${Math.max(1, config.searchIntervalMinutes)} * * * *`,
+    run: (signal) => runAutoSearch(signal),
   });
 
-  const pollSeconds = Math.max(5, config.queuePollIntervalSeconds);
-  setInterval(() => {
-    pollQueue().catch((err) => log.error("[scheduler] queue poll error:", err));
-  }, pollSeconds * 1000);
-
-  cron.schedule("0 */6 * * *", () => {
-    runAutoArchival().catch((err) => log.error("[scheduler] auto-archival error:", err));
+  registerJob({
+    key: "queuePoll",
+    name: "Queue Poll",
+    scheduleType: "interval",
+    defaultSchedule: String(Math.max(5, config.queuePollIntervalSeconds)),
+    run: () => pollQueue(),
   });
 
-  cron.schedule("0 */12 * * *", () => {
-    runTraktSync()
-      .then((r) => r.added > 0 && log.info(`[scheduler] Trakt sync added ${r.added} item(s)`))
-      .catch((err) => log.error("[scheduler] Trakt sync error:", err));
+  registerJob({
+    key: "autoArchival",
+    name: "Watch-status Auto-Archival",
+    scheduleType: "cron",
+    defaultSchedule: "0 */6 * * *",
+    run: () => runAutoArchival(),
   });
 
-  cron.schedule("0 */12 * * *", () => {
-    runAllImportLists().catch((err) => log.error("[scheduler] import lists error:", err));
+  registerJob({
+    key: "traktSync",
+    name: "Trakt List Sync",
+    scheduleType: "cron",
+    defaultSchedule: "0 */12 * * *",
+    run: async () => {
+      const r = await runTraktSync();
+      if (r.added > 0) log.info(`[scheduler] Trakt sync added ${r.added} item(s)`);
+    },
   });
 
-  cron.schedule("0 0 * * *", () => {
-    try {
-      recordDiskUsageSamples();
-    } catch (err) {
-      log.error("[scheduler] disk usage sampling error:", err);
-    }
+  registerJob({
+    key: "importLists",
+    name: "Import Lists",
+    scheduleType: "cron",
+    defaultSchedule: "0 */12 * * *",
+    run: (signal) => runAllImportLists(signal),
   });
 
-  cron.schedule("0 * * * *", () => {
-    runScheduledBackup().catch((err) => log.error("[scheduler] scheduled backup error:", err));
+  registerJob({
+    key: "diskUsageSampling",
+    name: "Disk Usage Sampling",
+    scheduleType: "cron",
+    defaultSchedule: "0 0 * * *",
+    run: async () => recordDiskUsageSamples(),
   });
+
+  registerJob({
+    key: "recycleBinCleanup",
+    name: "Recycle Bin Cleanup",
+    scheduleType: "cron",
+    defaultSchedule: "0 3 * * *",
+    run: () => purgeExpiredRecycleBinEntries(),
+  });
+
+  registerJob({
+    key: "scheduledBackup",
+    name: "Scheduled Backup",
+    scheduleType: "cron",
+    defaultSchedule: "0 * * * *",
+    run: () => runScheduledBackup(),
+  });
+
+  startAllJobs();
 
   log.info(
-    `[scheduler] started: auto-search every ${config.searchIntervalMinutes}m, queue poll every ${pollSeconds}s`
+    `[scheduler] started: auto-search every ${config.searchIntervalMinutes}m, queue poll every ${config.queuePollIntervalSeconds}s`
   );
 }

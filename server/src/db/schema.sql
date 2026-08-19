@@ -221,6 +221,21 @@ CREATE TABLE IF NOT EXISTS library_groups (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Files moved here instead of straight-deleted (by archival's permanent-delete path and the
+-- media Remove action) so they're recoverable until the scheduled cleanup job purges them.
+-- recycle_path preserves the type/relative-path structure under the recycle bin root so browsing
+-- it mirrors each library's own folder layout.
+CREATE TABLE IF NOT EXISTS recycle_bin (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  media_item_id INTEGER REFERENCES media_items(id) ON DELETE SET NULL,
+  media_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  original_path TEXT NOT NULL,
+  recycle_path TEXT NOT NULL,
+  size_bytes INTEGER,
+  deleted_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- A public, unauthenticated read-only link to one media item's overview/poster — for sharing
 -- outside the household without handing out a login. Revocable; optionally expiring.
 CREATE TABLE IF NOT EXISTS share_links (

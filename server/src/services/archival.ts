@@ -4,6 +4,7 @@ import path from "node:path";
 import { db } from "../db/client.js";
 import { getSetting } from "./settingsStore.js";
 import { fetchWatchedFiles, getMediaServerConfig, type WatchedFile } from "./mediaServer.js";
+import { recycleFile } from "./recycleBin.js";
 
 /**
  * Plex/Jellyfin/Emby usually mount the library at a different path than AoNarr sees (e.g. Plex's
@@ -22,9 +23,19 @@ export function findWatchedMatch(filePath: string | null, watched: WatchedFile[]
   return watched.find((w) => pathTail(w.path) === tail) ?? null;
 }
 
-function moveOrDelete(filePath: string, archiveFolder: string | null, permanentDelete: boolean): void {
+function moveOrDelete(
+  filePath: string,
+  archiveFolder: string | null,
+  permanentDelete: boolean,
+  mediaType: string,
+  title: string,
+  mediaItemId: number
+): void {
   if (permanentDelete || !archiveFolder) {
-    fs.unlinkSync(filePath);
+    // "Permanently delete" here means "don't keep an archive copy" — it still goes through the
+    // recycle bin (unless that's disabled instance-wide), since the whole point of a recycle bin
+    // is catching exactly this kind of automated deletion.
+    recycleFile(filePath, mediaType, title, mediaItemId);
     return;
   }
   fs.mkdirSync(archiveFolder, { recursive: true });
@@ -116,7 +127,7 @@ export async function runAutoArchival(): Promise<void> {
     const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
     if (match.lastPlayedAt.getTime() > cutoffMs) continue;
     try {
-      moveOrDelete(item.path, archiveFolder, permanentDelete);
+      moveOrDelete(item.path, archiveFolder, permanentDelete, item.type, item.title, item.id);
       db.prepare("UPDATE media_items SET has_file = 0, path = NULL, quality = NULL WHERE id = ?").run(item.id);
       logArchival(item.id, item.title, permanentDelete ? "deleted" : "archived");
     } catch (err) {
@@ -126,7 +137,7 @@ export async function runAutoArchival(): Promise<void> {
 
   const episodes = db
     .prepare(
-      `SELECT e.*, m.title AS media_title, m.protected AS media_protected
+      `SELECT e.*, m.title AS media_title, m.protected AS media_protected, m.type AS media_type
        FROM episodes e JOIN media_items m ON m.id = e.media_item_id
        WHERE e.has_file = 1 AND m.protected = 0 AND e.file_path IS NOT NULL`
     )
@@ -140,7 +151,7 @@ export async function runAutoArchival(): Promise<void> {
     if (match.lastPlayedAt.getTime() > cutoffMs) continue;
     const label = `${ep.media_title} S${String(ep.season_number).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}`;
     try {
-      moveOrDelete(ep.file_path, archiveFolder, permanentDelete);
+      moveOrDelete(ep.file_path, archiveFolder, permanentDelete, ep.media_type, label, ep.media_item_id);
       db.prepare("UPDATE episodes SET has_file = 0, file_path = NULL, quality = NULL WHERE id = ?").run(ep.id);
       logArchival(ep.media_item_id, label, permanentDelete ? "deleted" : "archived");
     } catch (err) {
@@ -150,7 +161,7 @@ export async function runAutoArchival(): Promise<void> {
 
   const subItems = db
     .prepare(
-      `SELECT s.*, m.title AS media_title, m.protected AS media_protected
+      `SELECT s.*, m.title AS media_title, m.protected AS media_protected, m.type AS media_type
        FROM sub_items s JOIN media_items m ON m.id = s.media_item_id
        WHERE s.has_file = 1 AND m.protected = 0 AND s.file_path IS NOT NULL`
     )
@@ -164,7 +175,7 @@ export async function runAutoArchival(): Promise<void> {
     if (match.lastPlayedAt.getTime() > cutoffMs) continue;
     const label = `${sub.media_title} - ${sub.title}`;
     try {
-      moveOrDelete(sub.file_path, archiveFolder, permanentDelete);
+      moveOrDelete(sub.file_path, archiveFolder, permanentDelete, sub.media_type, label, sub.media_item_id);
       db.prepare("UPDATE sub_items SET has_file = 0, file_path = NULL, quality = NULL WHERE id = ?").run(sub.id);
       logArchival(sub.media_item_id, label, permanentDelete ? "deleted" : "archived");
     } catch (err) {

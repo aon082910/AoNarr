@@ -211,9 +211,13 @@ export async function syncImportList(list: ImportListRow): Promise<{ added: numb
 }
 
 /** Runs every enabled import list, called on the same interval as the search scheduler. */
-export async function runAllImportLists(): Promise<void> {
+export async function runAllImportLists(signal?: AbortSignal): Promise<void> {
   const lists = db.prepare("SELECT * FROM import_lists WHERE enabled = 1").all() as ImportListRow[];
   for (const list of lists) {
+    if (signal?.aborted) {
+      log.info("[importLists] cancelled");
+      return;
+    }
     const result = await syncImportList(list);
     if (result.error) log.warn(`[importLists] "${list.name}" failed:`, result.error);
     else if (result.added > 0) log.info(`[importLists] "${list.name}" added ${result.added} item(s)`);

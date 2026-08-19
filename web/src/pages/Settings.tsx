@@ -465,6 +465,39 @@ export default function Settings() {
         )}
       </div>
 
+      <h2>Recycle Bin</h2>
+      <div className="form-panel">
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          Files removed with "delete files" go here instead of being deleted outright, until the
+          scheduled cleanup job (Jobs page) purges them. See the Recycle Bin page to restore or
+          permanently delete an entry early.
+        </p>
+        <label>Recycle bin</label>
+        <select
+          key={settings.recycleBinEnabled ?? "recycle-enabled-empty"}
+          defaultValue={settings.recycleBinEnabled ?? "1"}
+          onChange={(e) => saveSetting("recycleBinEnabled", e.target.value)}
+        >
+          <option value="1">Enabled</option>
+          <option value="0">Disabled (delete files outright)</option>
+        </select>
+        <label>Retention (days)</label>
+        <input
+          type="number"
+          style={{ maxWidth: 120 }}
+          key={settings.recycleBinRetentionDays ?? "recycle-days-empty"}
+          defaultValue={settings.recycleBinRetentionDays ?? "30"}
+          onBlur={(e) => saveSetting("recycleBinRetentionDays", e.target.value)}
+        />
+        <label>Recycle bin directory (blank = config dir's recycle-bin/ folder)</label>
+        <input
+          key={settings.recycleBinDir ?? "recycle-dir-empty"}
+          defaultValue={settings.recycleBinDir ?? ""}
+          placeholder="/config/recycle-bin"
+          onBlur={(e) => saveSetting("recycleBinDir", e.target.value)}
+        />
+      </div>
+
       <h2>Config Template</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
