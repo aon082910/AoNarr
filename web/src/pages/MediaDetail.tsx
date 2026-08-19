@@ -116,6 +116,7 @@ export default function MediaDetail() {
   const [collectionToAdd, setCollectionToAdd] = useState<number | "">("");
 
   const [cast, setCast] = useState<CastMember[] | null>(null);
+  const [trailerUrl, setTrailerUrl] = useState<string | null>(null);
 
   function load() {
     api.get<MediaDetailResponse>(`/media/${id}`).then(setItem);
@@ -128,6 +129,13 @@ export default function MediaDetail() {
       .get<CastMember[]>(`/media/${id}/cast`)
       .then(setCast)
       .catch(() => setCast([]));
+  }, [id]);
+  useEffect(() => {
+    setTrailerUrl(null);
+    api
+      .get<{ url: string | null }>(`/media/${id}/trailer`)
+      .then((r) => setTrailerUrl(r.url))
+      .catch(() => setTrailerUrl(null));
   }, [id]);
   useEffect(() => {
     if (isAdmin) api.get<Tag[]>("/tags").then(setAllTags);
@@ -437,6 +445,13 @@ export default function MediaDetail() {
             </p>
           )}
           {item.overview && <p>{item.overview}</p>}
+          {trailerUrl && (
+            <p>
+              <a href={trailerUrl} target="_blank" rel="noreferrer">
+                ▶ Watch trailer
+              </a>
+            </p>
+          )}
 
           {isAdmin && (
             <table style={{ marginTop: 8 }}>

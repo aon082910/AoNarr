@@ -8,6 +8,7 @@ type Protocol = "torznab" | "newznab" | "rss" | "ddl";
 export default function Indexers() {
   const [indexers, setIndexers] = useState<Indexer[]>([]);
   const [showAdd, setShowAdd] = useState(false);
+  const [syncingProwlarr, setSyncingProwlarr] = useState(false);
   const [name, setName] = useState("");
   const [protocol, setProtocol] = useState<Protocol>("torznab");
   const [url, setUrl] = useState("");
@@ -65,6 +66,19 @@ export default function Indexers() {
     load();
   }
 
+  async function syncProwlarr() {
+    setSyncingProwlarr(true);
+    try {
+      const result = await api.post<{ synced: number }>("/indexers/prowlarr-sync", {});
+      alert(`Synced ${result.synced} indexer(s) from Prowlarr.`);
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setSyncingProwlarr(false);
+    }
+  }
+
   async function test(id: number) {
     const result = await api.post<{ ok: boolean; resultCount?: number; error?: string }>(`/indexers/${id}/test`);
     setTestResults((prev) => ({
@@ -84,9 +98,14 @@ export default function Indexers() {
         the response; AoNarr never scrapes a site itself, only reads JSON the API returns.
       </p>
 
-      <button type="button" onClick={() => setShowAdd(true)} style={{ marginBottom: 16 }}>
-        + Add indexer
-      </button>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <button type="button" onClick={() => setShowAdd(true)}>
+          + Add indexer
+        </button>
+        <button type="button" className="secondary" onClick={syncProwlarr} disabled={syncingProwlarr}>
+          {syncingProwlarr ? "Syncing..." : "Sync from Prowlarr"}
+        </button>
+      </div>
 
       {showAdd && (
         <Modal title="Add Indexer" onClose={() => setShowAdd(false)} maxWidth={560}>

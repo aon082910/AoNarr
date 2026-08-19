@@ -3,6 +3,15 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 28
+- Anime absolute-episode naming: new {absoluteEpisode} naming token (a running count across every
+  season) as an alternative to {season}/{episode}, alongside the existing global numbering
+- Prowlarr indexer sync — mirrors your Prowlarr instance's indexer list in, searches go through
+  Prowlarr's own per-indexer proxy so credentials stay managed there; scheduled job + manual sync
+- Trailers on the media detail page (movies/series/anime, via TMDB) when a trailer is available
+- Notifications expanded to Matrix and SMS (Twilio), alongside the existing
+  Discord/Slack/Telegram/Pushover/webhook/email channels
+
 ## Round 27
 - New Manga library (Books-shaped, metadata from AniList and MangaDex — both free, no API key)
 - Missing page: episodes now group by series with a "Search all missing in this series" button,

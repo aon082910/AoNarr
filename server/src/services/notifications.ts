@@ -101,6 +101,46 @@ async function fanOut(content: NotificationContent): Promise<void> {
     );
   }
 
+  const matrixHomeserver = getSetting("matrixHomeserverUrl");
+  const matrixAccessToken = getSetting("matrixAccessToken");
+  const matrixRoomId = getSetting("matrixRoomId");
+  if (matrixHomeserver && matrixAccessToken && matrixRoomId) {
+    const txnId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const url = `${matrixHomeserver.replace(/\/+$/, "")}/_matrix/client/v3/rooms/${encodeURIComponent(
+      matrixRoomId
+    )}/send/m.room.message/${txnId}?access_token=${encodeURIComponent(matrixAccessToken)}`;
+    jobs.push(
+      (async () => {
+        const res = await fetch(url, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ msgtype: "m.text", body: `${content.title}\n${content.text}` }),
+        });
+        if (!res.ok) throw new Error(`Matrix send failed: HTTP ${res.status}`);
+      })()
+    );
+  }
+
+  const twilioSid = getSetting("twilioAccountSid");
+  const twilioToken = getSetting("twilioAuthToken");
+  const twilioFrom = getSetting("twilioFromNumber");
+  const twilioTo = getSetting("twilioToNumber");
+  if (twilioSid && twilioToken && twilioFrom && twilioTo) {
+    jobs.push(
+      (async () => {
+        const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`, {
+          method: "POST",
+          headers: {
+            Authorization: `Basic ${Buffer.from(`${twilioSid}:${twilioToken}`).toString("base64")}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({ From: twilioFrom, To: twilioTo, Body: `${content.title}: ${content.text}` }),
+        });
+        if (!res.ok) throw new Error(`SMS (Twilio) send failed: HTTP ${res.status}`);
+      })()
+    );
+  }
+
   const smtpHost = getSetting("smtpHost");
   const smtpTo = getSetting("smtpTo");
   const smtpFrom = getSetting("smtpFrom");

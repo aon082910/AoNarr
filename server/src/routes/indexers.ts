@@ -4,6 +4,7 @@ import { db } from "../db/client.js";
 import { indexerFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { searchIndexer } from "../services/indexerClient.js";
+import { syncFromProwlarr } from "../services/prowlarrSync.js";
 
 export const indexersRouter = Router();
 indexersRouter.use(requireAdmin);
@@ -13,6 +14,15 @@ indexersRouter.get(
   asyncHandler(async (_req, res) => {
     const rows = db.prepare("SELECT * FROM indexers ORDER BY priority").all();
     res.json(rows.map(indexerFromRow));
+  })
+);
+
+indexersRouter.post(
+  "/prowlarr-sync",
+  asyncHandler(async (_req, res) => {
+    const result = await syncFromProwlarr();
+    if (result.error) throw new HttpError(400, result.error);
+    res.json(result);
   })
 );
 

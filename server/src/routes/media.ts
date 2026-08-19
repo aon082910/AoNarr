@@ -9,7 +9,7 @@ import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { CONTENT_RATING_ORDER, isRatingBlocked } from "../services/contentRatings.js";
-import { fetchCastFor, searchMetadata } from "../services/metadata.js";
+import { fetchCastFor, fetchTrailerFor, searchMetadata } from "../services/metadata.js";
 import { notifyGrabbed } from "../services/notifications.js";
 import { recycleFile } from "../services/recycleBin.js";
 import type { MediaType } from "../types/index.js";
@@ -276,6 +276,26 @@ mediaRouter.get(
     } catch (err) {
       throw new HttpError(400, (err as Error).message);
     }
+  })
+);
+
+/** Trailer link (movies/series/anime, needs a TMDB id and API key configured) for the media
+ * detail page. Returns { url: null } rather than 404 when unavailable, since "no trailer" is a
+ * normal outcome, not an error. */
+mediaRouter.get(
+  "/:id/trailer",
+  asyncHandler(async (req, res) => {
+    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    if (!row) throw new HttpError(404, "Media item not found");
+    const item = mediaItemFromRow(row);
+    const allowedTypes = allowedTypesFor(req);
+    if (allowedTypes && !allowedTypes.includes(item.type)) {
+      throw new HttpError(403, "You don't have access to this library");
+    }
+
+    const externalIds = item.externalIds ? JSON.parse(item.externalIds) : {};
+    const url = await fetchTrailerFor(item.type, externalIds).catch(() => null);
+    res.json({ url });
   })
 );
 

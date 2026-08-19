@@ -833,6 +833,33 @@ async function searchAdultThePornDb(query: string): Promise<MetadataSearchResult
   }));
 }
 
+/**
+ * Trailer lookup for the media detail page — TMDB's /videos endpoint covers movies and TV series
+ * (which also serves anime, since anime-via-TMDB uses the same tv endpoint). Prefers an
+ * "official" YouTube "Trailer", falls back to any YouTube video TMDB has listed.
+ */
+export async function fetchTrailerFor(type: MediaType, externalIds: Record<string, string>): Promise<string | null> {
+  if (!externalIds.tmdb) return null;
+  const key = getSetting("tmdbApiKey");
+  if (!key) return null;
+
+  const kind = type === "movie" ? "movie" : "tv";
+  const url = new URL(`https://api.themoviedb.org/3/${kind}/${externalIds.tmdb}/videos`);
+  url.searchParams.set("api_key", key);
+
+  const res = await fetch(url.toString());
+  if (!res.ok) return null;
+  const body: any = await res.json();
+  const videos: any[] = body.results ?? [];
+
+  const youtube = videos.filter((v) => v.site === "YouTube");
+  const best =
+    youtube.find((v) => v.type === "Trailer" && v.official) ??
+    youtube.find((v) => v.type === "Trailer") ??
+    youtube[0];
+  return best ? `https://www.youtube.com/watch?v=${best.key}` : null;
+}
+
 // ---------------------------------------------------------------------------
 // Manga: AniList (same GraphQL API used for anime, just `type: MANGA`) and MangaDex (public, no key)
 // ---------------------------------------------------------------------------

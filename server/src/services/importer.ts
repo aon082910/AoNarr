@@ -227,10 +227,22 @@ export async function placeFile(params: {
   } else if (typeConfig.shape === "episodic" && episodeId) {
     const epRow = db.prepare("SELECT * FROM episodes WHERE id = ?").get(episodeId) as any;
     if (!epRow) throw new Error(`Episode ${episodeId} not found`);
+    // Running count across every season up to and including this episode — what anime naming
+    // conventions call "absolute" numbering (e.g. episode 26 instead of S02E01), as an
+    // alternative to {season}/{episode} in a custom naming template.
+    const absoluteEpisode = (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ?
+           AND (season_number < ? OR (season_number = ? AND episode_number <= ?))`
+        )
+        .get(epRow.media_item_id, epRow.season_number, epRow.season_number, epRow.episode_number) as { c: number }
+    ).c;
     const segments = renderPathSegments(getNamingTemplate(item.type), {
       parentTitle: item.title,
       season: epRow.season_number,
       episode: epRow.episode_number,
+      absoluteEpisode,
     });
     fileLabel = `${segments[segments.length - 1]}${ext}`;
     destPath = path.join(rootFolder.path, ...segments) + ext;

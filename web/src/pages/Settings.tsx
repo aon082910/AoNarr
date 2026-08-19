@@ -776,9 +776,56 @@ export default function Settings() {
           placeholder="you@yourdomain.com"
           onBlur={(e) => saveSetting("smtpTo", e.target.value)}
         />
+        <label>Matrix homeserver URL</label>
+        <input
+          key={settings.matrixHomeserverUrl ?? "matrix-hs-empty"}
+          defaultValue={settings.matrixHomeserverUrl ?? ""}
+          placeholder="https://matrix.org"
+          onBlur={(e) => saveSetting("matrixHomeserverUrl", e.target.value)}
+        />
+        <label>Matrix access token</label>
+        <input
+          key={settings.matrixAccessToken ?? "matrix-token-empty"}
+          defaultValue={settings.matrixAccessToken ?? ""}
+          onBlur={(e) => saveSetting("matrixAccessToken", e.target.value)}
+        />
+        <label>Matrix room ID</label>
+        <input
+          key={settings.matrixRoomId ?? "matrix-room-empty"}
+          defaultValue={settings.matrixRoomId ?? ""}
+          placeholder="!roomid:matrix.org"
+          onBlur={(e) => saveSetting("matrixRoomId", e.target.value)}
+        />
+        <label>Twilio Account SID (SMS)</label>
+        <input
+          key={settings.twilioAccountSid ?? "twilio-sid-empty"}
+          defaultValue={settings.twilioAccountSid ?? ""}
+          onBlur={(e) => saveSetting("twilioAccountSid", e.target.value)}
+        />
+        <label>Twilio Auth Token</label>
+        <input
+          type="password"
+          key={settings.twilioAuthToken ?? "twilio-token-empty"}
+          defaultValue={settings.twilioAuthToken ?? ""}
+          onBlur={(e) => saveSetting("twilioAuthToken", e.target.value)}
+        />
+        <label>Twilio from number</label>
+        <input
+          key={settings.twilioFromNumber ?? "twilio-from-empty"}
+          defaultValue={settings.twilioFromNumber ?? ""}
+          placeholder="+15551234567"
+          onBlur={(e) => saveSetting("twilioFromNumber", e.target.value)}
+        />
+        <label>Twilio to number</label>
+        <input
+          key={settings.twilioToNumber ?? "twilio-to-empty"}
+          defaultValue={settings.twilioToNumber ?? ""}
+          placeholder="+15557654321"
+          onBlur={(e) => saveSetting("twilioToNumber", e.target.value)}
+        />
         <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
           Fired on grab, import, and failure events. Leave any provider's fields blank to disable it.
-          Email sends only once host, from, and to are all set.
+          Email sends only once host, from, and to are all set; SMS needs all four Twilio fields.
         </p>
 
         <label>Custom script</label>
@@ -843,7 +890,10 @@ export default function Settings() {
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
           Tokens: <code>{"{title}"}</code> <code>{"{year}"}</code> (single-file libraries — Movies,
           ROMs, Adult) · <code>{"{parentTitle}"}</code> <code>{"{season:00}"}</code>{" "}
-          <code>{"{episode:00}"}</code> (episodic — TV Shows, Anime) ·{" "}
+          <code>{"{episode:00}"}</code> (episodic — TV Shows, Anime; set the Anime template below
+          to use <code>{"{absoluteEpisode:000}"}</code> instead of season/episode for a flat,
+          continuously-numbered scheme — e.g. <code>{"{parentTitle}/{parentTitle} - {absoluteEpisode:000}"}</code>{" "}
+          instead of the season/episode default) ·{" "}
           <code>{"{parentTitle}"}</code> <code>{"{childTitle}"}</code> (collection — Music, Books,
           Comics, Online Videos, Courses; Music is folder-only, track filenames are kept as
           downloaded). Use <code>/</code> to nest folders. Extension is appended automatically.
@@ -956,6 +1006,28 @@ export default function Settings() {
 
       </div>
       <div style={{ display: tab === "indexers" ? undefined : "none" }}>
+      <h2>Prowlarr Sync</h2>
+      <div className="form-panel">
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          Mirrors your Prowlarr instance's indexer list into AoNarr — searches go through
+          Prowlarr's own per-indexer proxy, so indexer credentials stay managed there. Runs on a
+          schedule (see Jobs), or sync immediately from the Indexers page.
+        </p>
+        <label>Prowlarr URL</label>
+        <input
+          key={settings.prowlarrUrl ?? "prowlarr-url-empty"}
+          defaultValue={settings.prowlarrUrl ?? ""}
+          placeholder="http://prowlarr:9696"
+          onBlur={(e) => saveSetting("prowlarrUrl", e.target.value)}
+        />
+        <label>Prowlarr API key</label>
+        <input
+          key={settings.prowlarrApiKey ?? "prowlarr-key-empty"}
+          defaultValue={settings.prowlarrApiKey ?? ""}
+          onBlur={(e) => saveSetting("prowlarrApiKey", e.target.value)}
+        />
+      </div>
+
       <h2>FlareSolverr</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
