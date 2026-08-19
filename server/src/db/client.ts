@@ -124,7 +124,7 @@ dropCheckConstraint(
      url TEXT NOT NULL,
      api_key TEXT,
      categories TEXT NOT NULL DEFAULT '',
-     media_types TEXT NOT NULL DEFAULT 'movie,series,anime,artist,author,audiobook,comic,rom,video,course,adult',
+     media_types TEXT NOT NULL DEFAULT 'movie,series,anime,artist,author,audiobook,comic,manga,rom,video,course,adult',
      enabled INTEGER NOT NULL DEFAULT 1,
      priority INTEGER NOT NULL DEFAULT 25,
      config TEXT

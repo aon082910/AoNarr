@@ -109,6 +109,16 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     metadataProviders: ["comicvine"],
     defaultProvider: "comicvine",
   },
+  manga: {
+    key: "manga",
+    label: "Manga",
+    shape: "collection",
+    childLabel: "Chapter",
+    extensions: COMIC_EXT,
+    indexerCategory: "7020",
+    metadataProviders: ["anilist", "mangadex"],
+    defaultProvider: "anilist",
+  },
   rom: {
     key: "rom",
     label: "ROMs",

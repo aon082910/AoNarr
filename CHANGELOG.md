@@ -3,6 +3,18 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 27
+- New Manga library (Books-shaped, metadata from AniList and MangaDex — both free, no API key)
+- Missing page: episodes now group by series with a "Search all missing in this series" button,
+  and every row (movies/episodes/albums/books) got an individual "Search" button, not just bulk
+- Complete size details: total + per-library size on the Dashboard, a size per type on the
+  Library overview page, and each library type's own page now shows its size — computed from
+  actual on-disk file sizes (cached 10 minutes), not just free-space-remaining like before
+- Confirmed already covered by earlier rounds, no new work needed: max-quality-wanted (quality
+  profile "cutoff" already caps upgrades there), audio/video codec display (already shown on
+  Media Detail via ffprobe-derived info), and logs outside the container (already written to
+  stdout/stderr for `docker logs`, in addition to the in-app System → Logs tab)
+
 ## Round 26
 - Stalled-download cleanup job: a queue item with no progress for longer than a configurable
   threshold gets dropped and retried with the next-best release, same as a failed grab

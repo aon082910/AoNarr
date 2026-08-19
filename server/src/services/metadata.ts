@@ -834,6 +834,64 @@ async function searchAdultThePornDb(query: string): Promise<MetadataSearchResult
 }
 
 // ---------------------------------------------------------------------------
+// Manga: AniList (same GraphQL API used for anime, just `type: MANGA`) and MangaDex (public, no key)
+// ---------------------------------------------------------------------------
+
+async function searchMangaAnilist(query: string): Promise<MetadataSearchResult[]> {
+  const gql = `
+    query ($search: String) {
+      Page(perPage: 15) {
+        media(search: $search, type: MANGA) {
+          id
+          title { romaji english }
+          startDate { year }
+          description(asHtml: false)
+          coverImage { medium }
+        }
+      }
+    }
+  `;
+  const res = await fetch("https://graphql.anilist.co", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: gql, variables: { search: query } }),
+  });
+  if (!res.ok) throw new Error(`AniList search failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+
+  return (body?.data?.Page?.media ?? []).map((m: any) => ({
+    title: m.title.english || m.title.romaji,
+    year: m.startDate?.year ?? null,
+    overview: m.description || null,
+    posterUrl: m.coverImage?.medium || null,
+    externalIds: { anilist: String(m.id) },
+  }));
+}
+
+async function searchMangaMangadex(query: string): Promise<MetadataSearchResult[]> {
+  const url = new URL("https://api.mangadex.org/manga");
+  url.searchParams.set("title", query);
+  url.searchParams.set("limit", "15");
+  url.searchParams.set("includes[]", "cover_art");
+
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`MangaDex search failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+
+  return (body.data ?? []).map((m: any) => {
+    const title = m.attributes?.title?.en || Object.values(m.attributes?.title ?? {})[0] || "Unknown";
+    const cover = m.relationships?.find((r: any) => r.type === "cover_art")?.attributes?.fileName;
+    return {
+      title: String(title),
+      year: m.attributes?.year ?? null,
+      overview: m.attributes?.description?.en || null,
+      posterUrl: cover ? `https://uploads.mangadex.org/covers/${m.id}/${cover}.256.jpg` : null,
+      externalIds: { mangadex: String(m.id) },
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Provider registry + dispatch
 // ---------------------------------------------------------------------------
 
@@ -857,6 +915,7 @@ const SEARCH_FNS: Record<string, (query: string) => Promise<MetadataSearchResult
   igdb: searchRomsIgdb,
   youtube: searchVideosYoutube,
   theporndb: searchAdultThePornDb,
+  mangadex: searchMangaMangadex,
 };
 
 // A few providers (TMDB, Trakt) search differently depending on media type despite being offered
@@ -864,6 +923,7 @@ const SEARCH_FNS: Record<string, (query: string) => Promise<MetadataSearchResult
 const TYPE_SPECIFIC_SEARCH_FNS: Record<string, Record<string, (query: string) => Promise<MetadataSearchResult[]>>> = {
   tmdb: { movie: searchMoviesTmdb, series: searchSeriesTmdb, anime: searchSeriesTmdb },
   trakt: { movie: searchMoviesTrakt, series: searchSeriesTrakt },
+  anilist: { series: searchSeriesAnilist, anime: searchSeriesAnilist, manga: searchMangaAnilist },
 };
 
 function defaultProviderFor(type: MediaType): string | null {

@@ -1,4 +1,5 @@
 import { Router } from "express";
+import fs from "node:fs";
 import { db } from "../db/client.js";
 import { mediaItemFromRow } from "../db/mappers.js";
 import { asyncHandler } from "../middleware/errorHandler.js";
@@ -35,6 +36,58 @@ dashboardRouter.get(
     }[];
     const filtered = allowedTypes ? rows.filter((r) => allowedTypes.includes(r.type)) : rows;
     res.json(Object.fromEntries(filtered.map((r) => [r.type, r.count])));
+  })
+);
+
+/** Actual on-disk file sizes, grouped by library type — sums media_items.path plus every
+ * episode/sub_item file_path, statting each file directly since AoNarr doesn't store file size
+ * separately (only the release's advertised size at grab time, which can differ from the final
+ * file). Cached for 10 minutes since this stats every file in the library on a cache miss. */
+let sizeCache: { at: number; sizes: Record<string, number> } | null = null;
+const SIZE_CACHE_TTL_MS = 10 * 60 * 1000;
+
+function addSize(sizes: Record<string, number>, type: string, filePath: string | null) {
+  if (!filePath) return;
+  try {
+    sizes[type] = (sizes[type] ?? 0) + fs.statSync(filePath).size;
+  } catch {
+    // file listed in the DB but missing on disk — skip rather than crash the whole computation
+  }
+}
+
+function computeLibrarySizes(): Record<string, number> {
+  const sizes: Record<string, number> = {};
+  for (const row of db.prepare("SELECT type, path FROM media_items WHERE has_file = 1").all() as any[]) {
+    addSize(sizes, row.type, row.path);
+  }
+  for (const row of db
+    .prepare(
+      `SELECT m.type, e.file_path FROM episodes e JOIN media_items m ON m.id = e.media_item_id WHERE e.has_file = 1`
+    )
+    .all() as any[]) {
+    addSize(sizes, row.type, row.file_path);
+  }
+  for (const row of db
+    .prepare(
+      `SELECT m.type, s.file_path FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE s.has_file = 1`
+    )
+    .all() as any[]) {
+    addSize(sizes, row.type, row.file_path);
+  }
+  return sizes;
+}
+
+dashboardRouter.get(
+  "/library-sizes",
+  asyncHandler(async (req, res) => {
+    if (!sizeCache || Date.now() - sizeCache.at > SIZE_CACHE_TTL_MS) {
+      sizeCache = { at: Date.now(), sizes: computeLibrarySizes() };
+    }
+    const allowedTypes = allowedTypesFor(req);
+    const sizes = allowedTypes
+      ? Object.fromEntries(Object.entries(sizeCache.sizes).filter(([type]) => allowedTypes.includes(type)))
+      : sizeCache.sizes;
+    res.json(sizes);
   })
 );
 

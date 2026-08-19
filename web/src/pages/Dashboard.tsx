@@ -4,6 +4,7 @@ import { api } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { MediaItem } from "../types.js";
+import { formatBytes } from "../utils/format.js";
 
 interface RecentlyWatchedEntry {
   mediaItemId: number;
@@ -41,6 +42,8 @@ export default function Dashboard() {
   const [recentlyWatched, setRecentlyWatched] = useState<RecentlyWatchedEntry[]>([]);
   const [upcoming, setUpcoming] = useState<UpcomingEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [librarySizes, setLibrarySizes] = useState<Record<string, number>>({});
+  const [libraryCounts, setLibraryCounts] = useState<Record<string, number>>({});
 
   useEffect(() => {
     setLoading(true);
@@ -50,19 +53,53 @@ export default function Dashboard() {
       auth.isAdmin
         ? api.get<UpcomingEntry[]>(`/wanted/calendar?start=${todayIso()}&end=${addDaysIso(14)}`)
         : Promise.resolve([]),
+      api.get<Record<string, number>>("/dashboard/library-sizes"),
+      api.get<Record<string, number>>("/dashboard/library-counts"),
     ])
-      .then(([added, watched, cal]) => {
+      .then(([added, watched, cal, sizes, counts]) => {
         setRecentlyAdded(added);
         setRecentlyWatched(watched);
         setUpcoming(cal);
+        setLibrarySizes(sizes);
+        setLibraryCounts(counts);
       })
       .finally(() => setLoading(false));
   }, [auth.isAdmin]);
+
+  const totalSize = Object.values(librarySizes).reduce((sum, n) => sum + n, 0);
+  const totalCount = Object.values(libraryCounts).reduce((sum, n) => sum + n, 0);
 
   return (
     <div>
       <h1>Dashboard</h1>
       {loading && <p className="empty">Loading...</p>}
+
+      {!loading && (
+        <>
+          <h2>Library Size</h2>
+          <p style={{ color: "var(--muted)" }}>
+            {totalCount} item(s) across every library · {formatBytes(totalSize)} total on disk
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Library</th>
+                <th>Items</th>
+                <th>Size</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.keys(libraryCounts).map((type) => (
+                <tr key={type}>
+                  <td>{labelFor(type)}</td>
+                  <td>{libraryCounts[type]}</td>
+                  <td>{formatBytes(librarySizes[type] ?? 0)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
 
       {!loading && (
         <>

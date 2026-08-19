@@ -4,6 +4,7 @@ import { api, downloadFile, uploadFormFile } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { LibraryGroup, MediaItem, Tag } from "../types.js";
+import { formatBytes } from "../utils/format.js";
 
 type SortKey = "title" | "year" | "added" | "status";
 type ViewMode = "poster" | "list";
@@ -160,6 +161,7 @@ export function LibraryItemGrid({
   groupDetail: GroupDetail | null;
 }) {
   const [items, setItems] = useState<MediaItem[]>([]);
+  const [typeSize, setTypeSize] = useState<number | null>(null);
   const [tags, setTags] = useState<Tag[]>([]);
   const [tagFilter, setTagFilter] = useState<number | "all">("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -190,6 +192,9 @@ export function LibraryItemGrid({
   }
 
   useEffect(load, [type, groupId, tagFilter]);
+  useEffect(() => {
+    api.get<Record<string, number>>("/dashboard/library-sizes").then((sizes) => setTypeSize(sizes[type] ?? 0));
+  }, [type]);
   useEffect(() => {
     if (auth.isAdmin) api.get<Tag[]>("/tags").then(setTags);
   }, [auth.isAdmin]);
@@ -277,6 +282,7 @@ export function LibraryItemGrid({
   return (
     <div>
       <h1>{typeLabel}</h1>
+      {typeSize !== null && <p style={{ color: "var(--muted)" }}>{formatBytes(typeSize)} on disk</p>}
       {groupDetail && (
         <p style={{ color: "var(--muted)" }}>
           <Link to={`/library/${type}`}>{typeLabel}</Link>
