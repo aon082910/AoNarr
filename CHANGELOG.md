@@ -3,6 +3,11 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 23
+- Poster size option (small/medium/large, persisted per browser) on every library type's poster view
+- Verified Online Videos' and Courses' group hierarchies live against the actual published image,
+  not just typechecked — both browse and label correctly at every level
+
 ## Round 22
 - Multi-source metadata on the media detail page — pull a second opinion from any other
   configured provider for that type without touching the item's primary overview/poster, then

@@ -7,7 +7,10 @@ import type { LibraryGroup, MediaItem, Tag } from "../types.js";
 
 type SortKey = "title" | "year" | "added" | "status";
 type ViewMode = "poster" | "list";
+type PosterSize = "small" | "medium" | "large";
 type StatusFilter = "all" | "monitored" | "unmonitored" | "missing" | "downloaded";
+
+const POSTER_SIZE_PX: Record<PosterSize, number> = { small: 120, medium: 160, large: 220 };
 
 interface GroupDetail {
   group: LibraryGroup;
@@ -162,6 +165,7 @@ export function LibraryItemGrid({
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sortKey, setSortKey] = useState<SortKey>("added");
   const [viewMode, setViewMode] = useState<ViewMode>(() => (localStorage.getItem("aonarr_library_view") as ViewMode) || "poster");
+  const [posterSize, setPosterSize] = useState<PosterSize>(() => (localStorage.getItem("aonarr_library_poster_size") as PosterSize) || "medium");
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [tagToApply, setTagToApply] = useState<number | "">("");
@@ -192,6 +196,9 @@ export function LibraryItemGrid({
   useEffect(() => {
     localStorage.setItem("aonarr_library_view", viewMode);
   }, [viewMode]);
+  useEffect(() => {
+    localStorage.setItem("aonarr_library_poster_size", posterSize);
+  }, [posterSize]);
 
   function toggleSelect(id: number, e: MouseEvent) {
     e.stopPropagation();
@@ -317,6 +324,13 @@ export function LibraryItemGrid({
             List
           </button>
         </div>
+        {viewMode === "poster" && (
+          <select value={posterSize} onChange={(e) => setPosterSize(e.target.value as PosterSize)} style={{ maxWidth: 120 }}>
+            <option value="small">Small posters</option>
+            <option value="medium">Medium posters</option>
+            <option value="large">Large posters</option>
+          </select>
+        )}
         {auth.isAdmin && groupId && (
           <button type="button" onClick={quickAdd}>
             + Add {typeLabel.replace(/ — Ungrouped$/, "")}
@@ -382,7 +396,7 @@ export function LibraryItemGrid({
       )}
 
       {viewMode === "poster" ? (
-        <div className="grid">
+        <div className="grid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${POSTER_SIZE_PX[posterSize]}px, 1fr))` }}>
           {sorted.map((item) => (
             <div key={item.id} className="card" onClick={() => navigate(`/media/${item.id}`)} style={{ position: "relative" }}>
               {auth.isAdmin && (
