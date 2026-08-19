@@ -4,7 +4,7 @@ import Modal from "../components/Modal.js";
 import type { DownloadClient } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 
-type ClientType = "qbittorrent" | "sabnzbd" | "http" | "ytdlp" | "realdebrid";
+type ClientType = "qbittorrent" | "sabnzbd" | "http" | "ytdlp" | "realdebrid" | "blackhole";
 
 interface ClientHealthStats {
   uploadedTotalBytes: number;
@@ -30,6 +30,7 @@ export default function DownloadClients() {
   const [audioOnly, setAudioOnly] = useState(false);
 
   const needsHost = type === "qbittorrent" || type === "sabnzbd";
+  const needsWatchFolder = type === "blackhole";
 
   function load() {
     api.get<DownloadClient[]>("/download-clients").then(setClients);
@@ -38,11 +39,11 @@ export default function DownloadClients() {
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if (!name || (needsHost && (!host || !port))) return;
+    if (!name || (needsHost && (!host || !port)) || (needsWatchFolder && !host)) return;
     await api.post("/download-clients", {
       name,
       type,
-      host: needsHost ? host : null,
+      host: needsHost || needsWatchFolder ? host : null,
       port: needsHost ? Number(port) : null,
       username: username || null,
       password: password || null,
@@ -106,6 +107,7 @@ export default function DownloadClients() {
           <option value="http">Direct HTTP download (for DDL/RSS indexer results)</option>
           <option value="ytdlp">yt-dlp (for Online Videos)</option>
           <option value="realdebrid">Real-Debrid</option>
+          <option value="blackhole">Blackhole (watch folder)</option>
         </select>
 
         {needsHost && (
@@ -141,6 +143,20 @@ export default function DownloadClients() {
               From real-debrid.com → Account → API Token. AoNarr sends grabbed magnet/torrent
               links to Real-Debrid, waits for it to cache them, then downloads the unrestricted
               link(s) directly — no host/port needed, it's always their public API.
+            </p>
+          </>
+        )}
+
+        {needsWatchFolder && (
+          <>
+            <label>Watch folder path</label>
+            <input value={host} onChange={(e) => setHost(e.target.value)} required placeholder="/downloads/blackhole" />
+            <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+              Fire-and-forget: for a client with no usable API, AoNarr just drops a .torrent/
+              .magnet/.nzb file here for a separately-configured external client watching this same
+              folder to pick up on its own. AoNarr can't track its progress or auto-import the
+              finished file — point that client's own completed-download output at one of your
+              root folders to get files into the library.
             </p>
           </>
         )}

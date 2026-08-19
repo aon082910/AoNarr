@@ -3,6 +3,14 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 36
+- Blackhole download client type — for a torrent/usenet client with no usable HTTP API, AoNarr
+  drops the release as a .magnet/.torrent/.nzb file into a watch folder for that client to pick
+  up on its own, the oldest and most universal *Starr integration pattern. Fire-and-forget by
+  design (documented clearly in the UI): AoNarr can't track an unknown external client's progress,
+  so the queue entry stays "downloading" — point the client's own completed output at a root
+  folder to get files into the library
+
 ## Round 35
 - Import Lists finally got a UI (Manage → Import Lists) — the recurring Trakt/IMDb auto-add
   backend has existed since Round 27's generalization from the old single Trakt-sync setting, but

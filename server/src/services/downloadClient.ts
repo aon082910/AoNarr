@@ -439,12 +439,54 @@ class RealDebridAdapter implements DownloadClientAdapter {
   }
 }
 
+/**
+ * Blackhole — the oldest, most universal *Starr integration pattern, for a torrent/usenet client
+ * with no usable HTTP API (or one AoNarr just hasn't written an adapter for yet): instead of
+ * talking to the client at all, AoNarr drops the release into a folder the client is separately
+ * configured to watch (`client.host` holds that folder's path, reusing the field the same way
+ * Real-Debrid reuses `apiKey` for its token). A magnet link is written as a `.magnet` file
+ * (content is just the URI — most watch-folder setups that support magnets at all expect this);
+ * anything else is fetched and sniffed by content (XML → `.nzb`, otherwise `.torrent`) since the
+ * shared adapter interface doesn't carry the result's protocol through to here.
+ *
+ * This is fire-and-forget by design, same as the real thing: AoNarr has no way to ask an unknown
+ * external client how a download is progressing, so getStatus can't report real progress or ever
+ * return "completed" — the queue entry just stays "downloading" until removed by hand. Point the
+ * client's own completed-download output at one of AoNarr's root folders to actually get files
+ * into the library; this only handles getting the release TO the client.
+ */
+class BlackholeAdapter implements DownloadClientAdapter {
+  async addDownload(client: DownloadClient, downloadUrl: string, _category: string | null, releaseTitle?: string): Promise<GrabResult> {
+    if (!client.host) throw new Error("Blackhole client has no watch folder path configured");
+    fs.mkdirSync(client.host, { recursive: true });
+    const downloadId = crypto.randomUUID();
+    const base = sanitizeFilename(releaseTitle || downloadId);
+
+    if (downloadUrl.startsWith("magnet:")) {
+      fs.writeFileSync(path.join(client.host, `${base}.magnet`), downloadUrl, "utf-8");
+    } else {
+      const res = await fetch(downloadUrl);
+      if (!res.ok) throw new Error(`Failed to fetch release file for blackhole: HTTP ${res.status}`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      const looksLikeNzb = buf.subarray(0, 20).toString("utf-8").trimStart().startsWith("<");
+      fs.writeFileSync(path.join(client.host, `${base}${looksLikeNzb ? ".nzb" : ".torrent"}`), buf);
+    }
+
+    return { downloadId };
+  }
+
+  async getStatus(_client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
+    return downloadIds.map((id) => ({ downloadId: id, progress: 0, status: "downloading" }));
+  }
+}
+
 const adapters: Record<DownloadClient["type"], DownloadClientAdapter> = {
   qbittorrent: new QBittorrentAdapter(),
   sabnzbd: new SabnzbdAdapter(),
   http: new HttpDownloadAdapter(),
   ytdlp: new YtdlpAdapter(),
   realdebrid: new RealDebridAdapter(),
+  blackhole: new BlackholeAdapter(),
 };
 
 export function getDownloadClientAdapter(type: DownloadClient["type"]): DownloadClientAdapter {
