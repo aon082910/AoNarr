@@ -71,6 +71,10 @@ usersRouter.patch(
     const b = req.body ?? {};
     if (b.password) {
       db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hashPassword(b.password), req.params.id);
+      // A password reset should invalidate any session issued under the old password — otherwise
+      // a compromised account stays logged in elsewhere even after the admin "fixes" it.
+      db.prepare("DELETE FROM sessions WHERE user_id = ?").run(req.params.id);
+      logAuditEvent(null, "admin", "user_password_reset", (existing as any).username);
     }
     if (b.maxPendingRequests !== undefined) {
       db.prepare("UPDATE users SET max_pending_requests = ? WHERE id = ?").run(

@@ -1,11 +1,13 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client.js";
+import Modal from "../components/Modal.js";
 import type { Indexer } from "../types.js";
 
 type Protocol = "torznab" | "newznab" | "rss" | "ddl";
 
 export default function Indexers() {
   const [indexers, setIndexers] = useState<Indexer[]>([]);
+  const [showAdd, setShowAdd] = useState(false);
   const [name, setName] = useState("");
   const [protocol, setProtocol] = useState<Protocol>("torznab");
   const [url, setUrl] = useState("");
@@ -44,6 +46,7 @@ export default function Indexers() {
     setUrl("");
     setApiKey("");
     setUseFlareSolverr(false);
+    setShowAdd(false);
     load();
   }
 
@@ -81,7 +84,13 @@ export default function Indexers() {
         the response; AoNarr never scrapes a site itself, only reads JSON the API returns.
       </p>
 
-      <form className="form-panel" onSubmit={submit}>
+      <button type="button" onClick={() => setShowAdd(true)} style={{ marginBottom: 16 }}>
+        + Add indexer
+      </button>
+
+      {showAdd && (
+        <Modal title="Add Indexer" onClose={() => setShowAdd(false)} maxWidth={560}>
+      <form className="form-panel" onSubmit={submit} style={{ padding: 0 }}>
         <label>Name</label>
         <input value={name} onChange={(e) => setName(e.target.value)} required />
 
@@ -142,6 +151,8 @@ export default function Indexers() {
 
         <button type="submit">Add indexer</button>
       </form>
+        </Modal>
+      )}
 
       <table>
         <thead>

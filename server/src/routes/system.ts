@@ -5,7 +5,8 @@ import path from "node:path";
 import os from "node:os";
 import { db } from "../db/client.js";
 import { config } from "../config.js";
-import { indexerFromRow, rootFolderFromRow } from "../db/mappers.js";
+import { downloadClientFromRow, indexerFromRow, rootFolderFromRow } from "../db/mappers.js";
+import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { checkIndexerHealth } from "../services/indexerClient.js";
 import { runAutoArchival } from "../services/archival.js";
@@ -117,13 +118,44 @@ systemRouter.get(
     const repeatedImports = findRepeatedImports();
     const upgradeCandidates = findUpgradeCandidates();
 
+    const downloadClients = (db.prepare("SELECT * FROM download_clients WHERE enabled = 1").all() as any[]).map(
+      downloadClientFromRow
+    );
+    const downloadClientHealth = await Promise.all(
+      downloadClients.map(async (client) => {
+        try {
+          await getDownloadClientAdapter(client.type).getStatus(client, []);
+          return { id: client.id, name: client.name, ok: true };
+        } catch (err) {
+          return { id: client.id, name: client.name, ok: false, error: (err as Error).message };
+        }
+      })
+    );
+
+    const DISK_WARN_PERCENT_FREE = 10;
+    const rootFolders = db.prepare("SELECT id, path FROM root_folders").all() as { id: number; path: string }[];
+    const diskWarnings = rootFolders
+      .map((folder) => {
+        const latest = db
+          .prepare("SELECT free_bytes, total_bytes FROM disk_usage_samples WHERE root_folder_id = ? ORDER BY sampled_at DESC LIMIT 1")
+          .get(folder.id) as { free_bytes: number; total_bytes: number } | undefined;
+        if (!latest || !latest.total_bytes) return null;
+        const percentFree = (latest.free_bytes / latest.total_bytes) * 100;
+        if (percentFree >= DISK_WARN_PERCENT_FREE) return null;
+        return { rootFolderId: folder.id, path: folder.path, percentFree: Math.round(percentFree * 10) / 10 };
+      })
+      .filter((w): w is NonNullable<typeof w> => w !== null);
+
     res.json({
       indexers: indexerHealth,
+      downloadClients: downloadClientHealth,
       stuckQueue: stuckQueueRows,
       stuckQueueThresholdHours: STUCK_QUEUE_HOURS,
       pendingRequests,
       repeatedImports,
       upgradeCandidates,
+      diskWarnings,
+      diskWarnPercentFree: DISK_WARN_PERCENT_FREE,
     });
   })
 );

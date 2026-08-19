@@ -3,6 +3,14 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 18
+- Indexer rate-limit backoff — a 429 pauses that indexer for 15m instead of retrying every cycle
+- Consolidated health dashboard now also covers download client reachability and low disk space
+- Admin-triggered password reset for household accounts, with automatic session revocation
+- Settings and System pages reorganized into tabs instead of one long scroll
+- Users/Indexers/Download Clients/Watchlist Import "Add" flows moved into popup dialogs
+- Watchlist Import gained a single-title add option alongside the existing CSV upload
+
 ## Round 17
 - Guided first-run onboarding wizard (root folder → indexer → download client checklist)
 - SMTP email notifications alongside the existing webhook/bot providers

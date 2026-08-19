@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client.js";
+import Modal from "../components/Modal.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useContentRatings } from "../hooks/useContentRatings.js";
 import type { RequestStats, Session, User } from "../types.js";
@@ -9,6 +10,7 @@ export default function Users() {
   const mediaTypes = useMediaTypes();
   const contentRatings = useContentRatings();
   const [users, setUsers] = useState<User[]>([]);
+  const [showAdd, setShowAdd] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [allowedTypes, setAllowedTypes] = useState<string[]>([]);
@@ -51,6 +53,7 @@ export default function Users() {
     setMaxPendingRequests("");
     setAutoApprove(false);
     setMaxContentRating("");
+    setShowAdd(false);
     load();
   }
 
@@ -83,6 +86,18 @@ export default function Users() {
     load();
   }
 
+  async function resetPassword(user: User) {
+    const newPassword = prompt(`New password for ${user.username} (min 8 characters):`);
+    if (!newPassword) return;
+    if (newPassword.length < 8) {
+      alert("Password must be at least 8 characters.");
+      return;
+    }
+    await api.patch(`/users/${user.id}`, { password: newPassword });
+    alert(`Password reset for ${user.username}. Their other active sessions have been logged out.`);
+    load();
+  }
+
   return (
     <div>
       <h1>Users</h1>
@@ -93,7 +108,13 @@ export default function Users() {
         the item to the library immediately on request.
       </p>
 
-      <form className="form-panel" onSubmit={addUser}>
+      <button type="button" onClick={() => setShowAdd(true)} style={{ marginBottom: 16 }}>
+        + Add user
+      </button>
+
+      {showAdd && (
+        <Modal title="Add User" onClose={() => setShowAdd(false)}>
+      <form className="form-panel" onSubmit={addUser} style={{ padding: 0 }}>
         <label>Username</label>
         <input value={username} onChange={(e) => setUsername(e.target.value)} required />
         <label>Password</label>
@@ -129,6 +150,8 @@ export default function Users() {
         </select>
         <button type="submit">Create user</button>
       </form>
+        </Modal>
+      )}
 
       {users.length === 0 && <p className="empty">No household accounts yet.</p>}
       <table>
@@ -191,6 +214,9 @@ export default function Users() {
                 </select>
               </td>
               <td>
+                <button className="secondary" style={{ marginRight: 6 }} onClick={() => resetPassword(u)}>
+                  Reset password
+                </button>
                 <button className="danger" onClick={() => removeUser(u.id)}>
                   Delete
                 </button>

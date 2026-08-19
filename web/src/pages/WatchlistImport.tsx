@@ -1,5 +1,7 @@
 import { useRef, useState } from "react";
 import { api } from "../api/client.js";
+import Modal from "../components/Modal.js";
+import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { MediaType } from "../types.js";
 
 interface ParsedRow {
@@ -79,11 +81,23 @@ function parseCsv(text: string): ParsedRow[] {
 }
 
 export default function WatchlistImport() {
+  const mediaTypes = useMediaTypes();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [rows, setRows] = useState<ParsedRow[] | null>(null);
   const [fileName, setFileName] = useState("");
   const [importing, setImporting] = useState(false);
   const [results, setResults] = useState<RowResult[] | null>(null);
+
+  const [showAdd, setShowAdd] = useState(false);
+  const [addMode, setAddMode] = useState<"choose" | "single" | "csv">("choose");
+  const [singleTitle, setSingleTitle] = useState("");
+  const [singleYear, setSingleYear] = useState("");
+  const [singleType, setSingleType] = useState<MediaType>("movie");
+
+  function openAdd() {
+    setAddMode("choose");
+    setShowAdd(true);
+  }
 
   async function handleFile(file: File) {
     const text = await file.text();
@@ -93,13 +107,14 @@ export default function WatchlistImport() {
     setResults(null);
   }
 
-  async function runImport() {
-    if (!rows || rows.length === 0) return;
+  async function runImportRows(importRows: ParsedRow[]) {
+    if (importRows.length === 0) return;
     setImporting(true);
     setResults(null);
     try {
-      const response = await api.post<{ results: RowResult[] }>("/watchlist-import", { rows });
+      const response = await api.post<{ results: RowResult[] }>("/watchlist-import", { rows: importRows });
       setResults(response.results);
+      setShowAdd(false);
     } catch (e) {
       alert((e as Error).message);
     } finally {
@@ -107,40 +122,99 @@ export default function WatchlistImport() {
     }
   }
 
+  async function submitSingle() {
+    if (!singleTitle.trim()) return;
+    const year = singleYear && /^\d{4}$/.test(singleYear) ? Number(singleYear) : null;
+    await runImportRows([{ title: singleTitle.trim(), year, type: singleType }]);
+    setSingleTitle("");
+    setSingleYear("");
+  }
+
   return (
     <div>
       <h1>Watchlist Import</h1>
       <p style={{ color: "var(--muted)" }}>
-        Bulk-import a watchlist export — IMDb ("Your Watchlist" → Export), Letterboxd
-        (Settings → Import &amp; Export → Export your data → <code>watchlist.csv</code>), or a
-        Trakt CSV export. Each title is metadata-searched and the best match added as monitored;
-        rows with no match, or that look like duplicates of something already in the library, are
-        skipped and reported rather than guessed at.
+        Add a single title, or bulk-import a watchlist export — IMDb ("Your Watchlist" → Export),
+        Letterboxd (Settings → Import &amp; Export → Export your data → <code>watchlist.csv</code>),
+        or a Trakt CSV export. Each title is metadata-searched and the best match added as
+        monitored; rows with no match, or that look like duplicates of something already in the
+        library, are skipped and reported rather than guessed at.
       </p>
 
-      <div className="form-panel">
-        <button type="button" onClick={() => fileInputRef.current?.click()}>
-          Choose CSV file...
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".csv"
-          style={{ display: "none" }}
-          onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
-        />
-        {fileName && (
-          <p style={{ marginTop: 8 }}>
-            <strong>{fileName}</strong> — {rows?.length ?? 0} row(s) recognized
-            {rows && rows.length === 0 && " (no Title/Name column found — check the file is a real export)"}
-          </p>
-        )}
-        {rows && rows.length > 0 && (
-          <button type="button" onClick={runImport} disabled={importing} style={{ marginTop: 8 }}>
-            {importing ? "Importing..." : `Import ${rows.length} title(s)`}
-          </button>
-        )}
-      </div>
+      <button type="button" onClick={openAdd} style={{ marginBottom: 16 }}>
+        + Add title(s)
+      </button>
+
+      {showAdd && (
+        <Modal title="Add to Watchlist" onClose={() => setShowAdd(false)}>
+          {addMode === "choose" && (
+            <div style={{ display: "flex", gap: 8 }}>
+              <button type="button" onClick={() => setAddMode("single")}>
+                Single title
+              </button>
+              <button type="button" onClick={() => setAddMode("csv")}>
+                Upload CSV
+              </button>
+            </div>
+          )}
+
+          {addMode === "single" && (
+            <div className="form-panel" style={{ padding: 0 }}>
+              <label>Title</label>
+              <input value={singleTitle} onChange={(e) => setSingleTitle(e.target.value)} autoFocus />
+              <label>Year (optional)</label>
+              <input value={singleYear} onChange={(e) => setSingleYear(e.target.value)} placeholder="2024" />
+              <label>Type</label>
+              <select value={singleType} onChange={(e) => setSingleType(e.target.value as MediaType)}>
+                {mediaTypes.map((t) => (
+                  <option key={t.key} value={t.key}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button type="button" onClick={submitSingle} disabled={importing || !singleTitle.trim()}>
+                  {importing ? "Adding..." : "Add"}
+                </button>
+                <button type="button" className="secondary" onClick={() => setAddMode("choose")}>
+                  Back
+                </button>
+              </div>
+            </div>
+          )}
+
+          {addMode === "csv" && (
+            <div className="form-panel" style={{ padding: 0 }}>
+              <button type="button" onClick={() => fileInputRef.current?.click()}>
+                Choose CSV file...
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv"
+                style={{ display: "none" }}
+                onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+              />
+              {fileName && (
+                <p style={{ marginTop: 8 }}>
+                  <strong>{fileName}</strong> — {rows?.length ?? 0} row(s) recognized
+                  {rows && rows.length === 0 && " (no Title/Name column found — check the file is a real export)"}
+                </p>
+              )}
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                {rows && rows.length > 0 && (
+                  <button type="button" onClick={() => runImportRows(rows)} disabled={importing}>
+                    {importing ? "Importing..." : `Import ${rows.length} title(s)`}
+                  </button>
+                )}
+                <button type="button" className="secondary" onClick={() => setAddMode("choose")}>
+                  Back
+                </button>
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
 
       {results && (
         <>

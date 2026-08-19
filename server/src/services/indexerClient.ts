@@ -67,6 +67,9 @@ async function fetchIndexerText(url: string, indexer: Indexer, timeoutMs: number
 /** Lightweight reachability check. Torznab/Newznab hit their capabilities endpoint; rss/ddl just
  * confirm the configured URL responds. */
 export async function checkIndexerHealth(indexer: Indexer): Promise<{ ok: boolean; error?: string }> {
+  if (isIndexerBackedOff(indexer.id)) {
+    return { ok: false, error: "Backed off after a recent 429" };
+  }
   try {
     let url: string;
     if (indexer.protocol === "torznab" || indexer.protocol === "newznab") {
@@ -226,17 +229,43 @@ async function searchDdl(indexer: Indexer, query: string): Promise<SearchResult[
   return results;
 }
 
+/** Once an indexer 429s, back off entirely for a while rather than keep hammering a source
+ * that's already telling us to slow down — every subsequent auto-search/manual-search cycle
+ * within the window skips it outright instead of making (and likely wasting) another request. */
+const BACKOFF_MS = 15 * 60 * 1000;
+const backoffUntil = new Map<number, number>();
+
+export function isIndexerBackedOff(indexerId: number): boolean {
+  const until = backoffUntil.get(indexerId);
+  return !!until && until > Date.now();
+}
+
+function recordIfRateLimited(indexer: Indexer, err: unknown): void {
+  if (err instanceof Error && /HTTP 429/.test(err.message)) {
+    backoffUntil.set(indexer.id, Date.now() + BACKOFF_MS);
+    log.warn(`[indexerClient] "${indexer.name}" returned 429 — backing off for ${BACKOFF_MS / 60000}m`);
+  }
+}
+
 export async function searchIndexer(
   indexer: Indexer,
   query: string,
   mediaType: MediaType
 ): Promise<SearchResult[]> {
-  if (indexer.protocol === "torznab" || indexer.protocol === "newznab") {
-    return searchTorznabNewznab(indexer, query, mediaType);
+  if (isIndexerBackedOff(indexer.id)) {
+    throw new Error(`Indexer "${indexer.name}" is backed off after a recent 429 — skipping`);
   }
-  if (indexer.protocol === "rss") return searchRss(indexer, query);
-  if (indexer.protocol === "ddl") return searchDdl(indexer, query);
-  throw new Error(`Unknown indexer protocol "${indexer.protocol}"`);
+  try {
+    if (indexer.protocol === "torznab" || indexer.protocol === "newznab") {
+      return await searchTorznabNewznab(indexer, query, mediaType);
+    }
+    if (indexer.protocol === "rss") return await searchRss(indexer, query);
+    if (indexer.protocol === "ddl") return await searchDdl(indexer, query);
+    throw new Error(`Unknown indexer protocol "${indexer.protocol}"`);
+  } catch (err) {
+    recordIfRateLimited(indexer, err);
+    throw err;
+  }
 }
 
 async function searchIndexerCached(indexer: Indexer, query: string, mediaType: MediaType): Promise<SearchResult[]> {

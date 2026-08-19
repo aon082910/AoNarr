@@ -28,6 +28,7 @@ export default function Settings() {
   const [totpSetup, setTotpSetup] = useState<{ secret: string; otpauthUrl: string } | null>(null);
   const [totpCode, setTotpCode] = useState("");
   const [totpDisableCode, setTotpDisableCode] = useState("");
+  const [tab, setTab] = useState("general");
 
   const [folderPath, setFolderPath] = useState("");
   const [folderType, setFolderType] = useState<MediaType>("movie");
@@ -381,6 +382,28 @@ export default function Settings() {
     <div>
       <h1>Settings</h1>
 
+      <div className="settings-tabs" style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
+        {[
+          ["general", "General"],
+          ["metadata", "Metadata Providers"],
+          ["notifications", "Notifications"],
+          ["media", "Media Management"],
+          ["indexers", "Indexer Options"],
+          ["library", "Library Sync"],
+          ["quality", "Quality"],
+          ["subtitles", "Import & Subtitles"],
+        ].map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            className={tab === key ? "" : "secondary"}
+            onClick={() => setTab(key)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div style={{ display: tab === "general" ? undefined : "none" }}>
       <h2>Security</h2>
       <div className="form-panel">
         <label>API key</label>
@@ -469,6 +492,8 @@ export default function Settings() {
         </div>
       </div>
 
+      </div>
+      <div style={{ display: tab === "metadata" ? undefined : "none" }}>
       <h2>Metadata Providers</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
@@ -601,6 +626,8 @@ export default function Settings() {
           })}
       </div>
 
+      </div>
+      <div style={{ display: tab === "notifications" ? undefined : "none" }}>
       <h2>Notifications</h2>
       <div className="form-panel">
         <label>Discord webhook URL</label>
@@ -760,6 +787,8 @@ export default function Settings() {
         />
       </div>
 
+      </div>
+      <div style={{ display: tab === "media" ? undefined : "none" }}>
       <h2>Naming</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
@@ -876,6 +905,8 @@ export default function Settings() {
         </select>
       </div>
 
+      </div>
+      <div style={{ display: tab === "indexers" ? undefined : "none" }}>
       <h2>FlareSolverr</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
@@ -961,6 +992,8 @@ export default function Settings() {
         />
       </div>
 
+      </div>
+      <div style={{ display: tab === "library" ? undefined : "none" }}>
       <h2>Trakt List Sync</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
@@ -1111,6 +1144,8 @@ export default function Settings() {
       </table>
       {tags.length === 0 && <p className="empty">No tags yet.</p>}
 
+      </div>
+      <div style={{ display: tab === "quality" ? undefined : "none" }}>
       <h2>Quality Definitions</h2>
       <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
         Worst to best. Reorder to change how releases rank against each other; rename freely
@@ -1372,6 +1407,8 @@ export default function Settings() {
         </table>
       )}
 
+      </div>
+      <div style={{ display: tab === "subtitles" ? undefined : "none" }}>
       <h2>Import Exclusions</h2>
       <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
         Titles that should never be auto-added or re-suggested — search results show them dimmed,
@@ -1481,6 +1518,7 @@ export default function Settings() {
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }

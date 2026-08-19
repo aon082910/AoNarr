@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client.js";
+import Modal from "../components/Modal.js";
 import type { DownloadClient } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 
@@ -16,6 +17,7 @@ interface ClientHealthStats {
 
 export default function DownloadClients() {
   const [clients, setClients] = useState<DownloadClient[]>([]);
+  const [showAdd, setShowAdd] = useState(false);
   const [health, setHealth] = useState<Record<number, ClientHealthStats | "error">>({});
   const [name, setName] = useState("");
   const [type, setType] = useState<ClientType>("qbittorrent");
@@ -52,6 +54,7 @@ export default function DownloadClients() {
     setUsername("");
     setPassword("");
     setApiKey("");
+    setShowAdd(false);
     load();
   }
 
@@ -78,7 +81,13 @@ export default function DownloadClients() {
         of each you need without a host/port.
       </p>
 
-      <form className="form-panel" onSubmit={submit}>
+      <button type="button" onClick={() => setShowAdd(true)} style={{ marginBottom: 16 }}>
+        + Add download client
+      </button>
+
+      {showAdd && (
+        <Modal title="Add Download Client" onClose={() => setShowAdd(false)}>
+      <form className="form-panel" onSubmit={submit} style={{ padding: 0 }}>
         <label>Name</label>
         <input value={name} onChange={(e) => setName(e.target.value)} required />
 
@@ -124,6 +133,8 @@ export default function DownloadClients() {
 
         <button type="submit">Add download client</button>
       </form>
+        </Modal>
+      )}
 
       <table>
         <thead>

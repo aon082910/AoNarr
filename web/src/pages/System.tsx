@@ -54,13 +54,29 @@ interface UpgradeCandidate {
   profileName: string;
 }
 
+interface DownloadClientHealth {
+  id: number;
+  name: string;
+  ok: boolean;
+  error?: string;
+}
+
+interface DiskWarning {
+  rootFolderId: number;
+  path: string;
+  percentFree: number;
+}
+
 interface HealthReport {
   indexers: IndexerHealth[];
+  downloadClients: DownloadClientHealth[];
   stuckQueue: StuckQueueEntry[];
   stuckQueueThresholdHours: number;
   pendingRequests: number;
   repeatedImports: RepeatedImport[];
   upgradeCandidates: UpgradeCandidate[];
+  diskWarnings: DiskWarning[];
+  diskWarnPercentFree: number;
 }
 
 interface OrphanedFile {
@@ -111,6 +127,7 @@ function formatUptime(seconds: number): string {
 
 export default function System() {
   const navigate = useNavigate();
+  const [tab, setTab] = useState("overview");
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [health, setHealth] = useState<HealthReport | null>(null);
   const [orphaned, setOrphaned] = useState<OrphanedFile[] | null>(null);
@@ -283,6 +300,26 @@ export default function System() {
     <div>
       <h1>System</h1>
 
+      <div className="settings-tabs" style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
+        {[
+          ["overview", "Overview"],
+          ["health", "Health"],
+          ["backups", "Backups"],
+          ["maintenance", "Maintenance"],
+          ["insights", "Insights"],
+          ["logs", "Logs"],
+        ].map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            className={tab === key ? "" : "secondary"}
+            onClick={() => setTab(key)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div style={{ display: tab === "overview" ? undefined : "none" }}>
       <h2>Overview</h2>
       <table>
         <tbody>
@@ -337,6 +374,8 @@ export default function System() {
         </tbody>
       </table>
 
+      </div>
+      <div style={{ display: tab === "health" ? undefined : "none" }}>
       <h2>Health</h2>
       {!health && <p className="empty">Loading...</p>}
       {health && (
@@ -368,6 +407,33 @@ export default function System() {
               )}
             </tbody>
           </table>
+
+          {health.downloadClients.length > 0 && (
+            <table style={{ marginTop: 12 }}>
+              <thead>
+                <tr>
+                  <th>Download Client</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {health.downloadClients.map((c) => (
+                  <tr key={c.id}>
+                    <td>{c.name}</td>
+                    <td>
+                      <span className={`badge ${c.ok ? "ok" : "danger"}`}>{c.ok ? "Reachable" : c.error ?? "Unreachable"}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {health.diskWarnings.length > 0 && (
+            <p style={{ marginTop: 12, color: "var(--danger)" }}>
+              Low disk space: {health.diskWarnings.map((w) => `${w.path} (${w.percentFree}% free)`).join(", ")}
+            </p>
+          )}
 
           <p style={{ marginTop: 12 }}>
             <strong>{health.stuckQueue.length}</strong> queue item(s) stuck longer than{" "}
@@ -465,6 +531,8 @@ export default function System() {
         </>
       )}
 
+      </div>
+      <div style={{ display: tab === "backups" ? undefined : "none" }}>
       <h2>Backup &amp; Restore</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
@@ -593,6 +661,8 @@ export default function System() {
         />
       </div>
 
+      </div>
+      <div style={{ display: tab === "maintenance" ? undefined : "none" }}>
       <h2>Maintenance</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
@@ -735,6 +805,8 @@ export default function System() {
         )}
       </div>
 
+      </div>
+      <div style={{ display: tab === "insights" ? undefined : "none" }}>
       <h2>Release Group Reputation</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
@@ -851,6 +923,8 @@ export default function System() {
         </table>
       )}
 
+      </div>
+      <div style={{ display: tab === "logs" ? undefined : "none" }}>
       <h2>Logs</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
@@ -888,6 +962,7 @@ export default function System() {
             ))}
           </div>
         )}
+      </div>
       </div>
     </div>
   );
