@@ -24,6 +24,31 @@ import { getMediaServerConfig } from "../services/mediaServer.js";
 export const systemRouter = Router();
 systemRouter.use(requireAdmin);
 
+/** Lists subdirectories of a path for the web UI's folder-picker, instead of typing/pasting a
+ * path blind — same idea as every *Starr app's own "Browse for folder." Scoped to whatever the
+ * container can already see (its mounted volumes), same as those apps; no extra sandboxing since
+ * there's nothing more sensitive reachable here than what's already mounted into the container. */
+systemRouter.get(
+  "/browse-directory",
+  asyncHandler(async (req, res) => {
+    const requested = (req.query.path as string | undefined) || "/";
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(requested, { withFileTypes: true });
+    } catch (err) {
+      throw new HttpError(400, `Can't list "${requested}": ${(err as Error).message}`);
+    }
+
+    const directories = entries
+      .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+      .map((e) => e.name)
+      .sort((a, b) => a.localeCompare(b));
+
+    const parent = path.dirname(requested);
+    res.json({ path: requested, parent: parent === requested ? null : parent, directories });
+  })
+);
+
 /**
  * Aggregates the bandwidth/queue-throughput information AoNarr actually has — per-client
  * upload/download totals and ratio (only qBittorrent's adapter implements getHealthStats today;

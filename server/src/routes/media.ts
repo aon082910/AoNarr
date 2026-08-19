@@ -13,6 +13,7 @@ import { fetchCastFor, fetchTrailerFor, searchMetadata } from "../services/metad
 import { notifyGrabbed } from "../services/notifications.js";
 import { recycleFile } from "../services/recycleBin.js";
 import { buildCalibreOpf, buildJson, buildNfo, safeFileName, type ExportableItem } from "../services/metadataExport.js";
+import { probeMediaInfo } from "../services/ffprobe.js";
 import AdmZip from "adm-zip";
 import type { MediaType } from "../types/index.js";
 
@@ -386,6 +387,32 @@ mediaRouter.get(
  * ordinary PATCH endpoint) whether to promote one's overview/poster to primary. Matches by title
  * search rather than a shared external id, since providers rarely share id schemes.
  */
+/** On-demand corrupt-file check for a "single" shape item (movie/rom/adult) — the full library
+ * scan lives in the scheduled Corrupt Media Check job; this is for checking just this one item
+ * right now instead of waiting for the next scheduled run. */
+mediaRouter.post(
+  "/:id/check-corrupt",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id) as any;
+    if (!row) throw new HttpError(404, "Media item not found");
+    if (!row.has_file || !row.path) {
+      res.json({ corrupt: false, checked: false, reason: "No file on record for this item" });
+      return;
+    }
+
+    const info = await probeMediaInfo(row.path);
+    const looksLikeVideo = ["movie", "series", "anime", "video", "course", "adult"].includes(row.type);
+    const corrupt = !info || (looksLikeVideo && !info.videoCodec);
+
+    if (corrupt) {
+      recycleFile(row.path, row.type, `${row.title} (corrupt)`, row.id);
+      db.prepare("UPDATE media_items SET has_file = 0, path = NULL, quality = NULL WHERE id = ?").run(row.id);
+    }
+    res.json({ corrupt, checked: true });
+  })
+);
+
 mediaRouter.post(
   "/:id/metadata/fetch",
   requireAdmin,

@@ -276,7 +276,7 @@ class YtdlpAdapter implements DownloadClientAdapter {
   private jobs = new Map<string, InProcessJob>();
 
   async addDownload(
-    _client: DownloadClient,
+    client: DownloadClient,
     downloadUrl: string,
     _category: string | null,
     releaseTitle?: string
@@ -286,7 +286,12 @@ class YtdlpAdapter implements DownloadClientAdapter {
     fs.mkdirSync(config.downloadsDir, { recursive: true });
 
     const outputTemplate = path.join(config.downloadsDir, `${sanitizeFilename(releaseTitle || downloadId)}.%(ext)s`);
-    const proc = spawn("yt-dlp", ["-o", outputTemplate, "--newline", downloadUrl]);
+    // Audio-only mode (e.g. ripping a music video / live set) extracts and transcodes to mp3
+    // instead of saving the source video container — yt-dlp's own -x/--audio-format flags.
+    const args = client.audioOnly
+      ? ["-x", "--audio-format", "mp3", "-o", outputTemplate, "--newline", downloadUrl]
+      : ["-o", outputTemplate, "--newline", downloadUrl];
+    const proc = spawn("yt-dlp", args);
 
     let stderrTail = "";
     proc.stdout.on("data", (chunk: Buffer) => {

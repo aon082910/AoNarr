@@ -78,6 +78,7 @@ export interface DownloadClient {
   apiKey: string | null;
   category: string | null;
   enabled: 0 | 1;
+  audioOnly: 0 | 1;
 }
 
 export interface QualityProfile {

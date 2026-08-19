@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, downloadFile, setApiKey } from "../api/client.js";
+import FolderPicker from "../components/FolderPicker.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { BlocklistEntry, CustomFormat, ImportExclusion, MediaType, Quality, QualityProfile, RootFolder, Tag } from "../types.js";
 import { formatBytes } from "../utils/format.js";
@@ -31,6 +32,7 @@ export default function Settings() {
   const [tab, setTab] = useState("general");
 
   const [folderPath, setFolderPath] = useState("");
+  const [showFolderPicker, setShowFolderPicker] = useState(false);
   const [folderType, setFolderType] = useState<MediaType>("movie");
 
   const [metadataProviders, setMetadataProviders] = useState<Record<MediaType, string[]>>({
@@ -1197,7 +1199,22 @@ export default function Settings() {
       <h2>Root Folders</h2>
       <form className="form-panel" onSubmit={addFolder}>
         <label>Path</label>
-        <input value={folderPath} onChange={(e) => setFolderPath(e.target.value)} placeholder="/media/movies" required />
+        <div style={{ display: "flex", gap: 6 }}>
+          <input value={folderPath} onChange={(e) => setFolderPath(e.target.value)} placeholder="/media/movies" required style={{ flex: 1 }} />
+          <button type="button" className="secondary" onClick={() => setShowFolderPicker(true)}>
+            Browse...
+          </button>
+        </div>
+        {showFolderPicker && (
+          <FolderPicker
+            initialPath={folderPath || "/media"}
+            onClose={() => setShowFolderPicker(false)}
+            onSelect={(p) => {
+              setFolderPath(p);
+              setShowFolderPicker(false);
+            }}
+          />
+        )}
         <label>Media type</label>
         <select value={folderType} onChange={(e) => setFolderType(e.target.value as MediaType)}>
           {mediaTypes.map((t) => (

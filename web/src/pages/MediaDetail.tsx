@@ -213,6 +213,19 @@ export default function MediaDetail() {
     setItem({ ...item, contentRating: updated.contentRating });
   }
 
+  async function checkCorrupt() {
+    if (!item) return;
+    const result = await api.post<{ corrupt: boolean; checked: boolean; reason?: string }>(`/media/${item.id}/check-corrupt`, {});
+    if (!result.checked) {
+      alert(result.reason ?? "Nothing to check.");
+    } else if (result.corrupt) {
+      alert("This file failed validation and was moved to the Recycle Bin. Marked missing — it'll be picked up by auto-search again.");
+      load();
+    } else {
+      alert("File looks fine.");
+    }
+  }
+
   async function remove() {
     if (!item) return;
     const deleteFiles = confirm(
@@ -631,6 +644,11 @@ export default function MediaDetail() {
           <button onClick={toggleImport} className="secondary">
             {showImport ? "Hide manual import" : "Manual Import"}
           </button>
+          {shape === "single" && item.hasFile && (
+            <button className="secondary" onClick={checkCorrupt}>
+              Check for corruption
+            </button>
+          )}
           <button
             className="secondary"
             onClick={() => downloadFile(`/media/${item.id}/export?format=nfo`, `${item.title}.nfo`)}

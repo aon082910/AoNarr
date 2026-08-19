@@ -3,6 +3,20 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 30
+- Corrupt media detection: a scheduled job (+ an on-demand "Check for corruption" button on media
+  detail pages) validates every file with ffprobe, moving anything that fails — including a real
+  video-library file that ffprobe reads fine but has no video stream at all, a classic sign of a
+  fake/mislabeled release — to the Recycle Bin and marking it missing so auto-search retries it
+- Folder-browser picker (the "Browse for folder" pattern the other *Starr apps use) instead of
+  typing/pasting a path blind, wired into Root Folders
+- Audio-only ripping for the yt-dlp download client — extracts to mp3 instead of saving video,
+  for pulling music out of a video source
+
+Also found and fixed a real bug while building the audio-only toggle: the download clients PATCH
+route passed raw JS booleans straight to better-sqlite3, which rejects them outright — coerced to
+1/0 for the columns that are actually booleans.
+
 ## Round 29
 - TRaSH-Guides custom format import — paste a TRaSH-Guides/Radarr/Sonarr custom format JSON
   export and title/release-group/size conditions translate directly into a real custom format;

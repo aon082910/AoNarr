@@ -26,8 +26,8 @@ downloadClientsRouter.post(
 
     const result = db
       .prepare(
-        `INSERT INTO download_clients (name, type, host, port, use_ssl, username, password, api_key, category, enabled)
-         VALUES (@name, @type, @host, @port, @useSsl, @username, @password, @apiKey, @category, @enabled)`
+        `INSERT INTO download_clients (name, type, host, port, use_ssl, username, password, api_key, category, enabled, audio_only)
+         VALUES (@name, @type, @host, @port, @useSsl, @username, @password, @apiKey, @category, @enabled, @audioOnly)`
       )
       .run({
         name: b.name,
@@ -40,6 +40,7 @@ downloadClientsRouter.post(
         apiKey: b.apiKey ?? null,
         category: b.category ?? null,
         enabled: b.enabled ?? 1,
+        audioOnly: b.audioOnly ? 1 : 0,
       });
     const row = db.prepare("SELECT * FROM download_clients WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(downloadClientFromRow(row));
@@ -61,13 +62,17 @@ downloadClientsRouter.patch(
       apiKey: "api_key",
       category: "category",
       enabled: "enabled",
+      audioOnly: "audio_only",
     };
+    const booleanKeys = new Set(["useSsl", "enabled", "audioOnly"]);
     const sets: string[] = [];
     const values: any[] = [];
     for (const [key, col] of Object.entries(map)) {
       if (b[key] !== undefined) {
         sets.push(`${col} = ?`);
-        values.push(b[key]);
+        // better-sqlite3 rejects binding a raw JS boolean — coerce true/false to 1/0 for the
+        // handful of columns that are actually booleans (everything else passes through as-is).
+        values.push(booleanKeys.has(key) ? (b[key] ? 1 : 0) : b[key]);
       }
     }
     if (sets.length > 0) {

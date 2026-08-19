@@ -97,7 +97,8 @@ CREATE TABLE IF NOT EXISTS download_clients (
   password TEXT,
   api_key TEXT,
   category TEXT,
-  enabled INTEGER NOT NULL DEFAULT 1
+  enabled INTEGER NOT NULL DEFAULT 1,
+  audio_only INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS queue (

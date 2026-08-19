@@ -92,6 +92,7 @@ export interface DownloadClient {
   apiKey: string | null;
   category: string | null;
   enabled: MonitorStatus;
+  audioOnly: MonitorStatus;
 }
 
 export interface QualityProfile {

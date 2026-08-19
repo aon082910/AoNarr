@@ -27,6 +27,7 @@ export default function DownloadClients() {
   const [password, setPassword] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [category, setCategory] = useState("aonarr");
+  const [audioOnly, setAudioOnly] = useState(false);
 
   const needsHost = type === "qbittorrent" || type === "sabnzbd";
 
@@ -47,6 +48,7 @@ export default function DownloadClients() {
       password: password || null,
       apiKey: apiKey || null,
       category,
+      audioOnly,
     });
     setName("");
     setHost("");
@@ -54,12 +56,18 @@ export default function DownloadClients() {
     setUsername("");
     setPassword("");
     setApiKey("");
+    setAudioOnly(false);
     setShowAdd(false);
     load();
   }
 
   async function remove(id: number) {
     await api.del(`/download-clients/${id}`);
+    load();
+  }
+
+  async function toggleAudioOnly(id: number, value: boolean) {
+    await api.patch(`/download-clients/${id}`, { audioOnly: value });
     load();
   }
 
@@ -124,6 +132,13 @@ export default function DownloadClients() {
           </>
         )}
 
+        {type === "ytdlp" && (
+          <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input type="checkbox" checked={audioOnly} onChange={(e) => setAudioOnly(e.target.checked)} />
+            Audio only (extract to mp3 — for ripping music from a video)
+          </label>
+        )}
+
         {needsHost && (
           <>
             <label>Category</label>
@@ -154,11 +169,21 @@ export default function DownloadClients() {
                   <td>{c.name}</td>
                   <td>{c.type}</td>
                   <td>{c.host ? `${c.host}:${c.port}` : "-"}</td>
-                  <td style={{ display: "flex", gap: 8 }}>
+                  <td style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     {c.type === "qbittorrent" && (
                       <button className="secondary" onClick={() => loadHealth(c.id)}>
                         Health
                       </button>
+                    )}
+                    {c.type === "ytdlp" && (
+                      <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.85rem" }}>
+                        <input
+                          type="checkbox"
+                          checked={!!c.audioOnly}
+                          onChange={(e) => toggleAudioOnly(c.id, e.target.checked)}
+                        />
+                        Audio only
+                      </label>
                     )}
                     <button className="danger" onClick={() => remove(c.id)}>
                       Delete

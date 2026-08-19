@@ -24,6 +24,7 @@ import { recordDiskUsageSamples } from "./storageForecast.js";
 import { runScheduledBackup } from "./scheduledBackup.js";
 import { purgeExpiredRecycleBinEntries } from "./recycleBin.js";
 import { syncFromProwlarr } from "./prowlarrSync.js";
+import { checkForCorruptMedia } from "./corruptMediaCheck.js";
 import { getGroupReputation, recordGroupFailure } from "./releaseGroupStats.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
 import { getSetting } from "./settingsStore.js";
@@ -678,6 +679,17 @@ export function startScheduler() {
       const r = await syncFromProwlarr();
       if (r.error) log.warn(`[scheduler] Prowlarr sync: ${r.error}`);
       else if (r.synced > 0) log.info(`[scheduler] Prowlarr sync: ${r.synced} indexer(s)`);
+    },
+  });
+
+  registerJob({
+    key: "corruptMediaCheck",
+    name: "Corrupt Media Check",
+    scheduleType: "cron",
+    defaultSchedule: "0 4 * * 0",
+    run: async (signal) => {
+      const r = await checkForCorruptMedia(signal);
+      if (r.corrupt > 0) log.info(`[scheduler] corrupt media check: ${r.corrupt} of ${r.checked} file(s) failed validation`);
     },
   });
 

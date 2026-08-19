@@ -97,6 +97,7 @@ export function downloadClientFromRow(row: any) {
     apiKey: row.api_key,
     category: row.category,
     enabled: row.enabled,
+    audioOnly: row.audio_only,
   };
 }
 
