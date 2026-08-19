@@ -3,6 +3,13 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 19
+- Library restructured: a landing page showing recently-added across every type plus per-type
+  cards, and each library type now has its own page with sort/status-filter/tag-filter and a
+  posters-vs-list view toggle (persisted per browser)
+- Sidebar reorganized into collapsible groups (Library, Manage, Configuration, System) instead of
+  one long flat list, with the Library group expanded to show every type as a direct link
+
 ## Round 18
 - Indexer rate-limit backoff — a 429 pauses that indexer for 15m instead of retrying every cycle
 - Consolidated health dashboard now also covers download client reachability and low disk space

@@ -23,6 +23,21 @@ dashboardRouter.get(
   })
 );
 
+/** Per-type item counts, for the Library landing page's per-type cards — same access rules as
+ * everything else here (household accounts only see counts for their allowed types). */
+dashboardRouter.get(
+  "/library-counts",
+  asyncHandler(async (req, res) => {
+    const allowedTypes = allowedTypesFor(req);
+    const rows = db.prepare("SELECT type, COUNT(*) AS count FROM media_items GROUP BY type").all() as {
+      type: string;
+      count: number;
+    }[];
+    const filtered = allowedTypes ? rows.filter((r) => allowedTypes.includes(r.type)) : rows;
+    res.json(Object.fromEntries(filtered.map((r) => [r.type, r.count])));
+  })
+);
+
 /**
  * Cross-references the configured media server's "watched" list (same source as auto-archival)
  * against library items/episodes/sub-items with a file, ordered by most recently played. Also

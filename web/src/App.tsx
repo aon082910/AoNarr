@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
 import { api } from "./api/client.js";
 import Dashboard from "./pages/Dashboard.js";
 import Onboarding, { shouldShowOnboarding } from "./pages/Onboarding.js";
-import Library from "./pages/Library.js";
+import LibraryHome from "./pages/LibraryHome.js";
+import LibraryType from "./pages/LibraryType.js";
 import MediaDetail from "./pages/MediaDetail.js";
 import AddMedia from "./pages/AddMedia.js";
 import Calendar from "./pages/Calendar.js";
@@ -30,11 +31,34 @@ import Changelog from "./pages/Changelog.js";
 import Person from "./pages/Person.js";
 import RemoteLibrary from "./pages/RemoteLibrary.js";
 import Account from "./pages/Account.js";
+import { useMediaTypes } from "./hooks/useMediaTypes.js";
+
+function NavGroup({
+  label,
+  defaultOpen,
+  children,
+}: {
+  label: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(!!defaultOpen);
+  return (
+    <div>
+      <a onClick={() => setOpen((o) => !o)} style={{ cursor: "pointer", display: "flex", justifyContent: "space-between" }}>
+        <span>{label}</span>
+        <span>{open ? "▾" : "▸"}</span>
+      </a>
+      {open && <div style={{ paddingLeft: 12 }}>{children}</div>}
+    </div>
+  );
+}
 
 export default function App() {
   const { auth, logout } = useAuth();
   const isAdmin = auth.isAdmin;
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const mediaTypes = useMediaTypes().filter((t) => isAdmin || auth.user?.allowedTypes.includes(t.key));
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -55,26 +79,52 @@ export default function App() {
         <NavLink to="/" end>
           Dashboard
         </NavLink>
-        <NavLink to="/library">Library</NavLink>
+
+        <NavGroup label="Library" defaultOpen>
+          <NavLink to="/library" end>
+            Overview
+          </NavLink>
+          {mediaTypes.map((t) => (
+            <NavLink key={t.key} to={`/library/${t.key}`}>
+              {t.label}
+            </NavLink>
+          ))}
+        </NavGroup>
+
         <NavLink to="/search">Search</NavLink>
         <NavLink to="/collections">Collections</NavLink>
-        {isAdmin && <NavLink to="/add">Add Media</NavLink>}
-        {isAdmin && <NavLink to="/recommendations">Recommendations</NavLink>}
-        {isAdmin && <NavLink to="/watchlist-import">Watchlist Import</NavLink>}
         <NavLink to="/requests">Requests</NavLink>
         <NavLink to="/changelog">What's New</NavLink>
         <NavLink to="/account">Account</NavLink>
-        {isAdmin && <NavLink to="/calendar">Calendar</NavLink>}
-        {isAdmin && <NavLink to="/missing">Missing</NavLink>}
-        {isAdmin && <NavLink to="/activity">Activity</NavLink>}
-        {isAdmin && <NavLink to="/indexers">Indexers</NavLink>}
-        {isAdmin && <NavLink to="/download-clients">Download Clients</NavLink>}
-        {isAdmin && <NavLink to="/users">Users</NavLink>}
-        {isAdmin && <NavLink to="/audit-log">Audit Log</NavLink>}
-        {isAdmin && <NavLink to="/settings">Settings</NavLink>}
-        {isAdmin && <NavLink to="/system">System</NavLink>}
-        {isAdmin && <NavLink to="/api-docs">API Docs</NavLink>}
-        {isAdmin && <NavLink to="/remote-library">Remote Library</NavLink>}
+
+        {isAdmin && (
+          <NavGroup label="Manage">
+            <NavLink to="/add">Add Media</NavLink>
+            <NavLink to="/recommendations">Recommendations</NavLink>
+            <NavLink to="/watchlist-import">Watchlist Import</NavLink>
+            <NavLink to="/calendar">Calendar</NavLink>
+            <NavLink to="/missing">Missing</NavLink>
+            <NavLink to="/activity">Activity</NavLink>
+          </NavGroup>
+        )}
+
+        {isAdmin && (
+          <NavGroup label="Configuration">
+            <NavLink to="/indexers">Indexers</NavLink>
+            <NavLink to="/download-clients">Download Clients</NavLink>
+            <NavLink to="/users">Users</NavLink>
+            <NavLink to="/settings">Settings</NavLink>
+          </NavGroup>
+        )}
+
+        {isAdmin && (
+          <NavGroup label="System">
+            <NavLink to="/system">Status &amp; Health</NavLink>
+            <NavLink to="/audit-log">Audit Log</NavLink>
+            <NavLink to="/api-docs">API Docs</NavLink>
+            <NavLink to="/remote-library">Remote Library</NavLink>
+          </NavGroup>
+        )}
         <div style={{ marginTop: "auto", display: "flex", flexDirection: "column" }}>
           <ThemeToggle />
           <NotificationsToggle />
@@ -91,7 +141,8 @@ export default function App() {
               isAdmin && showOnboarding ? <Onboarding onDone={() => setShowOnboarding(false)} /> : <Dashboard />
             }
           />
-          <Route path="/library" element={<Library />} />
+          <Route path="/library" element={<LibraryHome />} />
+          <Route path="/library/:type" element={<LibraryType />} />
           <Route path="/media/:id" element={<MediaDetail />} />
           <Route path="/people/:tmdbId" element={<Person />} />
           <Route path="/search" element={<GlobalSearch />} />
