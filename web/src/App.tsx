@@ -31,6 +31,7 @@ import ApiDocs from "./pages/ApiDocs.js";
 import Changelog from "./pages/Changelog.js";
 import Person from "./pages/Person.js";
 import RemoteLibrary from "./pages/RemoteLibrary.js";
+import FriendLibraries from "./pages/FriendLibraries.js";
 import Account from "./pages/Account.js";
 import Jobs from "./pages/Jobs.js";
 import RecycleBin from "./pages/RecycleBin.js";
@@ -130,6 +131,7 @@ export default function App() {
             <NavLink to="/audit-log">Audit Log</NavLink>
             <NavLink to="/api-docs">API Docs</NavLink>
             <NavLink to="/remote-library">Remote Library</NavLink>
+            <NavLink to="/friend-libraries">Friend Libraries</NavLink>
           </NavGroup>
         )}
         <div style={{ marginTop: "auto", display: "flex", flexDirection: "column" }}>
@@ -177,6 +179,7 @@ export default function App() {
           {isAdmin && <Route path="/network-stats" element={<NetworkStats />} />}
           {isAdmin && <Route path="/api-docs" element={<ApiDocs />} />}
           {isAdmin && <Route path="/remote-library" element={<RemoteLibrary />} />}
+          {isAdmin && <Route path="/friend-libraries" element={<FriendLibraries />} />}
         </Routes>
       </main>
     </div>

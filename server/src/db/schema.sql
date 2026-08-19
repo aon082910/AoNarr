@@ -348,6 +348,18 @@ CREATE TABLE IF NOT EXISTS remote_instances (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- A friend's own Plex/Jellyfin/Emby server, shared with this user (not the media server AoNarr
+-- manages its own library against, in the mediaServer* settings) — read-only, just for comparing
+-- their library against this one to see what they have that's missing here.
+CREATE TABLE IF NOT EXISTS friend_libraries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL CHECK (type IN ('plex', 'jellyfin', 'emby')),
+  url TEXT NOT NULL,
+  token TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- "Never suggest/add this again" — a title (optionally tied to an external id) that search
 -- results, recommendations, and Trakt sync should all skip, distinct from the blocklist above
 -- (which excludes a specific *release* for something already in the library, not a title from

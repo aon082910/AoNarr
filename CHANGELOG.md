@@ -3,6 +3,12 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 33
+- Friend Libraries (Manage → Friend Libraries) — connect a friend's own Plex/Jellyfin/Emby server
+  (shared with you, separate from the media server AoNarr manages its own library against) and
+  compare their library against yours by title/year to see what they have that you're missing,
+  with a one-click "Add" straight into the existing Add Media flow, pre-filled and auto-searched
+
 ## Round 32
 - Auto Upgrade: an opt-in scheduled job (Settings → General, off by default) that finds every
   item currently below its quality profile's cutoff and runs it back through search-and-grab, so

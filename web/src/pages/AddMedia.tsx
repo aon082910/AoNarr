@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../api/client.js";
 import GroupPicker from "../components/GroupPicker.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
@@ -37,11 +37,14 @@ const PROVIDER_LABELS: Record<string, string> = {
 
 export default function AddMedia() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const prefillQuery = searchParams.get("q") ?? "";
+  const prefillType = searchParams.get("type") ?? "";
   const mediaTypes = useMediaTypes();
   const [type, setType] = useState<MediaType>("");
   const [providers, setProviders] = useState<Record<MediaType, string[]>>({});
   const [provider, setProvider] = useState("");
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(prefillQuery);
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<MetadataSearchResult[] | null>(null);
   const [selected, setSelected] = useState<MetadataSearchResult | null>(null);
@@ -74,14 +77,31 @@ export default function AddMedia() {
   }, []);
 
   useEffect(() => {
-    if (!type && mediaTypes.length > 0) setType(mediaTypes[0].key);
-  }, [mediaTypes, type]);
+    if (!type && mediaTypes.length > 0) {
+      const preferred = mediaTypes.find((t) => t.key === prefillType);
+      setType(preferred ? preferred.key : mediaTypes[0].key);
+    }
+  }, [mediaTypes, type, prefillType]);
 
   useEffect(() => {
     setProvider(providers[type]?.[0] ?? "");
     // A type with no metadata provider (e.g. Courses) can only be added manually.
     if (activeTypeInfo && !activeTypeInfo.hasMetadataSearch) setManual(true);
   }, [type, providers]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Deep-linked from another page (e.g. Friend Libraries "Add") with a query/type already chosen
+  // — auto-run the search once the provider for that type has loaded, instead of making the user
+  // press the search button for a query that's already filled in.
+  useEffect(() => {
+    if (!prefillQuery || !provider || results !== null) return;
+    setSearching(true);
+    setError(null);
+    api
+      .get<MetadataSearchResult[]>(`/metadata/search?type=${type}&query=${encodeURIComponent(prefillQuery)}&provider=${provider}`)
+      .then(setResults)
+      .catch((e) => setError((e as Error).message))
+      .finally(() => setSearching(false));
+  }, [prefillQuery, provider]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const foldersForType = rootFolders.filter((f) => f.mediaType === type);
 
