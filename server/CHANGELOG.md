@@ -3,6 +3,12 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 38
+- Bulk metadata export now includes the actual poster image, not just a remote URL reference
+  inside the .nfo/.opf sidecar — `poster.jpg` alongside each item in the Kodi/Jellyfin/Emby-style
+  bulk export, `cover.jpg` (Calibre's own convention) in the Calibre export, so the exported
+  package is genuinely self-contained instead of needing internet access later to resolve it
+
 ## Round 37
 - AllDebrid support as a second "debrid" download client type alongside Real-Debrid — same shape
   (grab a magnet/torrent, wait for their servers to cache it, pull the unlocked link(s) directly),

@@ -12,7 +12,7 @@ import { CONTENT_RATING_ORDER, isRatingBlocked } from "../services/contentRating
 import { fetchCastFor, fetchTrailerFor, searchMetadata } from "../services/metadata.js";
 import { notifyGrabbed } from "../services/notifications.js";
 import { recycleFile } from "../services/recycleBin.js";
-import { buildCalibreOpf, buildJson, buildNfo, safeFileName, type ExportableItem } from "../services/metadataExport.js";
+import { buildCalibreOpf, buildJson, buildNfo, fetchPosterBuffer, safeFileName, type ExportableItem } from "../services/metadataExport.js";
 import { probeMediaInfo } from "../services/ffprobe.js";
 import AdmZip from "adm-zip";
 import type { MediaType } from "../types/index.js";
@@ -246,6 +246,8 @@ mediaRouter.get(
       const item = toExportable(row);
       const body = fmt === "json" ? buildJson(item) : buildNfo(item);
       zip.addFile(`${safeFileName(item.title)}.${fmt}`, Buffer.from(body, "utf-8"));
+      const poster = await fetchPosterBuffer(item.posterUrl);
+      if (poster) zip.addFile(`${safeFileName(item.title)}-poster.jpg`, poster);
     }
     res.setHeader("Content-Disposition", `attachment; filename="aonarr-${type}-metadata.zip"`);
     res.setHeader("Content-Type", "application/zip");
@@ -267,6 +269,8 @@ mediaRouter.get(
     for (const row of rows) {
       const item = toExportable(row);
       zip.addFile(`${safeFileName(item.title)}/metadata.opf`, Buffer.from(buildCalibreOpf(item), "utf-8"));
+      const cover = await fetchPosterBuffer(item.posterUrl);
+      if (cover) zip.addFile(`${safeFileName(item.title)}/cover.jpg`, cover);
     }
     res.setHeader("Content-Disposition", `attachment; filename="aonarr-${type}-calibre.zip"`);
     res.setHeader("Content-Type", "application/zip");

@@ -72,3 +72,22 @@ export function buildCalibreOpf(item: ExportableItem): string {
 export function safeFileName(title: string): string {
   return title.replace(/[/\\:*?"<>|]/g, "").trim().slice(0, 200);
 }
+
+/**
+ * Downloads the actual poster image bytes for a bulk export — the .nfo/.opf sidecar alone only
+ * embeds `posterUrl` as a remote reference, which needs AoNarr (or internet access) to resolve
+ * later. Plex/Kodi/Jellyfin/Emby's local media agents all recognize a real `poster.jpg` (or
+ * `cover.jpg`, Calibre's own convention) sitting next to the sidecar, so a bulk export is more
+ * useful as a genuinely self-contained package. Returns null (never throws) on any failure — a
+ * missing/unreachable poster shouldn't fail the whole export, just that one item's image.
+ */
+export async function fetchPosterBuffer(posterUrl: string | null): Promise<Buffer | null> {
+  if (!posterUrl) return null;
+  try {
+    const res = await fetch(posterUrl);
+    if (!res.ok) return null;
+    return Buffer.from(await res.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
