@@ -75,6 +75,8 @@ export default function MediaDetail() {
   const [showMove, setShowMove] = useState(false);
   const [groupBreadcrumb, setGroupBreadcrumb] = useState<string | null>(null);
   const [pendingGroupId, setPendingGroupId] = useState<number | null>(null);
+  const [metadataProviders, setMetadataProviders] = useState<Record<string, string[]>>({});
+  const [fetchingProvider, setFetchingProvider] = useState<string | null>(null);
   const [browseEntries, setBrowseEntries] = useState<BrowseEntry[]>([]);
   const [importEpisodeId, setImportEpisodeId] = useState<number | "">("");
   const [importSubItemId, setImportSubItemId] = useState<number | "">("");
@@ -110,6 +112,7 @@ export default function MediaDetail() {
   }, [id]);
   useEffect(() => {
     if (isAdmin) api.get<Tag[]>("/tags").then(setAllTags);
+    if (isAdmin) api.get<Record<string, string[]>>("/metadata/providers").then(setMetadataProviders);
     api.get<Collection[]>("/collections").then(setAllCollections);
   }, [isAdmin]);
 
@@ -185,6 +188,35 @@ export default function MediaDetail() {
     if (!confirm(`Remove "${item.title}" from AoNarr? This does not delete files on disk.`)) return;
     await api.del(`/media/${item.id}`);
     navigate("/");
+  }
+
+  async function fetchSupplemental(provider: string) {
+    if (!item) return;
+    setFetchingProvider(provider);
+    try {
+      const updated = await api.post<MediaDetailResponse>(`/media/${item.id}/metadata/fetch`, { provider });
+      setItem({ ...item, extraMetadata: updated.extraMetadata });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setFetchingProvider(null);
+    }
+  }
+
+  async function useAsOverview(provider: string) {
+    if (!item) return;
+    const overview = item.extraMetadata[provider]?.overview;
+    if (!overview) return;
+    await api.patch(`/media/${item.id}`, { overview });
+    setItem({ ...item, overview });
+  }
+
+  async function useAsPoster(provider: string) {
+    if (!item) return;
+    const posterUrl = item.extraMetadata[provider]?.posterUrl;
+    if (!posterUrl) return;
+    await api.patch(`/media/${item.id}`, { posterUrl });
+    setItem({ ...item, posterUrl });
   }
 
   async function saveGroup() {
@@ -509,6 +541,46 @@ export default function MediaDetail() {
             Save location
           </button>
         </div>
+      )}
+
+      {isAdmin && (metadataProviders[item.type]?.length ?? 0) > 0 && (
+        <>
+          <h2>Additional Metadata Sources</h2>
+          <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
+            Pull a second opinion from another provider without changing this item's primary
+            overview/poster — review it here, then choose to use it if you'd rather.
+          </p>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            {metadataProviders[item.type].map((p) => (
+              <button key={p} type="button" className="secondary" onClick={() => fetchSupplemental(p)} disabled={fetchingProvider === p}>
+                {fetchingProvider === p ? "Fetching..." : `Fetch from ${p}`}
+              </button>
+            ))}
+          </div>
+          {Object.entries(item.extraMetadata).map(([provider, data]) => (
+            <div key={provider} className="form-panel" style={{ display: "flex", gap: 12, marginBottom: 10 }}>
+              {data.posterUrl && (
+                <img src={data.posterUrl} alt="" style={{ width: 60, height: 90, objectFit: "cover", borderRadius: 4 }} />
+              )}
+              <div style={{ flex: 1 }}>
+                <strong>{provider}</strong>: {data.title} {data.year ? `(${data.year})` : ""}
+                {data.overview && <p style={{ fontSize: "0.85rem", margin: "4px 0" }}>{data.overview}</p>}
+                <div style={{ display: "flex", gap: 8 }}>
+                  {data.overview && (
+                    <button type="button" className="secondary" onClick={() => useAsOverview(provider)}>
+                      Use this overview
+                    </button>
+                  )}
+                  {data.posterUrl && (
+                    <button type="button" className="secondary" onClick={() => useAsPoster(provider)}>
+                      Use this poster
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </>
       )}
 
       {showArtwork && (

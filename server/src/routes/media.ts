@@ -9,7 +9,7 @@ import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { CONTENT_RATING_ORDER, isRatingBlocked } from "../services/contentRatings.js";
-import { fetchCastFor } from "../services/metadata.js";
+import { fetchCastFor, searchMetadata } from "../services/metadata.js";
 import { notifyGrabbed } from "../services/notifications.js";
 import type { MediaType } from "../types/index.js";
 
@@ -278,6 +278,40 @@ mediaRouter.get(
   })
 );
 
+/**
+ * Pulls a second (or third...) opinion from another configured metadata provider for this item's
+ * type, without touching the item's primary title/overview/poster — stored separately in
+ * extra_metadata keyed by provider so the admin can compare sources before deciding (via the
+ * ordinary PATCH endpoint) whether to promote one's overview/poster to primary. Matches by title
+ * search rather than a shared external id, since providers rarely share id schemes.
+ */
+mediaRouter.post(
+  "/:id/metadata/fetch",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    if (!row) throw new HttpError(404, "Media item not found");
+    const item = mediaItemFromRow(row);
+
+    const provider = req.body?.provider;
+    if (!provider) throw new HttpError(400, "provider is required");
+    if (!getMediaTypeConfig(item.type).metadataProviders.includes(provider)) {
+      throw new HttpError(400, `"${provider}" is not a metadata provider for "${item.type}"`);
+    }
+
+    const query = item.year ? `${item.title} ${item.year}` : item.title;
+    const results = await searchMetadata(item.type, query, provider);
+    const best = results[0];
+    if (!best) throw new HttpError(404, `No "${provider}" result found for "${item.title}"`);
+
+    const extra = { ...item.extraMetadata, [provider]: best };
+    db.prepare("UPDATE media_items SET extra_metadata = ? WHERE id = ?").run(JSON.stringify(extra), req.params.id);
+
+    const updated = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    res.json(mediaItemFromRow(updated));
+  })
+);
+
 mediaRouter.post(
   "/:id/tags",
   requireAdmin,
@@ -360,6 +394,8 @@ mediaRouter.patch(
     }
     const fields: Record<string, unknown> = {
       title: b.title,
+      overview: b.overview,
+      poster_url: b.posterUrl,
       monitored: b.monitored,
       protected: b.protected,
       quality_profile_id: b.qualityProfileId,

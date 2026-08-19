@@ -3,6 +3,12 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 22
+- Multi-source metadata on the media detail page — pull a second opinion from any other
+  configured provider for that type without touching the item's primary overview/poster, then
+  optionally promote a source's overview or poster to primary
+- PATCH /api/media/:id now accepts overview/posterUrl directly, backing that promotion
+
 ## Round 21
 - Verified Adult's 3-level hierarchy (Site → Maker → Series) end-to-end, not just typechecked
 - Add Media now shows cascading group pickers (with inline "+ New" at every level) for grouped

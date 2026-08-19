@@ -22,6 +22,7 @@ export function mediaItemFromRow(row: any) {
     mediaInfo: row.media_info ? JSON.parse(row.media_info) : null,
     contentRating: row.content_rating,
     groupId: row.group_id,
+    extraMetadata: row.extra_metadata ? JSON.parse(row.extra_metadata) : {},
   };
 }
 

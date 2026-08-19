@@ -45,6 +45,7 @@ export interface MediaItem {
   protected: 0 | 1;
   status: string;
   groupId: number | null;
+  extraMetadata: Record<string, { title: string; year: number | null; overview: string | null; posterUrl: string | null }>;
   addedAt: string;
   mediaInfo: MediaInfo | null;
   contentRating: string | null;
