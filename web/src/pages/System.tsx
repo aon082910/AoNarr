@@ -140,6 +140,8 @@ export default function System() {
   const restoreInputRef = useRef<HTMLInputElement>(null);
   const [logs, setLogs] = useState<LogEntry[] | null>(null);
   const [logsLoading, setLogsLoading] = useState(false);
+  const [logLevelFilter, setLogLevelFilter] = useState("");
+  const [logSearch, setLogSearch] = useState("");
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [unmonitoredNoFile, setUnmonitoredNoFile] = useState<UnmonitoredNoFileItem[] | null>(null);
   const [duplicateFiles, setDuplicateFiles] = useState<DuplicateFileGroup[] | null>(null);
@@ -183,10 +185,25 @@ export default function System() {
 
   function loadLogs() {
     setLogsLoading(true);
+    const params = new URLSearchParams();
+    if (logLevelFilter) params.set("level", logLevelFilter);
+    if (logSearch.trim()) params.set("search", logSearch.trim());
     api
-      .get<LogEntry[]>("/system/logs")
+      .get<LogEntry[]>(`/system/logs${params.toString() ? `?${params.toString()}` : ""}`)
       .then(setLogs)
       .finally(() => setLogsLoading(false));
+  }
+
+  function downloadLogs() {
+    if (!logs) return;
+    const text = logs.map((l) => `[${l.timestamp}] ${l.level.toUpperCase()} ${l.message}`).join("\n");
+    const blob = new Blob([text], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `aonarr-logs-${new Date().toISOString().replace(/[:.]/g, "-")}.log`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   useEffect(() => {
@@ -928,12 +945,33 @@ export default function System() {
       <h2>Logs</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
-          The last 500 log lines, newest first — the same output as{" "}
+          The last 2000 log lines, newest first — the same output as{" "}
           <code>docker compose logs aonarr-server</code> without needing shell access.
         </p>
-        <button className="secondary" onClick={loadLogs} disabled={logsLoading}>
-          {logsLoading ? "Loading..." : logs ? "Refresh" : "Load logs"}
-        </button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <select value={logLevelFilter} onChange={(e) => setLogLevelFilter(e.target.value)} style={{ width: "auto" }}>
+            <option value="">All levels</option>
+            <option value="info">Info</option>
+            <option value="warn">Warn</option>
+            <option value="error">Error</option>
+          </select>
+          <input
+            type="text"
+            placeholder="Search log text..."
+            value={logSearch}
+            onChange={(e) => setLogSearch(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && loadLogs()}
+            style={{ width: 220 }}
+          />
+          <button className="secondary" onClick={loadLogs} disabled={logsLoading}>
+            {logsLoading ? "Loading..." : logs ? "Refresh" : "Load logs"}
+          </button>
+          {logs && (
+            <button className="secondary" onClick={downloadLogs}>
+              Download .log
+            </button>
+          )}
+        </div>
         {logs && (
           <div
             style={{

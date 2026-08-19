@@ -286,6 +286,22 @@ repairDanglingReference(
    )`
 );
 
+dropCheckConstraint(
+  "import_lists",
+  `CREATE TABLE import_lists (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     name TEXT NOT NULL,
+     type TEXT NOT NULL,
+     url TEXT NOT NULL,
+     enabled INTEGER NOT NULL DEFAULT 1,
+     quality_profile_id INTEGER REFERENCES quality_profiles(id) ON DELETE SET NULL,
+     last_synced_at TEXT,
+     last_added_count INTEGER,
+     last_error TEXT,
+     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+   )`
+);
+
 const DEFAULT_QUALITY_SEED = [
   "SD",
   "DVD",

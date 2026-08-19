@@ -110,8 +110,11 @@ systemRouter.get(
 
 systemRouter.get(
   "/logs",
-  asyncHandler(async (_req, res) => {
-    res.json(getRecentLogs());
+  asyncHandler(async (req, res) => {
+    const level = req.query.level as "info" | "warn" | "error" | undefined;
+    const search = req.query.search as string | undefined;
+    const since = req.query.since as string | undefined;
+    res.json(getRecentLogs({ level, search, since }));
   })
 );
 

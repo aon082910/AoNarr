@@ -19,7 +19,7 @@ importListsRouter.post(
   asyncHandler(async (req, res) => {
     const { name, type, url, qualityProfileId, enabled } = req.body ?? {};
     if (!name || !url) throw new HttpError(400, "name and url are required");
-    if (type !== "trakt" && type !== "imdb") throw new HttpError(400, "type must be 'trakt' or 'imdb'");
+    if (type !== "trakt" && type !== "imdb" && type !== "lastfm") throw new HttpError(400, "type must be 'trakt', 'imdb' or 'lastfm'");
 
     const result = db
       .prepare("INSERT INTO import_lists (name, type, url, enabled, quality_profile_id) VALUES (?, ?, ?, ?, ?)")

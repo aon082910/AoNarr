@@ -6,7 +6,7 @@ export interface LogEntry {
   timestamp: string;
 }
 
-const MAX_ENTRIES = 500;
+const MAX_ENTRIES = 2000;
 const buffer: LogEntry[] = [];
 
 function push(level: LogLevel, args: unknown[]): void {
@@ -36,6 +36,22 @@ export const log = {
   },
 };
 
-export function getRecentLogs(): LogEntry[] {
-  return [...buffer].reverse();
+export interface LogFilter {
+  level?: LogLevel;
+  search?: string;
+  since?: string;
+}
+
+export function getRecentLogs(filter: LogFilter = {}): LogEntry[] {
+  let entries = [...buffer].reverse();
+  if (filter.level) entries = entries.filter((e) => e.level === filter.level);
+  if (filter.search) {
+    const needle = filter.search.toLowerCase();
+    entries = entries.filter((e) => e.message.toLowerCase().includes(needle));
+  }
+  if (filter.since) {
+    const sinceMs = Date.parse(filter.since);
+    if (!Number.isNaN(sinceMs)) entries = entries.filter((e) => Date.parse(e.timestamp) >= sinceMs);
+  }
+  return entries;
 }

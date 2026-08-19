@@ -3,6 +3,19 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 35
+- Import Lists finally got a UI (Manage → Import Lists) — the recurring Trakt/IMDb auto-add
+  backend has existed since Round 27's generalization from the old single Trakt-sync setting, but
+  had no page to manage it from; found while adding a new source type and not wanting to add a
+  UI-less feature on top of another UI-less feature
+- Last.fm added as a third import list source type — imports a Last.fm profile's all-time top
+  artists into Music (Last.fm has no user-playlist concept of its own, so top artists is the
+  closest equivalent); required dropping the `import_lists.type` CHECK constraint the same way
+  indexers/download_clients did previously, verified against a real pre-existing database that
+  the migration preserves existing rows and unlocks the new type
+- Logs page: filter by level, search by text, and a "Download .log" export button; bumped the
+  in-memory log buffer from 500 to 2000 lines
+
 ## Round 34
 - Video Channel Check: a scheduled job that re-lists every monitored Online Videos channel's
   current uploads, adds any video not already known as a new sub-item, and — if a yt-dlp download

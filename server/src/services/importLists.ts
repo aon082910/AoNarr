@@ -1,14 +1,14 @@
 import { log } from "./logger.js";
 import { db } from "../db/client.js";
 import { getSetting } from "./settingsStore.js";
-import { fetchSeriesEpisodesFor, searchMetadata } from "./metadata.js";
+import { fetchArtistAlbumsFor, fetchSeriesEpisodesFor, searchMetadata } from "./metadata.js";
 import { isExcluded } from "./importExclusions.js";
 import { findPossibleDuplicates } from "./duplicateCheck.js";
 
 export interface ImportListRow {
   id: number;
   name: string;
-  type: "trakt" | "imdb";
+  type: "trakt" | "imdb" | "lastfm";
   url: string;
   enabled: number;
   quality_profile_id: number | null;
@@ -42,6 +42,16 @@ async function insertSeriesEpisodes(mediaItemId: number | bigint, externalIds: R
      VALUES (?, ?, ?, ?, ?, 1)`
   );
   for (const ep of episodes) insertEp.run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate);
+}
+
+async function insertArtistAlbums(mediaItemId: number | bigint, externalIds: Record<string, string>) {
+  const result = await fetchArtistAlbumsFor(externalIds).catch(() => null);
+  if (!result) return;
+  const insertAlbum = db.prepare(
+    `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored)
+     VALUES (?, ?, ?, ?, ?, 1)`
+  );
+  for (const album of result.albums) insertAlbum.run(mediaItemId, album.title, album.releaseDate, album.externalId ?? null, result.provider);
 }
 
 interface TraktListTarget {
@@ -188,6 +198,63 @@ async function syncImdbList(list: ImportListRow, qualityProfileId: number | null
   return added;
 }
 
+/** Accepts either a full last.fm/user/<name> profile URL or a bare username. */
+function parseLastfmUsername(url: string): string | null {
+  const m = url.match(/last\.fm\/user\/([^/?#]+)/i);
+  if (m) return decodeURIComponent(m[1]);
+  const trimmed = url.trim();
+  return /^[\w-]+$/.test(trimmed) ? trimmed : null;
+}
+
+/** Imports a Last.fm user's all-time top artists as Music library entries — the closest thing
+ * Last.fm has to a "playlist" to import from (it has no user-created playlist concept itself,
+ * unlike Spotify/Apple Music, whose APIs require a paid developer account and OAuth per-user
+ * consent this app has no way to broker). */
+async function syncLastfmList(list: ImportListRow, qualityProfileId: number | null): Promise<number> {
+  const key = getSetting("lastfmApiKey");
+  if (!key) throw new Error("Set a Last.fm API key in Settings before using a Last.fm import list");
+  const username = parseLastfmUsername(list.url);
+  if (!username) throw new Error("URL is not a recognized Last.fm profile (expected last.fm/user/<name> or a bare username)");
+
+  const apiUrl = new URL("https://ws.audioscrobbler.com/2.0/");
+  apiUrl.searchParams.set("method", "user.gettopartists");
+  apiUrl.searchParams.set("user", username);
+  apiUrl.searchParams.set("api_key", key);
+  apiUrl.searchParams.set("format", "json");
+  apiUrl.searchParams.set("period", "overall");
+  apiUrl.searchParams.set("limit", "50");
+
+  const res = await fetch(apiUrl.toString());
+  if (!res.ok) throw new Error(`Last.fm top artists request failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  const raw = body?.topartists?.artist ?? [];
+  const artists: any[] = Array.isArray(raw) ? raw : [raw];
+
+  let added = 0;
+  for (const a of artists) {
+    const title = a?.name;
+    if (!title) continue;
+    try {
+      if (findPossibleDuplicates("artist" as any, title, null).length > 0) continue;
+      if (isExcluded("artist", title, null, a.mbid ?? "", "lastfm")) continue;
+
+      const externalIds = { lastfm: a.mbid || title };
+      const insertResult = db
+        .prepare(
+          `INSERT INTO media_items (type, title, sort_title, external_ids, quality_profile_id, monitored, status)
+           VALUES ('artist', ?, ?, ?, ?, 1, 'missing')`
+        )
+        .run(title, title.toLowerCase(), JSON.stringify(externalIds), qualityProfileId);
+      await insertArtistAlbums(insertResult.lastInsertRowid, externalIds);
+      added++;
+    } catch (err) {
+      log.warn(`[importLists] Last.fm list "${list.name}" failed to add "${title}":`, (err as Error).message);
+    }
+  }
+
+  return added;
+}
+
 export async function syncImportList(list: ImportListRow): Promise<{ added: number; error?: string }> {
   const qualityProfileId =
     list.quality_profile_id ??
@@ -195,7 +262,12 @@ export async function syncImportList(list: ImportListRow): Promise<{ added: numb
     null;
 
   try {
-    const added = list.type === "trakt" ? await syncTraktList(list, qualityProfileId) : await syncImdbList(list, qualityProfileId);
+    const added =
+      list.type === "trakt"
+        ? await syncTraktList(list, qualityProfileId)
+        : list.type === "lastfm"
+          ? await syncLastfmList(list, qualityProfileId)
+          : await syncImdbList(list, qualityProfileId);
     db.prepare(
       "UPDATE import_lists SET last_synced_at = datetime('now'), last_added_count = ?, last_error = NULL WHERE id = ?"
     ).run(added, list.id);

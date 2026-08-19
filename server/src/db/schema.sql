@@ -253,7 +253,7 @@ CREATE TABLE IF NOT EXISTS share_links (
 CREATE TABLE IF NOT EXISTS import_lists (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('trakt', 'imdb')),
+  type TEXT NOT NULL,
   url TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
   quality_profile_id INTEGER REFERENCES quality_profiles(id) ON DELETE SET NULL,

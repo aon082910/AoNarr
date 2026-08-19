@@ -32,6 +32,7 @@ import Changelog from "./pages/Changelog.js";
 import Person from "./pages/Person.js";
 import RemoteLibrary from "./pages/RemoteLibrary.js";
 import FriendLibraries from "./pages/FriendLibraries.js";
+import ImportLists from "./pages/ImportLists.js";
 import Account from "./pages/Account.js";
 import Jobs from "./pages/Jobs.js";
 import RecycleBin from "./pages/RecycleBin.js";
@@ -107,6 +108,7 @@ export default function App() {
             <NavLink to="/add">Add Media</NavLink>
             <NavLink to="/recommendations">Recommendations</NavLink>
             <NavLink to="/watchlist-import">Watchlist Import</NavLink>
+            <NavLink to="/import-lists">Import Lists</NavLink>
             <NavLink to="/calendar">Calendar</NavLink>
             <NavLink to="/missing">Missing</NavLink>
             <NavLink to="/activity">Activity</NavLink>
@@ -165,6 +167,7 @@ export default function App() {
           {isAdmin && <Route path="/add" element={<AddMedia />} />}
           {isAdmin && <Route path="/recommendations" element={<Recommendations />} />}
           {isAdmin && <Route path="/watchlist-import" element={<WatchlistImport />} />}
+          {isAdmin && <Route path="/import-lists" element={<ImportLists />} />}
           {isAdmin && <Route path="/calendar" element={<Calendar />} />}
           {isAdmin && <Route path="/missing" element={<Missing />} />}
           {isAdmin && <Route path="/activity" element={<Activity />} />}
