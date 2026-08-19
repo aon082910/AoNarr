@@ -55,6 +55,8 @@ ensureColumn("media_items", "content_rating", "content_rating TEXT");
 ensureColumn("users", "max_content_rating", "max_content_rating TEXT");
 ensureColumn("collections", "smart_filter", "smart_filter TEXT");
 ensureColumn("root_folders", "quota_percent", "quota_percent INTEGER");
+ensureColumn("users", "totp_secret", "totp_secret TEXT");
+ensureColumn("users", "totp_enabled", "totp_enabled INTEGER NOT NULL DEFAULT 0");
 ensureColumn("root_folders", "pause_grabs_at_quota", "pause_grabs_at_quota INTEGER NOT NULL DEFAULT 0");
 
 /**
@@ -119,7 +121,7 @@ dropCheckConstraint(
      url TEXT NOT NULL,
      api_key TEXT,
      categories TEXT NOT NULL DEFAULT '',
-     media_types TEXT NOT NULL DEFAULT 'movie,series,anime,artist,author,comic,rom,video,course,adult',
+     media_types TEXT NOT NULL DEFAULT 'movie,series,anime,artist,author,audiobook,comic,rom,video,course,adult',
      enabled INTEGER NOT NULL DEFAULT 1,
      priority INTEGER NOT NULL DEFAULT 25,
      config TEXT
@@ -189,7 +191,9 @@ function ensureUsersAdminRole() {
        created_at TEXT NOT NULL DEFAULT (datetime('now')),
        max_pending_requests INTEGER,
        auto_approve INTEGER NOT NULL DEFAULT 0,
-       max_content_rating TEXT
+       max_content_rating TEXT,
+       totp_secret TEXT,
+       totp_enabled INTEGER NOT NULL DEFAULT 0
      )`);
     db.exec(`INSERT INTO users (${cols.join(", ")}) SELECT ${cols.join(", ")} FROM users_pre_migration`);
     db.exec(`DROP TABLE users_pre_migration`);

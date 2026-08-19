@@ -1,17 +1,26 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { BrowserRouter } from "react-router-dom";
+import { BrowserRouter, Route, Routes } from "react-router-dom";
 import App from "./App.js";
 import ApiKeyGate from "./components/ApiKeyGate.js";
+import SharePage from "./pages/SharePage.js";
 import "./styles.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <ApiKeyGate>
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
-    </ApiKeyGate>
+    <BrowserRouter>
+      <Routes>
+        <Route path="/share/:token" element={<SharePage />} />
+        <Route
+          path="/*"
+          element={
+            <ApiKeyGate>
+              <App />
+            </ApiKeyGate>
+          }
+        />
+      </Routes>
+    </BrowserRouter>
   </React.StrictMode>
 );
 

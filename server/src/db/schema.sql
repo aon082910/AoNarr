@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS indexers (
   url TEXT NOT NULL,
   api_key TEXT,
   categories TEXT NOT NULL DEFAULT '',
-  media_types TEXT NOT NULL DEFAULT 'movie,series,anime,artist,author,comic,rom,video,course,adult',
+  media_types TEXT NOT NULL DEFAULT 'movie,series,anime,artist,author,audiobook,comic,rom,video,course,adult',
   enabled INTEGER NOT NULL DEFAULT 1,
   priority INTEGER NOT NULL DEFAULT 25,
   config TEXT -- JSON blob, protocol-specific (e.g. DDL's JSON-field mapping); unused by torznab/newznab/rss
@@ -204,6 +204,31 @@ CREATE TABLE IF NOT EXISTS collection_items (
   PRIMARY KEY (collection_id, media_item_id)
 );
 
+-- A public, unauthenticated read-only link to one media item's overview/poster — for sharing
+-- outside the household without handing out a login. Revocable; optionally expiring.
+CREATE TABLE IF NOT EXISTS share_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token TEXT NOT NULL UNIQUE,
+  media_item_id INTEGER NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT
+);
+
+-- Recurring "auto-add anything new here" sources, checked on the same schedule as auto-search.
+-- Distinct from watchlist_import (one-time CSV upload): these are re-fetched every cycle.
+CREATE TABLE IF NOT EXISTS import_lists (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL CHECK (type IN ('trakt', 'imdb')),
+  url TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  quality_profile_id INTEGER REFERENCES quality_profiles(id) ON DELETE SET NULL,
+  last_synced_at TEXT,
+  last_added_count INTEGER,
+  last_error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- User accounts. 'admin' rows are created once via the first-run setup wizard (or promoted);
 -- the instance-wide API key (settings.apiKey) remains valid in parallel for automation/scripts.
 -- 'user' rows are household members with limited, per-library access.
@@ -212,7 +237,9 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL, -- "scrypt$salt$hash", see services/auth.ts
   role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  totp_secret TEXT,
+  totp_enabled INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS user_library_access (

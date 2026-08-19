@@ -18,6 +18,24 @@ export function verifyPassword(password: string, stored: string): boolean {
   return crypto.timingSafeEqual(candidate, expected);
 }
 
+// In-memory only — a pending login is a few-minute window between "password verified" and "TOTP
+// code entered", not worth persisting across a restart (the user just logs in again).
+const PENDING_LOGIN_TTL_MS = 5 * 60 * 1000;
+const pendingLogins = new Map<string, { userId: number; expires: number }>();
+
+export function createPendingLogin(userId: number): string {
+  const token = crypto.randomBytes(24).toString("hex");
+  pendingLogins.set(token, { userId, expires: Date.now() + PENDING_LOGIN_TTL_MS });
+  return token;
+}
+
+export function consumePendingLogin(token: string): number | null {
+  const entry = pendingLogins.get(token);
+  pendingLogins.delete(token);
+  if (!entry || entry.expires < Date.now()) return null;
+  return entry.userId;
+}
+
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 export function createSession(userId: number, userAgent?: string | null): { token: string; expiresAt: string } {
@@ -72,6 +90,7 @@ export interface SessionUser {
   maxPendingRequests: number | null;
   autoApprove: boolean;
   maxContentRating: string | null;
+  totpEnabled: boolean;
 }
 
 export function getSessionUser(token: string): SessionUser | null {
@@ -94,6 +113,7 @@ export function getSessionUser(token: string): SessionUser | null {
         max_pending_requests: number | null;
         auto_approve: number;
         max_content_rating: string | null;
+        totp_enabled: number;
       }
     | undefined;
   if (!user) return null;
@@ -110,5 +130,6 @@ export function getSessionUser(token: string): SessionUser | null {
     maxPendingRequests: user.max_pending_requests,
     autoApprove: !!user.auto_approve,
     maxContentRating: user.max_content_rating,
+    totpEnabled: !!user.totp_enabled,
   };
 }

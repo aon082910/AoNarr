@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { log } from "./logger.js";
 import { getSetting } from "./settingsStore.js";
 import { sendPush } from "./push.js";
+import { sendEmail } from "./smtp.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -97,6 +98,27 @@ async function fanOut(content: NotificationContent): Promise<void> {
         title: content.title,
         message: content.text,
       })
+    );
+  }
+
+  const smtpHost = getSetting("smtpHost");
+  const smtpTo = getSetting("smtpTo");
+  const smtpFrom = getSetting("smtpFrom");
+  if (smtpHost && smtpTo && smtpFrom) {
+    jobs.push(
+      sendEmail(
+        {
+          host: smtpHost,
+          port: Number(getSetting("smtpPort") || 587),
+          secure: getSetting("smtpSecure") === "1",
+          username: getSetting("smtpUsername") || undefined,
+          password: getSetting("smtpPassword") || undefined,
+          from: smtpFrom,
+          to: smtpTo,
+        },
+        `AoNarr: ${content.title}`,
+        content.text
+      )
     );
   }
 

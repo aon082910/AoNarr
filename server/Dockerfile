@@ -17,8 +17,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
 # packaging toolchain just for one tool — used by the "ytdlp" download client type.
 RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
     && chmod +x /usr/local/bin/yt-dlp
+ARG BUILD_TIME=""
 ENV NODE_ENV=production
 ENV AONARR_CONFIG_DIR=/config
+ENV AONARR_BUILD_TIME=$BUILD_TIME
+ENV AONARR_IMAGE_TAG=server
 COPY package.json ./
 RUN npm install --omit=dev
 COPY --from=build /app/dist ./dist

@@ -36,10 +36,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
     && chmod +x /usr/local/bin/yt-dlp
 
+ARG BUILD_TIME=""
 ENV NODE_ENV=production
 ENV PORT=8989
 ENV AONARR_CONFIG_DIR=/config
 ENV AONARR_DOWNLOADS_DIR=/downloads
+ENV AONARR_BUILD_TIME=$BUILD_TIME
+ENV AONARR_IMAGE_TAG=combined
 
 COPY server/package.json ./
 RUN npm install --omit=dev

@@ -13,7 +13,7 @@
 &#13;
 This is the single all-in-one container — API and browser UI run together in one image, avoiding the cross-container networking that "aonarr-server" + "aonarr-web" require. Prefer this unless you specifically want the two containers to scale/update independently.&#13;
 &#13;
-On first boot, an admin API key is generated automatically — check this container's logs for it (docker logs aonarr), or open the web UI and it will prompt you to paste it in.&#13;
+On first boot, open the web UI and create an admin account (username/password) — no API key needed. To skip that screen entirely, set the Admin Username/Password variables below before first start.&#13;
 &#13;
 Point the Downloads and Media paths at the same shares your download client and media library actually use — AoNarr resolves completed downloads and organizes files under Media itself, it doesn't just track them.</Overview>
   <Category>MediaApp:Video MediaApp:Music MediaApp:Books</Category>
@@ -34,4 +34,6 @@ Point the Downloads and Media paths at the same shares your download client and 
   <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID files are created as — 100 is Unraid's default 'users' group." Type="Variable" Display="always" Required="false" Mask="false">100</Config>
   <Config Name="Search Interval (minutes)" Target="AONARR_SEARCH_INTERVAL_MINUTES" Default="30" Mode="" Description="How often the scheduler auto-searches monitored, fileless items." Type="Variable" Display="advanced" Required="false" Mask="false">30</Config>
   <Config Name="Queue Poll Interval (seconds)" Target="AONARR_QUEUE_POLL_SECONDS" Default="20" Mode="" Description="How often the scheduler polls download clients for progress." Type="Variable" Display="advanced" Required="false" Mask="false">20</Config>
+  <Config Name="Admin Username" Target="AONARR_ADMIN_USERNAME" Default="" Mode="" Description="Optional: auto-creates the admin account on first boot instead of using the web UI's setup screen. Leave blank to set it up in the browser instead." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="Admin Password" Target="AONARR_ADMIN_PASSWORD" Default="" Mode="" Description="Required if Admin Username is set (min 8 characters). For a Docker secret file instead, use AONARR_ADMIN_PASSWORD_FILE." Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
 </Container>

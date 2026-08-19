@@ -10,4 +10,8 @@ export const config = {
   downloadsDir,
   searchIntervalMinutes: Number(process.env.AONARR_SEARCH_INTERVAL_MINUTES ?? 30),
   queuePollIntervalSeconds: Number(process.env.AONARR_QUEUE_POLL_SECONDS ?? 20),
+  // Baked in at image build time (see Dockerfile --build-arg) so the update checker can tell
+  // "this running container" apart from "what's currently on Docker Hub" for the same tag.
+  buildTime: process.env.AONARR_BUILD_TIME ?? null,
+  imageTag: process.env.AONARR_IMAGE_TAG ?? null,
 };

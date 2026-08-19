@@ -650,8 +650,59 @@ export default function Settings() {
           defaultValue={settings.pushoverUserKey ?? ""}
           onBlur={(e) => saveSetting("pushoverUserKey", e.target.value)}
         />
+        <label>SMTP host</label>
+        <input
+          key={settings.smtpHost ?? "smtp-host-empty"}
+          defaultValue={settings.smtpHost ?? ""}
+          placeholder="smtp.gmail.com"
+          onBlur={(e) => saveSetting("smtpHost", e.target.value)}
+        />
+        <label>SMTP port</label>
+        <input
+          key={settings.smtpPort ?? "smtp-port-empty"}
+          defaultValue={settings.smtpPort ?? "587"}
+          placeholder="587"
+          onBlur={(e) => saveSetting("smtpPort", e.target.value)}
+        />
+        <label>SMTP encryption</label>
+        <select
+          key={settings.smtpSecure ?? "smtp-secure-empty"}
+          defaultValue={settings.smtpSecure ?? "0"}
+          onChange={(e) => saveSetting("smtpSecure", e.target.value)}
+        >
+          <option value="0">STARTTLS (587/25)</option>
+          <option value="1">Implicit TLS (465)</option>
+        </select>
+        <label>SMTP username</label>
+        <input
+          key={settings.smtpUsername ?? "smtp-user-empty"}
+          defaultValue={settings.smtpUsername ?? ""}
+          onBlur={(e) => saveSetting("smtpUsername", e.target.value)}
+        />
+        <label>SMTP password</label>
+        <input
+          type="password"
+          key={settings.smtpPassword ?? "smtp-pass-empty"}
+          defaultValue={settings.smtpPassword ?? ""}
+          onBlur={(e) => saveSetting("smtpPassword", e.target.value)}
+        />
+        <label>Send from</label>
+        <input
+          key={settings.smtpFrom ?? "smtp-from-empty"}
+          defaultValue={settings.smtpFrom ?? ""}
+          placeholder="aonarr@yourdomain.com"
+          onBlur={(e) => saveSetting("smtpFrom", e.target.value)}
+        />
+        <label>Send to</label>
+        <input
+          key={settings.smtpTo ?? "smtp-to-empty"}
+          defaultValue={settings.smtpTo ?? ""}
+          placeholder="you@yourdomain.com"
+          onBlur={(e) => saveSetting("smtpTo", e.target.value)}
+        />
         <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
           Fired on grab, import, and failure events. Leave any provider's fields blank to disable it.
+          Email sends only once host, from, and to are all set.
         </p>
 
         <label>Custom script</label>

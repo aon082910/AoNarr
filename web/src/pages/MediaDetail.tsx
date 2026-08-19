@@ -306,6 +306,25 @@ export default function MediaDetail() {
       <h1>{item.title}</h1>
       <p style={{ color: "var(--muted)" }}>
         {item.year ?? ""} · {item.type} · {item.status}
+        {isAdmin && (
+          <button
+            type="button"
+            className="secondary"
+            style={{ marginLeft: 10, fontSize: "0.8rem" }}
+            onClick={async () => {
+              const result = await api.post<{ token: string }>(`/media/${item.id}/share`, {});
+              const url = `${window.location.origin}/share/${result.token}`;
+              try {
+                await navigator.clipboard.writeText(url);
+                alert(`Share link copied to clipboard:\n${url}`);
+              } catch {
+                prompt("Share link (copy manually):", url);
+              }
+            }}
+          >
+            Share
+          </button>
+        )}
       </p>
       {shape === "single" && (
         <p>

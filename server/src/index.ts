@@ -6,6 +6,7 @@ import "./db/client.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requireAuth } from "./middleware/auth.js";
 import { startScheduler } from "./services/scheduler.js";
+import { bootstrapAdminFromEnv } from "./services/bootstrapAdmin.js";
 
 import { mediaRouter } from "./routes/media.js";
 import { indexersRouter } from "./routes/indexers.js";
@@ -46,6 +47,11 @@ import { contentRatingsRouter } from "./routes/contentRatingsRoute.js";
 import { changelogRouter } from "./routes/changelog.js";
 import { peopleRouter } from "./routes/people.js";
 import { remoteInstancesRouter } from "./routes/remoteInstances.js";
+import { importListsRouter } from "./routes/importLists.js";
+import { shareLinksRouter, shareLinksPublicRouter } from "./routes/shareLinks.js";
+import { updateCheckRouter } from "./routes/updateCheck.js";
+
+bootstrapAdminFromEnv();
 
 const app = express();
 app.use(cors());
@@ -101,6 +107,10 @@ app.use("/api/changelog", changelogRouter);
 app.use("/api/people", peopleRouter);
 app.use("/api/remote-instances", remoteInstancesRouter);
 app.use("/api/calendar.ics", calendarFeedRouter);
+app.use("/api/import-lists", importListsRouter);
+app.use("/api/share", shareLinksPublicRouter);
+app.use("/api/media", shareLinksRouter);
+app.use("/api/settings/update-check", updateCheckRouter);
 
 app.use(errorHandler);
 

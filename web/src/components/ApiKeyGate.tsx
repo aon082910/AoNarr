@@ -17,6 +17,8 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
   const [checking, setChecking] = useState(false);
   const [pendingTotpKey, setPendingTotpKey] = useState<string | null>(null);
   const [totpCode, setTotpCode] = useState("");
+  const [pendingSessionTotp, setPendingSessionTotp] = useState<string | null>(null);
+  const [sessionTotpCode, setSessionTotpCode] = useState("");
 
   useEffect(() => {
     if (hasCreds) return;
@@ -112,7 +114,33 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
     setChecking(true);
     setError(null);
     try {
-      const result = await api.post<{ token: string }>("/auth/login", { username: username.trim(), password });
+      const result = await api.post<{ token?: string; totpRequired?: boolean; pendingToken?: string }>(
+        "/auth/login",
+        { username: username.trim(), password }
+      );
+      if (result.totpRequired && result.pendingToken) {
+        setPendingSessionTotp(result.pendingToken);
+      } else if (result.token) {
+        setSessionToken(result.token);
+        setHasCreds(true);
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function submitSessionTotp(e: FormEvent) {
+    e.preventDefault();
+    if (!pendingSessionTotp || sessionTotpCode.length !== 6) return;
+    setChecking(true);
+    setError(null);
+    try {
+      const result = await api.post<{ token: string }>("/auth/login/totp", {
+        pendingToken: pendingSessionTotp,
+        code: sessionTotpCode,
+      });
       setSessionToken(result.token);
       setHasCreds(true);
     } catch (err) {
@@ -123,6 +151,30 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
   }
 
   if (hasCreds) return <AuthProvider>{children}</AuthProvider>;
+
+  if (pendingSessionTotp) {
+    return (
+      <div className="gate">
+        <form className="form-panel" onSubmit={submitSessionTotp} style={{ margin: "80px auto", maxWidth: 400 }}>
+          <h1 style={{ color: "var(--accent)" }}>AoNarr</h1>
+          <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
+            Enter the 6-digit code from your authenticator app.
+          </p>
+          <label>Code</label>
+          <input value={sessionTotpCode} onChange={(e) => setSessionTotpCode(e.target.value)} maxLength={6} autoFocus />
+          {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="submit" disabled={checking}>
+              {checking ? "Checking..." : "Continue"}
+            </button>
+            <button type="button" className="secondary" onClick={() => setPendingSessionTotp(null)}>
+              Back
+            </button>
+          </div>
+        </form>
+      </div>
+    );
+  }
 
   if (needsSetup === null) {
     return <div className="gate" />;

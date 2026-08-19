@@ -205,7 +205,7 @@ export interface MediaRequest {
 
 export interface AuthMe {
   isAdmin: boolean;
-  user?: { id: number; username: string; role: string; allowedTypes: string[] };
+  user?: { id: number; username: string; role: string; allowedTypes: string[]; totpEnabled?: boolean };
 }
 
 export interface SearchResult {

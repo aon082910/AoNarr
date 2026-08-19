@@ -20,6 +20,7 @@ import { notifyFailed, notifyGrabbed } from "./notifications.js";
 import { runAutoArchival } from "./archival.js";
 import { getBlocklistedTitles } from "./blocklist.js";
 import { runTraktSync } from "./traktSync.js";
+import { runAllImportLists } from "./importLists.js";
 import { recordDiskUsageSamples } from "./storageForecast.js";
 import { runScheduledBackup } from "./scheduledBackup.js";
 import { getGroupReputation, recordGroupFailure } from "./releaseGroupStats.js";
@@ -586,6 +587,10 @@ export function startScheduler() {
     runTraktSync()
       .then((r) => r.added > 0 && log.info(`[scheduler] Trakt sync added ${r.added} item(s)`))
       .catch((err) => log.error("[scheduler] Trakt sync error:", err));
+  });
+
+  cron.schedule("0 */12 * * *", () => {
+    runAllImportLists().catch((err) => log.error("[scheduler] import lists error:", err));
   });
 
   cron.schedule("0 0 * * *", () => {

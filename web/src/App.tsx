@@ -1,5 +1,8 @@
+import { useEffect, useState } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
+import { api } from "./api/client.js";
 import Dashboard from "./pages/Dashboard.js";
+import Onboarding, { shouldShowOnboarding } from "./pages/Onboarding.js";
 import Library from "./pages/Library.js";
 import MediaDetail from "./pages/MediaDetail.js";
 import AddMedia from "./pages/AddMedia.js";
@@ -26,10 +29,20 @@ import ApiDocs from "./pages/ApiDocs.js";
 import Changelog from "./pages/Changelog.js";
 import Person from "./pages/Person.js";
 import RemoteLibrary from "./pages/RemoteLibrary.js";
+import Account from "./pages/Account.js";
 
 export default function App() {
   const { auth, logout } = useAuth();
   const isAdmin = auth.isAdmin;
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    api
+      .get<any[]>("/root-folders")
+      .then((rows) => setShowOnboarding(shouldShowOnboarding(rows.length)))
+      .catch(() => {});
+  }, [isAdmin]);
 
   return (
     <div className="app">
@@ -50,6 +63,7 @@ export default function App() {
         {isAdmin && <NavLink to="/watchlist-import">Watchlist Import</NavLink>}
         <NavLink to="/requests">Requests</NavLink>
         <NavLink to="/changelog">What's New</NavLink>
+        <NavLink to="/account">Account</NavLink>
         {isAdmin && <NavLink to="/calendar">Calendar</NavLink>}
         {isAdmin && <NavLink to="/missing">Missing</NavLink>}
         {isAdmin && <NavLink to="/activity">Activity</NavLink>}
@@ -71,7 +85,12 @@ export default function App() {
       </nav>
       <main className="content">
         <Routes>
-          <Route path="/" element={<Dashboard />} />
+          <Route
+            path="/"
+            element={
+              isAdmin && showOnboarding ? <Onboarding onDone={() => setShowOnboarding(false)} /> : <Dashboard />
+            }
+          />
           <Route path="/library" element={<Library />} />
           <Route path="/media/:id" element={<MediaDetail />} />
           <Route path="/people/:tmdbId" element={<Person />} />
@@ -80,6 +99,7 @@ export default function App() {
           <Route path="/collections/:id" element={<CollectionDetail />} />
           <Route path="/requests" element={<Requests />} />
           <Route path="/changelog" element={<Changelog />} />
+          <Route path="/account" element={<Account />} />
           {isAdmin && <Route path="/add" element={<AddMedia />} />}
           {isAdmin && <Route path="/recommendations" element={<Recommendations />} />}
           {isAdmin && <Route path="/watchlist-import" element={<WatchlistImport />} />}

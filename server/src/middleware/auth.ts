@@ -27,11 +27,13 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (
     req.path === "/health" ||
     req.path === "/auth/login" ||
+    req.path === "/auth/login/totp" ||
     req.path === "/auth/setup" ||
     req.path === "/auth/setup-status" ||
     req.path === "/metrics" ||
     req.path === "/calendar.ics" ||
-    req.path === "/webhooks/media-server"
+    req.path === "/webhooks/media-server" ||
+    req.path.startsWith("/share/")
   ) {
     next();
     return;

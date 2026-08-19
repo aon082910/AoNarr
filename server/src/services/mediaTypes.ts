@@ -29,6 +29,7 @@ export interface MediaTypeConfig {
 const VIDEO_EXT = [".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v"];
 const AUDIO_EXT = [".mp3", ".flac", ".m4a", ".ogg", ".wav"];
 const BOOK_EXT = [".epub", ".mobi", ".pdf", ".azw3", ".m4b"];
+const AUDIOBOOK_EXT = [".m4b", ".mp3", ".m4a"];
 const COMIC_EXT = [".cbz", ".cbr", ".pdf"];
 const ROM_EXT = [".zip", ".7z", ".nes", ".sfc", ".smc", ".gba", ".gbc", ".gb", ".n64", ".z64", ".nds", ".3ds", ".iso", ".chd"];
 
@@ -80,6 +81,19 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     indexerCategory: "7000",
     metadataProviders: ["openlibrary", "googlebooks"],
     defaultProvider: "openlibrary",
+  },
+  audiobook: {
+    key: "audiobook",
+    label: "Audiobooks",
+    shape: "collection",
+    childLabel: "Book",
+    extensions: AUDIOBOOK_EXT,
+    indexerCategory: "3030",
+    // No dedicated audiobook metadata API is wired up; reuses the book-metadata providers for
+    // title/author/cover art since a narrated edition still shares the same underlying work.
+    metadataProviders: ["openlibrary", "googlebooks"],
+    defaultProvider: "openlibrary",
+    multiFilePerChild: true,
   },
   comic: {
     key: "comic",
