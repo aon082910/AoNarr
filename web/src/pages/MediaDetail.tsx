@@ -100,6 +100,7 @@ export default function MediaDetail() {
   const [allTags, setAllTags] = useState<Tag[]>([]);
   const [rootFolders, setRootFolders] = useState<RootFolder[]>([]);
   const [qualityProfiles, setQualityProfiles] = useState<QualityProfile[]>([]);
+  const [externalUrl, setExternalUrl] = useState("");
   const [tagToAdd, setTagToAdd] = useState<number | "">("");
 
   const [expandedAlbumId, setExpandedAlbumId] = useState<number | null>(null);
@@ -133,6 +134,7 @@ export default function MediaDetail() {
     if (isAdmin) api.get<Record<string, string[]>>("/metadata/providers").then(setMetadataProviders);
     if (isAdmin) api.get<RootFolder[]>("/root-folders").then(setRootFolders);
     if (isAdmin) api.get<QualityProfile[]>("/quality-profiles").then(setQualityProfiles);
+    if (isAdmin) api.get<Record<string, string>>("/settings").then((s) => setExternalUrl(s.externalUrl ?? ""));
     api.get<Collection[]>("/collections").then(setAllCollections);
   }, [isAdmin]);
 
@@ -412,7 +414,7 @@ export default function MediaDetail() {
                 style={{ marginLeft: 10, fontSize: "0.8rem" }}
                 onClick={async () => {
                   const result = await api.post<{ token: string }>(`/media/${item.id}/share`, {});
-                  const url = `${window.location.origin}/share/${result.token}`;
+                  const url = `${externalUrl || window.location.origin}/share/${result.token}`;
                   try {
                     await navigator.clipboard.writeText(url);
                     alert(`Share link copied to clipboard:\n${url}`);

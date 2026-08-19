@@ -7,6 +7,7 @@ import { errorHandler } from "./middleware/errorHandler.js";
 import { requireAuth } from "./middleware/auth.js";
 import { startScheduler } from "./services/scheduler.js";
 import { bootstrapAdminFromEnv } from "./services/bootstrapAdmin.js";
+import { applySocksProxySetting } from "./services/socksProxy.js";
 
 import { mediaRouter } from "./routes/media.js";
 import { indexersRouter } from "./routes/indexers.js";
@@ -55,6 +56,7 @@ import { jobsRouter } from "./routes/jobs.js";
 import { recycleBinRouter } from "./routes/recycleBin.js";
 
 bootstrapAdminFromEnv();
+applySocksProxySetting();
 
 const app = express();
 app.use(cors());

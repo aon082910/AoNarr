@@ -3,6 +3,16 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 26
+- Stalled-download cleanup job: a queue item with no progress for longer than a configurable
+  threshold gets dropped and retried with the next-best release, same as a failed grab
+- Archive unpacking: .zip (built-in), .7z/.rar (if the `7z`/`unrar` binary is present) inside a
+  download are unpacked automatically before the importer looks for the media file
+- SOCKS5 proxy support — routes every outbound request (indexers, metadata providers, download
+  client APIs) through a configured proxy, takes effect immediately with no restart
+- External URL setting, used to build share links correctly behind a reverse proxy where the
+  browser's own URL doesn't match the actual public one
+
 ## Round 25
 - Job scheduling system: every background job (auto-search, queue poll, auto-archival, Trakt
   sync, import lists, disk usage sampling, recycle bin cleanup, scheduled backup) now has an

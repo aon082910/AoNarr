@@ -59,6 +59,7 @@ ensureColumn("users", "totp_secret", "totp_secret TEXT");
 ensureColumn("users", "totp_enabled", "totp_enabled INTEGER NOT NULL DEFAULT 0");
 ensureColumn("media_items", "group_id", "group_id INTEGER REFERENCES library_groups(id) ON DELETE SET NULL");
 ensureColumn("media_items", "extra_metadata", "extra_metadata TEXT");
+ensureColumn("queue", "last_progress_at", "last_progress_at TEXT");
 ensureColumn("root_folders", "pause_grabs_at_quota", "pause_grabs_at_quota INTEGER NOT NULL DEFAULT 0");
 
 /**

@@ -404,6 +404,22 @@ export default function Settings() {
         ))}
       </div>
       <div style={{ display: tab === "general" ? undefined : "none" }}>
+      <h2>General</h2>
+      <div className="form-panel">
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          Used when AoNarr needs to build a link back to itself from somewhere other than your
+          browser — e.g. share links, if the URL your browser is on doesn't match your actual
+          public URL (common behind a reverse proxy). Leave blank to just use the browser's URL.
+        </p>
+        <label>External URL</label>
+        <input
+          key={settings.externalUrl ?? "external-url-empty"}
+          defaultValue={settings.externalUrl ?? ""}
+          placeholder="https://aonarr.example.com"
+          onBlur={(e) => saveSetting("externalUrl", e.target.value.replace(/\/+$/, ""))}
+        />
+      </div>
+
       <h2>Security</h2>
       <div className="form-panel">
         <label>API key</label>
@@ -960,6 +976,22 @@ export default function Settings() {
         />
       </div>
 
+      <h2>SOCKS5 Proxy</h2>
+      <div className="form-panel">
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          Routes every outbound request AoNarr makes (indexers, metadata providers, download
+          client APIs) through a SOCKS5 proxy. Leave blank to disable. Takes effect immediately —
+          no restart needed.
+        </p>
+        <label>Proxy URL</label>
+        <input
+          key={settings.socks5ProxyUrl ?? "socks5-empty"}
+          defaultValue={settings.socks5ProxyUrl ?? ""}
+          placeholder="socks5://user:pass@host:1080"
+          onBlur={(e) => saveSetting("socks5ProxyUrl", e.target.value)}
+        />
+      </div>
+
       <h2>Quiet Hours</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
@@ -1022,6 +1054,23 @@ export default function Settings() {
           key={settings.searchWindowEnd ?? "search-window-end-empty"}
           defaultValue={settings.searchWindowEnd ?? "06:00"}
           onBlur={(e) => saveSetting("searchWindowEnd", e.target.value)}
+        />
+      </div>
+
+      <h2>Stalled Downloads</h2>
+      <div className="form-panel">
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          A download with no progress for longer than this gets dropped from the queue and
+          retried with the next-best release (same as a failed grab) — schedule for the cleanup
+          job itself is on the Jobs page.
+        </p>
+        <label>Stalled after (hours)</label>
+        <input
+          type="number"
+          style={{ maxWidth: 120 }}
+          key={settings.stalledDownloadHours ?? "stalled-hours-empty"}
+          defaultValue={settings.stalledDownloadHours ?? "6"}
+          onBlur={(e) => saveSetting("stalledDownloadHours", e.target.value)}
         />
       </div>
 

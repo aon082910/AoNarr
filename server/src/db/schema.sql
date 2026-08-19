@@ -114,7 +114,8 @@ CREATE TABLE IF NOT EXISTS queue (
   status TEXT NOT NULL DEFAULT 'queued',
   progress REAL NOT NULL DEFAULT 0,
   added_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_progress_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS history (

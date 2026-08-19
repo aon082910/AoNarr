@@ -540,9 +540,18 @@ async function pollQueue() {
       for (const status of statuses) {
         const match = relevant.find((q) => q.downloadId === status.downloadId);
         if (!match) continue;
-        db.prepare(
-          `UPDATE queue SET progress = ?, status = ?, updated_at = datetime('now') WHERE id = ?`
-        ).run(status.progress, status.status, match.id);
+        // last_progress_at only moves forward when progress actually changed — that's the signal
+        // stalled-download cleanup uses to tell "still downloading, just slow" apart from "stuck".
+        if (status.progress !== match.progress) {
+          db.prepare(
+            `UPDATE queue SET progress = ?, status = ?, updated_at = datetime('now'), last_progress_at = datetime('now') WHERE id = ?`
+          ).run(status.progress, status.status, match.id);
+        } else {
+          db.prepare(`UPDATE queue SET status = ?, updated_at = datetime('now') WHERE id = ?`).run(
+            status.status,
+            match.id
+          );
+        }
 
         if (status.status === "completed") {
           try {
@@ -565,6 +574,32 @@ async function pollQueue() {
     } catch (err) {
       log.warn(`[scheduler] queue poll failed for client "${client.name}":`, (err as Error).message);
     }
+  }
+}
+
+/** Removes/retries queue items whose progress hasn't moved in longer than the configured
+ * threshold — a download stuck at the client (dead peers, a paused torrent, a stalled usenet
+ * connection) would otherwise sit in the queue forever since pollQueue only acts on status
+ * changes the client itself reports. */
+async function cleanupStalledDownloads(): Promise<void> {
+  const thresholdHours = Math.max(1, parseInt(getSetting("stalledDownloadHours") ?? "6", 10) || 6);
+  const stalled = (
+    db
+      .prepare(
+        `SELECT * FROM queue WHERE status = 'downloading'
+         AND last_progress_at IS NOT NULL AND last_progress_at <= datetime('now', ?)`
+      )
+      .all(`-${thresholdHours} hours`) as any[]
+  ).map(queueItemFromRow) as QueueItem[];
+
+  for (const item of stalled) {
+    // Not every download-client adapter exposes a way to cancel a specific download at the
+    // client itself (no such method in the shared adapter interface) — this drops it from
+    // AoNarr's own queue and retries the search; the stale entry may need manual cleanup at the
+    // download client's own UI.
+    db.prepare("UPDATE queue SET status = 'failed', updated_at = datetime('now') WHERE id = ?").run(item.id);
+    await retryFailedGrab(item, `Stalled: no progress for over ${thresholdHours}h`);
+    log.info(`[scheduler] cleaned up stalled download "${item.title}"`);
   }
 }
 
@@ -623,6 +658,14 @@ export function startScheduler() {
     scheduleType: "cron",
     defaultSchedule: "0 0 * * *",
     run: async () => recordDiskUsageSamples(),
+  });
+
+  registerJob({
+    key: "stalledDownloadCleanup",
+    name: "Stalled Download Cleanup",
+    scheduleType: "cron",
+    defaultSchedule: "0 * * * *",
+    run: () => cleanupStalledDownloads(),
   });
 
   registerJob({

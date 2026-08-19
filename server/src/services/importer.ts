@@ -13,6 +13,7 @@ import {
   searchSubtitles,
   type CustomSubtitleProviderConfig,
 } from "./subtitleClient.js";
+import { unpackDownloadedArchives } from "./archiveExtract.js";
 import { DEFAULT_SHAPE_TEMPLATES, renderTemplate } from "./naming.js";
 import { getMediaTypeConfig } from "./mediaTypes.js";
 import { getSetting } from "./settingsStore.js";
@@ -382,6 +383,7 @@ export async function importQueueItem(queueItemId: number): Promise<void> {
     episodeTarget = { season: epRow.season_number, episode: epRow.episode_number };
   }
 
+  await unpackDownloadedArchives();
   const sourceFile = findDownloadedFile(queueItem.title, item.type, episodeTarget);
   if (!sourceFile) {
     throw new Error(`No matching file found in downloads directory for "${queueItem.title}"`);

@@ -6,6 +6,7 @@ import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { invalidateQualityRankCache } from "../services/quality.js";
 import { buildOtpauthUrl, generateBase32Secret, verifyTotp } from "../services/totp.js";
 import { getSetting, setSetting } from "../services/settingsStore.js";
+import { applySocksProxySetting } from "../services/socksProxy.js";
 import { checkRateLimit, recordFailure, recordSuccess } from "../services/rateLimiter.js";
 
 export const settingsRouter = Router();
@@ -29,6 +30,7 @@ settingsRouter.put(
       `INSERT INTO settings (key, value) VALUES (?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`
     ).run(req.params.key, value);
+    if (req.params.key === "socks5ProxyUrl") applySocksProxySetting();
     res.json({ key: req.params.key, value });
   })
 );
