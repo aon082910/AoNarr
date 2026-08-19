@@ -3,6 +3,15 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 32
+- Auto Upgrade: an opt-in scheduled job (Settings → General, off by default) that finds every
+  item currently below its quality profile's cutoff and runs it back through search-and-grab, so
+  raising a cutoff actually gets enforced over time instead of just being a report an admin has
+  to act on by hand
+- "Create new folder" in the folder-browser picker (Settings → Root Folders → Browse...) — create
+  a subfolder on disk from the picker itself, instead of only being able to select folders that
+  already exist
+
 ## Round 31
 - Real-Debrid support as a new download client type — grabbed magnet/torrent links are sent to
   Real-Debrid's API, AoNarr polls until they're cached, then unrestricts and downloads the

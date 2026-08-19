@@ -27,6 +27,7 @@ import { syncFromProwlarr } from "./prowlarrSync.js";
 import { checkForCorruptMedia } from "./corruptMediaCheck.js";
 import { getGroupReputation, recordGroupFailure } from "./releaseGroupStats.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
+import { findUpgradeCandidates } from "./upgradeCandidates.js";
 import { getSetting } from "./settingsStore.js";
 import { registerJob, startAllJobs } from "./jobRegistry.js";
 import type { DownloadClient, Indexer, MediaItem, QueueItem, SearchResult } from "../types/index.js";
@@ -443,6 +444,29 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
   return results;
 }
 
+/**
+ * Downloaded files never get revisited automatically once imported (see upgradeCandidates.ts) —
+ * this job closes that gap for admins who opt in: on its own schedule, it finds everything
+ * currently below its quality profile's cutoff and runs it through the same search-and-grab
+ * pipeline as a manual bulk search, so a raised cutoff actually gets enforced over time instead
+ * of just being a "surface it in a report" affordance. Off by default (`autoUpgradeEnabled`
+ * setting) since it consumes indexer/download-client capacity same as any other search.
+ */
+async function runAutoUpgrade(): Promise<void> {
+  if (getSetting("autoUpgradeEnabled") !== "1") return;
+  const candidates = findUpgradeCandidates();
+  if (candidates.length === 0) return;
+
+  const targets: BulkSearchTarget[] = candidates.map((c) => ({
+    mediaItemId: c.mediaItemId,
+    episodeId: c.episodeId ?? null,
+    subItemId: c.subItemId ?? null,
+  }));
+  const results = await searchAndGrabTargets(targets);
+  const grabbed = results.filter((r) => r.grabbed).length;
+  if (grabbed > 0) log.info(`[scheduler] auto-upgrade: grabbed ${grabbed} of ${candidates.length} upgrade candidate(s)`);
+}
+
 const MAX_AUTO_RETRIES = 2;
 
 /**
@@ -699,6 +723,14 @@ export function startScheduler() {
     scheduleType: "cron",
     defaultSchedule: "0 3 * * *",
     run: () => purgeExpiredRecycleBinEntries(),
+  });
+
+  registerJob({
+    key: "autoUpgrade",
+    name: "Auto Upgrade",
+    scheduleType: "cron",
+    defaultSchedule: "0 */6 * * *",
+    run: () => runAutoUpgrade(),
   });
 
   registerJob({

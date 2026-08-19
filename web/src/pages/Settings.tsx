@@ -1171,6 +1171,26 @@ export default function Settings() {
         />
       </div>
 
+      <h2>Auto Upgrade</h2>
+      <div className="form-panel">
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          Each quality profile's cutoff normally only matters going forward — anything already
+          downloaded below it just stays as-is unless someone notices and re-searches by hand.
+          Turning this on runs that re-search automatically on a schedule (Jobs page), stopping
+          at each item's cutoff. Off by default since it uses the same indexer/download-client
+          capacity as any other search.
+        </p>
+        <label>Enable auto upgrade</label>
+        <select
+          key={settings.autoUpgradeEnabled ?? "auto-upgrade-enabled-empty"}
+          defaultValue={settings.autoUpgradeEnabled ?? "0"}
+          onChange={(e) => saveSetting("autoUpgradeEnabled", e.target.value)}
+        >
+          <option value="0">Disabled</option>
+          <option value="1">Enabled</option>
+        </select>
+      </div>
+
       <h2>Stalled Downloads</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>

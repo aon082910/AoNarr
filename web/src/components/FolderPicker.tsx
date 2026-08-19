@@ -22,6 +22,8 @@ export default function FolderPicker({
 }) {
   const [data, setData] = useState<BrowseResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [creating, setCreating] = useState(false);
 
   function browse(path: string) {
     setError(null);
@@ -29,6 +31,20 @@ export default function FolderPicker({
       .get<BrowseResponse>(`/system/browse-directory?path=${encodeURIComponent(path)}`)
       .then(setData)
       .catch((e) => setError((e as Error).message));
+  }
+
+  function createFolder() {
+    if (!data || !newFolderName.trim()) return;
+    setCreating(true);
+    setError(null);
+    api
+      .post<{ path: string }>("/system/browse-directory", { parent: data.path, name: newFolderName.trim() })
+      .then(() => {
+        setNewFolderName("");
+        browse(data.path);
+      })
+      .catch((e) => setError((e as Error).message))
+      .finally(() => setCreating(false));
   }
 
   useEffect(() => {
@@ -67,6 +83,19 @@ export default function FolderPicker({
                 </div>
               );
             })}
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <input
+              type="text"
+              placeholder="New folder name"
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && createFolder()}
+              style={{ flex: 1 }}
+            />
+            <button type="button" className="secondary" disabled={creating || !newFolderName.trim()} onClick={createFolder}>
+              Create
+            </button>
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
             <button type="button" onClick={() => onSelect(data.path)}>

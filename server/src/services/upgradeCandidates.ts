@@ -3,6 +3,8 @@ import { qualityRank } from "./quality.js";
 
 export interface UpgradeCandidate {
   mediaItemId: number;
+  episodeId?: number;
+  subItemId?: number;
   target: string;
   currentQuality: string;
   cutoff: string;
@@ -46,11 +48,12 @@ export function findUpgradeCandidates(): UpgradeCandidate[] {
 
   const episodes = db
     .prepare(
-      `SELECT e.season_number, e.episode_number, e.quality, m.id AS mediaItemId, m.title, m.quality_profile_id
+      `SELECT e.id, e.season_number, e.episode_number, e.quality, m.id AS mediaItemId, m.title, m.quality_profile_id
        FROM episodes e JOIN media_items m ON m.id = e.media_item_id
        WHERE e.has_file = 1 AND e.quality IS NOT NULL`
     )
     .all() as {
+    id: number;
     season_number: number;
     episode_number: number;
     quality: string;
@@ -64,6 +67,7 @@ export function findUpgradeCandidates(): UpgradeCandidate[] {
     if (qualityRank(e.quality) < qualityRank(profile.cutoff)) {
       candidates.push({
         mediaItemId: e.mediaItemId,
+        episodeId: e.id,
         target: `${e.title} S${String(e.season_number).padStart(2, "0")}E${String(e.episode_number).padStart(2, "0")}`,
         currentQuality: e.quality,
         cutoff: profile.cutoff,
@@ -74,11 +78,12 @@ export function findUpgradeCandidates(): UpgradeCandidate[] {
 
   const subItems = db
     .prepare(
-      `SELECT s.title AS subTitle, s.quality, m.id AS mediaItemId, m.title, m.quality_profile_id
+      `SELECT s.id, s.title AS subTitle, s.quality, m.id AS mediaItemId, m.title, m.quality_profile_id
        FROM sub_items s JOIN media_items m ON m.id = s.media_item_id
        WHERE s.has_file = 1 AND s.quality IS NOT NULL`
     )
     .all() as {
+    id: number;
     subTitle: string;
     quality: string;
     mediaItemId: number;
@@ -91,6 +96,7 @@ export function findUpgradeCandidates(): UpgradeCandidate[] {
     if (qualityRank(s.quality) < qualityRank(profile.cutoff)) {
       candidates.push({
         mediaItemId: s.mediaItemId,
+        subItemId: s.id,
         target: `${s.title} - ${s.subTitle}`,
         currentQuality: s.quality,
         cutoff: profile.cutoff,

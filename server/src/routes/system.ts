@@ -49,6 +49,29 @@ systemRouter.get(
   })
 );
 
+/** Creates a subdirectory under `parent` from the folder-picker itself, instead of requiring one
+ * to already exist on disk before it can be picked — mirrors "New folder" in a native file-picker
+ * dialog. `name` is a single path segment (no slashes), so this can only create a direct child of
+ * a directory the picker already navigated into. */
+systemRouter.post(
+  "/browse-directory",
+  asyncHandler(async (req, res) => {
+    const parent = (req.body?.parent as string | undefined) || "";
+    const name = (req.body?.name as string | undefined) || "";
+    if (!parent) throw new HttpError(400, "parent is required");
+    if (!name || name.includes("/") || name.includes("\\") || name === "." || name === "..") {
+      throw new HttpError(400, "name must be a single folder name with no path separators");
+    }
+    const target = path.join(parent, name);
+    try {
+      fs.mkdirSync(target, { recursive: false });
+    } catch (err) {
+      throw new HttpError(400, `Can't create "${target}": ${(err as Error).message}`);
+    }
+    res.status(201).json({ path: target });
+  })
+);
+
 /**
  * Aggregates the bandwidth/queue-throughput information AoNarr actually has — per-client
  * upload/download totals and ratio (only qBittorrent's adapter implements getHealthStats today;
