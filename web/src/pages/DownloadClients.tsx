@@ -4,7 +4,7 @@ import Modal from "../components/Modal.js";
 import type { DownloadClient } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 
-type ClientType = "qbittorrent" | "sabnzbd" | "http" | "ytdlp";
+type ClientType = "qbittorrent" | "sabnzbd" | "http" | "ytdlp" | "realdebrid";
 
 interface ClientHealthStats {
   uploadedTotalBytes: number;
@@ -105,6 +105,7 @@ export default function DownloadClients() {
           <option value="sabnzbd">SABnzbd</option>
           <option value="http">Direct HTTP download (for DDL/RSS indexer results)</option>
           <option value="ytdlp">yt-dlp (for Online Videos)</option>
+          <option value="realdebrid">Real-Debrid</option>
         </select>
 
         {needsHost && (
@@ -129,6 +130,18 @@ export default function DownloadClients() {
           <>
             <label>API key</label>
             <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+          </>
+        )}
+
+        {type === "realdebrid" && (
+          <>
+            <label>API token</label>
+            <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+            <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+              From real-debrid.com → Account → API Token. AoNarr sends grabbed magnet/torrent
+              links to Real-Debrid, waits for it to cache them, then downloads the unrestricted
+              link(s) directly — no host/port needed, it's always their public API.
+            </p>
           </>
         )}
 

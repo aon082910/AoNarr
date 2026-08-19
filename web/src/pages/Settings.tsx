@@ -441,6 +441,27 @@ export default function Settings() {
         />
       </div>
 
+      <h2>Custom Theme</h2>
+      <div className="form-panel">
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          Raw CSS, loaded after AoNarr's own stylesheet for everyone (no login required to load
+          it, same as the stylesheet itself) — so it can override anything, including the color
+          variables the built-in dark/light themes use:
+          <br />
+          <code>{"--bg --panel --border --text --muted --accent --accent-dim --danger --ok --input-bg"}</code>
+          <br />
+          e.g. <code>{":root { --accent: #ff6b35; }"}</code> to change the accent color instance-wide.
+          Takes effect on next page load for everyone, no restart needed.
+        </p>
+        <textarea
+          key={settings.customThemeCss ?? "theme-css-empty"}
+          defaultValue={settings.customThemeCss ?? ""}
+          rows={6}
+          placeholder={":root {\n  --accent: #ff6b35;\n}"}
+          onBlur={(e) => saveSetting("customThemeCss", e.target.value)}
+        />
+      </div>
+
       <h2>Security</h2>
       <div className="form-panel">
         <label>API key</label>

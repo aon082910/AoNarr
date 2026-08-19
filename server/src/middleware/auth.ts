@@ -32,6 +32,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     req.path === "/auth/setup-status" ||
     req.path === "/metrics" ||
     req.path === "/calendar.ics" ||
+    req.path === "/theme.css" ||
     req.path === "/webhooks/media-server" ||
     req.path.startsWith("/share/")
   ) {

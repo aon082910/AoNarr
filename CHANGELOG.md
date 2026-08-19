@@ -3,6 +3,22 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 31
+- Real-Debrid support as a new download client type — grabbed magnet/torrent links are sent to
+  Real-Debrid's API, AoNarr polls until they're cached, then unrestricts and downloads the
+  resulting link(s) directly; no host/port to configure, just an API token from Real-Debrid's
+  account page
+- Custom theme support — a raw-CSS field in Settings → General, served publicly at
+  `/api/theme.css` (no login needed, same as the stylesheet itself) and loaded for everyone on
+  next page load; documents the app's CSS variables (`--accent`, `--bg`, etc.) so an admin can
+  reskin the instance without editing source
+
+Found and fixed a real bug while building the theme feature: a static `<link>` tag in
+`index.html` had no guaranteed position relative to Vite's build-injected bundled stylesheet, so
+on a `:root { --accent: ... }` specificity tie the wrong one could win depending on injection
+order. Fixed by fetching and appending the custom CSS as a `<style>` tag at runtime instead,
+which guarantees it lands after the bundled stylesheet in the DOM.
+
 ## Round 30
 - Corrupt media detection: a scheduled job (+ an on-demand "Check for corruption" button on media
   detail pages) validates every file with ffprobe, moving anything that fails — including a real

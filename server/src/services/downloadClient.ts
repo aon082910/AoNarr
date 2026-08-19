@@ -324,11 +324,127 @@ class YtdlpAdapter implements DownloadClientAdapter {
   }
 }
 
+/**
+ * Real-Debrid — a "debrid" torrent-caching service: instead of AoNarr peering directly, it hands
+ * Real-Debrid a magnet/torrent, waits for RD's own servers to fetch it, then unrestricts the
+ * resulting link(s) into plain HTTPS downloads AoNarr pulls into downloadsDir itself, same as
+ * HttpDownloadAdapter's tail end. client.apiKey holds the RD API token (Settings -> Account on
+ * real-debrid.com); there's no host/port, it's always their public API.
+ */
+class RealDebridAdapter implements DownloadClientAdapter {
+  private jobs = new Map<string, InProcessJob>();
+  private readonly base = "https://api.real-debrid.com/rest/1.0";
+
+  private headers(client: DownloadClient): Record<string, string> {
+    return { Authorization: `Bearer ${client.apiKey}` };
+  }
+
+  async addDownload(
+    client: DownloadClient,
+    downloadUrl: string,
+    _category: string | null,
+    releaseTitle?: string
+  ): Promise<GrabResult> {
+    const downloadId = crypto.randomUUID();
+    this.jobs.set(downloadId, { progress: 0, status: "downloading" });
+
+    (async () => {
+      try {
+        const torrentId = await this.addToRealDebrid(client, downloadUrl);
+        await fetch(`${this.base}/torrents/selectFiles/${torrentId}`, {
+          method: "POST",
+          headers: { ...this.headers(client), "Content-Type": "application/x-www-form-urlencoded" },
+          body: "files=all",
+        });
+
+        // Poll RD's own caching/download progress until it's fully fetched on their end.
+        let links: string[] = [];
+        for (;;) {
+          const res = await fetch(`${this.base}/torrents/info/${torrentId}`, { headers: this.headers(client) });
+          if (!res.ok) throw new Error(`Real-Debrid status check failed: HTTP ${res.status}`);
+          const info: any = await res.json();
+          if (info.status === "error" || info.status === "magnet_error" || info.status === "virus" || info.status === "dead") {
+            throw new Error(`Real-Debrid reported "${info.status}"`);
+          }
+          if (info.status === "downloaded") {
+            links = info.links ?? [];
+            break;
+          }
+          this.jobs.set(downloadId, { progress: Math.min((info.progress ?? 0) / 100, 0.99), status: "downloading" });
+          await new Promise((r) => setTimeout(r, 5000));
+        }
+        if (links.length === 0) throw new Error("Real-Debrid reported no files");
+
+        fs.mkdirSync(config.downloadsDir, { recursive: true });
+        for (const link of links) {
+          const unrestrictRes = await fetch(`${this.base}/unrestrict/link`, {
+            method: "POST",
+            headers: { ...this.headers(client), "Content-Type": "application/x-www-form-urlencoded" },
+            body: `link=${encodeURIComponent(link)}`,
+          });
+          if (!unrestrictRes.ok) throw new Error(`Real-Debrid unrestrict failed: HTTP ${unrestrictRes.status}`);
+          const unrestricted: any = await unrestrictRes.json();
+
+          const fileRes = await fetch(unrestricted.download);
+          if (!fileRes.ok || !fileRes.body) throw new Error(`Downloading unrestricted link failed: HTTP ${fileRes.status}`);
+          const filename = sanitizeFilename(unrestricted.filename || releaseTitle || downloadId);
+          const dest = path.join(config.downloadsDir, filename);
+          const fileStream = fs.createWriteStream(dest);
+          for await (const chunk of fileRes.body as any) fileStream.write(chunk);
+          await new Promise<void>((resolve, reject) => fileStream.end((err: any) => (err ? reject(err) : resolve())));
+        }
+
+        this.jobs.set(downloadId, { progress: 1, status: "completed" });
+      } catch (err) {
+        log.warn(`[real-debrid] failed for "${releaseTitle ?? downloadUrl}":`, (err as Error).message);
+        this.jobs.set(downloadId, { progress: 0, status: "failed" });
+      }
+    })();
+
+    return { downloadId };
+  }
+
+  /** Magnet URIs go straight to addMagnet; anything else is fetched and treated as raw .torrent
+   * bytes for addTorrent — covers indexer results that hand back a .torrent download URL instead
+   * of a magnet link. */
+  private async addToRealDebrid(client: DownloadClient, downloadUrl: string): Promise<string> {
+    if (downloadUrl.startsWith("magnet:")) {
+      const res = await fetch(`${this.base}/torrents/addMagnet`, {
+        method: "POST",
+        headers: { ...this.headers(client), "Content-Type": "application/x-www-form-urlencoded" },
+        body: `magnet=${encodeURIComponent(downloadUrl)}`,
+      });
+      if (!res.ok) throw new Error(`Real-Debrid addMagnet failed: HTTP ${res.status}`);
+      const body: any = await res.json();
+      return body.id;
+    }
+
+    const torrentRes = await fetch(downloadUrl);
+    if (!torrentRes.ok) throw new Error(`Failed to fetch .torrent for Real-Debrid: HTTP ${torrentRes.status}`);
+    const torrentBytes = Buffer.from(await torrentRes.arrayBuffer());
+    const addRes = await fetch(`${this.base}/torrents/addTorrent`, {
+      method: "PUT",
+      headers: this.headers(client),
+      body: torrentBytes,
+    });
+    if (!addRes.ok) throw new Error(`Real-Debrid addTorrent failed: HTTP ${addRes.status}`);
+    const addBody: any = await addRes.json();
+    return addBody.id;
+  }
+
+  async getStatus(_client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
+    return downloadIds
+      .filter((id) => this.jobs.has(id))
+      .map((id) => ({ downloadId: id, ...this.jobs.get(id)! }));
+  }
+}
+
 const adapters: Record<DownloadClient["type"], DownloadClientAdapter> = {
   qbittorrent: new QBittorrentAdapter(),
   sabnzbd: new SabnzbdAdapter(),
   http: new HttpDownloadAdapter(),
   ytdlp: new YtdlpAdapter(),
+  realdebrid: new RealDebridAdapter(),
 };
 
 export function getDownloadClientAdapter(type: DownloadClient["type"]): DownloadClientAdapter {

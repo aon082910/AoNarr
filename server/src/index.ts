@@ -54,6 +54,7 @@ import { updateCheckRouter } from "./routes/updateCheck.js";
 import { libraryGroupsRouter } from "./routes/libraryGroups.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { recycleBinRouter } from "./routes/recycleBin.js";
+import { themeRouter } from "./routes/theme.js";
 
 bootstrapAdminFromEnv();
 applySocksProxySetting();
@@ -119,6 +120,7 @@ app.use("/api/settings/update-check", updateCheckRouter);
 app.use("/api/library-groups", libraryGroupsRouter);
 app.use("/api/jobs", jobsRouter);
 app.use("/api/recycle-bin", recycleBinRouter);
+app.use("/api/theme.css", themeRouter);
 
 app.use(errorHandler);
 
