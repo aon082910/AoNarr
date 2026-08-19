@@ -3,6 +3,16 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 17
+- Guided first-run onboarding wizard (root folder → indexer → download client checklist)
+- SMTP email notifications alongside the existing webhook/bot providers
+- Import lists — recurring Trakt/IMDb list auto-add, generalized from the old single Trakt-sync setting
+- Audiobooks as a distinct library type
+- Public, revocable share links for a single media item's overview/poster
+- Per-account TOTP two-factor (household and admin-via-session, not just the legacy API key)
+- Docker-secrets-style `_FILE` env vars, plus non-interactive admin account bootstrap
+- In-app update checker comparing the running image's build time against Docker Hub
+
 ## Round 16
 - Multi-instance federation — browse another AoNarr instance's library read-only
 - Smart collections — a saved filter re-evaluated live instead of a fixed item list
