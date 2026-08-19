@@ -440,6 +440,96 @@ class RealDebridAdapter implements DownloadClientAdapter {
 }
 
 /**
+ * AllDebrid — the same "debrid" torrent-caching shape as Real-Debrid, just a different provider:
+ * hand it a magnet/torrent, wait for AllDebrid's own servers to fetch it, unlock the resulting
+ * link(s) into plain HTTPS downloads AoNarr pulls into downloadsDir itself. client.apiKey holds
+ * the AllDebrid API key (Account -> API keys on alldebrid.com); no host/port needed.
+ */
+class AllDebridAdapter implements DownloadClientAdapter {
+  private jobs = new Map<string, InProcessJob>();
+  private readonly base = "https://api.alldebrid.com/v4";
+  private readonly agent = "aonarr";
+
+  private async call(client: DownloadClient, path: string, params: Record<string, string> = {}, base = this.base): Promise<any> {
+    const url = new URL(`${base}${path}`);
+    url.searchParams.set("agent", this.agent);
+    url.searchParams.set("apikey", client.apiKey ?? "");
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+    const res = await fetch(url.toString());
+    if (!res.ok) throw new Error(`AllDebrid request failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+    if (body.status === "error") throw new Error(`AllDebrid: ${body.error?.message ?? body.error?.code ?? "unknown error"}`);
+    return body.data;
+  }
+
+  async addDownload(
+    client: DownloadClient,
+    downloadUrl: string,
+    _category: string | null,
+    releaseTitle?: string
+  ): Promise<GrabResult> {
+    const downloadId = crypto.randomUUID();
+    this.jobs.set(downloadId, { progress: 0, status: "downloading" });
+
+    (async () => {
+      try {
+        // AllDebrid's magnet/upload accepts either a magnet URI or an http(s) URL to a .torrent
+        // file through the same "magnets[]" param — unlike Real-Debrid, no separate endpoint/method
+        // needed per input shape.
+        const uploadData = await this.call(client, "/magnet/upload", { "magnets[]": downloadUrl });
+        const magnetId = uploadData?.magnets?.[0]?.id;
+        if (!magnetId) throw new Error(uploadData?.magnets?.[0]?.error?.message ?? "AllDebrid rejected the magnet");
+
+        // Poll AllDebrid's own caching progress until it's fully fetched on their end.
+        let links: { link: string; filename: string }[] = [];
+        for (;;) {
+          const statusData = await this.call(client, "/magnet/status", { id: String(magnetId) }, "https://api.alldebrid.com/v4.1");
+          const magnet = statusData?.magnets;
+          if (!magnet) throw new Error("AllDebrid returned no status for this magnet");
+          if (magnet.statusCode >= 5) throw new Error(`AllDebrid reported "${magnet.status}"`);
+          if (magnet.statusCode === 4) {
+            links = (magnet.links ?? []).map((l: any) => ({ link: l.link, filename: l.filename }));
+            break;
+          }
+          const total = magnet.size || 1;
+          this.jobs.set(downloadId, { progress: Math.min((magnet.downloaded ?? 0) / total, 0.99), status: "downloading" });
+          await new Promise((r) => setTimeout(r, 5000));
+        }
+        if (links.length === 0) throw new Error("AllDebrid reported no files");
+
+        fs.mkdirSync(config.downloadsDir, { recursive: true });
+        for (const { link, filename: remoteFilename } of links) {
+          const unlockData = await this.call(client, "/link/unlock", { link });
+          const directLink = unlockData?.link;
+          if (!directLink) throw new Error("AllDebrid link/unlock returned no direct link");
+
+          const fileRes = await fetch(directLink);
+          if (!fileRes.ok || !fileRes.body) throw new Error(`Downloading unlocked link failed: HTTP ${fileRes.status}`);
+          const filename = sanitizeFilename(unlockData.filename || remoteFilename || releaseTitle || downloadId);
+          const dest = path.join(config.downloadsDir, filename);
+          const fileStream = fs.createWriteStream(dest);
+          for await (const chunk of fileRes.body as any) fileStream.write(chunk);
+          await new Promise<void>((resolve, reject) => fileStream.end((err: any) => (err ? reject(err) : resolve())));
+        }
+
+        this.jobs.set(downloadId, { progress: 1, status: "completed" });
+      } catch (err) {
+        log.warn(`[alldebrid] failed for "${releaseTitle ?? downloadUrl}":`, (err as Error).message);
+        this.jobs.set(downloadId, { progress: 0, status: "failed" });
+      }
+    })();
+
+    return { downloadId };
+  }
+
+  async getStatus(_client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
+    return downloadIds
+      .filter((id) => this.jobs.has(id))
+      .map((id) => ({ downloadId: id, ...this.jobs.get(id)! }));
+  }
+}
+
+/**
  * Blackhole — the oldest, most universal *Starr integration pattern, for a torrent/usenet client
  * with no usable HTTP API (or one AoNarr just hasn't written an adapter for yet): instead of
  * talking to the client at all, AoNarr drops the release into a folder the client is separately
@@ -486,6 +576,7 @@ const adapters: Record<DownloadClient["type"], DownloadClientAdapter> = {
   http: new HttpDownloadAdapter(),
   ytdlp: new YtdlpAdapter(),
   realdebrid: new RealDebridAdapter(),
+  alldebrid: new AllDebridAdapter(),
   blackhole: new BlackholeAdapter(),
 };
 

@@ -3,6 +3,13 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 37
+- AllDebrid support as a second "debrid" download client type alongside Real-Debrid — same shape
+  (grab a magnet/torrent, wait for their servers to cache it, pull the unlocked link(s) directly),
+  different provider and API. Unlike Real-Debrid, AllDebrid's upload endpoint accepts a magnet URI
+  or a .torrent URL through the same parameter, so no separate code path per input shape was
+  needed
+
 ## Round 36
 - Blackhole download client type — for a torrent/usenet client with no usable HTTP API, AoNarr
   drops the release as a .magnet/.torrent/.nzb file into a watch folder for that client to pick

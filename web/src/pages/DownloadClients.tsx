@@ -4,7 +4,7 @@ import Modal from "../components/Modal.js";
 import type { DownloadClient } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 
-type ClientType = "qbittorrent" | "sabnzbd" | "http" | "ytdlp" | "realdebrid" | "blackhole";
+type ClientType = "qbittorrent" | "sabnzbd" | "http" | "ytdlp" | "realdebrid" | "alldebrid" | "blackhole";
 
 interface ClientHealthStats {
   uploadedTotalBytes: number;
@@ -107,6 +107,7 @@ export default function DownloadClients() {
           <option value="http">Direct HTTP download (for DDL/RSS indexer results)</option>
           <option value="ytdlp">yt-dlp (for Online Videos)</option>
           <option value="realdebrid">Real-Debrid</option>
+          <option value="alldebrid">AllDebrid</option>
           <option value="blackhole">Blackhole (watch folder)</option>
         </select>
 
@@ -157,6 +158,18 @@ export default function DownloadClients() {
               folder to pick up on its own. AoNarr can't track its progress or auto-import the
               finished file — point that client's own completed-download output at one of your
               root folders to get files into the library.
+            </p>
+          </>
+        )}
+
+        {type === "alldebrid" && (
+          <>
+            <label>API key</label>
+            <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+            <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+              From alldebrid.com → Account → API keys. AoNarr sends grabbed magnet/torrent links
+              to AllDebrid, waits for it to cache them, then downloads the unlocked link(s)
+              directly — no host/port needed, it's always their public API.
             </p>
           </>
         )}

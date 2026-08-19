@@ -69,7 +69,7 @@ export interface Indexer {
 export interface DownloadClient {
   id: number;
   name: string;
-  type: "qbittorrent" | "sabnzbd" | "http" | "ytdlp" | "realdebrid" | "blackhole";
+  type: "qbittorrent" | "sabnzbd" | "http" | "ytdlp" | "realdebrid" | "alldebrid" | "blackhole";
   host: string | null;
   port: number | null;
   useSsl: 0 | 1;
