@@ -5,6 +5,7 @@ import Dashboard from "./pages/Dashboard.js";
 import Onboarding, { shouldShowOnboarding } from "./pages/Onboarding.js";
 import LibraryHome from "./pages/LibraryHome.js";
 import LibraryType from "./pages/LibraryType.js";
+import LibraryUngrouped from "./pages/LibraryUngrouped.js";
 import MediaDetail from "./pages/MediaDetail.js";
 import AddMedia from "./pages/AddMedia.js";
 import Calendar from "./pages/Calendar.js";
@@ -143,6 +144,8 @@ export default function App() {
           />
           <Route path="/library" element={<LibraryHome />} />
           <Route path="/library/:type" element={<LibraryType />} />
+          <Route path="/library/:type/g/:groupId" element={<LibraryType />} />
+          <Route path="/library/:type/ungrouped" element={<LibraryUngrouped />} />
           <Route path="/media/:id" element={<MediaDetail />} />
           <Route path="/people/:tmdbId" element={<Person />} />
           <Route path="/search" element={<GlobalSearch />} />

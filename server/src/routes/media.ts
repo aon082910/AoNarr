@@ -71,7 +71,7 @@ mediaRouter.post(
 mediaRouter.get(
   "/",
   asyncHandler(async (req, res) => {
-    const { type, tagId } = req.query as { type?: MediaType; tagId?: string };
+    const { type, tagId, groupId } = req.query as { type?: MediaType; tagId?: string; groupId?: string };
     const allowedTypes = allowedTypesFor(req);
     if (allowedTypes && type && !allowedTypes.includes(type)) {
       res.json([]);
@@ -88,6 +88,10 @@ mediaRouter.get(
            ORDER BY m.sort_title`
         )
         .all(...(type ? [tagId, type] : [tagId]));
+    } else if (groupId === "none" && type) {
+      rows = db.prepare("SELECT * FROM media_items WHERE type = ? AND group_id IS NULL ORDER BY sort_title").all(type);
+    } else if (groupId) {
+      rows = db.prepare("SELECT * FROM media_items WHERE group_id = ? ORDER BY sort_title").all(groupId);
     } else if (type) {
       rows = db.prepare("SELECT * FROM media_items WHERE type = ? ORDER BY sort_title").all(type);
     } else {
@@ -319,8 +323,8 @@ mediaRouter.post(
     const result = db
       .prepare(
         `INSERT INTO media_items
-         (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, status)
-         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @path, @rootFolderId, @qualityProfileId, @monitored, @status)`
+         (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, status, group_id)
+         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @path, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId)`
       )
       .run({
         type: b.type,
@@ -335,6 +339,7 @@ mediaRouter.post(
         qualityProfileId: b.qualityProfileId ?? null,
         monitored: b.monitored ?? 1,
         status: b.status ?? "unknown",
+        groupId: b.groupId ?? null,
       });
 
     const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(result.lastInsertRowid);
@@ -362,6 +367,7 @@ mediaRouter.patch(
       path: b.path,
       status: b.status,
       content_rating: b.contentRating,
+      group_id: b.groupId,
     };
     const sets: string[] = [];
     const values: any[] = [];

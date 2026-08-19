@@ -204,6 +204,23 @@ CREATE TABLE IF NOT EXISTS collection_items (
   PRIMARY KEY (collection_id, media_item_id)
 );
 
+-- Generic nested grouping above a media_item, for library types whose real-world organization
+-- goes deeper than "one item, optionally with children" — e.g. ROMs (System -> Maker -> Game),
+-- Adult (Site -> Maker -> Series -> Video), Online Videos and Courses (Site -> Creator -> item).
+-- One table serves every type rather than bespoke tables per hierarchy: `kind` names the level
+-- (e.g. "system", "maker", "site"), `media_type` scopes it to one MEDIA_TYPES key, and
+-- `parent_group_id` nests groups arbitrarily deep. A media_item's `group_id` (see below) points at
+-- its immediate parent group — walk `parent_group_id` up from there for the full breadcrumb.
+CREATE TABLE IF NOT EXISTS library_groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  media_type TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  name TEXT NOT NULL,
+  sort_name TEXT NOT NULL,
+  parent_group_id INTEGER REFERENCES library_groups(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- A public, unauthenticated read-only link to one media item's overview/poster — for sharing
 -- outside the household without handing out a login. Revocable; optionally expiring.
 CREATE TABLE IF NOT EXISTS share_links (

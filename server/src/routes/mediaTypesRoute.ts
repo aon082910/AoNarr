@@ -16,6 +16,7 @@ mediaTypesRouter.get(
         childLabel: t.childLabel ?? null,
         hasMetadataSearch: t.metadataProviders.length > 0,
         multiFilePerChild: !!t.multiFilePerChild,
+        groupLevels: t.groupLevels ?? [],
       }))
     );
   })

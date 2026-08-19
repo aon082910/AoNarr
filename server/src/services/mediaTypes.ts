@@ -24,6 +24,10 @@ export interface MediaTypeConfig {
   metadataProviders: string[];
   defaultProvider: string | null; // null when no viable search provider exists (manual-only)
   multiFilePerChild?: boolean;
+  /** Nested grouping levels above the media_item itself, outermost first — e.g. rom's
+   * ["system", "maker"] means System -> Maker -> Game. Empty/absent means items of this type
+   * aren't grouped (browsed as a flat list, same as before library_groups existed). */
+  groupLevels?: string[];
 }
 
 const VIDEO_EXT = [".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v"];
@@ -113,6 +117,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     indexerCategory: "4050",
     metadataProviders: ["rawg", "igdb"],
     defaultProvider: "rawg",
+    groupLevels: ["system", "maker"],
   },
   video: {
     key: "video",
@@ -123,6 +128,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     indexerCategory: "5000",
     metadataProviders: ["youtube"],
     defaultProvider: "youtube",
+    groupLevels: ["site"],
   },
   course: {
     key: "course",
@@ -133,6 +139,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     indexerCategory: "5000",
     metadataProviders: [],
     defaultProvider: null, // no viable public search API for arbitrary course platforms; manual-only
+    groupLevels: ["site", "creator"],
   },
   adult: {
     key: "adult",
@@ -142,6 +149,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     indexerCategory: "6000",
     metadataProviders: ["theporndb"],
     defaultProvider: "theporndb",
+    groupLevels: ["site", "maker", "series"],
   },
 };
 

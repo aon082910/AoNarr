@@ -1,16 +1,161 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, downloadFile, uploadFormFile } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
-import type { MediaItem, Tag } from "../types.js";
+import type { LibraryGroup, MediaItem, Tag } from "../types.js";
 
 type SortKey = "title" | "year" | "added" | "status";
 type ViewMode = "poster" | "list";
 type StatusFilter = "all" | "monitored" | "unmonitored" | "missing" | "downloaded";
 
+interface GroupDetail {
+  group: LibraryGroup;
+  breadcrumb: LibraryGroup[];
+  isDeepestLevel: boolean;
+  nextKind: string | null;
+}
+
+const KIND_LABEL: Record<string, string> = {
+  system: "System",
+  maker: "Maker",
+  site: "Site",
+  creator: "Creator",
+  series: "Series",
+};
+
+/**
+ * Handles both the flat library types (no groupLevels — behaves exactly like the old single-level
+ * page) and the nested ones (ROMs/Adult/Online Videos/Courses): at any level short of the deepest
+ * group kind, this renders a browse-groups grid instead of items; once at (or for flat types,
+ * always at) the deepest level it renders the item grid with the usual sort/filter/view controls.
+ */
 export default function LibraryType() {
-  const { type = "" } = useParams<{ type: string }>();
+  const { type = "", groupId } = useParams<{ type: string; groupId?: string }>();
+  const navigate = useNavigate();
+  const { auth } = useAuth();
+  const mediaTypes = useMediaTypes();
+  const typeInfo = mediaTypes.find((t) => t.key === type);
+  const groupLevels = typeInfo?.groupLevels ?? [];
+  const isGrouped = groupLevels.length > 0;
+
+  const [groupDetail, setGroupDetail] = useState<GroupDetail | null>(null);
+  const [childGroups, setChildGroups] = useState<LibraryGroup[]>([]);
+  const [ungroupedCount, setUngroupedCount] = useState(0);
+
+  const currentKind = groupDetail ? groupDetail.group.kind : groupLevels[0];
+  const nextKind = groupDetail ? groupDetail.nextKind : groupLevels[1] ?? (groupLevels.length === 1 ? null : groupLevels[0]);
+  const atGroupBrowseLevel = isGrouped && (!groupId || !groupDetail?.isDeepestLevel);
+
+  useEffect(() => {
+    if (!isGrouped) return;
+    if (groupId) {
+      api.get<GroupDetail>(`/library-groups/${groupId}`).then((detail) => {
+        setGroupDetail(detail);
+        if (!detail.isDeepestLevel) {
+          api.get<LibraryGroup[]>(`/library-groups?mediaType=${type}&parentId=${groupId}`).then(setChildGroups);
+        }
+      });
+    } else {
+      setGroupDetail(null);
+      api.get<LibraryGroup[]>(`/library-groups?mediaType=${type}`).then(setChildGroups);
+      api.get<MediaItem[]>(`/media?type=${type}&groupId=none`).then((rows) => setUngroupedCount(rows.length));
+    }
+  }, [isGrouped, type, groupId]);
+
+  async function addGroup() {
+    const kind = groupId ? groupDetail?.nextKind ?? groupLevels[0] : groupLevels[0];
+    const name = prompt(`New ${KIND_LABEL[kind ?? ""] ?? kind}:`);
+    if (!name?.trim()) return;
+    await api.post("/library-groups", { mediaType: type, kind, name: name.trim(), parentGroupId: groupId ?? null });
+    if (groupId) {
+      api.get<LibraryGroup[]>(`/library-groups?mediaType=${type}&parentId=${groupId}`).then(setChildGroups);
+    } else {
+      api.get<LibraryGroup[]>(`/library-groups?mediaType=${type}`).then(setChildGroups);
+    }
+  }
+
+  async function deleteGroup(g: LibraryGroup, e: MouseEvent) {
+    e.stopPropagation();
+    if (!confirm(`Delete "${g.name}"? Items directly inside will become ungrouped, not deleted.`)) return;
+    await api.del(`/library-groups/${g.id}`);
+    setChildGroups((prev) => prev.filter((c) => c.id !== g.id));
+  }
+
+  if (!typeInfo) return <p className="empty">Loading...</p>;
+
+  if (atGroupBrowseLevel) {
+    return (
+      <div>
+        <h1>{typeInfo.label}</h1>
+        {groupDetail && (
+          <p style={{ color: "var(--muted)" }}>
+            <Link to={`/library/${type}`}>{typeInfo.label}</Link>
+            {groupDetail.breadcrumb.map((b) => (
+              <span key={b.id}>
+                {" / "}
+                <Link to={`/library/${type}/g/${b.id}`}>{b.name}</Link>
+              </span>
+            ))}
+          </p>
+        )}
+        <p style={{ color: "var(--muted)" }}>
+          {KIND_LABEL[currentKind ?? ""] ?? currentKind}{groupDetail ? ` — browse by ${KIND_LABEL[nextKind ?? ""] ?? nextKind}` : ""}
+        </p>
+
+        {auth.isAdmin && (
+          <button type="button" onClick={addGroup} style={{ marginBottom: 16 }}>
+            + Add {KIND_LABEL[(groupId ? groupDetail?.nextKind : groupLevels[0]) ?? ""] ?? "group"}
+          </button>
+        )}
+
+        <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))" }}>
+          {childGroups.map((g) => (
+            <div
+              key={g.id}
+              className="card"
+              onClick={() => navigate(`/library/${type}/g/${g.id}`)}
+              style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20, cursor: "pointer", position: "relative" }}
+            >
+              <div style={{ fontWeight: 600 }}>{g.name}</div>
+              {auth.isAdmin && (
+                <button
+                  type="button"
+                  className="danger"
+                  style={{ position: "absolute", top: 4, right: 4, padding: "1px 6px", fontSize: "0.7rem" }}
+                  onClick={(e) => deleteGroup(g, e)}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+        {childGroups.length === 0 && <p className="empty">Nothing here yet.</p>}
+
+        {!groupId && ungroupedCount > 0 && (
+          <p style={{ marginTop: 16 }}>
+            <Link to={`/library/${type}/ungrouped`}>{ungroupedCount} ungrouped item(s) →</Link>
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return <LibraryItemGrid type={type} typeLabel={typeInfo.label} groupId={groupId} groupDetail={groupDetail} />;
+}
+
+export function LibraryItemGrid({
+  type,
+  typeLabel,
+  groupId,
+  groupDetail,
+}: {
+  type: string;
+  typeLabel: string;
+  groupId?: string;
+  groupDetail: GroupDetail | null;
+}) {
   const [items, setItems] = useState<MediaItem[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [tagFilter, setTagFilter] = useState<number | "all">("all");
@@ -24,13 +169,12 @@ export default function LibraryType() {
   const csvInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { auth } = useAuth();
-  const mediaTypes = useMediaTypes();
-  const typeInfo = mediaTypes.find((t) => t.key === type);
 
   function load() {
     setLoading(true);
     const params = new URLSearchParams();
     params.set("type", type);
+    if (groupId) params.set("groupId", groupId);
     if (tagFilter !== "all") params.set("tagId", String(tagFilter));
     api
       .get<MediaItem[]>(`/media?${params.toString()}`)
@@ -41,7 +185,7 @@ export default function LibraryType() {
       .finally(() => setLoading(false));
   }
 
-  useEffect(load, [type, tagFilter]);
+  useEffect(load, [type, groupId, tagFilter]);
   useEffect(() => {
     if (auth.isAdmin) api.get<Tag[]>("/tags").then(setTags);
   }, [auth.isAdmin]);
@@ -97,6 +241,17 @@ export default function LibraryType() {
     load();
   }
 
+  async function quickAdd() {
+    const title = prompt(`Title for the new ${typeLabel.replace(/ — Ungrouped$/, "")} item:`);
+    if (!title?.trim()) return;
+    await api.post("/media", {
+      type,
+      title: title.trim(),
+      groupId: groupId && groupId !== "none" ? Number(groupId) : null,
+    });
+    load();
+  }
+
   const filtered = items.filter((item) => {
     if (statusFilter === "monitored") return item.monitored;
     if (statusFilter === "unmonitored") return !item.monitored;
@@ -109,14 +264,23 @@ export default function LibraryType() {
     if (sortKey === "title") return a.title.localeCompare(b.title);
     if (sortKey === "year") return (b.year ?? 0) - (a.year ?? 0);
     if (sortKey === "status") return Number(b.hasFile) - Number(a.hasFile);
-    return b.id - a.id; // "added" — higher id = more recently added
+    return b.id - a.id;
   });
-
-  if (!typeInfo) return <p className="empty">Unknown library type.</p>;
 
   return (
     <div>
-      <h1>{typeInfo.label}</h1>
+      <h1>{typeLabel}</h1>
+      {groupDetail && (
+        <p style={{ color: "var(--muted)" }}>
+          <Link to={`/library/${type}`}>{typeLabel}</Link>
+          {groupDetail.breadcrumb.map((b) => (
+            <span key={b.id}>
+              {" / "}
+              <Link to={`/library/${type}/g/${b.id}`}>{b.name}</Link>
+            </span>
+          ))}
+        </p>
+      )}
       <div style={{ marginBottom: 16, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)} style={{ maxWidth: 160 }}>
           <option value="added">Sort: Recently added</option>
@@ -153,6 +317,11 @@ export default function LibraryType() {
             List
           </button>
         </div>
+        {auth.isAdmin && groupId && (
+          <button type="button" onClick={quickAdd}>
+            + Add {typeLabel.replace(/ — Ungrouped$/, "")}
+          </button>
+        )}
         {auth.isAdmin && (
           <button className="secondary" onClick={exportCsv}>
             Export CSV

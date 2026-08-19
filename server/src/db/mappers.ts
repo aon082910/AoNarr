@@ -21,6 +21,17 @@ export function mediaItemFromRow(row: any) {
     addedAt: row.added_at,
     mediaInfo: row.media_info ? JSON.parse(row.media_info) : null,
     contentRating: row.content_rating,
+    groupId: row.group_id,
+  };
+}
+
+export function libraryGroupFromRow(row: any) {
+  return {
+    id: row.id,
+    mediaType: row.media_type,
+    kind: row.kind,
+    name: row.name,
+    parentGroupId: row.parent_group_id,
   };
 }
 

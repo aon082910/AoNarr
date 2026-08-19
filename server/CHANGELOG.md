@@ -3,6 +3,14 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 20
+- Nested library grouping (generic `library_groups` table + API) for the library types whose
+  real-world organization goes deeper than one level: ROMs (System → Maker → Game), Adult
+  (Site → Maker → Series → Video), Online Videos (Site → Creator), and Courses (Site → Creator)
+- Library pages for those types now browse through the group hierarchy before showing items, with
+  breadcrumbs, in-place group creation/deletion, and an "ungrouped items" fallback view
+- `/api/media` and the add-media endpoint accept a `groupId` to file an item directly under a group
+
 ## Round 19
 - Library restructured: a landing page showing recently-added across every type plus per-type
   cards, and each library type now has its own page with sort/status-filter/tag-filter and a

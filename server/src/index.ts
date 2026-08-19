@@ -50,6 +50,7 @@ import { remoteInstancesRouter } from "./routes/remoteInstances.js";
 import { importListsRouter } from "./routes/importLists.js";
 import { shareLinksRouter, shareLinksPublicRouter } from "./routes/shareLinks.js";
 import { updateCheckRouter } from "./routes/updateCheck.js";
+import { libraryGroupsRouter } from "./routes/libraryGroups.js";
 
 bootstrapAdminFromEnv();
 
@@ -111,6 +112,7 @@ app.use("/api/import-lists", importListsRouter);
 app.use("/api/share", shareLinksPublicRouter);
 app.use("/api/media", shareLinksRouter);
 app.use("/api/settings/update-check", updateCheckRouter);
+app.use("/api/library-groups", libraryGroupsRouter);
 
 app.use(errorHandler);
 

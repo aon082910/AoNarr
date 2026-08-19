@@ -8,6 +8,15 @@ export interface MediaTypeInfo {
   childLabel: string | null;
   hasMetadataSearch: boolean;
   multiFilePerChild: boolean;
+  groupLevels: string[];
+}
+
+export interface LibraryGroup {
+  id: number;
+  mediaType: MediaType;
+  kind: string;
+  name: string;
+  parentGroupId: number | null;
 }
 
 export interface MediaInfo {
@@ -35,6 +44,7 @@ export interface MediaItem {
   quality: string | null;
   protected: 0 | 1;
   status: string;
+  groupId: number | null;
   addedAt: string;
   mediaInfo: MediaInfo | null;
   contentRating: string | null;
