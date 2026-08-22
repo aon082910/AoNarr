@@ -231,7 +231,7 @@ export function LibraryItemGrid({
     await downloadFile(`/media/export.csv?type=${type}`, `aonarr-${type}.csv`);
   }
 
-  async function exportMetadata(format: "nfo" | "json") {
+  async function exportMetadata(format: "nfo" | "json" | "plexmatch") {
     await downloadFile(`/media/export-bulk.zip?type=${type}&format=${format}`, `aonarr-${type}-metadata.zip`);
   }
 
@@ -368,6 +368,15 @@ export function LibraryItemGrid({
         {auth.isAdmin && ["author", "audiobook", "comic", "manga"].includes(type) && (
           <button className="secondary" onClick={exportCalibre}>
             Export for Calibre
+          </button>
+        )}
+        {auth.isAdmin && ["movie", "series", "anime"].includes(type) && (
+          <button
+            className="secondary"
+            onClick={() => exportMetadata("plexmatch")}
+            title="A .plexmatch file per item's own folder — Plex's own match-override format, since Plex doesn't read .nfo sidecars"
+          >
+            Export for Plex (.plexmatch)
           </button>
         )}
         {auth.isAdmin && (

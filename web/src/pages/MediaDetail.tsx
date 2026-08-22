@@ -681,6 +681,15 @@ export default function MediaDetail() {
           >
             Export .nfo
           </button>
+          {(item.type === "movie" || item.type === "series" || item.type === "anime") && (
+            <button
+              className="secondary"
+              onClick={() => downloadFile(`/media/${item.id}/export?format=plexmatch`, `.plexmatch`)}
+              title="Rename this file to exactly .plexmatch and place it in this item's own folder for Plex to pick it up"
+            >
+              Export for Plex
+            </button>
+          )}
           {typeInfo && typeInfo.groupLevels.length > 0 && (
             <button onClick={() => setShowMove((v) => !v)} className="secondary">
               {showMove ? "Cancel move" : "Move to group..."}

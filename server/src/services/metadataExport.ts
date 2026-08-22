@@ -69,6 +69,28 @@ export function buildCalibreOpf(item: ExportableItem): string {
     .join("\n");
 }
 
+/**
+ * Plex's own local-metadata override file — unlike Kodi/Jellyfin/Emby, Plex's built-in agents
+ * don't read .nfo sidecars at all; the closest equivalent is `.plexmatch`, a plain key:value text
+ * file (introduced in Plex Media Server 1.25) that forces a match to a specific TMDB/IMDb/TVDB id
+ * instead of relying on filename parsing. Must be named exactly `.plexmatch` and live directly in
+ * the item's own folder (a movie's folder, or a show's top-level folder) for Plex to pick it up —
+ * never per-title-named like the other sidecar formats, so callers zip it into a per-item folder
+ * the same way the Calibre export already does for metadata.opf/cover.jpg.
+ */
+export function buildPlexMatch(item: ExportableItem): string {
+  const ids = item.externalIds ?? {};
+  return [
+    `title: ${item.title}`,
+    item.year ? `year: ${item.year}` : null,
+    ids.tmdb ? `tmdbid: ${ids.tmdb}` : null,
+    ids.imdb ? `imdbid: ${ids.imdb}` : null,
+    ids.tvdb ? `tvdbid: ${ids.tvdb}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export function safeFileName(title: string): string {
   return title.replace(/[/\\:*?"<>|]/g, "").trim().slice(0, 200);
 }

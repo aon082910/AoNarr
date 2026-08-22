@@ -13,7 +13,7 @@ import { fetchCastFor, fetchTrailerFor, searchMetadata } from "../services/metad
 import { pushWatchState } from "../services/mediaServer.js";
 import { notifyGrabbed } from "../services/notifications.js";
 import { recycleFile } from "../services/recycleBin.js";
-import { buildCalibreOpf, buildJson, buildNfo, fetchPosterBuffer, safeFileName, type ExportableItem } from "../services/metadataExport.js";
+import { buildCalibreOpf, buildJson, buildNfo, buildPlexMatch, fetchPosterBuffer, safeFileName, type ExportableItem } from "../services/metadataExport.js";
 import { probeMediaInfo } from "../services/ffprobe.js";
 import AdmZip from "adm-zip";
 import type { MediaType } from "../types/index.js";
@@ -239,16 +239,24 @@ mediaRouter.get(
   asyncHandler(async (req, res) => {
     const { type, format } = req.query as { type?: string; format?: string };
     if (!type) throw new HttpError(400, "type is required");
-    const fmt = format === "json" ? "json" : "nfo";
+    const fmt = format === "json" ? "json" : format === "plexmatch" ? "plexmatch" : "nfo";
 
     const rows = db.prepare("SELECT * FROM media_items WHERE type = ?").all(type) as any[];
     const zip = new AdmZip();
     for (const row of rows) {
       const item = toExportable(row);
-      const body = fmt === "json" ? buildJson(item) : buildNfo(item);
-      zip.addFile(`${safeFileName(item.title)}.${fmt}`, Buffer.from(body, "utf-8"));
-      const poster = await fetchPosterBuffer(item.posterUrl);
-      if (poster) zip.addFile(`${safeFileName(item.title)}-poster.jpg`, poster);
+      if (fmt === "plexmatch") {
+        // Must be named exactly ".plexmatch" inside the item's own folder — never per-title-named
+        // like .nfo/.json, since that's not a filename Plex looks for.
+        zip.addFile(`${safeFileName(item.title)}/.plexmatch`, Buffer.from(buildPlexMatch(item), "utf-8"));
+        const poster = await fetchPosterBuffer(item.posterUrl);
+        if (poster) zip.addFile(`${safeFileName(item.title)}/poster.jpg`, poster);
+      } else {
+        const body = fmt === "json" ? buildJson(item) : buildNfo(item);
+        zip.addFile(`${safeFileName(item.title)}.${fmt}`, Buffer.from(body, "utf-8"));
+        const poster = await fetchPosterBuffer(item.posterUrl);
+        if (poster) zip.addFile(`${safeFileName(item.title)}-poster.jpg`, poster);
+      }
     }
     res.setHeader("Content-Disposition", `attachment; filename="aonarr-${type}-metadata.zip"`);
     res.setHeader("Content-Type", "application/zip");
@@ -327,7 +335,10 @@ function toExportable(row: any): ExportableItem {
 }
 
 /** Individual metadata export — ?format=nfo (default, Kodi/Jellyfin/Emby-compatible sidecar,
- * round-trips through Add Media's "Load NFO") or ?format=json. */
+ * round-trips through Add Media's "Load NFO"), ?format=json, or ?format=plexmatch (Plex's own
+ * match-override file; unlike the other two, it must be renamed to exactly ".plexmatch" and
+ * placed directly in the item's own folder for Plex to pick it up — the download itself is still
+ * a single file since there's no other way to hand back one file over HTTP). */
 mediaRouter.get(
   "/:id/export",
   requireAdmin,
@@ -335,10 +346,11 @@ mediaRouter.get(
     const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Media item not found");
     const item = toExportable(row);
-    const format = req.query.format === "json" ? "json" : "nfo";
-    const body = format === "json" ? buildJson(item) : buildNfo(item);
-    res.setHeader("Content-Disposition", `attachment; filename="${safeFileName(item.title)}.${format}"`);
-    res.setHeader("Content-Type", format === "json" ? "application/json" : "application/xml");
+    const format = req.query.format === "json" ? "json" : req.query.format === "plexmatch" ? "plexmatch" : "nfo";
+    const body = format === "json" ? buildJson(item) : format === "plexmatch" ? buildPlexMatch(item) : buildNfo(item);
+    const filename = format === "plexmatch" ? ".plexmatch" : `${safeFileName(item.title)}.${format}`;
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Type", format === "json" ? "application/json" : "text/plain");
     res.send(body);
   })
 );

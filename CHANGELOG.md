@@ -3,6 +3,13 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 40
+- Plex-specific metadata export: the existing .nfo export only ever covered Kodi/Jellyfin/Emby —
+  Plex's own local-media agents don't read .nfo sidecars at all. Added `.plexmatch` (Plex's own
+  match-override text format, since PMS 1.25) as a new export option, both individually and in
+  bulk (as `.plexmatch` + `poster.jpg` inside each item's own folder, since it has to be named
+  exactly that to be picked up — never per-title-named like the other sidecar formats)
+
 ## Round 39
 - Watch-state sync now flows both ways — previously only the media server could tell AoNarr
   something was watched (via the webhook or the periodic poll behind auto-archival). A "Mark
