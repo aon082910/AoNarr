@@ -3,6 +3,18 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 39
+- Watch-state sync now flows both ways — previously only the media server could tell AoNarr
+  something was watched (via the webhook or the periodic poll behind auto-archival). A "Mark
+  watched"/"Mark unwatched" button on the media detail page writes AoNarr's own watch_events
+  *and* best-effort pushes the same state to the configured Plex/Jellyfin/Emby server (resolved by
+  file-path match, same tail-matching heuristic library validation already uses); a media-server
+  push failure is reported but never rolls back AoNarr's own local state. Jellyfin/Emby's
+  PlayedItems endpoint was verified live against a public Jellyfin demo server (both a real 401
+  from a fake token and full round-trip through the actual UI); Plex's long-stable :/scrobble
+  endpoint is implemented per its documented contract but has no public demo server to verify
+  against the same way
+
 ## Round 38
 - Bulk metadata export now includes the actual poster image, not just a remote URL reference
   inside the .nfo/.opf sidecar — `poster.jpg` alongside each item in the Kodi/Jellyfin/Emby-style

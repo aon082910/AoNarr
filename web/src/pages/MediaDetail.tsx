@@ -117,12 +117,20 @@ export default function MediaDetail() {
 
   const [cast, setCast] = useState<CastMember[] | null>(null);
   const [trailerUrl, setTrailerUrl] = useState<string | null>(null);
+  const [watched, setWatched] = useState(false);
+  const [watchStateError, setWatchStateError] = useState<string | null>(null);
 
   function load() {
     api.get<MediaDetailResponse>(`/media/${id}`).then(setItem);
   }
 
   useEffect(load, [id]);
+  useEffect(() => {
+    api
+      .get<{ watched: boolean }>(`/media/${id}/watch-state`)
+      .then((r) => setWatched(r.watched))
+      .catch(() => setWatched(false));
+  }, [id]);
   useEffect(() => {
     setCast(null);
     api
@@ -205,6 +213,17 @@ export default function MediaDetail() {
     if (!item) return;
     const updated = await api.patch<MediaItem>(`/media/${item.id}`, { protected: item.protected ? 0 : 1 });
     setItem({ ...item, protected: updated.protected });
+  }
+
+  async function toggleWatched() {
+    if (!item) return;
+    setWatchStateError(null);
+    const next = !watched;
+    const result = await api.patch<{ watched: boolean; mediaServerError: string | null }>(`/media/${item.id}/watch-state`, {
+      watched: next,
+    });
+    setWatched(result.watched);
+    if (result.mediaServerError) setWatchStateError(`Marked in AoNarr, but couldn't update the media server: ${result.mediaServerError}`);
   }
 
   async function updateContentRating(rating: string | null) {
@@ -636,6 +655,13 @@ export default function MediaDetail() {
           <button onClick={toggleProtected} className="secondary" title="Protected items are skipped by watch-status auto-archival">
             {item.protected ? "Unprotect" : "Protect from archival"}
           </button>
+          <button
+            onClick={toggleWatched}
+            className="secondary"
+            title="Also pushed to your configured media server, if it recognizes this file"
+          >
+            {watched ? "Mark unwatched" : "Mark watched"}
+          </button>
           {shape === "single" && (
             <button onClick={() => runSearch(null)} disabled={searching}>
               {searching && !target ? "Searching..." : "Search now"}
@@ -674,6 +700,7 @@ export default function MediaDetail() {
       )}
 
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
+      {watchStateError && <p style={{ color: "var(--danger)" }}>{watchStateError}</p>}
 
       {typeInfo && typeInfo.groupLevels.length > 0 && groupBreadcrumb && !showMove && (
         <p style={{ color: "var(--muted)" }}>Location: {groupBreadcrumb}</p>

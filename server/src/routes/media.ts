@@ -10,6 +10,7 @@ import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { CONTENT_RATING_ORDER, isRatingBlocked } from "../services/contentRatings.js";
 import { fetchCastFor, fetchTrailerFor, searchMetadata } from "../services/metadata.js";
+import { pushWatchState } from "../services/mediaServer.js";
 import { notifyGrabbed } from "../services/notifications.js";
 import { recycleFile } from "../services/recycleBin.js";
 import { buildCalibreOpf, buildJson, buildNfo, fetchPosterBuffer, safeFileName, type ExportableItem } from "../services/metadataExport.js";
@@ -552,6 +553,53 @@ mediaRouter.patch(
 
     const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
     res.json(mediaItemFromRow(row));
+  })
+);
+
+/**
+ * Manual "mark watched"/"mark unwatched" — watch state normally only ever flows in from the
+ * configured media server (the webhook, or the periodic fetchWatchedFiles poll behind
+ * auto-archival); this is the other direction, for setting it from AoNarr itself and having it
+ * reflected back on the media server too. The media-server push is best-effort: no media server
+ * configured, or a path that doesn't resolve to anything there, still leaves AoNarr's own
+ * watch_events row in place — that failure is reported in the response but doesn't roll it back.
+ */
+mediaRouter.get(
+  "/:id/watch-state",
+  asyncHandler(async (req, res) => {
+    const row = db
+      .prepare(
+        "SELECT watched_at FROM watch_events WHERE media_item_id = ? AND episode_id IS NULL AND sub_item_id IS NULL ORDER BY watched_at DESC LIMIT 1"
+      )
+      .get(req.params.id) as { watched_at: string } | undefined;
+    res.json({ watched: !!row, watchedAt: row?.watched_at ?? null });
+  })
+);
+
+mediaRouter.patch(
+  "/:id/watch-state",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id) as any;
+    if (!row) throw new HttpError(404, "Media item not found");
+    const watched = !!req.body?.watched;
+
+    if (watched) {
+      db.prepare("INSERT INTO watch_events (media_item_id, watched_at) VALUES (?, datetime('now'))").run(row.id);
+    } else {
+      db.prepare("DELETE FROM watch_events WHERE media_item_id = ? AND episode_id IS NULL AND sub_item_id IS NULL").run(row.id);
+    }
+
+    let mediaServerError: string | null = null;
+    if (row.path) {
+      try {
+        await pushWatchState(row.path, watched);
+      } catch (err) {
+        mediaServerError = (err as Error).message;
+      }
+    }
+
+    res.json({ watched, mediaServerError });
   })
 );
 
