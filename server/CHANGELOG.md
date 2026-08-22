@@ -3,6 +3,12 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 41
+- Fixed a real sidebar layout bug: `.sidebar a` had no `display` set, so nav links defaulted to
+  `display: inline` and wrapped like text instead of stacking one per line — visible as staggered,
+  out-of-line text any time a dropdown (Library, Manage, Configuration, System) had more than a
+  couple of items open
+
 ## Round 40
 - Plex-specific metadata export: the existing .nfo export only ever covered Kodi/Jellyfin/Emby —
   Plex's own local-media agents don't read .nfo sidecars at all. Added `.plexmatch` (Plex's own
