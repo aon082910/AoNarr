@@ -2,7 +2,7 @@ import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { getMediaServerConfig } from "../services/mediaServer.js";
-import { importMoviesFromMediaServer } from "../services/mediaServerImport.js";
+import { importMoviesFromMediaServer, importSeriesFromMediaServer } from "../services/mediaServerImport.js";
 import { log } from "../services/logger.js";
 
 export const mediaServerImportRouter = Router();
@@ -22,6 +22,21 @@ mediaServerImportRouter.post(
     if (!rootFolderId) throw new HttpError(400, "rootFolderId is required");
 
     importMoviesFromMediaServer(rootFolderId).catch((err) => log.warn("[mediaServerImport] movies import failed:", (err as Error).message));
+    res.json({ started: true });
+  })
+);
+
+mediaServerImportRouter.post(
+  "/series",
+  asyncHandler(async (req, res) => {
+    if (!getMediaServerConfig()) throw new HttpError(400, "No media server configured — set one up in Settings first");
+    const rootFolderId = Number(req.body?.rootFolderId);
+    const type = req.body?.type === "anime" ? "anime" : "series";
+    if (!rootFolderId) throw new HttpError(400, "rootFolderId is required");
+
+    importSeriesFromMediaServer(type, rootFolderId).catch((err) =>
+      log.warn(`[mediaServerImport] ${type} import failed:`, (err as Error).message)
+    );
     res.json({ started: true });
   })
 );

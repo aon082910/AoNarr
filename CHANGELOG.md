@@ -3,6 +3,32 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 67
+- Extended "Import from Media Server" (Round 66, movies-only) to TV Shows and Anime libraries —
+  the deferred "larger job" from last round: matching/creating individual episodes under the right
+  parent show, not just a flat list of files. Fetches every show and every episode from the
+  configured Plex/Jellyfin/Emby server in two bulk passes (all shows, then all episodes), joins
+  episodes to their parent show in memory via Plex's `grandparentRatingKey` or Jellyfin/Emby's
+  `SeriesId`, then for each show matches or creates the AoNarr media_item (by external id, then
+  title+year — same precedence as the movie importer) and for each of its episodes matches or
+  creates the episode row by season+episode number, filling in has_file/file_path/title/overview
+  from the media server's own data. A show's own has_file flag is set once any of its episodes has
+  a file, matching how every other import path already treats episodic items
+- "Import from Media Server" button and modal (built in Round 66) now also appear on the Series and
+  Anime library pages, with type-aware copy describing the show/episode matching precedence
+- Verified live end-to-end against a real mock Plex TV server with three cases: a show and episode
+  AoNarr already had tracked (correctly skipped, left untouched), a show AoNarr knew under the
+  wrong guessed title with one episode already tracked (correctly matched via tmdb id rather than
+  duplicated, existing episode left alone, its other episodes created fresh with real Plex
+  metadata), and a show AoNarr had never seen at all (correctly created along with all its
+  episodes) — confirmed exact expected counts via the structured log summary, confirmed the
+  resulting media_items/episodes rows in the database, and confirmed the button/modal render
+  correctly on the Series library page in the browser. (First test pass used file paths that
+  happened to share a last-two-path-segment across two different shows — e.g. both named
+  `Season 01/S01E01.mkv` — which the existing pathTail cross-mount-point matching heuristic
+  treated as identical files; this is a known, pre-existing tradeoff already relied on everywhere
+  else in the codebase, not a bug, and the fixture was corrected to use distinct filenames.)
+
 ## Round 66
 - Added "Import from Media Server" (Movies library page, when a media server is configured) —
   pulls an already-organized Plex/Jellyfin/Emby movie library straight into AoNarr with its real

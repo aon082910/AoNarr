@@ -313,13 +313,14 @@ export function LibraryItemGrid({
   useEffect(() => {
     if (auth.isAdmin) api.get<Tag[]>("/tags").then(setTags);
   }, [auth.isAdmin]);
+  const mediaServerImportable = type === "movie" || type === "series" || type === "anime";
   useEffect(() => {
-    if (auth.isAdmin && type === "movie") {
+    if (auth.isAdmin && mediaServerImportable) {
       api.get<Record<string, string>>("/settings").then((s) => setMediaServerConfigured(!!s.mediaServerType && !!s.mediaServerUrl && !!s.mediaServerToken));
     } else {
       setMediaServerConfigured(false);
     }
-  }, [auth.isAdmin, type]);
+  }, [auth.isAdmin, mediaServerImportable]);
 
   async function openMediaServerImport() {
     const folders = await api.get<RootFolder[]>("/root-folders");
@@ -333,7 +334,11 @@ export function LibraryItemGrid({
     if (!mediaServerImportFolderId) return;
     setMediaServerImporting(true);
     try {
-      await api.post("/media-server-import/movies", { rootFolderId: mediaServerImportFolderId });
+      if (type === "movie") {
+        await api.post("/media-server-import/movies", { rootFolderId: mediaServerImportFolderId });
+      } else {
+        await api.post("/media-server-import/series", { rootFolderId: mediaServerImportFolderId, type });
+      }
       alert(
         "Import started in the background — this can take a while for a large library. Check the Logs page for the result, or come back to this list shortly."
       );
@@ -671,7 +676,7 @@ export function LibraryItemGrid({
           <button
             className="select-like"
             onClick={openMediaServerImport}
-            title="Import an already-organized movie library straight from your configured Plex/Jellyfin/Emby server, with its real title/year/poster/external-id metadata"
+            title={`Import an already-organized ${typeLabel.toLowerCase()} library straight from your configured Plex/Jellyfin/Emby server, with its real title/year/poster/external-id metadata`}
           >
             Import from Media Server
           </button>
@@ -815,10 +820,11 @@ export function LibraryItemGrid({
       {showMediaServerImport && (
         <Modal title="Import from Media Server" onClose={() => setShowMediaServerImport(false)} maxWidth={480}>
           <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
-            Pulls every movie your configured media server has — with its real title, year,
-            poster, and external ids — matching against anything already in this library first
-            (by path, then external id, then title/year) and creating a new entry for anything
-            genuinely new. Runs in the background; check the Logs page for the result.
+            Pulls every {type === "movie" ? "movie" : "show and its episodes"} your configured
+            media server has — with real title, year, poster, and external ids{type !== "movie" && ", plus each episode's own file"} — matching against anything already in this library first
+            (by path, then external id, then title/year{type !== "movie" && "/season/episode"}) and
+            creating a new entry for anything genuinely new. Runs in the background; check the Logs
+            page for the result.
           </p>
           {mediaServerImportFolders.length === 0 ? (
             <p className="empty">No root folder configured for this library yet — add one in Settings first.</p>

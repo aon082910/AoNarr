@@ -220,6 +220,146 @@ export async function fetchMediaServerMovies(): Promise<MediaServerLibraryItem[]
   return fetchJellyfinMovieDetails(cfg, cfg.type === "jellyfin" ? "" : "/emby");
 }
 
+export interface MediaServerShowInfo {
+  title: string;
+  year: number | null;
+  overview: string | null;
+  posterUrl: string | null;
+  externalIds: Record<string, string>;
+}
+
+export interface MediaServerEpisodeItem {
+  showId: string;
+  path: string;
+  seasonNumber: number;
+  episodeNumber: number;
+  title: string | null;
+  overview: string | null;
+}
+
+export interface MediaServerSeriesLibrary {
+  shows: Map<string, MediaServerShowInfo>;
+  episodes: MediaServerEpisodeItem[];
+}
+
+/** Plex type codes: 1=movie, 2=show, 3=season, 4=episode. Shows and episodes are fetched from the
+ * same "show" sections in two passes — shows first (to build the id->metadata map this needs for
+ * matching/creating the parent series), then episodes (linked back to their show via
+ * grandparentRatingKey) — rather than trying to extract show-level metadata off each episode
+ * response, which doesn't reliably include the show's own external ids (Plex's episode `Guid`
+ * array is the episode's own id, not the show's). */
+async function fetchPlexSeriesLibrary(cfg: MediaServerConfig): Promise<MediaServerSeriesLibrary> {
+  const headers = { Accept: "application/json" };
+  const sectionsRes = await fetch(`${cfg.url}/library/sections?X-Plex-Token=${cfg.token}`, { headers });
+  if (!sectionsRes.ok) throw new Error(`Plex sections request failed: ${sectionsRes.status}`);
+  const sectionsBody = (await sectionsRes.json()) as any;
+  const sections: { key: string; type: string }[] = sectionsBody?.MediaContainer?.Directory ?? [];
+
+  const shows = new Map<string, MediaServerShowInfo>();
+  const episodes: MediaServerEpisodeItem[] = [];
+
+  for (const section of sections) {
+    if (section.type !== "show") continue;
+
+    const showsRes = await fetch(`${cfg.url}/library/sections/${section.key}/all?type=2&X-Plex-Token=${cfg.token}`, { headers });
+    if (showsRes.ok) {
+      const showsBody = (await showsRes.json()) as any;
+      for (const show of (showsBody?.MediaContainer?.Metadata as any[]) ?? []) {
+        if (!show.ratingKey) continue;
+        shows.set(String(show.ratingKey), {
+          title: show.title,
+          year: show.year ?? null,
+          overview: show.summary || null,
+          posterUrl: show.thumb ? `${cfg.url}${show.thumb}?X-Plex-Token=${cfg.token}` : null,
+          externalIds: parsePlexExternalIds(show),
+        });
+      }
+    }
+
+    const episodesRes = await fetch(`${cfg.url}/library/sections/${section.key}/all?type=4&X-Plex-Token=${cfg.token}`, { headers });
+    if (episodesRes.ok) {
+      const episodesBody = (await episodesRes.json()) as any;
+      for (const ep of (episodesBody?.MediaContainer?.Metadata as any[]) ?? []) {
+        const file = ep.Media?.[0]?.Part?.[0]?.file;
+        if (!file || !ep.grandparentRatingKey || ep.parentIndex == null || ep.index == null) continue;
+        episodes.push({
+          showId: String(ep.grandparentRatingKey),
+          path: file,
+          seasonNumber: ep.parentIndex,
+          episodeNumber: ep.index,
+          title: ep.title || null,
+          overview: ep.summary || null,
+        });
+      }
+    }
+  }
+
+  return { shows, episodes };
+}
+
+async function fetchJellyfinSeriesLibrary(cfg: MediaServerConfig, basePath: string): Promise<MediaServerSeriesLibrary> {
+  const headers = { "X-Emby-Token": cfg.token, Accept: "application/json" };
+  const usersRes = await fetch(`${cfg.url}${basePath}/Users`, { headers });
+  if (!usersRes.ok) throw new Error(`${cfg.type} users request failed: ${usersRes.status}`);
+  const users = (await usersRes.json()) as { Id: string }[];
+  if (users.length === 0) return { shows: new Map(), episodes: [] };
+  const userId = users[0].Id;
+
+  const shows = new Map<string, MediaServerShowInfo>();
+  const showsRes = await fetch(
+    `${cfg.url}${basePath}/Users/${userId}/Items?Recursive=true&IncludeItemTypes=Series&Fields=Overview,ProviderIds,ProductionYear,ImageTags`,
+    { headers }
+  );
+  if (showsRes.ok) {
+    const showsBody = (await showsRes.json()) as { Items?: any[] };
+    for (const show of showsBody.Items ?? []) {
+      if (!show.Id) continue;
+      const externalIds: Record<string, string> = {};
+      if (show.ProviderIds?.Tmdb) externalIds.tmdb = show.ProviderIds.Tmdb;
+      if (show.ProviderIds?.Imdb) externalIds.imdb = show.ProviderIds.Imdb;
+      if (show.ProviderIds?.Tvdb) externalIds.tvdb = show.ProviderIds.Tvdb;
+      shows.set(String(show.Id), {
+        title: show.Name,
+        year: show.ProductionYear ?? null,
+        overview: show.Overview || null,
+        posterUrl: show.ImageTags?.Primary ? `${cfg.url}${basePath}/Items/${show.Id}/Images/Primary?api_key=${cfg.token}` : null,
+        externalIds,
+      });
+    }
+  }
+
+  const episodes: MediaServerEpisodeItem[] = [];
+  const episodesRes = await fetch(
+    `${cfg.url}${basePath}/Users/${userId}/Items?Recursive=true&IncludeItemTypes=Episode&Fields=Path,Overview,SeriesId,ParentIndexNumber,IndexNumber`,
+    { headers }
+  );
+  if (episodesRes.ok) {
+    const episodesBody = (await episodesRes.json()) as { Items?: any[] };
+    for (const ep of episodesBody.Items ?? []) {
+      if (!ep.Path || !ep.SeriesId || ep.ParentIndexNumber == null || ep.IndexNumber == null) continue;
+      episodes.push({
+        showId: String(ep.SeriesId),
+        path: ep.Path,
+        seasonNumber: ep.ParentIndexNumber,
+        episodeNumber: ep.IndexNumber,
+        title: ep.Name || null,
+        overview: ep.Overview || null,
+      });
+    }
+  }
+
+  return { shows, episodes };
+}
+
+/** Fetches every TV show + episode the configured media server's library has, with the metadata
+ * needed to create or match AoNarr media_items/episodes from it. */
+export async function fetchMediaServerSeries(): Promise<MediaServerSeriesLibrary> {
+  const cfg = getMediaServerConfig();
+  if (!cfg) throw new Error("No media server configured");
+  if (cfg.type === "plex") return fetchPlexSeriesLibrary(cfg);
+  return fetchJellyfinSeriesLibrary(cfg, cfg.type === "jellyfin" ? "" : "/emby");
+}
+
 async function fetchPlexItems(cfg: MediaServerConfig): Promise<MediaServerItem[]> {
   const headers = { Accept: "application/json" };
   const sectionsRes = await fetch(`${cfg.url}/library/sections?X-Plex-Token=${cfg.token}`, { headers });
