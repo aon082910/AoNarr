@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 64
+- Added three new sort options (Monitored, Quality, Content rating) and a Content Rating filter
+  (dynamically populated from whatever ratings are actually present in the library, same pattern
+  the existing Tags filter already uses) to every library's toolbar
+- Added column customization to the list view and info-line customization to the poster view —
+  previously both were hardcoded (list: Title/Year/Status/Monitored always, no way to add or
+  remove any; poster: Year/Status/Monitored always, same). New "Columns" (list view) / "Poster
+  info" (poster view) dropdown with a checkbox per available field (Year, Status, Monitored,
+  Quality, Content rating, Added date) — pick whichever combination is actually useful for that
+  library type. Persists per-browser via localStorage, same as the sort/status/view choices
+  Round 59 already made sticky
+- Verified live end-to-end: sorted by Quality and confirmed correct alphabetical ordering
+  (Bluray-1080p before Remux-2160p); filtered by a specific content rating and confirmed only the
+  matching item showed; toggled Quality on in the poster-info picker and confirmed it appeared in
+  the poster sub-line without the dropdown closing on each checkbox click; reloaded the page and
+  confirmed the poster-field choice persisted; switched to list view and added Quality + Content
+  rating columns, confirmed both rendered with correct per-item data
+
 ## Round 63
 - Added four new custom format condition types, closing most of the gap versus real Sonarr/
   Radarr's condition set: **Source** (Remux/Bluray/WEBDL/WEBRip/HDTV/DVD), **Resolution**

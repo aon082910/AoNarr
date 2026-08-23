@@ -7,12 +7,47 @@ import type { LibraryGroup, MediaItem, Tag } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 import DropdownMenu from "../components/DropdownMenu.js";
 
-type SortKey = "title" | "year" | "added" | "status";
+type SortKey = "title" | "year" | "added" | "status" | "monitored" | "quality" | "contentRating";
 type ViewMode = "poster" | "list";
 type PosterSize = "small" | "medium" | "large";
 type StatusFilter = "all" | "monitored" | "unmonitored" | "missing" | "downloaded";
 
 const POSTER_SIZE_PX: Record<PosterSize, number> = { small: 120, medium: 160, large: 220 };
+
+// "Title" is always shown (the primary column/label) — everything here is optional and
+// user-toggleable, for both the list view's columns and the extra info line under each poster.
+type ExtraField = "year" | "status" | "monitored" | "quality" | "contentRating" | "added";
+const EXTRA_FIELD_LABELS: Record<ExtraField, string> = {
+  year: "Year",
+  status: "Status",
+  monitored: "Monitored",
+  quality: "Quality",
+  contentRating: "Content rating",
+  added: "Added",
+};
+const DEFAULT_LIST_COLUMNS: ExtraField[] = ["year", "status", "monitored"];
+const DEFAULT_POSTER_FIELDS: ExtraField[] = ["year", "status", "monitored"];
+
+function loadFieldSet(key: string, fallback: ExtraField[]): Set<ExtraField> {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return new Set(fallback);
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length > 0 ? new Set(parsed) : new Set(fallback);
+  } catch {
+    return new Set(fallback);
+  }
+}
+
+function fieldValue(item: MediaItem, field: ExtraField): string {
+  if (field === "year") return item.year ? String(item.year) : "";
+  if (field === "status") return item.hasFile ? "downloaded" : "missing";
+  if (field === "monitored") return item.monitored ? "monitored" : "unmonitored";
+  if (field === "quality") return item.quality ?? "";
+  if (field === "contentRating") return item.contentRating ?? "";
+  if (field === "added") return new Date(item.addedAt).toLocaleDateString();
+  return "";
+}
 
 interface GroupDetail {
   group: LibraryGroup;
@@ -236,6 +271,9 @@ export function LibraryItemGrid({
   const [sortKey, setSortKey] = useState<SortKey>(() => (localStorage.getItem("aonarr_library_sort") as SortKey) || "added");
   const [viewMode, setViewMode] = useState<ViewMode>(() => (localStorage.getItem("aonarr_library_view") as ViewMode) || "poster");
   const [posterSize, setPosterSize] = useState<PosterSize>(() => (localStorage.getItem("aonarr_library_poster_size") as PosterSize) || "medium");
+  const [listColumns, setListColumns] = useState<Set<ExtraField>>(() => loadFieldSet("aonarr_library_columns", DEFAULT_LIST_COLUMNS));
+  const [posterFields, setPosterFields] = useState<Set<ExtraField>>(() => loadFieldSet("aonarr_library_poster_fields", DEFAULT_POSTER_FIELDS));
+  const [contentRatingFilter, setContentRatingFilter] = useState<string | "all">("all");
   const [loading, setLoading] = useState(true);
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -281,6 +319,30 @@ export function LibraryItemGrid({
   useEffect(() => {
     localStorage.setItem("aonarr_library_status", statusFilter);
   }, [statusFilter]);
+  useEffect(() => {
+    localStorage.setItem("aonarr_library_columns", JSON.stringify(Array.from(listColumns)));
+  }, [listColumns]);
+  useEffect(() => {
+    localStorage.setItem("aonarr_library_poster_fields", JSON.stringify(Array.from(posterFields)));
+  }, [posterFields]);
+
+  function toggleListColumn(field: ExtraField) {
+    setListColumns((prev) => {
+      const next = new Set(prev);
+      if (next.has(field)) next.delete(field);
+      else next.add(field);
+      return next;
+    });
+  }
+
+  function togglePosterField(field: ExtraField) {
+    setPosterFields((prev) => {
+      const next = new Set(prev);
+      if (next.has(field)) next.delete(field);
+      else next.add(field);
+      return next;
+    });
+  }
 
   function toggleSelect(id: number, e: MouseEvent) {
     e.stopPropagation();
@@ -380,11 +442,14 @@ export function LibraryItemGrid({
   const haveCount = items.filter((item) => item.hasFile).length;
   const missingCount = items.length - haveCount;
 
+  const contentRatings = Array.from(new Set(items.map((i) => i.contentRating).filter((r): r is string => !!r))).sort();
+
   const filtered = items.filter((item) => {
-    if (statusFilter === "monitored") return item.monitored;
-    if (statusFilter === "unmonitored") return !item.monitored;
-    if (statusFilter === "missing") return !item.hasFile;
-    if (statusFilter === "downloaded") return item.hasFile;
+    if (statusFilter === "monitored" && !item.monitored) return false;
+    if (statusFilter === "unmonitored" && item.monitored) return false;
+    if (statusFilter === "missing" && item.hasFile) return false;
+    if (statusFilter === "downloaded" && !item.hasFile) return false;
+    if (contentRatingFilter !== "all" && item.contentRating !== contentRatingFilter) return false;
     return true;
   });
 
@@ -392,6 +457,9 @@ export function LibraryItemGrid({
     if (sortKey === "title") return a.title.localeCompare(b.title);
     if (sortKey === "year") return (b.year ?? 0) - (a.year ?? 0);
     if (sortKey === "status") return Number(b.hasFile) - Number(a.hasFile);
+    if (sortKey === "monitored") return Number(b.monitored) - Number(a.monitored);
+    if (sortKey === "quality") return (a.quality ?? "").localeCompare(b.quality ?? "");
+    if (sortKey === "contentRating") return (a.contentRating ?? "").localeCompare(b.contentRating ?? "");
     return b.id - a.id;
   });
 
@@ -421,6 +489,9 @@ export function LibraryItemGrid({
           <option value="title">Sort: Title</option>
           <option value="year">Sort: Year</option>
           <option value="status">Sort: Status</option>
+          <option value="monitored">Sort: Monitored</option>
+          <option value="quality">Sort: Quality</option>
+          <option value="contentRating">Sort: Content rating</option>
         </select>
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as StatusFilter)} style={{ maxWidth: 160 }}>
           <option value="all">All statuses</option>
@@ -443,12 +514,49 @@ export function LibraryItemGrid({
             ))}
           </select>
         )}
+        {contentRatings.length > 0 && (
+          <select value={contentRatingFilter} onChange={(e) => setContentRatingFilter(e.target.value)} style={{ maxWidth: 160 }}>
+            <option value="all">All content ratings</option>
+            {contentRatings.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        )}
         {viewMode === "poster" && (
           <select value={posterSize} onChange={(e) => setPosterSize(e.target.value as PosterSize)} style={{ maxWidth: 120 }}>
             <option value="small">Small posters</option>
             <option value="medium">Medium posters</option>
             <option value="large">Large posters</option>
           </select>
+        )}
+        {viewMode === "poster" ? (
+          <DropdownMenu label="Poster info">
+            {(Object.keys(EXTRA_FIELD_LABELS) as ExtraField[]).map((field) => (
+              <label
+                key={field}
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", cursor: "pointer" }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <input type="checkbox" checked={posterFields.has(field)} onChange={() => togglePosterField(field)} style={{ width: "auto" }} />
+                {EXTRA_FIELD_LABELS[field]}
+              </label>
+            ))}
+          </DropdownMenu>
+        ) : (
+          <DropdownMenu label="Columns">
+            {(Object.keys(EXTRA_FIELD_LABELS) as ExtraField[]).map((field) => (
+              <label
+                key={field}
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", cursor: "pointer" }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <input type="checkbox" checked={listColumns.has(field)} onChange={() => toggleListColumn(field)} style={{ width: "auto" }} />
+                {EXTRA_FIELD_LABELS[field]}
+              </label>
+            ))}
+          </DropdownMenu>
         )}
       </div>
 
@@ -602,9 +710,11 @@ export function LibraryItemGrid({
               <div className="meta">
                 <div className="title">{item.title}</div>
                 <div className="sub">
-                  {item.year ?? ""}
-                  {item.monitored ? "" : " · unmonitored"}
-                  {item.hasFile ? " · downloaded" : " · missing"}
+                  {(Object.keys(EXTRA_FIELD_LABELS) as ExtraField[])
+                    .filter((f) => posterFields.has(f))
+                    .map((f) => (f === "monitored" && item.monitored ? "" : fieldValue(item, f)))
+                    .filter(Boolean)
+                    .join(" · ")}
                 </div>
               </div>
             </div>
@@ -616,9 +726,11 @@ export function LibraryItemGrid({
             <tr>
               {selectMode && <th></th>}
               <th>Title</th>
-              <th>Year</th>
-              <th>Status</th>
-              <th>Monitored</th>
+              {(Object.keys(EXTRA_FIELD_LABELS) as ExtraField[])
+                .filter((f) => listColumns.has(f))
+                .map((f) => (
+                  <th key={f}>{EXTRA_FIELD_LABELS[f]}</th>
+                ))}
             </tr>
           </thead>
           <tbody>
@@ -635,11 +747,19 @@ export function LibraryItemGrid({
                   </td>
                 )}
                 <td>{item.title}</td>
-                <td>{item.year ?? ""}</td>
-                <td>
-                  <span className={`badge ${item.hasFile ? "ok" : ""}`}>{item.hasFile ? "Downloaded" : "Missing"}</span>
-                </td>
-                <td>{item.monitored ? "Yes" : "No"}</td>
+                {(Object.keys(EXTRA_FIELD_LABELS) as ExtraField[])
+                  .filter((f) => listColumns.has(f))
+                  .map((f) =>
+                    f === "status" ? (
+                      <td key={f}>
+                        <span className={`badge ${item.hasFile ? "ok" : ""}`}>{item.hasFile ? "Downloaded" : "Missing"}</span>
+                      </td>
+                    ) : f === "monitored" ? (
+                      <td key={f}>{item.monitored ? "Yes" : "No"}</td>
+                    ) : (
+                      <td key={f}>{fieldValue(item, f)}</td>
+                    )
+                  )}
               </tr>
             ))}
           </tbody>
