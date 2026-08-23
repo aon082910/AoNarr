@@ -620,6 +620,15 @@ export default function Settings() {
           placeholder="/config/recycle-bin"
           onBlur={(e) => saveSetting("recycleBinDir", e.target.value)}
         />
+        <label>Corrupt media</label>
+        <select
+          key={settings.corruptMediaReviewEnabled ?? "corrupt-review-empty"}
+          defaultValue={settings.corruptMediaReviewEnabled ?? "0"}
+          onChange={(e) => saveSetting("corruptMediaReviewEnabled", e.target.value)}
+        >
+          <option value="0">Recycle automatically when the corrupt-media check flags a file</option>
+          <option value="1">Hold for review on the Recycle Bin page before recycling</option>
+        </select>
       </div>
 
       <h2>Config Template</h2>

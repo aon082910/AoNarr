@@ -58,6 +58,7 @@ import { updateCheckRouter } from "./routes/updateCheck.js";
 import { libraryGroupsRouter } from "./routes/libraryGroups.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { recycleBinRouter } from "./routes/recycleBin.js";
+import { corruptMediaReviewRouter } from "./routes/corruptMediaReview.js";
 import { themeRouter } from "./routes/theme.js";
 import { friendLibrariesRouter } from "./routes/friendLibraries.js";
 
@@ -125,6 +126,7 @@ app.use("/api/settings/update-check", updateCheckRouter);
 app.use("/api/library-groups", libraryGroupsRouter);
 app.use("/api/jobs", jobsRouter);
 app.use("/api/recycle-bin", recycleBinRouter);
+app.use("/api/corrupt-media-review", corruptMediaReviewRouter);
 app.use("/api/theme.css", themeRouter);
 app.use("/api/friend-libraries", friendLibrariesRouter);
 app.use("/api/media-analysis", mediaAnalysisRouter);

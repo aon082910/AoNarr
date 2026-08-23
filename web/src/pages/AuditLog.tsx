@@ -43,6 +43,8 @@ const EVENT_LABELS: Record<string, string> = {
   indexer_removed: "Removed indexer",
   download_client_added: "Added download client",
   download_client_removed: "Removed download client",
+  corrupt_media_recycled: "Recycled flagged corrupt media",
+  corrupt_media_dismissed: "Dismissed corrupt media flag",
 };
 
 export default function AuditLog() {

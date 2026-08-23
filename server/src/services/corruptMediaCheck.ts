@@ -4,6 +4,7 @@ import { probeMediaInfo } from "./ffprobe.js";
 import { recycleFile } from "./recycleBin.js";
 import { log } from "./logger.js";
 import { getMediaTypeConfig } from "./mediaTypes.js";
+import { getSetting } from "./settingsStore.js";
 
 export interface CorruptCheckResult {
   checked: number;
@@ -37,9 +38,10 @@ async function isStillBeingWritten(filePath: string): Promise<boolean> {
  * can't make sense of it (after ruling out "it's still being written" and giving it one retry), or
  * (for a library whose shape is actual video) ffprobe succeeds but finds no video stream at all —
  * a classic symptom of a fake/mislabeled release that's actually an html error page or a truncated
- * download saved with a video extension. */
-async function isCorrupt(filePath: string, type: string): Promise<boolean> {
-  if (!fs.existsSync(filePath)) return true;
+ * download saved with a video extension. Returns the reason it failed, or null if it's fine — a
+ * plain boolean would lose exactly the information a reviewer needs to judge a flagged file. */
+async function corruptReason(filePath: string, type: string): Promise<string | null> {
+  if (!fs.existsSync(filePath)) return "File is missing from disk";
 
   // Probe first — the fast path for the overwhelming majority of files, which are fine, so the
   // stability check and retry below only ever run for a file that's already failed once (paying
@@ -47,15 +49,33 @@ async function isCorrupt(filePath: string, type: string): Promise<boolean> {
   // that could be thousands of items).
   let info = await probeMediaInfo(filePath);
   if (!info) {
-    if (await isStillBeingWritten(filePath)) return false;
+    if (await isStillBeingWritten(filePath)) return null;
     await sleep(3000);
     info = await probeMediaInfo(filePath);
   }
-  if (!info) return true;
+  if (!info) return "ffprobe couldn't read this file (corrupt or unrecognized data)";
 
   const looksLikeVideo = ["movie", "series", "anime", "video", "course", "adult"].includes(type);
-  if (looksLikeVideo && !info.videoCodec) return true;
-  return false;
+  if (looksLikeVideo && !info.videoCodec) return "No video stream found — likely a fake/mislabeled release";
+  return null;
+}
+
+export function isCorruptMediaReviewEnabled(): boolean {
+  return getSetting("corruptMediaReviewEnabled") === "1";
+}
+
+export function recycleAndMarkMissing(
+  table: "media_items" | "episodes" | "sub_items",
+  id: number,
+  filePath: string,
+  type: string,
+  title: string,
+  mediaItemId: number
+): void {
+  recycleFile(filePath, type, `${title} (corrupt)`, mediaItemId);
+  const pathCol = table === "media_items" ? "path" : "file_path";
+  db.prepare(`UPDATE ${table} SET has_file = 0, ${pathCol} = NULL, quality = NULL WHERE id = ?`).run(id);
+  log.warn(`[corruptMediaCheck] "${title}" failed validation — moved to recycle bin, marked missing`);
 }
 
 async function handleCorrupt(
@@ -64,12 +84,25 @@ async function handleCorrupt(
   filePath: string,
   type: string,
   title: string,
-  mediaItemId: number
+  mediaItemId: number,
+  reason: string
 ): Promise<void> {
-  recycleFile(filePath, type, `${title} (corrupt)`, mediaItemId);
-  const pathCol = table === "media_items" ? "path" : "file_path";
-  db.prepare(`UPDATE ${table} SET has_file = 0, ${pathCol} = NULL, quality = NULL WHERE id = ?`).run(id);
-  log.warn(`[corruptMediaCheck] "${title}" failed validation — moved to recycle bin, marked missing`);
+  if (isCorruptMediaReviewEnabled()) {
+    // Leave the file and the DB row alone — has_file stays 1, so the item still shows as present
+    // until an admin actually confirms it. Only the queue entry is new.
+    const existing = db
+      .prepare("SELECT id FROM corrupt_media_review WHERE table_name = ? AND row_id = ?")
+      .get(table, id);
+    if (!existing) {
+      db.prepare(
+        `INSERT INTO corrupt_media_review (table_name, row_id, media_item_id, media_type, file_path, title, reason)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(table, id, mediaItemId, type, filePath, title, reason);
+      log.warn(`[corruptMediaCheck] "${title}" failed validation (${reason}) — queued for review`);
+    }
+    return;
+  }
+  recycleAndMarkMissing(table, id, filePath, type, title, mediaItemId);
 }
 
 /** Walks every file AoNarr thinks it has and validates it with ffprobe, moving anything that
@@ -84,9 +117,10 @@ export async function checkForCorruptMedia(signal?: AbortSignal): Promise<Corrup
   for (const item of singleItems) {
     if (signal?.aborted) return { checked, corrupt };
     checked++;
-    if (await isCorrupt(item.path, item.type)) {
+    const reason = await corruptReason(item.path, item.type);
+    if (reason) {
       corrupt++;
-      await handleCorrupt("media_items", item.id, item.path, item.type, item.title, item.id);
+      await handleCorrupt("media_items", item.id, item.path, item.type, item.title, item.id, reason);
     }
   }
 
@@ -99,9 +133,10 @@ export async function checkForCorruptMedia(signal?: AbortSignal): Promise<Corrup
   for (const ep of episodes) {
     if (signal?.aborted) return { checked, corrupt };
     checked++;
-    if (await isCorrupt(ep.file_path, ep.type)) {
+    const reason = await corruptReason(ep.file_path, ep.type);
+    if (reason) {
       corrupt++;
-      await handleCorrupt("episodes", ep.id, ep.file_path, ep.type, `${ep.media_title} — ${ep.title ?? "episode"}`, ep.media_item_id);
+      await handleCorrupt("episodes", ep.id, ep.file_path, ep.type, `${ep.media_title} — ${ep.title ?? "episode"}`, ep.media_item_id, reason);
     }
   }
 
@@ -117,9 +152,10 @@ export async function checkForCorruptMedia(signal?: AbortSignal): Promise<Corrup
     // multiFilePerChild stores per-track files elsewhere, not sub_items.file_path).
     if (getMediaTypeConfig(sub.type).multiFilePerChild) continue;
     checked++;
-    if (await isCorrupt(sub.file_path, sub.type)) {
+    const reason = await corruptReason(sub.file_path, sub.type);
+    if (reason) {
       corrupt++;
-      await handleCorrupt("sub_items", sub.id, sub.file_path, sub.type, `${sub.media_title} — ${sub.title}`, sub.media_item_id);
+      await handleCorrupt("sub_items", sub.id, sub.file_path, sub.type, `${sub.media_title} — ${sub.title}`, sub.media_item_id, reason);
     }
   }
 

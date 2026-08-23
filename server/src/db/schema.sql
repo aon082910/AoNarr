@@ -246,6 +246,23 @@ CREATE TABLE IF NOT EXISTS recycle_bin (
   restore_error TEXT -- set if the last restore attempt failed, cleared on the next attempt
 );
 
+-- Files the corrupt-media check (services/corruptMediaCheck.ts) flagged as failing validation,
+-- held here instead of being recycled immediately when "review before recycling" is enabled in
+-- Settings — an admin confirms (recycle it) or dismisses (false positive, leave the file alone)
+-- each one. table_name/row_id identify the actual media_items/episodes/sub_items row so approving
+-- can run the exact same recycle-and-mark-missing logic the automatic path already uses.
+CREATE TABLE IF NOT EXISTS corrupt_media_review (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  table_name TEXT NOT NULL, -- 'media_items' | 'episodes' | 'sub_items'
+  row_id INTEGER NOT NULL,
+  media_item_id INTEGER NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+  media_type TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  title TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  detected_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- A public, unauthenticated read-only link to one media item's overview/poster — for sharing
 -- outside the household without handing out a login. Revocable; optionally expiring.
 CREATE TABLE IF NOT EXISTS share_links (

@@ -3,6 +3,21 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 75
+- Added an option to review corrupted media before it's recycled (Settings → Recycle Bin →
+  "Corrupt media") — previously the corrupt-media check (ffprobe validation, weekly by default)
+  always recycled and marked-missing anything it flagged, fully automatically. With review turned
+  on, a flagged file is instead held in a new "Pending Corrupt Media Review" queue at the top of
+  the Recycle Bin page — the item keeps showing as present in the library, the file stays exactly
+  where it was, until an admin either confirms it (Recycle — runs the exact same recycle-and-
+  mark-missing logic the automatic path always used) or dismisses it (false positive — a network
+  hiccup, a file that was still being written when checked; leaves everything untouched). Off by
+  default, so upgrading changes nothing for anyone who hasn't turned it on
+- Verified live: a genuinely unreadable file correctly landed in the review queue (not recycled)
+  with the item still showing has_file, confirming Recycle from the queue correctly recycles and
+  marks it missing, confirming Dismiss correctly leaves the file and item alone, and confirming both
+  actions render correctly and log to the Audit Log
+
 ## Round 74
 - Fixed Recycle Bin restore freezing the whole app for however long a large file took to move.
   Restoring used `fs.copyFileSync` (needed when the recycle bin and the original location are on

@@ -321,3 +321,13 @@ export interface RecycleBinEntry {
   restoring: boolean;
   restoreError: string | null;
 }
+
+export interface CorruptMediaReviewEntry {
+  id: number;
+  mediaItemId: number;
+  mediaType: MediaType;
+  title: string;
+  filePath: string;
+  reason: string;
+  detectedAt: string;
+}
