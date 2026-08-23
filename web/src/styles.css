@@ -189,13 +189,18 @@ button.select-like:hover { background: rgba(255,255,255,0.04); opacity: 1; }
 }
 .toolbar > button,
 .toolbar > select,
-.toolbar > input,
-.toolbar > .dropdown {
+.toolbar > input {
   margin-top: 0;
   height: 38px;
 }
+/* The dropdown trigger's real height comes from the button inside it, set directly rather than
+   inherited via a percentage from the wrapping .dropdown div — a height:100% chain through an
+   inline-flex wrapper doesn't reliably compute to the same pixel value as a plain sibling button
+   in every browser, which is what caused this to need a second pass. Setting it once, directly,
+   with nothing to inherit through, removes that whole class of discrepancy. */
 .toolbar > .dropdown > button {
-  height: 100%;
+  margin-top: 0;
+  height: 38px;
 }
 
 .dropdown { position: relative; display: inline-flex; align-items: center; }

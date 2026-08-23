@@ -3,6 +3,18 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 47
+- Fixed the last of the toolbar height discrepancy: the dropdown trigger's height was set on the
+  wrapping `.dropdown` div and inherited by its inner button via `height: 100%` — a percentage
+  chain through an inline-flex wrapper that doesn't reliably compute to the exact same pixel value
+  as a plain sibling button/select in every browser. Set the height directly and unconditionally
+  on the trigger button itself instead, with nothing to inherit through, and let the wrapper
+  shrink-wrap to match it exactly
+- Widened the Sort select (160px → 210px) — its longest option ("Sort: Recently added") was being
+  clipped by the dropdown-arrow padding added in Round 45. Verified via scrollWidth vs clientWidth
+  that it no longer clips, and reconfirmed every toolbar control still sits at identical
+  top/height pixel values
+
 ## Round 46
 - Fixed a real bug in Round 45's own fix: the hand-drawn caret background-image on `<select>` had
   no `background-size` set, so it rendered oversized (a giant chevron overlapping the option

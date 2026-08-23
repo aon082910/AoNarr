@@ -339,7 +339,7 @@ export function LibraryItemGrid({
         </p>
       )}
       <div className="toolbar" style={{ marginBottom: 10 }}>
-        <select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)} style={{ maxWidth: 160 }}>
+        <select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)} style={{ maxWidth: 210 }}>
           <option value="added">Sort: Recently added</option>
           <option value="title">Sort: Title</option>
           <option value="year">Sort: Year</option>
