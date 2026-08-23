@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, downloadFile } from "../api/client.js";
 import GroupPicker from "../components/GroupPicker.js";
+import SearchMatchModal, { type MetadataSearchResult } from "../components/SearchMatchModal.js";
 import type { LibraryGroup } from "../types.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
@@ -119,6 +120,7 @@ export default function MediaDetail() {
   const [trailerUrl, setTrailerUrl] = useState<string | null>(null);
   const [watched, setWatched] = useState(false);
   const [watchStateError, setWatchStateError] = useState<string | null>(null);
+  const [showSearchMatch, setShowSearchMatch] = useState(false);
 
   function load() {
     api.get<MediaDetailResponse>(`/media/${id}`).then(setItem);
@@ -213,6 +215,19 @@ export default function MediaDetail() {
     if (!item) return;
     const updated = await api.patch<MediaItem>(`/media/${item.id}`, { protected: item.protected ? 0 : 1 });
     setItem({ ...item, protected: updated.protected });
+  }
+
+  async function applyRematch(result: MetadataSearchResult) {
+    if (!item) return;
+    const updated = await api.post<MediaItem>(`/media/${item.id}/rematch`, {
+      title: result.title,
+      year: result.year,
+      overview: result.overview,
+      posterUrl: result.posterUrl,
+      externalIds: result.externalIds,
+    });
+    setItem({ ...item, title: updated.title, year: updated.year, overview: updated.overview, posterUrl: updated.posterUrl, externalIds: updated.externalIds });
+    setShowSearchMatch(false);
   }
 
   async function toggleWatched() {
@@ -681,6 +696,15 @@ export default function MediaDetail() {
           >
             Export .nfo
           </button>
+          {(metadataProviders[item.type]?.length ?? 0) > 0 && (
+            <button
+              className="secondary"
+              onClick={() => setShowSearchMatch(true)}
+              title="Search with a custom query and pick a different metadata match — for when the current title is wrong or garbled"
+            >
+              Search for a different match...
+            </button>
+          )}
           {(item.type === "movie" || item.type === "series" || item.type === "anime") && (
             <button
               className="secondary"
@@ -1103,6 +1127,16 @@ export default function MediaDetail() {
             </tbody>
           </table>
         </>
+      )}
+
+      {showSearchMatch && (
+        <SearchMatchModal
+          type={item.type}
+          initialQuery={item.title}
+          providers={metadataProviders[item.type] ?? []}
+          onClose={() => setShowSearchMatch(false)}
+          onSelect={applyRematch}
+        />
       )}
     </div>
   );

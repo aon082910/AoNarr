@@ -3,6 +3,29 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 50
+- Fixed TV Shows Scan & Import skipping everything: the episodic branch only ever *matched*
+  against an existing series, it never created one — a fresh TV library with nothing pre-added
+  in AoNarr yet skipped every single file. Now creates a new series (mirroring what the movie/
+  single-shape branch already did) when nothing matches. Also made season/episode + series-title
+  detection folder-aware: real TV libraries very often only carry the series name in the folder
+  structure (`Series Name/Season 01/S01E01.mkv`, sometimes just `Series Name/Season 01/01.mkv`)
+  rather than repeating it in every episode's filename, which the filename-only detection used
+  before this couldn't handle at all. Found and fixed a second bug surfaced while verifying
+  this: files named just `01x02.mkv`/`E03.mkv` (with the series name only in the folder) were
+  getting used as literal series titles instead of falling back to the folder, since the title
+  guesser only recognized `SxxExx` as a marker to strip, not the other formats it was actually
+  being asked to detect season/episode from. Verified against three episodes of the same series
+  using three different naming conventions (`S01E01`, `01x02`, `E03`, series name only in the
+  folder) — all three now land under one correctly-created series with the right episode numbers
+- Added the ability to search with a custom query and pick a different metadata match for an
+  existing item — a Radarr/Sonarr-style "interactive search" popup (new `SearchMatchModal`
+  component, `POST /media/:id/rematch`), for exactly the situation a bug report surfaced: an item
+  whose title got garbled by an old scan-import bug, where every "Fetch from X" button and Library
+  Refresh could only ever search using that same broken stored title and would always come back
+  empty. Verified end-to-end in the actual browser: opened the modal, searched a real provider,
+  picked a result, and confirmed the item's title/year/overview/poster/externalIds updated
+
 ## Round 49
 - Fixed the Scan & Import 504: it probed every matched/created file with ffprobe (up to a 30s
   timeout each) synchronously inside the HTTP request, so a library with even a few slow or

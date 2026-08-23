@@ -620,6 +620,43 @@ mediaRouter.patch(
 );
 
 /**
+ * Re-points an existing item at a different metadata match — Radarr/Sonarr-style "interactive
+ * search," for when the original title guess (typically from a Scan & Import, or an old import
+ * before a parser bug was fixed) was close enough to create the item but wrong enough that further
+ * metadata lookups (the "Fetch from X" buttons, Library Refresh) can't find anything under it.
+ * Overwrites title/year/overview/poster/externalIds with the chosen search result; deliberately
+ * leaves episodes/sub-items alone rather than trying to reconcile them against the new match's own
+ * season/episode list, since that's real data (file paths, has_file flags) that shouldn't be
+ * silently discarded on a title fix.
+ */
+mediaRouter.post(
+  "/:id/rematch",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const existing = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    if (!existing) throw new HttpError(404, "Media item not found");
+
+    const b = req.body ?? {};
+    if (!b.title) throw new HttpError(400, "title is required");
+
+    db.prepare(
+      "UPDATE media_items SET title = ?, sort_title = ?, year = ?, overview = ?, poster_url = ?, external_ids = ? WHERE id = ?"
+    ).run(
+      b.title,
+      b.title.toLowerCase(),
+      b.year ?? null,
+      b.overview ?? null,
+      b.posterUrl ?? null,
+      b.externalIds ? JSON.stringify(b.externalIds) : null,
+      req.params.id
+    );
+
+    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    res.json(mediaItemFromRow(row));
+  })
+);
+
+/**
  * Manual "mark watched"/"mark unwatched" — watch state normally only ever flows in from the
  * configured media server (the webhook, or the periodic fetchWatchedFiles poll behind
  * auto-archival); this is the other direction, for setting it from AoNarr itself and having it

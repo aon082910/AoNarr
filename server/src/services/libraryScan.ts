@@ -22,13 +22,15 @@ function titlesMatch(a: string, b: string): boolean {
   return na === nb || na.includes(nb) || nb.includes(na);
 }
 
-/** Cuts a filename off at the first season/year/quality marker to get a plausible title —
+/** Cuts a piece of text off at the first season/year/quality marker to get a plausible title —
  * the same "everything before the release metadata starts" heuristic release names use, just
- * applied to a plain filename instead of a scene-style release string. */
-function guessTitleFromFilename(filenameNoExt: string): string {
-  const normalized = filenameNoExt.replace(/[._]/g, " ");
+ * applied to a plain filename (or folder name) instead of a scene-style release string. */
+function guessTitleFromText(text: string): string {
+  const normalized = text.replace(/[._]/g, " ");
   const cutPatterns = [
     /\bS\d{1,2}(E\d{1,3})?\b/i,
+    /\b\d{1,2}x\d{1,3}\b/i, // "1x02"
+    /\bE\d{1,3}\b/i, // bare "E03" — a season-folder-relative episode file with no series name at all
     /\b(19|20)\d{2}\b/,
     /\b(2160p|1080p|720p|bluray|blu-ray|web-?dl|webrip|hdtv|dvdrip|remux)\b/i,
   ];
@@ -46,6 +48,49 @@ function guessTitleFromFilename(filenameNoExt: string): string {
     .trim()
     .replace(/[\s([{-]+$/, "")
     .trim();
+}
+
+const SEASON_FOLDER = /^season\s*0*(\d{1,3})$|^s0*(\d{1,3})$/i;
+const EPISODE_X_FORMAT = /\b0*(\d{1,2})x0*(\d{1,3})\b/i; // "1x01"
+const EPISODE_ONLY = /\bE0*(\d{1,3})\b/i;
+
+/**
+ * Real TV libraries very often only carry the series name in the folder structure (e.g.
+ * `Series Name/Season 01/S01E01.mkv`, sometimes even just `Series Name/Season 01/01.mkv`) rather
+ * than repeating it — and the season number — in every single episode's filename. Falls back
+ * through, in order: season+episode straight from the filename (handles "S01E01"/"1x01" embedded
+ * in the file itself, the common scene-release-style case) → a "Season NN"/"SNN" parent folder
+ * plus an "E01"-style marker in the filename. Doesn't guess a bare episode number with no season
+ * context or marker at all — too easy to misfire on an unrelated number in the name (a resolution,
+ * a year, part of the title itself).
+ */
+function detectSeasonEpisode(parentFolderName: string, filenameBase: string): { season: number | null; episode: number | null } {
+  const parsed = parseReleaseTitle(filenameBase);
+  if (parsed.seasonNumber !== null && parsed.episodeNumbers && parsed.episodeNumbers.length > 0) {
+    return { season: parsed.seasonNumber, episode: parsed.episodeNumbers[0] };
+  }
+  const xMatch = filenameBase.match(EPISODE_X_FORMAT);
+  if (xMatch) return { season: Number(xMatch[1]), episode: Number(xMatch[2]) };
+
+  const seasonFolderMatch = parentFolderName.match(SEASON_FOLDER);
+  if (seasonFolderMatch) {
+    const season = Number(seasonFolderMatch[1] ?? seasonFolderMatch[2]);
+    const epMatch = filenameBase.match(EPISODE_ONLY);
+    if (epMatch) return { season, episode: Number(epMatch[1]) };
+  }
+  return { season: null, episode: null };
+}
+
+/** Same folder-awareness reasoning as detectSeasonEpisode: prefers a title guessed from the
+ * filename itself when it looks substantial, otherwise falls back to the parent folder name (or
+ * the grandparent, when the parent is just a "Season NN" folder rather than the series' own). */
+function guessSeriesTitle(parentDir: string, filenameBase: string): string {
+  const fromFilename = guessTitleFromText(filenameBase);
+  if (fromFilename.length > 2) return fromFilename;
+
+  const parentName = path.basename(parentDir);
+  const folderName = SEASON_FOLDER.test(parentName) ? path.basename(path.dirname(parentDir)) : parentName;
+  return guessTitleFromText(folderName);
 }
 
 function walkForExtensions(dir: string, extensions: string[], knownPaths: Set<string>, out: string[]): void {
@@ -80,12 +125,14 @@ export interface ScanImportResult {
 
 /**
  * Scans a library type's root folder(s) for media files not already tracked by any media_item/
- * episode/sub_item, and imports them: matches an existing "missing" item by filename-guessed
- * title where possible (has_file=1 + path, same as a normal grab import), else creates a new
- * minimal item outright. Scoped to "single" and "episodic" shapes (movie/series/anime/rom/adult) —
- * "collection" shapes (books, comics, music, video channels, courses) need a parent item to file a
- * new child under, and blindly creating one from a single filename would misrepresent the
- * structure, so those are reported as unsupported rather than guessed at.
+ * episode/sub_item, and imports them: matches an existing "missing" item (movie) or series
+ * (episodic) by a guessed title where possible (has_file=1 + path, same as a normal grab import),
+ * else creates a new minimal item/series outright — a fresh library with nothing pre-added in
+ * AoNarr yet still gets fully imported, not just files that happen to match something already
+ * there. Scoped to "single" and "episodic" shapes (movie/series/anime/rom/adult) — "collection"
+ * shapes (books, comics, music, video channels, courses) need a parent item to file a new child
+ * under, and blindly creating one from a single filename would misrepresent the structure, so
+ * those are reported as unsupported rather than guessed at.
  */
 export async function scanAndImportLibrary(type: string, signal?: AbortSignal): Promise<ScanImportResult> {
   const typeConfig = getMediaTypeConfig(type);
@@ -119,29 +166,46 @@ export async function scanAndImportLibrary(type: string, signal?: AbortSignal): 
   for (const filePath of files) {
     if (signal?.aborted) break;
     const base = path.basename(filePath, path.extname(filePath));
-    const guessedTitle = guessTitleFromFilename(base);
-    if (!guessedTitle) {
-      result.skipped++;
-      result.skippedFiles.push(filePath);
-      continue;
-    }
-    const parsed = parseReleaseTitle(base);
-    const quality = parsed.quality === "Unknown" ? null : parsed.quality;
+    const parentDir = path.dirname(filePath);
 
     try {
       if (typeConfig.shape === "episodic") {
-        const seriesMatch = seriesItems.find((m) => titlesMatch(m.title, guessedTitle));
-        if (!seriesMatch || parsed.seasonNumber === null || !parsed.episodeNumbers || parsed.episodeNumbers.length === 0) {
+        const { season, episode } = detectSeasonEpisode(path.basename(parentDir), base);
+        if (season === null || episode === null) {
           result.skipped++;
           result.skippedFiles.push(filePath);
           continue;
         }
-        const epNum = parsed.episodeNumbers[0];
+        const guessedTitle = guessSeriesTitle(parentDir, base);
+        if (!guessedTitle) {
+          result.skipped++;
+          result.skippedFiles.push(filePath);
+          continue;
+        }
+        const parsed = parseReleaseTitle(base);
+        const quality = parsed.quality === "Unknown" ? null : parsed.quality;
+
+        let seriesMatch = seriesItems.find((m) => titlesMatch(m.title, guessedTitle));
+        if (!seriesMatch) {
+          // No existing series to match against at all — create one, same as the single-shape
+          // branch already does for movies. Otherwise a fresh TV library with nothing pre-added
+          // in AoNarr yet would skip every single file with nothing to show for it.
+          const folder = folders.find((f) => filePath.startsWith(f.path));
+          const insertResult = db
+            .prepare(
+              `INSERT INTO media_items (type, title, sort_title, root_folder_id, quality_profile_id, monitored, has_file, status)
+               VALUES (?, ?, ?, ?, ?, 1, 0, 'unknown')`
+            )
+            .run(type, guessedTitle, guessedTitle.toLowerCase(), folder?.id ?? null, qualityProfileId);
+          seriesMatch = { id: Number(insertResult.lastInsertRowid), title: guessedTitle, has_file: 0 };
+          seriesItems.push(seriesMatch);
+        }
+
         const mediaInfo = await probeMediaInfo(filePath);
         const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
         const existingEp = db
           .prepare("SELECT id FROM episodes WHERE media_item_id = ? AND season_number = ? AND episode_number = ?")
-          .get(seriesMatch.id, parsed.seasonNumber, epNum) as { id: number } | undefined;
+          .get(seriesMatch.id, season, episode) as { id: number } | undefined;
         if (existingEp) {
           db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?").run(
             filePath,
@@ -153,10 +217,19 @@ export async function scanAndImportLibrary(type: string, signal?: AbortSignal): 
           db.prepare(
             `INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path, quality, media_info)
              VALUES (?, ?, ?, ?, 1, 1, ?, ?, ?)`
-          ).run(seriesMatch.id, parsed.seasonNumber, epNum, `Episode ${epNum}`, filePath, quality, mediaInfoJson);
+          ).run(seriesMatch.id, season, episode, `Episode ${episode}`, filePath, quality, mediaInfoJson);
         }
         result.matched++;
       } else {
+        const guessedTitle = guessTitleFromText(base);
+        if (!guessedTitle) {
+          result.skipped++;
+          result.skippedFiles.push(filePath);
+          continue;
+        }
+        const parsed = parseReleaseTitle(base);
+        const quality = parsed.quality === "Unknown" ? null : parsed.quality;
+
         const match = missingItems.find((m) => titlesMatch(m.title, guessedTitle));
         const mediaInfo = await probeMediaInfo(filePath);
         const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
