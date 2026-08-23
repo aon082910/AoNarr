@@ -3,6 +3,19 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 85
+- PostgreSQL support: converted `routes/customFormats.ts` (all 8 routes) and its backing
+  `services/trashSync.ts` to the async DB interface — 26 files converted so far, ~44 remain
+- The scores upsert route (`PUT /custom-formats/scores/:qualityProfileId/:customFormatId`) uses
+  `ON CONFLICT ... DO UPDATE` — ported unchanged, Postgres supports the same upsert syntax
+- Deliberately left `services/customFormatScoring.ts` unconverted — it's called from the actual
+  search/grab pipeline (search, importer, upgrade candidates, scheduler), a much larger and riskier
+  surface than custom-formats CRUD; confirmed nothing converted this round calls into it
+- Verified live against a real Postgres container: created/renamed/deleted a custom format, set and
+  re-read a quality-profile format score, and ran a real `trash-sync` against the live TRaSH-Guides
+  GitHub repo (234 Radarr formats synced, 8 unsupported) — same sequence regression-checked against
+  SQLite on the same build with identical results
+
 ## Round 84
 - PostgreSQL support: converted `people.ts`, `calendarEvents.ts`, `libraryViews.ts`,
   `remoteInstances.ts`, `friendLibraries.ts` (route + service), and `libraryGroups.ts` to the async

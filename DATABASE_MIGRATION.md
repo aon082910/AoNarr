@@ -1,13 +1,35 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — 24 files converted and verified against a real Postgres container**, covering
+Status: **PostgreSQL — 26 files converted and verified against a real Postgres container**, covering
 auth, users, quality/library config, indexers, download clients, calendar events, saved library
 views, remote instances, friend libraries, library groups (including its `WITH RECURSIVE`
-nested-count rollup), and person credits. Most of the app (~46 remaining files) still isn't
-converted; `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one yet. MariaDB —
-scoped, not started, deliberately deferred until PostgreSQL is fully done (see "The ask" below;
-narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by explicit user decision). This
-document exists so a future round can pick this up without re-deriving the analysis below.
+nested-count rollup), person credits, and custom formats (including TRaSH-Guides sync). Most of the
+app (~44 remaining files) still isn't converted; `AONARR_DATABASE_DRIVER=postgres` runs a real app,
+just not a complete one yet. MariaDB — scoped, not started, deliberately deferred until PostgreSQL is
+fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by
+explicit user decision). This document exists so a future round can pick this up without re-deriving
+the analysis below.
+
+## Progress (Round 85)
+
+Converted `routes/customFormats.ts` (all 8 routes: list, create, patch, TRaSH-Guides JSON import,
+trash-sync trigger, delete, and the two quality-profile-format-score routes) and its backing
+`services/trashSync.ts`. The scores PUT route relies on `ON CONFLICT(quality_profile_id,
+custom_format_id) DO UPDATE SET score = excluded.score` — ported unchanged, since Postgres supports
+the same `ON CONFLICT ... DO UPDATE` upsert syntax as SQLite.
+
+**Deliberately NOT converted**: `services/customFormatScoring.ts`, which scores releases during the
+actual search/grab pipeline (called from `search.ts`, `importer.ts`, `upgradeCandidates.ts`,
+`scheduler.ts`, and others). Converting it would cascade into that much larger and riskier surface
+rather than staying scoped to "custom formats CRUD." Confirmed neither file converted this round
+calls into it, so leaving it on the old synchronous `db/client.ts` path creates no
+converted-calls-unconverted breakage this round.
+
+Verified live against a real Postgres container (no admin-bootstrap env vars): created, listed,
+renamed, and deleted a custom format; set and re-read a quality-profile format score via the upsert
+route; ran a real `trash-sync` against the live TRaSH-Guides GitHub repo (234 Radarr formats synced
+in, 8 unsupported and reported as such, matching the SQLite-path count exactly) — same regression
+sequence repeated against SQLite on the same build, identical results end to end.
 
 ## Progress (Round 84)
 

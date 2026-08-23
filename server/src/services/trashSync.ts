@@ -1,4 +1,4 @@
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { log } from "./logger.js";
 import { translateTrashFormat, type TrashCustomFormat } from "./trashFormats.js";
 
@@ -85,17 +85,16 @@ export async function syncTrashFormats(app: "radarr" | "sonarr"): Promise<TrashS
     }
 
     try {
-      const existing = db.prepare("SELECT id FROM custom_formats WHERE trash_id = ?").get(trash.trash_id) as { id: number } | undefined;
+      const existing = (await db.prepare("SELECT id FROM custom_formats WHERE trash_id = ?").get(trash.trash_id)) as
+        | { id: number }
+        | undefined;
       if (existing) {
-        db.prepare("UPDATE custom_formats SET name = ?, patterns = ? WHERE id = ?").run(trash.name, JSON.stringify(groups), existing.id);
+        await db.prepare("UPDATE custom_formats SET name = ?, patterns = ? WHERE id = ?").run(trash.name, JSON.stringify(groups), existing.id);
         result.updated++;
       } else {
-        db.prepare("INSERT INTO custom_formats (name, patterns, media_types, trash_id) VALUES (?, ?, ?, ?)").run(
-          trash.name,
-          JSON.stringify(groups),
-          JSON.stringify(mediaTypes),
-          trash.trash_id
-        );
+        await db
+          .prepare("INSERT INTO custom_formats (name, patterns, media_types, trash_id) VALUES (?, ?, ?, ?)")
+          .run(trash.name, JSON.stringify(groups), JSON.stringify(mediaTypes), trash.trash_id);
         result.added++;
       }
     } catch (err) {

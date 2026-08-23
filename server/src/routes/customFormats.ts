@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { customFormatFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { translateTrashFormat, type TrashCustomFormat } from "../services/trashFormats.js";
@@ -13,7 +13,7 @@ customFormatsRouter.use(requireAdmin);
 customFormatsRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
-    const rows = db.prepare("SELECT * FROM custom_formats ORDER BY name").all();
+    const rows = await db.prepare("SELECT * FROM custom_formats ORDER BY name").all();
     res.json(rows.map(customFormatFromRow));
   })
 );
@@ -112,10 +112,10 @@ customFormatsRouter.post(
     const normalized = validateAndNormalizeGroups(b.conditionGroups);
     const mediaTypes = Array.isArray(b.mediaTypes) ? b.mediaTypes : [];
 
-    const result = db
+    const result = await db
       .prepare("INSERT INTO custom_formats (name, patterns, media_types) VALUES (?, ?, ?)")
       .run(b.name, JSON.stringify(normalized), mediaTypes.length > 0 ? JSON.stringify(mediaTypes) : null);
-    const row = db.prepare("SELECT * FROM custom_formats WHERE id = ?").get(result.lastInsertRowid);
+    const row = await db.prepare("SELECT * FROM custom_formats WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(customFormatFromRow(row));
   })
 );
@@ -123,7 +123,7 @@ customFormatsRouter.post(
 customFormatsRouter.patch(
   "/:id",
   asyncHandler(async (req, res) => {
-    const existing = db.prepare("SELECT * FROM custom_formats WHERE id = ?").get(req.params.id);
+    const existing = await db.prepare("SELECT * FROM custom_formats WHERE id = ?").get(req.params.id);
     if (!existing) throw new HttpError(404, "Custom format not found");
     const b = req.body ?? {};
 
@@ -144,9 +144,9 @@ customFormatsRouter.patch(
     }
     if (sets.length > 0) {
       values.push(req.params.id);
-      db.prepare(`UPDATE custom_formats SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+      await db.prepare(`UPDATE custom_formats SET ${sets.join(", ")} WHERE id = ?`).run(...values);
     }
-    const row = db.prepare("SELECT * FROM custom_formats WHERE id = ?").get(req.params.id);
+    const row = await db.prepare("SELECT * FROM custom_formats WHERE id = ?").get(req.params.id);
     res.json(customFormatFromRow(row));
   })
 );
@@ -178,10 +178,10 @@ customFormatsRouter.post(
       throw new HttpError(400, "None of this format's conditions are supported (only title/release-group/size/resolution specs translate)");
     }
 
-    const result = db
+    const result = await db
       .prepare("INSERT INTO custom_formats (name, patterns, trash_id) VALUES (?, ?, ?)")
       .run(trash.name, JSON.stringify(groups), trash.trash_id ?? null);
-    const row = db.prepare("SELECT * FROM custom_formats WHERE id = ?").get(result.lastInsertRowid);
+    const row = await db.prepare("SELECT * FROM custom_formats WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json({ format: customFormatFromRow(row), skipped });
   })
 );
@@ -207,7 +207,7 @@ customFormatsRouter.post(
 customFormatsRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
-    const result = db.prepare("DELETE FROM custom_formats WHERE id = ?").run(req.params.id);
+    const result = await db.prepare("DELETE FROM custom_formats WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Custom format not found");
     res.status(204).send();
   })
@@ -217,15 +217,13 @@ customFormatsRouter.delete(
 customFormatsRouter.get(
   "/scores/:qualityProfileId",
   asyncHandler(async (req, res) => {
-    const formats = db.prepare("SELECT * FROM custom_formats ORDER BY name").all() as any[];
-    const scoreRows = db
+    const formats = (await db.prepare("SELECT * FROM custom_formats ORDER BY name").all()) as any[];
+    const scoreRows = (await db
       .prepare("SELECT custom_format_id, score FROM quality_profile_format_scores WHERE quality_profile_id = ?")
-      .all(req.params.qualityProfileId) as { custom_format_id: number; score: number }[];
+      .all(req.params.qualityProfileId)) as { custom_format_id: number; score: number }[];
     const scoreMap = new Map(scoreRows.map((r) => [r.custom_format_id, r.score]));
 
-    res.json(
-      formats.map((f) => ({ ...customFormatFromRow(f), score: scoreMap.get(f.id) ?? 0 }))
-    );
+    res.json(formats.map((f) => ({ ...customFormatFromRow(f), score: scoreMap.get(f.id) ?? 0 })));
   })
 );
 
@@ -233,11 +231,13 @@ customFormatsRouter.put(
   "/scores/:qualityProfileId/:customFormatId",
   asyncHandler(async (req, res) => {
     const score = Number(req.body?.score ?? 0);
-    db.prepare(
-      `INSERT INTO quality_profile_format_scores (quality_profile_id, custom_format_id, score)
-       VALUES (?, ?, ?)
-       ON CONFLICT(quality_profile_id, custom_format_id) DO UPDATE SET score = excluded.score`
-    ).run(req.params.qualityProfileId, req.params.customFormatId, score);
+    await db
+      .prepare(
+        `INSERT INTO quality_profile_format_scores (quality_profile_id, custom_format_id, score)
+         VALUES (?, ?, ?)
+         ON CONFLICT(quality_profile_id, custom_format_id) DO UPDATE SET score = excluded.score`
+      )
+      .run(req.params.qualityProfileId, req.params.customFormatId, score);
     res.json({ qualityProfileId: Number(req.params.qualityProfileId), customFormatId: Number(req.params.customFormatId), score });
   })
 );
