@@ -3,6 +3,29 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 70
+- Added "Import from a course page URL" (Add Media → Courses) — pulls title/description/thumbnail
+  from a Coursera/edX/Udemy (or any) course landing page to prefill the manual Add Media form, the
+  last of the deferred items from the original request list. Courses has no metadata-provider API
+  (there's no viable public search API for arbitrary course platforms — see mediaTypes.ts), so this
+  was previously typing everything in by hand
+- Deliberately scoped to Open Graph tags (`og:title`/`og:description`/`og:image`) rather than each
+  platform's own internal curriculum/lesson data. During development, Coursera's server-rendered
+  HTML did contain a syllabus (an Apollo GraphQL normalized cache blob with week/lecture names),
+  but Udemy's didn't expose any curriculum data in its raw HTML at all — its lesson list loads via
+  a separate, undocumented internal API call. Building on either would mean silently working for
+  one platform and not another, and breaking without warning on the next front-end redesign of
+  whichever platform it did work on. Open Graph tags, by contrast, are meant to be publicly scraped
+  (that's their purpose — link-preview cards) and were present and stable on all three real pages
+  tested. The lesson-by-lesson breakdown still has to be added by hand after creating the entry,
+  same as before this round
+- Verified live against real Coursera, edX, and Udemy course pages (not mocks) — confirmed correct
+  title/overview/poster extraction for each, confirmed edX's " | edX" title suffix and HTML entities
+  (`&#x27;` → `'`) are handled, confirmed a friendly error for both an invalid URL and an unreachable
+  domain rather than a raw fetch exception, and confirmed the new "Import from a course page URL"
+  section on Add Media (Courses only) actually populates the Title/Overview fields end-to-end in
+  the browser
+
 ## Round 69
 - Added "Sync from TRaSH-Guides" (Settings → Quality → Custom Formats) — pulls every custom format
   TRaSH-Guides publishes for Radarr or Sonarr straight from their public GitHub repo and syncs it

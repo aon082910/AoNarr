@@ -7,6 +7,7 @@ import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { placeFile } from "../services/importer.js";
 import { parseReleaseTitle } from "../services/releaseParser.js";
 import { parseNfo } from "../services/nfoParser.js";
+import { scrapeCoursePage } from "../services/courseScraper.js";
 
 export const importRouter = Router();
 importRouter.use(requireAdmin);
@@ -81,6 +82,23 @@ importRouter.get(
       res.json(parsed);
     } catch {
       throw new HttpError(400, "Could not parse this file as NFO/XML");
+    }
+  })
+);
+
+/** POST /api/import/course-url — scrapes a Coursera/edX/Udemy (or any) course landing page's
+ * title/description/thumbnail for use as an Add Media prefill, the same role /nfo plays for
+ * file-based libraries. Body: { url }. */
+importRouter.post(
+  "/course-url",
+  asyncHandler(async (req, res) => {
+    const url = String(req.body?.url ?? "").trim();
+    if (!url) throw new HttpError(400, "url is required");
+    try {
+      const scraped = await scrapeCoursePage(url);
+      res.json(scraped);
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
     }
   })
 );

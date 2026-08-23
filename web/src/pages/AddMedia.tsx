@@ -63,6 +63,8 @@ export default function AddMedia() {
   const [nfoPath, setNfoPath] = useState("");
   const [nfoLoading, setNfoLoading] = useState(false);
   const [nfoResult, setNfoResult] = useState<MetadataSearchResult | null>(null);
+  const [courseUrl, setCourseUrl] = useState("");
+  const [courseLoading, setCourseLoading] = useState(false);
   const [groupId, setGroupId] = useState<number | null>(null);
 
   const activeTypeInfo = mediaTypes.find((t) => t.key === type);
@@ -200,6 +202,25 @@ export default function AddMedia() {
     }
   }
 
+  async function loadCourseUrl(e: FormEvent) {
+    e.preventDefault();
+    if (!courseUrl.trim()) return;
+    setCourseLoading(true);
+    setError(null);
+    try {
+      const parsed = await api.post<MetadataSearchResult>("/import/course-url", { url: courseUrl.trim() });
+      setNfoResult(parsed);
+      setManual(true);
+      setSelected(null);
+      setTitle(parsed.title ?? "");
+      setOverview(parsed.overview ?? "");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setCourseLoading(false);
+    }
+  }
+
   function confirmImport(e: FormEvent) {
     e.preventDefault();
     doImport(false);
@@ -271,6 +292,30 @@ export default function AddMedia() {
             {nfoResult && <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>Loaded — review the fields below before adding.</p>}
           </form>
         </details>
+
+        {type === "course" && (
+          <details style={{ marginTop: 12 }} open>
+            <summary style={{ cursor: "pointer", color: "var(--muted)", fontSize: "0.85rem" }}>
+              Import from a course page URL
+            </summary>
+            <form onSubmit={loadCourseUrl} style={{ marginTop: 8 }}>
+              <label>Coursera / edX / Udemy (or any) course URL</label>
+              <input
+                value={courseUrl}
+                onChange={(e) => setCourseUrl(e.target.value)}
+                placeholder="https://www.coursera.org/learn/..."
+              />
+              <button type="submit" disabled={courseLoading}>
+                {courseLoading ? "Fetching..." : "Fetch course info"}
+              </button>
+              <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+                Pulls the title, description, and thumbnail the page publishes for link previews.
+                The lesson-by-lesson breakdown isn't published in a scrapable form on these sites, so
+                add lessons individually after creating this entry.
+              </p>
+            </form>
+          </details>
+        )}
       </div>
 
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
