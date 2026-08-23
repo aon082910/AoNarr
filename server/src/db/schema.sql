@@ -221,6 +221,7 @@ CREATE TABLE IF NOT EXISTS library_groups (
   kind TEXT NOT NULL,
   name TEXT NOT NULL,
   sort_name TEXT NOT NULL,
+  overview TEXT, -- optional user-entered description for this group's own page (e.g. what a System/Company/Site/Creator is)
   parent_group_id INTEGER REFERENCES library_groups(id) ON DELETE CASCADE,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

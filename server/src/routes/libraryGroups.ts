@@ -19,6 +19,29 @@ function levelIndex(mediaType: string, kind: string): number {
   return idx;
 }
 
+/**
+ * have/missing/total media_items nested under each group of a media type, rolled up through
+ * arbitrarily many levels of parent_group_id (e.g. a System's count includes every Game under
+ * every Company under it, not just items directly attached to the System itself) — one recursive
+ * CTE walks every (ancestor, descendant) group pair, then joins media_items on the descendant.
+ */
+function groupCounts(mediaType: string): Map<number, { total: number; have: number }> {
+  const rows = db
+    .prepare(
+      `WITH RECURSIVE anc(id, desc_id) AS (
+         SELECT id, id FROM library_groups WHERE media_type = ?
+         UNION ALL
+         SELECT anc.id, lg.id FROM anc JOIN library_groups lg ON lg.parent_group_id = anc.desc_id
+       )
+       SELECT anc.id AS group_id, COUNT(mi.id) AS total, COALESCE(SUM(mi.has_file), 0) AS have
+       FROM anc
+       LEFT JOIN media_items mi ON mi.group_id = anc.desc_id
+       GROUP BY anc.id`
+    )
+    .all(mediaType) as { group_id: number; total: number; have: number }[];
+  return new Map(rows.map((r) => [r.group_id, { total: r.total, have: r.have }]));
+}
+
 /** Lists groups for a type, optionally scoped to one parent (omit parentId for top-level groups). */
 libraryGroupsRouter.get(
   "/",
@@ -30,7 +53,13 @@ libraryGroupsRouter.get(
       ? db.prepare("SELECT * FROM library_groups WHERE media_type = ? AND parent_group_id = ? ORDER BY sort_name").all(mediaType, parentId)
       : db.prepare("SELECT * FROM library_groups WHERE media_type = ? AND parent_group_id IS NULL ORDER BY sort_name").all(mediaType);
 
-    res.json((rows as any[]).map(libraryGroupFromRow));
+    const counts = groupCounts(mediaType);
+    res.json(
+      (rows as any[]).map((row) => {
+        const c = counts.get(row.id) ?? { total: 0, have: 0 };
+        return { ...libraryGroupFromRow(row), itemCount: c.total, haveCount: c.have, missingCount: c.total - c.have };
+      })
+    );
   })
 );
 
@@ -52,9 +81,10 @@ libraryGroupsRouter.get(
     const levels = getMediaTypeConfig(row.media_type).groupLevels ?? [];
     const depth = levelIndex(row.media_type, row.kind);
     const isDeepest = depth === levels.length - 1;
+    const counts = groupCounts(row.media_type).get(row.id) ?? { total: 0, have: 0 };
 
     res.json({
-      group: libraryGroupFromRow(row),
+      group: { ...libraryGroupFromRow(row), itemCount: counts.total, haveCount: counts.have, missingCount: counts.total - counts.have },
       breadcrumb,
       isDeepestLevel: isDeepest,
       nextKind: isDeepest ? null : levels[depth + 1],
@@ -95,9 +125,11 @@ libraryGroupsRouter.patch(
   asyncHandler(async (req, res) => {
     const existing = db.prepare("SELECT * FROM library_groups WHERE id = ?").get(req.params.id);
     if (!existing) throw new HttpError(404, "Group not found");
-    const { name } = req.body ?? {};
+    const { name, overview } = req.body ?? {};
     if (!name || typeof name !== "string") throw new HttpError(400, "name is required");
-    db.prepare("UPDATE library_groups SET name = ?, sort_name = ? WHERE id = ?").run(name.trim(), sortName(name), req.params.id);
+    db
+      .prepare("UPDATE library_groups SET name = ?, sort_name = ?, overview = ? WHERE id = ?")
+      .run(name.trim(), sortName(name), overview !== undefined ? overview || null : (existing as any).overview, req.params.id);
     res.json(libraryGroupFromRow(db.prepare("SELECT * FROM library_groups WHERE id = ?").get(req.params.id)));
   })
 );

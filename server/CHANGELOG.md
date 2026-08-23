@@ -3,6 +3,26 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 53
+- Added have/missing/total counts to every level of the nested-group library browsers (ROMs'
+  System → Maker, Online Videos/Courses' Site → Creator, Adult's Site → Maker → Series) — each
+  group card now shows a rolled-up `have/total` (e.g. a System's count includes every game under
+  every Maker beneath it, not just games attached to the System directly), and the current group's
+  own page shows the same as have/missing/total badges, matching every other library page. One
+  recursive CTE (`WITH RECURSIVE`) walks arbitrarily many levels of `parent_group_id` per query
+  rather than N+1 per-group lookups
+- Added an optional, admin-editable description ("metadata for that page") to every group level —
+  new `library_groups.overview` column, editable inline on the group's own browse page. Answers
+  the "each layer having metadata" half of the ROMs/Online Videos ask that counts alone didn't cover
+- Confirmed the Games list under a Maker (and every other grouped type's leaf-level item list) was
+  already listing every item regardless of downloaded status, not just downloaded ones — no change
+  needed there, just verified live
+- Verified this round live end-to-end in a running test container: built a real System → Maker →
+  3 Games hierarchy, confirmed the recursive count correctly rolled up through both levels
+  (1 have / 3 total at both the System and the Maker), confirmed the description saves and
+  persists across a reload, and confirmed the Games list under the Maker still shows all three
+  games including the two missing ones
+
 ## Round 52
 - Added dedicated detail pages for every "collection"-shape library's children (Album, Book,
   Audiobook, Issue, Chapter, Lesson, Video) — new `SubItemDetail.tsx` page at

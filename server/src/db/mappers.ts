@@ -32,6 +32,7 @@ export function libraryGroupFromRow(row: any) {
     mediaType: row.media_type,
     kind: row.kind,
     name: row.name,
+    overview: row.overview,
     parentGroupId: row.parent_group_id,
   };
 }

@@ -47,6 +47,8 @@ export default function LibraryType() {
   const [groupDetail, setGroupDetail] = useState<GroupDetail | null>(null);
   const [childGroups, setChildGroups] = useState<LibraryGroup[]>([]);
   const [ungroupedCount, setUngroupedCount] = useState(0);
+  const [editingOverview, setEditingOverview] = useState(false);
+  const [overviewDraft, setOverviewDraft] = useState("");
 
   const currentKind = groupDetail ? groupDetail.group.kind : groupLevels[0];
   const nextKind = groupDetail ? groupDetail.nextKind : groupLevels[1] ?? (groupLevels.length === 1 ? null : groupLevels[0]);
@@ -67,6 +69,16 @@ export default function LibraryType() {
       api.get<MediaItem[]>(`/media?type=${type}&groupId=none`).then((rows) => setUngroupedCount(rows.length));
     }
   }, [isGrouped, type, groupId]);
+
+  async function saveOverview() {
+    if (!groupDetail) return;
+    const updated = await api.patch<LibraryGroup>(`/library-groups/${groupDetail.group.id}`, {
+      name: groupDetail.group.name,
+      overview: overviewDraft.trim() || null,
+    });
+    setGroupDetail({ ...groupDetail, group: { ...groupDetail.group, overview: updated.overview } });
+    setEditingOverview(false);
+  }
 
   async function addGroup() {
     const kind = groupId ? groupDetail?.nextKind ?? groupLevels[0] : groupLevels[0];
@@ -107,6 +119,56 @@ export default function LibraryType() {
         <p style={{ color: "var(--muted)" }}>
           {KIND_LABEL[currentKind ?? ""] ?? currentKind}{groupDetail ? ` — browse by ${KIND_LABEL[nextKind ?? ""] ?? nextKind}` : ""}
         </p>
+        {groupDetail && (groupDetail.group.itemCount ?? 0) > 0 && (
+          <p style={{ color: "var(--muted)" }}>
+            <span className="badge ok">{groupDetail.group.haveCount} have</span>{" "}
+            <span className={`badge ${(groupDetail.group.missingCount ?? 0) > 0 ? "danger" : ""}`}>
+              {groupDetail.group.missingCount} missing
+            </span>{" "}
+            <span className="badge">{groupDetail.group.itemCount} total</span>
+          </p>
+        )}
+
+        {groupDetail && !editingOverview && (
+          <div style={{ marginBottom: 12 }}>
+            {groupDetail.group.overview ? (
+              <p>{groupDetail.group.overview}</p>
+            ) : (
+              auth.isAdmin && <p className="empty">No description yet.</p>
+            )}
+            {auth.isAdmin && (
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  setOverviewDraft(groupDetail.group.overview ?? "");
+                  setEditingOverview(true);
+                }}
+              >
+                {groupDetail.group.overview ? "Edit description" : "Add description"}
+              </button>
+            )}
+          </div>
+        )}
+        {groupDetail && editingOverview && (
+          <div className="form-panel" style={{ marginBottom: 12 }}>
+            <textarea
+              value={overviewDraft}
+              onChange={(e) => setOverviewDraft(e.target.value)}
+              rows={3}
+              style={{ width: "100%", maxWidth: 480 }}
+              placeholder={`What is "${groupDetail.group.name}"?`}
+            />
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button type="button" onClick={saveOverview}>
+                Save
+              </button>
+              <button type="button" className="secondary" onClick={() => setEditingOverview(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
 
         {auth.isAdmin && (
           <button type="button" onClick={addGroup} style={{ marginBottom: 16 }}>
@@ -123,6 +185,9 @@ export default function LibraryType() {
               style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20, cursor: "pointer", position: "relative" }}
             >
               <div style={{ fontWeight: 600 }}>{g.name}</div>
+              <div style={{ fontSize: "0.75rem", color: "var(--muted)", marginTop: 4 }}>
+                {(g.itemCount ?? 0) > 0 ? `${g.haveCount}/${g.itemCount}` : "empty"}
+              </div>
               {auth.isAdmin && (
                 <button
                   type="button"
