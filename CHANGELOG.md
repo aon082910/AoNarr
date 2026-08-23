@@ -3,6 +3,17 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 81
+- PostgreSQL support: converted `routes/users.ts` (household account management — create/list/patch
+  users, per-user library permissions, session listing and force-revocation) to the async DB
+  interface, the natural next slice after Round 80's auth/login path since it's the other half of
+  "who can log in and what can they see." 10 files converted so far; ~60 remain
+- Verified live against a real Postgres container: created a household user with library
+  permissions, listed users, patched permissions (including the delete-then-reinsert pattern for
+  changing allowed libraries), logged in as that user, listed active sessions, force-revoked one,
+  deleted the user, and confirmed every one of those actions recorded correctly in the audit log —
+  all passed, plus the same sequence regression-checked against SQLite on the same build
+
 ## Round 80
 - PostgreSQL support: converted the first real vertical slice of the app — the entire auth/login/
   session path (`db/index.ts` new driver dispatcher, `settingsStore.ts`, `auth.ts`,

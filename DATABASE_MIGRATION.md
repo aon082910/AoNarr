@@ -1,12 +1,23 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — first working vertical slice (the whole auth/login/session path) verified
-against a real Postgres container.** The app can now actually boot and log a user in against
-Postgres — this is the first round where that's been true. Most of the app (~65 remaining files)
-still isn't converted; `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one
-yet. MariaDB — scoped, not started, deliberately deferred until PostgreSQL is fully done (see "The
-ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by explicit user decision).
-This document exists so a future round can pick this up without re-deriving the analysis below.
+Status: **PostgreSQL — auth/login/session path plus household user management verified against a
+real Postgres container.** 10 files converted so far. Most of the app (~60 remaining files) still
+isn't converted; `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one yet.
+MariaDB — scoped, not started, deliberately deferred until PostgreSQL is fully done (see "The ask"
+below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by explicit user decision). This
+document exists so a future round can pick this up without re-deriving the analysis below.
+
+## Progress (Round 81)
+
+Converted `routes/users.ts` (household account CRUD, per-user library permissions, session listing/
+revocation) — the natural next slice after auth itself, since it's the other half of "who can log in
+and what can they see." No new patterns or bugs this round; straightforward `await` + `Promise.all`
+for the one spot that mapped an array of rows through an async per-row lookup
+(`getAllowedTypes`). Verified live against a real Postgres container: create a household user with
+library permissions, list users, patch permissions (including the delete-then-reinsert allowed-types
+pattern), log in as that user, list active sessions, force-revoke one, delete the user, and confirm
+every one of those actions shows up correctly in the audit log — all passed, plus the same sequence
+regression-checked against SQLite on the same build.
 
 ## Progress (Round 80) — first working vertical slice
 
