@@ -232,10 +232,13 @@ export async function placeFile(params: {
     // Running count across every season up to and including this episode — what anime naming
     // conventions call "absolute" numbering (e.g. episode 26 instead of S02E01), as an
     // alternative to {season}/{episode} in a custom naming template.
+    // Season 0 (specials) is excluded from the running count — absolute numbering conventions
+    // (AniDB, TVDB's absolute order, most anime release groups) start from season 1's episode 1,
+    // not from whatever specials happen to sort before it.
     const absoluteEpisode = (
       db
         .prepare(
-          `SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ?
+          `SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ? AND season_number > 0
            AND (season_number < ? OR (season_number = ? AND episode_number <= ?))`
         )
         .get(epRow.media_item_id, epRow.season_number, epRow.season_number, epRow.episode_number) as { c: number }
@@ -433,10 +436,12 @@ export async function placeSeasonPackFiles(params: {
       continue;
     }
 
+    // Season 0 (specials) is excluded from the running count — see the identical comment in
+    // placeFile() above.
     const absoluteEpisode = (
       db
         .prepare(
-          `SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ?
+          `SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ? AND season_number > 0
            AND (season_number < ? OR (season_number = ? AND episode_number <= ?))`
         )
         .get(itemId, seasonNumber, seasonNumber, episodeNumber) as { c: number }

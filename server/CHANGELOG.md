@@ -3,6 +3,30 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 56
+- Continued the audit series onto `importer.ts`, `naming.ts`, and `mediaServer.ts`. Found and fixed
+  one real bug: `{absoluteEpisode}` (the anime-style running episode count naming templates can use
+  instead of `{season}`/`{episode}`) was counting season 0 specials into the total, so any show with
+  specials had every real episode's absolute number inflated by however many specials sorted before
+  it. Real absolute-numbering conventions (AniDB, TVDB's absolute order, most anime release groups)
+  start counting from season 1 episode 1 and exclude specials entirely — fixed both `placeFile()`
+  and `placeSeasonPackFiles()`'s identical count query to do the same. Verified against a simulated
+  12-episode-per-season show with 2 specials: S1E1/S2E1/S2E12 now correctly compute as 1/13/24
+  instead of 3/15/26
+- Reviewed two other candidates and concluded neither needs a change this round: `importer.ts`
+  moves a file to its final destination before writing `has_file`/`path` to the DB in all three
+  place* functions — on a crash between those two steps the file sits correctly placed but
+  untracked, which is actually the *safer* of the two possible orderings (the reverse would leave
+  the DB pointing at a file that doesn't exist) and self-heals on the next Scan & Import since the
+  file is already sitting in the root folder in its final form. Separately, `mediaServer.ts`'s
+  Jellyfin/Emby watch-state push only targets the first user returned by `/Users` — a real scope
+  limit on multi-user instances, but consistent with the feature's existing "low-frequency manual
+  admin action" framing rather than an oversight
+- Confirmed `naming.ts`'s template token replacement (single regex pass, exact-case tokens, correct
+  zero-padding) and `mediaServer.ts`'s Plex vs. Jellyfin vs. Emby API differences (auth header
+  names, the `/emby` path prefix Emby needs that Jellyfin dropped) are both handled correctly —
+  nothing else to fix in either file
+
 ## Round 55
 - Continued the provider-audit pass from Round 54 onto the indexer/download-client integrations
   (`indexerClient.ts`, `downloadClient.ts` — Torznab/Newznab, qBittorrent, SABnzbd, Real-Debrid,
