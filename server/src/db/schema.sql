@@ -150,7 +150,8 @@ CREATE TABLE IF NOT EXISTS qualities (
   name TEXT NOT NULL UNIQUE,
   rank INTEGER NOT NULL UNIQUE,
   min_size_mb INTEGER,
-  max_size_mb INTEGER
+  max_size_mb INTEGER,
+  preferred_size_mb INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS tags (
@@ -169,7 +170,8 @@ CREATE TABLE IF NOT EXISTS media_item_tags (
 CREATE TABLE IF NOT EXISTS custom_formats (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
-  patterns TEXT NOT NULL -- JSON array of regex source strings; format matches if ANY pattern matches the release title
+  patterns TEXT NOT NULL, -- JSON array of ConditionGroup objects (see services/customFormatScoring.ts)
+  media_types TEXT -- JSON array of media_type keys this format applies to; NULL/empty = every type (unrestricted, the pre-scoping default)
 );
 
 -- Per-profile score for a custom format; a format with no row for a given profile scores 0.

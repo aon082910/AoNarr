@@ -3,6 +3,35 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 63
+- Added four new custom format condition types, closing most of the gap versus real Sonarr/
+  Radarr's condition set: **Source** (Remux/Bluray/WEBDL/WEBRip/HDTV/DVD), **Resolution**
+  (2160p/1080p/720p — split out from the combined `quality` string as their own conditions),
+  **Year** (min/max range), and **Release Flags** (proper/repack/extended/unrated/directorscut/
+  imax — newly parsed from the release title; nothing detected these before). Previously only
+  Title/Size/Language/ReleaseGroup existed. New syntax lines in the Custom Formats textarea:
+  `SOURCE:`, `RESOLUTION:`, `YEAR:`, `FLAGS:`, alongside the existing `SIZE:`/`LANG:`/`GROUP:`
+- Added per-library scoping to custom formats — "Giving the option to set custom format by
+  library" was a real, total gap: a custom format applied to every media type indiscriminately
+  with no way to restrict it. New `mediaTypes` field (empty = every library, the previous
+  behavior, so nothing existing changes); a multi-select per format in the table, and checkboxes
+  on the add form. `scoreRelease()` now takes the searching item's type and skips any format
+  that's restricted to other types — threaded through all 6 call sites (search route + 5 inside
+  the scheduler's auto-search/retry paths)
+- Added "Preferred size" to Quality Definitions — previously min/max size only *rejected*
+  releases outside a range; there was no way to express "closer to this size wins" between two
+  releases that are otherwise tied. Now a genuine tiebreaker: after format score, seeders, and
+  release-group reputation, whichever candidate's size is closest to its quality's configured
+  preferred size wins. No preferred size configured (the default) is a neutral tie, same as before
+- Verified live end-to-end: created a `movie`-scoped "Remux Boost" format and confirmed it scores
+  for a movie search but correctly scores 0 for a series search with the identical release title;
+  created unrestricted Resolution/Year/ReleaseFlags formats and confirmed correct AND/OR/negate
+  behavior across realistic release titles (a clean 2024 4K release matched all three; the same
+  release with a PROPER tag correctly lost only the negated "avoid proper/repack" format; an old
+  1080p release matched only that one); set a preferred size and confirmed the distance
+  calculation correctly favors the closer release; confirmed the per-format media-type multi-select
+  round-trips through a real PATCH request in the browser
+
 ## Round 62
 - Added a per-library enable/disable toggle for naming (Settings → Media → Naming) — previously
   every import always renamed a file via its type's template unconditionally, with no way to keep

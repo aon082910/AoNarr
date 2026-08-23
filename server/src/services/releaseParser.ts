@@ -1,11 +1,16 @@
 import type { QualityName } from "./quality.js";
 
+export type ReleaseFlag = "proper" | "repack" | "extended" | "unrated" | "directorscut" | "imax";
+
 export interface ParsedRelease {
   seasonNumber: number | null;
   episodeNumbers: number[] | null; // null when not an episode release (movie, full-season, album, book)
   isFullSeason: boolean;
   year: number | null;
   quality: QualityName | "Unknown";
+  source: string | null; // "Remux"/"Bluray"/"WEBDL"/"WEBRip"/"HDTV"/"DVD" — the source half of `quality`, split out as its own custom-format condition
+  resolution: string | null; // "2160p"/"1080p"/"720p" — the resolution half of `quality`
+  flags: ReleaseFlag[]; // proper/repack/edition tags found in the title
   languages: string[]; // lowercased audio/subtitle language tags found in the title, e.g. ["french","multi"]
   releaseGroup: string | null; // the tag after the final hyphen, e.g. "RARBG"
 }
@@ -32,6 +37,19 @@ const SOURCE_WEBDL = /\b(web-?dl|webdl)\b/i;
 const SOURCE_WEBRIP = /\bwebrip\b/i;
 const SOURCE_HDTV = /\bhdtv\b/i;
 const SOURCE_DVD = /\bdvd(rip)?\b/i;
+
+// "real" is deliberately not included here — unlike proper/repack/imax/etc, it's a common English
+// word (collides constantly with ordinary titles), so it's not safe to detect with a bare regex
+// the way real Sonarr/Radarr can (they check it against a controlled release-name grammar, not a
+// simple whole-word scan over an arbitrary title string).
+const FLAG_PATTERNS: [ReleaseFlag, RegExp][] = [
+  ["proper", /\bproper\b/i],
+  ["repack", /\brepack\b/i],
+  ["extended", /\bextended\b/i],
+  ["unrated", /\bunrated\b/i],
+  ["directorscut", /\bdirectors?[\s.]?cut\b/i],
+  ["imax", /\bimax\b/i],
+];
 
 // Common language/audio tags seen in scene/P2P release titles. Matched as whole words,
 // case-insensitive; the map value is the canonical lowercase tag stored on the parsed result.
@@ -74,29 +92,40 @@ function detectReleaseGroup(title: string): string | null {
   return match ? match[1] : null;
 }
 
+function detectResolution(title: string): string | null {
+  if (RESOLUTION_2160.test(title)) return "2160p";
+  if (RESOLUTION_1080.test(title)) return "1080p";
+  if (RESOLUTION_720.test(title)) return "720p";
+  return null;
+}
+
+function detectSource(title: string): string | null {
+  if (SOURCE_REMUX.test(title)) return "Remux";
+  if (SOURCE_BLURAY.test(title)) return "Bluray";
+  if (SOURCE_WEBDL.test(title)) return "WEBDL";
+  if (SOURCE_WEBRIP.test(title)) return "WEBRip";
+  if (SOURCE_HDTV.test(title)) return "HDTV";
+  if (SOURCE_DVD.test(title)) return "DVD";
+  return null;
+}
+
+function detectFlags(title: string): ReleaseFlag[] {
+  return FLAG_PATTERNS.filter(([, pattern]) => pattern.test(title)).map(([flag]) => flag);
+}
+
 function detectQuality(title: string): QualityName | "Unknown" {
-  const is2160 = RESOLUTION_2160.test(title);
-  const is1080 = RESOLUTION_1080.test(title);
-  const is720 = RESOLUTION_720.test(title);
-
-  const isRemux = SOURCE_REMUX.test(title);
-  const isBluray = SOURCE_BLURAY.test(title);
-  const isWebdl = SOURCE_WEBDL.test(title);
-  const isWebrip = SOURCE_WEBRIP.test(title);
-  const isHdtv = SOURCE_HDTV.test(title);
-  const isDvd = SOURCE_DVD.test(title);
-
-  const suffix = is2160 ? "2160p" : is1080 ? "1080p" : is720 ? "720p" : null;
+  const suffix = detectResolution(title);
+  const source = detectSource(title);
   if (!suffix) {
-    if (isDvd) return "DVD";
+    if (source === "DVD") return "DVD";
     return "Unknown";
   }
 
-  if (isRemux) return `Remux-${suffix}` as QualityName;
-  if (isBluray) return `Bluray-${suffix}` as QualityName;
-  if (isWebdl) return `WEBDL-${suffix}` as QualityName;
-  if (isWebrip) return `WEBRip-${suffix}` as QualityName;
-  if (isHdtv) return `HDTV-${suffix}` as QualityName;
+  if (source === "Remux") return `Remux-${suffix}` as QualityName;
+  if (source === "Bluray") return `Bluray-${suffix}` as QualityName;
+  if (source === "WEBDL") return `WEBDL-${suffix}` as QualityName;
+  if (source === "WEBRip") return `WEBRip-${suffix}` as QualityName;
+  if (source === "HDTV") return `HDTV-${suffix}` as QualityName;
 
   // Resolution present but no recognizable source tag: assume WEB-DL, the most common case.
   return `WEBDL-${suffix}` as QualityName;
@@ -146,6 +175,9 @@ export function parseReleaseTitle(title: string): ParsedRelease {
     isFullSeason,
     year,
     quality: detectQuality(title),
+    source: detectSource(title),
+    resolution: detectResolution(title),
+    flags: detectFlags(title),
     languages: detectLanguages(title),
     releaseGroup: detectReleaseGroup(title),
   };

@@ -136,6 +136,7 @@ export interface Quality {
   rank: number;
   minSizeMb: number | null;
   maxSizeMb: number | null;
+  preferredSizeMb: number | null;
 }
 
 export interface Tag {
@@ -172,11 +173,16 @@ export interface Track {
 }
 
 export interface ConditionGroup {
-  type?: "title" | "size" | "language" | "releaseGroup";
+  type?: "title" | "size" | "language" | "releaseGroup" | "source" | "resolution" | "year" | "releaseFlags";
   patterns?: string[];
   minMb?: number | null;
   maxMb?: number | null;
   languages?: string[];
+  sources?: string[];
+  resolutions?: string[];
+  minYear?: number | null;
+  maxYear?: number | null;
+  flags?: string[];
   negate: boolean;
 }
 
@@ -184,6 +190,7 @@ export interface CustomFormat {
   id: number;
   name: string;
   conditionGroups: ConditionGroup[];
+  mediaTypes: MediaType[]; // empty = applies to every library type
 }
 
 export interface QueueItem {

@@ -19,63 +19,132 @@ const VALID_PATTERN_LANGUAGES = new Set([
   "multi", "vostfr", "vff", "vfq", "french", "german", "italian", "spanish", "dutch",
   "russian", "korean", "japanese", "danish", "swedish", "norwegian", "polish", "portuguese", "english",
 ]);
+const VALID_SOURCES = new Set(["remux", "bluray", "webdl", "webrip", "hdtv", "dvd"]);
+const VALID_RESOLUTIONS = new Set(["2160p", "1080p", "720p"]);
+const VALID_FLAGS = new Set(["proper", "repack", "extended", "unrated", "directorscut", "imax"]);
 
 /**
  * A custom format is a list of condition groups: title (patterns OR'd against the full title),
  * size (release size within [minMb, maxMb]), language (any of a set of detected language tags),
- * or releaseGroup (patterns OR'd against the parsed trailing release-group tag). Across groups,
- * results are AND'd (every group must pass); a group can be negated for the opposite (e.g. "must
- * not contain x265", "must not be French").
- * Body: { name, conditionGroups: [{ type?, patterns?, minMb?, maxMb?, languages?, negate? }, ...] }
+ * releaseGroup (patterns OR'd against the parsed trailing release-group tag), source (Remux/
+ * Bluray/WEBDL/WEBRip/HDTV/DVD), resolution (2160p/1080p/720p), year (release year within
+ * [minYear, maxYear]), or releaseFlags (proper/repack/extended/unrated/directorscut/imax). Across
+ * groups, results are AND'd (every group must pass); a group can be negated for the opposite (e.g.
+ * "must not contain x265", "must not be French").
+ * Body: { name, mediaTypes?: string[], conditionGroups: [{ type?, patterns?, minMb?, maxMb?, languages?, sources?, resolutions?, minYear?, maxYear?, flags?, negate? }, ...] }
+ * mediaTypes empty/omitted means the format applies to every library type (unrestricted).
  */
+function validateAndNormalizeGroups(groups: any[]): any[] {
+  if (!Array.isArray(groups) || groups.length === 0) {
+    throw new HttpError(400, "a non-empty conditionGroups array is required");
+  }
+  for (const group of groups) {
+    if (group.type === "size" || group.type === "year") {
+      const [minKey, maxKey] = group.type === "size" ? ["minMb", "maxMb"] : ["minYear", "maxYear"];
+      if (group[minKey] == null && group[maxKey] == null) {
+        throw new HttpError(400, `a ${group.type} condition needs at least one of ${minKey}/${maxKey}`);
+      }
+    } else if (group.type === "language") {
+      if (!Array.isArray(group.languages) || group.languages.length === 0) {
+        throw new HttpError(400, "a language condition needs a non-empty languages array");
+      }
+      for (const lang of group.languages) {
+        if (!VALID_PATTERN_LANGUAGES.has(String(lang).toLowerCase())) {
+          throw new HttpError(400, `"${lang}" is not a recognized language tag`);
+        }
+      }
+    } else if (group.type === "source") {
+      if (!Array.isArray(group.sources) || group.sources.length === 0) {
+        throw new HttpError(400, "a source condition needs a non-empty sources array");
+      }
+      for (const s of group.sources) {
+        if (!VALID_SOURCES.has(String(s).toLowerCase())) throw new HttpError(400, `"${s}" is not a recognized source`);
+      }
+    } else if (group.type === "resolution") {
+      if (!Array.isArray(group.resolutions) || group.resolutions.length === 0) {
+        throw new HttpError(400, "a resolution condition needs a non-empty resolutions array");
+      }
+      for (const r of group.resolutions) {
+        if (!VALID_RESOLUTIONS.has(String(r).toLowerCase())) throw new HttpError(400, `"${r}" is not a recognized resolution`);
+      }
+    } else if (group.type === "releaseFlags") {
+      if (!Array.isArray(group.flags) || group.flags.length === 0) {
+        throw new HttpError(400, "a releaseFlags condition needs a non-empty flags array");
+      }
+      for (const f of group.flags) {
+        if (!VALID_FLAGS.has(String(f).toLowerCase())) throw new HttpError(400, `"${f}" is not a recognized release flag`);
+      }
+    } else {
+      // "title" and "releaseGroup" both validate as a non-empty regex-pattern array
+      if (!Array.isArray(group.patterns) || group.patterns.length === 0) {
+        throw new HttpError(400, "each title/releaseGroup condition group needs a non-empty patterns array");
+      }
+      for (const p of group.patterns) {
+        try {
+          new RegExp(p);
+        } catch {
+          throw new HttpError(400, `"${p}" is not a valid regular expression`);
+        }
+      }
+    }
+  }
+
+  return groups.map((g: any) => {
+    if (g.type === "size") return { type: "size", minMb: g.minMb ?? null, maxMb: g.maxMb ?? null, negate: !!g.negate };
+    if (g.type === "year") return { type: "year", minYear: g.minYear ?? null, maxYear: g.maxYear ?? null, negate: !!g.negate };
+    if (g.type === "language") return { type: "language", languages: g.languages.map((l: string) => l.toLowerCase()), negate: !!g.negate };
+    if (g.type === "releaseGroup") return { type: "releaseGroup", patterns: g.patterns, negate: !!g.negate };
+    if (g.type === "source") return { type: "source", sources: g.sources, negate: !!g.negate };
+    if (g.type === "resolution") return { type: "resolution", resolutions: g.resolutions.map((r: string) => r.toLowerCase()), negate: !!g.negate };
+    if (g.type === "releaseFlags") return { type: "releaseFlags", flags: g.flags.map((f: string) => f.toLowerCase()), negate: !!g.negate };
+    return { type: "title", patterns: g.patterns, negate: !!g.negate };
+  });
+}
+
 customFormatsRouter.post(
   "/",
   asyncHandler(async (req, res) => {
     const b = req.body ?? {};
-    const groups = b.conditionGroups;
-    if (!b.name || !Array.isArray(groups) || groups.length === 0) {
-      throw new HttpError(400, "name and a non-empty conditionGroups array are required");
-    }
-    for (const group of groups) {
-      if (group.type === "size") {
-        if (group.minMb == null && group.maxMb == null) {
-          throw new HttpError(400, "a size condition needs at least one of minMb/maxMb");
-        }
-      } else if (group.type === "language") {
-        if (!Array.isArray(group.languages) || group.languages.length === 0) {
-          throw new HttpError(400, "a language condition needs a non-empty languages array");
-        }
-        for (const lang of group.languages) {
-          if (!VALID_PATTERN_LANGUAGES.has(String(lang).toLowerCase())) {
-            throw new HttpError(400, `"${lang}" is not a recognized language tag`);
-          }
-        }
-      } else {
-        // "title" and "releaseGroup" both validate as a non-empty regex-pattern array
-        if (!Array.isArray(group.patterns) || group.patterns.length === 0) {
-          throw new HttpError(400, "each title/releaseGroup condition group needs a non-empty patterns array");
-        }
-        for (const p of group.patterns) {
-          try {
-            new RegExp(p);
-          } catch {
-            throw new HttpError(400, `"${p}" is not a valid regular expression`);
-          }
-        }
-      }
-    }
+    if (!b.name) throw new HttpError(400, "name is required");
+    const normalized = validateAndNormalizeGroups(b.conditionGroups);
+    const mediaTypes = Array.isArray(b.mediaTypes) ? b.mediaTypes : [];
 
-    const normalized = groups.map((g: any) => {
-      if (g.type === "size") return { type: "size", minMb: g.minMb ?? null, maxMb: g.maxMb ?? null, negate: !!g.negate };
-      if (g.type === "language") return { type: "language", languages: g.languages.map((l: string) => l.toLowerCase()), negate: !!g.negate };
-      if (g.type === "releaseGroup") return { type: "releaseGroup", patterns: g.patterns, negate: !!g.negate };
-      return { type: "title", patterns: g.patterns, negate: !!g.negate };
-    });
     const result = db
-      .prepare("INSERT INTO custom_formats (name, patterns) VALUES (?, ?)")
-      .run(b.name, JSON.stringify(normalized));
+      .prepare("INSERT INTO custom_formats (name, patterns, media_types) VALUES (?, ?, ?)")
+      .run(b.name, JSON.stringify(normalized), mediaTypes.length > 0 ? JSON.stringify(mediaTypes) : null);
     const row = db.prepare("SELECT * FROM custom_formats WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(customFormatFromRow(row));
+  })
+);
+
+customFormatsRouter.patch(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    const existing = db.prepare("SELECT * FROM custom_formats WHERE id = ?").get(req.params.id);
+    if (!existing) throw new HttpError(404, "Custom format not found");
+    const b = req.body ?? {};
+
+    const sets: string[] = [];
+    const values: any[] = [];
+    if (b.name !== undefined) {
+      sets.push("name = ?");
+      values.push(b.name);
+    }
+    if (b.conditionGroups !== undefined) {
+      sets.push("patterns = ?");
+      values.push(JSON.stringify(validateAndNormalizeGroups(b.conditionGroups)));
+    }
+    if (b.mediaTypes !== undefined) {
+      const mediaTypes = Array.isArray(b.mediaTypes) ? b.mediaTypes : [];
+      sets.push("media_types = ?");
+      values.push(mediaTypes.length > 0 ? JSON.stringify(mediaTypes) : null);
+    }
+    if (sets.length > 0) {
+      values.push(req.params.id);
+      db.prepare(`UPDATE custom_formats SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+    }
+    const row = db.prepare("SELECT * FROM custom_formats WHERE id = ?").get(req.params.id);
+    res.json(customFormatFromRow(row));
   })
 );
 

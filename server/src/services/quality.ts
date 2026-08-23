@@ -28,6 +28,7 @@ interface SizeBounds {
 
 let rankCache: Map<string, number> | null = null;
 let sizeBoundsCache: Map<string, SizeBounds> | null = null;
+let preferredSizeCache: Map<string, number | null> | null = null;
 
 function loadRanks(): Map<string, number> {
   const rows = db.prepare("SELECT name, rank FROM qualities ORDER BY rank").all() as {
@@ -46,10 +47,31 @@ function loadSizeBounds(): Map<string, SizeBounds> {
   return new Map(rows.map((r) => [r.name, { minSizeMb: r.min_size_mb, maxSizeMb: r.max_size_mb }]));
 }
 
+function loadPreferredSizes(): Map<string, number | null> {
+  const rows = db.prepare("SELECT name, preferred_size_mb FROM qualities").all() as {
+    name: string;
+    preferred_size_mb: number | null;
+  }[];
+  return new Map(rows.map((r) => [r.name, r.preferred_size_mb]));
+}
+
 /** Call after any write to the `qualities` table so subsequent rank/size lookups see the change. */
 export function invalidateQualityRankCache(): void {
   rankCache = null;
   sizeBoundsCache = null;
+  preferredSizeCache = null;
+}
+
+/** How far a release's size is from its quality's configured preferred size, in MB — smaller is
+ * better. Used only as a tiebreaker between releases already equal on format score/seeders/group
+ * reputation, never to reject anything (unlike min/max size bounds). No preferred size configured,
+ * or no size on the release, is treated as a neutral tie (0), not a penalty. */
+export function preferredSizeDistance(qualityName: string | null, sizeBytes: number | null): number {
+  if (!qualityName || sizeBytes == null) return 0;
+  if (!preferredSizeCache) preferredSizeCache = loadPreferredSizes();
+  const preferredMb = preferredSizeCache.get(qualityName);
+  if (preferredMb == null) return 0;
+  return Math.abs(sizeBytes / 1_000_000 - preferredMb);
 }
 
 export function qualityRank(name: string | null): number {

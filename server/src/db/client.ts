@@ -65,6 +65,8 @@ ensureColumn("queue", "season_number", "season_number INTEGER");
 ensureColumn("download_clients", "audio_only", "audio_only INTEGER NOT NULL DEFAULT 0");
 ensureColumn("root_folders", "pause_grabs_at_quota", "pause_grabs_at_quota INTEGER NOT NULL DEFAULT 0");
 ensureColumn("library_groups", "overview", "overview TEXT");
+ensureColumn("qualities", "preferred_size_mb", "preferred_size_mb INTEGER");
+ensureColumn("custom_formats", "media_types", "media_types TEXT");
 
 /**
  * indexers.protocol and download_clients.type originally shipped with a rigid `CHECK (... IN (...))`

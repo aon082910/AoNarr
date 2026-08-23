@@ -34,6 +34,10 @@ qualitiesRouter.patch(
       sets.push("max_size_mb = ?");
       values.push(b.maxSizeMb);
     }
+    if (b.preferredSizeMb !== undefined) {
+      sets.push("preferred_size_mb = ?");
+      values.push(b.preferredSizeMb);
+    }
     if (sets.length > 0) {
       values.push(req.params.id);
       db.prepare(`UPDATE qualities SET ${sets.join(", ")} WHERE id = ?`).run(...values);

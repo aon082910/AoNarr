@@ -113,7 +113,7 @@ searchRouter.get(
           : targetSeason !== null
             ? parsed.seasonNumber === targetSeason
             : true;
-      const { totalScore, matches } = scoreRelease(r.title, r.size ?? null, item.qualityProfileId);
+      const { totalScore, matches } = scoreRelease(r.title, r.size ?? null, item.qualityProfileId, item.type);
       return {
         ...r,
         parsedQuality: parsed.quality,

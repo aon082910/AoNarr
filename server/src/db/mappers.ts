@@ -162,6 +162,7 @@ export function qualityFromRow(row: any) {
     rank: row.rank,
     minSizeMb: row.min_size_mb,
     maxSizeMb: row.max_size_mb,
+    preferredSizeMb: row.preferred_size_mb,
   };
 }
 
@@ -170,7 +171,12 @@ export function tagFromRow(row: any) {
 }
 
 export function customFormatFromRow(row: any) {
-  return { id: row.id, name: row.name, conditionGroups: JSON.parse(row.patterns) };
+  return {
+    id: row.id,
+    name: row.name,
+    conditionGroups: JSON.parse(row.patterns),
+    mediaTypes: row.media_types ? JSON.parse(row.media_types) : [],
+  };
 }
 
 export function trackFromRow(row: any) {

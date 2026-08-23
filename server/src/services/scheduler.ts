@@ -4,7 +4,7 @@ import { config } from "../config.js";
 import { searchAllIndexers } from "./indexerClient.js";
 import { getDownloadClientAdapter } from "./downloadClient.js";
 import { parseReleaseTitle, releaseMatchesEpisode } from "./releaseParser.js";
-import { pickBestAllowedQuality, sizeWithinQualityBounds } from "./quality.js";
+import { pickBestAllowedQuality, preferredSizeDistance, sizeWithinQualityBounds } from "./quality.js";
 import { scoreRelease } from "./customFormatScoring.js";
 import { getMediaTypeConfig } from "./mediaTypes.js";
 import {
@@ -86,7 +86,8 @@ function chooseBestResult(
   qualityProfileId: number | null,
   minFormatScore: number,
   target: { season: number; episode: number } | null,
-  blocklisted: Set<string>
+  blocklisted: Set<string>,
+  mediaType: string
 ): ChosenResult | null {
   const notBlocklisted = results.filter((r) => !blocklisted.has(r.title));
   const withParsed = notBlocklisted.map((r) => ({ result: r, parsed: parseReleaseTitle(r.title) }));
@@ -108,7 +109,7 @@ function chooseBestResult(
 
   const candidates = relevant
     .filter(({ parsed }) => parsed.quality === best)
-    .map(({ result }) => ({ result, ...scoreRelease(result.title, result.size ?? null, qualityProfileId) }))
+    .map(({ result }) => ({ result, ...scoreRelease(result.title, result.size ?? null, qualityProfileId, mediaType) }))
     .filter((c) => c.totalScore >= minFormatScore);
   if (candidates.length === 0) return null;
 
@@ -117,7 +118,8 @@ function chooseBestResult(
       b.totalScore - a.totalScore ||
       (b.result.seeders ?? 0) - (a.result.seeders ?? 0) ||
       getGroupReputation(parseReleaseTitle(b.result.title).releaseGroup) -
-        getGroupReputation(parseReleaseTitle(a.result.title).releaseGroup)
+        getGroupReputation(parseReleaseTitle(a.result.title).releaseGroup) ||
+      preferredSizeDistance(best, a.result.size ?? null) - preferredSizeDistance(best, b.result.size ?? null)
   );
   const winner = candidates[0]?.result;
   return winner ? { result: winner, quality: best } : null;
@@ -271,7 +273,8 @@ async function runAutoSearch(signal?: AbortSignal) {
           item.qualityProfileId,
           minFormatScore,
           null,
-          blocklisted
+          blocklisted,
+          item.type
         );
         if (best) {
           const targetClient = pickClientForProtocol(clients, best.result.protocol);
@@ -296,7 +299,8 @@ async function runAutoSearch(signal?: AbortSignal) {
             item.qualityProfileId,
             minFormatScore,
             { season: ep.season_number, episode: ep.episode_number },
-            blocklisted
+            blocklisted,
+            item.type
           );
           if (best) {
             const targetClient = pickClientForProtocol(clients, best.result.protocol);
@@ -348,7 +352,8 @@ async function runAutoSearch(signal?: AbortSignal) {
             item.qualityProfileId,
             minFormatScore,
             null,
-            blocklisted
+            blocklisted,
+            item.type
           );
           if (best) {
             const targetClient = pickClientForProtocol(clients, best.result.protocol);
@@ -425,7 +430,8 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
         item.qualityProfileId,
         minFormatScore,
         episodeTarget,
-        blocklisted
+        blocklisted,
+        item.type
       );
       if (!best) {
         results.push({ ...t, grabbed: false, error: "No matching results" });
@@ -595,7 +601,8 @@ async function retryFailedGrab(match: QueueItem, reason: string): Promise<void> 
       item.qualityProfileId,
       profile?.minFormatScore ?? 0,
       episodeTarget,
-      blocklisted
+      blocklisted,
+      item.type
     );
     if (!best) {
       log.info(`[scheduler] retry exhausted search results for "${mediaTitle}" — notifying instead`);

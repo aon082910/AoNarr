@@ -66,6 +66,7 @@ export default function Settings() {
   const [customFormats, setCustomFormats] = useState<CustomFormat[]>([]);
   const [formatName, setFormatName] = useState("");
   const [formatPatterns, setFormatPatterns] = useState("");
+  const [formatMediaTypes, setFormatMediaTypes] = useState<Set<MediaType>>(new Set());
   const [trashJson, setTrashJson] = useState("");
   const [trashError, setTrashError] = useState<string | null>(null);
   const [scoreProfileId, setScoreProfileId] = useState<number | "">("");
@@ -96,7 +97,7 @@ export default function Settings() {
     load();
   }
 
-  async function saveQualitySize(id: number, field: "minSizeMb" | "maxSizeMb", value: string) {
+  async function saveQualitySize(id: number, field: "minSizeMb" | "maxSizeMb" | "preferredSizeMb", value: string) {
     await api.patch(`/qualities/${id}`, { [field]: value === "" ? null : Number(value) });
     load();
   }
@@ -165,6 +166,31 @@ export default function Settings() {
           return { type: "releaseGroup" as const, patterns, negate };
         }
 
+        const sourceMatch = rest.match(/^SOURCE:\s*(.+)$/i);
+        if (sourceMatch) {
+          const sources = sourceMatch[1].split(",").map((s) => s.trim()).filter(Boolean);
+          return { type: "source" as const, sources, negate };
+        }
+
+        const resolutionMatch = rest.match(/^RESOLUTION:\s*(.+)$/i);
+        if (resolutionMatch) {
+          const resolutions = resolutionMatch[1].split(",").map((r) => r.trim().toLowerCase()).filter(Boolean);
+          return { type: "resolution" as const, resolutions, negate };
+        }
+
+        const yearMatch = rest.match(/^YEAR:\s*(\d+)?\s*-\s*(\d+)?$/i);
+        if (yearMatch) {
+          const minYear = yearMatch[1] ? Number(yearMatch[1]) : null;
+          const maxYear = yearMatch[2] ? Number(yearMatch[2]) : null;
+          return { type: "year" as const, minYear, maxYear, negate };
+        }
+
+        const flagsMatch = rest.match(/^FLAGS:\s*(.+)$/i);
+        if (flagsMatch) {
+          const flags = flagsMatch[1].split(",").map((f) => f.trim().toLowerCase()).filter(Boolean);
+          return { type: "releaseFlags" as const, flags, negate };
+        }
+
         const patterns = rest
           .split(",")
           .map((p) => p.trim())
@@ -173,7 +199,11 @@ export default function Settings() {
       })
       .filter((g) => {
         if (g.type === "size") return g.minMb != null || g.maxMb != null;
+        if (g.type === "year") return g.minYear != null || g.maxYear != null;
         if (g.type === "language") return g.languages.length > 0;
+        if (g.type === "source") return g.sources.length > 0;
+        if (g.type === "resolution") return g.resolutions.length > 0;
+        if (g.type === "releaseFlags") return g.flags.length > 0;
         return g.patterns.length > 0;
       });
   }
@@ -182,14 +212,33 @@ export default function Settings() {
     e.preventDefault();
     const conditionGroups = parseConditionGroups(formatPatterns);
     if (!formatName.trim() || conditionGroups.length === 0) return;
-    await api.post("/custom-formats", { name: formatName.trim(), conditionGroups });
+    await api.post("/custom-formats", {
+      name: formatName.trim(),
+      conditionGroups,
+      mediaTypes: Array.from(formatMediaTypes),
+    });
     setFormatName("");
     setFormatPatterns("");
+    setFormatMediaTypes(new Set());
     load();
+  }
+
+  function toggleFormatMediaType(type: MediaType) {
+    setFormatMediaTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(type)) next.delete(type);
+      else next.add(type);
+      return next;
+    });
   }
 
   async function removeCustomFormat(id: number) {
     await api.del(`/custom-formats/${id}`);
+    load();
+  }
+
+  async function saveCustomFormatMediaTypes(id: number, mediaTypes: MediaType[]) {
+    await api.patch(`/custom-formats/${id}`, { mediaTypes });
     load();
   }
 
@@ -1410,7 +1459,9 @@ export default function Settings() {
         Worst to best. Reorder to change how releases rank against each other; rename freely
         (used as the name shown everywhere, including release parsing output). Min/max size (MB)
         is optional and rejects releases parsed as this quality whose size falls outside it —
-        useful for catching mislabeled or fake releases.
+        useful for catching mislabeled or fake releases. Preferred size is a soft target only —
+        used to break ties between otherwise-equal releases at this quality, closer wins; it
+        doesn't reject anything the way min/max do.
       </p>
       <table>
         <thead>
@@ -1419,6 +1470,7 @@ export default function Settings() {
             <th>Name</th>
             <th>Min size (MB)</th>
             <th>Max size (MB)</th>
+            <th>Preferred size (MB)</th>
             <th></th>
           </tr>
         </thead>
@@ -1446,6 +1498,14 @@ export default function Settings() {
                   style={{ width: 100 }}
                   defaultValue={q.maxSizeMb ?? ""}
                   onBlur={(e) => saveQualitySize(q.id, "maxSizeMb", e.target.value)}
+                />
+              </td>
+              <td>
+                <input
+                  type="number"
+                  style={{ width: 100 }}
+                  defaultValue={q.preferredSizeMb ?? ""}
+                  onBlur={(e) => saveQualitySize(q.id, "preferredSizeMb", e.target.value)}
                 />
               </td>
               <td style={{ display: "flex", gap: 6 }}>
@@ -1523,22 +1583,26 @@ export default function Settings() {
 
       <h2>Custom Formats</h2>
       <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
-        Score releases up or down by matching each release against title regex, size, language, or
-        release-group conditions. One condition per line; comma-separated patterns on a line are
-        OR'd, all lines are AND'd, and a line starting with <code>NOT</code> negates it. Prefixes
-        switch the condition type — <code>SIZE: 4000-15000</code> (either bound optional),{" "}
-        <code>LANG: french, multi</code> (detected language tags), <code>GROUP: RARBG, EVO</code>{" "}
-        (regex against the parsed release-group tag) — anything else is a title regex. Example:
+        Score releases up or down by matching each release against title regex, size, language,
+        release-group, source, resolution, year, or release-flag conditions. One condition per
+        line; comma-separated patterns on a line are OR'd, all lines are AND'd, and a line starting
+        with <code>NOT</code> negates it. Prefixes switch the condition type —{" "}
+        <code>SIZE: 4000-15000</code> (either bound optional), <code>LANG: french, multi</code>{" "}
+        (detected language tags), <code>GROUP: RARBG, EVO</code> (regex against the parsed
+        release-group tag), <code>SOURCE: Remux, Bluray, WEBDL, WEBRip, HDTV, DVD</code>,{" "}
+        <code>RESOLUTION: 2160p, 1080p, 720p</code>, <code>YEAR: 2020-2024</code> (either bound
+        optional), <code>FLAGS: proper, repack, extended, unrated, directorscut, imax</code> —
+        anything else is a title regex. Example:
         <br />
-        <code>REMUX, BluRay</code>
+        <code>SOURCE: Remux, Bluray</code>
         <br />
         <code>NOT x265</code>
         <br />
-        <code>SIZE: 4000-15000</code>
+        <code>RESOLUTION: 2160p</code>
         <br />
         <code>NOT LANG: french</code>
         <br />
-        means "(REMUX or BluRay) and not x265 and 4000-15000 MB and not French". Assign scores per
+        means "(Remux or Bluray source) and not x265 and 2160p and not French". Assign scores per
         quality profile below.
       </p>
       <form className="form-panel" onSubmit={addCustomFormat}>
@@ -1548,10 +1612,24 @@ export default function Settings() {
         <textarea
           value={formatPatterns}
           onChange={(e) => setFormatPatterns(e.target.value)}
-          placeholder={"REMUX, BluRay\nNOT x265\nSIZE: 4000-15000\nNOT LANG: french"}
+          placeholder={"SOURCE: Remux, Bluray\nNOT x265\nRESOLUTION: 2160p\nNOT LANG: french"}
           rows={5}
           required
         />
+        <label>Applies to (leave all unchecked for every library)</label>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 8 }}>
+          {mediaTypes.map((t) => (
+            <label key={t.key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.85rem", margin: 0 }}>
+              <input
+                type="checkbox"
+                checked={formatMediaTypes.has(t.key)}
+                onChange={() => toggleFormatMediaType(t.key)}
+                style={{ width: "auto" }}
+              />
+              {t.label}
+            </label>
+          ))}
+        </div>
         <button type="submit">Add custom format</button>
       </form>
 
@@ -1575,6 +1653,7 @@ export default function Settings() {
           <tr>
             <th>Name</th>
             <th>Conditions</th>
+            <th>Applies to</th>
             <th></th>
           </tr>
         </thead>
@@ -1592,10 +1671,39 @@ export default function Settings() {
                         ? `LANG (${(g.languages ?? []).join(" OR ")})`
                         : g.type === "releaseGroup"
                         ? `GROUP (${(g.patterns ?? []).join(" OR ")})`
+                        : g.type === "source"
+                        ? `SOURCE (${(g.sources ?? []).join(" OR ")})`
+                        : g.type === "resolution"
+                        ? `RESOLUTION (${(g.resolutions ?? []).join(" OR ")})`
+                        : g.type === "year"
+                        ? `YEAR ${g.minYear ?? ""}-${g.maxYear ?? ""}`
+                        : g.type === "releaseFlags"
+                        ? `FLAGS (${(g.flags ?? []).join(" OR ")})`
                         : `(${(g.patterns ?? []).join(" OR ")})`;
                     return `${g.negate ? "NOT " : ""}${body}`;
                   })
                   .join(" AND ")}
+              </td>
+              <td>
+                <select
+                  multiple
+                  value={f.mediaTypes}
+                  onChange={(e) =>
+                    saveCustomFormatMediaTypes(
+                      f.id,
+                      Array.from(e.target.selectedOptions).map((o) => o.value as MediaType)
+                    )
+                  }
+                  style={{ minWidth: 140, height: 60 }}
+                  title="Ctrl/Cmd-click to select multiple; select none for every library"
+                >
+                  {mediaTypes.map((t) => (
+                    <option key={t.key} value={t.key}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+                {f.mediaTypes.length === 0 && <div style={{ fontSize: "0.75rem", color: "var(--muted)" }}>all libraries</div>}
               </td>
               <td>
                 <button className="danger" onClick={() => removeCustomFormat(f.id)}>
