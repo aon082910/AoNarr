@@ -140,6 +140,48 @@ async function fetchPlexItems(cfg: MediaServerConfig): Promise<MediaServerItem[]
 }
 
 /**
+ * Tells the configured media server to pick up a just-imported file, instead of leaving it to
+ * whatever periodic scan interval the media server itself is configured with — the same "Connect"
+ * capability Sonarr/Radarr call a notification. Plex supports a *targeted* refresh scoped to one
+ * path (`?path=`), which only rescans that folder rather than the whole library section — cheap
+ * enough to call on every import, so this fires it against every movie/show section rather than
+ * trying to guess which one the file belongs to (Plex just no-ops for a path outside a section).
+ * Jellyfin/Emby have no equivalent lightweight per-path trigger via a simple REST call, so this
+ * falls back to their full-library refresh endpoint for those two — heavier, but still far better
+ * than waiting for their own scan interval. Never throws — this is a best-effort nicety alongside
+ * the import that already succeeded, not something that should fail the import itself.
+ */
+export async function refreshMediaServerLibrary(filePath: string): Promise<void> {
+  const cfg = getMediaServerConfig();
+  if (!cfg) return;
+
+  try {
+    if (cfg.type === "plex") {
+      const headers = { Accept: "application/json" };
+      const sectionsRes = await fetch(`${cfg.url}/library/sections?X-Plex-Token=${cfg.token}`, { headers });
+      if (!sectionsRes.ok) return;
+      const sectionsBody = (await sectionsRes.json()) as any;
+      const sections: { key: string; type: string }[] = sectionsBody?.MediaContainer?.Directory ?? [];
+      for (const section of sections) {
+        if (section.type !== "movie" && section.type !== "show") continue;
+        await fetch(
+          `${cfg.url}/library/sections/${section.key}/refresh?path=${encodeURIComponent(filePath)}&X-Plex-Token=${cfg.token}`,
+          { method: "PUT", headers }
+        ).catch(() => {});
+      }
+    } else {
+      const basePath = cfg.type === "jellyfin" ? "" : "/emby";
+      await fetch(`${cfg.url}${basePath}/Library/Refresh`, {
+        method: "POST",
+        headers: { "X-Emby-Token": cfg.token },
+      });
+    }
+  } catch {
+    // Best-effort — the import already succeeded regardless of whether the media server noticed.
+  }
+}
+
+/**
  * Plex's webhook payload carries no file path at all (its Metadata object is a much lighter
  * subset than the real API's — no Media/Part/file, just RatingKey/Key/GUID/title fields), so a
  * webhook handler needs this follow-up API call to resolve the ratingKey it DOES get into an

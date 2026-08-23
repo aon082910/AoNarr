@@ -4,6 +4,7 @@ import { log } from "./logger.js";
 import { getSetting } from "./settingsStore.js";
 import { sendPush } from "./push.js";
 import { sendEmail } from "./smtp.js";
+import { refreshMediaServerLibrary } from "./mediaServer.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -198,13 +199,24 @@ export async function notifyGrabbed(mediaTitle: string, releaseTitle: string): P
   });
 }
 
-export async function notifyImported(mediaTitle: string, fileName: string): Promise<void> {
+/**
+ * `filePath` is separate from the human-readable `fileName` shown in the notification text — it's
+ * only used, when present, to tell the configured media server to pick up the new file (see
+ * mediaServer.ts's refreshMediaServerLibrary) rather than waiting for its own scan interval. Opt-in
+ * via the `mediaServerRefreshOnImport` setting, off by default so upgrading doesn't change behavior
+ * for anyone who already has a media server configured just for watch-state sync.
+ */
+export async function notifyImported(mediaTitle: string, fileName: string, filePath?: string): Promise<void> {
   await fanOut({
     title: "Imported",
     text: renderTemplate("notifyTemplateImported", DEFAULT_TEMPLATES.imported, { mediaTitle, fileName }),
     color: 0x4fbf6a,
     payload: { event: "imported", mediaTitle, fileName },
   });
+
+  if (filePath && getSetting("mediaServerRefreshOnImport") === "1") {
+    refreshMediaServerLibrary(filePath).catch((err) => log.warn("[notifications] media server refresh failed:", err.message));
+  }
 }
 
 export async function notifyFailed(mediaTitle: string, reason: string): Promise<void> {

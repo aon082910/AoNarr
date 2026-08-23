@@ -325,7 +325,7 @@ export async function placeFile(params: {
     JSON.stringify({ fileLabel, destPath })
   );
 
-  await notifyImported(item.title, fileLabel);
+  await notifyImported(item.title, fileLabel, destPath);
   log.info(`[importer] imported "${fileLabel}" for "${item.title}"`);
   return { destPath, fileLabel };
 }
@@ -409,7 +409,7 @@ export async function placeAlbumFiles(params: {
     JSON.stringify({ destFolder, fileCount: movedCount })
   );
 
-  await notifyImported(item.title, `${movedCount} file(s) into ${path.basename(destFolder)}`);
+  await notifyImported(item.title, `${movedCount} file(s) into ${path.basename(destFolder)}`, destFolder);
   log.info(`[importer] imported ${movedCount} file(s) into "${path.basename(destFolder)}" for "${item.title}"`);
   return { destFolder, fileCount: movedCount };
 }
@@ -506,7 +506,7 @@ export async function placeSeasonPackFiles(params: {
     item.id,
     JSON.stringify({ seasonNumber, episodeCount: importedCount })
   );
-  await notifyImported(item.title, `season ${seasonNumber} pack — ${importedCount} episode(s)`);
+  await notifyImported(item.title, `season ${seasonNumber} pack — ${importedCount} episode(s)`, destFolder);
   log.info(`[importer] imported season ${seasonNumber} pack for "${item.title}": ${importedCount} episode(s)`);
   return { destFolder, episodeCount: importedCount };
 }

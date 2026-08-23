@@ -1079,6 +1079,20 @@ export default function Settings() {
           defaultValue={settings.mediaServerToken ?? ""}
           onBlur={(e) => saveSetting("mediaServerToken", e.target.value)}
         />
+        <label>Refresh media server library after each import</label>
+        <select
+          key={settings.mediaServerRefreshOnImport ?? "media-server-refresh-empty"}
+          defaultValue={settings.mediaServerRefreshOnImport ?? "0"}
+          onChange={(e) => saveSetting("mediaServerRefreshOnImport", e.target.value)}
+        >
+          <option value="0">Disabled — rely on the media server's own scan schedule</option>
+          <option value="1">Enabled — tell it about new files right away</option>
+        </select>
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          Plex gets a targeted refresh scoped to just the new file's folder; Jellyfin/Emby have no
+          equivalent lightweight endpoint, so they get a full library refresh instead — still
+          faster than waiting for their own scan interval, but heavier on a large library.
+        </p>
 
         <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
           Optional: paste this URL into Plex's Settings → Webhooks (or Jellyfin/Emby's Webhook

@@ -3,6 +3,26 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 65
+- Added Plex/Jellyfin/Emby as a notification target (Sonarr/Radarr's "Connect" feature) — a real,
+  total gap before this: AoNarr already had polling-based watch-state sync and an incoming webhook
+  for Plex/Jellyfin/Emby, but never told the media server about a newly-imported file, so it sat
+  invisible until the media server's own scan interval got to it. New opt-in setting ("Refresh
+  media server library after each import", off by default so upgrading changes nothing for anyone
+  who only has a media server configured for watch-sync). Plex gets a targeted refresh scoped to
+  just the new file's folder (`PUT /library/sections/{key}/refresh?path=...`, fired against every
+  movie/show section since there's no cheap way to know in advance which one a given path belongs
+  to — Plex just no-ops for the wrong ones); Jellyfin/Emby have no equivalent lightweight per-path
+  endpoint, so they get a full `POST /Library/Refresh` instead — heavier, but still faster than
+  waiting for their own scan interval. Never blocks or fails the import itself — best-effort,
+  logged on failure rather than thrown
+- Verified live against real mock Plex and Jellyfin servers (not just reading the code): ran a real
+  manual import with the setting on, confirmed Plex received the exact expected `GET
+  /library/sections` enumeration followed by two `PUT .../refresh?path=<url-encoded-path>` calls
+  (one per movie/show section) with the correct destination path; confirmed Jellyfin received a
+  `POST /Library/Refresh` with the correct `X-Emby-Token` auth header; confirmed a second import
+  with the setting off produced zero additional requests, proving the opt-in gate actually gates
+
 ## Round 64
 - Added three new sort options (Monitored, Quality, Content rating) and a Content Rating filter
   (dynamically populated from whatever ratings are actually present in the library, same pattern
