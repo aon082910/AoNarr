@@ -3,6 +3,32 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 57
+- Continued the audit series onto `scheduler.ts`, `duplicateCheck.ts`, `customFormatScoring.ts`,
+  `notifications.ts`, and the Plex/Jellyfin/Emby webhook handler. Found and fixed a real bug: Plex's
+  webhook payload does not carry a file path anywhere in its `Metadata` object (confirmed against
+  Plex's real wire format, not just assumed — its webhook `Metadata` is a much lighter subset of
+  its API's response shape, with no `Media`/`Part`/`file` fields at all, only `ratingKey`/`title`/
+  `GUID`/etc.), so `parsePlexPayload` reading `Metadata.Media[0].Part[0].file` always got
+  `undefined` and silently returned null for every real Plex webhook — meaning Plex's watch-state
+  webhook (the "instant update" path the Dashboard's Recently Watched widget and auto-archival's
+  webhook signal both rely on) has never actually fired for any Plex user, full stop, with nothing
+  logged to indicate why. Jellyfin/Emby were unaffected — their webhook plugins do send a `Path`
+  field directly
+- Fixed by resolving the webhook's `ratingKey` through a follow-up call to Plex's own
+  `/library/metadata/{ratingKey}` API (new exported `resolvePlexFilePath()` in `mediaServer.ts`,
+  reusing the server URL/token config the polling-based watch sync already has), the same way a
+  real Plex API client would — `parsePlexPayload` is now async to accommodate the extra round-trip
+- Verified live end-to-end with a mock Plex server: configured AoNarr to point at it, sent a real
+  multipart `media.scrobble` webhook body with a `ratingKey`, confirmed the mock's file path
+  resolved correctly and the matching library item flipped to `watched: true` — something that
+  could never have happened with the pre-fix code no matter how correct the rest of the pipeline
+  was. Also confirmed the failure path stays graceful when Plex is unreachable: the existing
+  route-level try/catch already covers the new async call, responds 200 (so Plex doesn't
+  retry-storm), and logs a visible warning instead of crashing
+- `scheduler.ts`, `duplicateCheck.ts`, `customFormatScoring.ts`, `notifications.ts`, and the
+  Jellyfin/Emby half of the webhook handler all checked out clean — no other bugs found
+
 ## Round 56
 - Continued the audit series onto `importer.ts`, `naming.ts`, and `mediaServer.ts`. Found and fixed
   one real bug: `{absoluteEpisode}` (the anime-style running episode count naming templates can use

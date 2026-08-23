@@ -1,5 +1,6 @@
 import { db } from "../db/client.js";
 import { pathTail } from "./archival.js";
+import { resolvePlexFilePath } from "./mediaServer.js";
 
 export interface WebhookWatchSignal {
   filePath: string;
@@ -10,11 +11,17 @@ export interface WebhookWatchSignal {
  * `media.scrobble` (fired once a stream crosses Plex's watched threshold, ~90%) is treated as a
  * genuine "watched" signal — `media.play`/`media.pause`/`media.resume` fire on every play/pause
  * and would massively over-report. See https://support.plex.tv/articles/115002267687-webhooks/.
+ *
+ * Plex's webhook Metadata object does NOT include a file path (no Media/Part/file — that's only
+ * in the real API's response shape, never the webhook body), only a `ratingKey`. Resolving it
+ * requires a follow-up call to Plex's own API using the configured server URL/token.
  */
-export function parsePlexPayload(payload: any): WebhookWatchSignal | null {
+export async function parsePlexPayload(payload: any): Promise<WebhookWatchSignal | null> {
   if (payload?.event !== "media.scrobble") return null;
-  const file = payload?.Metadata?.Media?.[0]?.Part?.[0]?.file;
-  return typeof file === "string" && file ? { filePath: file } : null;
+  const ratingKey = payload?.Metadata?.ratingKey;
+  if (!ratingKey) return null;
+  const file = await resolvePlexFilePath(String(ratingKey));
+  return file ? { filePath: file } : null;
 }
 
 /**

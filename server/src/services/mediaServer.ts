@@ -139,6 +139,25 @@ async function fetchPlexItems(cfg: MediaServerConfig): Promise<MediaServerItem[]
   return items;
 }
 
+/**
+ * Plex's webhook payload carries no file path at all (its Metadata object is a much lighter
+ * subset than the real API's — no Media/Part/file, just RatingKey/Key/GUID/title fields), so a
+ * webhook handler needs this follow-up API call to resolve the ratingKey it DOES get into an
+ * actual file path, the same way fetchPlexItems() above already does for the polling path.
+ */
+export async function resolvePlexFilePath(ratingKey: string): Promise<string | null> {
+  const cfg = getMediaServerConfig();
+  if (!cfg || cfg.type !== "plex") return null;
+  const res = await fetch(`${cfg.url}/library/metadata/${ratingKey}?X-Plex-Token=${cfg.token}`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) return null;
+  const body = (await res.json()) as any;
+  const item = body?.MediaContainer?.Metadata?.[0];
+  const file = item?.Media?.[0]?.Part?.[0]?.file;
+  return typeof file === "string" && file ? file : null;
+}
+
 async function fetchJellyfinLikeItems(cfg: MediaServerConfig, basePath: string): Promise<{ items: MediaServerItem[]; userId: string | null }> {
   const headers = { "X-Emby-Token": cfg.token, Accept: "application/json" };
   const usersRes = await fetch(`${cfg.url}${basePath}/Users`, { headers });

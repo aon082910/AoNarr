@@ -60,7 +60,7 @@ mediaServerWebhookRouter.post(
     let signal = null;
     try {
       if (typeof req.body?.payload === "string") {
-        signal = parsePlexPayload(JSON.parse(req.body.payload));
+        signal = await parsePlexPayload(JSON.parse(req.body.payload));
       } else if (req.body && Object.keys(req.body).length > 0) {
         signal = parseJellyfinEmbyPayload(req.body);
       }
