@@ -117,7 +117,7 @@ usersRouter.patch(
 usersRouter.get(
   "/sessions",
   asyncHandler(async (_req, res) => {
-    res.json(listActiveSessions());
+    res.json(await listActiveSessions());
   })
 );
 

@@ -3,6 +3,35 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 80
+- PostgreSQL support: converted the first real vertical slice of the app — the entire auth/login/
+  session path (`db/index.ts` new driver dispatcher, `settingsStore.ts`, `auth.ts`,
+  `middleware/auth.ts`, `bootstrapAdmin.ts`, `authRoutes.ts`, `audit.ts`, `auditLog.ts`) — to the
+  async DB interface from Round 79. **`AONARR_DATABASE_DRIVER=postgres` now boots a real, working
+  app for this slice**, the first round that's been true; most of the app (~61 files) still isn't
+  converted and would still misbehave under Postgres today
+- Kept `getSetting`/`setSetting` and `logAuditEvent` synchronous on purpose (an in-memory cache for
+  settings, fire-and-forget writes for both) specifically to avoid cascading `await` through the 24
+  files/101 call sites that read settings and the ~20 that log audit events — a deliberate, scoped
+  exception to "convert everything," justified by both being small, read-heavy, low-write tables
+  where the old synchronous-in-effect behavior is easy to preserve without threading async through
+  code that has nothing else to do with the DB
+- Found and fixed two real bugs the Postgres verification pass caught that plain `tsc -b` couldn't:
+  (1) a converted file calling into a not-yet-converted one (`logAuditEvent`, before this round)
+  silently wrote to an orphaned shadow SQLite database instead of Postgres, crashing every login on
+  a foreign-key violation — invisible until actually tested against Postgres; (2) Postgres folds
+  unquoted SQL identifiers to lowercase, so `auditLog.ts`'s `user_id AS userId` alias came back as
+  `userid` on Postgres while working fine on SQLite — every camelCase alias needs explicit quoting
+  going forward, documented in DATABASE_MIGRATION.md as a systemic risk for the rest of the
+  conversion, not just this one file
+- Also fixed a latent bug this conversion surfaced in `routes/users.ts`: `res.json(listActiveSessions())`
+  was passing a Promise straight to `res.json()` without awaiting it — TypeScript never flagged this
+  because `res.json(x: any)` doesn't care what `x` used to be
+- Verified live end-to-end against a real `postgres:16` container on the same build as the SQLite
+  regression check: setup-status, admin bootstrap from env vars, login, session-validated requests,
+  logout, session revocation, a rejected bad-password login, and the audit log correctly recording
+  all of it — all passed on both backends
+
 ## Round 79
 - Started PostgreSQL support (MariaDB deferred to a later phase per user decision — see
   DATABASE_MIGRATION.md). This round is foundation only: **the running app is unaffected and still

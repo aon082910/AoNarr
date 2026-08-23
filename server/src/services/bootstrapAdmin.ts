@@ -1,4 +1,4 @@
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { hashPassword } from "./auth.js";
 import { readEnvOrFile } from "./env.js";
 import { log } from "./logger.js";
@@ -10,8 +10,8 @@ import { log } from "./logger.js";
  * so it's safe to leave these env vars set permanently (e.g. rotating a secret file doesn't
  * change anything after the first run).
  */
-export function bootstrapAdminFromEnv(): void {
-  const existingAdmin = db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
+export async function bootstrapAdminFromEnv(): Promise<void> {
+  const existingAdmin = await db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
   if (existingAdmin) return;
 
   const username = readEnvOrFile("AONARR_ADMIN_USERNAME");
@@ -23,7 +23,7 @@ export function bootstrapAdminFromEnv(): void {
     return;
   }
 
-  db.prepare("INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'admin')").run(
+  await db.prepare("INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'admin')").run(
     username.trim(),
     hashPassword(password)
   );

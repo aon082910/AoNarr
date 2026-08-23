@@ -204,3 +204,17 @@ export function createPostgresAsyncDb(connectionString: string): AsyncDb {
   const pool = new Pool({ connectionString });
   return new PostgresAsyncDb(pool);
 }
+
+/**
+ * SQL fragment for "the current time, as a string in the same shape schema.sql's `datetime('now')`
+ * column defaults already produce" — for use *inside a query* (`WHERE expires_at > ${nowExpr(db)}`),
+ * not just a column default. SQLite's `datetime('now')` only works verbatim on SQLite; call sites
+ * that need "now" as part of a WHERE/SET clause (not just relying on a column's own DEFAULT) need
+ * this instead of hardcoding the SQLite spelling, since a plain string comparison between a TEXT
+ * column and Postgres's `now()` (a real timestamptz) fails outright rather than silently doing the
+ * wrong thing — see DATABASE_MIGRATION.md's note on the 5-6 files using `datetime('now', ...)` at
+ * the query level.
+ */
+export function nowExpr(db: Pick<AsyncDb, "dialect">): string {
+  return db.dialect === "postgres" ? "to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')" : "datetime('now')";
+}

@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
+import { nowExpr } from "../db/asyncDb.js";
 
 const SCRYPT_KEYLEN = 64;
 
@@ -38,17 +39,17 @@ export function consumePendingLogin(token: string): number | null {
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
-export function createSession(userId: number, userAgent?: string | null): { token: string; expiresAt: string } {
+export async function createSession(userId: number, userAgent?: string | null): Promise<{ token: string; expiresAt: string }> {
   const token = crypto.randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
-  db.prepare(
-    "INSERT INTO sessions (token, user_id, expires_at, last_used_at, user_agent) VALUES (?, ?, ?, datetime('now'), ?)"
-  ).run(token, userId, expiresAt, userAgent ?? null);
+  await db
+    .prepare(`INSERT INTO sessions (token, user_id, expires_at, last_used_at, user_agent) VALUES (?, ?, ?, ${nowExpr(db)}, ?)`)
+    .run(token, userId, expiresAt, userAgent ?? null);
   return { token, expiresAt };
 }
 
-export function destroySession(token: string): void {
-  db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
+export async function destroySession(token: string): Promise<void> {
+  await db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
 }
 
 export interface SessionSummary {
@@ -62,15 +63,15 @@ export interface SessionSummary {
 }
 
 /** Lists every active (non-expired) session across all users, newest activity first, for the admin session-management screen. */
-export function listActiveSessions(): SessionSummary[] {
-  const rows = db
+export async function listActiveSessions(): Promise<SessionSummary[]> {
+  const rows = (await db
     .prepare(
       `SELECT s.token, s.user_id, u.username, s.created_at, s.expires_at, s.last_used_at, s.user_agent
        FROM sessions s JOIN users u ON u.id = s.user_id
-       WHERE s.expires_at > datetime('now')
+       WHERE s.expires_at > ${nowExpr(db)}
        ORDER BY s.last_used_at DESC NULLS LAST, s.created_at DESC`
     )
-    .all() as any[];
+    .all()) as any[];
   return rows.map((r) => ({
     token: r.token,
     userId: r.user_id,
@@ -93,19 +94,19 @@ export interface SessionUser {
   totpEnabled: boolean;
 }
 
-export function getSessionUser(token: string): SessionUser | null {
-  const session = db.prepare("SELECT * FROM sessions WHERE token = ?").get(token) as
+export async function getSessionUser(token: string): Promise<SessionUser | null> {
+  const session = (await db.prepare("SELECT * FROM sessions WHERE token = ?").get(token)) as
     | { user_id: number; expires_at: string }
     | undefined;
   if (!session) return null;
   if (new Date(session.expires_at).getTime() < Date.now()) {
-    db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
+    await db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
     return null;
   }
 
-  db.prepare("UPDATE sessions SET last_used_at = datetime('now') WHERE token = ?").run(token);
+  await db.prepare(`UPDATE sessions SET last_used_at = ${nowExpr(db)} WHERE token = ?`).run(token);
 
-  const user = db.prepare("SELECT * FROM users WHERE id = ?").get(session.user_id) as
+  const user = (await db.prepare("SELECT * FROM users WHERE id = ?").get(session.user_id)) as
     | {
         id: number;
         username: string;
@@ -119,7 +120,7 @@ export function getSessionUser(token: string): SessionUser | null {
   if (!user) return null;
 
   const allowedTypes = (
-    db.prepare("SELECT media_type FROM user_library_access WHERE user_id = ?").all(user.id) as { media_type: string }[]
+    (await db.prepare("SELECT media_type FROM user_library_access WHERE user_id = ?").all(user.id)) as { media_type: string }[]
   ).map((r) => r.media_type);
 
   return {

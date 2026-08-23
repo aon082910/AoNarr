@@ -2,8 +2,9 @@ import { log } from "./services/logger.js";
 import express from "express";
 import cors from "cors";
 import { config } from "./config.js";
-import "./db/client.js";
-import { errorHandler } from "./middleware/errorHandler.js";
+import { initDb } from "./db/index.js";
+import { loadSettingsCache } from "./services/settingsStore.js";
+import { errorHandler, asyncHandler } from "./middleware/errorHandler.js";
 import { requireAuth } from "./middleware/auth.js";
 import { startScheduler } from "./services/scheduler.js";
 import { bootstrapAdminFromEnv } from "./services/bootstrapAdmin.js";
@@ -64,13 +65,20 @@ import { corruptMediaReviewRouter } from "./routes/corruptMediaReview.js";
 import { themeRouter } from "./routes/theme.js";
 import { friendLibrariesRouter } from "./routes/friendLibraries.js";
 
-bootstrapAdminFromEnv();
+// Everything downstream (bootstrap, the settings cache, every route) needs the DB ready and the
+// settings cache populated first — see db/index.ts and settingsStore.ts for why these two are
+// awaited explicitly here rather than relying on the old "import for its side effect" pattern the
+// SQLite-only files below this point still use (harmlessly redundant for them, since ESM caches
+// the module either way; required for anything already converted to the new async db interface).
+await initDb();
+await loadSettingsCache();
+await bootstrapAdminFromEnv();
 applySocksProxySetting();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use("/api", requireAuth);
+app.use("/api", asyncHandler(requireAuth));
 
 app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
 app.get("/api/openapi.json", (req, res) => {

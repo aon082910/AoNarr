@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import {
   consumePendingLogin,
@@ -19,7 +19,7 @@ export const authRouter = Router();
 authRouter.get(
   "/setup-status",
   asyncHandler(async (_req, res) => {
-    const admin = db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
+    const admin = await db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
     res.json({ needsSetup: !admin });
   })
 );
@@ -32,7 +32,7 @@ authRouter.get(
 authRouter.post(
   "/setup",
   asyncHandler(async (req, res) => {
-    const existingAdmin = db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
+    const existingAdmin = await db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
     if (existingAdmin) throw new HttpError(403, "An admin account already exists");
 
     const { username, password } = req.body ?? {};
@@ -44,14 +44,14 @@ authRouter.post(
     }
 
     const passwordHash = hashPassword(password);
-    const result = db
+    const result = await db
       .prepare("INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'admin')")
       .run(username.trim(), passwordHash);
     const userId = Number(result.lastInsertRowid);
 
     logAuditEvent(userId, username.trim(), "admin_account_created");
 
-    const session = createSession(userId, req.header("User-Agent"));
+    const session = await createSession(userId, req.header("User-Agent"));
     res.status(201).json({
       token: session.token,
       expiresAt: session.expiresAt,
@@ -74,7 +74,7 @@ authRouter.post(
       return;
     }
 
-    const user = db.prepare("SELECT * FROM users WHERE username = ?").get(username) as
+    const user = (await db.prepare("SELECT * FROM users WHERE username = ?").get(username)) as
       | { id: number; username: string; password_hash: string; role: string; totp_enabled: number }
       | undefined;
     if (!user || !verifyPassword(password, user.password_hash)) {
@@ -91,12 +91,12 @@ authRouter.post(
 
     logAuditEvent(user.id, user.username, "login");
     const allowedTypes = (
-      db.prepare("SELECT media_type FROM user_library_access WHERE user_id = ?").all(user.id) as {
+      (await db.prepare("SELECT media_type FROM user_library_access WHERE user_id = ?").all(user.id)) as {
         media_type: string;
       }[]
     ).map((r) => r.media_type);
 
-    const session = createSession(user.id, req.header("User-Agent"));
+    const session = await createSession(user.id, req.header("User-Agent"));
     res.json({
       token: session.token,
       expiresAt: session.expiresAt,
@@ -122,7 +122,7 @@ authRouter.post(
 
     const userId = consumePendingLogin(pendingToken);
     const user = userId
-      ? (db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as
+      ? ((await db.prepare("SELECT * FROM users WHERE id = ?").get(userId)) as
           | { id: number; username: string; role: string; totp_secret: string | null }
           | undefined)
       : undefined;
@@ -134,12 +134,12 @@ authRouter.post(
     logAuditEvent(user.id, user.username, "login");
 
     const allowedTypes = (
-      db.prepare("SELECT media_type FROM user_library_access WHERE user_id = ?").all(user.id) as {
+      (await db.prepare("SELECT media_type FROM user_library_access WHERE user_id = ?").all(user.id)) as {
         media_type: string;
       }[]
     ).map((r) => r.media_type);
 
-    const session = createSession(user.id, req.header("User-Agent"));
+    const session = await createSession(user.id, req.header("User-Agent"));
     res.json({
       token: session.token,
       expiresAt: session.expiresAt,
@@ -155,7 +155,7 @@ authRouter.post(
   asyncHandler(async (req, res) => {
     if (!req.auth?.user) throw new HttpError(401, "Not authenticated");
     const secret = generateBase32Secret();
-    db.prepare("UPDATE users SET totp_secret = ? WHERE id = ?").run(secret, req.auth.user.id);
+    await db.prepare("UPDATE users SET totp_secret = ? WHERE id = ?").run(secret, req.auth.user.id);
     res.json({ secret, otpauthUrl: buildOtpauthUrl(secret, req.auth.user.username) });
   })
 );
@@ -164,12 +164,12 @@ authRouter.post(
   "/totp/verify",
   asyncHandler(async (req, res) => {
     if (!req.auth?.user) throw new HttpError(401, "Not authenticated");
-    const user = db.prepare("SELECT totp_secret FROM users WHERE id = ?").get(req.auth.user.id) as
+    const user = (await db.prepare("SELECT totp_secret FROM users WHERE id = ?").get(req.auth.user.id)) as
       | { totp_secret: string | null }
       | undefined;
     if (!user?.totp_secret) throw new HttpError(400, "No pending TOTP setup — call /totp/setup first");
     if (!verifyTotp(user.totp_secret, req.body?.code ?? "")) throw new HttpError(400, "Invalid code");
-    db.prepare("UPDATE users SET totp_enabled = 1 WHERE id = ?").run(req.auth.user.id);
+    await db.prepare("UPDATE users SET totp_enabled = 1 WHERE id = ?").run(req.auth.user.id);
     res.status(204).send();
   })
 );
@@ -178,7 +178,7 @@ authRouter.post(
   "/totp/disable",
   asyncHandler(async (req, res) => {
     if (!req.auth?.user) throw new HttpError(401, "Not authenticated");
-    db.prepare("UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE id = ?").run(req.auth.user.id);
+    await db.prepare("UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE id = ?").run(req.auth.user.id);
     res.status(204).send();
   })
 );
@@ -187,7 +187,7 @@ authRouter.post(
   "/logout",
   asyncHandler(async (req, res) => {
     const token = req.header("X-Session-Token");
-    if (token) destroySession(token);
+    if (token) await destroySession(token);
     if (req.auth?.user) logAuditEvent(req.auth.user.id, req.auth.user.username, "logout");
     res.status(204).send();
   })

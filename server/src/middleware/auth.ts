@@ -33,7 +33,7 @@ declare global {
  * created in Settings → Users. Whichever is present and valid populates `req.auth`; routes that
  * need admin-only access additionally apply `requireAdmin`.
  */
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
+export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (
     req.path === "/health" ||
     req.path === "/auth/login" ||
@@ -68,7 +68,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
 
   const sessionToken = req.header("X-Session-Token");
   if (sessionToken) {
-    const user = getSessionUser(sessionToken);
+    const user = await getSessionUser(sessionToken);
     if (user) {
       recordSuccess(rateLimitKey);
       req.auth = { isAdmin: user.role === "admin", user };

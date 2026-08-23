@@ -1,9 +1,58 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — foundation built and verified, not wired into the app yet.** MariaDB —
-scoped, not started, deliberately deferred until PostgreSQL is fully done (see "The ask" below;
-narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by explicit user decision). This
-document exists so a future round can pick this up without re-deriving the analysis below.
+Status: **PostgreSQL — first working vertical slice (the whole auth/login/session path) verified
+against a real Postgres container.** The app can now actually boot and log a user in against
+Postgres — this is the first round where that's been true. Most of the app (~65 remaining files)
+still isn't converted; `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one
+yet. MariaDB — scoped, not started, deliberately deferred until PostgreSQL is fully done (see "The
+ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by explicit user decision).
+This document exists so a future round can pick this up without re-deriving the analysis below.
+
+## Progress (Round 80) — first working vertical slice
+
+Converted the full auth/login/session critical path — the single most connected piece of the app,
+since `requireAuth` runs as global middleware on every request — to the async db interface, and
+verified the whole thing end to end against a real `postgres:16` container: setup-status, creating
+the bootstrap admin account from env vars, login, session-validated requests (`/me`, `/settings`),
+logout, session revocation, a failed-login rejection, and the audit log correctly recording it all.
+Confirmed zero regression on the same build against SQLite.
+
+**Files converted**: `db/index.ts` (new — the driver dispatcher `initDb()`/`db` everything else
+converted now imports instead of `db/client.ts` directly), `services/settingsStore.ts` (see its own
+comment for the in-memory-cache design — deliberately kept `getSetting`/`setSetting` synchronous so
+their ~101 existing call sites across 24 files don't need to change), `services/auth.ts`,
+`middleware/auth.ts`, `services/bootstrapAdmin.ts`, `routes/authRoutes.ts`, `services/audit.ts` (kept
+`logAuditEvent` synchronous/fire-and-forget for the same no-cascade reason as settings — see below),
+`routes/auditLog.ts`, and one bugfix in `routes/users.ts` (a pre-existing `res.json(listActiveSessions())`
+that TypeScript never caught, because `res.json(x: any)` doesn't care that `x` used to be a value and
+is now a Promise — this class of bug won't show up as a compile error anywhere in the remaining
+conversion, only as wrong runtime output, so each converted file needs someone to actually grep for
+its exported functions' other call sites, not just trust `tsc -b` came back clean).
+
+**Two real, previously-unknown bugs the Postgres verification pass caught** (both would have shipped
+silently broken if this had gone straight from "compiles" to "looks done"):
+
+1. **A converted file calling into an unconverted one through the *old* SQLite path corrupts data
+   silently.** `authRoutes.ts`'s login handler calls `logAuditEvent(...)`, which — before this
+   round's fix — still imported the old synchronous `db/client.ts`. In Postgres mode, that import
+   still creates and opens a local SQLite file as an orphaned side effect (nothing stops it; every
+   unconverted file does this), and audit_log's `user_id` foreign key pointed at that empty
+   shadow database's `users` table, which the real user (created in Postgres) doesn't exist in —
+   every login crashed with a foreign-key violation. Fixed by converting `audit.ts` too. **This means
+   a file can't really be considered "converted and done" in isolation — everything it calls into
+   that also touches the DB needs to be checked, or verification needs to exercise the actual
+   call chain, not just the one file in question.**
+2. **Postgres folds unquoted SQL identifiers to lowercase; SQLite doesn't.** `auditLog.ts`'s query
+   aliased columns with plain camelCase (`user_id AS userId`) — on SQLite this returns a `userId`
+   key exactly as written; on Postgres, an unquoted `userId` alias comes back as `userid`, silently
+   breaking any code (or frontend) expecting camelCase keys. Fixed by quoting every such alias
+   (`AS "userId"`). **This is a systemic risk for the rest of the conversion**: this codebase's raw
+   SQL uses camelCase aliases extensively (`AS mediaTitle`, `AS hasFile`, `AS mediaItemId`, etc. —
+   seen throughout `wanted.ts`, `dashboard.ts`, and others). Every file's conversion needs to audit
+   its own queries for this, not just add `await`. A query that aliases to `snake_case` (or doesn't
+   alias at all, matching the column's real name) and lets a `db/mappers.ts`-style function do the
+   snake→camel conversion in JS — the pattern already used for full table rows — sidesteps this
+   entirely and is the safer default for any *new* ad-hoc query, versus hand-quoting each alias.
 
 ## Progress (Round 79)
 
@@ -51,12 +100,14 @@ retrying inside an already-poisoned transaction would just fail again.
 Postgres equivalent (`now() - interval '30 days'` is the right shape) and needs a per-call-site
 rewrite when those files are converted, not a generic translation the wrapper can do for them.
 
-**Not done yet**: none of the ~70 application files (routes/services) have been converted to use
-this abstraction — they all still import the synchronous `db` from `db/client.ts` directly, and the
-app still only runs against SQLite. `AONARR_DATABASE_DRIVER=postgres` exists as a config value but
-selecting it today would not produce a working app, since the vast majority of routes would still
-be calling the old synchronous SQLite-only `db` object regardless of what's configured. That
-conversion — file by file, verified against both backends as it goes — is the rest of this project.
+**Not done yet, as of Round 79**: none of the ~70 application files (routes/services) had been
+converted. **As of Round 80** (see above): 9 files converted — the full auth/login/session path,
+proven end to end against real Postgres. `AONARR_DATABASE_DRIVER=postgres` now runs a real,
+correctly-behaving app for that slice; everything else still imports the old synchronous
+`db/client.ts` directly and would still be broken or silently wrong under Postgres (per Round 80's
+bug #1 above — an unconverted file a converted one calls into can corrupt data through the orphaned
+shadow SQLite database, not just throw a type error). The remaining ~61 files, converted one group
+at a time and verified against both backends as each group lands, is the rest of this project.
 
 ## The ask
 
