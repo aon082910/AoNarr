@@ -33,6 +33,16 @@ const EVENT_LABELS: Record<string, string> = {
   media_added: "Added media",
   media_deleted: "Deleted media",
   media_rematched: "Rematched media",
+  user_permissions_changed: "Changed user permissions",
+  session_revoked: "Force-logged-out a session",
+  totp_enabled: "Enabled two-factor authentication",
+  totp_disabled: "Disabled two-factor authentication",
+  api_key_regenerated: "Regenerated API key",
+  backup_downloaded: "Downloaded a database backup",
+  indexer_added: "Added indexer",
+  indexer_removed: "Removed indexer",
+  download_client_added: "Added download client",
+  download_client_removed: "Removed download client",
 };
 
 export default function AuditLog() {
@@ -55,8 +65,10 @@ export default function AuditLog() {
     <div>
       <h1>Audit Log</h1>
       <p style={{ color: "var(--muted)" }}>
-        Logins, requests, account changes, and media add/delete/rematch actions across every
-        household account — most recent first. {data.total} event{data.total === 1 ? "" : "s"} total.
+        Logins, requests, account/permission changes, media add/delete/rematch actions, and
+        security-sensitive config changes (2FA, API key, indexers, download clients, backups)
+        across every household account — most recent first. {data.total} event
+        {data.total === 1 ? "" : "s"} total.
       </p>
       {data.rows.length === 0 && <p className="empty">Nothing logged yet.</p>}
       {data.rows.length > 0 && (

@@ -15,11 +15,12 @@ import { findRepeatedImports } from "../services/duplicates.js";
 import { findUpgradeCandidates } from "../services/upgradeCandidates.js";
 import { getStorageForecast, recordDiskUsageSamples } from "../services/storageForecast.js";
 import { getMediaTypeConfig } from "../services/mediaTypes.js";
-import { getRecentLogs } from "../services/logger.js";
+import { getRecentLogs, log } from "../services/logger.js";
 import { findDuplicateFiles, findUnmonitoredNoFile } from "../services/cleanupSuggestions.js";
 import { listReleaseGroupStats } from "../services/releaseGroupStats.js";
 import { findLibraryMismatches } from "../services/libraryValidation.js";
 import { getMediaServerConfig } from "../services/mediaServer.js";
+import { auditActor, logAuditEvent } from "../services/audit.js";
 
 export const systemRouter = Router();
 systemRouter.use(requireAdmin);
@@ -398,10 +399,12 @@ const SQLITE_MAGIC = "SQLite format 3\0";
  * backup() uses SQLite's own online backup API rather than copying the file bytes directly. */
 systemRouter.get(
   "/backup",
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
     const tmpFile = path.join(os.tmpdir(), `aonarr-backup-${Date.now()}.db`);
     await db.backup(tmpFile);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const actor = auditActor(req);
+    logAuditEvent(actor.userId, actor.username, "backup_downloaded");
     res.download(tmpFile, `aonarr-backup-${stamp}.db`, (err) => {
       fs.unlink(tmpFile, () => {});
       if (err && !res.headersSent) throw err;
@@ -429,6 +432,12 @@ systemRouter.post(
 
     const preRestorePath = `${config.dbPath}.pre-restore`;
     fs.copyFileSync(config.dbPath, preRestorePath);
+
+    // Not logged to audit_log: a restore replaces the entire DB file, including the audit_log
+    // table itself, so an entry written here wouldn't exist in the database anyone actually looks
+    // at afterward. The server log is the durable record for this one.
+    const actor = auditActor(req);
+    log.warn(`[system] database restore initiated by ${actor.username} — previous DB saved to ${preRestorePath}`);
 
     res.json({ restored: true, message: "Restoring — the app will restart momentarily." });
 

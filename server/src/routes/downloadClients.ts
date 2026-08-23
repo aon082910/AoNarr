@@ -4,6 +4,7 @@ import { db } from "../db/client.js";
 import { downloadClientFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
+import { auditActor, logAuditEvent } from "../services/audit.js";
 
 export const downloadClientsRouter = Router();
 downloadClientsRouter.use(requireAdmin);
@@ -43,6 +44,8 @@ downloadClientsRouter.post(
         audioOnly: b.audioOnly ? 1 : 0,
       });
     const row = db.prepare("SELECT * FROM download_clients WHERE id = ?").get(result.lastInsertRowid);
+    const actor = auditActor(req);
+    logAuditEvent(actor.userId, actor.username, "download_client_added", `${b.name} (${b.type})`);
     res.status(201).json(downloadClientFromRow(row));
   })
 );
@@ -106,8 +109,11 @@ downloadClientsRouter.get(
 downloadClientsRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
+    const existing = db.prepare("SELECT name FROM download_clients WHERE id = ?").get(req.params.id) as { name: string } | undefined;
     const result = db.prepare("DELETE FROM download_clients WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Download client not found");
+    const actor = auditActor(req);
+    logAuditEvent(actor.userId, actor.username, "download_client_removed", existing?.name);
     res.status(204).send();
   })
 );

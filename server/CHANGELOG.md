@@ -3,6 +3,30 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 72
+- Extended the Audit Log to cover 9 more event types beyond its existing login/request/user/media
+  coverage: user permission changes (auto-approve, allowed libraries, max pending requests, max
+  content rating — one combined `user_permissions_changed` entry summarizing whatever actually
+  changed), force-logging-out a session, enabling/disabling two-factor auth, regenerating the API
+  key, downloading a database backup, and adding/removing an indexer or download client. These are
+  the security- and administratively-significant actions that weren't attributed to anyone before —
+  Audit Log's own scope (who changed account/security/config state) is deliberately kept distinct
+  from the existing History page (which already covers grabs/imports/upgrades), so this doesn't
+  duplicate that
+- Database restore is deliberately NOT logged to the audit table: a restore replaces the entire DB
+  file, audit_log included, so an entry written just before the swap wouldn't exist in whatever
+  database anyone actually looks at afterward — logged to the server log instead, which is a
+  separate, durable store the restore doesn't touch
+- Centralized the `auditActor` helper (session user, or "admin" for a bare-API-key request) into
+  `services/audit.ts` — it previously lived only in media.ts's own file; now every route file adding
+  audit coverage shares one definition instead of copy-pasting it
+- Pagination and add/delete/rematch media coverage were already in place from an earlier round of
+  this project; this round's news is entirely the additional event types above
+- Verified live: exercised all 9 new actions end-to-end (real TOTP setup/verify/disable with a
+  correctly-computed code, not a stub) against a running instance, confirmed each produced exactly
+  the expected audit_log row with an accurate detail string, and confirmed the Audit Log page
+  renders each with its new human-readable label
+
 ## Round 71
 - Added "Import from Lidarr"/"Import from Readarr" (Music/Books library pages) — extends Round 68's
   Radarr/Sonarr import to the two remaining Starr apps, migrating an already-organized Lidarr artist

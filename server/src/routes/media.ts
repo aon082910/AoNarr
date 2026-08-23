@@ -17,14 +17,7 @@ import { notifyGrabbed } from "../services/notifications.js";
 import { recycleFile } from "../services/recycleBin.js";
 import { buildCalibreOpf, buildJson, buildNfo, buildPlexMatch, fetchPosterBuffer, safeFileName, type ExportableItem } from "../services/metadataExport.js";
 import { probeMediaInfo } from "../services/ffprobe.js";
-import { logAuditEvent } from "../services/audit.js";
-
-/** Admin actions can come from either a logged-in user session or the raw instance API key — the
- * latter has no user row to attribute the change to, so it's logged as "admin" the same way the
- * existing requests.ts audit calls already do for API-key-driven approve/reject actions. */
-function auditActor(req: import("express").Request): { userId: number | null; username: string } {
-  return req.auth?.user ? { userId: req.auth.user.id, username: req.auth.user.username } : { userId: null, username: "admin" };
-}
+import { auditActor, logAuditEvent } from "../services/audit.js";
 import AdmZip from "adm-zip";
 import type { MediaType } from "../types/index.js";
 

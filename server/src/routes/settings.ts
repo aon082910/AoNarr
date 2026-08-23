@@ -8,6 +8,7 @@ import { buildOtpauthUrl, generateBase32Secret, verifyTotp } from "../services/t
 import { getSetting, setSetting } from "../services/settingsStore.js";
 import { applySocksProxySetting } from "../services/socksProxy.js";
 import { checkRateLimit, recordFailure, recordSuccess } from "../services/rateLimiter.js";
+import { auditActor, logAuditEvent } from "../services/audit.js";
 
 export const settingsRouter = Router();
 settingsRouter.use(requireAdmin);
@@ -39,12 +40,14 @@ settingsRouter.put(
  * (the web UI does this itself since it made the request with the old key). */
 settingsRouter.post(
   "/api-key/regenerate",
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
     const newKey = crypto.randomBytes(24).toString("hex");
     db.prepare(
       `INSERT INTO settings (key, value) VALUES ('apiKey', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`
     ).run(newKey);
+    const actor = auditActor(req);
+    logAuditEvent(actor.userId, actor.username, "api_key_regenerated");
     res.json({ key: "apiKey", value: newKey });
   })
 );
@@ -193,6 +196,8 @@ settingsRouter.post(
     setSetting("totpSecret", pendingSecret);
     setSetting("totpEnabled", "1");
     db.prepare("DELETE FROM settings WHERE key = 'totpPendingSecret'").run();
+    const actor = auditActor(req);
+    logAuditEvent(actor.userId, actor.username, "totp_enabled");
     res.json({ enabled: true });
   })
 );
@@ -207,6 +212,8 @@ settingsRouter.post(
     }
     setSetting("totpEnabled", "0");
     db.prepare("DELETE FROM settings WHERE key = 'totpSecret'").run();
+    const actor = auditActor(req);
+    logAuditEvent(actor.userId, actor.username, "totp_disabled");
     res.json({ enabled: false });
   })
 );
