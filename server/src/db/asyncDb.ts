@@ -118,6 +118,46 @@ function toPgPlaceholders(sql: string): string {
   return out;
 }
 
+/** better-sqlite3 supports named parameters — `.run({ name: "x", ... })` against SQL containing
+ * `@name` tokens — used in a handful of files for INSERTs with a lot of columns, where a long
+ * positional `?` list gets hard to keep aligned with its values by eye. Postgres's driver has no
+ * named-parameter concept at all, only positional `$1, $2, ...`, so this rewrites `@word` tokens
+ * to sequential `$N`s (the same token repeated later in the SQL reuses its first `$N`, matching
+ * better-sqlite3's own semantics for a repeated named param) and builds the matching positional
+ * values array by looking each token up in the params object, in the order the *placeholders*
+ * were assigned — not the order the object's keys happen to be defined in. */
+function translateNamedParams(sql: string, params: Record<string, unknown>): { sql: string; values: unknown[] } {
+  const indexByName = new Map<string, number>();
+  const values: unknown[] = [];
+  let out = "";
+  let inString = false;
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    if (ch === "'") {
+      inString = !inString;
+      out += ch;
+      continue;
+    }
+    if (ch === "@" && !inString) {
+      const match = /^@(\w+)/.exec(sql.slice(i));
+      if (match) {
+        const name = match[1];
+        let index = indexByName.get(name);
+        if (index === undefined) {
+          values.push(params[name]);
+          index = values.length;
+          indexByName.set(name, index);
+        }
+        out += `$${index}`;
+        i += match[0].length - 1;
+        continue;
+      }
+    }
+    out += ch;
+  }
+  return { sql: out, values };
+}
+
 /** Tables with no plain `id` column — a key-value table keyed by `key` (settings), and junction/
  * join tables with a composite primary key. Appending RETURNING id to an INSERT into one of these
  * would fail with Postgres error 42703 and, worse, abort any transaction it ran inside (Postgres
@@ -157,6 +197,14 @@ class PostgresAsyncDb implements AsyncDb {
 
   private async query(sql: string, params: any[]): Promise<{ rows: any[]; rowCount: number | null }> {
     const runner = activeTransactionClient.getStore() ?? this.pool;
+    // A single plain-object argument means better-sqlite3 named-parameter style (`@name` tokens in
+    // the SQL) — anything else (zero args, or one-or-more positional values) is the ordinary `?`
+    // positional style. Arrays/null/Date etc. as a *single* positional param would false-positive
+    // here if treated as "an object", so this only takes the named-param path for a plain object.
+    if (params.length === 1 && params[0] !== null && typeof params[0] === "object" && !Array.isArray(params[0]) && !(params[0] instanceof Date)) {
+      const translated = translateNamedParams(sql, params[0]);
+      return runner.query(translated.sql, translated.values);
+    }
     return runner.query(toPgPlaceholders(sql), params);
   }
 

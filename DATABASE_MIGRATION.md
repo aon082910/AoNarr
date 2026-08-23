@@ -1,14 +1,45 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — auth, users, and quality/library config all verified against a real Postgres
-container. Fresh-install seeding (default qualities, quality profile, and — critically — the
-instance API key) now works on Postgres too**, closing a gap that would have made a brand-new
-Postgres-backed install completely unusable (no way to even authenticate). 15 files converted so
-far. Most of the app (~55 remaining files) still isn't converted; `AONARR_DATABASE_DRIVER=postgres`
-runs a real app, just not a complete one yet. MariaDB — scoped, not started, deliberately deferred
-until PostgreSQL is fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to
-"PostgreSQL first" by explicit user decision). This document exists so a future round can pick this
+Status: **PostgreSQL — auth, users, quality/library config, indexers, and download clients all
+verified against a real Postgres container.** 18 files converted so far. Most of the app (~52
+remaining files) still isn't converted; `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not
+a complete one yet. MariaDB — scoped, not started, deliberately deferred until PostgreSQL is fully
+done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by explicit
+user decision). This document exists so a future round can pick this
 up without re-deriving the analysis below.
+
+## Progress (Round 83)
+
+Converted `routes/indexers.ts`, `routes/downloadClients.ts`, and `services/prowlarrSync.ts` (called
+by the indexers route, converted alongside it for the same reason `audit.ts` had to be converted
+alongside `authRoutes.ts` in Round 80 — an unconverted callee undoes a converted caller).
+
+**New pattern handled**: these two route files use better-sqlite3's named-parameter binding
+(`.run({ name: "x", ... })` against SQL with `@name` tokens) for their longer INSERTs — Postgres's
+driver has no named-parameter concept at all, only positional `$1, $2, ...`. Extended `asyncDb.ts`
+with `translateNamedParams()`, which rewrites `@word` tokens to sequential `$N`s and builds the
+matching positional values array, so the 6 files using this style (2 converted so far) don't need
+their queries rewritten — just the same `await`/`db/index.js` treatment as everywhere else. Verified
+standalone with a small test script before trusting it in the app (repeated-token reuse, and an `@`
+inside a string literal being left alone, both confirmed).
+
+**Found and fixed a real, pre-existing bug** (not caused by this migration, just surfaced by testing
+more thoroughly than the existing test suite had): `indexers.ts`'s PATCH route bound whatever value
+a boolean field (`enabled`, `useFlareSolverr`) arrived as directly, with no `true/false → 1/0`
+coercion — unlike `downloadClients.ts`'s own PATCH route, which already had this coercion with a
+comment explaining why. Both better-sqlite3 and Postgres reject binding a raw JS boolean to an
+INTEGER column, so `PATCH /indexers/:id` with `{"enabled": true}` would have thrown on **either**
+backend, not just Postgres — it just never came up before because nothing had tested that exact
+input. Fixed in both `indexers.ts` (POST and PATCH) and `downloadClients.ts` (POST, which used
+`b.enabled ?? 1` — silently wrong specifically for `enabled: false`, since `??` doesn't treat a real
+`false` as nullish).
+
+Verified live against a real Postgres container: created/listed/patched/deleted indexers and
+download clients (including the named-parameter INSERTs and the boolean fields on both create and
+patch), confirmed `prowlarr-sync` fails gracefully when unconfigured rather than crashing. Regression-
+checked the identical sequence — including the exact boolean-edge-case payloads that had been
+broken — against SQLite on the same build, confirming the fix (not just the Postgres path) is
+correct on both backends.
 
 ## Progress (Round 82)
 

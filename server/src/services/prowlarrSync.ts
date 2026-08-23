@@ -1,4 +1,4 @@
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { getSetting } from "./settingsStore.js";
 import { log } from "./logger.js";
 
@@ -39,23 +39,18 @@ export async function syncFromProwlarr(): Promise<{ synced: number; error?: stri
       const url = `${prowlarrUrl}/${idx.id}`;
       const config = JSON.stringify({ prowlarrId: idx.id });
 
-      const existing = db
-        .prepare(`SELECT id FROM indexers WHERE config LIKE ?`)
-        .get(`%"prowlarrId":${idx.id}%`) as { id: number } | undefined;
+      const existing = (await db.prepare(`SELECT id FROM indexers WHERE config LIKE ?`).get(`%"prowlarrId":${idx.id}%`)) as
+        | { id: number }
+        | undefined;
 
       if (existing) {
-        db.prepare("UPDATE indexers SET name = ?, protocol = ?, url = ?, api_key = ?, enabled = ? WHERE id = ?").run(
-          idx.name,
-          protocol,
-          url,
-          apiKey,
-          idx.enable ? 1 : 0,
-          existing.id
-        );
+        await db
+          .prepare("UPDATE indexers SET name = ?, protocol = ?, url = ?, api_key = ?, enabled = ? WHERE id = ?")
+          .run(idx.name, protocol, url, apiKey, idx.enable ? 1 : 0, existing.id);
       } else {
-        db.prepare(
-          "INSERT INTO indexers (name, protocol, url, api_key, enabled, config) VALUES (?, ?, ?, ?, ?, ?)"
-        ).run(idx.name, protocol, url, apiKey, idx.enable ? 1 : 0, config);
+        await db
+          .prepare("INSERT INTO indexers (name, protocol, url, api_key, enabled, config) VALUES (?, ?, ?, ?, ?, ?)")
+          .run(idx.name, protocol, url, apiKey, idx.enable ? 1 : 0, config);
       }
       synced++;
     } catch (err) {

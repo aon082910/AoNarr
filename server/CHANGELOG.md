@@ -3,6 +3,25 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 83
+- PostgreSQL support: converted `indexers.ts`, `downloadClients.ts`, and `prowlarrSync.ts` to the
+  async DB interface — 18 files converted so far, ~52 remain
+- Extended the async DB layer to support better-sqlite3's named-parameter binding style
+  (`.run({ name: "x", ... })` against SQL with `@name` tokens), used in 6 files for longer INSERTs —
+  Postgres's driver only supports positional `$1, $2, ...` params, so this translates automatically
+  rather than requiring every such query to be rewritten
+- Found and fixed a real, pre-existing bug (surfaced by testing more thoroughly, not caused by this
+  migration): `indexers.ts`'s PATCH route bound boolean fields (`enabled`, `useFlareSolverr`)
+  without coercing them to 1/0 first. Both better-sqlite3 and Postgres reject a raw boolean bound to
+  an INTEGER column, so `PATCH /indexers/:id` with `{"enabled": true}` would have thrown on either
+  backend — nothing had tested that exact input before. Also fixed `downloadClients.ts`'s create
+  route, which used `b.enabled ?? 1` (silently wrong specifically for an explicit `enabled: false`,
+  since `??` doesn't treat real `false` as nullish)
+- Verified live against a real Postgres container: full CRUD on indexers and download clients
+  including the named-parameter inserts and the boolean edge cases on both create and patch, plus
+  `prowlarr-sync` failing gracefully when unconfigured. Regression-checked the identical sequence —
+  including the exact payloads that had been broken — against SQLite on the same build
+
 ## Round 82
 - PostgreSQL support: converted the quality/library config slice (`tags.ts`, `rootFolders.ts`,
   `qualities.ts`, `qualityProfiles.ts`, `services/quality.ts`) to the async DB interface — 15 files

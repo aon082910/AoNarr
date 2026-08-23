@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { downloadClientFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
@@ -12,7 +12,7 @@ downloadClientsRouter.use(requireAdmin);
 downloadClientsRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
-    const rows = db.prepare("SELECT * FROM download_clients").all();
+    const rows = await db.prepare("SELECT * FROM download_clients").all();
     res.json(rows.map(downloadClientFromRow));
   })
 );
@@ -25,7 +25,7 @@ downloadClientsRouter.post(
     const needsHost = b.type === "qbittorrent" || b.type === "sabnzbd";
     if (needsHost && (!b.host || !b.port)) throw new HttpError(400, "host and port are required for this client type");
 
-    const result = db
+    const result = await db
       .prepare(
         `INSERT INTO download_clients (name, type, host, port, use_ssl, username, password, api_key, category, enabled, audio_only)
          VALUES (@name, @type, @host, @port, @useSsl, @username, @password, @apiKey, @category, @enabled, @audioOnly)`
@@ -35,15 +35,15 @@ downloadClientsRouter.post(
         type: b.type,
         host: b.host ?? null,
         port: b.port ?? null,
-        useSsl: b.useSsl ?? 0,
+        useSsl: b.useSsl ? 1 : 0,
         username: b.username ?? null,
         password: b.password ?? null,
         apiKey: b.apiKey ?? null,
         category: b.category ?? null,
-        enabled: b.enabled ?? 1,
+        enabled: b.enabled === false ? 0 : 1,
         audioOnly: b.audioOnly ? 1 : 0,
       });
-    const row = db.prepare("SELECT * FROM download_clients WHERE id = ?").get(result.lastInsertRowid);
+    const row = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(result.lastInsertRowid);
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "download_client_added", `${b.name} (${b.type})`);
     res.status(201).json(downloadClientFromRow(row));
@@ -73,16 +73,17 @@ downloadClientsRouter.patch(
     for (const [key, col] of Object.entries(map)) {
       if (b[key] !== undefined) {
         sets.push(`${col} = ?`);
-        // better-sqlite3 rejects binding a raw JS boolean — coerce true/false to 1/0 for the
-        // handful of columns that are actually booleans (everything else passes through as-is).
+        // Postgres (like better-sqlite3) rejects binding a raw JS boolean to an INTEGER column —
+        // coerce true/false to 1/0 for the handful of columns that are actually booleans
+        // (everything else passes through as-is).
         values.push(booleanKeys.has(key) ? (b[key] ? 1 : 0) : b[key]);
       }
     }
     if (sets.length > 0) {
       values.push(req.params.id);
-      db.prepare(`UPDATE download_clients SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+      await db.prepare(`UPDATE download_clients SET ${sets.join(", ")} WHERE id = ?`).run(...values);
     }
-    const row = db.prepare("SELECT * FROM download_clients WHERE id = ?").get(req.params.id);
+    const row = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Download client not found");
     res.json(downloadClientFromRow(row));
   })
@@ -93,7 +94,7 @@ downloadClientsRouter.patch(
 downloadClientsRouter.get(
   "/:id/health",
   asyncHandler(async (req, res) => {
-    const row = db.prepare("SELECT * FROM download_clients WHERE id = ?").get(req.params.id);
+    const row = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Download client not found");
     const client = downloadClientFromRow(row) as any;
 
@@ -109,8 +110,10 @@ downloadClientsRouter.get(
 downloadClientsRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
-    const existing = db.prepare("SELECT name FROM download_clients WHERE id = ?").get(req.params.id) as { name: string } | undefined;
-    const result = db.prepare("DELETE FROM download_clients WHERE id = ?").run(req.params.id);
+    const existing = (await db.prepare("SELECT name FROM download_clients WHERE id = ?").get(req.params.id)) as
+      | { name: string }
+      | undefined;
+    const result = await db.prepare("DELETE FROM download_clients WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Download client not found");
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "download_client_removed", existing?.name);
