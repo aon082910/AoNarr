@@ -77,6 +77,19 @@ calendarFeedRouter.get(
       )
       .all(today, future) as any[];
 
+    const singleShapeItems = db
+      .prepare(
+        `SELECT title AS mediaTitle, release_date AS date
+         FROM media_items
+         WHERE release_date BETWEEN ? AND ? AND monitored = 1 AND release_date IS NOT NULL
+         ORDER BY release_date`
+      )
+      .all(today, future) as any[];
+
+    const customEvents = db
+      .prepare(`SELECT title, date, note FROM custom_calendar_events WHERE date BETWEEN ? AND ? ORDER BY date`)
+      .all(today, future) as any[];
+
     const lines = [
       "BEGIN:VCALENDAR",
       "VERSION:2.0",
@@ -105,6 +118,27 @@ calendarFeedRouter.get(
         `UID:subitem-${sub.mediaTitle}-${sub.subTitle}-${sub.date}@aonarr`,
         `DTSTART;VALUE=DATE:${toIcsDate(sub.date)}`,
         `SUMMARY:${icsEscape(summary)}`,
+        "END:VEVENT"
+      );
+    }
+
+    for (const item of singleShapeItems) {
+      lines.push(
+        "BEGIN:VEVENT",
+        `UID:media-${item.mediaTitle}-${item.date}@aonarr`,
+        `DTSTART;VALUE=DATE:${toIcsDate(item.date)}`,
+        `SUMMARY:${icsEscape(item.mediaTitle)}`,
+        "END:VEVENT"
+      );
+    }
+
+    for (const ev of customEvents) {
+      lines.push(
+        "BEGIN:VEVENT",
+        `UID:custom-${ev.title}-${ev.date}@aonarr`,
+        `DTSTART;VALUE=DATE:${toIcsDate(ev.date)}`,
+        `SUMMARY:${icsEscape(ev.title)}`,
+        ...(ev.note ? [`DESCRIPTION:${icsEscape(ev.note)}`] : []),
         "END:VEVENT"
       );
     }

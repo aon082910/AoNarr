@@ -643,7 +643,7 @@ mediaRouter.post(
     if (!b.title) throw new HttpError(400, "title is required");
 
     db.prepare(
-      "UPDATE media_items SET title = ?, sort_title = ?, year = ?, overview = ?, poster_url = ?, external_ids = ? WHERE id = ?"
+      "UPDATE media_items SET title = ?, sort_title = ?, year = ?, overview = ?, poster_url = ?, external_ids = ?, release_date = ? WHERE id = ?"
     ).run(
       b.title,
       b.title.toLowerCase(),
@@ -651,6 +651,7 @@ mediaRouter.post(
       b.overview ?? null,
       b.posterUrl ?? null,
       b.externalIds ? JSON.stringify(b.externalIds) : null,
+      b.releaseDate ?? null,
       req.params.id
     );
 

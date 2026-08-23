@@ -51,7 +51,10 @@ wantedRouter.get(
   })
 );
 
-/** Upcoming episodes (by air date) and albums/books (by release date) in a date range. */
+/** Upcoming episodes (by air date), movies/other single-shape items (by their own release date),
+ * albums/books (by release date), and admin-added custom events, in a date range — the same
+ * per-type date source Sonarr (episode air date), Radarr (movie release date), and Lidarr/Readarr
+ * (album/book release date) each use for their own calendars. */
 wantedRouter.get(
   "/calendar",
   asyncHandler(async (req, res) => {
@@ -61,10 +64,10 @@ wantedRouter.get(
 
     const episodes = db
       .prepare(
-        `SELECT m.id AS mediaItemId, m.title AS mediaTitle, m.type AS type, e.id AS episodeId,
+        `SELECT m.id AS mediaItemId, m.title AS mediaTitle, m.type AS type, e.id AS episodeId, NULL AS subItemId,
                 ('S' || substr('00' || e.season_number, -2) || 'E' || substr('00' || e.episode_number, -2) ||
                  CASE WHEN e.title IS NOT NULL THEN ' - ' || e.title ELSE '' END) AS label,
-                e.air_date AS date, e.has_file AS hasFile
+                e.air_date AS date, e.has_file AS hasFile, 'media' AS kind
          FROM episodes e
          JOIN media_items m ON m.id = e.media_item_id
          WHERE e.air_date BETWEEN ? AND ?
@@ -74,8 +77,8 @@ wantedRouter.get(
 
     const subItems = db
       .prepare(
-        `SELECT m.id AS mediaItemId, m.title AS mediaTitle, m.type AS type, s.id AS subItemId,
-                s.title AS label, s.release_date AS date, s.has_file AS hasFile
+        `SELECT m.id AS mediaItemId, m.title AS mediaTitle, m.type AS type, NULL AS episodeId, s.id AS subItemId,
+                s.title AS label, s.release_date AS date, s.has_file AS hasFile, 'media' AS kind
          FROM sub_items s
          JOIN media_items m ON m.id = s.media_item_id
          WHERE s.release_date BETWEEN ? AND ?
@@ -83,7 +86,26 @@ wantedRouter.get(
       )
       .all(start, end);
 
-    const combined = [...episodes, ...subItems].sort((a: any, b: any) => (a.date > b.date ? 1 : -1));
+    const singleShapePlaceholders = SINGLE_SHAPE_TYPES.map(() => "?").join(",");
+    const singleShapeItems = db
+      .prepare(
+        `SELECT id AS mediaItemId, title AS mediaTitle, type AS type, NULL AS episodeId, NULL AS subItemId,
+                title AS label, release_date AS date, has_file AS hasFile, 'media' AS kind
+         FROM media_items
+         WHERE release_date BETWEEN ? AND ? AND type IN (${singleShapePlaceholders})`
+      )
+      .all(start, end, ...SINGLE_SHAPE_TYPES);
+
+    const customEvents = db
+      .prepare(
+        `SELECT id AS mediaItemId, title AS mediaTitle, 'custom' AS type, NULL AS episodeId, NULL AS subItemId,
+                COALESCE(note, '') AS label, date AS date, 1 AS hasFile, 'event' AS kind
+         FROM custom_calendar_events
+         WHERE date BETWEEN ? AND ?`
+      )
+      .all(start, end);
+
+    const combined = [...episodes, ...subItems, ...singleShapeItems, ...customEvents].sort((a: any, b: any) => (a.date > b.date ? 1 : -1));
     res.json(combined);
   })
 );

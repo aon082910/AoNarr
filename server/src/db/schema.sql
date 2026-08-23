@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS media_items (
   quality TEXT,
   protected INTEGER NOT NULL DEFAULT 0, -- excluded from watch-status auto-archival
   status TEXT NOT NULL DEFAULT 'unknown',
-  added_at TEXT NOT NULL DEFAULT (datetime('now'))
+  added_at TEXT NOT NULL DEFAULT (datetime('now')),
+  release_date TEXT -- single/collection-shape items' own release date (movies from TMDB, etc.) — episodes/sub_items already have air_date/release_date of their own; this is what the Calendar shows single-shape items by
 );
 
 CREATE INDEX IF NOT EXISTS idx_media_items_type ON media_items(type);
@@ -445,6 +446,17 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   endpoint TEXT NOT NULL UNIQUE,
   p256dh TEXT NOT NULL,
   auth TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- User-added calendar entries not tied to any media item — a release-day watch party, a reminder,
+-- anything worth marking on the same Calendar page the library's own upcoming episodes/albums/
+-- movies show on.
+CREATE TABLE IF NOT EXISTS custom_calendar_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  date TEXT NOT NULL, -- YYYY-MM-DD
+  note TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

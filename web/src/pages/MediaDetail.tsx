@@ -207,6 +207,7 @@ export default function MediaDetail() {
       overview: result.overview,
       posterUrl: result.posterUrl,
       externalIds: result.externalIds,
+      releaseDate: result.releaseDate,
     });
     setItem({ ...item, title: updated.title, year: updated.year, overview: updated.overview, posterUrl: updated.posterUrl, externalIds: updated.externalIds });
     setShowSearchMatch(false);

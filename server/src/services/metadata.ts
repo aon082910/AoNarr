@@ -8,6 +8,9 @@ export interface MetadataSearchResult {
   overview: string | null;
   posterUrl: string | null;
   externalIds: Record<string, string>;
+  /** Full YYYY-MM-DD release date, when the provider has one — currently only TMDB movie search
+   * populates this (used by the Calendar page, which otherwise has no date to show movies by). */
+  releaseDate?: string | null;
 }
 
 export interface MetadataEpisode {
@@ -60,6 +63,7 @@ async function searchMoviesTmdb(query: string): Promise<MetadataSearchResult[]> 
     overview: r.overview || null,
     posterUrl: r.poster_path ? `${TMDB_IMAGE_BASE}${r.poster_path}` : null,
     externalIds: { tmdb: String(r.id) },
+    releaseDate: r.release_date || null,
   }));
 }
 

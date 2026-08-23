@@ -3,6 +3,28 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 77
+- Rebuilt the Calendar page as a real month grid — the same view Sonarr/Radarr/Lidarr/Readarr each
+  show by default — with Prev/Next/Today navigation, a day cell per date showing up to 3 entries
+  plus a "+N more," and a click-through detail panel for the selected day. The previous scrolling
+  day-by-day list is still there as an "Agenda" mode (useful for a quick scan of what's coming),
+  just no longer the only option
+- Closed a real gap in what the calendar could show: it only ever pulled from episode air dates and
+  album/book release dates, so movies never appeared on it at all — there was nowhere in the
+  schema to even put a movie's release date. Added a `release_date` column to media_items (populated
+  from TMDB's own release date on search-select, rematch, and Refresh, the same three moments
+  title/overview/poster already get filled in) and wired it into the calendar query — this is the
+  same per-type date source each real Starr app's own calendar uses: Sonarr → episode air date,
+  Radarr → movie release date, Lidarr/Readarr → album/book release date
+- Added custom calendar dates — "+ Add custom date" on the Calendar page lets an admin mark any day
+  with a title and optional note (a watch party, a reminder, anything), shown alongside the regular
+  entries with a 📌 marker and removable from the day's detail panel. Included in the .ics
+  subscription feed too, not just the in-app view
+- Verified live: seeded a movie/episode/album all dated today plus a custom event, confirmed all
+  four appear correctly in the month grid's today cell (including the "+1 more" overflow), confirmed
+  clicking the day opens the detail panel, confirmed removing the custom event actually removes it,
+  confirmed Agenda mode still works, and confirmed the movie shows up in the .ics feed
+
 ## Round 76
 - Added saved, reusable library views — a "Views" dropdown plus "Save view..."/"Delete view" on
   every library page lets you name and reuse a specific combination of sort, status filter, tag

@@ -13,6 +13,7 @@ interface MetadataSearchResult {
   posterUrl: string | null;
   externalIds: Record<string, string>;
   excluded?: boolean;
+  releaseDate?: string | null;
 }
 
 /** Hostname → the "Site" group name to file a scraped course under, so the group picker doesn't
@@ -185,6 +186,7 @@ export default function AddMedia() {
             monitored: 1,
             confirmDuplicate,
             groupId,
+            releaseDate: selected?.releaseDate ?? null,
           };
       const created = await api.post<MediaItem>(manual ? "/media" : "/metadata/import", payload);
       navigate(`/media/${created.id}`);

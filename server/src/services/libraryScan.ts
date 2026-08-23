@@ -413,13 +413,15 @@ export async function refreshLibraryMetadata(type: string, signal?: AbortSignal)
       }
       const alreadyMatched = item.external_ids && item.external_ids !== "{}";
       db.prepare(
-        `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), year = COALESCE(?, year)
+        `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), year = COALESCE(?, year),
+         release_date = COALESCE(?, release_date)
          ${alreadyMatched ? "" : ", title = ?, sort_title = ?, external_ids = ?"}
          WHERE id = ?`
       ).run(
         best.overview,
         best.posterUrl,
         best.year,
+        best.releaseDate ?? null,
         ...(alreadyMatched ? [] : [best.title, best.title.toLowerCase(), JSON.stringify(best.externalIds ?? {})]),
         item.id
       );

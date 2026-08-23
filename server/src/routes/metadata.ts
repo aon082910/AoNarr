@@ -71,8 +71,8 @@ metadataRouter.post(
     const result = db
       .prepare(
         `INSERT INTO media_items
-         (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status, group_id)
-         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId)`
+         (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status, group_id, release_date)
+         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate)`
       )
       .run({
         type: b.type,
@@ -87,6 +87,7 @@ metadataRouter.post(
         monitored: b.monitored ?? 1,
         status: "unknown",
         groupId: b.groupId ?? null,
+        releaseDate: b.releaseDate ?? null,
       });
 
     const mediaItemId = result.lastInsertRowid;

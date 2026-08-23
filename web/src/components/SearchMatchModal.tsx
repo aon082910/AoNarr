@@ -8,6 +8,7 @@ export interface MetadataSearchResult {
   overview: string | null;
   posterUrl: string | null;
   externalIds: Record<string, string>;
+  releaseDate?: string | null;
 }
 
 /**
