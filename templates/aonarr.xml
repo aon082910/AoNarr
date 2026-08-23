@@ -17,8 +17,9 @@ On first boot, open the web UI and create an admin account (username/password) â
 &#13;
 Point the Downloads and Media paths at the same shares your download client and media library actually use â€” AoNarr resolves completed downloads and organizes files under Media itself, it doesn't just track them.</Overview>
   <Category>MediaApp:Video MediaApp:Music MediaApp:Books</Category>
+  <License>MIT</License>
   <WebUI>http://[IP]:[PORT:7878]/</WebUI>
-  <TemplateURL>https://raw.githubusercontent.com/aon082910/AoNarr/main/unraid-templates/aonarr.xml</TemplateURL>
+  <TemplateURL>https://raw.githubusercontent.com/aon082910/AoNarr/main/templates/aonarr.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/aon082910/AoNarr/main/web/public/icon.svg</Icon>
   <ExtraParams/>
   <PostArgs/>

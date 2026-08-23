@@ -1,0 +1,18 @@
+<CommunityApplications>
+  <!-- Required profile -->
+  <Profile>
+AoNarr is a self-hosted media manager that unifies Sonarr/Radarr/Lidarr/Readarr/Prowlarr/Bazarr/Whisparr-style functionality across 10 library types (Movies, TV Shows, Anime, Music, Books, Comics, ROMs, Online Videos, Courses, Adult) in one app.
+
+This repository hosts the Unraid Community Applications templates for AoNarr:
+
+- **aonarr** — the single all-in-one container (API + browser UI together). Recommended for most users.
+- **aonarr-server** — the API/backend-only container, for running the backend and web UI as two independently-scalable containers.
+- **aonarr-web** — the browser-UI-only container, pairs with `aonarr-server`.
+
+For support, bug reports, and feature requests, open an issue on the GitHub repository below.
+  </Profile>
+  <!-- Optional icon -->
+  <Icon>https://raw.githubusercontent.com/aon082910/AoNarr/main/web/public/icon.svg</Icon>
+  <!-- Optional web page -->
+  <WebPage>https://github.com/aon082910/AoNarr</WebPage>
+</CommunityApplications>

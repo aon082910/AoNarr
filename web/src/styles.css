@@ -147,6 +147,18 @@ button:hover { opacity: 0.9; }
 button.secondary { background: var(--border); }
 button.danger { background: var(--danger); }
 
+/* Same box (background, border, padding, radius) as input/select so a button sitting in the same
+   toolbar row as selects — a dropdown trigger, a scan/refresh action — looks like part of the
+   same control set instead of a mismatched lighter-gray button of a different height. */
+button.select-like {
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+  font-weight: 400;
+}
+button.select-like:hover { background: rgba(255,255,255,0.04); opacity: 1; }
+
 /* A horizontal row of controls (selects/inputs/buttons/dropdowns) meant to sit flush on one
    baseline — button's own margin-top: 16px (meant for a button following a stacked label+input)
    otherwise pushes buttons down out of line with their row-mates. */

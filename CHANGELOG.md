@@ -3,6 +3,17 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 43
+- Library page toolbar buttons (the new "View"/"Export & Bulk" dropdowns, "Scan & Import",
+  "Refresh") were using `button.secondary`'s lighter gray instead of matching the black
+  `<select>` boxes sitting right next to them in the same row — added a `.select-like` class
+  (same background/border/padding as input/select) and applied it to all four, confirmed via
+  computed styles that background color, border, and box height now match the selects exactly
+- Added the Unraid Community Applications submission files at the repo root: `LICENSE` (MIT),
+  `ca_profile.xml`, and moved the existing templates from `unraid-templates/` to `templates/`
+  (the layout CA's own starter repo and submission scanner expect), updating each template's
+  `TemplateURL` to match and adding a `<License>` tag now that one exists
+
 ## Round 42
 - Fixed another alignment bug from the same root cause as Round 41's sidebar fix: `button` has a
   global `margin-top: 16px` (meant for a button following a stacked label+input), which also

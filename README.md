@@ -523,8 +523,14 @@ Key services:
 
 ## Running on Unraid
 
-The simplest path is Docker Compose (Unraid's Docker tab can also run a compose stack via the
-Compose Manager plugin, or you can `docker compose up -d` over SSH):
+The easiest path is Community Applications: search "AoNarr" in the Apps tab. Until the app is
+listed there, add this repo as a Template Repository (Apps → Settings → Template Repositories →
+paste `https://github.com/aon082910/AoNarr`) to get the templates in `templates/` — `aonarr`
+(all-in-one, recommended) or `aonarr-server` + `aonarr-web` (split, independently scalable) —
+without needing Docker Compose at all.
+
+Otherwise, the simplest path is Docker Compose (Unraid's Docker tab can also run a compose stack
+via the Compose Manager plugin, or you can `docker compose up -d` over SSH):
 
 ```bash
 cd /mnt/user/appdata/aonarr

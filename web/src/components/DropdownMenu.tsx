@@ -8,7 +8,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 export default function DropdownMenu({
   label,
   children,
-  buttonClassName = "secondary",
+  buttonClassName = "select-like",
 }: {
   label: string;
   children: ReactNode;

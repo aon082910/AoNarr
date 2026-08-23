@@ -430,7 +430,7 @@ export function LibraryItemGrid({
 
         {auth.isAdmin && (
           <button
-            className="secondary"
+            className="select-like"
             onClick={scanAndImport}
             disabled={scanning}
             title="Scan this library's root folder(s) for media already on disk and import it"
@@ -439,7 +439,7 @@ export function LibraryItemGrid({
           </button>
         )}
         {auth.isAdmin && (
-          <button className="secondary" onClick={refreshLibrary} disabled={refreshing} title="Re-pull overview/poster/year for every item in this library">
+          <button className="select-like" onClick={refreshLibrary} disabled={refreshing} title="Re-pull overview/poster/year for every item in this library">
             {refreshing ? "Refreshing..." : "Refresh"}
           </button>
         )}
