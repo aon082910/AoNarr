@@ -111,14 +111,20 @@ async function searchTorznabNewznab(indexer: Indexer, query: string, mediaType: 
     const pubDate = item.pubDate?.[0] ?? null;
 
     let seeders: number | null = null;
+    let peers: number | null = null;
     let leechers: number | null = null;
     const torznabAttrs: any[] = item["torznab:attr"] ?? item.attr ?? [];
     for (const attr of torznabAttrs) {
       const a = attr?.$;
       if (!a) continue;
       if (a.name === "seeders") seeders = Number(a.value);
-      if (a.name === "peers") leechers = Number(a.value);
+      if (a.name === "peers") peers = Number(a.value);
+      if (a.name === "leechers") leechers = Number(a.value);
     }
+    // Torznab's "peers" attr is the TOTAL peer count (seeders + leechers), not the leecher count
+    // on its own — most indexers only emit seeders/peers, not a separate leechers attr, so derive
+    // it the same way Sonarr/Radarr's own Torznab parsers do rather than misreporting the total.
+    if (leechers === null && peers !== null && seeders !== null) leechers = Math.max(0, peers - seeders);
 
     results.push({
       indexerId: indexer.id,

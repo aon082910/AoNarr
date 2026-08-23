@@ -3,6 +3,23 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 55
+- Continued the provider-audit pass from Round 54 onto the indexer/download-client integrations
+  (`indexerClient.ts`, `downloadClient.ts` — Torznab/Newznab, qBittorrent, SABnzbd, Real-Debrid,
+  AllDebrid, FlareSolverr, and the http/ytdlp/blackhole adapters). Found one real bug: Torznab's
+  `peers` attribute is the release's *total* peer count (seeders + leechers combined), not the
+  leecher count on its own — the parser was assigning the raw `peers` value straight into
+  `leechers`, so a release with 10 seeders and 5 real leechers (`seeders=10, peers=15` on the wire)
+  would report 15 leechers instead of 5. Fixed to derive leechers as peers minus seeders, matching
+  how Sonarr/Radarr's own Torznab parsers handle the same attribute, and to prefer an explicit
+  `leechers` attr when an indexer happens to emit one directly. Currently has no live UI impact —
+  `leechers` is stored and exposed via the API but nothing in the app renders or sorts on it yet —
+  fixed anyway since it's real stored/API data with the wrong value. Verified the fix against a
+  realistic Torznab XML fixture (seeders=10, peers=15 → correctly derives leechers=5)
+- Everything else in both files checked out against the real documented protocol for each client
+  (qBittorrent Web API v2, SABnzbd's mode=/apikey params, Real-Debrid and AllDebrid's REST APIs,
+  Torznab/Newznab's t=/cat=/apikey= search params)
+
 ## Round 54
 - Audited every external-provider URL builder in `metadata.ts` (46 functions across TMDB, TVDB,
   TVmaze, Trakt, AniList, MusicBrainz, Deezer, Discogs, Last.fm, Open Library, Google Books,
