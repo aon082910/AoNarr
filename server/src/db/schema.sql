@@ -447,3 +447,16 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   auth TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Named, reusable combinations of a library page's sort/filter/view/column settings — the
+-- lightweight per-browser localStorage state (Round 64) remembers your LAST choice; this is for
+-- explicitly saving a particular combination (e.g. "Missing 4K remuxes") to switch back to later,
+-- shared instance-wide the same way quality profiles/custom formats are rather than per-user.
+CREATE TABLE IF NOT EXISTS saved_library_views (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  media_type TEXT NOT NULL,
+  name TEXT NOT NULL,
+  config TEXT NOT NULL, -- JSON: {sortKey, statusFilter, tagFilter, contentRatingFilter, viewMode, posterSize, listColumns, posterFields}
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(media_type, name)
+);

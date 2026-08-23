@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, downloadFile, uploadFormFile } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
-import type { LibraryGroup, MediaItem, RootFolder, Tag } from "../types.js";
+import type { LibraryGroup, MediaItem, RootFolder, SavedLibraryView, Tag } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 import DropdownMenu from "../components/DropdownMenu.js";
 import Modal from "../components/Modal.js";
@@ -11,7 +11,19 @@ import Modal from "../components/Modal.js";
 type SortKey = "title" | "year" | "added" | "status" | "monitored" | "quality" | "contentRating";
 type ViewMode = "poster" | "list";
 type PosterSize = "small" | "medium" | "large";
-type StatusFilter = "all" | "monitored" | "unmonitored" | "missing" | "downloaded";
+type StatusFilter = "all" | "monitored" | "unmonitored" | "missing" | "downloaded" | "unmatched";
+
+/** An item counts as unmatched when it has no external provider ids at all — the state a Scan &
+ * Import guess or a manually-added item sits in until something (a real search match, or the
+ * Refresh button) actually links it to real metadata. */
+function isUnmatched(item: MediaItem): boolean {
+  if (!item.externalIds) return true;
+  try {
+    return Object.keys(JSON.parse(item.externalIds)).length === 0;
+  } catch {
+    return true;
+  }
+}
 
 const POSTER_SIZE_PX: Record<PosterSize, number> = { small: 120, medium: 160, large: 220 };
 
@@ -275,6 +287,8 @@ export function LibraryItemGrid({
   const [listColumns, setListColumns] = useState<Set<ExtraField>>(() => loadFieldSet("aonarr_library_columns", DEFAULT_LIST_COLUMNS));
   const [posterFields, setPosterFields] = useState<Set<ExtraField>>(() => loadFieldSet("aonarr_library_poster_fields", DEFAULT_POSTER_FIELDS));
   const [contentRatingFilter, setContentRatingFilter] = useState<string | "all">("all");
+  const [savedViews, setSavedViews] = useState<SavedLibraryView[]>([]);
+  const [activeViewId, setActiveViewId] = useState<number | "">("");
   const [loading, setLoading] = useState(true);
   const [mediaServerConfigured, setMediaServerConfigured] = useState(false);
   const [showMediaServerImport, setShowMediaServerImport] = useState(false);
@@ -316,6 +330,57 @@ export function LibraryItemGrid({
   useEffect(() => {
     api.get<Record<string, number>>("/dashboard/library-sizes").then((sizes) => setTypeSize(sizes[type] ?? 0));
   }, [type]);
+  useEffect(() => {
+    setActiveViewId("");
+    api.get<SavedLibraryView[]>(`/library-views?mediaType=${type}`).then(setSavedViews);
+  }, [type]);
+
+  function applyView(view: SavedLibraryView) {
+    const c = view.config;
+    setSortKey(c.sortKey as SortKey);
+    setStatusFilter(c.statusFilter as StatusFilter);
+    setTagFilter(c.tagFilter);
+    setContentRatingFilter(c.contentRatingFilter);
+    setViewMode(c.viewMode as ViewMode);
+    setPosterSize(c.posterSize as PosterSize);
+    setListColumns(new Set(c.listColumns as ExtraField[]));
+    setPosterFields(new Set(c.posterFields as ExtraField[]));
+    setActiveViewId(view.id);
+  }
+
+  async function saveCurrentAsView() {
+    const name = prompt("Name this view:");
+    if (!name?.trim()) return;
+    try {
+      const created = await api.post<SavedLibraryView>("/library-views", {
+        mediaType: type,
+        name: name.trim(),
+        config: {
+          sortKey,
+          statusFilter,
+          tagFilter,
+          contentRatingFilter,
+          viewMode,
+          posterSize,
+          listColumns: Array.from(listColumns),
+          posterFields: Array.from(posterFields),
+        },
+      });
+      setSavedViews((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
+      setActiveViewId(created.id);
+    } catch (e) {
+      alert((e as Error).message);
+    }
+  }
+
+  async function deleteActiveView() {
+    if (!activeViewId) return;
+    const view = savedViews.find((v) => v.id === activeViewId);
+    if (!view || !confirm(`Delete the saved view "${view.name}"?`)) return;
+    await api.del(`/library-views/${activeViewId}`);
+    setSavedViews((prev) => prev.filter((v) => v.id !== activeViewId));
+    setActiveViewId("");
+  }
   useEffect(() => {
     if (auth.isAdmin) api.get<Tag[]>("/tags").then(setTags);
   }, [auth.isAdmin]);
@@ -540,6 +605,7 @@ export function LibraryItemGrid({
     if (statusFilter === "unmonitored" && item.monitored) return false;
     if (statusFilter === "missing" && item.hasFile) return false;
     if (statusFilter === "downloaded" && !item.hasFile) return false;
+    if (statusFilter === "unmatched" && !isUnmatched(item)) return false;
     if (contentRatingFilter !== "all" && item.contentRating !== contentRatingFilter) return false;
     return true;
   });
@@ -590,6 +656,7 @@ export function LibraryItemGrid({
           <option value="unmonitored">Unmonitored</option>
           <option value="downloaded">Downloaded</option>
           <option value="missing">Missing</option>
+          <option value="unmatched">Unmatched (no metadata match)</option>
         </select>
         {tags.length > 0 && (
           <select
@@ -621,6 +688,35 @@ export function LibraryItemGrid({
             <option value="medium">Medium posters</option>
             <option value="large">Large posters</option>
           </select>
+        )}
+        {savedViews.length > 0 && (
+          <select
+            value={activeViewId}
+            onChange={(e) => {
+              const view = savedViews.find((v) => v.id === Number(e.target.value));
+              if (view) applyView(view);
+              else setActiveViewId("");
+            }}
+            style={{ maxWidth: 180 }}
+            title="Saved combinations of sort/filter/columns for this library"
+          >
+            <option value="">Views...</option>
+            {savedViews.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name}
+              </option>
+            ))}
+          </select>
+        )}
+        {auth.isAdmin && (
+          <button type="button" className="secondary" onClick={saveCurrentAsView} title="Save the current sort/filter/columns as a reusable named view">
+            Save view...
+          </button>
+        )}
+        {auth.isAdmin && activeViewId !== "" && (
+          <button type="button" className="secondary" onClick={deleteActiveView} title="Delete this saved view">
+            Delete view
+          </button>
         )}
         {viewMode === "poster" ? (
           <DropdownMenu label="Poster info">

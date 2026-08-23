@@ -257,3 +257,13 @@ export function subtitleProviderFromRow(row: any) {
     config: row.config ? JSON.parse(row.config) : null,
   };
 }
+
+export function savedLibraryViewFromRow(row: any) {
+  return {
+    id: row.id,
+    mediaType: row.media_type,
+    name: row.name,
+    config: JSON.parse(row.config),
+    createdAt: row.created_at,
+  };
+}

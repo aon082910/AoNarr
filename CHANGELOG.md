@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 76
+- Added saved, reusable library views — a "Views" dropdown plus "Save view..."/"Delete view" on
+  every library page lets you name and reuse a specific combination of sort, status filter, tag
+  filter, content-rating filter, poster/list mode, poster size, and visible columns (e.g. "4K
+  Missing"), instead of only ever remembering your last-used state (the existing per-browser
+  localStorage behavior from Round 64, which this doesn't replace — applying a saved view still
+  updates that same local "last used" state). Saved instance-wide, the same sharing model as
+  quality profiles and custom formats, rather than locked to one browser; saving/deleting is
+  admin-only, viewing/applying isn't
+- Added an "Unmatched" status filter to every library page — items with no external provider ids at
+  all (almost always a Scan & Import guess or a manual add that's never been searched/refreshed),
+  so a library can be filtered down to exactly the items still waiting on a real metadata match
+  instead of hunting for them by eye
+- Verified live: created a matched and an unmatched movie, confirmed the Unmatched filter shows
+  only the right one; created a saved view via the API, confirmed selecting it in the browser
+  correctly switched every one of its settings (including actually flipping poster view to list
+  view), confirmed "Save view..." and "Delete view" both work end-to-end in the browser
+
 ## Round 75
 - Added an option to review corrupted media before it's recycled (Settings → Recycle Bin →
   "Corrupt media") — previously the corrupt-media check (ffprobe validation, weekly by default)

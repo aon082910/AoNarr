@@ -322,6 +322,23 @@ export interface RecycleBinEntry {
   restoreError: string | null;
 }
 
+export interface SavedLibraryView {
+  id: number;
+  mediaType: MediaType;
+  name: string;
+  config: {
+    sortKey: string;
+    statusFilter: string;
+    tagFilter: number | "all";
+    contentRatingFilter: string;
+    viewMode: string;
+    posterSize: string;
+    listColumns: string[];
+    posterFields: string[];
+  };
+  createdAt: string;
+}
+
 export interface CorruptMediaReviewEntry {
   id: number;
   mediaItemId: number;
