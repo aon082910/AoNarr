@@ -4,6 +4,7 @@ import cors from "cors";
 import { config } from "./config.js";
 import { initDb } from "./db/index.js";
 import { loadSettingsCache } from "./services/settingsStore.js";
+import { loadQualityCaches } from "./services/quality.js";
 import { errorHandler, asyncHandler } from "./middleware/errorHandler.js";
 import { requireAuth } from "./middleware/auth.js";
 import { startScheduler } from "./services/scheduler.js";
@@ -72,6 +73,7 @@ import { friendLibrariesRouter } from "./routes/friendLibraries.js";
 // the module either way; required for anything already converted to the new async db interface).
 await initDb();
 await loadSettingsCache();
+await loadQualityCaches();
 await bootstrapAdminFromEnv();
 applySocksProxySetting();
 

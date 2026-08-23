@@ -354,8 +354,17 @@ const existingApiKey = db.prepare("SELECT value FROM settings WHERE key = 'apiKe
 if (!existingApiKey) {
   const apiKey = crypto.randomBytes(24).toString("hex");
   db.prepare("INSERT INTO settings (key, value) VALUES ('apiKey', ?)").run(apiKey);
-  console.log("=".repeat(60));
-  console.log(`[startup] generated AoNarr API key: ${apiKey}`);
-  console.log("Use this to log into the web UI. Find it again later in Settings.");
-  console.log("=".repeat(60));
+  // This whole file's top-level setup still runs even when AONARR_DATABASE_DRIVER=postgres —
+  // every not-yet-converted file that still imports `db/client.ts` directly (see
+  // DATABASE_MIGRATION.md) triggers it as an ES module side effect, maintaining an orphaned local
+  // SQLite database nothing in postgres mode actually reads from. Printing "here's your API key"
+  // for a key that lives in the database the app *isn't* using would be actively misleading — the
+  // real one comes from db/postgresSeed.ts instead — so this banner is suppressed specifically in
+  // postgres mode, even though the shadow SQLite file still quietly gets seeded either way.
+  if (config.databaseDriver !== "postgres") {
+    console.log("=".repeat(60));
+    console.log(`[startup] generated AoNarr API key: ${apiKey}`);
+    console.log("Use this to log into the web UI. Find it again later in Settings.");
+    console.log("=".repeat(60));
+  }
 }

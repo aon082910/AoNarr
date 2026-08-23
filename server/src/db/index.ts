@@ -1,6 +1,7 @@
 import { config } from "../config.js";
 import { createPostgresAsyncDb, createSqliteAsyncDb, type AsyncDb } from "./asyncDb.js";
 import { migratePostgresSchema } from "./postgresSchema.js";
+import { seedPostgresDefaults } from "./postgresSeed.js";
 
 /**
  * The async DB entry point every newly-converted file should import `db` from, instead of the old
@@ -29,6 +30,7 @@ export async function initDb(): Promise<AsyncDb> {
     }
     const pg = createPostgresAsyncDb(config.databaseUrl);
     await migratePostgresSchema(pg);
+    await seedPostgresDefaults(pg);
     dbInstance = pg;
     return dbInstance;
   }

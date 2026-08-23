@@ -1,11 +1,45 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — auth/login/session path plus household user management verified against a
-real Postgres container.** 10 files converted so far. Most of the app (~60 remaining files) still
-isn't converted; `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one yet.
-MariaDB — scoped, not started, deliberately deferred until PostgreSQL is fully done (see "The ask"
-below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by explicit user decision). This
-document exists so a future round can pick this up without re-deriving the analysis below.
+Status: **PostgreSQL — auth, users, and quality/library config all verified against a real Postgres
+container. Fresh-install seeding (default qualities, quality profile, and — critically — the
+instance API key) now works on Postgres too**, closing a gap that would have made a brand-new
+Postgres-backed install completely unusable (no way to even authenticate). 15 files converted so
+far. Most of the app (~55 remaining files) still isn't converted; `AONARR_DATABASE_DRIVER=postgres`
+runs a real app, just not a complete one yet. MariaDB — scoped, not started, deliberately deferred
+until PostgreSQL is fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to
+"PostgreSQL first" by explicit user decision). This document exists so a future round can pick this
+up without re-deriving the analysis below.
+
+## Progress (Round 82)
+
+Converted the quality/library config slice: `routes/tags.ts`, `routes/rootFolders.ts`,
+`routes/qualities.ts`, `routes/qualityProfiles.ts`, and `services/quality.ts` (the
+`qualityRank`/`sizeWithinQualityBounds`/`preferredSizeDistance`/`pickBestAllowedQuality` functions
+called synchronously throughout release-parsing/scoring code — converted to the same in-memory-cache
+pattern as `settingsStore.ts`, since these are called from deep, hot, synchronous call chains that
+would otherwise cascade `await` broadly for no real benefit on a small, read-heavy table).
+
+**Found and fixed a genuinely critical gap**: `db/client.ts`'s SQLite-only first-boot seeding
+(default qualities, the "Any" quality profile, and — the important one — generating the instance API
+key) had no Postgres equivalent at all. A fresh Postgres-backed install would have booted with zero
+qualities, no quality profile, and **no API key ever generated — meaning nobody could authenticate
+into a brand-new Postgres install at all**, not even to click through initial setup. Added
+`db/postgresSeed.ts` (an async port of that seeding logic, called once from `db/index.ts`'s
+`initDb()` right after the schema itself is applied) to close this. Also silenced a confusing side
+effect this surfaced: the old SQLite-only seeding still runs even in postgres mode (an unavoidable
+consequence of every not-yet-converted file still importing `db/client.ts` directly — see the
+"Not done yet" note below), which means it was *also* printing its own "generated AoNarr API key"
+banner for a key that lives in the orphaned shadow SQLite database, not the one actually in use —
+actively misleading rather than just redundant, since an admin reading it would try the wrong key.
+That banner is now suppressed specifically when `AONARR_DATABASE_DRIVER=postgres`.
+
+Verified live end-to-end against a real Postgres container: booted a **completely fresh** database
+with no admin-bootstrap env vars set (the harder, more realistic case — most Postgres users
+wouldn't set those), confirmed exactly one API key was generated and logged, authenticated with it,
+confirmed 15 qualities and the default "Any" profile were seeded, then exercised every converted
+route (create/list tags, create/list root folders, the quality-reorder transaction with its
+negative-rank staging trick to dodge the UNIQUE constraint) — all correct. Regression-checked the
+same sequence against SQLite on the same build.
 
 ## Progress (Round 81)
 

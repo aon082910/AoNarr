@@ -1,4 +1,5 @@
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
+import { log } from "./logger.js";
 
 /** Seed order used to populate the `qualities` table on first boot. Editable afterward via Settings. */
 export const DEFAULT_QUALITY_ORDER = [
@@ -26,20 +27,32 @@ interface SizeBounds {
   maxSizeMb: number | null;
 }
 
-let rankCache: Map<string, number> | null = null;
-let sizeBoundsCache: Map<string, SizeBounds> | null = null;
-let preferredSizeCache: Map<string, number | null> | null = null;
+/**
+ * `qualityRank`/`sizeWithinQualityBounds`/`preferredSizeDistance` are called synchronously from
+ * deep inside release-parsing/scoring code (search, import, scheduler — likely the single hottest
+ * read path in the app after settings), so — same reasoning and same pattern as
+ * `services/settingsStore.ts` — the small `qualities` table (~15 rows) is kept as an in-memory
+ * cache with a synchronous read API, populated at startup and refreshed in the background
+ * whenever `invalidateQualityRankCache()` is called after a write. A caller that writes to
+ * `qualities` and immediately re-reads through one of these functions in the very same request
+ * could theoretically see a stale value for the brief moment the background refresh is still in
+ * flight; nothing in this codebase does that (every write route responds with its own updated row
+ * directly, not by re-reading through this cache).
+ */
+let rankCache = new Map<string, number>();
+let sizeBoundsCache = new Map<string, SizeBounds>();
+let preferredSizeCache = new Map<string, number | null>();
 
-function loadRanks(): Map<string, number> {
-  const rows = db.prepare("SELECT name, rank FROM qualities ORDER BY rank").all() as {
+async function loadRanks(): Promise<Map<string, number>> {
+  const rows = (await db.prepare("SELECT name, rank FROM qualities ORDER BY rank").all()) as {
     name: string;
     rank: number;
   }[];
   return new Map(rows.map((r) => [r.name, r.rank]));
 }
 
-function loadSizeBounds(): Map<string, SizeBounds> {
-  const rows = db.prepare("SELECT name, min_size_mb, max_size_mb FROM qualities").all() as {
+async function loadSizeBounds(): Promise<Map<string, SizeBounds>> {
+  const rows = (await db.prepare("SELECT name, min_size_mb, max_size_mb FROM qualities").all()) as {
     name: string;
     min_size_mb: number | null;
     max_size_mb: number | null;
@@ -47,19 +60,25 @@ function loadSizeBounds(): Map<string, SizeBounds> {
   return new Map(rows.map((r) => [r.name, { minSizeMb: r.min_size_mb, maxSizeMb: r.max_size_mb }]));
 }
 
-function loadPreferredSizes(): Map<string, number | null> {
-  const rows = db.prepare("SELECT name, preferred_size_mb FROM qualities").all() as {
+async function loadPreferredSizes(): Promise<Map<string, number | null>> {
+  const rows = (await db.prepare("SELECT name, preferred_size_mb FROM qualities").all()) as {
     name: string;
     preferred_size_mb: number | null;
   }[];
   return new Map(rows.map((r) => [r.name, r.preferred_size_mb]));
 }
 
-/** Call after any write to the `qualities` table so subsequent rank/size lookups see the change. */
+/** Actually awaitable version of the refresh, for the one place (server startup) that needs the
+ * cache populated before anything else runs rather than "eventually, in the background." */
+export async function loadQualityCaches(): Promise<void> {
+  [rankCache, sizeBoundsCache, preferredSizeCache] = await Promise.all([loadRanks(), loadSizeBounds(), loadPreferredSizes()]);
+}
+
+/** Call after any write to the `qualities` table so subsequent rank/size lookups see the change.
+ * Fire-and-forget (kept synchronous/void on purpose — see the module comment above) so its two
+ * existing call sites don't need to become async themselves. */
 export function invalidateQualityRankCache(): void {
-  rankCache = null;
-  sizeBoundsCache = null;
-  preferredSizeCache = null;
+  loadQualityCaches().catch((err) => log.error("[quality] failed to refresh cache:", (err as Error).message));
 }
 
 /** How far a release's size is from its quality's configured preferred size, in MB — smaller is
@@ -68,7 +87,6 @@ export function invalidateQualityRankCache(): void {
  * or no size on the release, is treated as a neutral tie (0), not a penalty. */
 export function preferredSizeDistance(qualityName: string | null, sizeBytes: number | null): number {
   if (!qualityName || sizeBytes == null) return 0;
-  if (!preferredSizeCache) preferredSizeCache = loadPreferredSizes();
   const preferredMb = preferredSizeCache.get(qualityName);
   if (preferredMb == null) return 0;
   return Math.abs(sizeBytes / 1_000_000 - preferredMb);
@@ -76,7 +94,6 @@ export function preferredSizeDistance(qualityName: string | null, sizeBytes: num
 
 export function qualityRank(name: string | null): number {
   if (!name) return -1;
-  if (!rankCache) rankCache = loadRanks();
   return rankCache.get(name) ?? -1;
 }
 
@@ -88,7 +105,6 @@ export function qualityRank(name: string | null): number {
  */
 export function sizeWithinQualityBounds(qualityName: string | null, sizeBytes: number | null): boolean {
   if (!qualityName || sizeBytes == null) return true;
-  if (!sizeBoundsCache) sizeBoundsCache = loadSizeBounds();
   const bounds = sizeBoundsCache.get(qualityName);
   if (!bounds) return true;
 

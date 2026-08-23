@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { rootFolderFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { isValidMediaType } from "../services/mediaTypes.js";
@@ -12,7 +12,7 @@ rootFoldersRouter.use(requireAdmin);
 rootFoldersRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
-    const rows = db.prepare("SELECT * FROM root_folders").all();
+    const rows = await db.prepare("SELECT * FROM root_folders").all();
     res.json(
       rows.map((row) => {
         const folder = rootFolderFromRow(row);
@@ -36,10 +36,8 @@ rootFoldersRouter.post(
     const b = req.body ?? {};
     if (!b.path || !b.mediaType) throw new HttpError(400, "path and mediaType are required");
     if (!isValidMediaType(b.mediaType)) throw new HttpError(400, `Unknown media type "${b.mediaType}"`);
-    const result = db
-      .prepare("INSERT INTO root_folders (path, media_type) VALUES (?, ?)")
-      .run(b.path, b.mediaType);
-    const row = db.prepare("SELECT * FROM root_folders WHERE id = ?").get(result.lastInsertRowid);
+    const result = await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, ?)").run(b.path, b.mediaType);
+    const row = await db.prepare("SELECT * FROM root_folders WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(rootFolderFromRow(row));
   })
 );
@@ -60,9 +58,9 @@ rootFoldersRouter.patch(
     }
     if (sets.length > 0) {
       values.push(req.params.id);
-      db.prepare(`UPDATE root_folders SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+      await db.prepare(`UPDATE root_folders SET ${sets.join(", ")} WHERE id = ?`).run(...values);
     }
-    const row = db.prepare("SELECT * FROM root_folders WHERE id = ?").get(req.params.id);
+    const row = await db.prepare("SELECT * FROM root_folders WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Root folder not found");
     res.json(rootFolderFromRow(row));
   })
@@ -71,7 +69,7 @@ rootFoldersRouter.patch(
 rootFoldersRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
-    const result = db.prepare("DELETE FROM root_folders WHERE id = ?").run(req.params.id);
+    const result = await db.prepare("DELETE FROM root_folders WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Root folder not found");
     res.status(204).send();
   })

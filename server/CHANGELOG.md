@@ -3,6 +3,25 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 82
+- PostgreSQL support: converted the quality/library config slice (`tags.ts`, `rootFolders.ts`,
+  `qualities.ts`, `qualityProfiles.ts`, `services/quality.ts`) to the async DB interface — 15 files
+  converted so far, ~55 remain
+- Found and fixed a critical gap: first-boot seeding (default qualities, the default "Any" quality
+  profile, and — the one that actually matters — generating the instance API key) only ever existed
+  for SQLite. **A fresh Postgres-backed install would have had no API key generated at all — nobody
+  could have authenticated into it, not even to reach initial setup.** Added `db/postgresSeed.ts` to
+  close this, and silenced a confusing side effect it surfaced along the way: the old SQLite-only
+  seeding still runs even in postgres mode (every not-yet-converted file importing `db/client.ts`
+  directly triggers it) and was printing its own "generated API key" banner for a key that lives in
+  an orphaned, unused shadow database — actively misleading rather than just redundant. Suppressed
+  specifically in postgres mode
+- Verified live against a real Postgres container with a **completely fresh database and no
+  admin-bootstrap env vars set** — the realistic case for most Postgres users — confirming exactly
+  one (correct) API key gets generated and logged, qualities/quality-profile seeding works, and
+  every converted route (including the quality-reorder transaction's negative-rank staging trick)
+  behaves correctly, with the same sequence regression-checked against SQLite on the same build
+
 ## Round 81
 - PostgreSQL support: converted `routes/users.ts` (household account management — create/list/patch
   users, per-user library permissions, session listing and force-revocation) to the async DB
