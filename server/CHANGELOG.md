@@ -3,6 +3,17 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 84
+- PostgreSQL support: converted `people.ts`, `calendarEvents.ts`, `libraryViews.ts`,
+  `remoteInstances.ts`, `friendLibraries.ts` (route + service), and `libraryGroups.ts` to the async
+  DB interface — 24 files converted so far, ~46 remain
+- `libraryGroups.ts` carries the app's `WITH RECURSIVE` query (the nested-group item-count rollup)
+  — ported with no changes beyond the standard `await` treatment, no new translation gaps found
+- Verified live against a real Postgres container: custom calendar events, a saved library view, a
+  remote instance, a friend library, and a two-level library group hierarchy — including confirming
+  the recursive-CTE count rollup, breadcrumb resolution, and deepest-level detection all work
+  correctly — with the same sequence regression-checked against SQLite on the same build
+
 ## Round 83
 - PostgreSQL support: converted `indexers.ts`, `downloadClients.ts`, and `prowlarrSync.ts` to the
   async DB interface — 18 files converted so far, ~52 remain

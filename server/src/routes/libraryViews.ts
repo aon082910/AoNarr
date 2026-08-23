@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { savedLibraryViewFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { requireAdmin } from "../middleware/auth.js";
@@ -15,7 +15,7 @@ libraryViewsRouter.get(
   asyncHandler(async (req, res) => {
     const mediaType = req.query.mediaType as string | undefined;
     if (!mediaType || !isValidMediaType(mediaType)) throw new HttpError(400, "A valid mediaType is required");
-    const rows = db.prepare("SELECT * FROM saved_library_views WHERE media_type = ? ORDER BY name").all(mediaType);
+    const rows = await db.prepare("SELECT * FROM saved_library_views WHERE media_type = ? ORDER BY name").all(mediaType);
     res.json(rows.map(savedLibraryViewFromRow));
   })
 );
@@ -31,13 +31,13 @@ libraryViewsRouter.post(
 
     let result;
     try {
-      result = db
+      result = await db
         .prepare("INSERT INTO saved_library_views (media_type, name, config) VALUES (?, ?, ?)")
         .run(b.mediaType, b.name.trim(), JSON.stringify(b.config));
     } catch {
       throw new HttpError(409, `A saved view named "${b.name.trim()}" already exists for this library`);
     }
-    const row = db.prepare("SELECT * FROM saved_library_views WHERE id = ?").get(result.lastInsertRowid);
+    const row = await db.prepare("SELECT * FROM saved_library_views WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(savedLibraryViewFromRow(row));
   })
 );
@@ -46,7 +46,7 @@ libraryViewsRouter.delete(
   "/:id",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const result = db.prepare("DELETE FROM saved_library_views WHERE id = ?").run(req.params.id);
+    const result = await db.prepare("DELETE FROM saved_library_views WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Saved view not found");
     res.status(204).send();
   })

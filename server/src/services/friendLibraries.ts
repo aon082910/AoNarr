@@ -1,4 +1,4 @@
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 
 export interface FriendLibraryConfig {
   id: number;
@@ -72,8 +72,8 @@ async function fetchFriendTitles(cfg: FriendLibraryConfig): Promise<FriendLibrar
   return fetchJellyfinLikeTitles(cfg, "/emby");
 }
 
-function loadLocalTitles(): Map<string, Set<number | null>> {
-  const rows = db.prepare("SELECT title, year, type FROM media_items WHERE type IN ('movie', 'series')").all() as {
+async function loadLocalTitles(): Promise<Map<string, Set<number | null>>> {
+  const rows = (await db.prepare("SELECT title, year, type FROM media_items WHERE type IN ('movie', 'series')").all()) as {
     title: string;
     year: number | null;
     type: string;
@@ -105,7 +105,7 @@ function isPresentLocally(item: FriendLibraryItem, localTitles: Map<string, Set<
  */
 export async function compareFriendLibrary(friend: FriendLibraryConfig): Promise<FriendLibraryItem[]> {
   const friendItems = await fetchFriendTitles(friend);
-  const localTitles = loadLocalTitles();
+  const localTitles = await loadLocalTitles();
   const seen = new Set<string>();
   const missing: FriendLibraryItem[] = [];
   for (const item of friendItems) {

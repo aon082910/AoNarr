@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 
 export const remoteInstancesRouter = Router();
@@ -13,7 +13,7 @@ function fromRow(row: any) {
 remoteInstancesRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
-    const rows = db.prepare("SELECT * FROM remote_instances ORDER BY name").all();
+    const rows = await db.prepare("SELECT * FROM remote_instances ORDER BY name").all();
     res.json(rows.map(fromRow));
   })
 );
@@ -23,10 +23,10 @@ remoteInstancesRouter.post(
   asyncHandler(async (req, res) => {
     const b = req.body ?? {};
     if (!b.name || !b.url || !b.apiKey) throw new HttpError(400, "name, url and apiKey are required");
-    const result = db
+    const result = await db
       .prepare("INSERT INTO remote_instances (name, url, api_key) VALUES (?, ?, ?)")
       .run(b.name, b.url.replace(/\/+$/, ""), b.apiKey);
-    const row = db.prepare("SELECT * FROM remote_instances WHERE id = ?").get(result.lastInsertRowid);
+    const row = await db.prepare("SELECT * FROM remote_instances WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(fromRow(row));
   })
 );
@@ -34,7 +34,7 @@ remoteInstancesRouter.post(
 remoteInstancesRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
-    const result = db.prepare("DELETE FROM remote_instances WHERE id = ?").run(req.params.id);
+    const result = await db.prepare("DELETE FROM remote_instances WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Remote instance not found");
     res.status(204).send();
   })
@@ -48,7 +48,7 @@ remoteInstancesRouter.delete(
 remoteInstancesRouter.get(
   "/:id/media",
   asyncHandler(async (req, res) => {
-    const row = db.prepare("SELECT * FROM remote_instances WHERE id = ?").get(req.params.id) as any;
+    const row = (await db.prepare("SELECT * FROM remote_instances WHERE id = ?").get(req.params.id)) as any;
     if (!row) throw new HttpError(404, "Remote instance not found");
 
     const type = req.query.type as string | undefined;
@@ -67,7 +67,7 @@ remoteInstancesRouter.get(
 remoteInstancesRouter.get(
   "/:id/media-types",
   asyncHandler(async (req, res) => {
-    const row = db.prepare("SELECT * FROM remote_instances WHERE id = ?").get(req.params.id) as any;
+    const row = (await db.prepare("SELECT * FROM remote_instances WHERE id = ?").get(req.params.id)) as any;
     if (!row) throw new HttpError(404, "Remote instance not found");
 
     try {

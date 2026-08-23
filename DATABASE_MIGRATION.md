@@ -1,12 +1,31 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — auth, users, quality/library config, indexers, and download clients all
-verified against a real Postgres container.** 18 files converted so far. Most of the app (~52
-remaining files) still isn't converted; `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not
-a complete one yet. MariaDB — scoped, not started, deliberately deferred until PostgreSQL is fully
-done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by explicit
-user decision). This document exists so a future round can pick this
-up without re-deriving the analysis below.
+Status: **PostgreSQL — 24 files converted and verified against a real Postgres container**, covering
+auth, users, quality/library config, indexers, download clients, calendar events, saved library
+views, remote instances, friend libraries, library groups (including its `WITH RECURSIVE`
+nested-count rollup), and person credits. Most of the app (~46 remaining files) still isn't
+converted; `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one yet. MariaDB —
+scoped, not started, deliberately deferred until PostgreSQL is fully done (see "The ask" below;
+narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by explicit user decision). This
+document exists so a future round can pick this up without re-deriving the analysis below.
+
+## Progress (Round 84)
+
+Converted a batch of 6 smaller, mostly-independent route files plus one service:
+`routes/people.ts`, `routes/calendarEvents.ts`, `routes/libraryViews.ts`,
+`routes/remoteInstances.ts`, `routes/friendLibraries.ts` (+ its `services/friendLibraries.ts`
+backing service), and `routes/libraryGroups.ts` — the last of these carrying the app's `WITH
+RECURSIVE` query (the nested-group item-count rollup), the second-most structurally complex query
+in the codebase after the transaction-based quality reorder from Round 82. No new translation gaps
+found this round — the recursive CTE, the breadcrumb-walking loop (a `while` loop re-querying one
+row at a time), and every INSERT/UPDATE/DELETE all ported with just the standard `await` treatment.
+
+Verified live against a real Postgres container: created/listed custom calendar events, a saved
+library view, a remote instance, a friend library, and a two-level library group hierarchy (System →
+Maker), confirmed the `WITH RECURSIVE` count rollup correctly reports 0 items for a freshly-created
+empty group, confirmed the breadcrumb and `isDeepestLevel`/`nextKind` fields on a single-group fetch,
+patched and deleted a group, and confirmed `people.ts` fails gracefully (not a crash) when no TMDB
+key is configured — same regression sequence repeated against SQLite on the same build.
 
 ## Progress (Round 83)
 

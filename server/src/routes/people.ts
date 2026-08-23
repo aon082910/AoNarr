@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { fetchPersonDetails } from "../services/metadata.js";
 
@@ -20,7 +20,7 @@ peopleRouter.get(
       throw new HttpError(400, (err as Error).message);
     }
 
-    const libraryRows = db.prepare("SELECT id, type, external_ids FROM media_items WHERE type IN ('movie', 'series')").all() as {
+    const libraryRows = (await db.prepare("SELECT id, type, external_ids FROM media_items WHERE type IN ('movie', 'series')").all()) as {
       id: number;
       type: string;
       external_ids: string | null;
