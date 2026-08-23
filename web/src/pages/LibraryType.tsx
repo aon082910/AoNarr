@@ -303,6 +303,9 @@ export function LibraryItemGrid({
     load();
   }
 
+  const haveCount = items.filter((item) => item.hasFile).length;
+  const missingCount = items.length - haveCount;
+
   const filtered = items.filter((item) => {
     if (statusFilter === "monitored") return item.monitored;
     if (statusFilter === "unmonitored") return !item.monitored;
@@ -321,7 +324,12 @@ export function LibraryItemGrid({
   return (
     <div>
       <h1>{typeLabel}</h1>
-      {typeSize !== null && <p style={{ color: "var(--muted)" }}>{formatBytes(typeSize)} on disk</p>}
+      <p style={{ color: "var(--muted)" }}>
+        {typeSize !== null && <>{formatBytes(typeSize)} on disk · </>}
+        <span className="badge ok">{haveCount} have</span>{" "}
+        <span className={`badge ${missingCount > 0 ? "danger" : ""}`}>{missingCount} missing</span>{" "}
+        <span className="badge">{items.length} total</span>
+      </p>
       {groupDetail && (
         <p style={{ color: "var(--muted)" }}>
           <Link to={`/library/${type}`}>{typeLabel}</Link>

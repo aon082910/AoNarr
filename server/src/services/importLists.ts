@@ -38,10 +38,10 @@ function existingTmdbIds(type: string): Set<string> {
 async function insertSeriesEpisodes(mediaItemId: number | bigint, externalIds: Record<string, string>) {
   const episodes = await fetchSeriesEpisodesFor(externalIds).catch(() => []);
   const insertEp = db.prepare(
-    `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, monitored)
-     VALUES (?, ?, ?, ?, ?, 1)`
+    `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
+     VALUES (?, ?, ?, ?, ?, ?, 1)`
   );
-  for (const ep of episodes) insertEp.run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate);
+  for (const ep of episodes) insertEp.run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
 }
 
 async function insertArtistAlbums(mediaItemId: number | bigint, externalIds: Record<string, string>) {

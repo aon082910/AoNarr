@@ -96,12 +96,12 @@ metadataRouter.post(
       if (typeConfig.shape === "episodic") {
         const episodes = await fetchSeriesEpisodesFor(externalIds);
         const insert = db.prepare(
-          `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, monitored)
-           VALUES (?, ?, ?, ?, ?, 1)`
+          `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
+           VALUES (?, ?, ?, ?, ?, ?, 1)`
         );
         const insertMany = db.transaction((rows: typeof episodes) => {
           for (const ep of rows) {
-            insert.run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate);
+            insert.run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
           }
         });
         insertMany(episodes);

@@ -48,6 +48,7 @@ ensureColumn("sessions", "user_agent", "user_agent TEXT");
 ensureColumn("subtitle_providers", "config", "config TEXT");
 ensureColumn("media_items", "media_info", "media_info TEXT");
 ensureColumn("episodes", "media_info", "media_info TEXT");
+ensureColumn("episodes", "overview", "overview TEXT");
 ensureColumn("sub_items", "media_info", "media_info TEXT");
 ensureColumn("queue", "retry_count", "retry_count INTEGER NOT NULL DEFAULT 0");
 ensureColumn("indexers", "use_flaresolverr", "use_flaresolverr INTEGER NOT NULL DEFAULT 0");
@@ -60,6 +61,7 @@ ensureColumn("users", "totp_enabled", "totp_enabled INTEGER NOT NULL DEFAULT 0")
 ensureColumn("media_items", "group_id", "group_id INTEGER REFERENCES library_groups(id) ON DELETE SET NULL");
 ensureColumn("media_items", "extra_metadata", "extra_metadata TEXT");
 ensureColumn("queue", "last_progress_at", "last_progress_at TEXT");
+ensureColumn("queue", "season_number", "season_number INTEGER");
 ensureColumn("download_clients", "audio_only", "audio_only INTEGER NOT NULL DEFAULT 0");
 ensureColumn("root_folders", "pause_grabs_at_quota", "pause_grabs_at_quota INTEGER NOT NULL DEFAULT 0");
 

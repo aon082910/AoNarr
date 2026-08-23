@@ -115,6 +115,7 @@ export interface QueueItem {
   mediaItemId: number;
   episodeId: number | null;
   subItemId: number | null;
+  seasonNumber: number | null;
   title: string;
   indexerId: number | null;
   downloadClientId: number | null;

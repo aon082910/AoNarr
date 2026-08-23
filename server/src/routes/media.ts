@@ -746,6 +746,19 @@ mediaRouter.post(
   })
 );
 
+/** Single episode's full data plus its parent show's title/type, for the episode detail page. */
+mediaRouter.get(
+  "/:id/episodes/:episodeId",
+  asyncHandler(async (req, res) => {
+    const row = db
+      .prepare("SELECT * FROM episodes WHERE id = ? AND media_item_id = ?")
+      .get(req.params.episodeId, req.params.id);
+    if (!row) throw new HttpError(404, "Episode not found");
+    const parentRow = db.prepare("SELECT id, title, type FROM media_items WHERE id = ?").get(req.params.id) as any;
+    res.json({ ...episodeFromRow(row), parent: parentRow ? { id: parentRow.id, title: parentRow.title, type: parentRow.type } : null });
+  })
+);
+
 mediaRouter.patch(
   "/:id/episodes/:episodeId",
   requireAdmin,

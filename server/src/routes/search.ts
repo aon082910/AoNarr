@@ -65,6 +65,7 @@ searchRouter.get(
 
     const episodeId = req.query.episodeId as string | undefined;
     const subItemId = req.query.subItemId as string | undefined;
+    const seasonNumberParam = req.query.seasonNumber as string | undefined;
 
     if (episodeId) {
       const ep = db.prepare("SELECT * FROM episodes WHERE id = ?").get(episodeId) as any;
@@ -74,6 +75,12 @@ searchRouter.get(
       const seasonStr = String(targetSeason).padStart(2, "0");
       const episodeStr = String(targetEpisode).padStart(2, "0");
       query = `${item.title} S${seasonStr}E${episodeStr}`;
+    } else if (seasonNumberParam) {
+      // Season-only (no specific episode) — surfaces full-season pack releases, which a
+      // per-episode query wouldn't reliably match against.
+      targetSeason = Number(seasonNumberParam);
+      const seasonStr = String(targetSeason).padStart(2, "0");
+      query = `${item.title} S${seasonStr}`;
     } else if (subItemId) {
       const sub = db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId) as any;
       if (!sub) throw new HttpError(404, "Sub-item not found");
@@ -102,7 +109,9 @@ searchRouter.get(
       const matchesTarget =
         targetSeason !== null && targetEpisode !== null
           ? releaseMatchesEpisode(parsed, targetSeason, targetEpisode)
-          : true;
+          : targetSeason !== null
+            ? parsed.seasonNumber === targetSeason
+            : true;
       const { totalScore, matches } = scoreRelease(r.title, r.size ?? null, item.qualityProfileId);
       return {
         ...r,
@@ -146,13 +155,14 @@ searchRouter.post(
 
     const result = db
       .prepare(
-        `INSERT INTO queue (media_item_id, episode_id, sub_item_id, title, indexer_id, download_client_id, download_id, size, quality, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`
+        `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, indexer_id, download_client_id, download_id, size, quality, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`
       )
       .run(
         req.params.mediaItemId,
         b.episodeId ?? null,
         b.subItemId ?? null,
+        b.episodeId ? null : (b.seasonNumber ?? null),
         b.title ?? "Unknown release",
         b.indexerId ?? null,
         client.id,

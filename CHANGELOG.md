@@ -3,6 +3,44 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 51
+- Added per-library have/missing/total count badges to the top of every library list page
+  (`LibraryType.tsx`), computed from the already-loaded item list
+- Import operations (single-file, music album, and the new TV season-pack path) now log an
+  info-level line on success, not just on failure — visible both in `docker logs` and the
+  in-app Logs page, since every prior round only logged warnings/errors and gave no visibility
+  into what actually happened during a scan-import run
+- Added a dedicated episode detail page (`web/src/pages/EpisodeDetail.tsx`, new route
+  `/media/:mediaId/episode/:episodeId`, new `GET /media/:id/episodes/:episodeId` endpoint) showing
+  full metadata (air date, overview, quality, file info, file path) for a single episode, reachable
+  by clicking any episode row on a show's page
+- Added the ability to search for a full season at once rather than one episode at a time: the
+  search route now accepts a `seasonNumber` with no `episodeId` and matches releases by season only,
+  and grabbing such a release now imports the whole season pack (new `placeSeasonPackFiles` in
+  `importer.ts`, which walks the sibling files next to the downloaded anchor file and maps each to
+  the matching episode by parsing season/episode out of its own name — the same pattern the existing
+  music album importer already used for multi-file placement). Needed a new `queue.season_number`
+  column to track season-only grabs through the download queue
+- Rebuilt the TV Shows (and Anime, which shares the same episodic show shape) metadata page:
+  seasons are now closeable/expandable sections like Sonarr, seeded open on first load; each season
+  header shows its own have/total badges plus per-season Search/Monitor/Unmonitor actions; the page
+  header shows the whole show's have/missing/total counts; episode titles now show the real fetched
+  title instead of a bare "EPISODE 1" (falls back to an italic "Episode N" placeholder only when no
+  title was ever fetched). Episode metadata fetches (TMDB/TVDB/TVmaze/Trakt/AniList) now also pull
+  each episode's overview text, needed a new `episodes.overview` column
+- Hardened the scan-import title guesser against dangling-parenthesis titles (e.g. "45 Years (")
+  reported on some movies beyond the specific case fixed in Round 49: broadened the cut-pattern list
+  to recognize more release-metadata markers (resolution, codec, audio format, edition tags, and
+  imdb/tmdb/tvdb id tags) as places to stop, and broadened the trailing-punctuation strip to catch
+  more leftover separators. Could not reproduce a fresh failure against the current build with
+  realistic test filenames, so this is defensive hardening rather than a confirmed root-cause fix —
+  worth watching for a recurrence with a concrete example if it still happens
+- Verified this round's TV Shows work live end-to-end in a running test container: imported a real
+  62-episode show, confirmed the per-show and per-season count badges, confirmed season sections
+  collapse/expand correctly, confirmed clicking an episode navigates to its detail page with full
+  metadata, confirmed the "Search season" button reaches the season-only search endpoint and returns
+  results, and confirmed the library list page shows the new have/missing/total header
+
 ## Round 50
 - Fixed TV Shows Scan & Import skipping everything: the episodic branch only ever *matched*
   against an existing series, it never created one — a fresh TV library with nothing pre-added

@@ -15,6 +15,7 @@ export interface MetadataEpisode {
   episodeNumber: number;
   title: string | null;
   airDate: string | null;
+  overview: string | null;
 }
 
 export interface MetadataSubItem {
@@ -163,6 +164,7 @@ async function fetchSeriesEpisodesTmdb(tmdbId: string): Promise<MetadataEpisode[
         episodeNumber: ep.episode_number,
         title: ep.name || null,
         airDate: ep.air_date || null,
+        overview: ep.overview || null,
       });
     }
   }
@@ -219,6 +221,7 @@ async function fetchSeriesEpisodesTvdb(tvdbId: string): Promise<MetadataEpisode[
     episodeNumber: e.number,
     title: e.name || null,
     airDate: e.aired || null,
+    overview: e.overview || null,
   }));
 }
 
@@ -248,6 +251,7 @@ async function fetchSeriesEpisodesTvmaze(tvmazeId: string): Promise<MetadataEpis
     episodeNumber: e.number,
     title: e.name || null,
     airDate: e.airdate || null,
+    overview: e.summary ? e.summary.replace(/<[^>]+>/g, "") : null,
   }));
 }
 
@@ -287,6 +291,7 @@ async function fetchSeriesEpisodesTrakt(traktId: string): Promise<MetadataEpisod
         episodeNumber: ep.number,
         title: ep.title || null,
         airDate: ep.first_aired ? ep.first_aired.slice(0, 10) : null,
+        overview: ep.overview || null,
       });
     }
   }
@@ -346,6 +351,7 @@ async function fetchSeriesEpisodesAnilist(anilistId: string): Promise<MetadataEp
     episodeNumber: i + 1,
     title: null,
     airDate: null,
+    overview: null,
   }));
 }
 

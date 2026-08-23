@@ -33,14 +33,17 @@ interface CastMember {
   photoUrl: string | null;
 }
 
-interface Episode {
+export interface Episode {
   id: number;
   seasonNumber: number;
   episodeNumber: number;
   title: string | null;
+  airDate: string | null;
+  overview: string | null;
   monitored: 0 | 1;
   hasFile: 0 | 1;
   quality: string | null;
+  filePath: string | null;
   mediaInfo: MediaInfo | null;
 }
 
@@ -58,7 +61,7 @@ interface SubItem {
 
 type MediaDetailResponse = MediaItem & { children: Episode[] | SubItem[]; tags: Tag[] };
 
-type SearchTarget = { episodeId?: number; subItemId?: number; label: string } | null;
+type SearchTarget = { episodeId?: number; subItemId?: number; seasonNumber?: number; label: string } | null;
 
 interface BrowseEntry {
   name: string;
@@ -90,6 +93,8 @@ export default function MediaDetail() {
   const [showImport, setShowImport] = useState(false);
   const [browsePath, setBrowsePath] = useState("");
   const [showMove, setShowMove] = useState(false);
+  const [openSeasons, setOpenSeasons] = useState<Set<number>>(new Set());
+  const [seededSeasons, setSeededSeasons] = useState(false);
   const [groupBreadcrumb, setGroupBreadcrumb] = useState<string | null>(null);
   const [pendingGroupId, setPendingGroupId] = useState<number | null>(null);
   const [metadataProviders, setMetadataProviders] = useState<Record<string, string[]>>({});
@@ -306,6 +311,23 @@ export default function MediaDetail() {
     setShowMove(false);
   }
 
+  useEffect(() => {
+    if (seededSeasons || !item || item.type === "movie") return;
+    const episodes = item.children as Episode[] | undefined;
+    if (!episodes || episodes.length === 0) return;
+    setOpenSeasons(new Set(episodes.map((ep) => ep.seasonNumber)));
+    setSeededSeasons(true);
+  }, [item, seededSeasons]);
+
+  function toggleSeasonOpen(seasonNumber: number) {
+    setOpenSeasons((prev) => {
+      const next = new Set(prev);
+      if (next.has(seasonNumber)) next.delete(seasonNumber);
+      else next.add(seasonNumber);
+      return next;
+    });
+  }
+
   async function toggleSeasonMonitor(seasonNumber: number, monitored: boolean) {
     if (!item) return;
     const updated = await api.patch<Episode[]>(`/media/${item.id}/season/${seasonNumber}/monitor`, { monitored });
@@ -326,6 +348,7 @@ export default function MediaDetail() {
     try {
       const params = new URLSearchParams();
       if (t?.episodeId) params.set("episodeId", String(t.episodeId));
+      else if (t?.seasonNumber) params.set("seasonNumber", String(t.seasonNumber));
       if (t?.subItemId) params.set("subItemId", String(t.subItemId));
       const qs = params.toString();
       const res = await api.get<SearchResult[]>(`/search/${id}${qs ? `?${qs}` : ""}`);
@@ -351,6 +374,7 @@ export default function MediaDetail() {
       downloadClientId: clients[0].id,
       episodeId: target?.episodeId ?? null,
       subItemId: target?.subItemId ?? null,
+      seasonNumber: target?.episodeId ? null : target?.seasonNumber ?? null,
     });
     alert(`Sent "${result.title}" to download client.`);
     load();
@@ -958,72 +982,111 @@ export default function MediaDetail() {
 
       {shape === "episodic" && (item.children as Episode[]).length > 0 && (
         <>
+          {(() => {
+            const episodes = item.children as Episode[];
+            const have = episodes.filter((ep) => ep.hasFile).length;
+            const missing = episodes.length - have;
+            return (
+              <p style={{ color: "var(--muted)" }}>
+                <span className="badge ok">{have} have</span>{" "}
+                <span className={`badge ${missing > 0 ? "danger" : ""}`}>{missing} missing</span>{" "}
+                <span className="badge">{episodes.length} total</span>
+              </p>
+            );
+          })()}
           <h2>Episodes</h2>
           {Array.from(new Set((item.children as Episode[]).map((ep) => ep.seasonNumber)))
             .sort((a, b) => a - b)
             .map((seasonNumber) => {
-              const seasonEpisodes = (item.children as Episode[]).filter((ep) => ep.seasonNumber === seasonNumber);
+              const seasonEpisodes = (item.children as Episode[])
+                .filter((ep) => ep.seasonNumber === seasonNumber)
+                .sort((a, b) => a.episodeNumber - b.episodeNumber);
+              const seasonHave = seasonEpisodes.filter((ep) => ep.hasFile).length;
+              const isOpen = openSeasons.has(seasonNumber);
               return (
-                <div key={seasonNumber} style={{ marginBottom: 20 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
-                    <h3 style={{ margin: 0 }}>Season {seasonNumber}</h3>
+                <div key={seasonNumber} className="form-panel" style={{ marginBottom: 12, padding: 0, maxWidth: "none" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      padding: "12px 16px",
+                      cursor: "pointer",
+                    }}
+                    onClick={() => toggleSeasonOpen(seasonNumber)}
+                  >
+                    <span style={{ fontSize: "0.8rem", color: "var(--muted)" }}>{isOpen ? "▾" : "▸"}</span>
+                    <h3 style={{ margin: 0, flex: 1 }}>Season {seasonNumber}</h3>
+                    <span className="badge ok">{seasonHave}</span>
+                    <span className="badge">{seasonEpisodes.length}</span>
                     {isAdmin && (
-                      <>
+                      <div style={{ display: "flex", gap: 6 }} onClick={(e) => e.stopPropagation()}>
+                        <button
+                          className="secondary"
+                          disabled={searching}
+                          onClick={() => runSearch({ seasonNumber, label: `Season ${seasonNumber}` })}
+                        >
+                          Search season
+                        </button>
                         <button className="secondary" onClick={() => toggleSeasonMonitor(seasonNumber, true)}>
-                          Monitor season
+                          Monitor
                         </button>
                         <button className="secondary" onClick={() => toggleSeasonMonitor(seasonNumber, false)}>
-                          Unmonitor season
+                          Unmonitor
                         </button>
-                      </>
+                      </div>
                     )}
                   </div>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Episode</th>
-                        <th>Title</th>
-                        <th>Monitored</th>
-                        <th>File</th>
-                        <th>Quality</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {seasonEpisodes.map((ep) => (
-                        <tr key={ep.id}>
-                          <td>{ep.episodeNumber}</td>
-                          <td>{ep.title ?? "-"}</td>
-                          <td>{ep.monitored ? "Yes" : "No"}</td>
-                          <td>
-                            <span className={`badge ${ep.hasFile ? "ok" : ""}`}>{ep.hasFile ? "Downloaded" : "Missing"}</span>
-                          </td>
-                          <td>
-                            {ep.quality ?? "-"}
-                            {formatMediaInfo(ep.mediaInfo) && (
-                              <div style={{ color: "var(--muted)", fontSize: "0.75rem" }}>{formatMediaInfo(ep.mediaInfo)}</div>
-                            )}
-                          </td>
-                          <td>
-                            {isAdmin && (
-                              <button
-                                className="secondary"
-                                disabled={searching}
-                                onClick={() =>
-                                  runSearch({
-                                    episodeId: ep.id,
-                                    label: `S${String(ep.seasonNumber).padStart(2, "0")}E${String(ep.episodeNumber).padStart(2, "0")}`,
-                                  })
-                                }
-                              >
-                                Search
-                              </button>
-                            )}
-                          </td>
+                  {isOpen && (
+                    <table style={{ marginBottom: 0 }}>
+                      <thead>
+                        <tr>
+                          <th>Episode</th>
+                          <th>Title</th>
+                          <th>Air date</th>
+                          <th>Monitored</th>
+                          <th>File</th>
+                          <th>Quality</th>
+                          <th></th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {seasonEpisodes.map((ep) => (
+                          <tr key={ep.id} onClick={() => navigate(`/media/${item.id}/episode/${ep.id}`)} style={{ cursor: "pointer" }}>
+                            <td>{ep.episodeNumber}</td>
+                            <td>{ep.title ?? <span style={{ color: "var(--muted)", fontStyle: "italic" }}>Episode {ep.episodeNumber}</span>}</td>
+                            <td>{ep.airDate ?? "-"}</td>
+                            <td>{ep.monitored ? "Yes" : "No"}</td>
+                            <td>
+                              <span className={`badge ${ep.hasFile ? "ok" : ""}`}>{ep.hasFile ? "Downloaded" : "Missing"}</span>
+                            </td>
+                            <td>
+                              {ep.quality ?? "-"}
+                              {formatMediaInfo(ep.mediaInfo) && (
+                                <div style={{ color: "var(--muted)", fontSize: "0.75rem" }}>{formatMediaInfo(ep.mediaInfo)}</div>
+                              )}
+                            </td>
+                            <td onClick={(e) => e.stopPropagation()}>
+                              {isAdmin && (
+                                <button
+                                  className="secondary"
+                                  disabled={searching}
+                                  onClick={() =>
+                                    runSearch({
+                                      episodeId: ep.id,
+                                      label: `S${String(ep.seasonNumber).padStart(2, "0")}E${String(ep.episodeNumber).padStart(2, "0")}`,
+                                    })
+                                  }
+                                >
+                                  Search
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
                 </div>
               );
             })}

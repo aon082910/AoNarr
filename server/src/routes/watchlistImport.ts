@@ -78,10 +78,10 @@ watchlistImportRouter.post(
           const mediaItemId = insertResult.lastInsertRowid;
           const episodes = await fetchSeriesEpisodesFor(best.externalIds).catch(() => []);
           const insertEp = db.prepare(
-            `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, monitored)
-             VALUES (?, ?, ?, ?, ?, 1)`
+            `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
+             VALUES (?, ?, ?, ?, ?, ?, 1)`
           );
-          for (const ep of episodes) insertEp.run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate);
+          for (const ep of episodes) insertEp.run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
         }
 
         results.push({ title: row.title, status: "added" });

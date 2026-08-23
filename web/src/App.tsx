@@ -7,6 +7,7 @@ import LibraryHome from "./pages/LibraryHome.js";
 import LibraryType from "./pages/LibraryType.js";
 import LibraryUngrouped from "./pages/LibraryUngrouped.js";
 import MediaDetail from "./pages/MediaDetail.js";
+import EpisodeDetail from "./pages/EpisodeDetail.js";
 import AddMedia from "./pages/AddMedia.js";
 import Calendar from "./pages/Calendar.js";
 import Missing from "./pages/Missing.js";
@@ -160,6 +161,7 @@ export default function App() {
           <Route path="/library/:type/g/:groupId" element={<LibraryType />} />
           <Route path="/library/:type/ungrouped" element={<LibraryUngrouped />} />
           <Route path="/media/:id" element={<MediaDetail />} />
+          <Route path="/media/:mediaId/episode/:episodeId" element={<EpisodeDetail />} />
           <Route path="/people/:tmdbId" element={<Person />} />
           <Route path="/search" element={<GlobalSearch />} />
           <Route path="/collections" element={<Collections />} />

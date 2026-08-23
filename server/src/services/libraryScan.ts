@@ -32,7 +32,13 @@ function guessTitleFromText(text: string): string {
     /\b\d{1,2}x\d{1,3}\b/i, // "1x02"
     /\bE\d{1,3}\b/i, // bare "E03" — a season-folder-relative episode file with no series name at all
     /\b(19|20)\d{2}\b/,
-    /\b(2160p|1080p|720p|bluray|blu-ray|web-?dl|webrip|hdtv|dvdrip|remux)\b/i,
+    /\b(2160p|1080p|720p|480p|bluray|blu-ray|web-?dl|webrip|hdtv|dvdrip|brrip|remux)\b/i,
+    /\b(x264|x265|h264|h265|hevc|xvid|divx)\b/i,
+    /\b(aac|ac3|dts|atmos|ddp?5\s?1|truehd)\b/i,
+    /\b(proper|repack|extended|unrated|directors?\s?cut|imax)\b/i,
+    /\bimdb-tt\d+\b/i,
+    /\btmdb-\d+\b/i,
+    /\btvdb-\d+\b/i,
   ];
   let cutIndex = normalized.length;
   for (const p of cutPatterns) {
@@ -41,12 +47,14 @@ function guessTitleFromText(text: string): string {
   }
   // The cut lands right at the start of the matched marker (e.g. the "2" in "2015"), so whatever
   // separator introduced it — "(", "[", "-", a trailing "." — is still dangling at the end of the
-  // slice (e.g. "45 Years (2015)" -> "45 Years ("). Strip that off along with surrounding spaces.
+  // slice (e.g. "45 Years (2015)" -> "45 Years ("). Strip that off, along with any other trailing
+  // punctuation left over from the cut (not just the exact separator immediately before the
+  // marker — a stray unmatched "(" or "[" earlier in the leftover text can otherwise survive too).
   return normalized
     .slice(0, cutIndex)
     .replace(/\s+/g, " ")
     .trim()
-    .replace(/[\s([{-]+$/, "")
+    .replace(/[\s([{.,:;_-]+$/, "")
     .trim();
 }
 
@@ -64,7 +72,7 @@ const EPISODE_ONLY = /\bE0*(\d{1,3})\b/i;
  * context or marker at all — too easy to misfire on an unrelated number in the name (a resolution,
  * a year, part of the title itself).
  */
-function detectSeasonEpisode(parentFolderName: string, filenameBase: string): { season: number | null; episode: number | null } {
+export function detectSeasonEpisode(parentFolderName: string, filenameBase: string): { season: number | null; episode: number | null } {
   const parsed = parseReleaseTitle(filenameBase);
   if (parsed.seasonNumber !== null && parsed.episodeNumbers && parsed.episodeNumbers.length > 0) {
     return { season: parsed.seasonNumber, episode: parsed.episodeNumbers[0] };

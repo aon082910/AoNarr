@@ -19,6 +19,7 @@ import { getMediaTypeConfig } from "./mediaTypes.js";
 import { getSetting } from "./settingsStore.js";
 import { probeMediaInfo } from "./ffprobe.js";
 import { recordGroupSuccess } from "./releaseGroupStats.js";
+import { detectSeasonEpisode } from "./libraryScan.js";
 import type { MediaType } from "../types/index.js";
 
 // Shared across every "single"/"episodic" video library (Movies, TV Shows, Anime) so a just-moved
@@ -56,6 +57,7 @@ async function tryDownloadSubtitle(videoPath: string, mediaItemId: number): Prom
       mediaItemId,
       JSON.stringify({ srtPath, language: best.language })
     );
+    log.info(`[importer] downloaded "${best.language}" subtitle for "${path.basename(videoPath)}"`);
   } catch (err) {
     log.warn(`[importer] subtitle download failed for "${videoPath}":`, (err as Error).message);
   }
@@ -299,6 +301,7 @@ export async function placeFile(params: {
   );
 
   await notifyImported(item.title, fileLabel);
+  log.info(`[importer] imported "${fileLabel}" for "${item.title}"`);
   return { destPath, fileLabel };
 }
 
@@ -374,7 +377,103 @@ export async function placeAlbumFiles(params: {
   );
 
   await notifyImported(item.title, `${movedCount} file(s) into ${path.basename(destFolder)}`);
+  log.info(`[importer] imported ${movedCount} file(s) into "${path.basename(destFolder)}" for "${item.title}"`);
   return { destFolder, fileCount: movedCount };
+}
+
+/**
+ * Imports a full-season pack download — a folder with one video file per episode, no single
+ * episodeId to place against. Same "walk every sibling file next to the anchor" shape as
+ * placeAlbumFiles, but maps each file to an episode by parsing it (reusing the same folder-aware
+ * detection scan-import uses) instead of a leading track number. A file whose parsed episode
+ * number doesn't match any known episode of the target season is left in place rather than moved
+ * blind — better to leave one file for manual handling than silently misplace it.
+ */
+export async function placeSeasonPackFiles(params: {
+  itemId: number;
+  seasonNumber: number;
+  anchorFile: string;
+  quality: string | null;
+}): Promise<{ destFolder: string; episodeCount: number }> {
+  const { itemId, seasonNumber, anchorFile, quality } = params;
+
+  const mediaRow = db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
+  if (!mediaRow) throw new Error(`Media item ${itemId} not found`);
+  const item = mediaItemFromRow(mediaRow);
+  const typeConfig = getMediaTypeConfig(item.type);
+
+  if (!item.rootFolderId) throw new ImportSkippedError(`"${item.title}" has no root folder configured`);
+  const folderRow = db.prepare("SELECT * FROM root_folders WHERE id = ?").get(item.rootFolderId);
+  if (!folderRow) throw new ImportSkippedError(`Root folder for "${item.title}" no longer exists`);
+  const rootFolder = rootFolderFromRow(folderRow);
+
+  const sourceDir = path.dirname(anchorFile);
+  const siblings = fs
+    .readdirSync(sourceDir, { withFileTypes: true })
+    .filter((e) => e.isFile() && typeConfig.extensions.includes(path.extname(e.name).toLowerCase()))
+    .map((e) => path.join(sourceDir, e.name));
+
+  const episodes = db
+    .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND season_number = ?")
+    .all(itemId, seasonNumber) as any[];
+  const sourceDirName = path.basename(sourceDir);
+
+  let importedCount = 0;
+  let destFolder = "";
+  for (const src of siblings) {
+    const base = path.basename(src, path.extname(src));
+    const detected = detectSeasonEpisode(sourceDirName, base);
+    // A season pack's own folder name (e.g. "Show.S01.1080p.WEB-DL") won't itself look like a
+    // "Season NN" folder to detectSeasonEpisode, so a file with no season of its own (e.g. a bare
+    // "01.mkv") falls back to assuming it belongs to the season this whole download is for.
+    const episodeNumber = detected.season === null || detected.season === seasonNumber ? detected.episode : null;
+    const targetEpisode = episodeNumber !== null ? episodes.find((e) => e.episode_number === episodeNumber) : undefined;
+    if (!targetEpisode) {
+      log.warn(`[importer] couldn't match "${path.basename(src)}" to a known episode of season ${seasonNumber} for "${item.title}" — left in place`);
+      continue;
+    }
+
+    const absoluteEpisode = (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ?
+           AND (season_number < ? OR (season_number = ? AND episode_number <= ?))`
+        )
+        .get(itemId, seasonNumber, seasonNumber, episodeNumber) as { c: number }
+    ).c;
+    const segments = renderPathSegments(getNamingTemplate(item.type), {
+      parentTitle: item.title,
+      season: seasonNumber,
+      episode: episodeNumber as number,
+      absoluteEpisode,
+    });
+    const ext = path.extname(src);
+    const dest = path.join(rootFolder.path, ...segments) + ext;
+    destFolder = path.dirname(dest);
+    moveFile(src, dest);
+
+    if (VIDEO_EXTENSIONS.has(ext.toLowerCase())) await tryDownloadSubtitle(dest, item.id);
+    const mediaInfo = await probeMediaInfo(dest);
+    db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?").run(
+      dest,
+      quality,
+      mediaInfo ? JSON.stringify(mediaInfo) : null,
+      targetEpisode.id
+    );
+    importedCount++;
+  }
+
+  if (importedCount === 0) {
+    throw new ImportSkippedError(`No files in this download could be matched to a known episode of season ${seasonNumber}`);
+  }
+
+  db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
+    item.id,
+    JSON.stringify({ seasonNumber, episodeCount: importedCount })
+  );
+  await notifyImported(item.title, `season ${seasonNumber} pack — ${importedCount} episode(s)`);
+  log.info(`[importer] imported season ${seasonNumber} pack for "${item.title}": ${importedCount} episode(s)`);
+  return { destFolder, episodeCount: importedCount };
 }
 
 /** Locates, moves, and links the downloaded file(s) for a completed queue entry. Throws on failure. */
@@ -405,6 +504,13 @@ export async function importQueueItem(queueItemId: number): Promise<void> {
     await placeAlbumFiles({
       itemId: item.id,
       subItemId: queueItem.subItemId,
+      anchorFile: sourceFile,
+      quality: queueItem.quality,
+    });
+  } else if (typeConfig.shape === "episodic" && !queueItem.episodeId && queueItem.seasonNumber) {
+    await placeSeasonPackFiles({
+      itemId: item.id,
+      seasonNumber: queueItem.seasonNumber,
       anchorFile: sourceFile,
       quality: queueItem.quality,
     });
