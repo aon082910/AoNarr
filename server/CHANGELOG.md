@@ -3,6 +3,33 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 68
+- Added "Import from Radarr"/"Import from Sonarr" (Movies/Series/Anime library pages) — migrates an
+  already-organized Radarr or Sonarr library straight into AoNarr, closing the last of the three
+  deferred migration paths flagged back in Round 65 (media server was Rounds 66-67; this is "import
+  from other Starr programs"). Unlike the media server connection, this isn't a standing setting:
+  the Radarr/Sonarr URL and API key are supplied once in the import dialog and used only for that
+  one request, never saved, since there's no ongoing reason for AoNarr to keep talking to a
+  Radarr/Sonarr instance once its library has been pulled in
+- Reuses the exact match-or-create logic already shipped and verified for Plex/Jellyfin/Emby import
+  (Rounds 66-67) — refactored `importMoviesFromMediaServer`/`importSeriesFromMediaServer` into
+  fetch-then-import pairs so both the media-server path and the new Radarr/Sonarr path share one
+  `importMovieItems`/`importSeriesData` core, rather than duplicating the matching precedence (path,
+  then external id, then title/year(/season/episode)) a second time
+- Sonarr's v3 API has no bulk "every episode" endpoint — episodes and episode-files are fetched
+  per-series (N+1 requests), which is fine for a one-time migration but wouldn't be for a repeated
+  sync; noted in code rather than treated as something to optimize away in a job that only runs once
+  per library
+- Verified live against real mock Radarr and Sonarr servers: for movies, three cases (already
+  tracked and correctly skipped, tracked under a wrong guessed title with no file and correctly
+  matched via its tmdb id, never seen and correctly created) plus a fourth case confirming a movie
+  with no file yet in Radarr is correctly excluded entirely rather than imported as empty; for
+  series, the same three-case matrix one level deeper (show matched via tvdb id with one episode
+  already tracked left untouched and its sibling episode created fresh, a second show created along
+  with both its episodes) — confirmed exact match/create counts via the log summary, confirmed the
+  resulting rows in the database, and confirmed the "Import from Radarr"/"Import from Sonarr"
+  buttons and modals render with the correct app name and copy on both library types
+
 ## Round 67
 - Extended "Import from Media Server" (Round 66, movies-only) to TV Shows and Anime libraries —
   the deferred "larger job" from last round: matching/creating individual episodes under the right

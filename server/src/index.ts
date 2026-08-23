@@ -46,6 +46,7 @@ import { mediaServerWebhookRouter, mediaServerWebhookTokenRouter } from "./route
 import { mediaAnalysisRouter } from "./routes/mediaAnalysis.js";
 import { importReviewRouter } from "./routes/importReview.js";
 import { mediaServerImportRouter } from "./routes/mediaServerImport.js";
+import { starrImportRouter } from "./routes/starrImport.js";
 import { openApiSpec } from "./openapi.js";
 import { contentRatingsRouter } from "./routes/contentRatingsRoute.js";
 import { changelogRouter } from "./routes/changelog.js";
@@ -129,6 +130,7 @@ app.use("/api/friend-libraries", friendLibrariesRouter);
 app.use("/api/media-analysis", mediaAnalysisRouter);
 app.use("/api/import-review", importReviewRouter);
 app.use("/api/media-server-import", mediaServerImportRouter);
+app.use("/api/starr-import", starrImportRouter);
 
 app.use(errorHandler);
 

@@ -1,6 +1,6 @@
 import { db } from "../db/client.js";
 import { pathTail } from "./archival.js";
-import { fetchMediaServerMovies, fetchMediaServerSeries } from "./mediaServer.js";
+import { fetchMediaServerMovies, fetchMediaServerSeries, type MediaServerLibraryItem, type MediaServerSeriesLibrary } from "./mediaServer.js";
 import { log } from "./logger.js";
 
 function normalizeForMatch(s: string): string {
@@ -45,6 +45,17 @@ export interface MediaServerImportResult {
  */
 export async function importMoviesFromMediaServer(rootFolderId: number, signal?: AbortSignal): Promise<MediaServerImportResult> {
   const items = await fetchMediaServerMovies();
+  return importMovieItems(items, rootFolderId, signal);
+}
+
+/** Core matching/creation logic shared by every movie-library source (Plex/Jellyfin/Emby via
+ * fetchMediaServerMovies above, Radarr via starrImport.ts) — takes already-fetched items so each
+ * source only needs to know how to fetch and shape its own data into MediaServerLibraryItem. */
+export async function importMovieItems(
+  items: MediaServerLibraryItem[],
+  rootFolderId: number,
+  signal?: AbortSignal
+): Promise<MediaServerImportResult> {
   const result: MediaServerImportResult = { matched: 0, created: 0, skipped: 0 };
 
   const knownTails = new Set(
@@ -129,6 +140,18 @@ export async function importSeriesFromMediaServer(
   signal?: AbortSignal
 ): Promise<MediaServerSeriesImportResult> {
   const { shows, episodes } = await fetchMediaServerSeries();
+  return importSeriesData(shows, episodes, type, rootFolderId, signal);
+}
+
+/** Core matching/creation logic shared by every series-library source (Plex/Jellyfin/Emby via
+ * fetchMediaServerSeries above, Sonarr via starrImport.ts) — same reasoning as importMovieItems. */
+export async function importSeriesData(
+  shows: MediaServerSeriesLibrary["shows"],
+  episodes: MediaServerSeriesLibrary["episodes"],
+  type: "series" | "anime",
+  rootFolderId: number,
+  signal?: AbortSignal
+): Promise<MediaServerSeriesImportResult> {
   const result: MediaServerSeriesImportResult = { showsMatched: 0, showsCreated: 0, episodesMatched: 0, episodesCreated: 0, episodesSkipped: 0 };
 
   const existingShows = db.prepare("SELECT * FROM media_items WHERE type = ?").all(type) as any[];

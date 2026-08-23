@@ -281,6 +281,12 @@ export function LibraryItemGrid({
   const [mediaServerImportFolders, setMediaServerImportFolders] = useState<RootFolder[]>([]);
   const [mediaServerImportFolderId, setMediaServerImportFolderId] = useState<number | "">("");
   const [mediaServerImporting, setMediaServerImporting] = useState(false);
+  const [showStarrImport, setShowStarrImport] = useState(false);
+  const [starrImportFolders, setStarrImportFolders] = useState<RootFolder[]>([]);
+  const [starrImportFolderId, setStarrImportFolderId] = useState<number | "">("");
+  const [starrUrl, setStarrUrl] = useState("");
+  const [starrApiKey, setStarrApiKey] = useState("");
+  const [starrImporting, setStarrImporting] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [tagToApply, setTagToApply] = useState<number | "">("");
@@ -349,6 +355,45 @@ export function LibraryItemGrid({
       setMediaServerImporting(false);
     }
   }
+
+  const starrImportable = type === "movie" || type === "series" || type === "anime";
+  const starrAppName = type === "movie" ? "Radarr" : "Sonarr";
+
+  async function openStarrImport() {
+    const folders = await api.get<RootFolder[]>("/root-folders");
+    const forType = folders.filter((f) => f.mediaType === type);
+    setStarrImportFolders(forType);
+    setStarrImportFolderId(forType[0]?.id ?? "");
+    setShowStarrImport(true);
+  }
+
+  async function runStarrImport() {
+    if (!starrImportFolderId || !starrUrl.trim() || !starrApiKey.trim()) return;
+    setStarrImporting(true);
+    try {
+      if (type === "movie") {
+        await api.post("/starr-import/movies", { url: starrUrl.trim(), apiKey: starrApiKey.trim(), rootFolderId: starrImportFolderId });
+      } else {
+        await api.post("/starr-import/series", {
+          url: starrUrl.trim(),
+          apiKey: starrApiKey.trim(),
+          rootFolderId: starrImportFolderId,
+          type,
+        });
+      }
+      alert(
+        "Import started in the background — this can take a while for a large library. Check the Logs page for the result, or come back to this list shortly."
+      );
+      setShowStarrImport(false);
+      setStarrUrl("");
+      setStarrApiKey("");
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setStarrImporting(false);
+    }
+  }
+
   useEffect(() => {
     localStorage.setItem("aonarr_library_view", viewMode);
   }, [viewMode]);
@@ -681,6 +726,15 @@ export function LibraryItemGrid({
             Import from Media Server
           </button>
         )}
+        {auth.isAdmin && starrImportable && (
+          <button
+            className="select-like"
+            onClick={openStarrImport}
+            title={`Migrate an existing ${starrAppName} library straight into AoNarr — real title/year/poster/external-id metadata, matched against anything already here first`}
+          >
+            Import from {starrAppName}
+          </button>
+        )}
         {auth.isAdmin && (
           <button
             className={selectMode ? "" : "secondary"}
@@ -846,6 +900,54 @@ export function LibraryItemGrid({
                   {mediaServerImporting ? "Starting..." : "Start import"}
                 </button>
                 <button type="button" className="secondary" onClick={() => setShowMediaServerImport(false)}>
+                  Cancel
+                </button>
+              </div>
+            </>
+          )}
+        </Modal>
+      )}
+
+      {showStarrImport && (
+        <Modal title={`Import from ${starrAppName}`} onClose={() => setShowStarrImport(false)} maxWidth={480}>
+          <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
+            Migrates an already-organized {starrAppName} {type === "movie" ? "movie" : "show and episode"}{" "}
+            library into AoNarr — pulled from {starrAppName}'s own API with real title/year/poster/external-id
+            metadata, matching against anything already in this library first (by path, then external id, then
+            title/year{type !== "movie" && "/season/episode"}) and creating a new entry for anything genuinely
+            new. The URL and API key are only used for this one import, not saved. Runs in the background; check
+            the Logs page for the result.
+          </p>
+          {starrImportFolders.length === 0 ? (
+            <p className="empty">No root folder configured for this library yet — add one in Settings first.</p>
+          ) : (
+            <>
+              <label>{starrAppName} URL</label>
+              <input
+                type="text"
+                value={starrUrl}
+                onChange={(e) => setStarrUrl(e.target.value)}
+                placeholder={`http://localhost:${type === "movie" ? "7878" : "8989"}`}
+              />
+              <label>{starrAppName} API key</label>
+              <input type="text" value={starrApiKey} onChange={(e) => setStarrApiKey(e.target.value)} placeholder="Settings → General → Security" />
+              <label>Root folder for newly-created items</label>
+              <select value={starrImportFolderId} onChange={(e) => setStarrImportFolderId(e.target.value ? Number(e.target.value) : "")}>
+                {starrImportFolders.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.path}
+                  </option>
+                ))}
+              </select>
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <button
+                  type="button"
+                  onClick={runStarrImport}
+                  disabled={starrImporting || !starrImportFolderId || !starrUrl.trim() || !starrApiKey.trim()}
+                >
+                  {starrImporting ? "Starting..." : "Start import"}
+                </button>
+                <button type="button" className="secondary" onClick={() => setShowStarrImport(false)}>
                   Cancel
                 </button>
               </div>
