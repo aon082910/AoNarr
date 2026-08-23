@@ -23,9 +23,13 @@ export interface MediaInfo {
  */
 export async function probeMediaInfo(filePath: string): Promise<MediaInfo | null> {
   try {
+    // "-v error" (not "quiet") — quiet suppresses ffprobe's own explanation of *why* it failed
+    // along with the routine info it's actually meant to silence, so a real failure came back with
+    // empty stderr and nothing to log beyond "the command failed." error-level still says nothing
+    // for a file that probes fine, but keeps the actual reason for one that doesn't.
     const { stdout } = await execFileAsync(
       "ffprobe",
-      ["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", filePath],
+      ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", filePath],
       { timeout: 30_000, maxBuffer: 10 * 1024 * 1024 }
     );
     const data = JSON.parse(stdout);
@@ -44,7 +48,11 @@ export async function probeMediaInfo(filePath: string): Promise<MediaInfo | null
       durationSeconds: data.format?.duration ? Math.round(Number(data.format.duration)) : null,
     };
   } catch (err) {
-    log.warn(`[ffprobe] could not probe "${filePath}":`, (err as Error).message);
+    // execFile's promisified error carries the real reason on .stderr — the .message alone is
+    // just "Command failed: ffprobe <args>", which repeats the command back without saying why it
+    // failed (unsupported/corrupt codec, DRM, a genuinely broken file, etc).
+    const stderr = (err as NodeJS.ErrnoException & { stderr?: string }).stderr?.trim();
+    log.warn(`[ffprobe] could not probe "${filePath}":`, stderr || (err as Error).message);
     return null;
   }
 }

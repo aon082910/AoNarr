@@ -1,5 +1,6 @@
 import { Router } from "express";
 import multer from "multer";
+import { log } from "../services/logger.js";
 import { db } from "../db/client.js";
 import { episodeFromRow, mediaItemFromRow, queueItemFromRow, subItemFromRow, tagFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
@@ -232,32 +233,52 @@ mediaRouter.post(
   })
 );
 
-/** Scans a library type's root folder(s) for files not already tracked and imports them — matches
+/**
+ * Scans a library type's root folder(s) for files not already tracked and imports them — matches
  * an existing "missing" item by filename-guessed title where possible, else creates a new item
  * outright. Same underlying function the scheduled "Library Scan & Import" job runs for every
- * type; this is the per-library, on-demand version for the button on each Library page. */
+ * type; this is the per-library, on-demand version for the button on each Library page.
+ *
+ * Fire-and-forget rather than awaited: this probes every matched/created file with ffprobe (up to
+ * a 30s timeout each — see services/ffprobe.ts), so a library with even a handful of slow or
+ * unreadable files can easily take the whole request past any reasonable HTTP/gateway timeout,
+ * surfacing as a 504 to the browser even though the scan itself is still working fine in the
+ * background. Same pattern services/jobRegistry.ts's runJobNow already uses for exactly this
+ * reason — the result is logged (visible on the Logs page) rather than returned in the response.
+ */
 mediaRouter.post(
   "/scan-import",
   requireAdmin,
   asyncHandler(async (req, res) => {
     const type = req.query.type as string | undefined;
     if (!type || !isValidMediaType(type)) throw new HttpError(400, "A valid type is required");
-    const result = await scanAndImportLibrary(type);
-    res.json(result);
+    scanAndImportLibrary(type)
+      .then((result) => {
+        if (result.unsupported) {
+          log.info(`[scan-import] "${type}": ${result.unsupported}`);
+        } else {
+          log.info(`[scan-import] "${type}": matched ${result.matched}, created ${result.created}, skipped ${result.skipped}`);
+        }
+      })
+      .catch((err) => log.warn(`[scan-import] "${type}" failed:`, (err as Error).message));
+    res.json({ started: true });
   })
 );
 
 /** Re-pulls overview/poster/year for every item of a type from its metadata provider. Same
  * underlying function the scheduled "Library Refresh" job runs for every type; this is the
- * per-library, on-demand version for the button on each Library page. */
+ * per-library, on-demand version for the button on each Library page. Fire-and-forget for the
+ * same reason as scan-import above — one metadata-provider request per item adds up. */
 mediaRouter.post(
   "/refresh",
   requireAdmin,
   asyncHandler(async (req, res) => {
     const type = req.query.type as string | undefined;
     if (!type || !isValidMediaType(type)) throw new HttpError(400, "A valid type is required");
-    const result = await refreshLibraryMetadata(type);
-    res.json(result);
+    refreshLibraryMetadata(type)
+      .then((result) => log.info(`[refresh] "${type}": updated ${result.updated}, failed ${result.failed}`))
+      .catch((err) => log.warn(`[refresh] "${type}" failed:`, (err as Error).message));
+    res.json({ started: true });
   })
 );
 

@@ -3,6 +3,25 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 49
+- Fixed the Scan & Import 504: it probed every matched/created file with ffprobe (up to a 30s
+  timeout each) synchronously inside the HTTP request, so a library with even a few slow or
+  unreadable files could easily exceed any reasonable gateway timeout even though the scan itself
+  kept working fine in the background. Both `/media/scan-import` and `/media/refresh` are now
+  fire-and-forget — same pattern the scheduled job registry already uses for exactly this reason —
+  responding immediately and logging the real result (matched/created/skipped, or updated/failed)
+  once it finishes. Verified: the request now returns in ~70ms regardless of library size
+- Fixed a real diagnostic dead-end while investigating the above: ffprobe was invoked with `-v
+  quiet`, which suppresses its own explanation of *why* a file failed to probe along with the
+  routine info it's meant to silence — a genuinely corrupt file logged nothing but "Command
+  failed: ffprobe ...", repeating the command back with no reason. Changed to `-v error`; the
+  exact same corrupt-file scenario now logs the real cause (e.g. "Failed to read frame size:
+  Could not seek to 3071. Invalid argument") instead
+- Fixed a title-guessing bug this surfaced: cutting a filename at its year marker left a dangling
+  separator behind — "45 Years (2015).wmv" guessed a title of "45 Years (" instead of "45 Years".
+  Strips trailing separator punctuation after the cut now; reverified the same file produces a
+  clean title
+
 ## Round 48
 - App icon now appears in the sidebar next to the "AoNarr" wordmark, not just the browser tab
 - Default WebUI port changed from 7878 to 9876, everywhere it's referenced: nginx (both the

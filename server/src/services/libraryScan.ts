@@ -37,7 +37,15 @@ function guessTitleFromFilename(filenameNoExt: string): string {
     const m = normalized.match(p);
     if (m && m.index !== undefined && m.index < cutIndex) cutIndex = m.index;
   }
-  return normalized.slice(0, cutIndex).replace(/\s+/g, " ").trim();
+  // The cut lands right at the start of the matched marker (e.g. the "2" in "2015"), so whatever
+  // separator introduced it — "(", "[", "-", a trailing "." — is still dangling at the end of the
+  // slice (e.g. "45 Years (2015)" -> "45 Years ("). Strip that off along with surrounding spaces.
+  return normalized
+    .slice(0, cutIndex)
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[\s([{-]+$/, "")
+    .trim();
 }
 
 function walkForExtensions(dir: string, extensions: string[], knownPaths: Set<string>, out: string[]): void {

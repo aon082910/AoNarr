@@ -264,36 +264,31 @@ export function LibraryItemGrid({
     load();
   }
 
+  // Runs in the background on the server (probing every file with ffprobe can take a while for a
+  // real library — long enough to blow past an HTTP/gateway timeout if the request waited for it),
+  // so this only confirms it started; check the Logs page for the actual matched/created/skipped
+  // counts once it's done, or just come back to this list in a bit.
   async function scanAndImport() {
     setScanning(true);
     try {
-      const result = await api.post<{ matched: number; created: number; skipped: number; unsupported?: string }>(
-        `/media/scan-import?type=${type}`,
-        {}
-      );
-      if (result.unsupported) {
-        alert(result.unsupported);
-      } else {
-        alert(`Scan complete: matched ${result.matched} existing item(s), created ${result.created} new item(s), skipped ${result.skipped} file(s).`);
-        load();
-      }
+      await api.post(`/media/scan-import?type=${type}`, {});
+      alert("Scan & import started in the background — this can take a while for a large library. Check the Logs page for the result, or come back to this list shortly.");
     } catch (e) {
       alert((e as Error).message);
     } finally {
-      setScanning(false);
+      setTimeout(() => setScanning(false), 5000);
     }
   }
 
   async function refreshLibrary() {
     setRefreshing(true);
     try {
-      const result = await api.post<{ updated: number; failed: number }>(`/media/refresh?type=${type}`, {});
-      alert(`Refreshed ${result.updated} item(s), ${result.failed} not found/failed.`);
-      load();
+      await api.post(`/media/refresh?type=${type}`, {});
+      alert("Refresh started in the background — check the Logs page for the result, or come back to this list shortly.");
     } catch (e) {
       alert((e as Error).message);
     } finally {
-      setRefreshing(false);
+      setTimeout(() => setRefreshing(false), 5000);
     }
   }
 
