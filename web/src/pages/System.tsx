@@ -948,7 +948,7 @@ export default function System() {
           The last 2000 log lines, newest first — the same output as{" "}
           <code>docker compose logs aonarr-server</code> without needing shell access.
         </p>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <div className="toolbar">
           <select value={logLevelFilter} onChange={(e) => setLogLevelFilter(e.target.value)} style={{ width: "auto" }}>
             <option value="">All levels</option>
             <option value="info">Info</option>

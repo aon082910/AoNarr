@@ -3,6 +3,27 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 42
+- Fixed another alignment bug from the same root cause as Round 41's sidebar fix: `button` has a
+  global `margin-top: 16px` (meant for a button following a stacked label+input), which also
+  pushed toolbar buttons down out of line with the select/input sitting next to them — visible on
+  the Logs page's "Load logs" row and every Library page's toolbar. Added a `.toolbar` class that
+  resets it, used consistently everywhere a row of controls needs to sit flush on one baseline
+- Consolidated each Library page's five export/bulk-edit buttons (Export CSV, .nfo, JSON, Plex,
+  Calibre, Bulk edit via CSV) into one "Export & Bulk" dropdown, and the Posters/List view toggle
+  into a "View" dropdown — a new reusable `DropdownMenu` component, since nothing like it existed
+- Two new jobs, each with a per-library "Scan & Import" / "Refresh" button placed in the same
+  toolbar row: **Library Scan & Import** walks a library type's root folder(s) for media files not
+  already tracked, matches them into an existing "missing" item by filename-guessed title where
+  possible (has_file + path, same as a normal import) or creates a new item outright when nothing
+  matches — scoped to single/episodic shapes (Movies, TV, Anime, ROMs, Adult) since collection
+  shapes (Books, Comics, Music, Online Videos, Courses) need an existing parent to file a new child
+  under, so those report a clear "not supported yet" instead of guessing at structure. **Library
+  Refresh** re-pulls overview/poster/year from the type's metadata provider for every existing
+  item. Verified scan & import against real files in a running container: matched an existing
+  "missing" item by parsed title, correctly parsed quality from the filename for both the matched
+  and newly-created item, and a second run against the same files found nothing new (idempotent)
+
 ## Round 41
 - Fixed a real sidebar layout bug: `.sidebar a` had no `display` set, so nav links defaulted to
   `display: inline` and wrapped like text instead of stacking one per line — visible as staggered,

@@ -147,6 +147,50 @@ button:hover { opacity: 0.9; }
 button.secondary { background: var(--border); }
 button.danger { background: var(--danger); }
 
+/* A horizontal row of controls (selects/inputs/buttons/dropdowns) meant to sit flush on one
+   baseline — button's own margin-top: 16px (meant for a button following a stacked label+input)
+   otherwise pushes buttons down out of line with their row-mates. */
+.toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.toolbar > button,
+.toolbar > select,
+.toolbar > input,
+.toolbar > .dropdown {
+  margin-top: 0;
+}
+
+.dropdown { position: relative; display: inline-block; }
+.dropdown-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  min-width: 220px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+.dropdown-menu button {
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  border-radius: 4px;
+  margin-top: 0;
+  padding: 8px 10px;
+  width: 100%;
+}
+.dropdown-menu button:hover { background: rgba(255,255,255,0.06); }
+.dropdown-menu button:disabled { opacity: 0.5; cursor: default; }
+.dropdown-menu .dropdown-divider { height: 1px; background: var(--border); margin: 4px 2px; }
+
 .form-panel {
   background: var(--panel);
   border: 1px solid var(--border);

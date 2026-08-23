@@ -11,6 +11,7 @@ import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { CONTENT_RATING_ORDER, isRatingBlocked } from "../services/contentRatings.js";
 import { fetchCastFor, fetchTrailerFor, searchMetadata } from "../services/metadata.js";
 import { pushWatchState } from "../services/mediaServer.js";
+import { scanAndImportLibrary, refreshLibraryMetadata } from "../services/libraryScan.js";
 import { notifyGrabbed } from "../services/notifications.js";
 import { recycleFile } from "../services/recycleBin.js";
 import { buildCalibreOpf, buildJson, buildNfo, buildPlexMatch, fetchPosterBuffer, safeFileName, type ExportableItem } from "../services/metadataExport.js";
@@ -228,6 +229,35 @@ mediaRouter.post(
     }
 
     res.json({ updated, skipped });
+  })
+);
+
+/** Scans a library type's root folder(s) for files not already tracked and imports them — matches
+ * an existing "missing" item by filename-guessed title where possible, else creates a new item
+ * outright. Same underlying function the scheduled "Library Scan & Import" job runs for every
+ * type; this is the per-library, on-demand version for the button on each Library page. */
+mediaRouter.post(
+  "/scan-import",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const type = req.query.type as string | undefined;
+    if (!type || !isValidMediaType(type)) throw new HttpError(400, "A valid type is required");
+    const result = await scanAndImportLibrary(type);
+    res.json(result);
+  })
+);
+
+/** Re-pulls overview/poster/year for every item of a type from its metadata provider. Same
+ * underlying function the scheduled "Library Refresh" job runs for every type; this is the
+ * per-library, on-demand version for the button on each Library page. */
+mediaRouter.post(
+  "/refresh",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const type = req.query.type as string | undefined;
+    if (!type || !isValidMediaType(type)) throw new HttpError(400, "A valid type is required");
+    const result = await refreshLibraryMetadata(type);
+    res.json(result);
   })
 );
 

@@ -29,6 +29,7 @@ import { getGroupReputation, recordGroupFailure } from "./releaseGroupStats.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
 import { findUpgradeCandidates } from "./upgradeCandidates.js";
 import { fetchCollectionChildrenFor } from "./metadata.js";
+import { scanAndImportAllLibraries, refreshAllLibraries } from "./libraryScan.js";
 import { getSetting } from "./settingsStore.js";
 import { registerJob, startAllJobs } from "./jobRegistry.js";
 import type { DownloadClient, Indexer, MediaItem, QueueItem, SearchResult } from "../types/index.js";
@@ -811,6 +812,22 @@ export function startScheduler() {
     scheduleType: "cron",
     defaultSchedule: "0 */4 * * *",
     run: () => checkVideoChannels(),
+  });
+
+  registerJob({
+    key: "libraryScan",
+    name: "Library Scan & Import",
+    scheduleType: "cron",
+    defaultSchedule: "0 5 * * *",
+    run: (signal) => scanAndImportAllLibraries(signal),
+  });
+
+  registerJob({
+    key: "libraryRefresh",
+    name: "Library Refresh",
+    scheduleType: "cron",
+    defaultSchedule: "0 6 * * 0",
+    run: (signal) => refreshAllLibraries(signal),
   });
 
   registerJob({

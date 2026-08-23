@@ -5,6 +5,7 @@ import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { LibraryGroup, MediaItem, Tag } from "../types.js";
 import { formatBytes } from "../utils/format.js";
+import DropdownMenu from "../components/DropdownMenu.js";
 
 type SortKey = "title" | "year" | "added" | "status";
 type ViewMode = "poster" | "list";
@@ -172,6 +173,8 @@ export function LibraryItemGrid({
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [tagToApply, setTagToApply] = useState<number | "">("");
   const [importingCsv, setImportingCsv] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const csvInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { auth } = useAuth();
@@ -261,6 +264,39 @@ export function LibraryItemGrid({
     load();
   }
 
+  async function scanAndImport() {
+    setScanning(true);
+    try {
+      const result = await api.post<{ matched: number; created: number; skipped: number; unsupported?: string }>(
+        `/media/scan-import?type=${type}`,
+        {}
+      );
+      if (result.unsupported) {
+        alert(result.unsupported);
+      } else {
+        alert(`Scan complete: matched ${result.matched} existing item(s), created ${result.created} new item(s), skipped ${result.skipped} file(s).`);
+        load();
+      }
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function refreshLibrary() {
+    setRefreshing(true);
+    try {
+      const result = await api.post<{ updated: number; failed: number }>(`/media/refresh?type=${type}`, {});
+      alert(`Refreshed ${result.updated} item(s), ${result.failed} not found/failed.`);
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   async function quickAdd() {
     const title = prompt(`Title for the new ${typeLabel.replace(/ — Ungrouped$/, "")} item:`);
     if (!title?.trim()) return;
@@ -302,7 +338,7 @@ export function LibraryItemGrid({
           ))}
         </p>
       )}
-      <div style={{ marginBottom: 16, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+      <div className="toolbar" style={{ marginBottom: 16 }}>
         <select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)} style={{ maxWidth: 160 }}>
           <option value="added">Sort: Recently added</option>
           <option value="title">Sort: Title</option>
@@ -330,14 +366,15 @@ export function LibraryItemGrid({
             ))}
           </select>
         )}
-        <div style={{ display: "flex", gap: 4 }}>
-          <button type="button" className={viewMode === "poster" ? "" : "secondary"} onClick={() => setViewMode("poster")}>
-            Posters
+
+        <DropdownMenu label={`View: ${viewMode === "poster" ? "Posters" : "List"}`}>
+          <button type="button" onClick={() => setViewMode("poster")}>
+            {viewMode === "poster" ? "✓ " : ""}Posters
           </button>
-          <button type="button" className={viewMode === "list" ? "" : "secondary"} onClick={() => setViewMode("list")}>
-            List
+          <button type="button" onClick={() => setViewMode("list")}>
+            {viewMode === "list" ? "✓ " : ""}List
           </button>
-        </div>
+        </DropdownMenu>
         {viewMode === "poster" && (
           <select value={posterSize} onChange={(e) => setPosterSize(e.target.value as PosterSize)} style={{ maxWidth: 120 }}>
             <option value="small">Small posters</option>
@@ -345,58 +382,71 @@ export function LibraryItemGrid({
             <option value="large">Large posters</option>
           </select>
         )}
+
         {auth.isAdmin && groupId && (
           <button type="button" onClick={quickAdd}>
             + Add {typeLabel.replace(/ — Ungrouped$/, "")}
           </button>
         )}
+
         {auth.isAdmin && (
-          <button className="secondary" onClick={exportCsv}>
-            Export CSV
-          </button>
-        )}
-        {auth.isAdmin && (
-          <button className="secondary" onClick={() => exportMetadata("nfo")}>
-            Export metadata (.nfo)
-          </button>
-        )}
-        {auth.isAdmin && (
-          <button className="secondary" onClick={() => exportMetadata("json")}>
-            Export metadata (JSON)
-          </button>
-        )}
-        {auth.isAdmin && ["author", "audiobook", "comic", "manga"].includes(type) && (
-          <button className="secondary" onClick={exportCalibre}>
-            Export for Calibre
-          </button>
-        )}
-        {auth.isAdmin && ["movie", "series", "anime"].includes(type) && (
-          <button
-            className="secondary"
-            onClick={() => exportMetadata("plexmatch")}
-            title="A .plexmatch file per item's own folder — Plex's own match-override format, since Plex doesn't read .nfo sidecars"
-          >
-            Export for Plex (.plexmatch)
-          </button>
-        )}
-        {auth.isAdmin && (
-          <>
-            <button className="secondary" onClick={() => csvInputRef.current?.click()} disabled={importingCsv}>
+          <DropdownMenu label="Export & Bulk">
+            <button type="button" onClick={exportCsv}>
+              Export CSV
+            </button>
+            <button type="button" onClick={() => exportMetadata("nfo")}>
+              Export metadata (.nfo)
+            </button>
+            <button type="button" onClick={() => exportMetadata("json")}>
+              Export metadata (JSON)
+            </button>
+            {["movie", "series", "anime"].includes(type) && (
+              <button
+                type="button"
+                onClick={() => exportMetadata("plexmatch")}
+                title="A .plexmatch file per item's own folder — Plex's own match-override format, since Plex doesn't read .nfo sidecars"
+              >
+                Export for Plex (.plexmatch)
+              </button>
+            )}
+            {["author", "audiobook", "comic", "manga"].includes(type) && (
+              <button type="button" onClick={exportCalibre}>
+                Export for Calibre
+              </button>
+            )}
+            <div className="dropdown-divider" />
+            <button type="button" onClick={() => csvInputRef.current?.click()} disabled={importingCsv}>
               {importingCsv ? "Importing..." : "Bulk edit via CSV..."}
             </button>
-            <input
-              ref={csvInputRef}
-              type="file"
-              accept=".csv"
-              style={{ display: "none" }}
-              onChange={(e) => e.target.files?.[0] && importCsv(e.target.files[0])}
-            />
-          </>
+          </DropdownMenu>
+        )}
+        <input
+          ref={csvInputRef}
+          type="file"
+          accept=".csv"
+          style={{ display: "none" }}
+          onChange={(e) => e.target.files?.[0] && importCsv(e.target.files[0])}
+        />
+
+        {auth.isAdmin && (
+          <button
+            className="secondary"
+            onClick={scanAndImport}
+            disabled={scanning}
+            title="Scan this library's root folder(s) for media already on disk and import it"
+          >
+            {scanning ? "Scanning..." : "Scan & Import"}
+          </button>
+        )}
+        {auth.isAdmin && (
+          <button className="secondary" onClick={refreshLibrary} disabled={refreshing} title="Re-pull overview/poster/year for every item in this library">
+            {refreshing ? "Refreshing..." : "Refresh"}
+          </button>
         )}
       </div>
 
       {auth.isAdmin && selected.size > 0 && (
-        <div className="form-panel" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <div className="form-panel toolbar">
           <strong>{selected.size} selected</strong>
           <button className="secondary" onClick={() => bulkMonitor(true)}>
             Monitor
