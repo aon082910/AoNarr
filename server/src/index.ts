@@ -44,6 +44,7 @@ import { dashboardRouter } from "./routes/dashboard.js";
 import { importExclusionsRouter } from "./routes/importExclusions.js";
 import { mediaServerWebhookRouter, mediaServerWebhookTokenRouter } from "./routes/mediaServerWebhook.js";
 import { mediaAnalysisRouter } from "./routes/mediaAnalysis.js";
+import { importReviewRouter } from "./routes/importReview.js";
 import { openApiSpec } from "./openapi.js";
 import { contentRatingsRouter } from "./routes/contentRatingsRoute.js";
 import { changelogRouter } from "./routes/changelog.js";
@@ -125,6 +126,7 @@ app.use("/api/recycle-bin", recycleBinRouter);
 app.use("/api/theme.css", themeRouter);
 app.use("/api/friend-libraries", friendLibrariesRouter);
 app.use("/api/media-analysis", mediaAnalysisRouter);
+app.use("/api/import-review", importReviewRouter);
 
 app.use(errorHandler);
 

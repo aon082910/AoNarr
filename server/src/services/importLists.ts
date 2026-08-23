@@ -4,6 +4,7 @@ import { getSetting } from "./settingsStore.js";
 import { fetchArtistAlbumsFor, fetchSeriesEpisodesFor, searchMetadata } from "./metadata.js";
 import { isExcluded } from "./importExclusions.js";
 import { findPossibleDuplicates } from "./duplicateCheck.js";
+import { queueForReview } from "./importReview.js";
 
 export interface ImportListRow {
   id: number;
@@ -170,7 +171,10 @@ async function syncImdbList(list: ImportListRow, qualityProfileId: number | null
       const query = year ? `${title} ${year}` : title;
       const results = await searchMetadata(type as any, query).catch(() => []);
       const best = results[0];
-      if (!best) continue;
+      if (!best) {
+        queueForReview({ source: list.name, importListId: list.id, type, title, year });
+        continue;
+      }
 
       const insertResult = db
         .prepare(

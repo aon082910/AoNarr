@@ -26,6 +26,7 @@ import Users from "./pages/Users.js";
 import Recommendations from "./pages/Recommendations.js";
 import AuditLog from "./pages/AuditLog.js";
 import WatchlistImport from "./pages/WatchlistImport.js";
+import ImportReview from "./pages/ImportReview.js";
 import { useAuth } from "./context/AuthContext.js";
 import NotificationsToggle from "./components/NotificationsToggle.js";
 import ThemeToggle from "./components/ThemeToggle.js";
@@ -126,6 +127,7 @@ export default function App() {
             <NavLink to="/add">Add Media</NavLink>
             <NavLink to="/recommendations">Recommendations</NavLink>
             <NavLink to="/watchlist-import">Watchlist Import</NavLink>
+            <NavLink to="/import-review">Import Review</NavLink>
             <NavLink to="/import-lists">Import Lists</NavLink>
             <NavLink to="/calendar">Calendar</NavLink>
             <NavLink to="/missing">Missing</NavLink>
@@ -189,6 +191,7 @@ export default function App() {
           {isAdmin && <Route path="/add" element={<AddMedia />} />}
           {isAdmin && <Route path="/recommendations" element={<Recommendations />} />}
           {isAdmin && <Route path="/watchlist-import" element={<WatchlistImport />} />}
+          {isAdmin && <Route path="/import-review" element={<ImportReview />} />}
           {isAdmin && <Route path="/import-lists" element={<ImportLists />} />}
           {isAdmin && <Route path="/calendar" element={<Calendar />} />}
           {isAdmin && <Route path="/missing" element={<Missing />} />}

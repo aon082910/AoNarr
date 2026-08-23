@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, downloadFile, uploadRaw } from "../api/client.js";
+import FolderPicker from "../components/FolderPicker.js";
 import { formatBytes } from "../utils/format.js";
 
 interface DiskSpaceEntry {
@@ -143,6 +144,7 @@ export default function System() {
   const [logLevelFilter, setLogLevelFilter] = useState("");
   const [logSearch, setLogSearch] = useState("");
   const [settings, setSettings] = useState<Record<string, string>>({});
+  const [showBackupDirPicker, setShowBackupDirPicker] = useState(false);
   const [unmonitoredNoFile, setUnmonitoredNoFile] = useState<UnmonitoredNoFileItem[] | null>(null);
   const [duplicateFiles, setDuplicateFiles] = useState<DuplicateFileGroup[] | null>(null);
   const [cleanupLoading, setCleanupLoading] = useState<"unmonitored" | "duplicates" | null>(null);
@@ -596,12 +598,28 @@ export default function System() {
           <option value="1">Enabled</option>
         </select>
         <label>Backup directory (path inside the container)</label>
-        <input
-          key={settings.backupDir ?? "backup-dir-empty"}
-          defaultValue={settings.backupDir ?? ""}
-          placeholder="/backups"
-          onBlur={(e) => saveSetting("backupDir", e.target.value)}
-        />
+        <div style={{ display: "flex", gap: 6 }}>
+          <input
+            key={settings.backupDir ?? "backup-dir-empty"}
+            defaultValue={settings.backupDir ?? ""}
+            placeholder="/backups"
+            onBlur={(e) => saveSetting("backupDir", e.target.value)}
+            style={{ flex: 1 }}
+          />
+          <button type="button" className="secondary" onClick={() => setShowBackupDirPicker(true)}>
+            Browse...
+          </button>
+        </div>
+        {showBackupDirPicker && (
+          <FolderPicker
+            initialPath={settings.backupDir || "/"}
+            onClose={() => setShowBackupDirPicker(false)}
+            onSelect={(p) => {
+              saveSetting("backupDir", p);
+              setShowBackupDirPicker(false);
+            }}
+          />
+        )}
         <label>Interval (hours)</label>
         <input
           type="number"

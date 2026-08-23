@@ -266,6 +266,25 @@ CREATE TABLE IF NOT EXISTS import_lists (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- A title that Watchlist Import or an Import List's recurring sync couldn't confidently match to
+-- a metadata provider result — previously such a title was just silently dropped with no record
+-- anywhere. `source` is either 'watchlist' or the import list's own name at the time it was queued
+-- (kept as a snapshot, not a live join, so it still reads sensibly if the list is later renamed or
+-- deleted); `import_list_id` is set only for the recurring-list case, null for a one-time watchlist
+-- upload. Deduped by (source, import_list_id, type, title, year) regardless of status so a
+-- dismissed item doesn't get silently re-queued on every subsequent sync.
+CREATE TABLE IF NOT EXISTS import_review_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source TEXT NOT NULL,
+  import_list_id INTEGER REFERENCES import_lists(id) ON DELETE CASCADE,
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  year INTEGER,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'resolved', 'dismissed')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  resolved_at TEXT
+);
+
 -- User accounts. 'admin' rows are created once via the first-run setup wizard (or promoted);
 -- the instance-wide API key (settings.apiKey) remains valid in parallel for automation/scripts.
 -- 'user' rows are household members with limited, per-library access.

@@ -4,6 +4,7 @@ import { db } from "../db/client.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { searchMetadata, fetchSeriesEpisodesFor } from "../services/metadata.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
+import { queueForReview } from "../services/importReview.js";
 import { log } from "../services/logger.js";
 import type { MediaType } from "../types/index.js";
 
@@ -27,7 +28,9 @@ interface RowResult {
  * Trakt CSV export — the web UI normalizes whichever headers it finds into {title, year, type}
  * before posting here) by metadata-searching each title and adding the top match as monitored,
  * same pipeline as a single Add Media import. Duplicates are skipped automatically rather than
- * prompted one-by-one, since this can be dozens/hundreds of rows.
+ * prompted one-by-one, since this can be dozens/hundreds of rows. A title the metadata search
+ * comes up empty for is queued in import_review_items (see services/importReview.ts) for manual
+ * matching later, rather than just vanishing — see the Import Review page.
  */
 watchlistImportRouter.post(
   "/",
@@ -54,6 +57,7 @@ watchlistImportRouter.post(
         const searchResults = await searchMetadata(row.type, query).catch(() => []);
         const best = searchResults[0];
         if (!best) {
+          queueForReview({ source: "watchlist", importListId: null, type: row.type, title: row.title, year: row.year });
           results.push({ title: row.title, status: "not_found" });
           continue;
         }

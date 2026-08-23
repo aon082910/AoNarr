@@ -225,6 +225,20 @@ export function requestFromRow(row: any) {
   };
 }
 
+export function importReviewItemFromRow(row: any) {
+  return {
+    id: row.id,
+    source: row.source,
+    importListId: row.import_list_id,
+    type: row.type,
+    title: row.title,
+    year: row.year,
+    status: row.status,
+    createdAt: row.created_at,
+    resolvedAt: row.resolved_at,
+  };
+}
+
 export function subtitleProviderFromRow(row: any) {
   return {
     id: row.id,

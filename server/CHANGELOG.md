@@ -3,6 +3,31 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 61
+- Added a manual-match fallback for titles Watchlist Import and Import Lists' recurring sync
+  couldn't confidently match — previously a "no metadata result found" title (both flows take the
+  provider's own top result with no confidence threshold) was silently discarded with no record
+  anywhere, a dead end with no way to ever recover it. New Import Review page (nav: Manage → Import
+  Review) queues every unmatched title instead, with a "Match..." action reusing the same
+  interactive-search flow Add Media already has, and a "Dismiss" action for ones you don't want —
+  dismissed titles are deduped against on future syncs so they don't get silently re-queued forever.
+  Watchlist Import's results table now links to Import Review when it has unmatched rows; the
+  Import Lists page shows a per-list "N need review" badge. New `import_review_items` table;
+  Trakt and Last.fm import-list syncs don't do provider-search matching at all (Trakt trusts its
+  own tmdb id, Last.fm adds every returned artist), so only Watchlist Import and Import Lists'
+  IMDb sync — the two paths that actually have a "no match" branch — feed this queue
+- Added a "Browse..." folder picker to the Scheduled Backups directory setting (System → Backups)
+  — it was a plain text input with no way to browse the container's filesystem, unlike every other
+  path field in the app. Turned out a full directory browser + "New folder" endpoint
+  (`/api/system/browse-directory`) and a reusable `FolderPicker` component already existed (used
+  for root folders) — this just wires the same component into the one remaining path field that
+  didn't have it yet, no new backend needed
+- Verified live end-to-end: browsed into a real container directory, created a subfolder, selected
+  it, confirmed the setting saved correctly; ran a fake title through Watchlist Import, confirmed
+  it appeared in Import Review, resolved it (created the media item, cleared the queue entry), ran
+  a second fake title through, dismissed it, and confirmed re-running the same import doesn't
+  re-queue the dismissed title
+
 ## Round 60
 - Added a read-only Media Analyzer (System → Media Analyzer) covering every library — a
   library-wide breakdown (video codec, HDR format, audio codec, resolution, subtitle language

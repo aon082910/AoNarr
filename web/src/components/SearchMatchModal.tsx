@@ -23,12 +23,16 @@ export default function SearchMatchModal({
   providers,
   onClose,
   onSelect,
+  title = "Search for a different match",
+  description = 'Search with your own query instead of this item\'s current title — useful when the stored title is wrong or garbled and metadata lookups keep coming up empty. Picking a result re-points this item at it (title, year, overview, poster, external ids); episodes/files already on disk are left alone.',
 }: {
   type: string;
   initialQuery: string;
   providers: string[];
   onClose: () => void;
   onSelect: (result: MetadataSearchResult) => void;
+  title?: string;
+  description?: string;
 }) {
   const [query, setQuery] = useState(initialQuery);
   const [provider, setProvider] = useState(providers[0] ?? "");
@@ -67,13 +71,8 @@ export default function SearchMatchModal({
   }
 
   return (
-    <Modal title="Search for a different match" onClose={onClose} maxWidth={640}>
-      <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
-        Search with your own query instead of this item's current title — useful when the stored
-        title is wrong or garbled and metadata lookups keep coming up empty. Picking a result
-        re-points this item at it (title, year, overview, poster, external ids); episodes/files
-        already on disk are left alone.
-      </p>
+    <Modal title={title} onClose={onClose} maxWidth={640}>
+      <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>{description}</p>
       <form onSubmit={runSearch} className="toolbar" style={{ marginBottom: 12 }}>
         <input
           value={query}

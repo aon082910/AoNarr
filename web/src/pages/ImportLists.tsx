@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import type { QualityProfile } from "../types.js";
 
@@ -30,9 +31,13 @@ export default function ImportLists() {
   const [qualityProfileId, setQualityProfileId] = useState<number | "">("");
   const [syncingId, setSyncingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reviewCounts, setReviewCounts] = useState<Record<number, number>>({});
 
   function load() {
     api.get<ImportList[]>("/import-lists").then(setLists);
+    api.get<{ importListId: number; count: number }[]>("/import-review/counts").then((rows) => {
+      setReviewCounts(Object.fromEntries(rows.map((r) => [r.importListId, r.count])));
+    });
   }
   useEffect(() => {
     load();
@@ -143,6 +148,14 @@ export default function ImportLists() {
                     `+${l.last_added_count}`
                   ) : (
                     ""
+                  )}
+                  {reviewCounts[l.id] > 0 && (
+                    <>
+                      {" "}
+                      <Link to="/import-review" className="badge" title="Titles that couldn't be confidently matched — review them manually">
+                        {reviewCounts[l.id]} need review
+                      </Link>
+                    </>
                   )}
                 </td>
                 <td style={{ display: "flex", gap: 6 }}>

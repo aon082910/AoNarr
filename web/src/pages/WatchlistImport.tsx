@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
@@ -224,6 +225,12 @@ export default function WatchlistImport() {
             {results.filter((r) => r.status === "skipped_duplicate").length} already in library,{" "}
             {results.filter((r) => r.status === "not_found").length} not found,{" "}
             {results.filter((r) => r.status === "error").length} errored.
+            {results.some((r) => r.status === "not_found") && (
+              <>
+                {" "}
+                <Link to="/import-review">Manually match the ones that weren't found →</Link>
+              </>
+            )}
           </p>
           <table>
             <thead>
