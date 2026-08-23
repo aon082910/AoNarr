@@ -3,6 +3,26 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 54
+- Audited every external-provider URL builder in `metadata.ts` (46 functions across TMDB, TVDB,
+  TVmaze, Trakt, AniList, MusicBrainz, Deezer, Discogs, Last.fm, Open Library, Google Books,
+  ComicVine, MangaDex, RAWG, IGDB, YouTube, ThePornDB, Fanart.tv) for the same class of bug as the
+  Open Library fix in Round 52 — a malformed path/param silently 404ing with the failure caught and
+  never surfacing anywhere. Nothing else was broken; everything else checked out against each
+  provider's real documented API shape
+- Routed every remaining `console.warn`/`console.error` in the request-handling path through the
+  same `log` service the rest of the app already uses, so failures that used to be visible only via
+  `docker logs` now show up on the in-app Logs page too: the metadata child-import failure warning
+  (the exact failure mode that hid the Open Library bug from view for however long it had been
+  broken), two grab-notification failure warnings, and — the most consequential one — the top-level
+  Express error handler that catches every route's unhandled exception app-wide. That last one had
+  never gone through `log` at all, meaning any unexpected 500 anywhere in the app was invisible in
+  the UI no matter how much of Round 51's logging work covered specific features
+- Verified live: sent a deliberately malformed request body to force a real (non-`HttpError`)
+  exception through the top-level handler, confirmed it now appears via `GET
+  /api/system/logs?level=error`; separately imported an artist with a bogus MusicBrainz id and
+  confirmed the child-fetch failure appears via `?level=warn`
+
 ## Round 53
 - Added have/missing/total counts to every level of the nested-group library browsers (ROMs'
   System → Maker, Online Videos/Courses' Site → Creator, Adult's Site → Maker → Series) — each

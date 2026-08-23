@@ -13,6 +13,7 @@ import {
 import { getMediaTypeConfig } from "../services/mediaTypes.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { isExcluded } from "../services/importExclusions.js";
+import { log } from "../services/logger.js";
 import type { MediaType } from "../types/index.js";
 
 export const metadataRouter = Router();
@@ -143,8 +144,10 @@ metadataRouter.post(
       }
     } catch (err) {
       // The media item itself was created successfully; a failed child fetch (e.g. missing
-      // API key) shouldn't roll that back, just surface it so the UI can inform the user.
-      console.warn(`[metadata] failed to import children for media item ${mediaItemId}:`, (err as Error).message);
+      // API key, or a malformed provider URL like the Open Library bug this class of failure
+      // used to hide) shouldn't roll that back, just surface it so the UI/Logs page can inform
+      // the user instead of the item silently sitting there with zero children forever.
+      log.warn(`[metadata] failed to import children for media item ${mediaItemId}:`, (err as Error).message);
     }
 
     const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId);

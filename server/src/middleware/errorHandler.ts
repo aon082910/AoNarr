@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import { log } from "../services/logger.js";
 
 export class HttpError extends Error {
   status: number;
@@ -13,7 +14,10 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     res.status(err.status).json({ error: err.message });
     return;
   }
-  console.error(err);
+  // Every other route's unhandled exception ends up here — routing it through the same log
+  // service the rest of the app uses (rather than raw console.error) is what makes it show up
+  // on the in-app Logs page instead of only being visible via `docker logs`.
+  log.error(err instanceof Error ? err : String(err));
   res.status(500).json({ error: "Internal server error" });
 }
 

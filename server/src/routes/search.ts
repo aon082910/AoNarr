@@ -14,6 +14,7 @@ import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { parseReleaseTitle, releaseMatchesEpisode } from "../services/releaseParser.js";
 import { notifyGrabbed } from "../services/notifications.js";
 import { scoreRelease } from "../services/customFormatScoring.js";
+import { log } from "../services/logger.js";
 import { sizeWithinQualityBounds } from "../services/quality.js";
 import { getBlocklistedTitles, isBlocklisted } from "../services/blocklist.js";
 import { searchAndGrabTargets, type BulkSearchTarget } from "../services/scheduler.js";
@@ -177,7 +178,7 @@ searchRouter.post(
     );
 
     notifyGrabbed(item.title, b.title ?? "Unknown release").catch((err) =>
-      console.warn("[search] notification failed:", err.message)
+      log.warn("[search] notification failed:", err.message)
     );
 
     const queueRow = db.prepare("SELECT * FROM queue WHERE id = ?").get(result.lastInsertRowid);

@@ -897,7 +897,7 @@ mediaRouter.post(
       sub.media_item_id,
       JSON.stringify({ title: sub.title, source: sourceUrl })
     );
-    notifyGrabbed(mediaItem.title, sub.title).catch((err) => console.warn("[media] notification failed:", err.message));
+    notifyGrabbed(mediaItem.title, sub.title).catch((err) => log.warn("[media] notification failed:", err.message));
 
     const queueRow = db.prepare("SELECT * FROM queue WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(queueItemFromRow(queueRow));
