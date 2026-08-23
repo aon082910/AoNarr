@@ -3,6 +3,27 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 71
+- Added "Import from Lidarr"/"Import from Readarr" (Music/Books library pages) — extends Round 68's
+  Radarr/Sonarr import to the two remaining Starr apps, migrating an already-organized Lidarr artist
+  library or Readarr author library into AoNarr. Same one-time-use model as Radarr/Sonarr: URL and
+  API key are supplied once in the import dialog and never saved
+- Structurally different from movies/series: artists/authors are "collection" shape (an open-ended
+  list of albums/books, not a fixed season/episode grid), so this is new matching logic rather than
+  a third reuse of Round 68's episodic core — parent matched by external id (MusicBrainz artist id
+  for Lidarr; Readarr's Goodreads author id is recorded too, though no existing AoNarr provider key
+  overlaps with it yet) then title, child (album/book) matched by path tail then title. An album's
+  file_path is its folder (matching how Scan & Import already treats multi-file-per-child music, not
+  a specific track), a book's is its one file. Lidarr's own API doesn't return an album's folder
+  path, only its track files — derived from the first track file's own directory instead
+- Verified live against real mock Lidarr and Readarr servers, mirroring Round 68's three-case matrix
+  one level deeper: a pre-existing artist/author matched via external id (artist) or title fallback
+  (author, deliberately seeded with no matching id to test that path) with one album/book already
+  tracked correctly left untouched and a second created fresh, plus an entirely new artist/author
+  created along with its one album/book — confirmed exact counts via the log summary, confirmed the
+  resulting database rows including the Readarr author's newly-captured Goodreads id, and confirmed
+  "Import from Lidarr"/"Import from Readarr" render correctly on the Music/Books library pages
+
 ## Round 70
 - Added "Import from a course page URL" (Add Media → Courses) — pulls title/description/thumbnail
   from a Coursera/edX/Udemy (or any) course landing page to prefill the manual Add Media form, the

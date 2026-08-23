@@ -356,8 +356,8 @@ export function LibraryItemGrid({
     }
   }
 
-  const starrImportable = type === "movie" || type === "series" || type === "anime";
-  const starrAppName = type === "movie" ? "Radarr" : "Sonarr";
+  const starrImportable = type === "movie" || type === "series" || type === "anime" || type === "artist" || type === "author";
+  const starrAppName = type === "movie" ? "Radarr" : type === "artist" ? "Lidarr" : type === "author" ? "Readarr" : "Sonarr";
 
   async function openStarrImport() {
     const folders = await api.get<RootFolder[]>("/root-folders");
@@ -373,6 +373,10 @@ export function LibraryItemGrid({
     try {
       if (type === "movie") {
         await api.post("/starr-import/movies", { url: starrUrl.trim(), apiKey: starrApiKey.trim(), rootFolderId: starrImportFolderId });
+      } else if (type === "artist") {
+        await api.post("/starr-import/artists", { url: starrUrl.trim(), apiKey: starrApiKey.trim(), rootFolderId: starrImportFolderId });
+      } else if (type === "author") {
+        await api.post("/starr-import/authors", { url: starrUrl.trim(), apiKey: starrApiKey.trim(), rootFolderId: starrImportFolderId });
       } else {
         await api.post("/starr-import/series", {
           url: starrUrl.trim(),
@@ -911,12 +915,20 @@ export function LibraryItemGrid({
       {showStarrImport && (
         <Modal title={`Import from ${starrAppName}`} onClose={() => setShowStarrImport(false)} maxWidth={480}>
           <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
-            Migrates an already-organized {starrAppName} {type === "movie" ? "movie" : "show and episode"}{" "}
-            library into AoNarr — pulled from {starrAppName}'s own API with real title/year/poster/external-id
+            Migrates an already-organized {starrAppName}{" "}
+            {type === "movie"
+              ? "movie"
+              : type === "artist"
+                ? "artist and album"
+                : type === "author"
+                  ? "author and book"
+                  : "show and episode"}{" "}
+            library into AoNarr — pulled from {starrAppName}'s own API with real title/poster/external-id
             metadata, matching against anything already in this library first (by path, then external id, then
-            title/year{type !== "movie" && "/season/episode"}) and creating a new entry for anything genuinely
-            new. The URL and API key are only used for this one import, not saved. Runs in the background; check
-            the Logs page for the result.
+            title{type === "movie" || type === "series" || type === "anime" ? "/year" : ""}
+            {type !== "movie" && type !== "artist" && type !== "author" && "/season/episode"}) and creating a new
+            entry for anything genuinely new. The URL and API key are only used for this one import, not saved.
+            Runs in the background; check the Logs page for the result.
           </p>
           {starrImportFolders.length === 0 ? (
             <p className="empty">No root folder configured for this library yet — add one in Settings first.</p>
@@ -927,7 +939,9 @@ export function LibraryItemGrid({
                 type="text"
                 value={starrUrl}
                 onChange={(e) => setStarrUrl(e.target.value)}
-                placeholder={`http://localhost:${type === "movie" ? "7878" : "8989"}`}
+                placeholder={`http://localhost:${
+                  type === "movie" ? "7878" : type === "artist" ? "8686" : type === "author" ? "8787" : "8989"
+                }`}
               />
               <label>{starrAppName} API key</label>
               <input type="text" value={starrApiKey} onChange={(e) => setStarrApiKey(e.target.value)} placeholder="Settings → General → Security" />

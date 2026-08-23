@@ -10,19 +10,19 @@ function normalizeForMatch(s: string): string {
     .trim();
 }
 
-function titlesMatch(a: string, b: string): boolean {
+export function titlesMatch(a: string, b: string): boolean {
   const na = normalizeForMatch(a);
   const nb = normalizeForMatch(b);
   if (!na || !nb) return false;
   return na === nb || na.includes(nb) || nb.includes(na);
 }
 
-function externalIdsOverlap(a: Record<string, string> | null, b: Record<string, string>): boolean {
+export function externalIdsOverlap(a: Record<string, string> | null, b: Record<string, string>): boolean {
   if (!a) return false;
   return Object.entries(b).some(([provider, id]) => a[provider] === id);
 }
 
-function defaultQualityProfileId(): number | null {
+export function defaultQualityProfileId(): number | null {
   const row = db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get() as { id: number } | undefined;
   return row?.id ?? null;
 }
