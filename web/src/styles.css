@@ -161,7 +161,11 @@ button.select-like:hover { background: rgba(255,255,255,0.04); opacity: 1; }
 
 /* A horizontal row of controls (selects/inputs/buttons/dropdowns) meant to sit flush on one
    baseline — button's own margin-top: 16px (meant for a button following a stacked label+input)
-   otherwise pushes buttons down out of line with their row-mates. */
+   otherwise pushes buttons down out of line with their row-mates. Heights are pinned explicitly
+   (rather than left to match via identical padding/border alone) because browsers give <select>
+   its own native intrinsic sizing around the dropdown-arrow area that padding/border can't fully
+   override, so a <select> and a <button> with pixel-identical CSS box properties can still render
+   a couple of px apart — an explicit height guarantees every control in the row is the same size. */
 .toolbar {
   display: flex;
   gap: 8px;
@@ -173,9 +177,13 @@ button.select-like:hover { background: rgba(255,255,255,0.04); opacity: 1; }
 .toolbar > input,
 .toolbar > .dropdown {
   margin-top: 0;
+  height: 38px;
+}
+.toolbar > .dropdown > button {
+  height: 100%;
 }
 
-.dropdown { position: relative; display: inline-block; }
+.dropdown { position: relative; display: inline-flex; align-items: center; }
 .dropdown-menu {
   position: absolute;
   top: calc(100% + 4px);

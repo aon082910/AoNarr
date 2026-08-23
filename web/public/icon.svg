@@ -1,4 +1,24 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
-  <rect width="192" height="192" rx="32" fill="#161b22"/>
-  <text x="96" y="122" font-family="Segoe UI, Arial, sans-serif" font-size="88" font-weight="700" fill="#4f8cff" text-anchor="middle">A</text>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="192" y2="192" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1c1f28"/>
+      <stop offset="1" stop-color="#12141b"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="30" y1="30" x2="162" y2="162" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7ab0ff"/>
+      <stop offset="1" stop-color="#3f6fd8"/>
+    </linearGradient>
+    <linearGradient id="play" x1="76" y1="62" x2="132" y2="96" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8fbcff"/>
+      <stop offset="1" stop-color="#4f8cff"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="192" height="192" rx="40" fill="url(#bg)"/>
+
+  <!-- Unified media hub: a ring (every library type orbiting one app) around a play mark. -->
+  <circle cx="96" cy="96" r="58" fill="none" stroke="url(#ring)" stroke-width="11"/>
+  <circle cx="96" cy="38" r="7" fill="#4f8cff"/>
+
+  <path d="M78 63 L128 96 L78 129 Z" fill="url(#play)" stroke="#12141b" stroke-width="3" stroke-linejoin="round"/>
 </svg>

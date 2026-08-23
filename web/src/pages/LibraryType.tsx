@@ -338,7 +338,7 @@ export function LibraryItemGrid({
           ))}
         </p>
       )}
-      <div className="toolbar" style={{ marginBottom: 16 }}>
+      <div className="toolbar" style={{ marginBottom: 10 }}>
         <select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)} style={{ maxWidth: 160 }}>
           <option value="added">Sort: Recently added</option>
           <option value="title">Sort: Title</option>
@@ -366,7 +366,9 @@ export function LibraryItemGrid({
             ))}
           </select>
         )}
+      </div>
 
+      <div className="toolbar" style={{ marginBottom: 16 }}>
         <DropdownMenu label={`View: ${viewMode === "poster" ? "Posters" : "List"}`}>
           <button type="button" onClick={() => setViewMode("poster")}>
             {viewMode === "poster" ? "✓ " : ""}Posters

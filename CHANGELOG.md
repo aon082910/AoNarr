@@ -3,6 +3,29 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 44
+- Found and fixed the actual remaining cause of the Library toolbar misalignment: a `<select>`
+  carries its own native intrinsic sizing around the dropdown-arrow area that identical
+  padding/border CSS can't fully override, so it still rendered a couple of px taller than a
+  `<button>` with pixel-identical box properties. Pinned an explicit height on every `.toolbar`
+  child instead of relying on padding/border alone, and split the Library page's single crowded
+  toolbar row (9 controls) into two purposeful rows — filters, then view/export/job actions — so
+  wrapping on a narrower window happens at a clean boundary instead of mid-row. Verified via
+  getBoundingClientRect() on a live page: every control in each row now sits at the exact same
+  `top`/`height` pixel values
+- Found and fixed a real, previously-undetected bug while wiring up a new app icon: neither
+  `web/Dockerfile` nor `Dockerfile.combined` ever copied `web/public/` into the build stage, so
+  Vite had nothing to copy into `dist/` — every image built and shipped this entire session was
+  silently serving no favicon, no PWA manifest, and no service worker. Added `COPY web/public
+  ./public` to both. Verified against a real container: `icon.svg`/`manifest.json`/`sw.js` all
+  returned 404 (served the SPA's `index.html` fallback instead) before the fix, all correctly
+  return 200 after
+- Replaced the placeholder icon (a rounded square with a plain "A") with a custom design — a ring
+  around a play mark, in the app's own accent-blue gradient — referenced by a single source file
+  (`web/public/icon.svg`) that every required location already pointed at (browser tab favicon,
+  PWA manifest, and all four Unraid template/`ca_profile.xml` `<Icon>` tags), so no other file
+  needed updating to pick it up
+
 ## Round 43
 - Library page toolbar buttons (the new "View"/"Export & Bulk" dropdowns, "Scan & Import",
   "Refresh") were using `button.secondary`'s lighter gray instead of matching the black
