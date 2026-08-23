@@ -96,13 +96,13 @@ export async function fetchAllLibraryFiles(): Promise<WatchedFile[]> {
   return fetchFiles(false);
 }
 
-/** Same 2-segment-tail comparison services/archival.ts's pathTail uses for the same reason (AoNarr
+/** Same 3-segment-tail comparison services/archival.ts's pathTail uses, for the same reason (AoNarr
  * and the media server often see the same file under different mount points) — duplicated rather
  * than imported to avoid a circular import (archival.ts already imports fetchWatchedFiles from
- * this module). */
+ * this module). Keep in sync with archival.ts's pathTail if that heuristic ever changes again. */
 function pathTail(p: string): string {
   const parts = p.replace(/\\/g, "/").split("/").filter(Boolean);
-  return parts.slice(-2).join("/").toLowerCase();
+  return parts.slice(-3).join("/").toLowerCase();
 }
 
 interface MediaServerItem {

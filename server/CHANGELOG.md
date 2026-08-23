@@ -3,6 +3,29 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 73
+- Add Media's "Import from a course page URL" (Round 70) now auto-selects the Courses library's
+  "Site" group from the scraped URL's hostname (coursera.org/udemy.com/edx.org → Coursera/Udemy/
+  edX) instead of leaving the group picker on "Select Site..." — finds the existing group by name
+  if one's already there, creates it on first use otherwise, so scraping several courses from the
+  same platform doesn't mean re-picking (or worse, duplicating) the same Site every time
+- Widened `pathTail`'s cross-mount-point file-matching heuristic (used throughout media-server
+  sync/import and Starr-app import) from the last two path segments to the last three. Two segments
+  alone can collide across two *different* shows when episodes are generically named ("Season 01/
+  S01E01.mkv" under a season folder with no show name in the filename) — this is exactly what
+  produced a false-positive collision in a Round 67 test fixture, previously written off as an
+  accepted tradeoff. The third segment reaches up to the item's own folder name (the show, or a
+  movie's release folder), which is what actually disambiguates one item from another; a
+  mount-point prefix difference never touches these trailing segments, so this is strictly more
+  specific than before with no loss of legitimate matches — confirmed with a standalone test script
+  covering the exact Round 67 collision (no longer collides), ordinary cross-mount-point movie and
+  season-folder episode matches (still match), two different movies sharing everything but their
+  own folder name (still don't match), and a shallow 2-segment path with no season folder (unchanged
+  behavior, since `slice(-3)` degrades gracefully on shorter paths)
+- Verified live: fetching two different Coursera course URLs correctly reused the same "Coursera"
+  group (confirmed via the API — no duplicate created) and the group picker's Site dropdown showed
+  it pre-selected in the browser both times
+
 ## Round 72
 - Extended the Audit Log to cover 9 more event types beyond its existing login/request/user/media
   coverage: user permission changes (auto-approve, allowed libraries, max pending requests, max

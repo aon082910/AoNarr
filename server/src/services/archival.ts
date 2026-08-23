@@ -9,12 +9,20 @@ import { recycleFile } from "./recycleBin.js";
 /**
  * Plex/Jellyfin/Emby usually mount the library at a different path than AoNarr sees (e.g. Plex's
  * `/data/movies/...` vs AoNarr's `/media/movies/...` inside their own containers), so an exact
- * path match is unreliable. Comparing the last two path segments (parent folder + filename) is a
- * much safer heuristic given each media item normally lives in its own folder.
+ * path match is unreliable. Comparing the last three path segments is a much safer heuristic given
+ * each media item normally lives in its own folder — three rather than two specifically because a
+ * generically-named episode file under a generic season folder ("Season 01/S01E01.mkv") is common
+ * enough that two segments alone can collide across two *different* shows; the third segment reaches
+ * up to the item's own folder name (the show, or the movie's release folder), which is what actually
+ * disambiguates one item from another. A mount-point prefix difference never touches these trailing
+ * segments, so this is strictly more specific than the old two-segment comparison with no loss of
+ * legitimate cross-mount-point matches — verified during Round 67 development, where a test fixture
+ * using identical "Season 01/S01E01.mkv" episode paths for two unrelated shows produced exactly this
+ * false-positive collision under the two-segment version.
  */
 export function pathTail(p: string): string {
   const parts = p.replace(/\\/g, "/").split("/").filter(Boolean);
-  return parts.slice(-2).join("/").toLowerCase();
+  return parts.slice(-3).join("/").toLowerCase();
 }
 
 export function findWatchedMatch(filePath: string | null, watched: WatchedFile[]): WatchedFile | null {

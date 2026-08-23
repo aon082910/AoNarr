@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../api/client.js";
 import GroupPicker from "../components/GroupPicker.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
-import type { MediaItem, MediaType, QualityProfile, RootFolder } from "../types.js";
+import type { LibraryGroup, MediaItem, MediaType, QualityProfile, RootFolder } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 
 interface MetadataSearchResult {
@@ -13,6 +13,26 @@ interface MetadataSearchResult {
   posterUrl: string | null;
   externalIds: Record<string, string>;
   excluded?: boolean;
+}
+
+/** Hostname → the "Site" group name to file a scraped course under, so the group picker doesn't
+ * make the user re-type "Coursera"/"Udemy"/"edX" for every course from the same platform. */
+const COURSE_SITE_NAMES: Record<string, string> = {
+  "coursera.org": "Coursera",
+  "udemy.com": "Udemy",
+  "edx.org": "edX",
+};
+
+function detectCourseSite(url: string): string | null {
+  try {
+    const hostname = new URL(url).hostname.replace(/^www\./, "");
+    for (const [domain, name] of Object.entries(COURSE_SITE_NAMES)) {
+      if (hostname === domain || hostname.endsWith(`.${domain}`)) return name;
+    }
+  } catch {
+    // not a valid URL — caller already validated this before getting here
+  }
+  return null;
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -65,6 +85,7 @@ export default function AddMedia() {
   const [nfoResult, setNfoResult] = useState<MetadataSearchResult | null>(null);
   const [courseUrl, setCourseUrl] = useState("");
   const [courseLoading, setCourseLoading] = useState(false);
+  const [courseSiteGroupId, setCourseSiteGroupId] = useState<number | null>(null);
   const [groupId, setGroupId] = useState<number | null>(null);
 
   const activeTypeInfo = mediaTypes.find((t) => t.key === type);
@@ -214,6 +235,14 @@ export default function AddMedia() {
       setSelected(null);
       setTitle(parsed.title ?? "");
       setOverview(parsed.overview ?? "");
+
+      const site = detectCourseSite(courseUrl.trim());
+      if (site) {
+        const groups = await api.get<LibraryGroup[]>("/library-groups?mediaType=course");
+        const existing = groups.find((g) => g.name.toLowerCase() === site.toLowerCase());
+        const group = existing ?? (await api.post<LibraryGroup>("/library-groups", { mediaType: "course", kind: "site", name: site }));
+        setCourseSiteGroupId(group.id);
+      }
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -352,7 +381,17 @@ export default function AddMedia() {
           <textarea value={overview} onChange={(e) => setOverview(e.target.value)} rows={3} />
 
           {activeTypeInfo && activeTypeInfo.groupLevels.length > 0 && (
-            <GroupPicker type={type} groupLevels={activeTypeInfo.groupLevels} onChange={setGroupId} />
+            <GroupPicker
+              key={type === "course" ? courseSiteGroupId ?? "unset" : "default"}
+              type={type}
+              groupLevels={activeTypeInfo.groupLevels}
+              initialChain={
+                type === "course" && courseSiteGroupId
+                  ? [courseSiteGroupId, ...activeTypeInfo.groupLevels.slice(1).map(() => null)]
+                  : undefined
+              }
+              onChange={setGroupId}
+            />
           )}
 
           <label>Root folder</label>
