@@ -396,6 +396,10 @@ AoNarr/
 The server exposes a REST API under `/api`, gated by an API key (`X-Api-Key` header) that's
 generated on first boot and printed once to the container logs.
 
+SQLite is the only supported database — see [DATABASE_MIGRATION.md](DATABASE_MIGRATION.md) for the
+scoping analysis on optional PostgreSQL/MariaDB support (not started; that document explains why
+it's a foundation-level change rather than a bounded feature).
+
 **`services/mediaTypes.ts` is the single source of truth for every library.** Each of the 10
 entries declares a `shape` (`single` | `episodic` | `collection`), file extensions, a default
 Torznab/Newznab category, and its metadata providers. Every other part of the app — the DB layer

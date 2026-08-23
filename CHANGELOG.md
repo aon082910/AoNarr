@@ -3,6 +3,20 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 78
+- No code changes — scoped the deferred "external database support" (MariaDB/PostgreSQL as an
+  alternative to SQLite) request instead of implementing it, per the user's explicit choice to defer
+  it until everything else in the original batch shipped. Wrote
+  [DATABASE_MIGRATION.md](DATABASE_MIGRATION.md): a concrete accounting of what it would actually
+  touch (70 files, 444 `db.prepare()` call sites, a fully-synchronous DB layer with no existing
+  abstraction, 48 accumulated ad-hoc SQLite migrations, several SQLite-only SQL constructs in active
+  use), the options considered (a multi-dialect query builder vs. a full ORM vs. hand-writing every
+  query three times vs. not doing live dual-backend support at all), a recommendation (Kysely,
+  Postgres before MariaDB, phased so the abstraction layer lands and stabilizes against SQLite
+  itself before a second engine is introduced), and the decision the user still needs to make before
+  work starts (commit to the size of this, and whether Postgres-only is an acceptable scope cut).
+  Linked from README.md's Architecture section
+
 ## Round 77
 - Rebuilt the Calendar page as a real month grid — the same view Sonarr/Radarr/Lidarr/Readarr each
   show by default — with Prev/Next/Today navigation, a day cell per date showing up to 3 entries
