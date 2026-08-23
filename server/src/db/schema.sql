@@ -171,7 +171,8 @@ CREATE TABLE IF NOT EXISTS custom_formats (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
   patterns TEXT NOT NULL, -- JSON array of ConditionGroup objects (see services/customFormatScoring.ts)
-  media_types TEXT -- JSON array of media_type keys this format applies to; NULL/empty = every type (unrestricted, the pre-scoping default)
+  media_types TEXT, -- JSON array of media_type keys this format applies to; NULL/empty = every type (unrestricted, the pre-scoping default)
+  trash_id TEXT -- TRaSH-Guides format id, set only for formats pulled in via /custom-formats/trash-sync; lets a re-sync update rather than duplicate
 );
 
 -- Per-profile score for a custom format; a format with no row for a given profile scores 0.

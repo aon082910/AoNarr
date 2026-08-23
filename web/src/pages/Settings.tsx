@@ -69,6 +69,7 @@ export default function Settings() {
   const [formatMediaTypes, setFormatMediaTypes] = useState<Set<MediaType>>(new Set());
   const [trashJson, setTrashJson] = useState("");
   const [trashError, setTrashError] = useState<string | null>(null);
+  const [trashSyncing, setTrashSyncing] = useState<"radarr" | "sonarr" | null>(null);
   const [scoreProfileId, setScoreProfileId] = useState<number | "">("");
   const [formatScores, setFormatScores] = useState<FormatScore[]>([]);
 
@@ -256,6 +257,20 @@ export default function Settings() {
       load();
     } catch (e) {
       setTrashError((e as Error).message);
+    }
+  }
+
+  async function syncTrashFormats(app: "radarr" | "sonarr") {
+    setTrashSyncing(app);
+    try {
+      await api.post("/custom-formats/trash-sync", { app });
+      alert(
+        `Syncing ${app === "radarr" ? "Radarr" : "Sonarr"} formats from TRaSH-Guides in the background — this can take a minute for 100+ formats. Check the Logs page for the result, or refresh this list shortly.`
+      );
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setTrashSyncing(null);
     }
   }
 
@@ -1646,6 +1661,25 @@ export default function Settings() {
         </div>
         <button type="submit">Add custom format</button>
       </form>
+
+      <div className="form-panel">
+        <label>Sync from TRaSH-Guides</label>
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          Pulls every custom format TRaSH-Guides publishes for Radarr or Sonarr straight from their
+          GitHub repo — unlike the one-off paste below, this is repeatable: re-running updates
+          formats already synced in (matched by TRaSH's own stable id) instead of duplicating them,
+          so it stays current as TRaSH's guides change. Newly-synced formats are scored 0 on every
+          quality profile until you set a score for them below.
+        </p>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="button" onClick={() => syncTrashFormats("radarr")} disabled={trashSyncing !== null}>
+            {trashSyncing === "radarr" ? "Syncing..." : "Sync Radarr formats"}
+          </button>
+          <button type="button" onClick={() => syncTrashFormats("sonarr")} disabled={trashSyncing !== null}>
+            {trashSyncing === "sonarr" ? "Syncing..." : "Sync Sonarr formats"}
+          </button>
+        </div>
+      </div>
 
       <div className="form-panel">
         <label>Import from TRaSH-Guides (or a Radarr/Sonarr custom format export)</label>

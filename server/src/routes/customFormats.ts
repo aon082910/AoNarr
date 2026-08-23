@@ -3,6 +3,9 @@ import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/client.js";
 import { customFormatFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
+import { translateTrashFormat, type TrashCustomFormat } from "../services/trashFormats.js";
+import { syncTrashFormats } from "../services/trashSync.js";
+import { log } from "../services/logger.js";
 
 export const customFormatsRouter = Router();
 customFormatsRouter.use(requireAdmin);
@@ -148,17 +151,6 @@ customFormatsRouter.patch(
   })
 );
 
-interface TrashSpecification {
-  implementation: string;
-  negate?: boolean;
-  fields?: { value?: string | number; min?: number; max?: number };
-}
-
-interface TrashCustomFormat {
-  name: string;
-  specifications?: TrashSpecification[];
-}
-
 /**
  * Imports a custom format exported from TRaSH-Guides (or copy-pasted straight from Radarr/
  * Sonarr's own custom format JSON export, since TRaSH publishes in that same shape) by mapping
@@ -180,35 +172,35 @@ customFormatsRouter.post(
       throw new HttpError(400, "Doesn't look like a TRaSH-Guides/Radarr/Sonarr custom format export");
     }
 
-    const groups: any[] = [];
-    const skipped: string[] = [];
-
-    for (const spec of trash.specifications) {
-      if (spec.implementation === "ReleaseTitleSpecification" && typeof spec.fields?.value === "string") {
-        groups.push({ type: "title", patterns: [spec.fields.value], negate: !!spec.negate });
-      } else if (spec.implementation === "ReleaseGroupSpecification" && typeof spec.fields?.value === "string") {
-        groups.push({ type: "releaseGroup", patterns: [spec.fields.value], negate: !!spec.negate });
-      } else if (spec.implementation === "SizeSpecification") {
-        groups.push({
-          type: "size",
-          minMb: spec.fields?.min != null ? spec.fields.min * 1000 : null,
-          maxMb: spec.fields?.max != null ? spec.fields.max * 1000 : null,
-          negate: !!spec.negate,
-        });
-      } else {
-        skipped.push(spec.implementation);
-      }
-    }
+    const { groups, skipped } = translateTrashFormat(trash);
 
     if (groups.length === 0) {
-      throw new HttpError(400, "None of this format's conditions are supported (only title/release-group/size specs translate)");
+      throw new HttpError(400, "None of this format's conditions are supported (only title/release-group/size/resolution specs translate)");
     }
 
     const result = db
-      .prepare("INSERT INTO custom_formats (name, patterns) VALUES (?, ?)")
-      .run(trash.name, JSON.stringify(groups));
+      .prepare("INSERT INTO custom_formats (name, patterns, trash_id) VALUES (?, ?, ?)")
+      .run(trash.name, JSON.stringify(groups), trash.trash_id ?? null);
     const row = db.prepare("SELECT * FROM custom_formats WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json({ format: customFormatFromRow(row), skipped });
+  })
+);
+
+/**
+ * Pulls every custom format TRaSH-Guides publishes for Radarr or Sonarr straight from their public
+ * GitHub repo and syncs it into AoNarr — unlike the paste-JSON import above, this is a repeatable
+ * sync: each format is matched by its stable `trash_id` (not name, since names occasionally change
+ * upstream) so re-running updates already-synced formats in place instead of duplicating them. Only
+ * formats with at least one translatable condition are synced; the rest are reported back as
+ * unsupported rather than created empty. Fire-and-forget, same reasoning as the media-server and
+ * Starr-app imports — fetching 100+ format files from GitHub can outrun an HTTP/gateway timeout.
+ */
+customFormatsRouter.post(
+  "/trash-sync",
+  asyncHandler(async (req, res) => {
+    const app = req.body?.app === "sonarr" ? "sonarr" : "radarr";
+    syncTrashFormats(app).catch((err) => log.warn(`[trashSync] ${app} sync failed:`, (err as Error).message));
+    res.json({ started: true });
   })
 );
 

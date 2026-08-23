@@ -176,6 +176,7 @@ export function customFormatFromRow(row: any) {
     name: row.name,
     conditionGroups: JSON.parse(row.patterns),
     mediaTypes: row.media_types ? JSON.parse(row.media_types) : [],
+    trashId: row.trash_id ?? null,
   };
 }
 

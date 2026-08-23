@@ -3,6 +3,32 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 69
+- Added "Sync from TRaSH-Guides" (Settings → Quality → Custom Formats) — pulls every custom format
+  TRaSH-Guides publishes for Radarr or Sonarr straight from their public GitHub repo and syncs it
+  into AoNarr's own custom-format table, closing the "syncing (not just importing)" gap left by the
+  existing paste-JSON import: re-running the sync updates formats already pulled in (matched by
+  TRaSH's own stable `trash_id`, stored in a new `custom_formats.trash_id` column) rather than
+  duplicating them, so it stays current as TRaSH's guides evolve instead of being a one-time copy
+- Extracted the specification-to-condition-group translation (title/release-group/size, now also
+  resolution — TRaSH's `ResolutionSpecification` uses a plain pixel-height value, not a Radarr/
+  Sonarr-internal id, so it's safe to map) into a shared `trashFormats.ts` used by both the sync and
+  the existing paste-JSON import, so the two paths can't drift on what counts as translatable.
+  Anything else (quality-modifier, language, indexer-flag, source specs — all keyed to Radarr/
+  Sonarr's own internal enums) is still reported back as unsupported rather than silently dropped
+- Newly-synced formats are scoped to the syncing app's own library types (Radarr → Movies, Sonarr →
+  Series/Anime) rather than left unrestricted, since a resolution/size-tier format has no reason to
+  also apply to unrelated libraries; a user can broaden the scope afterward like any other format.
+  Fire-and-forget, same reasoning as the media-server/Starr-app imports (Rounds 66-68) — fetching
+  200+ format files from GitHub can outrun an HTTP/gateway timeout
+- Verified live against the real TRaSH-Guides repo (not a mock): synced Sonarr's 236 published
+  formats (226 translated and added, 10 correctly reported unsupported), confirmed individual
+  translations in the database (e.g. `1080p` → a resolution condition, `x265` → its title-regex
+  condition with the internal quality-modifier spec correctly skipped), re-ran the same sync and
+  confirmed it reported "added 0, updated 226" with the total format count unchanged (no
+  duplication), and confirmed the paste-JSON import still works unchanged (regression check on the
+  now-shared translation code) and the new Sync buttons render correctly in Settings
+
 ## Round 68
 - Added "Import from Radarr"/"Import from Sonarr" (Movies/Series/Anime library pages) — migrates an
   already-organized Radarr or Sonarr library straight into AoNarr, closing the last of the three
