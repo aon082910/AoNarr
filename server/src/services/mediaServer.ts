@@ -110,6 +110,116 @@ interface MediaServerItem {
   id: string;
 }
 
+export interface MediaServerLibraryItem {
+  mediaServerId: string;
+  path: string;
+  title: string;
+  year: number | null;
+  overview: string | null;
+  posterUrl: string | null;
+  externalIds: Record<string, string>;
+}
+
+/** Plex signals an external id two ways depending on server/agent version: a `Guid` array of
+ * `{id: "tmdb://603"}`-style entries (current "new agents"), or a single legacy `guid` string like
+ * "com.plexapp.agents.themoviedb://603?lang=en" (old agents, still seen on long-running servers
+ * that haven't re-matched their library). Both are parsed so neither vintage silently loses ids. */
+function parsePlexExternalIds(item: any): Record<string, string> {
+  const ids: Record<string, string> = {};
+  const PROVIDER_MAP: Record<string, string> = { themoviedb: "tmdb", thetvdb: "tvdb", imdb: "imdb", tmdb: "tmdb", tvdb: "tvdb" };
+
+  for (const g of item.Guid ?? []) {
+    const m = typeof g?.id === "string" ? g.id.match(/^(\w+):\/\/(.+)$/) : null;
+    if (m && PROVIDER_MAP[m[1]]) ids[PROVIDER_MAP[m[1]]] = m[2];
+  }
+  if (typeof item.guid === "string") {
+    const m = item.guid.match(/agents\.(\w+):\/\/([^?]+)/);
+    if (m && PROVIDER_MAP[m[1]] && !ids[PROVIDER_MAP[m[1]]]) ids[PROVIDER_MAP[m[1]]] = m[2];
+  }
+  return ids;
+}
+
+/** Movies only (shape="single") — TV import would additionally need per-episode season/episode
+ * numbers and parent-show matching, a larger job left for a follow-up. */
+async function fetchPlexMovieDetails(cfg: MediaServerConfig): Promise<MediaServerLibraryItem[]> {
+  const headers = { Accept: "application/json" };
+  const sectionsRes = await fetch(`${cfg.url}/library/sections?X-Plex-Token=${cfg.token}`, { headers });
+  if (!sectionsRes.ok) throw new Error(`Plex sections request failed: ${sectionsRes.status}`);
+  const sectionsBody = (await sectionsRes.json()) as any;
+  const sections: { key: string; type: string }[] = sectionsBody?.MediaContainer?.Directory ?? [];
+
+  const results: MediaServerLibraryItem[] = [];
+  for (const section of sections) {
+    if (section.type !== "movie") continue;
+    const itemsRes = await fetch(
+      `${cfg.url}/library/sections/${section.key}/all?type=1&X-Plex-Token=${cfg.token}`,
+      { headers }
+    );
+    if (!itemsRes.ok) continue;
+    const itemsBody = (await itemsRes.json()) as any;
+    const metadata: any[] = itemsBody?.MediaContainer?.Metadata ?? [];
+    for (const item of metadata) {
+      const file = item.Media?.[0]?.Part?.[0]?.file;
+      if (!file || !item.ratingKey) continue;
+      results.push({
+        mediaServerId: String(item.ratingKey),
+        path: file,
+        title: item.title,
+        year: item.year ?? null,
+        overview: item.summary || null,
+        posterUrl: item.thumb ? `${cfg.url}${item.thumb}?X-Plex-Token=${cfg.token}` : null,
+        externalIds: parsePlexExternalIds(item),
+      });
+    }
+  }
+  return results;
+}
+
+async function fetchJellyfinMovieDetails(cfg: MediaServerConfig, basePath: string): Promise<MediaServerLibraryItem[]> {
+  const headers = { "X-Emby-Token": cfg.token, Accept: "application/json" };
+  const usersRes = await fetch(`${cfg.url}${basePath}/Users`, { headers });
+  if (!usersRes.ok) throw new Error(`${cfg.type} users request failed: ${usersRes.status}`);
+  const users = (await usersRes.json()) as { Id: string }[];
+  if (users.length === 0) return [];
+
+  const itemsRes = await fetch(
+    `${cfg.url}${basePath}/Users/${users[0].Id}/Items?Recursive=true&IncludeItemTypes=Movie&Fields=Path,Overview,ProviderIds,ProductionYear,ImageTags`,
+    { headers }
+  );
+  if (!itemsRes.ok) throw new Error(`${cfg.type} items request failed: ${itemsRes.status}`);
+  const body = (await itemsRes.json()) as { Items?: any[] };
+
+  const results: MediaServerLibraryItem[] = [];
+  for (const item of body.Items ?? []) {
+    if (!item.Path || !item.Id) continue;
+    const externalIds: Record<string, string> = {};
+    if (item.ProviderIds?.Tmdb) externalIds.tmdb = item.ProviderIds.Tmdb;
+    if (item.ProviderIds?.Imdb) externalIds.imdb = item.ProviderIds.Imdb;
+    if (item.ProviderIds?.Tvdb) externalIds.tvdb = item.ProviderIds.Tvdb;
+    results.push({
+      mediaServerId: String(item.Id),
+      path: item.Path,
+      title: item.Name,
+      year: item.ProductionYear ?? null,
+      overview: item.Overview || null,
+      posterUrl: item.ImageTags?.Primary ? `${cfg.url}${basePath}/Items/${item.Id}/Images/Primary?api_key=${cfg.token}` : null,
+      externalIds,
+    });
+  }
+  return results;
+}
+
+/** Fetches every movie the configured media server's library has, with the metadata (title,
+ * year, overview, poster, external ids) needed to create or match an AoNarr media_item from it —
+ * unlike fetchPlexItems/fetchJellyfinLikeItems above, which only keep path+id (enough for
+ * watch-state matching, not for populating a real library entry). */
+export async function fetchMediaServerMovies(): Promise<MediaServerLibraryItem[]> {
+  const cfg = getMediaServerConfig();
+  if (!cfg) throw new Error("No media server configured");
+  if (cfg.type === "plex") return fetchPlexMovieDetails(cfg);
+  return fetchJellyfinMovieDetails(cfg, cfg.type === "jellyfin" ? "" : "/emby");
+}
+
 async function fetchPlexItems(cfg: MediaServerConfig): Promise<MediaServerItem[]> {
   const headers = { Accept: "application/json" };
   const sectionsRes = await fetch(`${cfg.url}/library/sections?X-Plex-Token=${cfg.token}`, { headers });

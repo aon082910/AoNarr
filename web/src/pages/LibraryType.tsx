@@ -3,9 +3,10 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, downloadFile, uploadFormFile } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
-import type { LibraryGroup, MediaItem, Tag } from "../types.js";
+import type { LibraryGroup, MediaItem, RootFolder, Tag } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 import DropdownMenu from "../components/DropdownMenu.js";
+import Modal from "../components/Modal.js";
 
 type SortKey = "title" | "year" | "added" | "status" | "monitored" | "quality" | "contentRating";
 type ViewMode = "poster" | "list";
@@ -275,6 +276,11 @@ export function LibraryItemGrid({
   const [posterFields, setPosterFields] = useState<Set<ExtraField>>(() => loadFieldSet("aonarr_library_poster_fields", DEFAULT_POSTER_FIELDS));
   const [contentRatingFilter, setContentRatingFilter] = useState<string | "all">("all");
   const [loading, setLoading] = useState(true);
+  const [mediaServerConfigured, setMediaServerConfigured] = useState(false);
+  const [showMediaServerImport, setShowMediaServerImport] = useState(false);
+  const [mediaServerImportFolders, setMediaServerImportFolders] = useState<RootFolder[]>([]);
+  const [mediaServerImportFolderId, setMediaServerImportFolderId] = useState<number | "">("");
+  const [mediaServerImporting, setMediaServerImporting] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [tagToApply, setTagToApply] = useState<number | "">("");
@@ -307,6 +313,37 @@ export function LibraryItemGrid({
   useEffect(() => {
     if (auth.isAdmin) api.get<Tag[]>("/tags").then(setTags);
   }, [auth.isAdmin]);
+  useEffect(() => {
+    if (auth.isAdmin && type === "movie") {
+      api.get<Record<string, string>>("/settings").then((s) => setMediaServerConfigured(!!s.mediaServerType && !!s.mediaServerUrl && !!s.mediaServerToken));
+    } else {
+      setMediaServerConfigured(false);
+    }
+  }, [auth.isAdmin, type]);
+
+  async function openMediaServerImport() {
+    const folders = await api.get<RootFolder[]>("/root-folders");
+    const forType = folders.filter((f) => f.mediaType === type);
+    setMediaServerImportFolders(forType);
+    setMediaServerImportFolderId(forType[0]?.id ?? "");
+    setShowMediaServerImport(true);
+  }
+
+  async function runMediaServerImport() {
+    if (!mediaServerImportFolderId) return;
+    setMediaServerImporting(true);
+    try {
+      await api.post("/media-server-import/movies", { rootFolderId: mediaServerImportFolderId });
+      alert(
+        "Import started in the background — this can take a while for a large library. Check the Logs page for the result, or come back to this list shortly."
+      );
+      setShowMediaServerImport(false);
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setMediaServerImporting(false);
+    }
+  }
   useEffect(() => {
     localStorage.setItem("aonarr_library_view", viewMode);
   }, [viewMode]);
@@ -630,6 +667,15 @@ export function LibraryItemGrid({
             {refreshing ? "Refreshing..." : "Refresh"}
           </button>
         )}
+        {auth.isAdmin && mediaServerConfigured && (
+          <button
+            className="select-like"
+            onClick={openMediaServerImport}
+            title="Import an already-organized movie library straight from your configured Plex/Jellyfin/Emby server, with its real title/year/poster/external-id metadata"
+          >
+            Import from Media Server
+          </button>
+        )}
         {auth.isAdmin && (
           <button
             className={selectMode ? "" : "secondary"}
@@ -764,6 +810,42 @@ export function LibraryItemGrid({
             ))}
           </tbody>
         </table>
+      )}
+
+      {showMediaServerImport && (
+        <Modal title="Import from Media Server" onClose={() => setShowMediaServerImport(false)} maxWidth={480}>
+          <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
+            Pulls every movie your configured media server has — with its real title, year,
+            poster, and external ids — matching against anything already in this library first
+            (by path, then external id, then title/year) and creating a new entry for anything
+            genuinely new. Runs in the background; check the Logs page for the result.
+          </p>
+          {mediaServerImportFolders.length === 0 ? (
+            <p className="empty">No root folder configured for this library yet — add one in Settings first.</p>
+          ) : (
+            <>
+              <label>Root folder for newly-created items</label>
+              <select
+                value={mediaServerImportFolderId}
+                onChange={(e) => setMediaServerImportFolderId(e.target.value ? Number(e.target.value) : "")}
+              >
+                {mediaServerImportFolders.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.path}
+                  </option>
+                ))}
+              </select>
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <button type="button" onClick={runMediaServerImport} disabled={mediaServerImporting || !mediaServerImportFolderId}>
+                  {mediaServerImporting ? "Starting..." : "Start import"}
+                </button>
+                <button type="button" className="secondary" onClick={() => setShowMediaServerImport(false)}>
+                  Cancel
+                </button>
+              </div>
+            </>
+          )}
+        </Modal>
       )}
     </div>
   );

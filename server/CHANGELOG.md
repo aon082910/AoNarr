@@ -3,6 +3,31 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 66
+- Added "Import from Media Server" (Movies library page, when a media server is configured) —
+  pulls an already-organized Plex/Jellyfin/Emby movie library straight into AoNarr with its real
+  title/year/overview/poster/external ids, instead of requiring Scan & Import (filename-guessing
+  only, no rich metadata) or adding everything one-by-one through Add Media. Matches against
+  anything already in AoNarr first — by path, then external id (tmdb/imdb/tvdb), then title+year —
+  before falling back to creating a new entry, so a library that's partially already tracked
+  doesn't get duplicated
+- Required actually extracting the metadata Plex/Jellyfin's APIs already return but the existing
+  polling code discarded (it only ever kept path+id, enough for watch-state matching but nothing
+  else): Plex's `Guid` array (current agents) and legacy `guid` string (older agents still seen on
+  long-running servers that haven't re-matched) for external ids, `summary`/`thumb` for overview/
+  poster; Jellyfin/Emby's `ProviderIds`/`Overview`/`ImageTags`. TV shows aren't included this round
+  — matching/creating individual episodes under the right parent show is a larger job on its own
+- Fire-and-forget the same way Scan & Import already is, for the same reason (fetching and
+  matching an entire library can easily outrun an HTTP/gateway timeout)
+- Verified live against a real mock Plex server with three deliberately distinct cases in one
+  library: a movie already tracked by AoNarr (correctly skipped, left untouched), a movie only
+  known to AoNarr under a wrong guessed title with no file (correctly matched via its tmdb id
+  rather than duplicated, and filled in with Plex's real overview/path/poster), and a movie AoNarr
+  had never seen at all (correctly created fresh with full metadata) — confirmed all three outcomes
+  in the actual database afterward, confirmed the poster URL was built correctly with the Plex
+  token, and confirmed the "Import from Media Server" button and its root-folder-picker modal
+  render correctly in the browser
+
 ## Round 65
 - Added Plex/Jellyfin/Emby as a notification target (Sonarr/Radarr's "Connect" feature) — a real,
   total gap before this: AoNarr already had polling-based watch-state sync and an incoming webhook
