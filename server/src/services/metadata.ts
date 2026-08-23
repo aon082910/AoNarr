@@ -579,15 +579,20 @@ async function searchAuthorsOpenlibrary(query: string): Promise<MetadataSearchRe
 }
 
 async function fetchAuthorBooksOpenlibrary(openLibraryKey: string): Promise<MetadataSubItem[]> {
-  const url = `https://openlibrary.org${openLibraryKey}/works.json`;
+  const url = `https://openlibrary.org/authors/${openLibraryKey}/works.json`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Open Library works lookup failed: HTTP ${res.status}`);
   const body: any = await res.json();
 
-  return (body.entries ?? []).map((w: any) => ({
-    title: w.title,
-    releaseDate: w.first_publish_date || null,
-  }));
+  // A handful of Open Library "work" entries carry no title at all (data-quality gaps in their
+  // catalog, not a query issue on our end) — sub_items.title is NOT NULL, so skip those rather
+  // than let one bad entry fail the whole author's book-list insert transaction.
+  return (body.entries ?? [])
+    .filter((w: any) => w.title)
+    .map((w: any) => ({
+      title: w.title,
+      releaseDate: w.first_publish_date || null,
+    }));
 }
 
 /** Google Books has no stable per-author id, so the author's display name doubles as its "external id" for re-querying. */

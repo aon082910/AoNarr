@@ -109,31 +109,37 @@ metadataRouter.post(
       } else if (typeConfig.shape === "collection" && typeConfig.multiFilePerChild) {
         const result = await fetchArtistAlbumsFor(externalIds);
         if (result) {
+          // A provider occasionally returns an entry with no title (a data-quality gap on their
+          // end, e.g. Open Library "works" with a title-less record) — sub_items.title is NOT
+          // NULL, and since insertMany runs as one transaction, a single bad entry would otherwise
+          // roll back every good entry in the batch along with it.
+          const albums = result.albums.filter((a) => a.title);
           const insert = db.prepare(
             `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored)
              VALUES (?, ?, ?, ?, ?, 1)`
           );
-          const insertMany = db.transaction((rows: typeof result.albums) => {
+          const insertMany = db.transaction((rows: typeof albums) => {
             for (const album of rows) {
               insert.run(mediaItemId, album.title, album.releaseDate, album.externalId ?? null, result.provider);
             }
           });
-          insertMany(result.albums);
-          childCount = result.albums.length;
+          insertMany(albums);
+          childCount = albums.length;
         }
       } else if (typeConfig.shape === "collection") {
         const result = await fetchCollectionChildrenFor(externalIds);
+        const children = result.children.filter((c) => c.title);
         const insert = db.prepare(
           `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored)
            VALUES (?, ?, ?, ?, ?, 1)`
         );
-        const insertMany = db.transaction((rows: typeof result.children) => {
+        const insertMany = db.transaction((rows: typeof children) => {
           for (const child of rows) {
             insert.run(mediaItemId, child.title, child.releaseDate, child.externalId ?? null, result.provider);
           }
         });
-        insertMany(result.children);
-        childCount = result.children.length;
+        insertMany(children);
+        childCount = children.length;
       }
     } catch (err) {
       // The media item itself was created successfully; a failed child fetch (e.g. missing

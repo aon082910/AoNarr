@@ -3,6 +3,39 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 52
+- Added dedicated detail pages for every "collection"-shape library's children (Album, Book,
+  Audiobook, Issue, Chapter, Lesson, Video) — new `SubItemDetail.tsx` page at
+  `/media/:mediaId/item/:subItemId`, new `GET /media/:id/subitems/:subItemId` endpoint. Clicking
+  a child row on an Artist/Author/etc. page now opens its own page with full metadata (release
+  date, monitored/file/quality status, file path, external id), instead of the old inline-only
+  row. For Music specifically (the only type with a third level), the album page also shows its
+  track list and each track links to its own new detail page (`TrackDetail.tsx` at
+  `/media/:mediaId/item/:subItemId/track/:trackId`, new `GET
+  /media/:id/subitems/:subItemId/tracks/:trackId` endpoint) — completing the requested
+  Band → Album → Track drill-down
+- Added have/missing/total count badges to the top of every collection-shape parent page (Artist,
+  Author, etc.), matching what Round 51 already added for TV Shows and library list pages
+- Fixed Books/Audiobooks import silently returning zero books for every author: Open Library's
+  author→works URL was being built without the required `/authors/` path segment
+  (`https://openlibrary.org${key}/works.json` instead of
+  `https://openlibrary.org/authors/${key}/works.json`), so every lookup 404'd, was caught, and
+  silently left the library empty — nothing in the UI signaled this had happened. Found while
+  verifying the "Author page lists all books" requirement live: a real author import kept coming
+  back with `childCount: 0`. Also hardened the general collection-children insert path (used by
+  every collection-shape type, not just Books) against a *single* title-less entry from a provider
+  aborting the *entire* batch — Open Library's own works list turned out to include one such
+  malformed entry even after the URL fix, and since the insert ran as one all-or-nothing
+  transaction, that one bad record was silently discarding every good one alongside it
+- Verified this round live end-to-end in a running test container: imported a real 100-album
+  Radiohead artist (MusicBrainz) and a real Stephen King author (Open Library, 49 of 50 works
+  correctly imported, the one title-less entry correctly skipped instead of blocking the batch);
+  confirmed the per-parent have/missing/total badges, confirmed clicking an album opens its detail
+  page, confirmed a manually-seeded track list renders with its own have/total badge and links to
+  a working track detail page with the full Artist / Album breadcrumb, and confirmed a Book child
+  (a collection type with no `multiFilePerChild`) opens its detail page correctly with no
+  Tracks section shown
+
 ## Round 51
 - Added per-library have/missing/total count badges to the top of every library list page
   (`LibraryType.tsx`), computed from the already-loaded item list

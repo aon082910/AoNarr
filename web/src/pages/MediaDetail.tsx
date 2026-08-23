@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, downloadFile } from "../api/client.js";
 import GroupPicker from "../components/GroupPicker.js";
@@ -6,7 +6,7 @@ import SearchMatchModal, { type MetadataSearchResult } from "../components/Searc
 import type { LibraryGroup } from "../types.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
-import type { Collection, MediaInfo, MediaItem, QualityProfile, RootFolder, SearchResult, Tag, Track } from "../types.js";
+import type { Collection, MediaInfo, MediaItem, QualityProfile, RootFolder, SearchResult, Tag } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
 import { useContentRatings } from "../hooks/useContentRatings.js";
 
@@ -109,10 +109,6 @@ export default function MediaDetail() {
   const [externalUrl, setExternalUrl] = useState("");
   const [tagToAdd, setTagToAdd] = useState<number | "">("");
 
-  const [expandedAlbumId, setExpandedAlbumId] = useState<number | null>(null);
-  const [tracksByAlbum, setTracksByAlbum] = useState<Record<number, Track[]>>({});
-  const [loadingTracksFor, setLoadingTracksFor] = useState<number | null>(null);
-
   const [showArtwork, setShowArtwork] = useState(false);
   const [artworkOptions, setArtworkOptions] = useState<ArtworkOptions | null>(null);
   const [loadingArtwork, setLoadingArtwork] = useState(false);
@@ -189,25 +185,6 @@ export default function MediaDetail() {
     if (!item) return;
     await api.del(`/media/${item.id}/tags/${tagId}`);
     setItem({ ...item, tags: item.tags.filter((t) => t.id !== tagId) });
-  }
-
-  async function toggleTracks(subItemId: number) {
-    if (expandedAlbumId === subItemId) {
-      setExpandedAlbumId(null);
-      return;
-    }
-    setExpandedAlbumId(subItemId);
-    if (!tracksByAlbum[subItemId]) {
-      setLoadingTracksFor(subItemId);
-      try {
-        const tracks = await api.post<Track[]>(`/media/subitems/${subItemId}/tracks/fetch`);
-        setTracksByAlbum((prev) => ({ ...prev, [subItemId]: tracks }));
-      } catch (e) {
-        alert((e as Error).message);
-      } finally {
-        setLoadingTracksFor(null);
-      }
-    }
   }
 
   async function toggleMonitored() {
@@ -1095,6 +1072,18 @@ export default function MediaDetail() {
 
       {shape === "collection" && (item.children as SubItem[]).length > 0 && (
         <>
+          {(() => {
+            const children = item.children as SubItem[];
+            const have = children.filter((si) => si.hasFile).length;
+            const missing = children.length - have;
+            return (
+              <p style={{ color: "var(--muted)" }}>
+                <span className="badge ok">{have} have</span>{" "}
+                <span className={`badge ${missing > 0 ? "danger" : ""}`}>{missing} missing</span>{" "}
+                <span className="badge">{children.length} total</span>
+              </p>
+            );
+          })()}
           <h2>{childLabel}s</h2>
           <table>
             <thead>
@@ -1108,84 +1097,35 @@ export default function MediaDetail() {
             </thead>
             <tbody>
               {(item.children as SubItem[]).map((si) => (
-                <Fragment key={si.id}>
-                  <tr>
-                    <td>{si.title}</td>
-                    <td>{si.releaseDate ?? "-"}</td>
-                    <td>
-                      <span className={`badge ${si.hasFile ? "ok" : ""}`}>{si.hasFile ? "Downloaded" : "Missing"}</span>
-                    </td>
-                    <td>
-                      {si.quality ?? "-"}
-                      {formatMediaInfo(si.mediaInfo) && (
-                        <div style={{ color: "var(--muted)", fontSize: "0.75rem" }}>{formatMediaInfo(si.mediaInfo)}</div>
-                      )}
-                    </td>
-                    <td style={{ display: "flex", gap: 6 }}>
-                      {isAdmin && item.type === "video" && si.externalProvider === "youtube" && (
-                        <button className="secondary" onClick={() => downloadVideo(si)}>
-                          Download
-                        </button>
-                      )}
-                      {isAdmin && !(item.type === "video" && si.externalProvider === "youtube") && (
-                        <button
-                          className="secondary"
-                          disabled={searching}
-                          onClick={() => runSearch({ subItemId: si.id, label: si.title })}
-                        >
-                          Search
-                        </button>
-                      )}
-                      {typeInfo?.multiFilePerChild && (
-                        <button className="secondary" onClick={() => toggleTracks(si.id)}>
-                          {loadingTracksFor === si.id
-                            ? "Loading..."
-                            : expandedAlbumId === si.id
-                            ? "Hide tracks"
-                            : "Tracks"}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                  {typeInfo?.multiFilePerChild && expandedAlbumId === si.id && (
-                    <tr>
-                      <td colSpan={5} style={{ background: "rgba(255,255,255,0.02)" }}>
-                        {!tracksByAlbum[si.id] || tracksByAlbum[si.id].length === 0 ? (
-                          <p className="empty">No track data available.</p>
-                        ) : (
-                          <table>
-                            <thead>
-                              <tr>
-                                <th>#</th>
-                                <th>Title</th>
-                                <th>Duration</th>
-                                <th>File</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {tracksByAlbum[si.id].map((t) => (
-                                <tr key={t.id}>
-                                  <td>{t.trackNumber}</td>
-                                  <td>{t.title}</td>
-                                  <td>
-                                    {t.durationSeconds
-                                      ? `${Math.floor(t.durationSeconds / 60)}:${String(t.durationSeconds % 60).padStart(2, "0")}`
-                                      : "-"}
-                                  </td>
-                                  <td>
-                                    <span className={`badge ${t.hasFile ? "ok" : ""}`}>
-                                      {t.hasFile ? "Downloaded" : "Missing"}
-                                    </span>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        )}
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
+                <tr key={si.id} onClick={() => navigate(`/media/${item.id}/item/${si.id}`)} style={{ cursor: "pointer" }}>
+                  <td>{si.title}</td>
+                  <td>{si.releaseDate ?? "-"}</td>
+                  <td>
+                    <span className={`badge ${si.hasFile ? "ok" : ""}`}>{si.hasFile ? "Downloaded" : "Missing"}</span>
+                  </td>
+                  <td>
+                    {si.quality ?? "-"}
+                    {formatMediaInfo(si.mediaInfo) && (
+                      <div style={{ color: "var(--muted)", fontSize: "0.75rem" }}>{formatMediaInfo(si.mediaInfo)}</div>
+                    )}
+                  </td>
+                  <td onClick={(e) => e.stopPropagation()}>
+                    {isAdmin && item.type === "video" && si.externalProvider === "youtube" && (
+                      <button className="secondary" onClick={() => downloadVideo(si)}>
+                        Download
+                      </button>
+                    )}
+                    {isAdmin && !(item.type === "video" && si.externalProvider === "youtube") && (
+                      <button
+                        className="secondary"
+                        disabled={searching}
+                        onClick={() => runSearch({ subItemId: si.id, label: si.title })}
+                      >
+                        Search
+                      </button>
+                    )}
+                  </td>
+                </tr>
               ))}
             </tbody>
           </table>

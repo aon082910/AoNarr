@@ -2,7 +2,7 @@ import { Router } from "express";
 import multer from "multer";
 import { log } from "../services/logger.js";
 import { db } from "../db/client.js";
-import { episodeFromRow, mediaItemFromRow, queueItemFromRow, subItemFromRow, tagFromRow } from "../db/mappers.js";
+import { episodeFromRow, mediaItemFromRow, queueItemFromRow, subItemFromRow, tagFromRow, trackFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { getMediaTypeConfig, isValidMediaType } from "../services/mediaTypes.js";
@@ -802,6 +802,40 @@ mediaRouter.patch(
       .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND season_number = ? ORDER BY episode_number")
       .all(req.params.id, req.params.seasonNumber);
     res.json(rows.map(episodeFromRow));
+  })
+);
+
+/** Single sub-item's full data plus its parent's title/type, for the album/book/issue detail page. */
+mediaRouter.get(
+  "/:id/subitems/:subItemId",
+  asyncHandler(async (req, res) => {
+    const row = db
+      .prepare("SELECT * FROM sub_items WHERE id = ? AND media_item_id = ?")
+      .get(req.params.subItemId, req.params.id);
+    if (!row) throw new HttpError(404, "Sub-item not found");
+    const parentRow = db.prepare("SELECT id, title, type FROM media_items WHERE id = ?").get(req.params.id) as any;
+    res.json({ ...subItemFromRow(row), parent: parentRow ? { id: parentRow.id, title: parentRow.title, type: parentRow.type } : null });
+  })
+);
+
+/** Single track's full data plus its parent album's and artist's title, for the track detail page. */
+mediaRouter.get(
+  "/:id/subitems/:subItemId/tracks/:trackId",
+  asyncHandler(async (req, res) => {
+    const row = db
+      .prepare("SELECT * FROM tracks WHERE id = ? AND sub_item_id = ?")
+      .get(req.params.trackId, req.params.subItemId);
+    if (!row) throw new HttpError(404, "Track not found");
+    const subItemRow = db
+      .prepare("SELECT id, title FROM sub_items WHERE id = ? AND media_item_id = ?")
+      .get(req.params.subItemId, req.params.id) as any;
+    if (!subItemRow) throw new HttpError(404, "Sub-item not found");
+    const parentRow = db.prepare("SELECT id, title, type FROM media_items WHERE id = ?").get(req.params.id) as any;
+    res.json({
+      ...trackFromRow(row),
+      subItem: { id: subItemRow.id, title: subItemRow.title },
+      parent: parentRow ? { id: parentRow.id, title: parentRow.title, type: parentRow.type } : null,
+    });
   })
 );
 
