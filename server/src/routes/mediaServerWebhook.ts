@@ -1,7 +1,7 @@
 import { Router } from "express";
 import multer from "multer";
 import crypto from "node:crypto";
-import { requireAdmin } from "../middleware/auth.js";
+import { requireAdmin, safeEqual } from "../middleware/auth.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { getSetting, setSetting } from "../services/settingsStore.js";
 import { parseJellyfinEmbyPayload, parsePlexPayload, recordWatchEvent } from "../services/mediaServerWebhook.js";
@@ -55,7 +55,7 @@ mediaServerWebhookRouter.post(
   asyncHandler(async (req, res) => {
     const token = req.query.token as string | undefined;
     const expected = getSetting("mediaServerWebhookToken");
-    if (!expected || !token || token !== expected) throw new HttpError(401, "Invalid or missing webhook token");
+    if (!expected || !token || !safeEqual(token, expected)) throw new HttpError(401, "Invalid or missing webhook token");
 
     let signal = null;
     try {

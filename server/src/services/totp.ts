@@ -48,9 +48,11 @@ function hotp(secret: string, counter: number): string {
 /** Accepts a code from the current or adjacent 30s window (±1 step) to tolerate minor clock drift. */
 export function verifyTotp(secret: string, token: string): boolean {
   if (!/^\d{6}$/.test(token)) return false;
+  const tokenBuf = Buffer.from(token);
   const counter = Math.floor(Date.now() / 1000 / STEP_SECONDS);
   for (const offset of [0, -1, 1]) {
-    if (hotp(secret, counter + offset) === token) return true;
+    const expected = Buffer.from(hotp(secret, counter + offset));
+    if (crypto.timingSafeEqual(expected, tokenBuf)) return true;
   }
   return false;
 }

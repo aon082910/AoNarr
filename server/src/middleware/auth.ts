@@ -1,7 +1,17 @@
+import crypto from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import { getSetting } from "../services/settingsStore.js";
 import { getSessionUser, type SessionUser } from "../services/auth.js";
 import { checkRateLimit, recordFailure, recordSuccess } from "../services/rateLimiter.js";
+
+/** Same-length check first (timingSafeEqual throws on mismatched lengths — that's a length leak,
+ * not a content one, and the expected key's length is fixed/public anyway), then a constant-time
+ * byte comparison so a wrong-but-close guess doesn't take measurably longer to reject. */
+export function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+}
 
 export interface AuthContext {
   isAdmin: boolean;
@@ -49,7 +59,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
 
   const expectedApiKey = getSetting("apiKey");
   const providedApiKey = (req.header("X-Api-Key") ?? (req.query.apikey as string | undefined)) ?? "";
-  if (expectedApiKey && providedApiKey === expectedApiKey) {
+  if (expectedApiKey && providedApiKey && safeEqual(providedApiKey, expectedApiKey)) {
     recordSuccess(rateLimitKey);
     req.auth = { isAdmin: true };
     next();

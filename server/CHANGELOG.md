@@ -3,6 +3,37 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 58
+- Continued the audit series onto the security-critical files: `auth.ts`, `totp.ts`,
+  `rateLimiter.ts`, `middleware/auth.ts`, and `releaseParser.ts` (release-title matching, used
+  everywhere search results get matched against wanted episodes). Password hashing, session token
+  generation, session expiry enforcement, and rate-limit logic all checked out clean — no fail-open
+  paths, no weak entropy sources
+- Fixed two non-constant-time credential comparisons: the TOTP code check (`totp.ts`) and the
+  instance-wide admin API key check (`middleware/auth.ts`) both used plain `===`/`string` equality
+  instead of `crypto.timingSafeEqual`, theoretically leaking per-character timing info about the
+  correct value. Practical exploitability was already low given the existing rate limiter's
+  10-attempts/15-minute cap, but fixed anyway since it's the credential guarding the highest-privilege
+  surface in the app. Applied the same fix to the calendar-feed and media-server-webhook tokens for
+  consistency, via a shared `safeEqual()` helper. Verified live: session-token auth, correct and
+  wrong API keys (including a same-length wrong guess to actually exercise the constant-time compare
+  path rather than the length-mismatch shortcut), and a full TOTP enroll-with-a-real-computed-code
+  flow all behave identically to before the fix
+- Reviewed TOTP replay protection (a code can be reused within its ~90s validity window) and decided
+  not to implement it this round — doing so properly requires threading per-user identity through
+  five call sites plus a schema change, for a narrow attack window that requires an attacker to
+  already be intercepting the victim's traffic in real time, at which point TOTP replay is a minor
+  concern next to that
+- Fixed two real gaps in `releaseParser.ts`'s season/episode extraction found by the audit: the
+  `1x01` scene/P2P notation (an extremely common convention, already supported by the filename-based
+  scan-import detector but missing entirely from the search-result matcher) had no pattern at all, so
+  a release using it could never match a wanted episode and would silently never get grabbed. Added
+  it as a fallback behind the unambiguous `SxxExx` pattern. Also fixed hyphen-less chained
+  multi-episode packs (`S01E01E02E03`, distinct from the already-supported `S01E01-E03`/`S01E01-03`
+  hyphenated form) being parsed as only the first episode. Verified against a 10-case battery
+  covering both fixes plus regression checks confirming `x264`/`x265`/`4K` codec and resolution tags
+  don't false-match as `1x01`-style season/episode markers
+
 ## Round 57
 - Continued the audit series onto `scheduler.ts`, `duplicateCheck.ts`, `customFormatScoring.ts`,
   `notifications.ts`, and the Plex/Jellyfin/Emby webhook handler. Found and fixed a real bug: Plex's

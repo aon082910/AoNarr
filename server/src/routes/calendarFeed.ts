@@ -2,7 +2,7 @@ import { Router } from "express";
 import crypto from "node:crypto";
 import { db } from "../db/client.js";
 import { getSetting, setSetting } from "../services/settingsStore.js";
-import { requireAdmin } from "../middleware/auth.js";
+import { requireAdmin, safeEqual } from "../middleware/auth.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 
 export const calendarTokenRouter = Router();
@@ -54,7 +54,7 @@ calendarFeedRouter.get(
   asyncHandler(async (req, res) => {
     const token = req.query.token as string | undefined;
     const expected = getSetting("calendarToken");
-    if (!expected || !token || token !== expected) throw new HttpError(401, "Invalid or missing calendar token");
+    if (!expected || !token || !safeEqual(token, expected)) throw new HttpError(401, "Invalid or missing calendar token");
 
     const today = new Date().toISOString().slice(0, 10);
     const future = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);

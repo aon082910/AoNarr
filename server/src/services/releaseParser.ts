@@ -10,7 +10,14 @@ export interface ParsedRelease {
   releaseGroup: string | null; // the tag after the final hyphen, e.g. "RARBG"
 }
 
-const SEASON_EP_RANGE = /\bS(\d{1,2})E(\d{1,3})(?:-E?(\d{1,3}))?\b/i;
+// Group 3 (hyphenated range end, e.g. "S01E01-E03"/"S01E01-03") and group 4 (a chain of bare
+// "E\d+" tags with no hyphen, e.g. "S01E01E02E03") are mutually exclusive alternatives — a title
+// only ever uses one multi-episode convention or the other, never both.
+const SEASON_EP_RANGE = /\bS(\d{1,2})E(\d{1,3})(?:-E?(\d{1,3})|((?:E\d{1,3})+))?\b/i;
+// "1x01" scene/P2P notation, the same convention libraryScan.ts's filename-based detector already
+// recognizes — used as a fallback only when SxxExx doesn't match, since SxxExx is unambiguous while
+// this format risks colliding with e.g. a bare resolution/codec tag if not scoped narrowly.
+const SEASON_EP_X_FORMAT = /\b0*(\d{1,2})x0*(\d{1,3})\b/i;
 const SEASON_ONLY = /\bS(\d{1,2})\b(?!\s*E\d)/i;
 const FULL_SEASON_HINT = /\b(complete|season\s?\d{1,2}|full season)\b/i;
 const YEAR = /\b(19|20)\d{2}\b/;
@@ -104,16 +111,29 @@ export function parseReleaseTitle(title: string): ParsedRelease {
   if (rangeMatch) {
     seasonNumber = Number(rangeMatch[1]);
     const start = Number(rangeMatch[2]);
-    const end = rangeMatch[3] ? Number(rangeMatch[3]) : start;
-    episodeNumbers = [];
-    for (let e = start; e <= end; e++) episodeNumbers.push(e);
+    if (rangeMatch[4]) {
+      // Chained "E01E02E03" tags — an explicit list, not necessarily contiguous.
+      episodeNumbers = [start];
+      for (const m of rangeMatch[4].matchAll(/E(\d{1,3})/gi)) episodeNumbers.push(Number(m[1]));
+    } else {
+      // Single episode, or a hyphenated "-E03"/"-03" range end — inclusive.
+      const end = rangeMatch[3] ? Number(rangeMatch[3]) : start;
+      episodeNumbers = [];
+      for (let e = start; e <= end; e++) episodeNumbers.push(e);
+    }
   } else {
-    const seasonMatch = title.match(SEASON_ONLY);
-    if (seasonMatch) {
-      seasonNumber = Number(seasonMatch[1]);
-      isFullSeason = true;
-    } else if (FULL_SEASON_HINT.test(title)) {
-      isFullSeason = true;
+    const xMatch = title.match(SEASON_EP_X_FORMAT);
+    if (xMatch) {
+      seasonNumber = Number(xMatch[1]);
+      episodeNumbers = [Number(xMatch[2])];
+    } else {
+      const seasonMatch = title.match(SEASON_ONLY);
+      if (seasonMatch) {
+        seasonNumber = Number(seasonMatch[1]);
+        isFullSeason = true;
+      } else if (FULL_SEASON_HINT.test(title)) {
+        isFullSeason = true;
+      }
     }
   }
 
