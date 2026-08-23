@@ -542,7 +542,7 @@ This starts two containers:
 
 - `aonarr-server` — the API + scheduler, listening on `8989`, with `/mnt/user/appdata/aonarr/data`
   bind-mounted to `/config`, plus `/media` and `/downloads` mounts.
-- `aonarr-web` — the UI, listening on `7878`, proxying `/api` to the server.
+- `aonarr-web` — the UI, listening on `9876`, proxying `/api` to the server.
 
 Edit `docker-compose.yml` to point the `media` and `downloads` volumes at your actual Unraid
 shares (e.g. `/mnt/user/media`, `/mnt/user/downloads`) before starting — `downloads` must be the
@@ -555,7 +555,7 @@ On first boot, check the logs for your API key:
 docker compose logs aonarr-server | grep "API key"
 ```
 
-Then open `http://<unraid-ip>:7878`, paste that key in to log in, and:
+Then open `http://<unraid-ip>:9876`, paste that key in to log in, and:
 
 1. **Settings** → add a root folder per library you'll use, whichever metadata provider API keys
    you want (MusicBrainz/Open Library/Deezer/TVmaze/AniList need none), a subtitle provider

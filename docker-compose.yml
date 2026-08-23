@@ -29,4 +29,4 @@ services:
     depends_on:
       - aonarr-server
     ports:
-      - "7878:7878"
+      - "9876:9876"

@@ -3,6 +3,23 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 48
+- App icon now appears in the sidebar next to the "AoNarr" wordmark, not just the browser tab
+- Default WebUI port changed from 7878 to 9876, everywhere it's referenced: nginx (both the
+  combined image's static config and the split web image's template), both Dockerfiles'
+  `EXPOSE`/`HEALTHCHECK`, `docker-compose.yml`, the `aonarr`/`aonarr-web` Unraid templates'
+  `WebUI`/`Config` port entries, the Remote Library page's example URL placeholder, and the
+  current-instructions parts of the README (a historical log entry describing a past port-7878
+  bug was left as-is, since rewriting history there would be inaccurate). `aonarr-server.xml`'s
+  8989 API port is unrelated to this and wasn't touched. Verified against a real container mapped
+  to the new port: root page, `/icon.svg`, and `/api/health` all 200, and Docker's own
+  `HEALTHCHECK` (which hits the port internally, not through the host mapping) reports `healthy`
+- Removed the default Media/Downloads path values from the two Unraid templates that have them
+  (`aonarr.xml`, `aonarr-server.xml` — `aonarr-web.xml` has no path config at all) — previously
+  pre-filled with `/mnt/user/media`/`/mnt/user/downloads`, which could look like a working default
+  and get skipped past rather than pointed at the user's actual shares; now blank so the field has
+  to be deliberately filled in
+
 ## Round 47
 - Fixed the last of the toolbar height discrepancy: the dropdown trigger's height was set on the
   wrapping `.dropdown` div and inherited by its inner button via `height: 100%` — a percentage

@@ -49,11 +49,15 @@ body {
 }
 
 .sidebar .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 1.4rem;
   font-weight: 700;
   padding: 0 20px 16px;
   color: var(--accent);
 }
+.sidebar .brand img { border-radius: 6px; flex-shrink: 0; }
 
 .sidebar a {
   display: block;

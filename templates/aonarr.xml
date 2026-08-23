@@ -18,7 +18,7 @@ On first boot, open the web UI and create an admin account (username/password) �
 Point the Downloads and Media paths at the same shares your download client and media library actually use — AoNarr resolves completed downloads and organizes files under Media itself, it doesn't just track them.</Overview>
   <Category>MediaApp:Video MediaApp:Music MediaApp:Books</Category>
   <License>MIT</License>
-  <WebUI>http://[IP]:[PORT:7878]/</WebUI>
+  <WebUI>http://[IP]:[PORT:9876]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/aon082910/AoNarr/main/templates/aonarr.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/aon082910/AoNarr/main/web/public/icon.svg</Icon>
   <ExtraParams/>
@@ -27,10 +27,10 @@ Point the Downloads and Media paths at the same shares your download client and 
   <DateInstalled/>
   <DonateText/>
   <DonateLink/>
-  <Config Name="WebUI Port" Target="7878" Default="7878" Mode="tcp" Description="Port the browser UI is served on." Type="Port" Display="always" Required="true" Mask="false">7878</Config>
+  <Config Name="WebUI Port" Target="9876" Default="9876" Mode="tcp" Description="Port the browser UI is served on." Type="Port" Display="always" Required="true" Mask="false">9876</Config>
   <Config Name="Config" Target="/config" Default="/mnt/user/appdata/aonarr/config" Mode="rw" Description="Database and settings storage." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/aonarr/config</Config>
-  <Config Name="Media" Target="/media" Default="/mnt/user/media" Mode="rw" Description="Root of your media library — the same share your root folders (configured inside the app) live under." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/media</Config>
-  <Config Name="Downloads" Target="/downloads" Default="/mnt/user/downloads" Mode="rw" Description="Shared downloads folder — must be the same path your download client (qBittorrent/SABnzbd) writes completed downloads to." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/downloads</Config>
+  <Config Name="Media" Target="/media" Default="" Mode="rw" Description="Root of your media library — the same share your root folders (configured inside the app) live under." Type="Path" Display="always" Required="true" Mask="false"></Config>
+  <Config Name="Downloads" Target="/downloads" Default="" Mode="rw" Description="Shared downloads folder — must be the same path your download client (qBittorrent/SABnzbd) writes completed downloads to." Type="Path" Display="always" Required="true" Mask="false"></Config>
   <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID files are created as — 99 is Unraid's default 'nobody' user." Type="Variable" Display="always" Required="false" Mask="false">99</Config>
   <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID files are created as — 100 is Unraid's default 'users' group." Type="Variable" Display="always" Required="false" Mask="false">100</Config>
   <Config Name="Search Interval (minutes)" Target="AONARR_SEARCH_INTERVAL_MINUTES" Default="30" Mode="" Description="How often the scheduler auto-searches monitored, fileless items." Type="Variable" Display="advanced" Required="false" Mask="false">30</Config>

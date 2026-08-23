@@ -56,8 +56,8 @@ COPY combined/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 VOLUME ["/config"]
-EXPOSE 7878
+EXPOSE 9876
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD curl -f http://127.0.0.1:7878/api/health || exit 1
+  CMD curl -f http://127.0.0.1:9876/api/health || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]

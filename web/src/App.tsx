@@ -78,7 +78,10 @@ export default function App() {
     <div className="app">
       <CommandPalette />
       <nav className="sidebar">
-        <div className="brand">AoNarr</div>
+        <div className="brand">
+          <img src="/icon.svg" alt="" width={28} height={28} />
+          AoNarr
+        </div>
         <div style={{ fontSize: "0.7rem", color: "var(--muted)", padding: "0 12px 8px" }} title="Ctrl/Cmd+K to jump anywhere, / to search">
           ⌘K to jump · / to search
         </div>

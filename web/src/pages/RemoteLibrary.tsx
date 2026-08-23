@@ -97,7 +97,7 @@ export default function RemoteLibrary() {
       <form className="form-panel" onSubmit={addInstance}>
         <label>Name</label>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Cabin AoNarr" required />
-        <label>URL (base, e.g. http://192.168.1.50:7878)</label>
+        <label>URL (base, e.g. http://192.168.1.50:9876)</label>
         <input value={url} onChange={(e) => setUrl(e.target.value)} required />
         <label>API key</label>
         <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} required />
