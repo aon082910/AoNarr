@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { db } from "../db/client.js";
 import { config } from "../config.js";
@@ -60,20 +61,53 @@ export function recycleFile(filePath: string, mediaType: string, title: string, 
   }
 }
 
-export function restoreFromRecycleBin(id: number): void {
+/** Async counterpart to moveFile — restoring can mean moving a many-GB remux back across a
+ * different filesystem (the same EXDEV case moveFile handles), and fs.copyFileSync blocks Node's
+ * single event loop for the entire copy. fs.promises' copyFile/rename hand the work to libuv's
+ * thread pool instead, so the rest of the app (including the next click on this same page) keeps
+ * responding while a big restore is in flight. */
+async function moveFileAsync(src: string, dest: string): Promise<void> {
+  try {
+    await fsp.rename(src, dest);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
+    await fsp.copyFile(src, dest);
+    await fsp.unlink(src);
+  }
+}
+
+/** Kicks off a restore and returns immediately — the caller (the route) responds right away
+ * rather than holding the HTTP request open for however long a large file takes to move. Progress
+ * is tracked via the `restoring`/`restore_error` columns so the list view can reflect it. Throws
+ * synchronously (before any async work starts) for the cheap, immediate validation errors — "no
+ * such entry" or "already restoring" — so the route can 400 those the normal way; everything after
+ * that point resolves through the DB row instead of a thrown error, since by then the HTTP response
+ * has already gone out. */
+export function startRestoreFromRecycleBin(id: number): void {
   const row = db.prepare("SELECT * FROM recycle_bin WHERE id = ?").get(id) as
-    | { recycle_path: string; original_path: string }
+    | { recycle_path: string; original_path: string; restoring: number }
     | undefined;
   if (!row) throw new Error("Recycle bin entry not found");
+  if (row.restoring) throw new Error("This item is already being restored");
 
-  fs.mkdirSync(path.dirname(row.original_path), { recursive: true });
-  moveFile(row.recycle_path, row.original_path);
-  db.prepare("DELETE FROM recycle_bin WHERE id = ?").run(id);
+  db.prepare("UPDATE recycle_bin SET restoring = 1, restore_error = NULL WHERE id = ?").run(id);
+
+  (async () => {
+    try {
+      await fsp.mkdir(path.dirname(row.original_path), { recursive: true });
+      await moveFileAsync(row.recycle_path, row.original_path);
+      db.prepare("DELETE FROM recycle_bin WHERE id = ?").run(id);
+    } catch (err) {
+      log.warn(`[recycleBin] restore failed for entry ${id}:`, (err as Error).message);
+      db.prepare("UPDATE recycle_bin SET restoring = 0, restore_error = ? WHERE id = ?").run((err as Error).message, id);
+    }
+  })();
 }
 
 export function purgeRecycleBinEntry(id: number): void {
-  const row = db.prepare("SELECT * FROM recycle_bin WHERE id = ?").get(id) as { recycle_path: string } | undefined;
+  const row = db.prepare("SELECT * FROM recycle_bin WHERE id = ?").get(id) as { recycle_path: string; restoring: number } | undefined;
   if (!row) return;
+  if (row.restoring) throw new Error("This item is being restored — wait for that to finish first");
   try {
     fs.unlinkSync(row.recycle_path);
   } catch {
@@ -86,8 +120,14 @@ export function purgeRecycleBinEntry(id: number): void {
 export async function purgeExpiredRecycleBinEntries(): Promise<void> {
   const days = Math.max(1, parseInt(getSetting("recycleBinRetentionDays") ?? "30", 10) || 30);
   const rows = db
-    .prepare(`SELECT id FROM recycle_bin WHERE deleted_at <= datetime('now', ?)`)
+    .prepare(`SELECT id FROM recycle_bin WHERE deleted_at <= datetime('now', ?) AND restoring = 0`)
     .all(`-${days} days`) as { id: number }[];
-  for (const row of rows) purgeRecycleBinEntry(row.id);
+  for (const row of rows) {
+    try {
+      purgeRecycleBinEntry(row.id);
+    } catch (err) {
+      log.warn(`[recycleBin] failed to purge expired entry ${row.id}:`, (err as Error).message);
+    }
+  }
   if (rows.length > 0) log.info(`[recycleBin] purged ${rows.length} expired entrie(s)`);
 }

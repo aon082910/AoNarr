@@ -318,4 +318,6 @@ export interface RecycleBinEntry {
   originalPath: string;
   sizeBytes: number | null;
   deletedAt: string;
+  restoring: boolean;
+  restoreError: string | null;
 }

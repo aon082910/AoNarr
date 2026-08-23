@@ -3,6 +3,32 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 74
+- Fixed Recycle Bin restore freezing the whole app for however long a large file took to move.
+  Restoring used `fs.copyFileSync` (needed when the recycle bin and the original location are on
+  different Docker volumes — a plain rename fails with EXDEV there) synchronously on the request
+  thread, which blocks Node's single event loop for the entire copy — not just that one request,
+  every request the server was handling. Restore is now fire-and-forget like every other slow job
+  in this app, using real async file I/O (`fs.promises`) so the event loop stays free while a big
+  file moves. New `restoring`/`restoreError` columns track progress so the Recycle Bin page can
+  show "Restoring..." on the affected row (disabling that row's buttons) and poll until it either
+  disappears (done) or shows a retryable error, instead of the button just doing nothing for a long
+  stretch. Purging an entry that's mid-restore is now rejected with a clear error instead of racing
+  the in-flight move
+- Fixed a real title-accuracy bug: the "Refresh" button (and the scheduled Library Refresh job)
+  re-pulled overview/poster/year from each item's metadata provider but deliberately never touched
+  `title` — meaning an item Scan & Import created from a guessed filename (its whole point being "no
+  rich metadata yet") kept that guessed title forever, even after Refresh had already found and
+  applied the correct overview/poster/year from the real match. Refresh now also corrects title/
+  external ids, but only for items with no external ids yet — i.e. items that were never actually
+  matched to real metadata in the first place. An item that's already matched (has external ids)
+  keeps its title exactly as-is, since a fuzzy title-only search could occasionally land on the
+  wrong result and this shouldn't silently rename something already correct
+- Verified both live: the title fix was confirmed with a real (unmocked) AniList lookup — a
+  guessed-title unmatched item got corrected to AniList's real title/casing/overview/external id,
+  while a deliberately custom-titled already-matched item was correctly left untouched by the same
+  Refresh run
+
 ## Round 73
 - Add Media's "Import from a course page URL" (Round 70) now auto-selects the Courses library's
   "Site" group from the scraped URL's hostname (coursera.org/udemy.com/edx.org → Coursera/Udemy/

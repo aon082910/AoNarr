@@ -16,8 +16,23 @@ export default function RecycleBin() {
   }
   useEffect(load, []);
 
+  // Restoring happens in the background on the server now (large files can take a while to move),
+  // so this page polls while anything is mid-restore to notice when it finishes or fails, instead
+  // of the old behavior of blocking the request until the move completed.
+  useEffect(() => {
+    if (!entries.some((e) => e.restoring)) return;
+    const timer = setInterval(load, 3000);
+    return () => clearInterval(timer);
+  }, [entries]);
+
   async function restore(id: number) {
-    await api.post(`/recycle-bin/${id}/restore`, {});
+    setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, restoring: true, restoreError: null } : e)));
+    try {
+      await api.post(`/recycle-bin/${id}/restore`, {});
+    } catch (err) {
+      setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, restoring: false, restoreError: (err as Error).message } : e)));
+      return;
+    }
     load();
   }
 
@@ -64,17 +79,22 @@ export default function RecycleBin() {
                 <tbody>
                   {items.map((e) => (
                     <tr key={e.id}>
-                      <td>{e.title}</td>
+                      <td>
+                        {e.title}
+                        {e.restoreError && (
+                          <div style={{ color: "var(--danger)", fontSize: "0.8rem" }}>Restore failed: {e.restoreError}</div>
+                        )}
+                      </td>
                       <td style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {e.originalPath}
                       </td>
                       <td>{formatBytes(e.sizeBytes)}</td>
                       <td>{new Date(e.deletedAt).toLocaleString()}</td>
                       <td style={{ display: "flex", gap: 6 }}>
-                        <button className="secondary" onClick={() => restore(e.id)}>
-                          Restore
+                        <button className="secondary" onClick={() => restore(e.id)} disabled={e.restoring}>
+                          {e.restoring ? "Restoring..." : e.restoreError ? "Retry restore" : "Restore"}
                         </button>
-                        <button className="danger" onClick={() => purge(e.id, e.title)}>
+                        <button className="danger" onClick={() => purge(e.id, e.title)} disabled={e.restoring}>
                           Delete forever
                         </button>
                       </td>

@@ -241,7 +241,9 @@ CREATE TABLE IF NOT EXISTS recycle_bin (
   original_path TEXT NOT NULL,
   recycle_path TEXT NOT NULL,
   size_bytes INTEGER,
-  deleted_at TEXT NOT NULL DEFAULT (datetime('now'))
+  deleted_at TEXT NOT NULL DEFAULT (datetime('now')),
+  restoring INTEGER NOT NULL DEFAULT 0, -- 1 while an async restore is in flight (large files move off the request thread)
+  restore_error TEXT -- set if the last restore attempt failed, cleared on the next attempt
 );
 
 -- A public, unauthenticated read-only link to one media item's overview/poster — for sharing

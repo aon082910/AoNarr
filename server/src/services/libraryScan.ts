@@ -387,8 +387,16 @@ export async function scanAndImportLibrary(type: string, signal?: AbortSignal): 
 
 /** Re-pulls overview/poster/year from the same metadata provider used at add-time for every item
  * of a type — the closest a title-only search API can get to "refresh," since there's no
- * fetch-by-id call generic enough to cover every provider this app supports. Never touches title
- * or external ids, only fields safe to overwrite with a fresher value. */
+ * fetch-by-id call generic enough to cover every provider this app supports.
+ *
+ * Title/external ids are only overwritten for items that don't have external ids yet — i.e. items
+ * that were never actually matched to real metadata in the first place, almost always a Scan &
+ * Import guess parsed straight from a filename. For those, this Refresh is the only "match" they
+ * ever get, so leaving the guessed title in place forever (the previous behavior) meant Scan &
+ * Import's filename guess was permanent even after the item's overview/poster/year had all been
+ * correctly filled in from the real provider result. An item that's already matched (has external
+ * ids) keeps its title untouched, since a fuzzy title-only search could occasionally land on the
+ * wrong result and this shouldn't silently rename something that was already correct. */
 export async function refreshLibraryMetadata(type: string, signal?: AbortSignal): Promise<{ updated: number; failed: number }> {
   const items = db.prepare("SELECT * FROM media_items WHERE type = ?").all(type) as any[];
   let updated = 0;
@@ -403,10 +411,16 @@ export async function refreshLibraryMetadata(type: string, signal?: AbortSignal)
         failed++;
         continue;
       }
-      db.prepare("UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), year = COALESCE(?, year) WHERE id = ?").run(
+      const alreadyMatched = item.external_ids && item.external_ids !== "{}";
+      db.prepare(
+        `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), year = COALESCE(?, year)
+         ${alreadyMatched ? "" : ", title = ?, sort_title = ?, external_ids = ?"}
+         WHERE id = ?`
+      ).run(
         best.overview,
         best.posterUrl,
         best.year,
+        ...(alreadyMatched ? [] : [best.title, best.title.toLowerCase(), JSON.stringify(best.externalIds ?? {})]),
         item.id
       );
       updated++;

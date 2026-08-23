@@ -68,6 +68,8 @@ ensureColumn("library_groups", "overview", "overview TEXT");
 ensureColumn("qualities", "preferred_size_mb", "preferred_size_mb INTEGER");
 ensureColumn("custom_formats", "media_types", "media_types TEXT");
 ensureColumn("custom_formats", "trash_id", "trash_id TEXT");
+ensureColumn("recycle_bin", "restoring", "restoring INTEGER NOT NULL DEFAULT 0");
+ensureColumn("recycle_bin", "restore_error", "restore_error TEXT");
 
 /**
  * indexers.protocol and download_clients.type originally shipped with a rigid `CHECK (... IN (...))`
