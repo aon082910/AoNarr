@@ -8,7 +8,7 @@
       <stop offset="0" stop-color="#7ab0ff"/>
       <stop offset="1" stop-color="#3f6fd8"/>
     </linearGradient>
-    <linearGradient id="play" x1="76" y1="62" x2="132" y2="96" gradientUnits="userSpaceOnUse">
+    <linearGradient id="mark" x1="64" y1="60" x2="128" y2="132" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#8fbcff"/>
       <stop offset="1" stop-color="#4f8cff"/>
     </linearGradient>
@@ -16,9 +16,20 @@
 
   <rect width="192" height="192" rx="40" fill="url(#bg)"/>
 
-  <!-- Unified media hub: a ring (every library type orbiting one app) around a play mark. -->
+  <!-- Unified media hub: a ring (every library type orbiting one app), 8 stars spaced evenly
+       around it, and a geometric "A" mark at the center. -->
   <circle cx="96" cy="96" r="58" fill="none" stroke="url(#ring)" stroke-width="11"/>
-  <circle cx="96" cy="38" r="7" fill="#4f8cff"/>
 
-  <path d="M78 63 L128 96 L78 129 Z" fill="url(#play)" stroke="#12141b" stroke-width="3" stroke-linejoin="round"/>
+  <!-- 8 stars, one every 45 degrees around the ring -->
+  <path d="M96,31 Q98.5,35.5 103,38 Q98.5,40.5 96,45 Q93.5,40.5 89,38 Q93.5,35.5 96,31 Z" fill="#9cc4ff"/>
+  <path d="M137,48 Q139.5,52.5 144,55 Q139.5,57.5 137,62 Q134.5,57.5 130,55 Q134.5,52.5 137,48 Z" fill="#9cc4ff"/>
+  <path d="M154,89 Q156.5,93.5 161,96 Q156.5,98.5 154,103 Q151.5,98.5 147,96 Q151.5,93.5 154,89 Z" fill="#9cc4ff"/>
+  <path d="M137,130 Q139.5,134.5 144,137 Q139.5,139.5 137,144 Q134.5,139.5 130,137 Q134.5,134.5 137,130 Z" fill="#9cc4ff"/>
+  <path d="M96,147 Q98.5,151.5 103,154 Q98.5,156.5 96,161 Q93.5,156.5 89,154 Q93.5,151.5 96,147 Z" fill="#9cc4ff"/>
+  <path d="M55,130 Q57.5,134.5 62,137 Q57.5,139.5 55,144 Q52.5,139.5 48,137 Q52.5,134.5 55,130 Z" fill="#9cc4ff"/>
+  <path d="M38,89 Q40.5,93.5 45,96 Q40.5,98.5 38,103 Q35.5,98.5 33,96 Q35.5,93.5 38,89 Z" fill="#9cc4ff"/>
+  <path d="M55,48 Q57.5,52.5 62,55 Q57.5,57.5 55,62 Q52.5,57.5 48,55 Q52.5,52.5 55,48 Z" fill="#9cc4ff"/>
+
+  <!-- Geometric "A" monogram -->
+  <path d="M96 60 L72 132 M96 60 L120 132 M80.4 106.8 L111.6 106.8" fill="none" stroke="url(#mark)" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

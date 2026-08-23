@@ -3,6 +3,19 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 45
+- Toolbar `<select>` elements now have their native OS dropdown-arrow chrome stripped entirely
+  (`appearance: none` + a hand-drawn caret background image) instead of relying on an explicit
+  `height` override to fight it — some browsers keep their own intrinsic sizing around that native
+  arrow area regardless of CSS height/padding, which can still show as a shorter/taller control
+  next to a plain button even when computed styles look identical in devtools. This is a stricter
+  fix than Round 44's, verified again with getBoundingClientRect() (still pixel-identical) plus
+  now robust against the browsers where the height-only approach wasn't enough
+- Icon v2, per feedback on the first design: the play-mark center is now a hand-drawn geometric
+  "A" monogram (three strokes — two diagonals, one crossbar — no font dependency so it renders
+  identically everywhere including Docker Hub/Unraid CA), and the single orbiting dot is now 8
+  small stars spaced evenly every 45° around the ring
+
 ## Round 44
 - Found and fixed the actual remaining cause of the Library toolbar misalignment: a `<select>`
   carries its own native intrinsic sizing around the dropdown-arrow area that identical
