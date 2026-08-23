@@ -10,14 +10,49 @@ export interface CorruptCheckResult {
   corrupt: number;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** A single ffprobe failure ("Invalid data found when processing input", "EBML header", a
+ * timeout, etc.) doesn't distinguish a genuinely corrupt file from a transient one — a file still
+ * mid-write by something else with access to the root folder, a network/SMB mount hiccup, a brief
+ * lock. Both look identical to ffprobe: it can't parse what's currently on disk. Before trusting a
+ * single failure enough to recycle a file, confirm the file isn't still changing size (a dead
+ * giveaway it's still being written) and give ffprobe one retry a few seconds later — cheap
+ * insurance against exactly the false-positive class this weekly background job has no business
+ * risking real data over. */
+async function isStillBeingWritten(filePath: string): Promise<boolean> {
+  try {
+    const before = fs.statSync(filePath).size;
+    await sleep(3000);
+    const after = fs.statSync(filePath).size;
+    return before !== after;
+  } catch {
+    return false;
+  }
+}
+
 /** A file counts as corrupt if it's gone from disk despite the DB saying it has one, or ffprobe
- * can't make sense of it, or (for a library whose shape is actual video) ffprobe succeeds but
- * finds no video stream at all — a classic symptom of a fake/mislabeled release that's actually
- * an html error page or a truncated download saved with a video extension. */
+ * can't make sense of it (after ruling out "it's still being written" and giving it one retry), or
+ * (for a library whose shape is actual video) ffprobe succeeds but finds no video stream at all —
+ * a classic symptom of a fake/mislabeled release that's actually an html error page or a truncated
+ * download saved with a video extension. */
 async function isCorrupt(filePath: string, type: string): Promise<boolean> {
   if (!fs.existsSync(filePath)) return true;
-  const info = await probeMediaInfo(filePath);
+
+  // Probe first — the fast path for the overwhelming majority of files, which are fine, so the
+  // stability check and retry below only ever run for a file that's already failed once (paying
+  // the extra few seconds only where it's actually needed, not on every healthy file in a library
+  // that could be thousands of items).
+  let info = await probeMediaInfo(filePath);
+  if (!info) {
+    if (await isStillBeingWritten(filePath)) return false;
+    await sleep(3000);
+    info = await probeMediaInfo(filePath);
+  }
   if (!info) return true;
+
   const looksLikeVideo = ["movie", "series", "anime", "video", "course", "adult"].includes(type);
   if (looksLikeVideo && !info.videoCodec) return true;
   return false;

@@ -137,18 +137,16 @@ export interface ScanImportResult {
  * (episodic) by a guessed title where possible (has_file=1 + path, same as a normal grab import),
  * else creates a new minimal item/series outright — a fresh library with nothing pre-added in
  * AoNarr yet still gets fully imported, not just files that happen to match something already
- * there. Scoped to "single" and "episodic" shapes (movie/series/anime/rom/adult) — "collection"
- * shapes (books, comics, music, video channels, courses) need a parent item to file a new child
- * under, and blindly creating one from a single filename would misrepresent the structure, so
- * those are reported as unsupported rather than guessed at.
+ * there. For "collection" shapes (books, comics, music, video channels, courses), the same idea
+ * applies one level deeper: the file's immediate parent folder (relative to the root folder) is
+ * taken as the parent item's title (Artist/Author/Creator — matched against an existing item or
+ * created), and the child (Album/Book/Issue) is either the next folder down (for
+ * `multiFilePerChild` types like Music, where an album is a folder of tracks — the whole folder
+ * becomes one sub_item) or the file's own name (for everything else, one file per child).
  */
 export async function scanAndImportLibrary(type: string, signal?: AbortSignal): Promise<ScanImportResult> {
   const typeConfig = getMediaTypeConfig(type);
   const result: ScanImportResult = { matched: 0, created: 0, skipped: 0, skippedFiles: [] };
-  if (typeConfig.shape === "collection") {
-    result.unsupported = "Scan & import isn't supported for this library type yet — it needs an existing parent item to file new children under.";
-    return result;
-  }
 
   const folders = (db.prepare("SELECT * FROM root_folders WHERE media_type = ?").all(type) as any[]).map(rootFolderFromRow);
   if (folders.length === 0) return result;
@@ -162,13 +160,37 @@ export async function scanAndImportLibrary(type: string, signal?: AbortSignal): 
         )
         .all(type) as { file_path: string }[]
     ).map((r) => r.file_path),
+    ...(
+      db
+        .prepare(
+          `SELECT s.file_path FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE s.file_path IS NOT NULL AND m.type = ?`
+        )
+        .all(type) as { file_path: string }[]
+    ).map((r) => r.file_path),
   ]);
 
-  const files: string[] = [];
+  let files: string[] = [];
   for (const folder of folders) walkForExtensions(folder.path, typeConfig.extensions, knownPaths, files);
+
+  // multiFilePerChild sub_items track a whole album FOLDER as one file_path — a plain per-file
+  // knownPaths check above wouldn't catch individual track files inside an already-known album, so
+  // every already-tracked album folder's files are excluded here instead, up front.
+  if (typeConfig.shape === "collection" && typeConfig.multiFilePerChild) {
+    const knownAlbumFolders = new Set(
+      (
+        db
+          .prepare(
+            `SELECT s.file_path FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE s.file_path IS NOT NULL AND m.type = ?`
+          )
+          .all(type) as { file_path: string }[]
+      ).map((r) => r.file_path)
+    );
+    files = files.filter((f) => !knownAlbumFolders.has(path.dirname(f)));
+  }
 
   const missingItems = db.prepare("SELECT * FROM media_items WHERE type = ? AND has_file = 0").all(type) as any[];
   const seriesItems = typeConfig.shape === "episodic" ? (db.prepare("SELECT * FROM media_items WHERE type = ?").all(type) as any[]) : [];
+  const collectionParents = typeConfig.shape === "collection" ? (db.prepare("SELECT * FROM media_items WHERE type = ?").all(type) as any[]) : [];
   const qualityProfileId = defaultQualityProfileId();
 
   for (const filePath of files) {
@@ -228,6 +250,100 @@ export async function scanAndImportLibrary(type: string, signal?: AbortSignal): 
           ).run(seriesMatch.id, season, episode, `Episode ${episode}`, filePath, quality, mediaInfoJson);
         }
         result.matched++;
+      } else if (typeConfig.shape === "collection") {
+        const folder = folders.find((f) => filePath.startsWith(f.path));
+        if (!folder) {
+          result.skipped++;
+          result.skippedFiles.push(filePath);
+          continue;
+        }
+        const relSegments = path.relative(folder.path, filePath).split(path.sep).filter(Boolean);
+        // Needs at least "Parent/file.ext" (2 segments) to know who the file belongs to — a file
+        // sitting directly in the root folder with no parent folder at all can't be guessed at.
+        if (relSegments.length < 2) {
+          result.skipped++;
+          result.skippedFiles.push(filePath);
+          continue;
+        }
+        const parentTitle = guessTitleFromText(relSegments[0]);
+        if (!parentTitle) {
+          result.skipped++;
+          result.skippedFiles.push(filePath);
+          continue;
+        }
+
+        let parentMatch = collectionParents.find((m) => titlesMatch(m.title, parentTitle));
+        if (!parentMatch) {
+          const insertResult = db
+            .prepare(
+              `INSERT INTO media_items (type, title, sort_title, root_folder_id, quality_profile_id, monitored, has_file, status)
+               VALUES (?, ?, ?, ?, ?, 1, 0, 'unknown')`
+            )
+            .run(type, parentTitle, parentTitle.toLowerCase(), folder.id, qualityProfileId);
+          parentMatch = { id: Number(insertResult.lastInsertRowid), title: parentTitle, has_file: 0 };
+          collectionParents.push(parentMatch);
+        }
+
+        const childSubItems = db.prepare("SELECT * FROM sub_items WHERE media_item_id = ?").all(parentMatch.id) as any[];
+
+        if (typeConfig.multiFilePerChild) {
+          // Album is whichever folder the file directly sits in (relSegments[0] = parent/artist,
+          // so a real "Artist/Album/track.mp3" layout has the album as relSegments[1]; a flatter
+          // "Artist/track.mp3" layout with no album subfolder falls back to the artist's own name
+          // as a single self-titled album rather than being skipped outright).
+          const albumFolderName = relSegments.length >= 3 ? relSegments[1] : relSegments[0];
+          const albumTitle = guessTitleFromText(albumFolderName);
+          if (!albumTitle) {
+            result.skipped++;
+            result.skippedFiles.push(filePath);
+            continue;
+          }
+          let childMatch = childSubItems.find((s) => titlesMatch(s.title, albumTitle));
+          if (!childMatch) {
+            const insertResult = db
+              .prepare("INSERT INTO sub_items (media_item_id, title, monitored) VALUES (?, ?, 1)")
+              .run(parentMatch.id, albumTitle);
+            childMatch = { id: Number(insertResult.lastInsertRowid), title: albumTitle, has_file: 0 };
+            childSubItems.push(childMatch);
+          }
+          if (!childMatch.has_file) {
+            db.prepare("UPDATE sub_items SET has_file = 1, file_path = ? WHERE id = ?").run(parentDir, childMatch.id);
+            childMatch.has_file = 1;
+            result.matched++;
+          } else {
+            // Already-known album that just gained another track file — nothing new to record at
+            // the album level, but the file itself is now accounted for rather than re-scanned
+            // forever (its containing folder join the knownAlbumFolders exclusion on the next run).
+            result.skipped++;
+          }
+        } else {
+          const childTitle = guessTitleFromText(base);
+          if (!childTitle) {
+            result.skipped++;
+            result.skippedFiles.push(filePath);
+            continue;
+          }
+          const parsed = parseReleaseTitle(base);
+          const quality = parsed.quality === "Unknown" ? null : parsed.quality;
+          const mediaInfo = await probeMediaInfo(filePath);
+          const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
+
+          const childMatch = childSubItems.find((s) => titlesMatch(s.title, childTitle));
+          if (childMatch) {
+            db.prepare("UPDATE sub_items SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?").run(
+              filePath,
+              quality,
+              mediaInfoJson,
+              childMatch.id
+            );
+          } else {
+            db.prepare(
+              `INSERT INTO sub_items (media_item_id, title, monitored, has_file, file_path, quality, media_info)
+               VALUES (?, ?, 1, 1, ?, ?, ?)`
+            ).run(parentMatch.id, childTitle, filePath, quality, mediaInfoJson);
+          }
+          result.matched++;
+        }
       } else {
         const guessedTitle = guessTitleFromText(base);
         if (!guessedTitle) {

@@ -3,6 +3,61 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 59
+- Fixed "API Definition fetch error unauthorized" on the API Docs page: Swagger UI's request
+  interceptor only ever attached `X-Api-Key`, never `X-Session-Token` — any admin logged in via a
+  normal session (not the raw admin API key) sent a fully anonymous request to `/api/openapi.json`
+  and got 401'd. Now sends whichever credential the current login actually populated
+- Fixed clicking any link/media row landing scrolled partway down the new page instead of at the
+  top — a plain `<BrowserRouter>` never resets scroll position on navigation on its own; added a
+  small `ScrollToTop` component that does
+- Fixed the ffprobe "Invalid data found when processing input" / "EBML header" corrupt-file
+  detection being trigger-happy: a single ffprobe failure for *any* reason (a genuinely corrupt
+  file, but equally a file still mid-write, a network/SMB mount hiccup, or a brief lock) was
+  unconditionally treated as "corrupt, recycle it" with zero retry. Now checks whether the file's
+  size is still changing (a dead giveaway it's still being written) before trusting a failure, and
+  gives ffprobe one retry a few seconds later before concluding anything is actually broken.
+  Verified against both a real corrupt file (garbage bytes saved as `.mkv`, reproducing the exact
+  "EBML header parsing failed" error from the bug report — still correctly caught after the retry)
+  and a file actively growing mid-write (correctly spared, not flagged corrupt)
+- Implemented Scan & Import for "collection"-shape libraries (Music, Books, Audiobooks, Comics,
+  Manga, Online Videos, Courses) — previously an intentional stub that always returned "isn't
+  supported yet." Follows the same folder-convention approach Sonarr/etc. use: the file's immediate
+  parent folder becomes the parent item (Artist/Author/Creator, matched or created), and the child
+  (Album/Book/Issue) is either the next folder down for `multiFilePerChild` types like Music (a
+  whole album folder becomes one child, matching how normal album grabs already work) or the file's
+  own name for everything else. Verified live: scanned a real `Radiohead/OK Computer/*.mp3`
+  structure, confirmed "Radiohead" was auto-created and "OK Computer" correctly registered as its
+  album; re-ran the scan and confirmed already-known albums are correctly skipped, not re-processed
+- Added pagination to the Audit Log (previously a flat unpaginated list capped at 500 rows total,
+  no way to see anything older) — `page`/`pageSize` query params server-side, Previous/Next controls
+  in the UI, and the effective total no longer capped at all (just paginated)
+- Added audit logging for adding, deleting, and rematching media — previously the audit log only
+  covered logins/requests/account changes, not the actual library-changing actions most worth
+  reviewing later. Verified live: added, rematched, and deleted a test item, confirmed all three
+  showed up correctly with the right before/after detail
+- Moved the poster-size dropdown into the same toolbar row as Sort/Status/Tags (previously in a
+  separate row with View), and made Sort and Status selections persist across visits the same way
+  View and poster size already did (all four now save to localStorage) — verified live: changed
+  Sort to "Title" and Status to "Missing" on Movies, navigated to a completely different library,
+  confirmed both choices carried over
+- Added a "Select" toggle to every library's toolbar (previously the bulk-selection checkboxes were
+  always visible for every admin, cluttering the view when you're not trying to bulk-act on
+  anything) plus "Select all"/"Select none" buttons that appear once selection mode is on. Verified
+  live: toggled Select on, confirmed checkboxes appear, confirmed Select all correctly selects every
+  currently-visible item
+
+**Scoped for later rounds** — the rest of this request is several genuinely separate large features,
+each comparable in scope to a full subsystem (a read-only media analyzer with HDR/Dolby
+Vision/hardware-compatibility detection; per-library naming setup UI; fully custom/filterable
+sorting across every metadata field; list/poster view column customization; a real per-library
+custom-formats + quality-definitions system like Sonarr/Radarr's; Plex/Jellyfin/Emby as
+notification *and* library-import targets; importing config/libraries from other Starr apps;
+Coursera/edX/Udemy course-page scraping; TRaSH-Guides format *sync* rather than one-time import;
+manual-match fallback UI for Watchlist Import and Import Lists; a file-path browser for the backup
+directory setting; "search all missing" bulk actions). Tackling these next, starting with whichever
+you'd like prioritized first.
+
 ## Round 58
 - Continued the audit series onto the security-critical files: `auth.ts`, `totp.ts`,
   `rateLimiter.ts`, `middleware/auth.ts`, and `releaseParser.ts` (release-title matching, used

@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import swaggerCssUrl from "swagger-ui-dist/swagger-ui.css?url";
 import swaggerBundleUrl from "swagger-ui-dist/swagger-ui-bundle.js?url";
 import swaggerPresetUrl from "swagger-ui-dist/swagger-ui-standalone-preset.js?url";
-import { getApiKey } from "../api/client.js";
+import { getApiKey, getSessionToken } from "../api/client.js";
 
 declare global {
   interface Window {
@@ -53,8 +53,13 @@ export default function ApiDocs() {
         domNode: containerRef.current,
         presets: [window.SwaggerUIBundle.presets.apis],
         requestInterceptor: (req: any) => {
+          // Whichever credential the current session actually used — the raw admin API key, or a
+          // session token from a normal logged-in admin account — since only one of the two is
+          // ever populated at a time (setApiKey/setSessionToken each clear the other).
           const key = getApiKey();
+          const token = getSessionToken();
           if (key) req.headers["X-Api-Key"] = key;
+          if (token) req.headers["X-Session-Token"] = token;
           return req;
         },
       });

@@ -14,6 +14,7 @@ import { getMediaTypeConfig } from "../services/mediaTypes.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { isExcluded } from "../services/importExclusions.js";
 import { log } from "../services/logger.js";
+import { logAuditEvent } from "../services/audit.js";
 import type { MediaType } from "../types/index.js";
 
 export const metadataRouter = Router();
@@ -151,6 +152,8 @@ metadataRouter.post(
     }
 
     const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId);
+    const actor = req.auth?.user ? { userId: req.auth.user.id, username: req.auth.user.username } : { userId: null, username: "admin" };
+    logAuditEvent(actor.userId, actor.username, "media_added", `${b.title} (${b.type})`);
     res.status(201).json({ ...mediaItemFromRow(row), childCount });
   })
 );

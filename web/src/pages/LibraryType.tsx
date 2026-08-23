@@ -230,11 +230,14 @@ export function LibraryItemGrid({
   const [typeSize, setTypeSize] = useState<number | null>(null);
   const [tags, setTags] = useState<Tag[]>([]);
   const [tagFilter, setTagFilter] = useState<number | "all">("all");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [sortKey, setSortKey] = useState<SortKey>("added");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(
+    () => (localStorage.getItem("aonarr_library_status") as StatusFilter) || "all"
+  );
+  const [sortKey, setSortKey] = useState<SortKey>(() => (localStorage.getItem("aonarr_library_sort") as SortKey) || "added");
   const [viewMode, setViewMode] = useState<ViewMode>(() => (localStorage.getItem("aonarr_library_view") as ViewMode) || "poster");
   const [posterSize, setPosterSize] = useState<PosterSize>(() => (localStorage.getItem("aonarr_library_poster_size") as PosterSize) || "medium");
   const [loading, setLoading] = useState(true);
+  const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [tagToApply, setTagToApply] = useState<number | "">("");
   const [importingCsv, setImportingCsv] = useState(false);
@@ -272,6 +275,12 @@ export function LibraryItemGrid({
   useEffect(() => {
     localStorage.setItem("aonarr_library_poster_size", posterSize);
   }, [posterSize]);
+  useEffect(() => {
+    localStorage.setItem("aonarr_library_sort", sortKey);
+  }, [sortKey]);
+  useEffect(() => {
+    localStorage.setItem("aonarr_library_status", statusFilter);
+  }, [statusFilter]);
 
   function toggleSelect(id: number, e: MouseEvent) {
     e.stopPropagation();
@@ -434,6 +443,13 @@ export function LibraryItemGrid({
             ))}
           </select>
         )}
+        {viewMode === "poster" && (
+          <select value={posterSize} onChange={(e) => setPosterSize(e.target.value as PosterSize)} style={{ maxWidth: 120 }}>
+            <option value="small">Small posters</option>
+            <option value="medium">Medium posters</option>
+            <option value="large">Large posters</option>
+          </select>
+        )}
       </div>
 
       <div className="toolbar" style={{ marginBottom: 16 }}>
@@ -445,13 +461,6 @@ export function LibraryItemGrid({
             {viewMode === "list" ? "✓ " : ""}List
           </button>
         </DropdownMenu>
-        {viewMode === "poster" && (
-          <select value={posterSize} onChange={(e) => setPosterSize(e.target.value as PosterSize)} style={{ maxWidth: 120 }}>
-            <option value="small">Small posters</option>
-            <option value="medium">Medium posters</option>
-            <option value="large">Large posters</option>
-          </select>
-        )}
 
         {auth.isAdmin && groupId && (
           <button type="button" onClick={quickAdd}>
@@ -513,9 +522,30 @@ export function LibraryItemGrid({
             {refreshing ? "Refreshing..." : "Refresh"}
           </button>
         )}
+        {auth.isAdmin && (
+          <button
+            className={selectMode ? "" : "secondary"}
+            onClick={() => {
+              setSelectMode((v) => !v);
+              setSelected(new Set());
+            }}
+          >
+            {selectMode ? "Done selecting" : "Select"}
+          </button>
+        )}
+        {auth.isAdmin && selectMode && (
+          <>
+            <button className="secondary" onClick={() => setSelected(new Set(sorted.map((i) => i.id)))}>
+              Select all
+            </button>
+            <button className="secondary" onClick={() => setSelected(new Set())}>
+              Select none
+            </button>
+          </>
+        )}
       </div>
 
-      {auth.isAdmin && selected.size > 0 && (
+      {auth.isAdmin && selectMode && selected.size > 0 && (
         <div className="form-panel toolbar">
           <strong>{selected.size} selected</strong>
           <button className="secondary" onClick={() => bulkMonitor(true)}>
@@ -557,7 +587,7 @@ export function LibraryItemGrid({
         <div className="grid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${POSTER_SIZE_PX[posterSize]}px, 1fr))` }}>
           {sorted.map((item) => (
             <div key={item.id} className="card" onClick={() => navigate(`/media/${item.id}`)} style={{ position: "relative" }}>
-              {auth.isAdmin && (
+              {selectMode && (
                 <input
                   type="checkbox"
                   checked={selected.has(item.id)}
@@ -584,7 +614,7 @@ export function LibraryItemGrid({
         <table>
           <thead>
             <tr>
-              {auth.isAdmin && <th></th>}
+              {selectMode && <th></th>}
               <th>Title</th>
               <th>Year</th>
               <th>Status</th>
@@ -594,7 +624,7 @@ export function LibraryItemGrid({
           <tbody>
             {sorted.map((item) => (
               <tr key={item.id} onClick={() => navigate(`/media/${item.id}`)} style={{ cursor: "pointer" }}>
-                {auth.isAdmin && (
+                {selectMode && (
                   <td>
                     <input
                       type="checkbox"

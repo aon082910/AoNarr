@@ -17,6 +17,14 @@ import { notifyGrabbed } from "../services/notifications.js";
 import { recycleFile } from "../services/recycleBin.js";
 import { buildCalibreOpf, buildJson, buildNfo, buildPlexMatch, fetchPosterBuffer, safeFileName, type ExportableItem } from "../services/metadataExport.js";
 import { probeMediaInfo } from "../services/ffprobe.js";
+import { logAuditEvent } from "../services/audit.js";
+
+/** Admin actions can come from either a logged-in user session or the raw instance API key — the
+ * latter has no user row to attribute the change to, so it's logged as "admin" the same way the
+ * existing requests.ts audit calls already do for API-key-driven approve/reject actions. */
+function auditActor(req: import("express").Request): { userId: number | null; username: string } {
+  return req.auth?.user ? { userId: req.auth.user.id, username: req.auth.user.username } : { userId: null, username: "admin" };
+}
 import AdmZip from "adm-zip";
 import type { MediaType } from "../types/index.js";
 
@@ -573,6 +581,8 @@ mediaRouter.post(
       });
 
     const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(result.lastInsertRowid);
+    const actor = auditActor(req);
+    logAuditEvent(actor.userId, actor.username, "media_added", `${b.title} (${b.type})`);
     res.status(201).json(mediaItemFromRow(row));
   })
 );
@@ -652,6 +662,8 @@ mediaRouter.post(
     );
 
     const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    const actor = auditActor(req);
+    logAuditEvent(actor.userId, actor.username, "media_rematched", `"${(existing as any).title}" → "${b.title}"`);
     res.json(mediaItemFromRow(row));
   })
 );
@@ -725,6 +737,13 @@ mediaRouter.delete(
 
     const result = db.prepare("DELETE FROM media_items WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Media item not found");
+    const actor = auditActor(req);
+    logAuditEvent(
+      actor.userId,
+      actor.username,
+      "media_deleted",
+      `${row.title} (${row.type})${req.query.deleteFiles === "1" ? " — files recycled" : ""}`
+    );
     res.status(204).send();
   })
 );

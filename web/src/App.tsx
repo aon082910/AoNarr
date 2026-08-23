@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { NavLink, Route, Routes } from "react-router-dom";
+import { NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { api } from "./api/client.js";
 import Dashboard from "./pages/Dashboard.js";
 import Onboarding, { shouldShowOnboarding } from "./pages/Onboarding.js";
@@ -42,6 +42,16 @@ import RecycleBin from "./pages/RecycleBin.js";
 import NetworkStats from "./pages/NetworkStats.js";
 import { useMediaTypes } from "./hooks/useMediaTypes.js";
 
+/** Plain <BrowserRouter>/<Routes> (not the data-router API) never touches scroll position on
+ * navigation on its own — this is what actually resets it back to the top of the new page. */
+function ScrollToTop() {
+  const { pathname } = useLocation();
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [pathname]);
+  return null;
+}
+
 function NavGroup({
   label,
   defaultOpen,
@@ -79,6 +89,7 @@ export default function App() {
 
   return (
     <div className="app">
+      <ScrollToTop />
       <CommandPalette />
       <nav className="sidebar">
         <div className="brand">
