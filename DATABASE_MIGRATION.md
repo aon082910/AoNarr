@@ -1,14 +1,66 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — 26 files converted and verified against a real Postgres container**, covering
+Status: **PostgreSQL — 28 files converted and verified against a real Postgres container**, covering
 auth, users, quality/library config, indexers, download clients, calendar events, saved library
 views, remote instances, friend libraries, library groups (including its `WITH RECURSIVE`
-nested-count rollup), person credits, and custom formats (including TRaSH-Guides sync). Most of the
-app (~44 remaining files) still isn't converted; `AONARR_DATABASE_DRIVER=postgres` runs a real app,
-just not a complete one yet. MariaDB — scoped, not started, deliberately deferred until PostgreSQL is
-fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by
-explicit user decision). This document exists so a future round can pick this up without re-deriving
-the analysis below.
+nested-count rollup), person credits, custom formats (including TRaSH-Guides sync), collections
+(including its smart-filter query builder and item reordering transaction), and album tracks. Most of
+the app (~42 remaining files) still isn't converted; `AONARR_DATABASE_DRIVER=postgres` runs a real
+app, just not a complete one yet. MariaDB — scoped, not started, deliberately deferred until
+PostgreSQL is fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL
+first" by explicit user decision). This document exists so a future round can pick this up without
+re-deriving the analysis below.
+
+## Progress (Round 86)
+
+Converted `routes/collections.ts` (all 9 routes, including the smart-filter query builder and the
+item-position reorder transaction) and `routes/tracks.ts` (both routes, including its track-list
+upsert transaction).
+
+**New pattern handled**: `collections.ts` used SQLite's `datetime('now', ?)` modifier syntax at the
+query level for its `addedAfterDays` smart-filter condition — flagged back in Round 79's SQL-
+portability audit as needing a per-call-site rewrite, not a generic wrapper translation. Added
+`nowOffsetExpr(db, days)` to `asyncDb.ts` (alongside the existing `nowExpr`), which returns
+`datetime('now', 'N days')` on SQLite or `to_char((now() AT TIME ZONE 'UTC') + interval 'N days', ...)`
+on Postgres — the same 4 other files flagged in that audit (`system.ts`, `recycleBin.ts`,
+`scheduler.ts`, `storageForecast.ts`) can reuse this helper when they're converted.
+
+Also found and fixed two more instances of known bug classes from earlier rounds while converting
+this batch:
+- `collections.ts`'s list route aliased `COUNT(ci.media_item_id) AS itemCount` unquoted — Postgres
+  folds it to lowercase, so `r.itemCount` would read as `undefined`. Fixed by quoting the alias
+  (`AS "itemCount"`), the same class of bug caught in Round 80.
+- The same route also read that `COUNT(...)` result as `r.itemCount` directly — Postgres's driver
+  returns `bigint` aggregates as strings, so this rendered as `"itemCount":"0"` (a string) instead of
+  a number. Fixed by wrapping in `Number(...)`, the same fix `libraryGroups.ts`'s `groupCounts()`
+  needed in Round 84 for its own `COUNT`/`SUM` results.
+- `collections.ts`'s "add item" route used SQLite's `INSERT OR IGNORE` syntax, which Postgres doesn't
+  support at all (not just a folding/type issue — a hard syntax error). Switched to a
+  dialect-conditional statement: `INSERT ... ON CONFLICT DO NOTHING` on Postgres, the original `INSERT
+  OR IGNORE` on SQLite. `media.ts` (not yet converted) has two more call sites using this same
+  SQLite-only syntax to handle when it's converted.
+
+**Deliberately NOT converted this round**: `routes/recycleBin.ts`, `services/recycleBin.ts`,
+`routes/corruptMediaReview.ts`, and `services/corruptMediaCheck.ts`. All four are entangled with each
+other (`corruptMediaCheck.ts` calls `recycleFile()` from the recycle-bin service; the recycle-bin
+route calls its own service directly) and, more importantly, `recycleFile()` is also called
+synchronously — with no `await`, since it isn't async today — from three call sites inside
+`routes/media.ts` (947 lines, not yet converted) and one inside `services/archival.ts`. Converting
+`recycleFile()`'s DB write to async now would leave those still-synchronous callers firing an
+unawaited promise into Postgres, the exact "converted callee reached from an unconverted caller"
+failure class first hit with `audit.ts` in Round 80 — except here the caller can't simply be converted
+alongside it the way `audit.ts` could, since the callers are still-unconverted, much larger files.
+This cluster is deferred to a future round bundled with `media.ts` and `archival.ts`.
+
+Verified live against a real Postgres container (no admin-bootstrap env vars): created a collection,
+added movie rows directly via `psql` to exercise real item membership, added/deduped items via the
+`ON CONFLICT DO NOTHING` path, reordered them and confirmed the new order round-tripped, exported both
+`?format=json` and `?format=m3u` (confirming the m3u path correctly skips a fileless item and reports
+the skip count), deleted an item and a collection, created a smart collection with an
+`addedAfterDays` filter and confirmed `nowOffsetExpr`'s Postgres interval arithmetic matched the
+expected items, and exercised both track routes — same regression sequence repeated against SQLite on
+the same build (media-item seeding done differently there, no `psql` equivalent inside the image, but
+every route and the `nowOffsetExpr` SQLite branch confirmed working identically).
 
 ## Progress (Round 85)
 

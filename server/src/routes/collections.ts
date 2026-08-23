@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
+import { nowOffsetExpr } from "../db/asyncDb.js";
 import { collectionFromRow, mediaItemFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 
@@ -17,7 +18,7 @@ interface SmartFilter {
  * unlike a normal collection's fixed collection_items membership. Kept to the same handful of
  * fields the Library page's own filters already support, so it stays predictable rather than
  * growing into a full query language. */
-function queryMediaItemsForFilter(filter: SmartFilter): any[] {
+async function queryMediaItemsForFilter(filter: SmartFilter): Promise<any[]> {
   const clauses: string[] = [];
   const params: any[] = [];
   let joinTags = "";
@@ -40,8 +41,7 @@ function queryMediaItemsForFilter(filter: SmartFilter): any[] {
     params.push(filter.tagId);
   }
   if (filter.addedAfterDays !== undefined) {
-    clauses.push("m.added_at >= datetime('now', ?)");
-    params.push(`-${filter.addedAfterDays} days`);
+    clauses.push(`m.added_at >= ${nowOffsetExpr(db, -filter.addedAfterDays)}`);
   }
 
   const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
@@ -51,21 +51,23 @@ function queryMediaItemsForFilter(filter: SmartFilter): any[] {
 collectionsRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
-    const rows = db
+    const rows = (await db
       .prepare(
-        `SELECT c.*, COUNT(ci.media_item_id) AS itemCount
+        `SELECT c.*, COUNT(ci.media_item_id) AS "itemCount"
          FROM collections c
          LEFT JOIN collection_items ci ON ci.collection_id = c.id
          GROUP BY c.id
          ORDER BY c.name`
       )
-      .all() as any[];
+      .all()) as any[];
     res.json(
-      rows.map((r) => {
-        const collection = collectionFromRow(r);
-        const itemCount = collection.smartFilter ? queryMediaItemsForFilter(collection.smartFilter).length : r.itemCount;
-        return { ...collection, itemCount };
-      })
+      await Promise.all(
+        rows.map(async (r) => {
+          const collection = collectionFromRow(r);
+          const itemCount = collection.smartFilter ? (await queryMediaItemsForFilter(collection.smartFilter)).length : Number(r.itemCount);
+          return { ...collection, itemCount };
+        })
+      )
     );
   })
 );
@@ -75,10 +77,10 @@ collectionsRouter.post(
   asyncHandler(async (req, res) => {
     const b = req.body ?? {};
     if (!b.name) throw new HttpError(400, "name is required");
-    const result = db
+    const result = await db
       .prepare("INSERT INTO collections (name, description, smart_filter) VALUES (?, ?, ?)")
       .run(b.name, b.description ?? null, b.smartFilter ? JSON.stringify(b.smartFilter) : null);
-    const row = db.prepare("SELECT * FROM collections WHERE id = ?").get(result.lastInsertRowid);
+    const row = await db.prepare("SELECT * FROM collections WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(collectionFromRow(row));
   })
 );
@@ -86,21 +88,21 @@ collectionsRouter.post(
 collectionsRouter.get(
   "/:id",
   asyncHandler(async (req, res) => {
-    const row = db.prepare("SELECT * FROM collections WHERE id = ?").get(req.params.id) as any;
+    const row = (await db.prepare("SELECT * FROM collections WHERE id = ?").get(req.params.id)) as any;
     if (!row) throw new HttpError(404, "Collection not found");
     const collection = collectionFromRow(row);
 
     const items = (
       collection.smartFilter
-        ? queryMediaItemsForFilter(collection.smartFilter)
-        : (db
+        ? await queryMediaItemsForFilter(collection.smartFilter)
+        : ((await db
             .prepare(
               `SELECT m.* FROM media_items m
                JOIN collection_items ci ON ci.media_item_id = m.id
                WHERE ci.collection_id = ?
                ORDER BY ci.position, m.sort_title`
             )
-            .all(req.params.id) as any[])
+            .all(req.params.id)) as any[])
     ).map(mediaItemFromRow);
 
     res.json({ ...collection, items });
@@ -127,9 +129,9 @@ collectionsRouter.patch(
     }
     if (sets.length > 0) {
       values.push(req.params.id);
-      db.prepare(`UPDATE collections SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+      await db.prepare(`UPDATE collections SET ${sets.join(", ")} WHERE id = ?`).run(...values);
     }
-    const row = db.prepare("SELECT * FROM collections WHERE id = ?").get(req.params.id);
+    const row = await db.prepare("SELECT * FROM collections WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Collection not found");
     res.json(collectionFromRow(row));
   })
@@ -138,7 +140,7 @@ collectionsRouter.patch(
 collectionsRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
-    const result = db.prepare("DELETE FROM collections WHERE id = ?").run(req.params.id);
+    const result = await db.prepare("DELETE FROM collections WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Collection not found");
     res.status(204).send();
   })
@@ -155,17 +157,19 @@ collectionsRouter.post(
   asyncHandler(async (req, res) => {
     const mediaItemId = req.body?.mediaItemId;
     if (!mediaItemId) throw new HttpError(400, "mediaItemId is required");
-    const collection = db.prepare("SELECT * FROM collections WHERE id = ?").get(req.params.id) as any;
+    const collection = (await db.prepare("SELECT * FROM collections WHERE id = ?").get(req.params.id)) as any;
     if (!collection) throw new HttpError(404, "Collection not found");
     assertNotSmart(collection);
     const maxPosition = (
-      db.prepare("SELECT COALESCE(MAX(position), -1) AS m FROM collection_items WHERE collection_id = ?").get(
+      (await db.prepare("SELECT COALESCE(MAX(position), -1) AS m FROM collection_items WHERE collection_id = ?").get(
         req.params.id
-      ) as { m: number }
+      )) as { m: number }
     ).m;
-    db.prepare(
-      "INSERT OR IGNORE INTO collection_items (collection_id, media_item_id, position) VALUES (?, ?, ?)"
-    ).run(req.params.id, mediaItemId, maxPosition + 1);
+    const insertIgnoreSql =
+      db.dialect === "postgres"
+        ? "INSERT INTO collection_items (collection_id, media_item_id, position) VALUES (?, ?, ?) ON CONFLICT DO NOTHING"
+        : "INSERT OR IGNORE INTO collection_items (collection_id, media_item_id, position) VALUES (?, ?, ?)";
+    await db.prepare(insertIgnoreSql).run(req.params.id, mediaItemId, maxPosition + 1);
     res.status(201).send();
   })
 );
@@ -173,10 +177,9 @@ collectionsRouter.post(
 collectionsRouter.delete(
   "/:id/items/:mediaItemId",
   asyncHandler(async (req, res) => {
-    db.prepare("DELETE FROM collection_items WHERE collection_id = ? AND media_item_id = ?").run(
-      req.params.id,
-      req.params.mediaItemId
-    );
+    await db
+      .prepare("DELETE FROM collection_items WHERE collection_id = ? AND media_item_id = ?")
+      .run(req.params.id, req.params.mediaItemId);
     res.status(204).send();
   })
 );
@@ -186,7 +189,7 @@ collectionsRouter.delete(
 collectionsRouter.put(
   "/:id/items/order",
   asyncHandler(async (req, res) => {
-    const collectionRow = db.prepare("SELECT * FROM collections WHERE id = ?").get(req.params.id) as any;
+    const collectionRow = (await db.prepare("SELECT * FROM collections WHERE id = ?").get(req.params.id)) as any;
     if (!collectionRow) throw new HttpError(404, "Collection not found");
     assertNotSmart(collectionRow);
 
@@ -194,11 +197,13 @@ collectionsRouter.put(
     if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
       throw new HttpError(400, "orderedIds is required");
     }
-    const update = db.prepare("UPDATE collection_items SET position = ? WHERE collection_id = ? AND media_item_id = ?");
-    const reorder = db.transaction((ids: number[]) => {
-      ids.forEach((mediaItemId, index) => update.run(index, req.params.id, mediaItemId));
+    await db.transaction(async () => {
+      for (let index = 0; index < orderedIds.length; index++) {
+        await db
+          .prepare("UPDATE collection_items SET position = ? WHERE collection_id = ? AND media_item_id = ?")
+          .run(index, req.params.id, orderedIds[index]);
+      }
     });
-    reorder(orderedIds);
     res.status(204).send();
   })
 );
@@ -214,21 +219,21 @@ const M3U_EXTENSIONS = new Set([".mp3", ".flac", ".m4a", ".wav", ".ogg", ".mp4",
 collectionsRouter.get(
   "/:id/export",
   asyncHandler(async (req, res) => {
-    const collectionRow = db.prepare("SELECT * FROM collections WHERE id = ?").get(req.params.id) as any;
+    const collectionRow = (await db.prepare("SELECT * FROM collections WHERE id = ?").get(req.params.id)) as any;
     if (!collectionRow) throw new HttpError(404, "Collection not found");
     const collection = collectionFromRow(collectionRow);
 
     const items = (
       collection.smartFilter
-        ? queryMediaItemsForFilter(collection.smartFilter)
-        : (db
+        ? await queryMediaItemsForFilter(collection.smartFilter)
+        : ((await db
             .prepare(
               `SELECT m.* FROM media_items m
                JOIN collection_items ci ON ci.media_item_id = m.id
                WHERE ci.collection_id = ?
                ORDER BY ci.position, m.sort_title`
             )
-            .all(req.params.id) as any[])
+            .all(req.params.id)) as any[])
     ).map(mediaItemFromRow);
 
     if (req.query.format === "m3u") {

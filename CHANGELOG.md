@@ -3,6 +3,30 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 86
+- PostgreSQL support: converted `routes/collections.ts` (all 9 routes, including its smart-filter
+  query builder and item-reorder transaction) and `routes/tracks.ts` (both routes) to the async DB
+  interface — 28 files converted so far, ~42 remain
+- Added `nowOffsetExpr(db, days)` to the async DB layer for SQLite's `datetime('now', ?)` relative-
+  offset syntax (used by `collections.ts`'s "added in the last N days" smart filter) — translates to
+  Postgres interval arithmetic; 4 more files flagged in the original SQL-portability audit can reuse
+  it when they're converted
+- Found and fixed two more instances of known migration bug classes: an unquoted `AS itemCount` SQL
+  alias (Postgres folds it to lowercase, same class as Round 80's bug) and an un-coerced `COUNT(...)`
+  aggregate read as a raw driver value (Postgres returns bigints as strings, same class as Round 84's
+  `libraryGroups.ts` fix)
+- Found a genuine Postgres incompatibility (not just a folding/type issue): SQLite's `INSERT OR
+  IGNORE` has no Postgres equivalent at all. Fixed `collections.ts`'s add-item route with a dialect-
+  conditional statement; `media.ts` has 2 more call sites using the same syntax for later
+- Deliberately left `recycleBin.ts` (route + service) and `corruptMediaReview.ts` +
+  `corruptMediaCheck.ts` unconverted — `recycleFile()` is called synchronously from 3 sites in the
+  still-unconverted 947-line `media.ts` plus one in `archival.ts`; converting it now would leave those
+  unawaited on Postgres. Deferred to a future round bundled with `media.ts`/`archival.ts`
+- Verified live against a real Postgres container: full collection CRUD, item add/dedupe via `ON
+  CONFLICT DO NOTHING`, reorder, `m3u`/`json` export (including the skip-fileless-item path), a smart
+  collection's `addedAfterDays` filter, and both track routes — same sequence regression-checked
+  against SQLite on the same build
+
 ## Round 85
 - PostgreSQL support: converted `routes/customFormats.ts` (all 8 routes) and its backing
   `services/trashSync.ts` to the async DB interface — 26 files converted so far, ~44 remain

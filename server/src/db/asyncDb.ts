@@ -266,3 +266,18 @@ export function createPostgresAsyncDb(connectionString: string): AsyncDb {
 export function nowExpr(db: Pick<AsyncDb, "dialect">): string {
   return db.dialect === "postgres" ? "to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')" : "datetime('now')";
 }
+
+/**
+ * Same idea as `nowExpr`, offset by a whole number of days (negative for the past, e.g. -30 for
+ * "30 days ago") — for the handful of call sites that used SQLite's `datetime('now', '-N days')`
+ * modifier syntax at the query level, which has no Postgres equivalent (`interval` arithmetic is the
+ * right shape there). `days` must be a trusted integer the caller computed itself (not raw user
+ * input) since it's interpolated directly rather than bound as a parameter — string interpolation
+ * here is safe for the same reason a LIMIT/OFFSET literal is, just not something to relax.
+ */
+export function nowOffsetExpr(db: Pick<AsyncDb, "dialect">, days: number): string {
+  const n = Math.trunc(days);
+  return db.dialect === "postgres"
+    ? `to_char((now() AT TIME ZONE 'UTC') + interval '${n} days', 'YYYY-MM-DD HH24:MI:SS')`
+    : `datetime('now', '${n} days')`;
+}
