@@ -3,6 +3,13 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 46
+- Fixed a real bug in Round 45's own fix: the hand-drawn caret background-image on `<select>` had
+  no `background-size` set, so it rendered oversized (a giant chevron overlapping the option
+  text) instead of the intended small 12×8px arrow — a mistake `getBoundingClientRect()` alone
+  couldn't have caught, since box height was already correct; only visually apparent. Added
+  `background-size: 12px 8px`, confirmed via computed styles this time (not just element bounds)
+
 ## Round 45
 - Toolbar `<select>` elements now have their native OS dropdown-arrow chrome stripped entirely
   (`appearance: none` + a hand-drawn caret background image) instead of relying on an explicit
