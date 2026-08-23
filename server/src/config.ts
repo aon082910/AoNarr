@@ -8,6 +8,11 @@ export const config = {
   dbPath: path.join(configDir, "aonarr.db"),
   configDir,
   downloadsDir,
+  // "sqlite" (default, the only backend the running app actually uses yet) or "postgres" — see
+  // DATABASE_MIGRATION.md. AONARR_DATABASE_URL is a standard postgres connection string
+  // (postgres://user:pass@host:port/dbname), required when driver is "postgres".
+  databaseDriver: (process.env.AONARR_DATABASE_DRIVER ?? "sqlite") as "sqlite" | "postgres",
+  databaseUrl: process.env.AONARR_DATABASE_URL ?? null,
   searchIntervalMinutes: Number(process.env.AONARR_SEARCH_INTERVAL_MINUTES ?? 30),
   queuePollIntervalSeconds: Number(process.env.AONARR_QUEUE_POLL_SECONDS ?? 20),
   // Baked in at image build time (see Dockerfile --build-arg) so the update checker can tell

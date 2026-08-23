@@ -7,7 +7,7 @@ RUN npm install
 COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
-RUN cp src/db/schema.sql dist/db/schema.sql
+RUN cp src/db/schema.sql dist/db/schema.sql && cp src/db/schema.postgres.sql dist/db/schema.postgres.sql
 
 FROM node:20-bookworm-slim
 WORKDIR /app

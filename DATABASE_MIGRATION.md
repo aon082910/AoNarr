@@ -1,13 +1,68 @@
 # External Database Support — Scoping Document
 
-Status: **scoped, not started**. This document exists so a future round can pick this up without
-re-deriving the analysis below. It reflects the codebase as of Round 77.
+Status: **PostgreSQL — foundation built and verified, not wired into the app yet.** MariaDB —
+scoped, not started, deliberately deferred until PostgreSQL is fully done (see "The ask" below;
+narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by explicit user decision). This
+document exists so a future round can pick this up without re-deriving the analysis below.
+
+## Progress (Round 79)
+
+Phase 1 from the plan below ("introduce the abstraction, verify it standalone against a real
+engine, don't touch the app yet") is done for PostgreSQL specifically:
+
+- `server/src/db/asyncDb.ts` — the dual-dialect async interface (see its own module comment for
+  the full design rationale). **Note: this shipped as a hand-written thin wrapper around raw SQL,
+  not Kysely** as originally recommended below — once the SQL-portability audit was actually
+  complete (see "What ported for free" below), the gap between "raw SQL + a thin async/placeholder-
+  translation shim" and "adopt a query-builder DSL and rewrite 444 call sites into it" turned out to
+  be enormous, with the query-builder buying comparatively little given how much of the existing SQL
+  already ports unchanged. The Kysely option is still on the table if a future round finds the thin
+  wrapper insufficient, but it's no longer the default recommendation.
+- `server/src/db/schema.postgres.sql` — mechanical translation of `schema.sql`, committed as a
+  static file (not generated at runtime).
+- `server/src/db/postgresSchema.ts` — applies that schema plus a Postgres port of every
+  `ensureColumn(...)` retrofit currently in `client.ts`, run via `migratePostgresSchema(db)`.
+- **Verified against a real `postgres:16` container** (not mocked): schema migration (including
+  idempotent re-run), insert with `lastInsertRowid` via `RETURNING id`, select, update, delete, the
+  `ON CONFLICT ... DO UPDATE` upsert pattern used throughout the codebase (ported verbatim, ran
+  correctly, no duplication on a second upsert), transaction commit, transaction rollback, and the
+  one `WITH RECURSIVE` query in the codebase (`library_groups`' nested-count rollup) — all passed.
+
+**What ported for free**, now confirmed rather than assumed: every table's DDL except two textual
+substitutions (`AUTOINCREMENT` → `SERIAL`, `datetime('now')` → an explicit UTC-text-formatted
+equivalent so `created_at`-style TEXT columns hold identical string shapes on both backends); the
+`ON CONFLICT(...) DO UPDATE SET x = excluded.x` pattern used in 14+ places; `WITH RECURSIVE`; plain
+positional `?` parameters (translated to `$1, $2, ...` internally by the wrapper, transparent to
+callers). None of the 47 `ensureColumn(...)` DDL strings needed any translation either.
+
+**One real bug the Postgres verification pass caught that the earlier static analysis missed**: not
+every table has a plain `id` column — `settings` (keyed by `key`), and several join/junction tables
+(`media_item_tags`, `quality_profile_format_scores`, `collection_items`, `user_library_access`,
+`sessions`, `release_group_stats`) use a composite or different primary key. Blindly appending
+`RETURNING id` to every INSERT breaks on those with Postgres error 42703 — and, worse, poisons the
+rest of an in-progress transaction if it happens inside one (Postgres aborts the whole transaction
+on a statement error; SQLite has no equivalent behavior, so this class of bug is invisible from the
+SQLite side entirely). Fixed with a static exception list in `asyncDb.ts`, not a try/catch, because
+retrying inside an already-poisoned transaction would just fail again.
+
+**Also confirmed, not yet acted on**: 5 files (`collections.ts`, `system.ts`, `recycleBin.ts`,
+`scheduler.ts`, `storageForecast.ts`) use SQLite's `datetime('now', ?)` modifier syntax
+(`datetime('now', '-30 days')`) at the query level, not just in schema defaults — this has no direct
+Postgres equivalent (`now() - interval '30 days'` is the right shape) and needs a per-call-site
+rewrite when those files are converted, not a generic translation the wrapper can do for them.
+
+**Not done yet**: none of the ~70 application files (routes/services) have been converted to use
+this abstraction — they all still import the synchronous `db` from `db/client.ts` directly, and the
+app still only runs against SQLite. `AONARR_DATABASE_DRIVER=postgres` exists as a config value but
+selecting it today would not produce a working app, since the vast majority of routes would still
+be calling the old synchronous SQLite-only `db` object regardless of what's configured. That
+conversion — file by file, verified against both backends as it goes — is the rest of this project.
 
 ## The ask
 
-Let users choose MariaDB or PostgreSQL as an alternative to AoNarr's built-in SQLite, the way some
-self-hosted apps (Nextcloud, Immich, Jellyfin's newer versions) let you point at an external DB
-server instead of a local file.
+Let users choose PostgreSQL (MariaDB later, as a separate follow-up) as an alternative to AoNarr's
+built-in SQLite, the way some self-hosted apps (Nextcloud, Immich, Jellyfin's newer versions) let
+you point at an external DB server instead of a local file.
 
 ## Why this isn't a bounded feature
 
@@ -109,40 +164,43 @@ actually asked for.
 
 ## Recommendation
 
-**Option A (Kysely), Postgres first, MariaDB second — if this gets built at all.**
+**Thin hand-written async wrapper (not Kysely — see "Progress" above for why that changed),
+PostgreSQL only for now, MariaDB deferred as a separate later phase.**
 
-- Postgres over MariaDB as the first alternative target because the `ON CONFLICT ... DO UPDATE`
-  syntax already used throughout the codebase is valid Postgres syntax verbatim — one whole category
-  of the port (14+ call sites, likely more as the schema grows) is close to free. MariaDB's
-  `ON DUPLICATE KEY UPDATE` is a genuinely different clause shape and would need every one of those
-  sites rewritten with different logic, not just swapped syntax.
-- Kysely over Drizzle/Prisma because it's the smallest conceptual jump from what's here today
-  (hand-written SQL-shaped queries, just async and dialect-aware) — lower risk of the migration
-  itself introducing bugs than adopting a full ORM's schema/migration model on top of everything
-  else changing at once.
+- Postgres over MariaDB as the first (and for now, only) alternative target because the
+  `ON CONFLICT ... DO UPDATE` syntax already used throughout the codebase is valid Postgres syntax
+  verbatim — one whole category of the port (14+ call sites, likely more as the schema grows) is
+  close to free. MariaDB's `ON DUPLICATE KEY UPDATE` is a genuinely different clause shape and would
+  need every one of those sites rewritten with different logic, not just swapped syntax.
 - SQLite stays the default and the only backend the Unraid Community Applications template assumes
-  — this is an opt-in advanced setting for people who already run a Postgres/MariaDB server, not a
+  — this is an opt-in advanced setting for people who already run a Postgres server, not a
   requirement for anyone else. Nothing about the existing single-file-DB deployment story changes
   for the overwhelming majority of users.
 
 ## If pursued, suggested phasing
 
-1. **Introduce the abstraction with zero behavior change.** Swap `db/client.ts`'s raw
-   better-sqlite3 export for a Kysely instance still backed by SQLite (Kysely has a SQLite dialect
-   using better-sqlite3 under the hood). Convert call sites file-by-file, each PR/round touching a
-   handful of routes, all still running against SQLite the whole time. This phase is pure risk
-   reduction — it's the point where the "add `await` up the call chain" cascade actually gets found
-   and fixed, without also debugging a new database engine at the same time.
-2. **Add the Postgres dialect and a `DATABASE_DRIVER` env var / setting.** Get the schema (rewritten
-   in Kysely's migration format, or hand-translated `CREATE TABLE` statements) applying cleanly to a
-   real Postgres instance. Audit the "implicit serialization" risk (point 4 above) — this is the
-   step where every check-then-insert pattern needs a real look, since Postgres will actually
-   surface races SQLite never could.
+1. **Introduce the abstraction with zero behavior change.** ~~Swap `db/client.ts`'s raw
+   better-sqlite3 export for a Kysely instance~~ — superseded, see "Progress" above:
+   `server/src/db/asyncDb.ts` now provides the same async-shaped interface over hand-written SQL
+   instead. Verified standalone against a real Postgres instance (done, Round 79). Converting the
+   ~70 application files to actually use it — each still running against SQLite the whole time via
+   this same interface — is the remaining, much larger part of this phase; not started. This is
+   where the "add `await` up the call chain" cascade gets found and fixed, one file at a time,
+   without also debugging a new database engine at the same time.
+2. **Wire the Postgres path into the running app** once phase 1's file-by-file conversion is
+   complete — an `AONARR_DATABASE_DRIVER=postgres` config value already exists (see config.ts) but
+   doesn't yet produce a working app, since most routes still bypass the new abstraction entirely.
+   Audit the "implicit serialization" risk (point 4 further up) as part of this — every
+   check-then-insert pattern needs a real look, since Postgres will actually surface races SQLite
+   never could.
 3. **Live-verify a full round-trip on Postgres**: every route this project has, exercised against a
    real `postgres:16` container the same way every other feature in this project has been verified
    against a real running instance — not just "the query compiles."
-4. **MariaDB as a follow-up phase**, once Postgres is solid — reusing the abstraction from phase 1,
-   but redoing every `ON CONFLICT` site with `ON DUPLICATE KEY UPDATE` semantics.
+4. **MariaDB as a follow-up phase**, once Postgres is solid and shipped — reusing the abstraction
+   from phase 1, but redoing every `ON CONFLICT` site with `ON DUPLICATE KEY UPDATE` semantics, and
+   auditing the two Postgres-specific choices already made (`RETURNING id` for lastInsertRowid,
+   which MySQL/MariaDB gets natively via `insertId` instead; the UTC-text `datetime('now')`
+   replacement, which needs MariaDB's own equivalent).
 
 ## Rough effort shape
 
@@ -162,8 +220,8 @@ completely done and stable first; none of them are safe to start concurrently wi
   runs their own Postgres/MariaDB server — that's entirely the user's infrastructure, same as how
   AoNarr doesn't manage the user's download client or media server today.
 
-## Decision needed before starting
+## Decision (resolved)
 
-Whether to actually commit to this given the size above, and if so, whether Postgres-only (skip
-MariaDB entirely, since it's the strictly larger and less-requested of the two once `ON CONFLICT`
-syntax is accounted for) is an acceptable scope cut.
+Commit to this; PostgreSQL first, MariaDB deferred as a separate later phase — decided by the user
+after this document's original scoping pass. Foundation work started the same round (see
+"Progress" above). Remaining rounds convert the ~70 application files one at a time.

@@ -3,6 +3,31 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 79
+- Started PostgreSQL support (MariaDB deferred to a later phase per user decision — see
+  DATABASE_MIGRATION.md). This round is foundation only: **the running app is unaffected and still
+  only runs against SQLite** — nothing in this round is wired into any route yet
+- Added `server/src/db/asyncDb.ts` — a dual-dialect async DB interface (SQLite and PostgreSQL) that
+  the ~70 route/service files touching data will be converted to use, file by file, in future
+  rounds. Callers keep writing plain `?` positional parameters and reading `.lastInsertRowid` off
+  `.run()`'s result on both backends — the wrapper handles placeholder translation and Postgres's
+  lack of a native rowid (via `RETURNING id`, applied automatically to every INSERT except the
+  handful of tables that don't have a plain `id` column, which needed a static exception list after
+  a first attempt discovered blindly appending it can poison an in-progress Postgres transaction)
+- Added `schema.postgres.sql` (mechanical translation of the existing SQLite schema — only two real
+  substitutions needed, `AUTOINCREMENT`→`SERIAL` and `datetime('now')`→an explicit UTC-text
+  equivalent) and `postgresSchema.ts` (applies it plus a Postgres port of every existing
+  `ensureColumn` retrofit, using Postgres's native `ADD COLUMN IF NOT EXISTS` instead of SQLite's
+  introspect-then-ALTER workaround)
+- Verified against a real `postgres:16` container (not mocked): full schema migration including an
+  idempotent second run, insert/select/update/delete, the `ON CONFLICT ... DO UPDATE` upsert pattern
+  used throughout the codebase (ported verbatim, confirmed no duplication on a repeat upsert),
+  transaction commit and rollback, and the codebase's one `WITH RECURSIVE` query — all passed
+- Updated DATABASE_MIGRATION.md with what actually happened vs. what was originally scoped —
+  notably, ended up hand-writing a thin async wrapper instead of adopting Kysely as originally
+  recommended, once the SQL-portability audit showed how much of the existing raw SQL already
+  ports to Postgres unchanged
+
 ## Round 78
 - No code changes — scoped the deferred "external database support" (MariaDB/PostgreSQL as an
   alternative to SQLite) request instead of implementing it, per the user's explicit choice to defer
