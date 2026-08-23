@@ -3,6 +3,34 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 60
+- Added a read-only Media Analyzer (System → Media Analyzer) covering every library — a
+  library-wide breakdown (video codec, HDR format, audio codec, resolution, subtitle language
+  coverage) plus a per-file table with rule-based playback-compatibility notes for common
+  hardware/software gotchas (an AV1 file that needs a fairly recent device to decode, single-layer
+  Dolby Vision with no HDR10 fallback, DTS/TrueHD needing an AVR with passthrough, image-based PGS/
+  VobSub subtitles that can't be resized or styled, 10-bit color needing Main10 decode support,
+  etc.). Nothing here moves, renames, or modifies any media file — ffprobe only ever reads
+- Widened what `ffprobe.ts` actually captures to make the analyzer possible: HDR signaling
+  (color transfer/primaries/space, bit depth), Dolby Vision detection (reading the DOVI
+  configuration record ffprobe surfaces in a stream's side_data_list, with a codec-tag fallback
+  for older ffmpeg builds), frame rate, and — a real gap in the old capture — every audio and
+  subtitle track instead of just the first of each (a file with a commentary track or 5 dub
+  languages only ever showed its first audio stream before this)
+- Files imported before this shipped only have the old narrower MediaInfo shape and show as "not
+  yet analyzed" until re-probed — added an "Analyze now" action (per-library or everything) that
+  re-probes with the new capture and updates the stored data, fire-and-forget the same way Scan &
+  Import already is for large libraries
+- Verified live end-to-end: generated a real HDR10-tagged HEVC file with ffmpeg (genuine
+  `smpte2084`/`bt2020` color metadata, not mocked) and confirmed the analyzer correctly detected
+  "HDR10" with accurate compatibility notes; generated a real AV1+FLAC file and confirmed both
+  correctly triggered "caution" notes; verified the caution/incompatible filter dropdown narrows
+  the table correctly. Dolby Vision's signaling couldn't be reproduced with a genuine encode (it
+  needs source RPU metadata a synthetic test clip doesn't have) — verified the detection logic
+  instead against 7 cases of realistic mock ffprobe output modeled on documented DV signaling
+  conventions (profile 5, profile 8.1 dual-layer, HDR10+, HLG, plain HDR10, plain SDR, and a file
+  with no color tags at all), all passing
+
 ## Round 59
 - Fixed "API Definition fetch error unauthorized" on the API Docs page: Swagger UI's request
   interceptor only ever attached `X-Api-Key`, never `X-Session-Token` — any admin logged in via a

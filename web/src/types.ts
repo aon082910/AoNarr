@@ -23,6 +23,24 @@ export interface LibraryGroup {
   missingCount?: number;
 }
 
+export interface AudioStreamInfo {
+  codec: string | null;
+  channels: number | null;
+  channelLayout: string | null;
+  language: string | null;
+  bitrateKbps: number | null;
+  default: boolean;
+}
+
+export interface SubtitleStreamInfo {
+  codec: string | null;
+  language: string | null;
+  forced: boolean;
+  default: boolean;
+}
+
+export type HdrFormat = "none" | "hdr10" | "hdr10plus" | "hlg" | "dolby-vision" | "dolby-vision-hdr10" | "unknown";
+
 export interface MediaInfo {
   videoCodec: string | null;
   audioCodec: string | null;
@@ -31,6 +49,14 @@ export interface MediaInfo {
   bitrateKbps: number | null;
   audioChannels: number | null;
   durationSeconds: number | null;
+  colorTransfer?: string | null;
+  colorPrimaries?: string | null;
+  colorSpace?: string | null;
+  bitDepth?: number | null;
+  hdrFormat?: HdrFormat;
+  frameRate?: number | null;
+  audioStreams?: AudioStreamInfo[];
+  subtitleStreams?: SubtitleStreamInfo[];
 }
 
 export interface MediaItem {
