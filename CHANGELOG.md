@@ -3,6 +3,27 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 62
+- Added a per-library enable/disable toggle for naming (Settings → Media → Naming) — previously
+  every import always renamed a file via its type's template unconditionally, with no way to keep
+  files as originally downloaded. When disabled for a type, the template's folder structure still
+  applies (so files stay organized and episodes stay grouped by season — the whole reason renaming
+  exists in the first place isn't just cosmetic), only the filename itself is left as-downloaded
+  instead of templated. Applies to every shape: single (Movies/ROMs/Adult), episodic (TV/Anime),
+  and collection (Books/Comics/etc, and Music's album *folder* specifically — track filenames were
+  already always kept as-downloaded there)
+- Replaced the naming section's flat list of plain text inputs with a proper "Naming setup..."
+  popup per library type: the enable/disable toggle, a template field, buttons that insert the
+  tokens actually available for that type's shape at the cursor position, a live preview rendered
+  with example values, and a one-click reset to the shape's default — instead of a wall of
+  unlabeled tokens in a paragraph above a dozen bare `<input>`s
+- Verified live end-to-end: toggled naming off for Movies via the new popup, confirmed the setting
+  persisted (`namingEnabledMovie: 0`), then ran a real manual import of a file named
+  `My.Weird.Release.Name.2020.1080p.WEB-DL.mkv` — confirmed it landed at
+  `Test Naming Disabled Movie (2020)/My.Weird.Release.Name.2020.1080p.WEB-DL.mkv` (templated
+  folder, original filename kept exactly). Verified the reverse case too: ROMs (left at its
+  untouched default) still fully templates both folder and filename as before
+
 ## Round 61
 - Added a manual-match fallback for titles Watchlist Import and Import Lists' recurring sync
   couldn't confidently match — previously a "no metadata result found" title (both flows take the

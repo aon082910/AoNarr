@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, downloadFile, setApiKey } from "../api/client.js";
 import FolderPicker from "../components/FolderPicker.js";
+import NamingSetupModal from "../components/NamingSetupModal.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { BlocklistEntry, CustomFormat, ImportExclusion, MediaType, Quality, QualityProfile, RootFolder, Tag } from "../types.js";
 import { formatBytes } from "../utils/format.js";
@@ -33,6 +34,7 @@ export default function Settings() {
 
   const [folderPath, setFolderPath] = useState("");
   const [showFolderPicker, setShowFolderPicker] = useState(false);
+  const [namingModalType, setNamingModalType] = useState<MediaType | null>(null);
   const [folderType, setFolderType] = useState<MediaType>("movie");
 
   const [metadataProviders, setMetadataProviders] = useState<Record<MediaType, string[]>>({
@@ -930,18 +932,41 @@ export default function Settings() {
       <h2>Naming</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
-          Tokens: <code>{"{title}"}</code> <code>{"{year}"}</code> (single-file libraries — Movies,
-          ROMs, Adult) · <code>{"{parentTitle}"}</code> <code>{"{season:00}"}</code>{" "}
-          <code>{"{episode:00}"}</code> (episodic — TV Shows, Anime; set the Anime template below
-          to use <code>{"{absoluteEpisode:000}"}</code> instead of season/episode for a flat,
-          continuously-numbered scheme — e.g. <code>{"{parentTitle}/{parentTitle} - {absoluteEpisode:000}"}</code>{" "}
-          instead of the season/episode default) ·{" "}
-          <code>{"{parentTitle}"}</code> <code>{"{childTitle}"}</code> (collection — Music, Books,
-          Comics, Online Videos, Courses; Music is folder-only, track filenames are kept as
-          downloaded). Use <code>/</code> to nest folders. Extension is appended automatically.
+          Click "Naming setup..." for a library type to open a picker with the tokens available for
+          that type, a live preview, and the option to turn renaming off entirely (keep files as
+          downloaded — the folder structure still applies so things stay organized, only the
+          filename itself is left alone).
         </p>
         {mediaTypes.map((t) => {
-          const key = `naming${t.key.charAt(0).toUpperCase()}${t.key.slice(1)}Template`;
+          const templateKey = `naming${t.key.charAt(0).toUpperCase()}${t.key.slice(1)}Template`;
+          const enabledKey = `namingEnabled${t.key.charAt(0).toUpperCase()}${t.key.slice(1)}`;
+          const shapeDefault =
+            t.shape === "single"
+              ? "{title} ({year})/{title} ({year})"
+              : t.shape === "episodic"
+              ? "{parentTitle}/Season {season:00}/{parentTitle} - S{season:00}E{episode:00}"
+              : "{parentTitle}/{childTitle}";
+          const isEnabled = settings[enabledKey] !== "0";
+          return (
+            <div key={t.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <div>
+                <strong>{t.label}</strong>
+                <div style={{ fontFamily: "monospace", fontSize: "0.8rem", color: "var(--muted)" }}>
+                  {isEnabled ? settings[templateKey] ?? shapeDefault : "renaming disabled"}
+                </div>
+              </div>
+              <button type="button" className="secondary" onClick={() => setNamingModalType(t.key)}>
+                Naming setup...
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      {namingModalType &&
+        (() => {
+          const t = mediaTypes.find((mt) => mt.key === namingModalType)!;
+          const templateKey = `naming${t.key.charAt(0).toUpperCase()}${t.key.slice(1)}Template`;
+          const enabledKey = `namingEnabled${t.key.charAt(0).toUpperCase()}${t.key.slice(1)}`;
           const shapeDefault =
             t.shape === "single"
               ? "{title} ({year})/{title} ({year})"
@@ -949,17 +974,20 @@ export default function Settings() {
               ? "{parentTitle}/Season {season:00}/{parentTitle} - S{season:00}E{episode:00}"
               : "{parentTitle}/{childTitle}";
           return (
-            <div key={t.key}>
-              <label>{t.label}</label>
-              <input
-                key={settings[key] ?? `${key}-empty`}
-                defaultValue={settings[key] ?? shapeDefault}
-                onBlur={(e) => saveSetting(key, e.target.value)}
-              />
-            </div>
+            <NamingSetupModal
+              typeLabel={t.label}
+              shape={t.shape}
+              defaultTemplate={shapeDefault}
+              initialTemplate={settings[templateKey] ?? shapeDefault}
+              initialEnabled={settings[enabledKey] !== "0"}
+              onClose={() => setNamingModalType(null)}
+              onSave={async (template, enabled) => {
+                await saveSetting(templateKey, template);
+                await saveSetting(enabledKey, enabled ? "1" : "0");
+              }}
+            />
           );
-        })}
-      </div>
+        })()}
 
       <h2>Watch-status Auto-Archival</h2>
       <div className="form-panel">

@@ -83,6 +83,31 @@ function getNamingTemplate(type: MediaType): string {
   return DEFAULT_SHAPE_TEMPLATES[getMediaTypeConfig(type).shape];
 }
 
+/** `namingEnabled<Type>` in settings, defaulting to enabled — unset/missing means "on" so existing
+ * installations (with no such key at all) keep their current templated-renaming behavior. */
+function getNamingEnabled(type: MediaType): boolean {
+  const capitalized = type.charAt(0).toUpperCase() + type.slice(1);
+  return getSetting(`namingEnabled${capitalized}`) !== "0";
+}
+
+/** Builds the final destination from rendered template segments. When naming is disabled for this
+ * type, the template's FOLDER structure still applies (still needed to keep episodes grouped
+ * under their season, and to avoid dumping every file flat into one directory) — only the
+ * filename itself is swapped for the sanitized original instead of the templated one. */
+function resolveDest(
+  rootFolderPath: string,
+  segments: string[],
+  ext: string,
+  sourceFile: string,
+  namingEnabled: boolean
+): { destPath: string; fileLabel: string } {
+  const folderSegments = segments.slice(0, -1);
+  const fileLabel = namingEnabled
+    ? `${segments[segments.length - 1]}${ext}`
+    : `${sanitizeForPath(path.basename(sourceFile, path.extname(sourceFile)))}${ext}`;
+  return { destPath: path.join(rootFolderPath, ...folderSegments, fileLabel), fileLabel };
+}
+
 function normalizeTokens(text: string): string[] {
   return text
     .toLowerCase()
@@ -224,8 +249,7 @@ export async function placeFile(params: {
 
   if (typeConfig.shape === "single") {
     const segments = renderPathSegments(getNamingTemplate(item.type), { title: item.title, year: item.year ?? "" });
-    fileLabel = `${segments[segments.length - 1]}${ext}`;
-    destPath = path.join(rootFolder.path, ...segments) + ext;
+    ({ destPath, fileLabel } = resolveDest(rootFolder.path, segments, ext, sourceFile, getNamingEnabled(item.type)));
   } else if (typeConfig.shape === "episodic" && episodeId) {
     const epRow = db.prepare("SELECT * FROM episodes WHERE id = ?").get(episodeId) as any;
     if (!epRow) throw new Error(`Episode ${episodeId} not found`);
@@ -249,8 +273,7 @@ export async function placeFile(params: {
       episode: epRow.episode_number,
       absoluteEpisode,
     });
-    fileLabel = `${segments[segments.length - 1]}${ext}`;
-    destPath = path.join(rootFolder.path, ...segments) + ext;
+    ({ destPath, fileLabel } = resolveDest(rootFolder.path, segments, ext, sourceFile, getNamingEnabled(item.type)));
   } else if (typeConfig.shape === "collection" && subItemId && !typeConfig.multiFilePerChild) {
     const subRow = db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId) as any;
     if (!subRow) throw new Error(`Sub-item ${subItemId} not found`);
@@ -258,8 +281,7 @@ export async function placeFile(params: {
       parentTitle: item.title,
       childTitle: subRow.title,
     });
-    fileLabel = `${segments[segments.length - 1]}${ext}`;
-    destPath = path.join(rootFolder.path, ...segments) + ext;
+    ({ destPath, fileLabel } = resolveDest(rootFolder.path, segments, ext, sourceFile, getNamingEnabled(item.type)));
   } else {
     throw new ImportSkippedError(
       `Don't know how to place a file for media type "${item.type}" without a linked episode/sub-item`
@@ -336,13 +358,21 @@ export async function placeAlbumFiles(params: {
   const subRow = db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId) as any;
   if (!subRow) throw new Error(`Sub-item ${subItemId} not found`);
 
-  const folderSegments = renderPathSegments(getNamingTemplate(item.type), {
+  const sourceDir = path.dirname(anchorFile);
+  // Music's individual track filenames are always kept as-downloaded (see the per-file loop
+  // below) — there's no separate "filename" to bypass independently the way single/episodic have,
+  // so for this shape the album FOLDER is the naming toggle's equivalent of a filename: the
+  // artist folder from the template still applies (avoids dumping every album flat), but the
+  // album folder itself reverts to the source download's own folder name when disabled.
+  const templatedSegments = renderPathSegments(getNamingTemplate(item.type), {
     parentTitle: item.title,
     childTitle: subRow.title,
   });
-  const destFolder = path.join(rootFolder.path, ...folderSegments);
-
-  const sourceDir = path.dirname(anchorFile);
+  const parentFolderSegments = templatedSegments.slice(0, -1);
+  const albumFolderName = getNamingEnabled(item.type)
+    ? templatedSegments[templatedSegments.length - 1]
+    : sanitizeForPath(path.basename(sourceDir));
+  const destFolder = path.join(rootFolder.path, ...parentFolderSegments, albumFolderName);
   const siblings = fs
     .readdirSync(sourceDir, { withFileTypes: true })
     .filter((e) => e.isFile() && typeConfig.extensions.includes(path.extname(e.name).toLowerCase()))
@@ -453,7 +483,7 @@ export async function placeSeasonPackFiles(params: {
       absoluteEpisode,
     });
     const ext = path.extname(src);
-    const dest = path.join(rootFolder.path, ...segments) + ext;
+    const { destPath: dest } = resolveDest(rootFolder.path, segments, ext, src, getNamingEnabled(item.type));
     destFolder = path.dirname(dest);
     moveFile(src, dest);
 
