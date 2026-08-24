@@ -1021,7 +1021,7 @@ export default function Settings() {
               : "{parentTitle}/{childTitle}";
           const isEnabled = settings[enabledKey] !== "0";
           return (
-            <div key={t.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <div key={t.key} className="toolbar" style={{ justifyContent: "space-between", gap: 12 }}>
               <div>
                 <strong>{t.label}</strong>
                 <div style={{ fontFamily: "monospace", fontSize: "0.8rem", color: "var(--muted)" }}>
@@ -1355,7 +1355,7 @@ export default function Settings() {
       <h2>Root Folders</h2>
       <form className="form-panel" onSubmit={addFolder}>
         <label>Path</label>
-        <div style={{ display: "flex", gap: 6 }}>
+        <div className="toolbar">
           <input value={folderPath} onChange={(e) => setFolderPath(e.target.value)} placeholder="/media/movies" required style={{ flex: 1 }} />
           <button type="button" className="secondary" onClick={() => setShowFolderPicker(true)}>
             Browse...
@@ -1546,7 +1546,7 @@ export default function Settings() {
                   onBlur={(e) => saveQualitySize(q.id, "preferredSizeMb", e.target.value)}
                 />
               </td>
-              <td style={{ display: "flex", gap: 6 }}>
+              <td className="toolbar">
                 <button className="secondary" disabled={idx === 0} onClick={() => moveQuality(idx, -1)}>
                   Up
                 </button>

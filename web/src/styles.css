@@ -146,8 +146,19 @@ select {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%238b909c' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-size: 12px 8px;
-  background-position: right 10px center;
-  padding-right: 28px;
+  background-position: right 12px center;
+  /* Wide enough that the arrow never sits directly against the last character even on a select
+     that's been given an explicit narrow width (several pages set one, e.g. a 160-210px sort/
+     filter dropdown) — 28px previously left the arrow's own 12px glyph only 6px clear of the text
+     box, which reads as "the arrow is covering the last letter" once the option text is long
+     enough to reach the padding boundary at all. */
+  padding-right: 34px;
+  /* A native <select> hard-clips overflowing text with no indication anything's missing — an
+     ellipsis is a much clearer signal than a letter just vanishing at the box edge, and reads as
+     "purposely truncated" rather than "broken," independent of how narrow the select ends up. */
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 label { display: block; font-size: 0.82rem; color: var(--muted); margin: 12px 0 4px; }
@@ -196,7 +207,13 @@ button.select-like:hover { background: rgba(255,255,255,0.04); opacity: 1; }
 .toolbar > input {
   margin-top: 0;
   height: 38px;
+  /* Flex items shrink below their own content width by default before flex-wrap kicks in, which
+     is what let a select/button's label get visually compressed (and its text clipped by the
+     select's own overflow/arrow padding) in a crowded toolbar row instead of just wrapping to the
+     next line — wrapping is the correct behavior here, shrinking text into illegibility isn't. */
+  flex-shrink: 0;
 }
+.toolbar > .dropdown { flex-shrink: 0; }
 /* The dropdown trigger's real height comes from the button inside it, set directly rather than
    inherited via a percentage from the wrapping .dropdown div — a height:100% chain through an
    inline-flex wrapper doesn't reliably compute to the same pixel value as a plain sibling button
@@ -234,6 +251,13 @@ button.select-like:hover { background: rgba(255,255,255,0.04); opacity: 1; }
 .dropdown-menu button:hover { background: rgba(255,255,255,0.06); }
 .dropdown-menu button:disabled { opacity: 0.5; cursor: default; }
 .dropdown-menu .dropdown-divider { height: 1px; background: var(--border); margin: 4px 2px; }
+
+/* Settings.tsx and System.tsx's own tab-switcher row — every tab button shares the same
+   margin-top so they were already aligned with each other, but the default button's
+   margin-top: 16px (meant for a button following a stacked label+input, not a tab bar sitting
+   right under a page's <h1>) still pushed the whole row an extra 16px below where it visually
+   belongs. */
+.settings-tabs > button { margin-top: 0; }
 
 .form-panel {
   background: var(--panel);

@@ -3,6 +3,40 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 108 — UI polish: layout bugs, layout options, metadata merge
+- Fixed a real navigation bug: switching from a grouped library (Online Videos, ROMs, Adult) to a
+  flat one (Music, Movies, ...) left the previous type's group state sitting around, so the flat
+  library's page kept showing the old type's group in its breadcrumb (e.g. "Music / Youtube" after
+  visiting Online Videos → Youtube then navigating to Music) — confirmed via a real client-side
+  navigation, not just a fresh page load, which is what the bug actually required to reproduce.
+- Fixed the per-library "on disk" size figure: switching libraries quickly could let an earlier,
+  slower-to-resolve request overwrite a later, faster one's correct size — the page would show
+  whichever library's request happened to finish last, not necessarily the one being viewed.
+- Fixed several button/input misalignments on the Activity, Settings, and System pages where a
+  button sat visibly lower than its row-mates (an input, a label, or another cell in the same
+  table row) — all traced to the same cause: the default button's `margin-top: 16px` (meant for a
+  button following a stacked label+input) leaking into flex rows that were never meant to have it.
+- Fixed select/dropdown text reading as cut off by the arrow: widened the reserved arrow padding
+  and added ellipsis truncation so a select that's narrower than its longest option now shows
+  "..." instead of a letter just vanishing at the box edge; also stopped toolbar buttons/selects
+  from being flex-compressed below their own content width before wrapping to a new line.
+- Added a side-by-side metadata-merge tool to the media detail page: fetch from 2+ providers, then
+  pick which source (current value or any fetched provider) to use per field — poster/title/year/
+  overview — and apply the merged result in one PATCH. Added `year` to the item PATCH endpoint's
+  supported fields, needed for the merge to actually apply a picked year.
+- Added layout customization, saved per-browser: the Dashboard's widgets (Library Size, Recently
+  Added, Recently Watched, Upcoming) can now be reordered and hidden via a "Customize layout"
+  panel; the sidebar's admin-only sections (Manage, Configuration, System) can be reordered and
+  hidden the same way; the whole sidebar can be collapsed to reclaim screen width, with a floating
+  toggle to bring it back. Also widened the library poster-size picker from 3 sizes to 5
+  (X-small/Small/Medium/Large/X-large).
+- Verified live against both Postgres and SQLite (the `year` PATCH field) and in-browser against
+  SQLite: the breadcrumb fix confirmed via an actual client-side sidebar-link navigation (not a
+  fresh page load, which wouldn't have reproduced the bug); the metadata-merge tool confirmed
+  end-to-end with real MusicBrainz/Deezer fetches, picking a mixed poster+year combination and
+  confirming the applied result matched exactly; the dashboard/sidebar customization confirmed
+  persisting across a reload.
+
 ## Round 107 — add a duplicate-merge tool
 - New "Duplicates" page (System nav group) for cleaning up the duplicate rows that predate Round
   106's import-matching fix, or anything else that ends up looking like a duplicate later: sweeps

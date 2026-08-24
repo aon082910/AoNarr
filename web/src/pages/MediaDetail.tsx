@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, downloadFile } from "../api/client.js";
 import GroupPicker from "../components/GroupPicker.js";
@@ -100,6 +100,16 @@ export default function MediaDetail() {
   const [pendingGroupId, setPendingGroupId] = useState<number | null>(null);
   const [metadataProviders, setMetadataProviders] = useState<Record<string, string[]>>({});
   const [fetchingProvider, setFetchingProvider] = useState<string | null>(null);
+  // Which source ("current" or a provider key) is picked per field in the metadata-merge table —
+  // reset whenever a fresh provider is fetched, so a stale pick from a previous item/session
+  // doesn't silently carry over to a different field's actual source list.
+  const [mergeChoice, setMergeChoice] = useState<{ title: string; year: string; overview: string; posterUrl: string }>({
+    title: "current",
+    year: "current",
+    overview: "current",
+    posterUrl: "current",
+  });
+  const [applyingMerge, setApplyingMerge] = useState(false);
   const [browseEntries, setBrowseEntries] = useState<BrowseEntry[]>([]);
   const [importEpisodeId, setImportEpisodeId] = useState<number | "">("");
   const [importSubItemId, setImportSubItemId] = useState<number | "">("");
@@ -267,20 +277,33 @@ export default function MediaDetail() {
     }
   }
 
-  async function useAsOverview(provider: string) {
-    if (!item) return;
-    const overview = item.extraMetadata[provider]?.overview;
-    if (!overview) return;
-    await api.patch(`/media/${item.id}`, { overview });
-    setItem({ ...item, overview });
+  /** Resolves one merge-table field's currently-picked source ("current" or a provider key) to
+   * its actual value, falling back to the item's own value if the picked provider's fetch doesn't
+   * have that field populated (e.g. a provider fetched before this field existed in extraMetadata). */
+  function mergedValue<K extends "title" | "year" | "overview" | "posterUrl">(item: MediaDetailResponse, field: K, choice: string) {
+    if (choice === "current") return item[field];
+    const provided = item.extraMetadata[choice]?.[field];
+    return provided ?? item[field];
   }
 
-  async function useAsPoster(provider: string) {
+  async function applyMerge() {
     if (!item) return;
-    const posterUrl = item.extraMetadata[provider]?.posterUrl;
-    if (!posterUrl) return;
-    await api.patch(`/media/${item.id}`, { posterUrl });
-    setItem({ ...item, posterUrl });
+    setApplyingMerge(true);
+    try {
+      const payload = {
+        title: mergedValue(item, "title", mergeChoice.title),
+        year: mergedValue(item, "year", mergeChoice.year),
+        overview: mergedValue(item, "overview", mergeChoice.overview),
+        posterUrl: mergedValue(item, "posterUrl", mergeChoice.posterUrl),
+      };
+      await api.patch(`/media/${item.id}`, payload);
+      setItem({ ...item, ...payload });
+      setMergeChoice({ title: "current", year: "current", overview: "current", posterUrl: "current" });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setApplyingMerge(false);
+    }
   }
 
   async function saveGroup() {
@@ -768,38 +791,99 @@ export default function MediaDetail() {
           <h2>Additional Metadata Sources</h2>
           <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
             Pull a second opinion from another provider without changing this item's primary
-            overview/poster — review it here, then choose to use it if you'd rather.
+            fields yet. Once you've fetched from one or more, pick which source to use per field
+            below — mixing and matching (e.g. this provider's poster with that one's overview) is
+            fine — then apply the merged result in one go.
           </p>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+          <div className="toolbar" style={{ marginBottom: 12 }}>
             {metadataProviders[item.type].map((p) => (
               <button key={p} type="button" className="secondary" onClick={() => fetchSupplemental(p)} disabled={fetchingProvider === p}>
                 {fetchingProvider === p ? "Fetching..." : `Fetch from ${p}`}
               </button>
             ))}
           </div>
-          {Object.entries(item.extraMetadata).map(([provider, data]) => (
-            <div key={provider} className="form-panel" style={{ display: "flex", gap: 12, marginBottom: 10 }}>
-              {data.posterUrl && (
-                <img src={data.posterUrl} alt="" style={{ width: 60, height: 90, objectFit: "cover", borderRadius: 4 }} />
-              )}
-              <div style={{ flex: 1 }}>
-                <strong>{provider}</strong>: {data.title} {data.year ? `(${data.year})` : ""}
-                {data.overview && <p style={{ fontSize: "0.85rem", margin: "4px 0" }}>{data.overview}</p>}
-                <div style={{ display: "flex", gap: 8 }}>
-                  {data.overview && (
-                    <button type="button" className="secondary" onClick={() => useAsOverview(provider)}>
-                      Use this overview
-                    </button>
-                  )}
-                  {data.posterUrl && (
-                    <button type="button" className="secondary" onClick={() => useAsPoster(provider)}>
-                      Use this poster
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          ))}
+          {Object.keys(item.extraMetadata).length > 0 &&
+            (() => {
+              const providers = Object.entries(item.extraMetadata);
+              const row = (
+                field: "title" | "year" | "overview" | "posterUrl",
+                label: string,
+                render: (value: string | number | null) => ReactNode
+              ) => (
+                <tr>
+                  <th style={{ whiteSpace: "nowrap" }}>{label}</th>
+                  <td>
+                    <label style={{ display: "flex", alignItems: "flex-start", gap: 6, cursor: "pointer" }}>
+                      <input
+                        type="radio"
+                        name={`merge-${field}`}
+                        checked={mergeChoice[field] === "current"}
+                        onChange={() => setMergeChoice((prev) => ({ ...prev, [field]: "current" }))}
+                        style={{ marginTop: 4 }}
+                      />
+                      {render(item[field])}
+                    </label>
+                  </td>
+                  {providers.map(([provider, data]) => (
+                    <td key={provider}>
+                      {data[field] != null && data[field] !== "" ? (
+                        <label style={{ display: "flex", alignItems: "flex-start", gap: 6, cursor: "pointer" }}>
+                          <input
+                            type="radio"
+                            name={`merge-${field}`}
+                            checked={mergeChoice[field] === provider}
+                            onChange={() => setMergeChoice((prev) => ({ ...prev, [field]: provider }))}
+                            style={{ marginTop: 4 }}
+                          />
+                          {render(data[field])}
+                        </label>
+                      ) : (
+                        <span style={{ color: "var(--muted)" }}>—</span>
+                      )}
+                    </td>
+                  ))}
+                </tr>
+              );
+
+              return (
+                <>
+                  <div style={{ overflowX: "auto" }}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th></th>
+                          <th>Current</th>
+                          {providers.map(([provider]) => (
+                            <th key={provider} style={{ textTransform: "capitalize" }}>
+                              {provider}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {row("posterUrl", "Poster", (v) =>
+                          v ? (
+                            <img src={v as string} alt="" style={{ width: 40, height: 60, objectFit: "cover", borderRadius: 3 }} />
+                          ) : (
+                            <span style={{ color: "var(--muted)" }}>none</span>
+                          )
+                        )}
+                        {row("title", "Title", (v) => <span>{v}</span>)}
+                        {row("year", "Year", (v) => <span>{v ?? "-"}</span>)}
+                        {row("overview", "Overview", (v) => (
+                          <span style={{ fontSize: "0.85rem", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                            {v}
+                          </span>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <button type="button" onClick={applyMerge} disabled={applyingMerge} style={{ marginTop: 12 }}>
+                    {applyingMerge ? "Applying..." : "Apply merged metadata"}
+                  </button>
+                </>
+              );
+            })()}
         </>
       )}
 

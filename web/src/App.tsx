@@ -44,6 +44,7 @@ import Duplicates from "./pages/Duplicates.js";
 import NetworkStats from "./pages/NetworkStats.js";
 import MediaAnalyzer from "./pages/MediaAnalyzer.js";
 import { useMediaTypes } from "./hooks/useMediaTypes.js";
+import { useCustomizableLayout } from "./hooks/useCustomizableLayout.js";
 
 /** Plain <BrowserRouter>/<Routes> (not the data-router API) never touches scroll position on
  * navigation on its own — this is what actually resets it back to the top of the new page. */
@@ -81,6 +82,12 @@ export default function App() {
   const isAdmin = auth.isAdmin;
   const [showOnboarding, setShowOnboarding] = useState(false);
   const mediaTypes = useMediaTypes().filter((t) => isAdmin || auth.user?.allowedTypes.includes(t.key));
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("aonarr_sidebar_collapsed") === "1");
+  const [customizingSidebar, setCustomizingSidebar] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem("aonarr_sidebar_collapsed", sidebarCollapsed ? "1" : "0");
+  }, [sidebarCollapsed]);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -90,14 +97,92 @@ export default function App() {
       .catch(() => {});
   }, [isAdmin]);
 
+  // Only the admin-only section groups are reorderable — Library stays pinned right after
+  // Dashboard since every account (including household logins) relies on it being there, and
+  // reordering/hiding it would just be a way to accidentally lose your own library nav.
+  const adminGroupDefs: { key: string; label: string; render: () => ReactNode }[] = [
+    {
+      key: "manage",
+      label: "Manage",
+      render: () => (
+        <NavGroup label="Manage">
+          <NavLink to="/add">Add Media</NavLink>
+          <NavLink to="/recommendations">Recommendations</NavLink>
+          <NavLink to="/watchlist-import">Watchlist Import</NavLink>
+          <NavLink to="/import-review">Import Review</NavLink>
+          <NavLink to="/import-lists">Import Lists</NavLink>
+          <NavLink to="/calendar">Calendar</NavLink>
+          <NavLink to="/missing">Missing</NavLink>
+          <NavLink to="/activity">Activity</NavLink>
+        </NavGroup>
+      ),
+    },
+    {
+      key: "configuration",
+      label: "Configuration",
+      render: () => (
+        <NavGroup label="Configuration">
+          <NavLink to="/indexers">Indexers</NavLink>
+          <NavLink to="/download-clients">Download Clients</NavLink>
+          <NavLink to="/users">Users</NavLink>
+          <NavLink to="/settings">Settings</NavLink>
+        </NavGroup>
+      ),
+    },
+    {
+      key: "system",
+      label: "System",
+      render: () => (
+        <NavGroup label="System">
+          <NavLink to="/system">Status &amp; Health</NavLink>
+          <NavLink to="/jobs">Jobs</NavLink>
+          <NavLink to="/recycle-bin">Recycle Bin</NavLink>
+          <NavLink to="/duplicates">Duplicates</NavLink>
+          <NavLink to="/network-stats">Network Stats</NavLink>
+          <NavLink to="/media-analyzer">Media Analyzer</NavLink>
+          <NavLink to="/audit-log">Audit Log</NavLink>
+          <NavLink to="/api-docs">API Docs</NavLink>
+          <NavLink to="/remote-library">Remote Library</NavLink>
+          <NavLink to="/friend-libraries">Friend Libraries</NavLink>
+        </NavGroup>
+      ),
+    },
+  ];
+  const { orderedItems: orderedGroups, visibleItems: visibleGroups, hidden: hiddenGroups, moveUp: moveGroupUp, moveDown: moveGroupDown, toggleHidden: toggleGroupHidden } =
+    useCustomizableLayout(
+      "aonarr_sidebar_groups",
+      adminGroupDefs.map((g) => ({ key: g.key, label: g.label }))
+    );
+  const groupByKey = new Map(adminGroupDefs.map((g) => [g.key, g]));
+
   return (
     <div className="app">
       <ScrollToTop />
       <CommandPalette />
-      <nav className="sidebar">
-        <div className="brand">
-          <img src="/icon.svg" alt="" width={28} height={28} />
-          AoNarr
+      <button
+        type="button"
+        className="secondary"
+        onClick={() => setSidebarCollapsed((v) => !v)}
+        title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+        style={{ position: "fixed", top: 12, left: 12, zIndex: 30, padding: "4px 10px", margin: 0, display: sidebarCollapsed ? "block" : "none" }}
+      >
+        ☰
+      </button>
+      <nav className="sidebar" style={sidebarCollapsed ? { display: "none" } : undefined}>
+        <div className="brand" style={{ justifyContent: "space-between" }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <img src="/icon.svg" alt="" width={28} height={28} />
+            AoNarr
+          </span>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => setSidebarCollapsed(true)}
+            title="Hide sidebar"
+            style={{ padding: "2px 8px", margin: 0, fontSize: "0.8rem" }}
+          >
+            ☰
+          </button>
         </div>
         <div style={{ fontSize: "0.7rem", color: "var(--muted)", padding: "0 12px 8px" }} title="Ctrl/Cmd+K to jump anywhere, / to search">
           ⌘K to jump · / to search
@@ -123,42 +208,57 @@ export default function App() {
         <NavLink to="/changelog">What's New</NavLink>
         <NavLink to="/account">Account</NavLink>
 
-        {isAdmin && (
-          <NavGroup label="Manage">
-            <NavLink to="/add">Add Media</NavLink>
-            <NavLink to="/recommendations">Recommendations</NavLink>
-            <NavLink to="/watchlist-import">Watchlist Import</NavLink>
-            <NavLink to="/import-review">Import Review</NavLink>
-            <NavLink to="/import-lists">Import Lists</NavLink>
-            <NavLink to="/calendar">Calendar</NavLink>
-            <NavLink to="/missing">Missing</NavLink>
-            <NavLink to="/activity">Activity</NavLink>
-          </NavGroup>
-        )}
+        {isAdmin && visibleGroups.map((g) => <div key={g.key}>{groupByKey.get(g.key)?.render()}</div>)}
 
         {isAdmin && (
-          <NavGroup label="Configuration">
-            <NavLink to="/indexers">Indexers</NavLink>
-            <NavLink to="/download-clients">Download Clients</NavLink>
-            <NavLink to="/users">Users</NavLink>
-            <NavLink to="/settings">Settings</NavLink>
-          </NavGroup>
+          <>
+            <a onClick={() => setCustomizingSidebar((v) => !v)} style={{ cursor: "pointer", fontSize: "0.85rem" }}>
+              {customizingSidebar ? "Done customizing" : "Customize sections..."}
+            </a>
+            {customizingSidebar && (
+              <div style={{ padding: "4px 20px 8px" }}>
+                {orderedGroups.map((item, idx) => (
+                  <div key={item.key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "3px 0" }}>
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        margin: 0,
+                        fontSize: "0.8rem",
+                        color: hiddenGroups.has(item.key) ? "var(--muted)" : "var(--text)",
+                      }}
+                    >
+                      <input type="checkbox" checked={!hiddenGroups.has(item.key)} onChange={() => toggleGroupHidden(item.key)} />
+                      {item.label}
+                    </label>
+                    <div style={{ display: "flex", gap: 2 }}>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => moveGroupUp(item.key)}
+                        disabled={idx === 0}
+                        style={{ padding: "1px 7px", margin: 0, fontSize: "0.75rem" }}
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => moveGroupDown(item.key)}
+                        disabled={idx === orderedGroups.length - 1}
+                        style={{ padding: "1px 7px", margin: 0, fontSize: "0.75rem" }}
+                      >
+                        ↓
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
 
-        {isAdmin && (
-          <NavGroup label="System">
-            <NavLink to="/system">Status &amp; Health</NavLink>
-            <NavLink to="/jobs">Jobs</NavLink>
-            <NavLink to="/recycle-bin">Recycle Bin</NavLink>
-            <NavLink to="/duplicates">Duplicates</NavLink>
-            <NavLink to="/network-stats">Network Stats</NavLink>
-            <NavLink to="/media-analyzer">Media Analyzer</NavLink>
-            <NavLink to="/audit-log">Audit Log</NavLink>
-            <NavLink to="/api-docs">API Docs</NavLink>
-            <NavLink to="/remote-library">Remote Library</NavLink>
-            <NavLink to="/friend-libraries">Friend Libraries</NavLink>
-          </NavGroup>
-        )}
         <div style={{ marginTop: "auto", display: "flex", flexDirection: "column" }}>
           <ThemeToggle />
           <NotificationsToggle />

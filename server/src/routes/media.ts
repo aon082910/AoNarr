@@ -639,6 +639,7 @@ mediaRouter.patch(
     }
     const fields: Record<string, unknown> = {
       title: b.title,
+      year: b.year,
       overview: b.overview,
       poster_url: b.posterUrl,
       monitored: b.monitored,

@@ -97,7 +97,7 @@ export default function Activity() {
                 </td>
                 <td>{q.quality ?? "-"}</td>
                 <td>{q.size ? `${(q.size / 1e9).toFixed(2)} GB` : "-"}</td>
-                <td style={{ display: "flex", gap: 6 }}>
+                <td className="toolbar">
                   {(q.status === "queued" || q.status === "downloading") && (
                     <button className="secondary" onClick={() => setPriority(q.id, "top")}>
                       Prioritize

@@ -598,7 +598,7 @@ export default function System() {
           <option value="1">Enabled</option>
         </select>
         <label>Backup directory (path inside the container)</label>
-        <div style={{ display: "flex", gap: 6 }}>
+        <div className="toolbar">
           <input
             key={settings.backupDir ?? "backup-dir-empty"}
             defaultValue={settings.backupDir ?? ""}

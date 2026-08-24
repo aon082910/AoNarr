@@ -10,7 +10,7 @@ import Modal from "../components/Modal.js";
 
 type SortKey = "title" | "year" | "added" | "status" | "monitored" | "quality" | "contentRating";
 type ViewMode = "poster" | "list";
-type PosterSize = "small" | "medium" | "large";
+type PosterSize = "xsmall" | "small" | "medium" | "large" | "xlarge";
 type StatusFilter = "all" | "monitored" | "unmonitored" | "missing" | "downloaded" | "unmatched";
 
 /** An item counts as unmatched when it has no external provider ids at all — the state a Scan &
@@ -25,7 +25,7 @@ function isUnmatched(item: MediaItem): boolean {
   }
 }
 
-const POSTER_SIZE_PX: Record<PosterSize, number> = { small: 120, medium: 160, large: 220 };
+const POSTER_SIZE_PX: Record<PosterSize, number> = { xsmall: 90, small: 120, medium: 160, large: 220, xlarge: 300 };
 
 // "Title" is always shown (the primary column/label) — everything here is optional and
 // user-toggleable, for both the list view's columns and the extra info line under each poster.
@@ -103,7 +103,16 @@ export default function LibraryType() {
   const atGroupBrowseLevel = isGrouped && (!groupId || !groupDetail?.isDeepestLevel);
 
   useEffect(() => {
-    if (!isGrouped) return;
+    if (!isGrouped) {
+      // Without this, switching from a grouped type (Online Videos, ROMs, ...) to a flat one
+      // (Music, Movies, ...) left the previous type's groupDetail/childGroups sitting in state —
+      // LibraryItemGrid below renders groupDetail.breadcrumb whenever it's non-null, so the flat
+      // type's page kept showing the old type's group name in its breadcrumb (e.g. "Music /
+      // Youtube" after visiting Online Videos → Youtube and then navigating to Music).
+      setGroupDetail(null);
+      setChildGroups([]);
+      return;
+    }
     if (groupId) {
       api.get<GroupDetail>(`/library-groups/${groupId}`).then((detail) => {
         setGroupDetail(detail);
@@ -328,7 +337,17 @@ export function LibraryItemGrid({
 
   useEffect(load, [type, groupId, tagFilter]);
   useEffect(() => {
-    api.get<Record<string, number>>("/dashboard/library-sizes").then((sizes) => setTypeSize(sizes[type] ?? 0));
+    // Guarded against out-of-order responses: switching libraries quickly could let an earlier
+    // type's slower-to-resolve request land after a later type's faster one, overwriting the
+    // correct size with a stale one — the page would then keep showing whichever library's
+    // request happened to finish last, not necessarily the one currently being viewed.
+    let cancelled = false;
+    api.get<Record<string, number>>("/dashboard/library-sizes").then((sizes) => {
+      if (!cancelled) setTypeSize(sizes[type] ?? 0);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [type]);
   useEffect(() => {
     setActiveViewId("");
@@ -697,10 +716,12 @@ export function LibraryItemGrid({
           </select>
         )}
         {viewMode === "poster" && (
-          <select value={posterSize} onChange={(e) => setPosterSize(e.target.value as PosterSize)} style={{ maxWidth: 120 }}>
+          <select value={posterSize} onChange={(e) => setPosterSize(e.target.value as PosterSize)} style={{ maxWidth: 140 }}>
+            <option value="xsmall">X-small posters</option>
             <option value="small">Small posters</option>
             <option value="medium">Medium posters</option>
             <option value="large">Large posters</option>
+            <option value="xlarge">X-large posters</option>
           </select>
         )}
         {savedViews.length > 0 && (
