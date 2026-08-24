@@ -99,17 +99,39 @@ function extractSubtitleStreams(streams: any[]): SubtitleStreamInfo[] {
  * available or the file can't be probed — this is a best-effort enrichment, not something that
  * should ever block an import.
  */
+/** A "moov atom not found"/similar container-parse failure on a file that plays back fine
+ * elsewhere usually isn't the file being corrupt — it's ffprobe catching a network-mounted file
+ * (NFS/SMB share, a cache-to-array move still settling) mid-flux, seeing a truncated or
+ * inconsistent view that a later read wouldn't. A single short-delayed retry absorbs that without
+ * masking a genuinely corrupt file (which fails identically both times). */
+const RETRYABLE_FFPROBE_PATTERNS = [/moov atom not found/i, /invalid data found/i, /could not find codec parameters/i];
+
+async function runFfprobe(filePath: string): Promise<{ stdout: string }> {
+  return execFileAsync("ffprobe", ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", filePath], {
+    timeout: 30_000,
+    maxBuffer: 10 * 1024 * 1024,
+  });
+}
+
 export async function probeMediaInfo(filePath: string): Promise<MediaInfo | null> {
   try {
     // "-v error" (not "quiet") — quiet suppresses ffprobe's own explanation of *why* it failed
     // along with the routine info it's actually meant to silence, so a real failure came back with
     // empty stderr and nothing to log beyond "the command failed." error-level still says nothing
     // for a file that probes fine, but keeps the actual reason for one that doesn't.
-    const { stdout } = await execFileAsync(
-      "ffprobe",
-      ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", filePath],
-      { timeout: 30_000, maxBuffer: 10 * 1024 * 1024 }
-    );
+    let result;
+    try {
+      result = await runFfprobe(filePath);
+    } catch (err) {
+      const stderr = (err as NodeJS.ErrnoException & { stderr?: string }).stderr ?? "";
+      if (RETRYABLE_FFPROBE_PATTERNS.some((p) => p.test(stderr))) {
+        await new Promise((r) => setTimeout(r, 2000));
+        result = await runFfprobe(filePath);
+      } else {
+        throw err;
+      }
+    }
+    const { stdout } = result;
     const data = JSON.parse(stdout);
     const streams: any[] = data.streams ?? [];
     const videoStream = streams.find((s) => s.codec_type === "video");

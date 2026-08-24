@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 105 — surface why Scan & Import skips files, retry flaky ffprobe reads
+- Scan & Import previously logged only a bare `skipped: N` count with no indication of which
+  files were skipped or why — a file with an unparseable filename, wrong folder depth, or outside
+  every root folder simply vanished from view with nothing to diagnose. Every skip site now
+  records a specific reason (e.g. "couldn't guess a title from the filename", "sits directly in
+  the root folder with no parent folder"), and both the manual scan-import route and the scheduled
+  library-scan job log each skipped file's path and reason (capped at 20 per run so a systemic
+  naming mismatch across hundreds of files doesn't flood the log).
+- `probeMediaInfo` (ffprobe) now retries once, after a short delay, when the failure looks like a
+  transient read issue ("moov atom not found", "invalid data found", "could not find codec
+  parameters") rather than a genuinely corrupt file — these are the exact errors a network-mounted
+  file (NFS/SMB share, a cache-to-array move still settling) throws when read mid-flux by one
+  process while playing back fine moments later in another. A file that fails identically on both
+  attempts is still reported as unprobed (never blocks the import itself, unchanged from before).
+- Verified live: an unparseable filename now logs its exact path and reason instead of a silent
+  count; a file that fails ffprobe still imports correctly with `has_file` set, matching the
+  existing "probe failure never blocks import" behavior.
+
 ## Round 104 — fix AllDebrid grabs failing on every .torrent-byte upload
 - Fixed #1 (reopened): every grab that resolved to raw `.torrent` bytes (rather than a magnet URI)
   was silently treated as "AllDebrid rejected the magnet," even when AllDebrid had accepted it

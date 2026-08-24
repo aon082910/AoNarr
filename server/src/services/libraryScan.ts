@@ -148,11 +148,16 @@ async function defaultQualityProfileId(): Promise<number | null> {
   return row?.id ?? null;
 }
 
+export interface SkippedFile {
+  path: string;
+  reason: string;
+}
+
 export interface ScanImportResult {
   matched: number;
   created: number;
   skipped: number;
-  skippedFiles: string[];
+  skippedFiles: SkippedFile[];
   unsupported?: string;
   alreadyRunning?: boolean;
 }
@@ -255,13 +260,13 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
         const { season, episode } = detectSeasonEpisode(path.basename(parentDir), base);
         if (season === null || episode === null) {
           result.skipped++;
-          result.skippedFiles.push(filePath);
+          result.skippedFiles.push({ path: filePath, reason: "couldn't detect a season/episode number from the filename or folder" });
           continue;
         }
         const guessedTitle = guessSeriesTitle(parentDir, base);
         if (!guessedTitle) {
           result.skipped++;
-          result.skippedFiles.push(filePath);
+          result.skippedFiles.push({ path: filePath, reason: "couldn't guess a series title from the filename or folder" });
           continue;
         }
         const parsed = parseReleaseTitle(base);
@@ -305,7 +310,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
         const folder = folders.find((f) => filePath.startsWith(f.path));
         if (!folder) {
           result.skipped++;
-          result.skippedFiles.push(filePath);
+          result.skippedFiles.push({ path: filePath, reason: "not inside any configured root folder" });
           continue;
         }
         const relSegments = path.relative(folder.path, filePath).split(path.sep).filter(Boolean);
@@ -313,13 +318,13 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
         // sitting directly in the root folder with no parent folder at all can't be guessed at.
         if (relSegments.length < 2) {
           result.skipped++;
-          result.skippedFiles.push(filePath);
+          result.skippedFiles.push({ path: filePath, reason: "sits directly in the root folder with no parent (Artist/Author/...) folder" });
           continue;
         }
         const parentTitle = guessTitleFromText(relSegments[0]);
         if (!parentTitle) {
           result.skipped++;
-          result.skippedFiles.push(filePath);
+          result.skippedFiles.push({ path: filePath, reason: `couldn't guess a title from the parent folder name "${relSegments[0]}"` });
           continue;
         }
 
@@ -346,7 +351,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
           const albumTitle = guessTitleFromText(albumFolderName);
           if (!albumTitle) {
             result.skipped++;
-            result.skippedFiles.push(filePath);
+            result.skippedFiles.push({ path: filePath, reason: `couldn't guess an album title from the folder name "${albumFolderName}"` });
             continue;
           }
           let childMatch = childSubItems.find((s) => titlesMatch(s.title, albumTitle));
@@ -377,7 +382,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
           const childTitle = guessTitleFromText(base);
           if (!childTitle) {
             result.skipped++;
-            result.skippedFiles.push(filePath);
+            result.skippedFiles.push({ path: filePath, reason: `couldn't guess a title from the filename "${base}"` });
             continue;
           }
           const parsed = parseReleaseTitle(base);
@@ -404,7 +409,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
         const guessedTitle = guessTitleFromText(base);
         if (!guessedTitle) {
           result.skipped++;
-          result.skippedFiles.push(filePath);
+          result.skippedFiles.push({ path: filePath, reason: `couldn't guess a title from the filename "${base}"` });
           continue;
         }
         const parsed = parseReleaseTitle(base);
@@ -433,7 +438,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
     } catch (err) {
       log.warn(`[libraryScan] failed to import "${filePath}":`, (err as Error).message);
       result.skipped++;
-      result.skippedFiles.push(filePath);
+      result.skippedFiles.push({ path: filePath, reason: (err as Error).message });
     }
   }
 
@@ -587,12 +592,31 @@ export async function backfillMissingAlbumTracks(): Promise<void> {
   if (fixed > 0) log.info(`[libraryScan] startup data fix: backfilled track listings for ${fixed} previously-scanned album(s)`);
 }
 
+/** Logs a scan's outcome, including WHY each skipped file was skipped — not just the bare count.
+ * Without the per-file reason, a file that's silently skipped (unparseable filename, wrong folder
+ * depth, etc.) looks like it simply vanished, with nothing in the logs pointing at which file or
+ * why; every caller of scanAndImportLibrary should route its result through this instead of
+ * logging matched/created/skipped counts alone. Capped at 20 reasons per call so a library with a
+ * systemic naming-convention mismatch (hundreds of skips) doesn't flood the log — the count above
+ * the list still reflects the true total. */
+export function logScanResult(type: string, result: ScanImportResult): void {
+  log.info(`[libraryScan] "${type}": matched ${result.matched}, created ${result.created}, skipped ${result.skipped}`);
+  if (result.skippedFiles.length === 0) return;
+  const shown = result.skippedFiles.slice(0, 20);
+  for (const { path: filePath, reason } of shown) {
+    log.info(`[libraryScan] "${type}" skipped "${filePath}": ${reason}`);
+  }
+  if (result.skippedFiles.length > shown.length) {
+    log.info(`[libraryScan] "${type}": ${result.skippedFiles.length - shown.length} more skipped file(s) not shown`);
+  }
+}
+
 export async function scanAndImportAllLibraries(signal?: AbortSignal): Promise<void> {
   for (const type of MEDIA_TYPE_KEYS) {
     if (signal?.aborted) return;
     const result = await scanAndImportLibrary(type, signal);
-    if (result.matched > 0 || result.created > 0) {
-      log.info(`[libraryScan] "${type}": matched ${result.matched}, created ${result.created}, skipped ${result.skipped}`);
+    if (result.matched > 0 || result.created > 0 || result.skipped > 0) {
+      logScanResult(type, result);
     }
   }
 }

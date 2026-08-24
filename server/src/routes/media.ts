@@ -13,7 +13,7 @@ import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { CONTENT_RATING_ORDER, isRatingBlocked } from "../services/contentRatings.js";
 import { fetchCastFor, fetchTrailerFor, searchMetadata } from "../services/metadata.js";
 import { pushWatchState } from "../services/mediaServer.js";
-import { scanAndImportLibrary, refreshLibraryMetadata } from "../services/libraryScan.js";
+import { scanAndImportLibrary, refreshLibraryMetadata, logScanResult } from "../services/libraryScan.js";
 import { notifyGrabbed } from "../services/notifications.js";
 import { recycleFile } from "../services/recycleBin.js";
 import { buildCalibreOpf, buildJson, buildNfo, buildPlexMatch, fetchPosterBuffer, safeFileName, type ExportableItem } from "../services/metadataExport.js";
@@ -302,7 +302,7 @@ mediaRouter.post(
         if (result.unsupported) {
           log.info(`[scan-import] "${type}": ${result.unsupported}`);
         } else {
-          log.info(`[scan-import] "${type}": matched ${result.matched}, created ${result.created}, skipped ${result.skipped}`);
+          logScanResult(type, result);
         }
       })
       .catch((err) => log.warn(`[scan-import] "${type}" failed:`, (err as Error).message));
