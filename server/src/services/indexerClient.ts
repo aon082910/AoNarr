@@ -2,6 +2,7 @@ import { log } from "./logger.js";
 import { parseStringPromise } from "xml2js";
 import { getMediaTypeConfig } from "./mediaTypes.js";
 import { getSetting } from "./settingsStore.js";
+import { recordIndexerHealth } from "./indexerHealth.js";
 import type { DdlIndexerConfig, Indexer, MediaType, SearchResult } from "../types/index.js";
 
 /**
@@ -261,15 +262,23 @@ export async function searchIndexer(
   if (isIndexerBackedOff(indexer.id)) {
     throw new Error(`Indexer "${indexer.name}" is backed off after a recent 429 — skipping`);
   }
+  const startedAt = Date.now();
   try {
+    let results: SearchResult[];
     if (indexer.protocol === "torznab" || indexer.protocol === "newznab") {
-      return await searchTorznabNewznab(indexer, query, mediaType);
+      results = await searchTorznabNewznab(indexer, query, mediaType);
+    } else if (indexer.protocol === "rss") {
+      results = await searchRss(indexer, query);
+    } else if (indexer.protocol === "ddl") {
+      results = await searchDdl(indexer, query);
+    } else {
+      throw new Error(`Unknown indexer protocol "${indexer.protocol}"`);
     }
-    if (indexer.protocol === "rss") return await searchRss(indexer, query);
-    if (indexer.protocol === "ddl") return await searchDdl(indexer, query);
-    throw new Error(`Unknown indexer protocol "${indexer.protocol}"`);
+    await recordIndexerHealth(indexer.id, true, Date.now() - startedAt, null);
+    return results;
   } catch (err) {
     recordIfRateLimited(indexer, err);
+    await recordIndexerHealth(indexer.id, false, Date.now() - startedAt, (err as Error).message);
     throw err;
   }
 }

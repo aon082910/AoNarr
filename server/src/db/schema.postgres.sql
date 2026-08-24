@@ -88,6 +88,21 @@ CREATE TABLE IF NOT EXISTS indexers (
   config TEXT -- JSON blob, protocol-specific (e.g. DDL's JSON-field mapping); unused by torznab/newznab/rss
 );
 
+-- Rolling per-indexer search-attempt log (pruned to the most recent 50 rows per indexer by the
+-- code that inserts into it — see recordIndexerHealth() in services/indexerClient.ts) — every real
+-- search attempt through searchIndexer(), whether triggered manually, by auto-search, or by the
+-- wanted-list cycle, plus the Indexers page's "Test" button. Powers the Indexers page's per-indexer
+-- success-rate/response-time display and the health-check page's "indexer failing repeatedly" flag.
+CREATE TABLE IF NOT EXISTS indexer_health (
+  id SERIAL PRIMARY KEY,
+  indexer_id INTEGER NOT NULL REFERENCES indexers(id) ON DELETE CASCADE,
+  success INTEGER NOT NULL,
+  response_time_ms INTEGER,
+  error TEXT,
+  checked_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+);
+CREATE INDEX IF NOT EXISTS idx_indexer_health_indexer_id ON indexer_health(indexer_id);
+
 CREATE TABLE IF NOT EXISTS download_clients (
   id SERIAL PRIMARY KEY,
   name TEXT NOT NULL,

@@ -4,6 +4,7 @@ import { db } from "../db/index.js";
 import { indexerFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { searchIndexer } from "../services/indexerClient.js";
+import { attachIndexerHealth } from "../services/indexerHealth.js";
 import { syncFromProwlarr } from "../services/prowlarrSync.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 
@@ -14,7 +15,9 @@ indexersRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
     const rows = await db.prepare("SELECT * FROM indexers ORDER BY priority").all();
-    res.json(rows.map(indexerFromRow));
+    const indexers = rows.map(indexerFromRow);
+    await attachIndexerHealth(indexers);
+    res.json(indexers);
   })
 );
 

@@ -85,6 +85,16 @@ export default function Indexers() {
       ...prev,
       [id]: result.ok ? `OK (${result.resultCount} results)` : `Failed: ${result.error}`,
     }));
+    load(); // the test itself just recorded a new health entry — refresh to show it
+  }
+
+  function healthLabel(i: Indexer): { text: string; className: string } {
+    const h = i.health;
+    if (!h || h.totalChecks === 0) return { text: "No checks yet", className: "" };
+    const rate = h.successRate ?? 0;
+    const className = rate >= 80 ? "ok" : rate > 0 ? "" : "danger";
+    const responseText = h.avgResponseTimeMs != null ? ` · ${h.avgResponseTimeMs}ms avg` : "";
+    return { text: `${rate}% (${h.totalChecks})${responseText}`, className };
   }
 
   return (
@@ -181,11 +191,14 @@ export default function Indexers() {
             <th>URL</th>
             <th>Enabled</th>
             <th>FlareSolverr</th>
+            <th>Health</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
-          {indexers.map((i) => (
+          {indexers.map((i) => {
+            const health = healthLabel(i);
+            return (
             <tr key={i.id}>
               <td>{i.name}</td>
               <td>{i.protocol}</td>
@@ -208,6 +221,9 @@ export default function Indexers() {
                   </span>
                 )}
               </td>
+              <td title={i.health?.lastError ?? undefined}>
+                <span className={`badge ${health.className}`}>{health.text}</span>
+              </td>
               <td style={{ display: "flex", gap: 8 }}>
                 <button className="secondary" onClick={() => test(i.id)}>
                   Test
@@ -218,7 +234,8 @@ export default function Indexers() {
                 {testResults[i.id] && <span style={{ alignSelf: "center", fontSize: "0.8rem" }}>{testResults[i.id]}</span>}
               </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
       {indexers.length === 0 && <p className="empty">No indexers configured yet.</p>}

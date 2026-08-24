@@ -3,6 +3,26 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 116 — per-indexer health tracking
+- Added Sonarr/Radarr-style per-indexer health tracking: every real search attempt through
+  `searchIndexer()` — manual "Search", scheduled auto-search, the wanted-list cycle, and the
+  Indexers page's own "Test" button, every call site funneled through this one choke point — now
+  records success/failure, response time, and the error (if any) to a new rolling `indexer_health`
+  table, pruned to the most recent 50 attempts per indexer.
+- The Indexers page now shows a "Health" column: success rate + check count + average response
+  time (e.g. "92% (50) · 340ms avg"), colored green/red by rate, with the last error as a hover
+  tooltip on a failing indexer — surfaces a dying indexer immediately instead of it silently
+  contributing nothing to search results until someone notices.
+- New `server/src/services/indexerHealth.ts`: `recordIndexerHealth()` (best-effort, never throws —
+  a health-logging failure can't mask the real search result/error) and `attachIndexerHealth()`
+  (one grouped query for the whole indexer list, mirroring Round 111's `attachChildCounts()`
+  pattern rather than one query per indexer).
+- Verified live against both SQLite and Postgres: created an indexer pointed at a URL that
+  reliably 404s, ran the "Test" button and confirmed the health summary (success rate, avg
+  response time, last error) appeared correctly and identically on both dialects; bulk-inserted 60
+  health rows directly and confirmed pruning correctly capped the table at 50 rows for that
+  indexer.
+
 ## Round 115 — mobile-responsive layout pass (item #4 of the scoped improvement list)
 - Found and fixed a real, app-wide mobile bug: `.content` (a flex child of `.app`) has no
   `min-width: 0`, so it defaults to `min-width: auto` — meaning it never shrinks below the

@@ -99,6 +99,17 @@ export interface Indexer {
   priority: number;
   config: string | null;
   useFlareSolverr: 0 | 1;
+  health?: IndexerHealth;
+}
+
+export interface IndexerHealth {
+  totalChecks: number;
+  successCount: number;
+  successRate: number | null;
+  avgResponseTimeMs: number | null;
+  lastCheckedAt: string | null;
+  lastSuccess: boolean | null;
+  lastError: string | null;
 }
 
 export interface DownloadClient {
