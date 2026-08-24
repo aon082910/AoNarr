@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 92
+- PostgreSQL support: converted `services/mediaAnalysis.ts` + `routes/mediaAnalysis.ts` (the Library
+  Analysis page) — 54 files converted so far, 26 remain
+- Found and fixed a real, pre-existing bug unrelated to database portability: the episodes query in
+  `getLibraryAnalysis()` never selected `e.media_item_id`, but its row mapper read it anyway — every
+  episode analysis item's `mediaItemId` was silently `undefined` in the API response, on both
+  backends, since this feature shipped
+- Documented why the remaining 26 files (the media-add pipeline and the search/grab/scoring pipeline)
+  don't decompose into further small batches: their helper functions are called inline from
+  synchronous `.filter()`/`.sort()`/`.some()` predicates in the big route/service files, not from
+  simple `await`-able call sites — converting them needs restructuring the surrounding control flow,
+  not just adding `await`
+- Verified live against a real Postgres container: seeded real `media_info` JSON and confirmed the
+  instant analysis route's summary and the episode mediaItemId fix, then generated a real playable
+  file with `ffmpeg` and ran the full-library re-probe job against it with real `ffprobe`, confirming
+  the result correctly persisted via the new async UPDATE — regression-checked against SQLite on the
+  same build
+
 ## Round 91
 - PostgreSQL support: converted `routes/settings.ts` (instance settings, API key regen, TOTP 2FA,
   config-template export/import) and `services/importReview.ts` + `routes/importReview.ts` — 52 files

@@ -1,4 +1,4 @@
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { probeMediaInfo, type MediaInfo } from "./ffprobe.js";
 import { log } from "./logger.js";
 
@@ -151,12 +151,14 @@ const ITEM_CAP = 2000;
 /** Reads whatever media_info is already stored — doesn't probe anything itself, so this is
  * instant even for a large library. Files imported before this feature shipped only have the
  * narrower pre-HDR/Dolby-Vision MediaInfo shape; runLibraryAnalysis() (below) re-probes those. */
-export function getLibraryAnalysis(type?: string): { summary: AnalysisSummary; items: AnalysisItem[]; truncated: boolean } {
+export async function getLibraryAnalysis(
+  type?: string
+): Promise<{ summary: AnalysisSummary; items: AnalysisItem[]; truncated: boolean }> {
   const rows: ProbedRow[] = [];
 
   const singleWhere = type ? "WHERE has_file = 1 AND path IS NOT NULL AND type = ?" : "WHERE has_file = 1 AND path IS NOT NULL";
   rows.push(
-    ...(db.prepare(`SELECT id, title, type, path, media_info FROM media_items ${singleWhere}`).all(...(type ? [type] : [])) as any[]).map(
+    ...((await db.prepare(`SELECT id, title, type, path, media_info FROM media_items ${singleWhere}`).all(...(type ? [type] : []))) as any[]).map(
       (r): ProbedRow => ({ id: r.id, table: "media_items", mediaItemId: r.id, title: r.title, type: r.type, path: r.path, mediaInfoJson: r.media_info })
     )
   );
@@ -164,12 +166,12 @@ export function getLibraryAnalysis(type?: string): { summary: AnalysisSummary; i
   const epWhere = type ? "WHERE e.has_file = 1 AND e.file_path IS NOT NULL AND m.type = ?" : "WHERE e.has_file = 1 AND e.file_path IS NOT NULL";
   rows.push(
     ...(
-      db
+      (await db
         .prepare(
-          `SELECT e.id, e.title AS ep_title, e.file_path, e.media_info, m.title AS parent_title, m.type
+          `SELECT e.id, e.title AS ep_title, e.file_path, e.media_info, e.media_item_id, m.title AS parent_title, m.type
            FROM episodes e JOIN media_items m ON m.id = e.media_item_id ${epWhere}`
         )
-        .all(...(type ? [type] : [])) as any[]
+        .all(...(type ? [type] : []))) as any[]
     ).map(
       (r): ProbedRow => ({
         id: r.id,
@@ -186,12 +188,12 @@ export function getLibraryAnalysis(type?: string): { summary: AnalysisSummary; i
   const subWhere = type ? "WHERE s.has_file = 1 AND s.file_path IS NOT NULL AND m.type = ?" : "WHERE s.has_file = 1 AND s.file_path IS NOT NULL";
   rows.push(
     ...(
-      db
+      (await db
         .prepare(
           `SELECT s.id, s.title AS sub_title, s.file_path, s.media_info, s.media_item_id, m.title AS parent_title, m.type
            FROM sub_items s JOIN media_items m ON m.id = s.media_item_id ${subWhere}`
         )
-        .all(...(type ? [type] : [])) as any[]
+        .all(...(type ? [type] : []))) as any[]
     ).map(
       (r): ProbedRow => ({
         id: r.id,
@@ -273,7 +275,10 @@ export async function runLibraryAnalysis(type?: string, signal?: AbortSignal): P
   let failed = 0;
 
   const singleWhere = type ? "WHERE has_file = 1 AND path IS NOT NULL AND type = ?" : "WHERE has_file = 1 AND path IS NOT NULL";
-  const singleRows = db.prepare(`SELECT id, path FROM media_items ${singleWhere}`).all(...(type ? [type] : [])) as { id: number; path: string }[];
+  const singleRows = (await db.prepare(`SELECT id, path FROM media_items ${singleWhere}`).all(...(type ? [type] : []))) as {
+    id: number;
+    path: string;
+  }[];
   for (const row of singleRows) {
     if (signal?.aborted) return { probed, failed };
     const info = await probeMediaInfo(row.path);
@@ -281,14 +286,14 @@ export async function runLibraryAnalysis(type?: string, signal?: AbortSignal): P
       failed++;
       continue;
     }
-    db.prepare("UPDATE media_items SET media_info = ? WHERE id = ?").run(JSON.stringify(info), row.id);
+    await db.prepare("UPDATE media_items SET media_info = ? WHERE id = ?").run(JSON.stringify(info), row.id);
     probed++;
   }
 
   const epWhere = type ? "WHERE e.has_file = 1 AND e.file_path IS NOT NULL AND m.type = ?" : "WHERE e.has_file = 1 AND e.file_path IS NOT NULL";
-  const epRows = db
+  const epRows = (await db
     .prepare(`SELECT e.id, e.file_path FROM episodes e JOIN media_items m ON m.id = e.media_item_id ${epWhere}`)
-    .all(...(type ? [type] : [])) as { id: number; file_path: string }[];
+    .all(...(type ? [type] : []))) as { id: number; file_path: string }[];
   for (const row of epRows) {
     if (signal?.aborted) return { probed, failed };
     const info = await probeMediaInfo(row.file_path);
@@ -296,14 +301,14 @@ export async function runLibraryAnalysis(type?: string, signal?: AbortSignal): P
       failed++;
       continue;
     }
-    db.prepare("UPDATE episodes SET media_info = ? WHERE id = ?").run(JSON.stringify(info), row.id);
+    await db.prepare("UPDATE episodes SET media_info = ? WHERE id = ?").run(JSON.stringify(info), row.id);
     probed++;
   }
 
   const subWhere = type ? "WHERE s.has_file = 1 AND s.file_path IS NOT NULL AND m.type = ?" : "WHERE s.has_file = 1 AND s.file_path IS NOT NULL";
-  const subRows = db
+  const subRows = (await db
     .prepare(`SELECT s.id, s.file_path FROM sub_items s JOIN media_items m ON m.id = s.media_item_id ${subWhere}`)
-    .all(...(type ? [type] : [])) as { id: number; file_path: string }[];
+    .all(...(type ? [type] : []))) as { id: number; file_path: string }[];
   for (const row of subRows) {
     if (signal?.aborted) return { probed, failed };
     const info = await probeMediaInfo(row.file_path);
@@ -311,7 +316,7 @@ export async function runLibraryAnalysis(type?: string, signal?: AbortSignal): P
       failed++;
       continue;
     }
-    db.prepare("UPDATE sub_items SET media_info = ? WHERE id = ?").run(JSON.stringify(info), row.id);
+    await db.prepare("UPDATE sub_items SET media_info = ? WHERE id = ?").run(JSON.stringify(info), row.id);
     probed++;
   }
 

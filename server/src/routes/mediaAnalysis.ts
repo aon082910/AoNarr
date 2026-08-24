@@ -14,7 +14,7 @@ mediaAnalysisRouter.get(
   asyncHandler(async (req, res) => {
     const type = req.query.type as string | undefined;
     if (type && !isValidMediaType(type)) throw new HttpError(400, `Unknown media type "${type}"`);
-    res.json(getLibraryAnalysis(type));
+    res.json(await getLibraryAnalysis(type));
   })
 );
 

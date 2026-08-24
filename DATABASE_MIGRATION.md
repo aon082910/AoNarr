@@ -1,6 +1,6 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — 52 files converted and verified against a real Postgres container**, covering
+Status: **PostgreSQL — 54 files converted and verified against a real Postgres container**, covering
 auth, users, quality/library config, indexers, download clients, calendar events, saved library
 views, remote instances, friend libraries, library groups (including its `WITH RECURSIVE`
 nested-count rollup), person credits, custom formats (including TRaSH-Guides sync), collections
@@ -10,11 +10,76 @@ import exclusions (route only), artwork selection, global library search, share 
 the wanted/missing + calendar views, household requests (including auto-approval and per-user storage
 stats), web push subscriptions, the media-server watch webhook, library/media-server validation, the
 full recycle-bin/corrupt-media/auto-archival cluster, instance settings (including the TOTP 2FA and
-config-template export/import flows), and the import-review queue. Most of the app (~18 remaining
-files) still isn't converted; `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete
-one yet. MariaDB — scoped, not started, deliberately deferred until PostgreSQL is fully done (see "The
-ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by explicit user decision).
-This document exists so a future round can pick this up without re-deriving the analysis below.
+config-template export/import flows), the import-review queue, and library media-compatibility
+analysis. 26 files remain unconverted; `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a
+complete one yet — see "What's left" below for the exact remaining list and why it doesn't decompose
+into further small batches. MariaDB — scoped, not started, deliberately deferred until PostgreSQL is
+fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by
+explicit user decision). This document exists so a future round can pick this up without re-deriving
+the analysis below.
+
+## What's left (as of Round 92)
+
+The remaining 26 files are one tightly-coupled cluster — the media-add and search/grab/scoring
+pipeline — that no longer decomposes into small, independently-safe batches the way every prior round
+did. Two sub-groups:
+
+**The media-add pipeline** (creating/importing library items and deciding what NOT to add):
+`routes/media.ts` (947 lines — the single largest remaining file, and the one every recently-converted
+small service kept turning out to be blocked by), `routes/metadata.ts`, `routes/watchlistImport.ts`,
+`routes/importLists.ts`, `services/importLists.ts`, `services/duplicateCheck.ts`,
+`services/importExclusions.ts`, `services/recommendations.ts`, `services/traktSync.ts`,
+`services/mediaServerImport.ts`, `services/starrImport.ts`. Their small helper functions
+(`findPossibleDuplicates`, `isExcluded`) are called *inline* inside synchronous `.filter()`/`.some()`
+predicates and object-literal field values across these files — unlike the recycle-bin cluster's
+`recycleFile()` (Round 90) or `sendPush()` (Round 89), simply adding `await` at the call site isn't
+enough here; the surrounding synchronous control flow needs restructuring first.
+
+**The search/grab/scoring pipeline**: `routes/search.ts`, `services/importer.ts`,
+`services/customFormatScoring.ts`, `services/upgradeCandidates.ts`, `services/blocklist.ts`,
+`services/releaseGroupStats.ts`, `services/rootFolderSelect.ts`, `services/scheduler.ts` (853 lines —
+the scheduler that ties nearly every background job together). Same shape of problem:
+`getGroupReputation()` is called inside a `.sort()` comparator in `scheduler.ts`, `isBlocklisted()`
+inside inline `if` conditions in `search.ts`, etc.
+
+Plus a handful of large, central route files that gate smaller already-identified services:
+`routes/system.ts` (457 lines — blocks `services/duplicates.ts`, `services/storageForecast.ts`,
+`services/cleanupSuggestions.ts`, `services/releaseGroupStats.ts`'s `listReleaseGroupStats`),
+`routes/metrics.ts` (blocks `services/duplicates.ts` too), and `services/scheduledBackup.ts` (blocked
+on something structural, not just caller-awaiting: it calls better-sqlite3's `Database.backup()`
+method directly, which has no Postgres equivalent at all — a real per-dialect backup strategy, not a
+query-portability fix, is needed there; `pg_dump`-equivalent logic for Postgres, unchanged
+`db.backup()` for SQLite).
+
+Converting this cluster will need an actual planned round (or several) that restructures the
+synchronous predicate/comparator usages into something `await`-compatible (e.g. pre-computing a
+lookup `Map` before the `.filter()`/`.sort()` runs, rather than calling an async function from inside
+the callback itself) — not the "convert an entry point, add `await` at its callers" pattern every
+round since Round 84 has used.
+
+## Progress (Round 92)
+
+Converted `services/mediaAnalysis.ts` + `routes/mediaAnalysis.ts` (the Library Analysis page: instant
+compatibility summary from already-stored `media_info`, and the fire-and-forget full-library re-probe
+job) — fully self-contained, no entanglement with the pipeline described above (only depends on
+`ffprobe.ts` and `logger.ts`).
+
+**Found and fixed a real, pre-existing bug unrelated to Postgres/SQLite portability**: the episodes
+query inside `getLibraryAnalysis()` selected `e.id, e.title AS ep_title, e.file_path, e.media_info,
+m.title AS parent_title, m.type` — no `e.media_item_id` — while the row-mapping function right below
+it read `r.media_item_id` anyway. Every episode analysis item's `mediaItemId` field was silently
+`undefined` in the API response, on both backends, since this table's creation; caught by reading the
+query and its consumer side by side while converting, not by any Postgres-specific behavior. Fixed by
+adding `e.media_item_id` to the `SELECT`.
+
+Verified live against a real Postgres container (no admin-bootstrap env vars): seeded a movie and a
+series+episode with real `media_info` JSON, confirmed the instant analysis route's summary counts and
+per-item compatibility notes, and confirmed the episode item's `mediaItemId` now correctly resolves
+(the bug fix) instead of being `undefined`; separately generated a real playable file with `ffmpeg`
+inside the test container, ran the full-library re-probe job against it with real `ffprobe` (not
+mocked), and confirmed the resulting `media_info` was correctly written back via the new async
+`UPDATE` — same sequence regression-checked against SQLite on the same build (empty-library state,
+since there was no non-destructive way to reuse the same seeded data across both backend runs).
 
 ## Progress (Round 91)
 
