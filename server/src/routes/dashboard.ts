@@ -1,6 +1,6 @@
 import { Router } from "express";
 import fs from "node:fs";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { mediaItemFromRow } from "../db/mappers.js";
 import { asyncHandler } from "../middleware/errorHandler.js";
 import { fetchWatchedFiles, getMediaServerConfig } from "../services/mediaServer.js";
@@ -18,7 +18,7 @@ dashboardRouter.get(
   "/recently-added",
   asyncHandler(async (req, res) => {
     const allowedTypes = allowedTypesFor(req);
-    let rows = db.prepare("SELECT * FROM media_items ORDER BY added_at DESC LIMIT 50").all() as any[];
+    let rows = (await db.prepare("SELECT * FROM media_items ORDER BY added_at DESC LIMIT 50").all()) as any[];
     if (allowedTypes) rows = rows.filter((r) => allowedTypes.includes(r.type));
     res.json(rows.slice(0, 12).map(mediaItemFromRow));
   })
@@ -30,12 +30,12 @@ dashboardRouter.get(
   "/library-counts",
   asyncHandler(async (req, res) => {
     const allowedTypes = allowedTypesFor(req);
-    const rows = db.prepare("SELECT type, COUNT(*) AS count FROM media_items GROUP BY type").all() as {
+    const rows = (await db.prepare("SELECT type, COUNT(*) AS count FROM media_items GROUP BY type").all()) as {
       type: string;
       count: number;
     }[];
     const filtered = allowedTypes ? rows.filter((r) => allowedTypes.includes(r.type)) : rows;
-    res.json(Object.fromEntries(filtered.map((r) => [r.type, r.count])));
+    res.json(Object.fromEntries(filtered.map((r) => [r.type, Number(r.count)])));
   })
 );
 
@@ -55,23 +55,23 @@ function addSize(sizes: Record<string, number>, type: string, filePath: string |
   }
 }
 
-function computeLibrarySizes(): Record<string, number> {
+async function computeLibrarySizes(): Promise<Record<string, number>> {
   const sizes: Record<string, number> = {};
-  for (const row of db.prepare("SELECT type, path FROM media_items WHERE has_file = 1").all() as any[]) {
+  for (const row of (await db.prepare("SELECT type, path FROM media_items WHERE has_file = 1").all()) as any[]) {
     addSize(sizes, row.type, row.path);
   }
-  for (const row of db
+  for (const row of (await db
     .prepare(
       `SELECT m.type, e.file_path FROM episodes e JOIN media_items m ON m.id = e.media_item_id WHERE e.has_file = 1`
     )
-    .all() as any[]) {
+    .all()) as any[]) {
     addSize(sizes, row.type, row.file_path);
   }
-  for (const row of db
+  for (const row of (await db
     .prepare(
       `SELECT m.type, s.file_path FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE s.has_file = 1`
     )
-    .all() as any[]) {
+    .all()) as any[]) {
     addSize(sizes, row.type, row.file_path);
   }
   return sizes;
@@ -81,7 +81,7 @@ dashboardRouter.get(
   "/library-sizes",
   asyncHandler(async (req, res) => {
     if (!sizeCache || Date.now() - sizeCache.at > SIZE_CACHE_TTL_MS) {
-      sizeCache = { at: Date.now(), sizes: computeLibrarySizes() };
+      sizeCache = { at: Date.now(), sizes: await computeLibrarySizes() };
     }
     const allowedTypes = allowedTypesFor(req);
     const sizes = allowedTypes
@@ -103,7 +103,7 @@ dashboardRouter.get(
   "/recently-watched",
   asyncHandler(async (req, res) => {
     const allowedTypes = allowedTypesFor(req);
-    const webhookEvents = db
+    const webhookEvents = (await db
       .prepare(
         `SELECT we.media_item_id, we.episode_id, we.sub_item_id, we.watched_at, m.title AS parent_title, m.type AS parent_type,
                 e.season_number, e.episode_number, s.title AS sub_title
@@ -114,7 +114,7 @@ dashboardRouter.get(
          ORDER BY we.watched_at DESC
          LIMIT 50`
       )
-      .all() as any[];
+      .all()) as any[];
 
     const keyed = new Map<string, { mediaItemId: number; type: string; label: string; watchedAt: string }>();
     for (const ev of webhookEvents) {
@@ -140,13 +140,13 @@ dashboardRouter.get(
       return;
     }
 
-    const items = db.prepare("SELECT * FROM media_items WHERE has_file = 1").all() as any[];
-    const episodes = db
+    const items = (await db.prepare("SELECT * FROM media_items WHERE has_file = 1").all()) as any[];
+    const episodes = (await db
       .prepare("SELECT e.*, m.title AS parent_title, m.type AS parent_type FROM episodes e JOIN media_items m ON m.id = e.media_item_id WHERE e.has_file = 1")
-      .all() as any[];
-    const subItems = db
+      .all()) as any[];
+    const subItems = (await db
       .prepare("SELECT s.*, m.title AS parent_title, m.type AS parent_type FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE s.has_file = 1")
-      .all() as any[];
+      .all()) as any[];
 
     function upsert(key: string, entry: { mediaItemId: number; type: string; label: string; watchedAt: string }) {
       const existing = keyed.get(key);

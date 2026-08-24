@@ -1,16 +1,52 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — 33 files converted and verified against a real Postgres container**, covering
+Status: **PostgreSQL — 38 files converted and verified against a real Postgres container**, covering
 auth, users, quality/library config, indexers, download clients, calendar events, saved library
 views, remote instances, friend libraries, library groups (including its `WITH RECURSIVE`
 nested-count rollup), person credits, custom formats (including TRaSH-Guides sync), collections
 (including its smart-filter query builder and item reordering transaction), album tracks, blocklist,
-import exclusions (route only), artwork selection, global library search, and share links. Most of
-the app (~37 remaining files) still isn't converted; `AONARR_DATABASE_DRIVER=postgres` runs a real
-app, just not a complete one yet. MariaDB — scoped, not started, deliberately deferred until
-PostgreSQL is fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL
-first" by explicit user decision). This document exists so a future round can pick this up without
-re-deriving the analysis below.
+import exclusions (route only), artwork selection, global library search, share links, activity
+(queue/history/timeline), the public calendar feed + token, the dashboard widgets, subtitle providers,
+and the wanted/missing + calendar views. Most of the app (~32 remaining files) still isn't converted;
+`AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one yet. MariaDB — scoped, not
+started, deliberately deferred until PostgreSQL is fully done (see "The ask" below; narrowed from
+"MariaDB or PostgreSQL" to "PostgreSQL first" by explicit user decision). This document exists so a
+future round can pick this up without re-deriving the analysis below.
+
+## Progress (Round 88)
+
+Converted 5 more self-contained route files: `routes/activity.ts` (queue, history, and the merged
+cross-source timeline), `routes/calendarFeed.ts` (both the admin token router and the public `.ics`
+feed router), `routes/dashboard.ts` (recently-added, per-type library counts, on-disk library sizes
+with its 10-minute cache, and the media-server-aware recently-watched cross-reference), `routes/subtitles.ts`,
+and `routes/wanted.ts` (missing items and the calendar view).
+
+Quoted a large number of unquoted camelCase SQL aliases across this batch — `wanted.ts` and
+`calendarFeed.ts` especially, since both build several near-identical multi-column SELECTs by hand
+(`mediaItemId`, `mediaTitle`, `episodeId`, `subItemId`, `sortKey`, `hasFile`, `epTitle`, `subTitle`) —
+same bug class as every prior round. Also proactively wrapped `dashboard.ts`'s `COUNT(*) AS count`
+result in `Number(...)` before this round's own Postgres verification could catch it as a live bug,
+since the Round 86 (`collections.ts`) and Round 84 (`libraryGroups.ts`) fixes already established that
+Postgres returns `COUNT`/`SUM` aggregates as strings, not numbers.
+
+**Deliberately NOT converted this round**: surveyed `routes/metrics.ts`, `routes/metadata.ts`, and
+`routes/watchlistImport.ts` and left all three alone — each calls at least one of
+`services/duplicateCheck.ts`, `services/importExclusions.ts`, or `services/upgradeCandidates.ts`
+synchronously, all of which are themselves called from the still-unconverted media-add/search
+pipeline (`media.ts`, `search.ts`, `importer.ts`, `recommendations.ts`, `traktSync.ts`,
+`importReview.ts`). These three routes, together with `metadata.ts`'s own "add media" flow, form a
+tightly coupled cluster (creating a media item, checking for duplicates/exclusions, and populating its
+children) that's better tackled as one dedicated round alongside `media.ts` than converted piecemeal —
+the same reasoning as the recycle-bin cluster deferred in Round 86.
+
+Verified live against a real Postgres container (no admin-bootstrap env vars): seeded two movies and
+a queue item directly via `psql`, confirmed the dashboard's library-counts came back as real numbers
+(not Postgres's string-typed `COUNT` result), fetched recently-added/recently-watched/library-sizes,
+listed wanted/missing and the wanted calendar with all their aliased columns intact, exercised the
+full activity queue lifecycle (list, the "no download client" 400 path, delete) plus history and
+timeline, created and listed a subtitle provider, and fetched/regenerated the calendar token before
+confirming the public `.ics` feed both serves a real event and 401s on a wrong token — same sequence
+regression-checked against SQLite on the same build with identical (empty-state) results.
 
 ## Progress (Round 87)
 
@@ -52,8 +88,6 @@ and created/listed/deleted both an admin share link and its public token-based f
 regression-checked against SQLite on the same build (lighter on data-dependent assertions there, since
 the image has no `sqlite3` CLI for direct seeding, but every route's success and 404 paths confirmed
 identical).
-
-## Progress (Round 86)
 
 ## Progress (Round 86)
 

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { downloadClientFromRow, historyEventFromRow, queueItemFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
@@ -11,7 +11,7 @@ activityRouter.use(requireAdmin);
 activityRouter.get(
   "/queue",
   asyncHandler(async (_req, res) => {
-    const rows = db.prepare("SELECT * FROM queue ORDER BY added_at DESC").all();
+    const rows = await db.prepare("SELECT * FROM queue ORDER BY added_at DESC").all();
     res.json(rows.map(queueItemFromRow));
   })
 );
@@ -19,7 +19,7 @@ activityRouter.get(
 activityRouter.delete(
   "/queue/:id",
   asyncHandler(async (req, res) => {
-    const result = db.prepare("DELETE FROM queue WHERE id = ?").run(req.params.id);
+    const result = await db.prepare("DELETE FROM queue WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Queue item not found");
     res.status(204).send();
   })
@@ -34,12 +34,12 @@ activityRouter.post(
   "/queue/:id/priority",
   asyncHandler(async (req, res) => {
     const priority = req.body?.priority === "top" ? "top" : "normal";
-    const queueRow = db.prepare("SELECT * FROM queue WHERE id = ?").get(req.params.id) as any;
+    const queueRow = (await db.prepare("SELECT * FROM queue WHERE id = ?").get(req.params.id)) as any;
     if (!queueRow) throw new HttpError(404, "Queue item not found");
     if (!queueRow.download_client_id || !queueRow.download_id) {
       throw new HttpError(400, "This queue item has no associated download client");
     }
-    const clientRow = db.prepare("SELECT * FROM download_clients WHERE id = ?").get(queueRow.download_client_id);
+    const clientRow = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(queueRow.download_client_id);
     if (!clientRow) throw new HttpError(404, "Download client not found");
     const client = downloadClientFromRow(clientRow) as any;
 
@@ -55,7 +55,7 @@ activityRouter.post(
 activityRouter.get(
   "/history",
   asyncHandler(async (_req, res) => {
-    const rows = db.prepare("SELECT * FROM history ORDER BY created_at DESC LIMIT 200").all();
+    const rows = await db.prepare("SELECT * FROM history ORDER BY created_at DESC LIMIT 200").all();
     res.json(rows.map(historyEventFromRow));
   })
 );
@@ -75,13 +75,13 @@ interface TimelineEntry {
 activityRouter.get(
   "/timeline",
   asyncHandler(async (_req, res) => {
-    const historyRows = db
+    const historyRows = (await db
       .prepare(
-        `SELECT h.event_type AS eventType, h.data, h.created_at AS createdAt, m.title AS mediaTitle
+        `SELECT h.event_type AS "eventType", h.data, h.created_at AS "createdAt", m.title AS "mediaTitle"
          FROM history h JOIN media_items m ON m.id = h.media_item_id
          ORDER BY h.created_at DESC LIMIT 150`
       )
-      .all() as { eventType: string; data: string | null; createdAt: string; mediaTitle: string }[];
+      .all()) as { eventType: string; data: string | null; createdAt: string; mediaTitle: string }[];
 
     const entries: TimelineEntry[] = historyRows.map((row) => {
       let detail: string | null = null;
@@ -94,7 +94,7 @@ activityRouter.get(
       return { timestamp: row.createdAt, type: row.eventType, title: row.mediaTitle, detail };
     });
 
-    const requestRows = db.prepare(`SELECT * FROM requests ORDER BY created_at DESC LIMIT 150`).all() as any[];
+    const requestRows = (await db.prepare(`SELECT * FROM requests ORDER BY created_at DESC LIMIT 150`).all()) as any[];
     for (const r of requestRows) {
       entries.push({ timestamp: r.created_at, type: "requested", title: r.title, detail: null });
       if (r.resolved_at && r.status !== "pending") {

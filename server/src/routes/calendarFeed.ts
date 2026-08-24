@@ -1,6 +1,6 @@
 import { Router } from "express";
 import crypto from "node:crypto";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { getSetting, setSetting } from "../services/settingsStore.js";
 import { requireAdmin, safeEqual } from "../middleware/auth.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
@@ -59,36 +59,36 @@ calendarFeedRouter.get(
     const today = new Date().toISOString().slice(0, 10);
     const future = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-    const episodes = db
+    const episodes = (await db
       .prepare(
-        `SELECT m.title AS mediaTitle, e.season_number, e.episode_number, e.title AS epTitle, e.air_date AS date
+        `SELECT m.title AS "mediaTitle", e.season_number, e.episode_number, e.title AS "epTitle", e.air_date AS date
          FROM episodes e JOIN media_items m ON m.id = e.media_item_id
          WHERE e.air_date BETWEEN ? AND ? AND e.monitored = 1
          ORDER BY e.air_date`
       )
-      .all(today, future) as any[];
+      .all(today, future)) as any[];
 
-    const subItems = db
+    const subItems = (await db
       .prepare(
-        `SELECT m.title AS mediaTitle, s.title AS subTitle, s.release_date AS date
+        `SELECT m.title AS "mediaTitle", s.title AS "subTitle", s.release_date AS date
          FROM sub_items s JOIN media_items m ON m.id = s.media_item_id
          WHERE s.release_date BETWEEN ? AND ? AND s.monitored = 1
          ORDER BY s.release_date`
       )
-      .all(today, future) as any[];
+      .all(today, future)) as any[];
 
-    const singleShapeItems = db
+    const singleShapeItems = (await db
       .prepare(
-        `SELECT title AS mediaTitle, release_date AS date
+        `SELECT title AS "mediaTitle", release_date AS date
          FROM media_items
          WHERE release_date BETWEEN ? AND ? AND monitored = 1 AND release_date IS NOT NULL
          ORDER BY release_date`
       )
-      .all(today, future) as any[];
+      .all(today, future)) as any[];
 
-    const customEvents = db
+    const customEvents = (await db
       .prepare(`SELECT title, date, note FROM custom_calendar_events WHERE date BETWEEN ? AND ? ORDER BY date`)
-      .all(today, future) as any[];
+      .all(today, future)) as any[];
 
     const lines = [
       "BEGIN:VCALENDAR",

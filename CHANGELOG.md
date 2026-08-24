@@ -3,6 +3,25 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 88
+- PostgreSQL support: converted `routes/activity.ts`, `routes/calendarFeed.ts` (both the admin token
+  router and public `.ics` feed), `routes/dashboard.ts`, `routes/subtitles.ts`, and `routes/wanted.ts`
+  to the async DB interface — 38 files converted so far, ~32 remain
+- Quoted a large batch of unquoted camelCase SQL aliases, especially in `wanted.ts` and
+  `calendarFeed.ts`'s hand-built multi-column SELECTs — same bug class as every prior round
+- Proactively wrapped `dashboard.ts`'s `COUNT(*) AS count` in `Number(...)` before verification could
+  catch it live, since Postgres returning aggregates as strings is now an established bug class from
+  Round 84/86
+- Surveyed and deliberately left `metrics.ts`, `metadata.ts`, and `watchlistImport.ts` unconverted —
+  all three call into services used by the still-unconverted media-add/search pipeline; that cluster
+  (duplicate/exclusion checks, media creation, `media.ts` itself) is better tackled as one dedicated
+  round than piecemeal
+- Verified live against a real Postgres container: dashboard counts came back as real numbers (not
+  Postgres's string-typed `COUNT` result), the full activity queue lifecycle including its "no
+  download client" 400 path, wanted/missing and calendar views with all aliased columns intact, and
+  the calendar token + public `.ics` feed including its 401-on-wrong-token path — same sequence
+  regression-checked against SQLite on the same build
+
 ## Round 87
 - PostgreSQL support: converted `routes/blocklist.ts`, `routes/importExclusions.ts` (CRUD route
   only), `routes/artwork.ts`, `routes/librarySearch.ts`, and `routes/shareLinks.ts` to the async DB
