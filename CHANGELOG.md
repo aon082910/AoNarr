@@ -3,6 +3,28 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 102 — PostgreSQL migration complete
+- Converted the last 3 files: `services/scheduler.ts` (auto-search/grab, queue polling, stalled-
+  download cleanup, retry logic, video-channel checks), `routes/search.ts` (manual/bulk search and
+  grab), and `services/scheduledBackup.ts` — **all 80 files converted**, `AONARR_DATABASE_DRIVER=
+  postgres` now runs the complete app
+- Designed and implemented real per-dialect database backup/restore, closing the one deferred
+  design question from earlier rounds: SQLite keeps `better-sqlite3`'s own backup API; Postgres now
+  uses `pg_dump --format=custom`/`pg_restore --clean --if-exists`, shared between the scheduled
+  backup job and the manual `/system/backup`/`/system/backup/restore` routes
+- Added `postgresql-client-17` (from the official PGDG apt repo, not Debian bookworm's own v15
+  package) to both Docker images — a same-version client refuses to dump servers newer than itself,
+  which is now the common case
+- Fixed a live-discovered `pg_restore` compatibility issue: `--single-transaction` aborted an entire
+  restore over one cosmetic `SET transaction_timeout` statement unsupported on older servers;
+  dropped the flag and added targeted error-inspection so a restore that only skipped that one
+  harmless statement is correctly reported as successful
+- Added `nowOffsetHoursExpr()` for `cleanupStalledDownloads()`'s hour-granularity threshold
+- Verified live against a real Postgres 16 container (deliberately one version behind the Postgres
+  17 client, to actually exercise the compatibility fix): manual/bulk search and grab, and a full
+  backup → mutate → restore roundtrip with a real downloaded dump file — regression-checked against
+  SQLite, including a full backup/restore roundtrip there too
+
 ## Round 101
 - PostgreSQL support: converted `routes/media.ts` — the largest remaining file (~40 routes: item
   CRUD, tags, bulk monitor/tag, CSV export/import, metadata export, corrupt-file check, rematch,

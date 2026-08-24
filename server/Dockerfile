@@ -11,7 +11,16 @@ RUN cp src/db/schema.sql dist/db/schema.sql && cp src/db/schema.postgres.sql dis
 
 FROM node:20-bookworm-slim
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ ca-certificates curl ffmpeg \
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ ca-certificates curl ffmpeg gnupg \
+    && rm -rf /var/lib/apt/lists/*
+# postgresql-client from Debian bookworm is v15, which refuses to pg_dump a newer (16/17) server —
+# pulling the latest client from PGDG's own repo instead, since a newer pg_dump can dump any older
+# server but not vice versa.
+RUN install -d /usr/share/postgresql-common/pgdg \
+    && curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && . /etc/os-release \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update && apt-get install -y --no-install-recommends postgresql-client-17 \
     && rm -rf /var/lib/apt/lists/*
 # yt-dlp is fetched as a standalone binary (not via pip) to avoid pulling in a whole Python
 # packaging toolchain just for one tool — used by the "ytdlp" download client type.

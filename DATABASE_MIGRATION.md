@@ -1,6 +1,7 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — 77 files converted and verified against a real Postgres container**, covering
+Status: **PostgreSQL — COMPLETE. All 80 files converted and verified against a real Postgres
+container**, covering
 auth, users, quality/library config, indexers, download clients, calendar events, saved library
 views, remote instances, friend libraries, library groups (including its `WITH RECURSIVE`
 nested-count rollup), person credits, custom formats (including TRaSH-Guides sync), collections
@@ -20,93 +21,31 @@ matches/creates movies, episodic shows, and collection/artist items, plus its ha
 import-list CRUD, Prometheus metrics, Radarr/Sonarr/Lidarr/Readarr library migration, the
 post-download file placement/manual-import pipeline (single/episodic/collection-shape file moves,
 season-pack imports, and multi-file album imports), system status/network-stats/health/
-orphaned-file-scan, and the full media library CRUD surface (item CRUD, tags, bulk monitor/tag,
-CSV export/import, metadata export (.nfo/.json/.plexmatch/Calibre .opf), corrupt-file check,
+orphaned-file-scan, the full media library CRUD surface (item CRUD, tags, bulk monitor/tag, CSV
+export/import, metadata export (.nfo/.json/.plexmatch/Calibre .opf), corrupt-file check,
 metadata-provider fetch, rematch, watch-state, episodes, sub-items/tracks, and the yt-dlp direct
-sub-item download). 3 files remain unconverted (their own *other* queries, not the call sites into the
-services converted in Rounds 93–101 — see those rounds' notes below for the distinction);
-`AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one yet — see "What's left"
-below for the exact remaining list, now narrower and more accurately scoped than earlier rounds
-estimated. MariaDB — scoped, not started, deliberately deferred until PostgreSQL is fully done (see
-"The ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by explicit user
-decision). This document exists so a future round can pick this up without re-deriving the analysis
-below.
+sub-item download), the scheduler (auto-search/grab, queue polling, stalled-download cleanup, retry
+logic, video-channel checks, and every registered background job), manual/bulk search and grab, and —
+closing out the one deferred structural question from Round 92 onward — real per-dialect database
+backup/restore (SQLite via better-sqlite3's own backup API, Postgres via `pg_dump`/`pg_restore`).
+`AONARR_DATABASE_DRIVER=postgres` now runs the complete app, with the same routes, jobs, and behavior
+as SQLite mode — this document's job is done; it's kept for the historical record and in case MariaDB
+support is picked up later. MariaDB — scoped, not started, deliberately deferred until PostgreSQL was
+fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by
+explicit user decision) — now unblocked if the user wants to pursue it.
 
-## What's left (as of Round 101)
+## Migration complete (Round 102)
 
-The remaining 3 files are `routes/search.ts`, `services/scheduler.ts` (864 lines), and
-`services/scheduledBackup.ts`. Their own *remaining*
-(non-`findPossibleDuplicates`/`isExcluded`/`isBlocklisted`/`scoreRelease`/`findRepeatedImports`/
-`findUpgradeCandidates`/etc.) database calls still need converting — but as Round 93 found, most of
-what made this list look unapproachable was **not actually true**.
-
-**Correction to the Round 92 assessment above**: it claimed the small helper functions in this
-cluster (`findPossibleDuplicates`, `isExcluded`, `isBlocklisted`, `getGroupReputation`, etc.) were
-called "inline inside synchronous `.filter()`/`.some()` predicates," implying every one of their ~25
-call sites needed control-flow restructuring before conversion. Round 93 checked every call site
-individually and found this was true for only **2 of them** — the rest were plain `for` loops, values
-computed before a `.map()`/object literal, or direct calls inside `async` route handlers, all
-trivially `await`-able with no restructuring. The lesson for whoever picks this up next: don't assume
-a function's *name* or its file's role in "the pipeline" predicts how hard its call sites are to
-convert — check each one. `services/scheduledBackup.ts` remains the one genuine structural exception:
-it calls better-sqlite3's `Database.backup()` directly, which has no Postgres equivalent at all (a
-real per-dialect backup strategy — `pg_dump`-equivalent logic for Postgres, unchanged `db.backup()`
-for SQLite — is needed there, not a query rewrite).
-
-What's actually left in each remaining file, now that the 5 easy services are extracted: their own
-CRUD/query logic (`media.ts`'s ~40 other routes, `search.ts`'s own indexer-search queries,
-`scheduler.ts`'s own history/queue/quality-profile reads, etc.) — ordinary conversion work of the kind
-every round since 84 has done, just in bigger files. `chooseBestResult()` in `scheduler.ts` (see Round
-93) is the template for the one real restructuring pattern likely to recur: precompute an async
-lookup into a `Map` before a `.sort()`/`.filter()` runs, then have the callback do synchronous `Map`
-lookups instead of calling the async function directly.
-
-## Conversion plan for the remaining 3 files (as of Round 101)
-
-Mapped every import edge *among these files* (edges to already-converted or db-free files don't
-matter — the risk this session has consistently guarded against is a converted file's own queries
-diverging from an unconverted callee's queries across two different databases under Postgres, not
-just "does it compile"). This gives a clean bottom-up order — convert a tier only once everything it
-depends on inside this set is already converted, so no new caller/callee split is ever introduced:
-
-**Tier 1 — no edges into this set at all (true leaves, safe standalone rounds):** ~~`services/
-storageForecast.ts`~~, ~~`services/duplicates.ts`~~, ~~`services/upgradeCandidates.ts`~~, ~~`services/
-cleanupSuggestions.ts`~~ (Round 96, surfaced a real previously-latent bug — see that round's notes),
-~~`services/traktSync.ts`~~, ~~`routes/metadata.ts`~~, ~~`services/recommendations.ts`~~,
-~~`routes/watchlistImport.ts`~~ — **all done as of Round 97**. ~~`services/mediaServerImport.ts`~~,
-~~`services/importLists.ts`~~, ~~`services/libraryScan.ts`~~ — **all done as of Round 98**. Tier 1 is
-now fully converted except `services/scheduledBackup.ts` (54), which is nominally a leaf too but is
-**not** a simple await-wrapping job — it calls better-sqlite3's `Database.backup()` directly, which
-has no Postgres equivalent, so it needs real per-dialect backup logic (`pg_dump`-equivalent for
-Postgres) designed before converting, not just query ports. Scoping that out to its own dedicated
-round rather than blocking the rest of Tier 1 on it.
-
-**Tier 2 — depend only on Tier 1:** ~~`routes/importLists.ts`~~, ~~`routes/metrics.ts`~~,
-~~`services/starrImport.ts`~~, ~~`services/importer.ts`~~ — **all done as of Round 99** (fully
-converted, not just the one `starrImport.ts` call site fixed in Round 98 — the file's own remaining
-query, in `importCollectionData()`'s Lidarr/Readarr parent/child matching, turned out to be its only
-one, so the whole file is done).
-
-**Tier 3 — depend on Tier 1+2:** ~~`routes/system.ts`~~ — **done as of Round 100**, except its
-`/backup` and `/backup/restore` routes, which now deliberately import the raw sync `db` from
-`db/client.ts` (aliased `sqliteDb`) instead of converting — same structural exception as
-`services/scheduledBackup.ts` below, since `Database.backup()`/`.close()`/raw file-swap restore have
-no Postgres equivalent yet. ~~`routes/media.ts`~~ — **done as of Round 101** (the single largest
-remaining file, ~40 routes, its own dedicated round; no restructuring needed — every db call was a
-direct call inside an already-`async` handler or a plain sequential step, same as every Tier 1/2 round
-before it).
-
-**Tier 4:**
-`services/scheduler.ts` (864, → `importLists.ts`/`importer.ts`/`libraryScan.ts`/
-`scheduledBackup.ts`/`storageForecast.ts`/`traktSync.ts`/`upgradeCandidates.ts`; `storageForecast.ts`/
-`traktSync.ts`/`upgradeCandidates.ts` now converted, Round 96/97 already fixed those specific call
-sites — the scheduler that ties nearly every background job together, so it's last among the
-services; Round 96 already fixed
-its `recordDiskUsageSamples`/`findUpgradeCandidates` call sites).
-
-**Tier 5:**
-`routes/search.ts` (204, → `services/scheduler.ts`) — the very last file, since it depends on
-`chooseBestResult()` already living in a fully-converted `scheduler.ts`.
+Every file that talks to the database now goes through the async `AsyncDb` interface
+(`db/asyncDb.ts`), dispatching to either `SqliteAsyncDb` (wraps better-sqlite3) or `PostgresAsyncDb`
+(a real `pg` Pool) based on `AONARR_DATABASE_DRIVER`. The last 3 files — `services/scheduler.ts`,
+`routes/search.ts`, and `services/scheduledBackup.ts` — are covered in Round 102's notes below. See
+the "Progress (Round N)" sections below for the full history of what was converted each round, the bug
+classes found along the way (unquoted camelCase aliases, `COUNT()`/`SUM()` string-vs-number, SQLite
+`LIKE` case-sensitivity, `IS ?` vs `IS NOT DISTINCT FROM`, `INSERT OR IGNORE` vs `ON CONFLICT DO
+NOTHING`, the `INTEGER`-vs-`BIGINT` overflow bug), and the restructuring patterns used (async
+transactions, `Promise.all`-precomputed `Map` lookups ahead of a `.sort()`/`.filter()`, per-dialect
+`nowExpr()`/`nowOffsetExpr()`/`nowOffsetHoursExpr()` for in-query "now").
 
 Execution plan: work tier by tier, batching several small Tier 1 files per round (matching this
 session's established round size) and giving each large file (`starrImport.ts`, `importer.ts`,
@@ -115,6 +54,65 @@ verification, following the same ritual every round since 79 has used (typecheck
 grep → build → live-verify both backends → update this doc + CHANGELOG.md → commit/push →
 rebuild/push Docker Hub tags). `services/scheduledBackup.ts`'s per-dialect backup logic is deferred
 to its own round after everything else, since it's a design question, not a conversion mop-up.
+
+## Progress (Round 102) — final round, migration complete
+
+Converted the last 3 files:
+
+- **`services/scheduler.ts`** (864 lines) — `rowsToIndexers()`, `rowsToDownloadClients()`,
+  `getQualityProfile()`, `isAlreadyQueued()` made `async`; `grab()`'s queue/history inserts;
+  `runAutoSearch()`'s monitored-items query and its 3 shape branches (single/episodic/collection);
+  `searchAndGrabTargets()` (backs the Library/Missing pages' bulk search); `runAutoUpgrade()` (no
+  direct db calls, already called into now-async functions); `checkVideoChannels()`'s new-video
+  insert + queue/history inserts; `retryFailedGrab()`; `pollQueue()`'s progress/status updates
+  (`datetime('now')` → `nowExpr(db)`) and failed-import handling; `cleanupStalledDownloads()`'s
+  stalled-threshold query (`datetime('now', ?)` → a new `nowOffsetHoursExpr(db, hours)` helper added
+  next to the existing day-granularity `nowOffsetExpr()`, since this threshold is hours not days).
+  `startScheduler()`'s job registrations needed no changes — they already just reference the
+  now-async functions. No restructuring beyond straightforward `await`-insertion was needed anywhere;
+  `chooseBestResult()` (Round 93) remains the only function in this file that needed the
+  `Promise.all`-precomputed-`Map` pattern.
+- **`routes/search.ts`** — `GET /:mediaItemId` (manual search, including its slskd-merge branch and
+  the per-result `Promise.all`-wrapped format-scoring annotation), `POST /:mediaItemId/grab` (manual
+  grab), `POST /bulk` (delegates to `scheduler.ts`'s already-async `searchAndGrabTargets()`).
+- **`services/scheduledBackup.ts`** — the deferred structural question since Round 92/97: designed
+  and implemented real per-dialect backup/restore instead of converting around it.
+  - SQLite: unchanged, still `better-sqlite3`'s own online `Database.backup()` API via a
+    `sqliteDb`-aliased import from `db/client.ts` (same pattern `routes/system.ts` established in
+    Round 100).
+  - Postgres: `pg_dump --format=custom` for backup, `pg_restore --clean --if-exists` for restore,
+    shelled out via `child_process.execFile`. New exported `writeBackup()`/`restorePostgres()`/
+    `backupFileExtension()` (`.dump` for Postgres, `.db` for SQLite — lets rotation and the manual
+    restore-upload's magic-byte check tell the two apart) are shared between the scheduled-backup job
+    and `routes/system.ts`'s `/backup`/`/backup/restore` routes, which were updated to branch on
+    `db.dialect` instead of always assuming SQLite.
+  - **Docker image change**: added `postgresql-client` (both `server/Dockerfile` and
+    `Dockerfile.combined`) so `pg_dump`/`pg_restore` exist in the container. Debian bookworm's own
+    `postgresql-client` package is v15, which refuses outright to `pg_dump` a newer server (a hard
+    version check, not a warning) — common in practice since Postgres 16/17 are now typical. Switched
+    to installing `postgresql-client-17` from the official PGDG apt repo instead, since a newer
+    client can dump/restore against any older-or-equal server.
+  - **Live-discovered compatibility issue**: even with a newer client, `pg_restore --single-transaction`
+    against an older server failed outright — `pg_dump`/`pg_restore` 17 emit a `SET
+    transaction_timeout = 0` preamble statement for a GUC that only exists on server 17+, and
+    `--single-transaction` implies `--exit-on-error`, aborting the *entire* restore over that one
+    cosmetic statement (confirmed live against a real `postgres:16-alpine` target). Fixed two ways:
+    dropped `--single-transaction` (restoring `pg_restore`'s own default "continue past errors, report
+    a count" behavior), and added error-inspection in `restorePostgres()` that treats "N errors
+    ignored, none of them anything other than the known `transaction_timeout` line" as success rather
+    than logging a false failure — verified the actual data was correctly restored despite the
+    non-zero exit code before writing that logic, not assumed.
+
+Live-verified against a real Postgres container (`postgres:16-alpine`, deliberately one major version
+behind the new client, to actually exercise the compatibility fix above rather than test against a
+same-version server that wouldn't have caught it): manual search and bulk search/grab through
+`routes/search.ts` and `scheduler.ts`'s shared code path; a full backup → mutate → restore roundtrip
+via `/system/backup` and `/system/backup/restore` — downloaded a real `PGDMP`-format dump, added a row,
+restored, and confirmed via `psql` the added row was gone and the original data intact. Regression-
+tested the identical search/bulk-search sequence plus a full SQLite backup → mutate → restore roundtrip
+(including the container actually exiting and needing a manual restart in the test harness, exactly as
+the SQLite restore route's own design expects `unless-stopped` to handle in production) against the
+same image in SQLite mode — matched.
 
 ## Progress (Round 101)
 

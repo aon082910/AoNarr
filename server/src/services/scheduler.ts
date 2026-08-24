@@ -1,5 +1,6 @@
 import { log } from "./logger.js";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
+import { nowExpr, nowOffsetHoursExpr } from "../db/asyncDb.js";
 import { config } from "../config.js";
 import { searchAllIndexers } from "./indexerClient.js";
 import { getDownloadClientAdapter } from "./downloadClient.js";
@@ -34,38 +35,38 @@ import { getSetting } from "./settingsStore.js";
 import { registerJob, startAllJobs } from "./jobRegistry.js";
 import type { DownloadClient, Indexer, MediaItem, QueueItem, SearchResult } from "../types/index.js";
 
-function rowsToIndexers(): Indexer[] {
-  return (db.prepare("SELECT * FROM indexers").all() as any[]).map(indexerFromRow);
+async function rowsToIndexers(): Promise<Indexer[]> {
+  return ((await db.prepare("SELECT * FROM indexers").all()) as any[]).map(indexerFromRow);
 }
 
-function rowsToDownloadClients(): DownloadClient[] {
-  return (db.prepare("SELECT * FROM download_clients WHERE enabled = 1").all() as any[]).map(
+async function rowsToDownloadClients(): Promise<DownloadClient[]> {
+  return ((await db.prepare("SELECT * FROM download_clients WHERE enabled = 1").all()) as any[]).map(
     downloadClientFromRow
   );
 }
 
-function getQualityProfile(id: number | null) {
+async function getQualityProfile(id: number | null) {
   if (!id) return null;
-  const row = db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(id);
+  const row = await db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(id);
   return row ? qualityProfileFromRow(row) : null;
 }
 
-function isAlreadyQueued(mediaItemId: number, episodeId: number | null, subItemId: number | null): boolean {
+async function isAlreadyQueued(mediaItemId: number, episodeId: number | null, subItemId: number | null): Promise<boolean> {
   if (episodeId) {
-    return !!db
+    return !!(await db
       .prepare("SELECT id FROM queue WHERE episode_id = ? AND status NOT IN ('failed')")
-      .get(episodeId);
+      .get(episodeId));
   }
   if (subItemId) {
-    return !!db
+    return !!(await db
       .prepare("SELECT id FROM queue WHERE sub_item_id = ? AND status NOT IN ('failed')")
-      .get(subItemId);
+      .get(subItemId));
   }
-  return !!db
+  return !!(await db
     .prepare(
       "SELECT id FROM queue WHERE media_item_id = ? AND episode_id IS NULL AND sub_item_id IS NULL AND status NOT IN ('failed')"
     )
-    .get(mediaItemId);
+    .get(mediaItemId));
 }
 
 interface ChosenResult {
@@ -148,23 +149,25 @@ async function grab(
   const adapter = getDownloadClientAdapter(client.type);
   const grabResult = await adapter.addDownload(client, best.downloadUrl, client.category, best.title);
 
-  db.prepare(
-    `INSERT INTO queue (media_item_id, episode_id, sub_item_id, title, indexer_id, download_client_id, download_id, size, quality, status, retry_count)
+  await db
+    .prepare(
+      `INSERT INTO queue (media_item_id, episode_id, sub_item_id, title, indexer_id, download_client_id, download_id, size, quality, status, retry_count)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`
-  ).run(
-    mediaItem.id,
-    episodeId,
-    subItemId,
-    best.title,
-    best.indexerId,
-    client.id,
-    grabResult.downloadId,
-    best.size,
-    quality,
-    retryCount
-  );
+    )
+    .run(
+      mediaItem.id,
+      episodeId,
+      subItemId,
+      best.title,
+      best.indexerId,
+      client.id,
+      grabResult.downloadId,
+      best.size,
+      quality,
+      retryCount
+    );
 
-  db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
+  await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
     mediaItem.id,
     JSON.stringify(best)
   );
@@ -242,16 +245,16 @@ async function runAutoSearch(signal?: AbortSignal) {
   // Not gated on indexers.length: a yt-dlp-only setup (Online Videos, no torrent/usenet indexer
   // at all) is valid, and each searchAllIndexers() call below already no-ops cleanly on an empty
   // indexer list.
-  const indexers = rowsToIndexers();
+  const indexers = await rowsToIndexers();
 
-  const clients = rowsToDownloadClients();
+  const clients = await rowsToDownloadClients();
   if (clients.length === 0) {
     log.info("[scheduler] skipping auto-search: no enabled download clients configured");
     return;
   }
 
   const monitoredItems = (
-    db.prepare("SELECT * FROM media_items WHERE monitored = 1").all() as any[]
+    (await db.prepare("SELECT * FROM media_items WHERE monitored = 1").all()) as any[]
   ).map(mediaItemFromRow) as MediaItem[];
 
   for (const item of monitoredItems) {
@@ -264,7 +267,7 @@ async function runAutoSearch(signal?: AbortSignal) {
       continue;
     }
 
-    const profile = getQualityProfile(item.qualityProfileId);
+    const profile = await getQualityProfile(item.qualityProfileId);
     const allowedQualities = profile?.allowedQualities ?? [];
     const cutoff = profile?.cutoff ?? "";
     const minFormatScore = profile?.minFormatScore ?? 0;
@@ -274,7 +277,7 @@ async function runAutoSearch(signal?: AbortSignal) {
       const blocklisted = await getBlocklistedTitles(item.id);
 
       if (shape === "single") {
-        if (item.hasFile || isAlreadyQueued(item.id, null, null)) continue;
+        if (item.hasFile || (await isAlreadyQueued(item.id, null, null))) continue;
         const query = item.year ? `${item.title} ${item.year}` : item.title;
         const results = await searchAllIndexers(indexers, query, item.type);
         const best = await chooseBestResult(
@@ -293,12 +296,12 @@ async function runAutoSearch(signal?: AbortSignal) {
           else log.warn(`[scheduler] no "${best.result.protocol}" download client configured, skipping "${best.result.title}"`);
         }
       } else if (shape === "episodic") {
-        const episodes = db
+        const episodes = (await db
           .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND monitored = 1 AND has_file = 0")
-          .all(item.id) as any[];
+          .all(item.id)) as any[];
 
         for (const ep of episodes) {
-          if (isAlreadyQueued(item.id, ep.id, null)) continue;
+          if (await isAlreadyQueued(item.id, ep.id, null)) continue;
           const season = String(ep.season_number).padStart(2, "0");
           const episode = String(ep.episode_number).padStart(2, "0");
           const query = `${item.title} S${season}E${episode}`;
@@ -321,12 +324,12 @@ async function runAutoSearch(signal?: AbortSignal) {
         }
       } else {
         // collection shape: albums / books / comic issues / videos / lessons
-        const subItems = db
+        const subItems = (await db
           .prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND monitored = 1 AND has_file = 0")
-          .all(item.id) as any[];
+          .all(item.id)) as any[];
 
         for (const sub of subItems) {
-          if (isAlreadyQueued(item.id, null, sub.id)) continue;
+          if (await isAlreadyQueued(item.id, null, sub.id)) continue;
 
           // Online Videos aren't on Torznab/Newznab indexers at all — a YouTube-sourced video is
           // grabbed directly via yt-dlp using the video id already stored at import time.
@@ -394,19 +397,19 @@ export interface BulkSearchResult extends BulkSearchTarget {
  * of targets and run on demand — backs the Library/Missing pages' "bulk search" action. Ignores
  * `monitored`/`hasFile` (the caller already chose specifically what to search for). */
 export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise<BulkSearchResult[]> {
-  const indexers = rowsToIndexers();
-  const clients = rowsToDownloadClients();
+  const indexers = await rowsToIndexers();
+  const clients = await rowsToDownloadClients();
   const results: BulkSearchResult[] = [];
 
   for (const t of targets) {
     try {
-      const itemRow = db.prepare("SELECT * FROM media_items WHERE id = ?").get(t.mediaItemId) as any;
+      const itemRow = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(t.mediaItemId)) as any;
       if (!itemRow) {
         results.push({ ...t, grabbed: false, error: "Media item not found" });
         continue;
       }
       const item = mediaItemFromRow(itemRow) as MediaItem;
-      const profile = getQualityProfile(item.qualityProfileId);
+      const profile = await getQualityProfile(item.qualityProfileId);
       const allowedQualities = profile?.allowedQualities ?? [];
       const cutoff = profile?.cutoff ?? "";
       const minFormatScore = profile?.minFormatScore ?? 0;
@@ -415,7 +418,7 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
       let query: string;
       let episodeTarget: { season: number; episode: number } | null = null;
       if (t.episodeId) {
-        const ep = db.prepare("SELECT * FROM episodes WHERE id = ?").get(t.episodeId) as any;
+        const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(t.episodeId)) as any;
         if (!ep) {
           results.push({ ...t, grabbed: false, error: "Episode not found" });
           continue;
@@ -423,7 +426,7 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
         episodeTarget = { season: ep.season_number, episode: ep.episode_number };
         query = `${item.title} S${String(ep.season_number).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}`;
       } else if (t.subItemId) {
-        const sub = db.prepare("SELECT * FROM sub_items WHERE id = ?").get(t.subItemId) as any;
+        const sub = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(t.subItemId)) as any;
         if (!sub) {
           results.push({ ...t, grabbed: false, error: "Sub-item not found" });
           continue;
@@ -495,10 +498,10 @@ async function runAutoUpgrade(): Promise<void> {
  * everywhere else in the app) is how an admin opts a channel out of this.
  */
 async function checkVideoChannels(): Promise<void> {
-  const channels = db.prepare("SELECT * FROM media_items WHERE type = 'video' AND monitored = 1").all() as any[];
+  const channels = (await db.prepare("SELECT * FROM media_items WHERE type = 'video' AND monitored = 1").all()) as any[];
   if (channels.length === 0) return;
 
-  const ytClientRow = db.prepare("SELECT * FROM download_clients WHERE type = 'ytdlp' AND enabled = 1 LIMIT 1").get() as any;
+  const ytClientRow = (await db.prepare("SELECT * FROM download_clients WHERE type = 'ytdlp' AND enabled = 1 LIMIT 1").get()) as any;
 
   let newVideos = 0;
   for (const channel of channels) {
@@ -519,14 +522,14 @@ async function checkVideoChannels(): Promise<void> {
     }
 
     const existingIds = new Set(
-      (db.prepare("SELECT external_id FROM sub_items WHERE media_item_id = ?").all(channel.id) as { external_id: string | null }[])
+      ((await db.prepare("SELECT external_id FROM sub_items WHERE media_item_id = ?").all(channel.id)) as { external_id: string | null }[])
         .map((r) => r.external_id)
         .filter((id): id is string => !!id)
     );
 
     for (const child of children) {
       if (!child.externalId || existingIds.has(child.externalId)) continue;
-      const insertResult = db
+      const insertResult = await db
         .prepare(
           `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored)
            VALUES (?, ?, ?, ?, 'youtube', 1)`
@@ -539,11 +542,13 @@ async function checkVideoChannels(): Promise<void> {
           const sourceUrl = `https://www.youtube.com/watch?v=${child.externalId}`;
           const adapter = getDownloadClientAdapter(ytClientRow.type);
           const grab = await adapter.addDownload(ytClientRow, sourceUrl, ytClientRow.category, child.title);
-          db.prepare(
-            `INSERT INTO queue (media_item_id, episode_id, sub_item_id, title, indexer_id, download_client_id, download_id, size, quality, status)
+          await db
+            .prepare(
+              `INSERT INTO queue (media_item_id, episode_id, sub_item_id, title, indexer_id, download_client_id, download_id, size, quality, status)
              VALUES (?, NULL, ?, ?, NULL, ?, ?, 0, NULL, 'queued')`
-          ).run(channel.id, insertResult.lastInsertRowid, child.title, ytClientRow.id, grab.downloadId);
-          db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
+            )
+            .run(channel.id, insertResult.lastInsertRowid, child.title, ytClientRow.id, grab.downloadId);
+          await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
             channel.id,
             JSON.stringify({ title: child.title, source: sourceUrl })
           );
@@ -567,10 +572,10 @@ const MAX_AUTO_RETRIES = 2;
  * need a person to notice and manually re-search.
  */
 async function retryFailedGrab(match: QueueItem, reason: string): Promise<void> {
-  const mediaRow = db.prepare("SELECT * FROM media_items WHERE id = ?").get(match.mediaItemId) as any;
+  const mediaRow = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(match.mediaItemId)) as any;
   const mediaTitle = mediaRow?.title ?? match.title;
 
-  db.prepare("INSERT INTO blocklist (media_item_id, release_title, indexer_id, reason) VALUES (?, ?, ?, ?)").run(
+  await db.prepare("INSERT INTO blocklist (media_item_id, release_title, indexer_id, reason) VALUES (?, ?, ?, ?)").run(
     match.mediaItemId,
     match.title,
     match.indexerId,
@@ -585,25 +590,25 @@ async function retryFailedGrab(match: QueueItem, reason: string): Promise<void> 
 
   try {
     const item = mediaItemFromRow(mediaRow) as MediaItem;
-    const profile = getQualityProfile(item.qualityProfileId);
+    const profile = await getQualityProfile(item.qualityProfileId);
     const blocklisted = await getBlocklistedTitles(item.id);
 
     let episodeTarget: { season: number; episode: number } | null = null;
     let query: string;
     if (match.episodeId) {
-      const ep = db.prepare("SELECT * FROM episodes WHERE id = ?").get(match.episodeId) as any;
+      const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(match.episodeId)) as any;
       if (!ep) throw new Error("episode no longer exists");
       episodeTarget = { season: ep.season_number, episode: ep.episode_number };
       query = `${item.title} S${String(ep.season_number).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}`;
     } else if (match.subItemId) {
-      const sub = db.prepare("SELECT * FROM sub_items WHERE id = ?").get(match.subItemId) as any;
+      const sub = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(match.subItemId)) as any;
       if (!sub) throw new Error("sub-item no longer exists");
       query = `${item.title} ${sub.title}`;
     } else {
       query = item.year ? `${item.title} ${item.year}` : item.title;
     }
 
-    const indexers = rowsToIndexers();
+    const indexers = await rowsToIndexers();
     const results = await searchAllIndexers(indexers, query, item.type);
     const best = await chooseBestResult(
       results,
@@ -621,7 +626,7 @@ async function retryFailedGrab(match: QueueItem, reason: string): Promise<void> 
       return;
     }
 
-    const clients = rowsToDownloadClients();
+    const clients = await rowsToDownloadClients();
     const targetClient = pickClientForProtocol(clients, best.result.protocol);
     if (!targetClient) {
       await notifyFailed(mediaTitle, `${reason} (retried, but no "${best.result.protocol}" download client configured)`);
@@ -638,9 +643,9 @@ async function retryFailedGrab(match: QueueItem, reason: string): Promise<void> 
 
 /** Poll download clients for progress on active queue items, and import completed ones. */
 async function pollQueue() {
-  const clients = rowsToDownloadClients();
+  const clients = await rowsToDownloadClients();
   const active = (
-    db.prepare("SELECT * FROM queue WHERE status IN ('queued','downloading')").all() as any[]
+    (await db.prepare("SELECT * FROM queue WHERE status IN ('queued','downloading')").all()) as any[]
   ).map(queueItemFromRow) as QueueItem[];
   if (active.length === 0) return;
 
@@ -660,11 +665,13 @@ async function pollQueue() {
         // last_progress_at only moves forward when progress actually changed — that's the signal
         // stalled-download cleanup uses to tell "still downloading, just slow" apart from "stuck".
         if (status.progress !== match.progress) {
-          db.prepare(
-            `UPDATE queue SET progress = ?, status = ?, updated_at = datetime('now'), last_progress_at = datetime('now') WHERE id = ?`
-          ).run(status.progress, status.status, match.id);
+          await db
+            .prepare(
+              `UPDATE queue SET progress = ?, status = ?, updated_at = ${nowExpr(db)}, last_progress_at = ${nowExpr(db)} WHERE id = ?`
+            )
+            .run(status.progress, status.status, match.id);
         } else {
-          db.prepare(`UPDATE queue SET status = ?, updated_at = datetime('now') WHERE id = ?`).run(
+          await db.prepare(`UPDATE queue SET status = ?, updated_at = ${nowExpr(db)} WHERE id = ?`).run(
             status.status,
             match.id
           );
@@ -678,7 +685,7 @@ async function pollQueue() {
               log.info(`[scheduler] import skipped for "${match.title}": ${err.message}`);
             } else {
               log.warn(`[scheduler] import failed for "${match.title}":`, (err as Error).message);
-              db.prepare("UPDATE queue SET status = 'failed', updated_at = datetime('now') WHERE id = ?").run(
+              await db.prepare(`UPDATE queue SET status = 'failed', updated_at = ${nowExpr(db)} WHERE id = ?`).run(
                 match.id
               );
               await retryFailedGrab(match, (err as Error).message);
@@ -701,12 +708,12 @@ async function pollQueue() {
 async function cleanupStalledDownloads(): Promise<void> {
   const thresholdHours = Math.max(1, parseInt(getSetting("stalledDownloadHours") ?? "6", 10) || 6);
   const stalled = (
-    db
+    (await db
       .prepare(
         `SELECT * FROM queue WHERE status = 'downloading'
-         AND last_progress_at IS NOT NULL AND last_progress_at <= datetime('now', ?)`
+         AND last_progress_at IS NOT NULL AND last_progress_at <= ${nowOffsetHoursExpr(db, -thresholdHours)}`
       )
-      .all(`-${thresholdHours} hours`) as any[]
+      .all()) as any[]
   ).map(queueItemFromRow) as QueueItem[];
 
   for (const item of stalled) {
@@ -714,7 +721,7 @@ async function cleanupStalledDownloads(): Promise<void> {
     // client itself (no such method in the shared adapter interface) — this drops it from
     // AoNarr's own queue and retries the search; the stale entry may need manual cleanup at the
     // download client's own UI.
-    db.prepare("UPDATE queue SET status = 'failed', updated_at = datetime('now') WHERE id = ?").run(item.id);
+    await db.prepare(`UPDATE queue SET status = 'failed', updated_at = ${nowExpr(db)} WHERE id = ?`).run(item.id);
     await retryFailedGrab(item, `Stalled: no progress for over ${thresholdHours}h`);
     log.info(`[scheduler] cleaned up stalled download "${item.title}"`);
   }

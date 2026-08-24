@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import {
   downloadClientFromRow,
   indexerFromRow,
@@ -57,7 +57,7 @@ export interface AnnotatedSearchResult extends SearchResult {
 searchRouter.get(
   "/:mediaItemId",
   asyncHandler(async (req, res) => {
-    const itemRow = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.mediaItemId);
+    const itemRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.mediaItemId);
     if (!itemRow) throw new HttpError(404, "Media item not found");
     const item = mediaItemFromRow(itemRow);
 
@@ -70,7 +70,7 @@ searchRouter.get(
     const seasonNumberParam = req.query.seasonNumber as string | undefined;
 
     if (episodeId) {
-      const ep = db.prepare("SELECT * FROM episodes WHERE id = ?").get(episodeId) as any;
+      const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(episodeId)) as any;
       if (!ep) throw new HttpError(404, "Episode not found");
       targetSeason = ep.season_number;
       targetEpisode = ep.episode_number;
@@ -84,12 +84,12 @@ searchRouter.get(
       const seasonStr = String(targetSeason).padStart(2, "0");
       query = `${item.title} S${seasonStr}`;
     } else if (subItemId) {
-      const sub = db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId) as any;
+      const sub = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId)) as any;
       if (!sub) throw new HttpError(404, "Sub-item not found");
       query = `${item.title} ${sub.title}`;
     }
 
-    const indexers = (db.prepare("SELECT * FROM indexers WHERE enabled = 1").all() as any[]).map(
+    const indexers = ((await db.prepare("SELECT * FROM indexers WHERE enabled = 1").all()) as any[]).map(
       indexerFromRow
     );
     const rawResults = await searchAllIndexers(indexers as any, query, item.type as any, true);
@@ -98,7 +98,7 @@ searchRouter.get(
     // directly instead and its results merged in alongside the indexer ones. Music-shaped
     // libraries only, since (user, filename) results from Soulseek only make sense there.
     if (item.type === "artist") {
-      const slskdClients = (db.prepare("SELECT * FROM download_clients WHERE type = 'slskd' AND enabled = 1").all() as any[]).map(
+      const slskdClients = ((await db.prepare("SELECT * FROM download_clients WHERE type = 'slskd' AND enabled = 1").all()) as any[]).map(
         downloadClientFromRow
       );
       for (const client of slskdClients) {
@@ -113,7 +113,7 @@ searchRouter.get(
     let allowedQualities: string[] = [];
     let cutoff = "";
     if (item.qualityProfileId) {
-      const profileRow = db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(item.qualityProfileId);
+      const profileRow = await db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(item.qualityProfileId);
       if (profileRow) {
         const profile = qualityProfileFromRow(profileRow);
         allowedQualities = profile.allowedQualities;
@@ -151,7 +151,7 @@ searchRouter.get(
 searchRouter.post(
   "/:mediaItemId/grab",
   asyncHandler(async (req, res) => {
-    const itemRow = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.mediaItemId);
+    const itemRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.mediaItemId);
     if (!itemRow) throw new HttpError(404, "Media item not found");
     const item = mediaItemFromRow(itemRow);
 
@@ -163,7 +163,7 @@ searchRouter.post(
       throw new HttpError(400, "This release is blocklisted for this media item");
     }
 
-    const clientRow = db.prepare("SELECT * FROM download_clients WHERE id = ?").get(b.downloadClientId);
+    const clientRow = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(b.downloadClientId);
     if (!clientRow) throw new HttpError(404, "Download client not found");
     const client = downloadClientFromRow(clientRow) as any;
 
@@ -171,7 +171,7 @@ searchRouter.post(
     const grab = await adapter.addDownload(client, b.downloadUrl, client.category, b.title);
     const quality = parseReleaseTitle(b.title ?? "").quality;
 
-    const result = db
+    const result = await db
       .prepare(
         `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, indexer_id, download_client_id, download_id, size, quality, status)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`
@@ -189,7 +189,7 @@ searchRouter.post(
         quality
       );
 
-    db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
+    await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
       req.params.mediaItemId,
       JSON.stringify(b)
     );
@@ -198,7 +198,7 @@ searchRouter.post(
       log.warn("[search] notification failed:", err.message)
     );
 
-    const queueRow = db.prepare("SELECT * FROM queue WHERE id = ?").get(result.lastInsertRowid);
+    const queueRow = await db.prepare("SELECT * FROM queue WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(queueItemFromRow(queueRow));
   })
 );

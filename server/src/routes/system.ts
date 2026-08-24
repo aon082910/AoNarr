@@ -5,11 +5,11 @@ import path from "node:path";
 import os from "node:os";
 import { db } from "../db/index.js";
 import { nowOffsetHoursExpr } from "../db/asyncDb.js";
-// SQLite-only backup/restore endpoints below need the raw better-sqlite3 handle directly
-// (Database.backup(), .close(), file-swap) — no Postgres equivalent exists yet, same deferred
-// design question as services/scheduledBackup.ts. Everything else in this file uses the async `db`
-// above.
+// The SQLite restore path below needs the raw better-sqlite3 handle directly (.close(), file-swap)
+// — replacing a live SQLite file only works from outside the async wrapper. Everything else in
+// this file, including backups on both dialects, uses the async `db`/services/scheduledBackup.ts.
 import { db as sqliteDb } from "../db/client.js";
+import { backupFileExtension, writeBackup, restorePostgres } from "../services/scheduledBackup.js";
 import { config } from "../config.js";
 import { downloadClientFromRow, indexerFromRow, rootFolderFromRow } from "../db/mappers.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
@@ -411,18 +411,22 @@ systemRouter.get(
 );
 
 const SQLITE_MAGIC = "SQLite format 3\0";
+const PG_DUMP_MAGIC = "PGDMP";
 
-/** Streams a consistent snapshot of the live DB — safe to take mid-write since better-sqlite3's
- * backup() uses SQLite's own online backup API rather than copying the file bytes directly. */
+/** Streams a consistent snapshot of the live DB — SQLite via better-sqlite3's own online backup
+ * API (safe mid-write, no need to pause anything), Postgres via `pg_dump` in custom format (see
+ * services/scheduledBackup.ts, shared with the scheduled-backup job so both paths produce
+ * identically-restorable files). */
 systemRouter.get(
   "/backup",
   asyncHandler(async (req, res) => {
-    const tmpFile = path.join(os.tmpdir(), `aonarr-backup-${Date.now()}.db`);
-    await sqliteDb.backup(tmpFile);
+    const ext = backupFileExtension();
+    const tmpFile = path.join(os.tmpdir(), `aonarr-backup-${Date.now()}.${ext}`);
+    await writeBackup(tmpFile);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "backup_downloaded");
-    res.download(tmpFile, `aonarr-backup-${stamp}.db`, (err) => {
+    res.download(tmpFile, `aonarr-backup-${stamp}.${ext}`, (err) => {
       fs.unlink(tmpFile, () => {});
       if (err && !res.headersSent) throw err;
     });
@@ -430,16 +434,41 @@ systemRouter.get(
 );
 
 /**
- * Restoring means replacing the live DB file out from under a running process, which is only
- * safe if we stop touching it first — so this checkpoints + closes the connection, swaps the
- * file, and exits; the container's restart policy (`unless-stopped`) brings it back up against
- * the restored file. The previous DB is kept alongside as a `.pre-restore` copy just in case.
+ * SQLite restore means replacing the live DB file out from under a running process, which is
+ * only safe if we stop touching it first — so this checkpoints + closes the connection, swaps
+ * the file, and exits; the container's restart policy (`unless-stopped`) brings it back up
+ * against the restored file. The previous DB is kept alongside as a `.pre-restore` copy just in
+ * case. Postgres restore is different in kind, not just mechanism: `pg_restore` runs against the
+ * live connection over the network (see restorePostgres()), so the app never needs to stop
+ * touching the database or exit — its connection pool just sees the schema replaced underneath it
+ * inside one transaction.
  */
 systemRouter.post(
   "/backup/restore",
   express.raw({ type: "*/*", limit: "1gb" }),
   asyncHandler(async (req, res) => {
     const body = req.body as Buffer;
+
+    if (db.dialect === "postgres") {
+      if (!Buffer.isBuffer(body) || body.length < PG_DUMP_MAGIC.length || body.toString("utf-8", 0, PG_DUMP_MAGIC.length) !== PG_DUMP_MAGIC) {
+        throw new HttpError(400, "Uploaded file is not a valid pg_dump custom-format backup");
+      }
+      const tmpFile = path.join(os.tmpdir(), `aonarr-restore-${Date.now()}.dump`);
+      fs.writeFileSync(tmpFile, body);
+      const actor = auditActor(req);
+      log.warn(`[system] database restore initiated by ${actor.username} (postgres)`);
+      res.json({ restored: true, message: "Restoring — this may take a moment, the app keeps running." });
+      try {
+        await restorePostgres(tmpFile);
+        log.info("[system] postgres restore completed");
+      } catch (err) {
+        log.error("[system] postgres restore failed:", (err as Error).message);
+      } finally {
+        fs.unlink(tmpFile, () => {});
+      }
+      return;
+    }
+
     if (!Buffer.isBuffer(body) || body.length < SQLITE_MAGIC.length) {
       throw new HttpError(400, "Uploaded file is empty or not a valid SQLite database");
     }
