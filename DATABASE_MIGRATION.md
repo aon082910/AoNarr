@@ -1,6 +1,6 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — 71 files converted and verified against a real Postgres container**, covering
+Status: **PostgreSQL — 75 files converted and verified against a real Postgres container**, covering
 auth, users, quality/library config, indexers, download clients, calendar events, saved library
 views, remote instances, friend libraries, library groups (including its `WITH RECURSIVE`
 nested-count rollup), person credits, custom formats (including TRaSH-Guides sync), collections
@@ -15,24 +15,26 @@ duplicate-detection, release-group reputation tracking, custom-format release sc
 forecasting/disk-usage sampling, repeated-import detection, upgrade-candidate detection,
 unmonitored/duplicate-file cleanup suggestions, Trakt list sync, TMDB/Last.fm recommendations, manual
 media import, watchlist CSV import, media-server library import (Plex/Jellyfin/Emby movies + series),
-import-list syncing (Trakt/IMDb/Last.fm), and library scan-and-import (the filesystem scan that
-matches/creates movies, episodic shows, and collection/artist items, plus its has_file rollups). 9
-files remain unconverted (their own *other* queries, not the call sites into the services converted in
-Rounds 93–98 — see those rounds' notes below for the distinction); `AONARR_DATABASE_DRIVER=postgres`
-runs a real app, just not a complete one yet — see "What's left" below for the exact remaining list,
-now narrower and more accurately scoped than earlier rounds estimated. MariaDB — scoped, not started,
-deliberately deferred until PostgreSQL is fully done (see "The ask" below; narrowed from "MariaDB or
-PostgreSQL" to "PostgreSQL first" by explicit user decision). This document exists so a future round
-can pick this up without re-deriving the analysis below.
+import-list syncing (Trakt/IMDb/Last.fm), library scan-and-import (the filesystem scan that
+matches/creates movies, episodic shows, and collection/artist items, plus its has_file rollups),
+import-list CRUD, Prometheus metrics, Radarr/Sonarr/Lidarr/Readarr library migration, and the
+post-download file placement/manual-import pipeline (single/episodic/collection-shape file moves,
+season-pack imports, and multi-file album imports). 5 files remain unconverted (their own *other*
+queries, not the call sites into the services converted in Rounds 93–99 — see those rounds' notes
+below for the distinction); `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one
+yet — see "What's left" below for the exact remaining list, now narrower and more accurately scoped
+than earlier rounds estimated. MariaDB — scoped, not started, deliberately deferred until PostgreSQL
+is fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by
+explicit user decision). This document exists so a future round can pick this up without re-deriving
+the analysis below.
 
-## What's left (as of Round 98)
+## What's left (as of Round 99)
 
-The remaining 9 files are `routes/media.ts` (948 lines), `routes/importLists.ts`,
-`services/starrImport.ts`, `routes/search.ts`, `services/importer.ts`, `services/scheduler.ts` (864
-lines), `routes/system.ts` (457 lines), `routes/metrics.ts`, and `services/scheduledBackup.ts`.
-Their own *remaining* (non-`findPossibleDuplicates`/`isExcluded`/`isBlocklisted`/`scoreRelease`/
-`findRepeatedImports`/`findUpgradeCandidates`/etc.) database calls still need converting — but as
-Round 93 found, most of what made this list look unapproachable was **not actually true**.
+The remaining 5 files are `routes/media.ts` (948 lines), `routes/search.ts`, `services/scheduler.ts`
+(864 lines), `routes/system.ts` (457 lines), and `services/scheduledBackup.ts`. Their own *remaining*
+(non-`findPossibleDuplicates`/`isExcluded`/`isBlocklisted`/`scoreRelease`/`findRepeatedImports`/
+`findUpgradeCandidates`/etc.) database calls still need converting — but as Round 93 found, most of
+what made this list look unapproachable was **not actually true**.
 
 **Correction to the Round 92 assessment above**: it claimed the small helper functions in this
 cluster (`findPossibleDuplicates`, `isExcluded`, `isBlocklisted`, `getGroupReputation`, etc.) were
@@ -55,7 +57,7 @@ every round since 84 has done, just in bigger files. `chooseBestResult()` in `sc
 lookup into a `Map` before a `.sort()`/`.filter()` runs, then have the callback do synchronous `Map`
 lookups instead of calling the async function directly.
 
-## Conversion plan for the remaining 9 files (as of Round 98)
+## Conversion plan for the remaining 5 files (as of Round 99)
 
 Mapped every import edge *among these files* (edges to already-converted or db-free files don't
 matter — the risk this session has consistently guarded against is a converted file's own queries
@@ -75,13 +77,11 @@ has no Postgres equivalent, so it needs real per-dialect backup logic (`pg_dump`
 Postgres) designed before converting, not just query ports. Scoping that out to its own dedicated
 round rather than blocking the rest of Tier 1 on it.
 
-**Tier 2 — depend only on Tier 1:**
-`routes/importLists.ts` (68, → `services/importLists.ts`, now converted as of Round 98),
-`routes/metrics.ts` (89, → `services/duplicates.ts` + `services/upgradeCandidates.ts`, both now
-converted — `metrics.ts`'s own remaining queries are the only thing left there), `services/
-starrImport.ts` (454, → `services/mediaServerImport.ts`, now converted as of Round 98 — one call site
-already fixed in `starrImport.ts` this round, the rest of the file's own queries remain), `services/
-importer.ts` (564, → `services/libraryScan.ts`, now converted as of Round 98).
+**Tier 2 — depend only on Tier 1:** ~~`routes/importLists.ts`~~, ~~`routes/metrics.ts`~~,
+~~`services/starrImport.ts`~~, ~~`services/importer.ts`~~ — **all done as of Round 99** (fully
+converted, not just the one `starrImport.ts` call site fixed in Round 98 — the file's own remaining
+query, in `importCollectionData()`'s Lidarr/Readarr parent/child matching, turned out to be its only
+one, so the whole file is done).
 
 **Tier 3 — depend on Tier 1+2:**
 `routes/system.ts` (457, → `cleanupSuggestions.ts`/`duplicates.ts`/`storageForecast.ts`/
@@ -108,6 +108,33 @@ verification, following the same ritual every round since 79 has used (typecheck
 grep → build → live-verify both backends → update this doc + CHANGELOG.md → commit/push →
 rebuild/push Docker Hub tags). `services/scheduledBackup.ts`'s per-dialect backup logic is deferred
 to its own round after everything else, since it's a design question, not a conversion mop-up.
+
+## Progress (Round 99)
+
+Converted all of Tier 2: `routes/importLists.ts` (import-list CRUD + the sync-trigger route),
+`routes/metrics.ts` (Prometheus text-exposition metrics — wrapped the raw `pg`-driver `COUNT(*)`
+string results in `Number(...)` both where they're read directly and where they feed a metric
+sample's `value`), `services/starrImport.ts` (Radarr/Sonarr/Lidarr/Readarr library migration — turned
+out `importCollectionData()`'s Lidarr/Readarr parent/child matching, including its `resolveParent()`
+closure made `async`, was the file's only remaining query cluster; Radarr/Sonarr's own import paths
+route entirely through the already-converted `mediaServerImport.ts`), and `services/importer.ts`
+(post-download file placement — `placeFile()`, `placeAlbumFiles()`, `placeSeasonPackFiles()`, and
+`importQueueItem()`, covering single/episodic/collection-shape moves, multi-file album imports, and
+season-pack imports; the queue-completion `datetime('now')` UPDATE replaced with `nowExpr(db)`).
+
+**Note**: no restructuring was needed anywhere in this round — every db call in all 4 files was a
+direct call inside an already-`async` function or a plain sequential step in a `for` loop, consistent
+with the Round 93 lesson that most call sites don't need the `.filter()`/`.sort()`-precompute pattern
+`chooseBestResult()` needed.
+
+Live-verified against a fresh Postgres container: created/listed/patched/deleted an import list via
+`routes/importLists.ts`'s CRUD routes, scraped `/api/metrics` and confirmed the Prometheus counters
+render as real numbers (not `"3"` string-literal output from an unconverted `COUNT(*)`), and exercised
+the manual-import endpoint (`services/importer.ts`'s `placeFile()`) end-to-end — seeded a movie
+`media_items` row and a fake download file, POSTed to `/api/import/manual`, and confirmed via `psql`
+that the file was moved to its templated destination and `has_file`/`path`/`quality` and a `history`
+row were all correctly set. Regression-tested the identical sequence against the same image in SQLite
+mode via the app's own API — results matched exactly.
 
 ## Progress (Round 98)
 

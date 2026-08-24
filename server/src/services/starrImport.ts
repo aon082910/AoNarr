@@ -1,4 +1,4 @@
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { pathTail } from "./archival.js";
 import type { MediaServerEpisodeItem, MediaServerLibraryItem, MediaServerShowInfo } from "./mediaServer.js";
 import {
@@ -345,19 +345,19 @@ async function importCollectionData(
 ): Promise<StarrCollectionImportResult> {
   const result: StarrCollectionImportResult = { parentsMatched: 0, parentsCreated: 0, childrenMatched: 0, childrenCreated: 0, childrenSkipped: 0 };
 
-  const existingParents = db.prepare("SELECT * FROM media_items WHERE type = ?").all(type) as any[];
+  const existingParents = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[];
   const qualityProfileId = await defaultQualityProfileId();
   const knownChildTails = new Set(
     (
-      db
+      (await db
         .prepare(`SELECT s.file_path FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE m.type = ? AND s.file_path IS NOT NULL`)
-        .all(type) as { file_path: string }[]
+        .all(type)) as { file_path: string }[]
     ).map((r) => pathTail(r.file_path))
   );
 
   const resolvedParentIds = new Map<string, number>();
 
-  function resolveParent(parentId: string): number | null {
+  async function resolveParent(parentId: string): Promise<number | null> {
     if (resolvedParentIds.has(parentId)) return resolvedParentIds.get(parentId)!;
     const info = parents.get(parentId);
     if (!info || !info.title) return null;
@@ -373,16 +373,18 @@ async function importCollectionData(
     });
 
     if (match) {
-      db.prepare(
-        `UPDATE media_items SET poster_url = COALESCE(poster_url, ?), overview = COALESCE(overview, ?),
+      await db
+        .prepare(
+          `UPDATE media_items SET poster_url = COALESCE(poster_url, ?), overview = COALESCE(overview, ?),
          external_ids = COALESCE(NULLIF(external_ids, '{}'), ?) WHERE id = ?`
-      ).run(info.posterUrl, info.overview, JSON.stringify(info.externalIds), match.id);
+        )
+        .run(info.posterUrl, info.overview, JSON.stringify(info.externalIds), match.id);
       result.parentsMatched++;
       resolvedParentIds.set(parentId, match.id);
       return match.id;
     }
 
-    const insertResult = db
+    const insertResult = await db
       .prepare(
         `INSERT INTO media_items (type, title, sort_title, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, has_file, status)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 'unknown')`
@@ -401,31 +403,35 @@ async function importCollectionData(
       result.childrenSkipped++;
       continue;
     }
-    const mediaItemId = resolveParent(child.parentId);
+    const mediaItemId = await resolveParent(child.parentId);
     if (!mediaItemId) {
       result.childrenSkipped++;
       continue;
     }
 
-    const existingChild = db
+    const existingChild = (await db
       .prepare("SELECT id FROM sub_items WHERE media_item_id = ? AND title = ?")
-      .get(mediaItemId, child.title) as { id: number } | undefined;
+      .get(mediaItemId, child.title)) as { id: number } | undefined;
 
     if (existingChild) {
-      db.prepare("UPDATE sub_items SET has_file = 1, file_path = ? WHERE id = ?").run(child.path, existingChild.id);
+      await db.prepare("UPDATE sub_items SET has_file = 1, file_path = ? WHERE id = ?").run(child.path, existingChild.id);
       result.childrenMatched++;
     } else {
-      db.prepare(
-        `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored, has_file, file_path)
+      await db
+        .prepare(
+          `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored, has_file, file_path)
          VALUES (?, ?, ?, ?, ?, 1, 1, ?)`
-      ).run(mediaItemId, child.title, child.releaseDate, child.externalId, child.externalId ? externalProvider : null, child.path);
+        )
+        .run(mediaItemId, child.title, child.releaseDate, child.externalId, child.externalId ? externalProvider : null, child.path);
       result.childrenCreated++;
     }
   }
 
-  db.prepare(
-    `UPDATE media_items SET has_file = 1 WHERE type = ? AND id IN (SELECT DISTINCT media_item_id FROM sub_items WHERE has_file = 1)`
-  ).run(type);
+  await db
+    .prepare(
+      `UPDATE media_items SET has_file = 1 WHERE type = ? AND id IN (SELECT DISTINCT media_item_id FROM sub_items WHERE has_file = 1)`
+    )
+    .run(type);
 
   log.info(
     `[starrImport] ${type}: parents matched ${result.parentsMatched}, created ${result.parentsCreated}; children matched ${result.childrenMatched}, created ${result.childrenCreated}, skipped ${result.childrenSkipped}`

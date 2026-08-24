@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { syncImportList, type ImportListRow } from "../services/importLists.js";
 
@@ -10,7 +10,7 @@ importListsRouter.use(requireAdmin);
 importListsRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
-    res.json(db.prepare("SELECT * FROM import_lists ORDER BY name").all());
+    res.json(await db.prepare("SELECT * FROM import_lists ORDER BY name").all());
   })
 );
 
@@ -21,10 +21,10 @@ importListsRouter.post(
     if (!name || !url) throw new HttpError(400, "name and url are required");
     if (type !== "trakt" && type !== "imdb" && type !== "lastfm") throw new HttpError(400, "type must be 'trakt', 'imdb' or 'lastfm'");
 
-    const result = db
+    const result = await db
       .prepare("INSERT INTO import_lists (name, type, url, enabled, quality_profile_id) VALUES (?, ?, ?, ?, ?)")
       .run(name, type, url, enabled === false ? 0 : 1, qualityProfileId ?? null);
-    const row = db.prepare("SELECT * FROM import_lists WHERE id = ?").get(result.lastInsertRowid);
+    const row = await db.prepare("SELECT * FROM import_lists WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(row);
   })
 );
@@ -32,27 +32,29 @@ importListsRouter.post(
 importListsRouter.patch(
   "/:id",
   asyncHandler(async (req, res) => {
-    const existing = db.prepare("SELECT * FROM import_lists WHERE id = ?").get(req.params.id);
+    const existing = await db.prepare("SELECT * FROM import_lists WHERE id = ?").get(req.params.id);
     if (!existing) throw new HttpError(404, "Import list not found");
 
     const b = req.body ?? {};
-    db.prepare(
-      `UPDATE import_lists SET
+    await db
+      .prepare(
+        `UPDATE import_lists SET
          name = COALESCE(?, name),
          url = COALESCE(?, url),
          enabled = COALESCE(?, enabled),
          quality_profile_id = COALESCE(?, quality_profile_id)
        WHERE id = ?`
-    ).run(b.name ?? null, b.url ?? null, b.enabled === undefined ? null : b.enabled ? 1 : 0, b.qualityProfileId ?? null, req.params.id);
+      )
+      .run(b.name ?? null, b.url ?? null, b.enabled === undefined ? null : b.enabled ? 1 : 0, b.qualityProfileId ?? null, req.params.id);
 
-    res.json(db.prepare("SELECT * FROM import_lists WHERE id = ?").get(req.params.id));
+    res.json(await db.prepare("SELECT * FROM import_lists WHERE id = ?").get(req.params.id));
   })
 );
 
 importListsRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
-    db.prepare("DELETE FROM import_lists WHERE id = ?").run(req.params.id);
+    await db.prepare("DELETE FROM import_lists WHERE id = ?").run(req.params.id);
     res.status(204).send();
   })
 );
@@ -60,7 +62,7 @@ importListsRouter.delete(
 importListsRouter.post(
   "/:id/sync",
   asyncHandler(async (req, res) => {
-    const list = db.prepare("SELECT * FROM import_lists WHERE id = ?").get(req.params.id) as ImportListRow | undefined;
+    const list = (await db.prepare("SELECT * FROM import_lists WHERE id = ?").get(req.params.id)) as ImportListRow | undefined;
     if (!list) throw new HttpError(404, "Import list not found");
     const result = await syncImportList(list);
     res.json(result);

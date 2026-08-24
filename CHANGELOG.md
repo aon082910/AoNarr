@@ -3,6 +3,17 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 99
+- PostgreSQL support: converted `routes/importLists.ts`, `routes/metrics.ts`,
+  `services/starrImport.ts` (Radarr/Sonarr/Lidarr/Readarr library migration), and
+  `services/importer.ts` (post-download file placement/manual import) — 75 files converted so far, 5
+  remain
+- Fixed `routes/metrics.ts`'s Prometheus counters to wrap raw `pg`-driver `COUNT(*)` string results
+  in `Number(...)` so they render as real numeric metric values instead of string literals
+- Verified live against a real Postgres container: import-list CRUD, the Prometheus metrics scrape,
+  and an end-to-end manual movie import (file move, has_file/path/quality update, history row) — same
+  sequence regression-checked against SQLite on the same build
+
 ## Round 98
 - PostgreSQL support: converted `services/mediaServerImport.ts` (Plex/Jellyfin/Emby movie + series
   library import), `services/importLists.ts` (Trakt/IMDb/Last.fm list syncing), and

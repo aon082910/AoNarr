@@ -1,7 +1,8 @@
 import { log } from "./logger.js";
 import fs from "node:fs";
 import path from "node:path";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
+import { nowExpr } from "../db/asyncDb.js";
 import { config } from "../config.js";
 import { mediaItemFromRow, queueItemFromRow, rootFolderFromRow } from "../db/mappers.js";
 import { notifyImported } from "./notifications.js";
@@ -28,7 +29,7 @@ const VIDEO_EXTENSIONS = new Set([".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v"
 
 /** Best-effort: finds and saves a subtitle next to a just-imported video file. Never throws. */
 async function tryDownloadSubtitle(videoPath: string, mediaItemId: number): Promise<void> {
-  const provider = db.prepare("SELECT * FROM subtitle_providers WHERE enabled = 1 LIMIT 1").get() as
+  const provider = (await db.prepare("SELECT * FROM subtitle_providers WHERE enabled = 1 LIMIT 1").get()) as
     | { type: string; api_key: string | null; languages: string; config: string | null }
     | undefined;
   if (!provider) return;
@@ -53,7 +54,7 @@ async function tryDownloadSubtitle(videoPath: string, mediaItemId: number): Prom
     const srtPath = videoPath.slice(0, -path.extname(videoPath).length) + `.${best.language}.srt`;
     fs.writeFileSync(srtPath, content, "utf-8");
 
-    db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'subtitleDownloaded', ?)`).run(
+    await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'subtitleDownloaded', ?)`).run(
       mediaItemId,
       JSON.stringify({ srtPath, language: best.language })
     );
@@ -231,7 +232,7 @@ export async function placeFile(params: {
 }): Promise<{ destPath: string; fileLabel: string }> {
   const { itemId, episodeId, subItemId, sourceFile, quality } = params;
 
-  const mediaRow = db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
+  const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
   if (!mediaRow) throw new Error(`Media item ${itemId} not found`);
   const item = mediaItemFromRow(mediaRow);
   const typeConfig = getMediaTypeConfig(item.type);
@@ -239,7 +240,7 @@ export async function placeFile(params: {
   if (!item.rootFolderId) {
     throw new ImportSkippedError(`"${item.title}" has no root folder configured`);
   }
-  const folderRow = db.prepare("SELECT * FROM root_folders WHERE id = ?").get(item.rootFolderId);
+  const folderRow = await db.prepare("SELECT * FROM root_folders WHERE id = ?").get(item.rootFolderId);
   if (!folderRow) throw new ImportSkippedError(`Root folder for "${item.title}" no longer exists`);
   const rootFolder = rootFolderFromRow(folderRow);
 
@@ -251,7 +252,7 @@ export async function placeFile(params: {
     const segments = renderPathSegments(getNamingTemplate(item.type), { title: item.title, year: item.year ?? "" });
     ({ destPath, fileLabel } = resolveDest(rootFolder.path, segments, ext, sourceFile, getNamingEnabled(item.type)));
   } else if (typeConfig.shape === "episodic" && episodeId) {
-    const epRow = db.prepare("SELECT * FROM episodes WHERE id = ?").get(episodeId) as any;
+    const epRow = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(episodeId)) as any;
     if (!epRow) throw new Error(`Episode ${episodeId} not found`);
     // Running count across every season up to and including this episode — what anime naming
     // conventions call "absolute" numbering (e.g. episode 26 instead of S02E01), as an
@@ -259,14 +260,16 @@ export async function placeFile(params: {
     // Season 0 (specials) is excluded from the running count — absolute numbering conventions
     // (AniDB, TVDB's absolute order, most anime release groups) start from season 1's episode 1,
     // not from whatever specials happen to sort before it.
-    const absoluteEpisode = (
-      db
-        .prepare(
-          `SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ? AND season_number > 0
+    const absoluteEpisode = Number(
+      (
+        (await db
+          .prepare(
+            `SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ? AND season_number > 0
            AND (season_number < ? OR (season_number = ? AND episode_number <= ?))`
-        )
-        .get(epRow.media_item_id, epRow.season_number, epRow.season_number, epRow.episode_number) as { c: number }
-    ).c;
+          )
+          .get(epRow.media_item_id, epRow.season_number, epRow.season_number, epRow.episode_number)) as { c: number }
+      ).c
+    );
     const segments = renderPathSegments(getNamingTemplate(item.type), {
       parentTitle: item.title,
       season: epRow.season_number,
@@ -275,7 +278,7 @@ export async function placeFile(params: {
     });
     ({ destPath, fileLabel } = resolveDest(rootFolder.path, segments, ext, sourceFile, getNamingEnabled(item.type)));
   } else if (typeConfig.shape === "collection" && subItemId && !typeConfig.multiFilePerChild) {
-    const subRow = db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId) as any;
+    const subRow = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId)) as any;
     if (!subRow) throw new Error(`Sub-item ${subItemId} not found`);
     const segments = renderPathSegments(getNamingTemplate(item.type), {
       parentTitle: item.title,
@@ -298,21 +301,21 @@ export async function placeFile(params: {
   const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
 
   if (typeConfig.shape === "single") {
-    db.prepare("UPDATE media_items SET has_file = 1, path = ?, quality = ?, media_info = ? WHERE id = ?").run(
+    await db.prepare("UPDATE media_items SET has_file = 1, path = ?, quality = ?, media_info = ? WHERE id = ?").run(
       destPath,
       quality,
       mediaInfoJson,
       item.id
     );
   } else if (episodeId) {
-    db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?").run(
+    await db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?").run(
       destPath,
       quality,
       mediaInfoJson,
       episodeId
     );
   } else if (subItemId) {
-    db.prepare("UPDATE sub_items SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?").run(
+    await db.prepare("UPDATE sub_items SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?").run(
       destPath,
       quality,
       mediaInfoJson,
@@ -320,7 +323,7 @@ export async function placeFile(params: {
     );
   }
 
-  db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
+  await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
     item.id,
     JSON.stringify({ fileLabel, destPath })
   );
@@ -345,17 +348,17 @@ export async function placeAlbumFiles(params: {
 }): Promise<{ destFolder: string; fileCount: number }> {
   const { itemId, subItemId, anchorFile, quality } = params;
 
-  const mediaRow = db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
+  const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
   if (!mediaRow) throw new Error(`Media item ${itemId} not found`);
   const item = mediaItemFromRow(mediaRow);
   const typeConfig = getMediaTypeConfig(item.type);
 
   if (!item.rootFolderId) throw new ImportSkippedError(`"${item.title}" has no root folder configured`);
-  const folderRow = db.prepare("SELECT * FROM root_folders WHERE id = ?").get(item.rootFolderId);
+  const folderRow = await db.prepare("SELECT * FROM root_folders WHERE id = ?").get(item.rootFolderId);
   if (!folderRow) throw new ImportSkippedError(`Root folder for "${item.title}" no longer exists`);
   const rootFolder = rootFolderFromRow(folderRow);
 
-  const subRow = db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId) as any;
+  const subRow = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId)) as any;
   if (!subRow) throw new Error(`Sub-item ${subItemId} not found`);
 
   const sourceDir = path.dirname(anchorFile);
@@ -378,7 +381,7 @@ export async function placeAlbumFiles(params: {
     .filter((e) => e.isFile() && typeConfig.extensions.includes(path.extname(e.name).toLowerCase()))
     .map((e) => path.join(sourceDir, e.name));
 
-  const tracks = db.prepare("SELECT * FROM tracks WHERE sub_item_id = ?").all(subItemId) as any[];
+  const tracks = (await db.prepare("SELECT * FROM tracks WHERE sub_item_id = ?").all(subItemId)) as any[];
 
   let movedCount = 0;
   for (const src of siblings) {
@@ -390,21 +393,21 @@ export async function placeAlbumFiles(params: {
     const leadingNumber = path.basename(src).match(/^(\d{1,3})/);
     if (leadingNumber && tracks.length > 0) {
       const track = tracks.find((t) => t.track_number === Number(leadingNumber[1]));
-      if (track) db.prepare("UPDATE tracks SET has_file = 1, file_path = ? WHERE id = ?").run(dest, track.id);
+      if (track) await db.prepare("UPDATE tracks SET has_file = 1, file_path = ? WHERE id = ?").run(dest, track.id);
     }
   }
 
   const anchorDest = path.join(destFolder, sanitizeForPath(path.basename(anchorFile)));
   const mediaInfo = movedCount > 0 ? await probeMediaInfo(anchorDest) : null;
 
-  db.prepare("UPDATE sub_items SET has_file = ?, file_path = ?, quality = ?, media_info = ? WHERE id = ?").run(
+  await db.prepare("UPDATE sub_items SET has_file = ?, file_path = ?, quality = ?, media_info = ? WHERE id = ?").run(
     movedCount > 0 ? 1 : 0,
     destFolder,
     quality,
     mediaInfo ? JSON.stringify(mediaInfo) : null,
     subItemId
   );
-  db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
+  await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
     item.id,
     JSON.stringify({ destFolder, fileCount: movedCount })
   );
@@ -430,13 +433,13 @@ export async function placeSeasonPackFiles(params: {
 }): Promise<{ destFolder: string; episodeCount: number }> {
   const { itemId, seasonNumber, anchorFile, quality } = params;
 
-  const mediaRow = db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
+  const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
   if (!mediaRow) throw new Error(`Media item ${itemId} not found`);
   const item = mediaItemFromRow(mediaRow);
   const typeConfig = getMediaTypeConfig(item.type);
 
   if (!item.rootFolderId) throw new ImportSkippedError(`"${item.title}" has no root folder configured`);
-  const folderRow = db.prepare("SELECT * FROM root_folders WHERE id = ?").get(item.rootFolderId);
+  const folderRow = await db.prepare("SELECT * FROM root_folders WHERE id = ?").get(item.rootFolderId);
   if (!folderRow) throw new ImportSkippedError(`Root folder for "${item.title}" no longer exists`);
   const rootFolder = rootFolderFromRow(folderRow);
 
@@ -446,9 +449,9 @@ export async function placeSeasonPackFiles(params: {
     .filter((e) => e.isFile() && typeConfig.extensions.includes(path.extname(e.name).toLowerCase()))
     .map((e) => path.join(sourceDir, e.name));
 
-  const episodes = db
+  const episodes = (await db
     .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND season_number = ?")
-    .all(itemId, seasonNumber) as any[];
+    .all(itemId, seasonNumber)) as any[];
   const sourceDirName = path.basename(sourceDir);
 
   let importedCount = 0;
@@ -468,14 +471,16 @@ export async function placeSeasonPackFiles(params: {
 
     // Season 0 (specials) is excluded from the running count — see the identical comment in
     // placeFile() above.
-    const absoluteEpisode = (
-      db
-        .prepare(
-          `SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ? AND season_number > 0
+    const absoluteEpisode = Number(
+      (
+        (await db
+          .prepare(
+            `SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ? AND season_number > 0
            AND (season_number < ? OR (season_number = ? AND episode_number <= ?))`
-        )
-        .get(itemId, seasonNumber, seasonNumber, episodeNumber) as { c: number }
-    ).c;
+          )
+          .get(itemId, seasonNumber, seasonNumber, episodeNumber)) as { c: number }
+      ).c
+    );
     const segments = renderPathSegments(getNamingTemplate(item.type), {
       parentTitle: item.title,
       season: seasonNumber,
@@ -489,7 +494,7 @@ export async function placeSeasonPackFiles(params: {
 
     if (VIDEO_EXTENSIONS.has(ext.toLowerCase())) await tryDownloadSubtitle(dest, item.id);
     const mediaInfo = await probeMediaInfo(dest);
-    db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?").run(
+    await db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?").run(
       dest,
       quality,
       mediaInfo ? JSON.stringify(mediaInfo) : null,
@@ -502,7 +507,7 @@ export async function placeSeasonPackFiles(params: {
     throw new ImportSkippedError(`No files in this download could be matched to a known episode of season ${seasonNumber}`);
   }
 
-  db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
+  await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
     item.id,
     JSON.stringify({ seasonNumber, episodeCount: importedCount })
   );
@@ -513,18 +518,18 @@ export async function placeSeasonPackFiles(params: {
 
 /** Locates, moves, and links the downloaded file(s) for a completed queue entry. Throws on failure. */
 export async function importQueueItem(queueItemId: number): Promise<void> {
-  const queueRow = db.prepare("SELECT * FROM queue WHERE id = ?").get(queueItemId);
+  const queueRow = await db.prepare("SELECT * FROM queue WHERE id = ?").get(queueItemId);
   if (!queueRow) throw new Error(`Queue item ${queueItemId} not found`);
   const queueItem = queueItemFromRow(queueRow);
 
-  const mediaRow = db.prepare("SELECT * FROM media_items WHERE id = ?").get(queueItem.mediaItemId);
+  const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(queueItem.mediaItemId);
   if (!mediaRow) throw new Error(`Media item ${queueItem.mediaItemId} not found`);
   const item = mediaItemFromRow(mediaRow);
   const typeConfig = getMediaTypeConfig(item.type);
 
   let episodeTarget: EpisodeTarget | undefined;
   if (typeConfig.shape === "episodic" && queueItem.episodeId) {
-    const epRow = db.prepare("SELECT * FROM episodes WHERE id = ?").get(queueItem.episodeId) as any;
+    const epRow = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(queueItem.episodeId)) as any;
     if (!epRow) throw new Error(`Episode ${queueItem.episodeId} not found`);
     episodeTarget = { season: epRow.season_number, episode: epRow.episode_number };
   }
@@ -559,6 +564,6 @@ export async function importQueueItem(queueItemId: number): Promise<void> {
     });
   }
 
-  db.prepare("UPDATE queue SET status = 'imported', updated_at = datetime('now') WHERE id = ?").run(queueItemId);
+  await db.prepare(`UPDATE queue SET status = 'imported', updated_at = ${nowExpr(db)} WHERE id = ?`).run(queueItemId);
   await recordGroupSuccess(parseReleaseTitle(queueItem.title).releaseGroup);
 }

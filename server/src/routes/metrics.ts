@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { asyncHandler } from "../middleware/errorHandler.js";
 import { findRepeatedImports } from "../services/duplicates.js";
 import { findUpgradeCandidates } from "../services/upgradeCandidates.js";
@@ -28,25 +28,27 @@ function metricLine(name: string, help: string, type: "gauge" | "counter", sampl
 metricsRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
-    const typeCounts = db.prepare("SELECT type, COUNT(*) AS c FROM media_items GROUP BY type").all() as {
+    const typeCounts = (await db.prepare("SELECT type, COUNT(*) AS c FROM media_items GROUP BY type").all()) as {
       type: string;
       c: number;
     }[];
-    const queueByStatus = db.prepare("SELECT status, COUNT(*) AS c FROM queue GROUP BY status").all() as {
+    const queueByStatus = (await db.prepare("SELECT status, COUNT(*) AS c FROM queue GROUP BY status").all()) as {
       status: string;
       c: number;
     }[];
-    const indexerCount = (db.prepare("SELECT COUNT(*) AS c FROM indexers WHERE enabled = 1").get() as { c: number }).c;
-    const clientCount = (
-      db.prepare("SELECT COUNT(*) AS c FROM download_clients WHERE enabled = 1").get() as { c: number }
-    ).c;
-    const pendingRequests = (
-      db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get() as { c: number }
-    ).c;
+    const indexerCount = Number(
+      ((await db.prepare("SELECT COUNT(*) AS c FROM indexers WHERE enabled = 1").get()) as { c: number }).c
+    );
+    const clientCount = Number(
+      ((await db.prepare("SELECT COUNT(*) AS c FROM download_clients WHERE enabled = 1").get()) as { c: number }).c
+    );
+    const pendingRequests = Number(
+      ((await db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get()) as { c: number }).c
+    );
     const repeatedImports = (await findRepeatedImports()).length;
     const upgradeCandidates = (await findUpgradeCandidates()).length;
 
-    const folders = (db.prepare("SELECT * FROM root_folders").all() as any[]).map(rootFolderFromRow);
+    const folders = ((await db.prepare("SELECT * FROM root_folders").all()) as any[]).map(rootFolderFromRow);
     const diskFree: { labels: Record<string, string>; value: number }[] = [];
     const diskTotal: { labels: Record<string, string>; value: number }[] = [];
     for (const f of folders) {
@@ -64,13 +66,13 @@ metricsRouter.get(
         "aonarr_media_items_total",
         "Media items in the library by type",
         "gauge",
-        typeCounts.map((r) => ({ labels: { type: r.type }, value: r.c }))
+        typeCounts.map((r) => ({ labels: { type: r.type }, value: Number(r.c) }))
       ),
       metricLine(
         "aonarr_queue_items",
         "Download queue items by status",
         "gauge",
-        queueByStatus.map((r) => ({ labels: { status: r.status }, value: r.c }))
+        queueByStatus.map((r) => ({ labels: { status: r.status }, value: Number(r.c) }))
       ),
       metricLine("aonarr_indexers_enabled", "Enabled indexers", "gauge", [{ value: indexerCount }]),
       metricLine("aonarr_download_clients_enabled", "Enabled download clients", "gauge", [{ value: clientCount }]),
