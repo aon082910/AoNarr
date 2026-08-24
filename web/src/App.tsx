@@ -40,6 +40,7 @@ import ImportLists from "./pages/ImportLists.js";
 import Account from "./pages/Account.js";
 import Jobs from "./pages/Jobs.js";
 import RecycleBin from "./pages/RecycleBin.js";
+import Duplicates from "./pages/Duplicates.js";
 import NetworkStats from "./pages/NetworkStats.js";
 import MediaAnalyzer from "./pages/MediaAnalyzer.js";
 import { useMediaTypes } from "./hooks/useMediaTypes.js";
@@ -149,6 +150,7 @@ export default function App() {
             <NavLink to="/system">Status &amp; Health</NavLink>
             <NavLink to="/jobs">Jobs</NavLink>
             <NavLink to="/recycle-bin">Recycle Bin</NavLink>
+            <NavLink to="/duplicates">Duplicates</NavLink>
             <NavLink to="/network-stats">Network Stats</NavLink>
             <NavLink to="/media-analyzer">Media Analyzer</NavLink>
             <NavLink to="/audit-log">Audit Log</NavLink>
@@ -204,6 +206,7 @@ export default function App() {
           {isAdmin && <Route path="/system" element={<System />} />}
           {isAdmin && <Route path="/jobs" element={<Jobs />} />}
           {isAdmin && <Route path="/recycle-bin" element={<RecycleBin />} />}
+          {isAdmin && <Route path="/duplicates" element={<Duplicates />} />}
           {isAdmin && <Route path="/network-stats" element={<NetworkStats />} />}
           {isAdmin && <Route path="/media-analyzer" element={<MediaAnalyzer />} />}
           {isAdmin && <Route path="/api-docs" element={<ApiDocs />} />}

@@ -348,3 +348,23 @@ export interface CorruptMediaReviewEntry {
   reason: string;
   detectedAt: string;
 }
+
+export interface DuplicateGroupItem {
+  id: number;
+  title: string;
+  year: number | null;
+  posterUrl: string | null;
+  hasFile: boolean;
+  path: string | null;
+  monitored: boolean;
+  addedAt: string | null;
+  childCount: number;
+  suggestedKeeper: boolean;
+}
+
+export interface DuplicateGroup {
+  type: MediaType;
+  title: string;
+  year: number | null;
+  items: DuplicateGroupItem[];
+}

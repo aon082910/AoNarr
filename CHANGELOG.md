@@ -3,6 +3,28 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 107 — add a duplicate-merge tool
+- New "Duplicates" page (System nav group) for cleaning up the duplicate rows that predate Round
+  106's import-matching fix, or anything else that ends up looking like a duplicate later: sweeps
+  the whole library for items sharing an exact (normalized title, year), lets an admin pick which
+  one to keep per group, and merges the rest into it in one click.
+- Merging adopts the file/metadata the keeper is missing from whichever duplicate has it,
+  reassigns everything meaningful pointing at the removed rows instead of silently losing it to
+  cascade-delete — episodes/sub-items (skipping anything that would collide with what the keeper
+  already has), tags, collection membership, grab history, the active download queue, blocklist
+  entries, watch status, share links, and household requests. A colliding child or an unadopted
+  extra file is left alone by default; check "Recycle files that aren't kept" to send those to the
+  Recycle Bin instead of leaving them on disk untracked.
+- New `GET /api/duplicates` and `POST /api/duplicates/merge` endpoints; the tag/collection-
+  membership reassign uses the same dialect-conditional `INSERT ... ON CONFLICT`/`INSERT OR IGNORE`
+  pattern established for other upsert-shaped writes, since both have a composite primary key a
+  loser and keeper could collide on.
+- Verified live against both Postgres and SQLite: a 3-way movie duplicate (one with a file, two
+  without) merges to one row with the file and a tag from a different duplicate both preserved; a
+  TV show duplicate with an overlapping episode keeps the keeper's copy and still picks up the
+  loser's non-overlapping episode; two duplicates sharing the identical tag merge without a
+  constraint error on either backend.
+
 ## Round 106 — fix movie import duplicates (#10)
 - Fixed #10: movies (and only movies/ROMs/Adult — the "single" shape) could get duplicated by
   every import path (Scan & Import, and Plex/Jellyfin/Emby/Radarr media-server import) because
