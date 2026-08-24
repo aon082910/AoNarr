@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { mediaItemFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import {
@@ -70,7 +70,7 @@ metadataRouter.post(
 
     const externalIds = b.externalIds ?? {};
 
-    const result = db
+    const result = await db
       .prepare(
         `INSERT INTO media_items
          (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status, group_id, release_date)
@@ -100,16 +100,16 @@ metadataRouter.post(
 
       if (typeConfig.shape === "episodic") {
         const episodes = await fetchSeriesEpisodesFor(externalIds);
-        const insert = db.prepare(
-          `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-           VALUES (?, ?, ?, ?, ?, ?, 1)`
-        );
-        const insertMany = db.transaction((rows: typeof episodes) => {
-          for (const ep of rows) {
-            insert.run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
+        await db.transaction(async () => {
+          for (const ep of episodes) {
+            await db
+              .prepare(
+                `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
+                 VALUES (?, ?, ?, ?, ?, ?, 1)`
+              )
+              .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
           }
         });
-        insertMany(episodes);
         childCount = episodes.length;
       } else if (typeConfig.shape === "collection" && typeConfig.multiFilePerChild) {
         const result = await fetchArtistAlbumsFor(externalIds);
@@ -119,31 +119,31 @@ metadataRouter.post(
           // NULL, and since insertMany runs as one transaction, a single bad entry would otherwise
           // roll back every good entry in the batch along with it.
           const albums = result.albums.filter((a) => a.title);
-          const insert = db.prepare(
-            `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored)
-             VALUES (?, ?, ?, ?, ?, 1)`
-          );
-          const insertMany = db.transaction((rows: typeof albums) => {
-            for (const album of rows) {
-              insert.run(mediaItemId, album.title, album.releaseDate, album.externalId ?? null, result.provider);
+          await db.transaction(async () => {
+            for (const album of albums) {
+              await db
+                .prepare(
+                  `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored)
+                   VALUES (?, ?, ?, ?, ?, 1)`
+                )
+                .run(mediaItemId, album.title, album.releaseDate, album.externalId ?? null, result.provider);
             }
           });
-          insertMany(albums);
           childCount = albums.length;
         }
       } else if (typeConfig.shape === "collection") {
         const result = await fetchCollectionChildrenFor(externalIds);
         const children = result.children.filter((c) => c.title);
-        const insert = db.prepare(
-          `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored)
-           VALUES (?, ?, ?, ?, ?, 1)`
-        );
-        const insertMany = db.transaction((rows: typeof children) => {
-          for (const child of rows) {
-            insert.run(mediaItemId, child.title, child.releaseDate, child.externalId ?? null, result.provider);
+        await db.transaction(async () => {
+          for (const child of children) {
+            await db
+              .prepare(
+                `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored)
+                 VALUES (?, ?, ?, ?, ?, 1)`
+              )
+              .run(mediaItemId, child.title, child.releaseDate, child.externalId ?? null, result.provider);
           }
         });
-        insertMany(children);
         childCount = children.length;
       }
     } catch (err) {
@@ -154,7 +154,7 @@ metadataRouter.post(
       log.warn(`[metadata] failed to import children for media item ${mediaItemId}:`, (err as Error).message);
     }
 
-    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId);
+    const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId);
     const actor = req.auth?.user ? { userId: req.auth.user.id, username: req.auth.user.username } : { userId: null, username: "admin" };
     logAuditEvent(actor.userId, actor.username, "media_added", `${b.title} (${b.type})`);
     res.status(201).json({ ...mediaItemFromRow(row), childCount });

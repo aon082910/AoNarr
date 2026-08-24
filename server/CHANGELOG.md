@@ -3,6 +3,20 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 97
+- PostgreSQL support: converted `services/traktSync.ts`, `routes/metadata.ts`,
+  `services/recommendations.ts`, and `routes/watchlistImport.ts` — 68 files converted so far, 12 remain
+- `routes/metadata.ts`'s `/import` route had 3 better-sqlite3-style synchronous
+  `db.transaction(fn)(rows)` calls (episode/album/child batch inserts) — converted to the async
+  transaction pattern established in earlier rounds
+- Closed a small ordering gap: `queueForReview()` in the watchlist-import "not found" path is now
+  correctly `await`-ed inline instead of fire-and-forget
+- Verified live against a real Postgres container: manual media import including the
+  transaction-based child-episode insert, Trakt sync's no-op-when-unconfigured path,
+  recommendations' DB-backed queries running cleanly ahead of the key-gated external API calls, and
+  watchlist import's full duplicate-skip → not-found → import-review-queue flow — same sequence
+  regression-checked against SQLite on the same build
+
 ## Round 96
 - PostgreSQL support: converted `services/storageForecast.ts`, `services/duplicates.ts`,
   `services/upgradeCandidates.ts`, and `services/cleanupSuggestions.ts` (the first Tier 1 batch of a

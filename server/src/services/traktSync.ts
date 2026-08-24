@@ -1,5 +1,5 @@
 import { log } from "./logger.js";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { getSetting } from "./settingsStore.js";
 import { fetchSeriesEpisodesFor } from "./metadata.js";
 import { isExcluded } from "./importExclusions.js";
@@ -27,8 +27,8 @@ async function fetchTraktListItems(target: TraktListTarget, clientId: string): P
   return (await res.json()) as any[];
 }
 
-function existingTmdbIds(type: string): Set<string> {
-  const rows = db.prepare("SELECT external_ids FROM media_items WHERE type = ?").all(type) as {
+async function existingTmdbIds(type: string): Promise<Set<string>> {
+  const rows = (await db.prepare("SELECT external_ids FROM media_items WHERE type = ?").all(type)) as {
     external_ids: string | null;
   }[];
   const ids = new Set<string>();
@@ -44,8 +44,8 @@ function existingTmdbIds(type: string): Set<string> {
   return ids;
 }
 
-function defaultQualityProfileId(): number | null {
-  const row = db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get() as { id: number } | undefined;
+async function defaultQualityProfileId(): Promise<number | null> {
+  const row = (await db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get()) as { id: number } | undefined;
   return row?.id ?? null;
 }
 
@@ -68,9 +68,9 @@ export async function runTraktSync(): Promise<{ added: number; error?: string }>
     return { added: 0, error: (err as Error).message };
   }
 
-  const qualityProfileId = defaultQualityProfileId();
-  const existingMovies = existingTmdbIds("movie");
-  const existingSeries = existingTmdbIds("series");
+  const qualityProfileId = await defaultQualityProfileId();
+  const existingMovies = await existingTmdbIds("movie");
+  const existingSeries = await existingTmdbIds("series");
   let added = 0;
 
   for (const entry of items) {
@@ -80,10 +80,12 @@ export async function runTraktSync(): Promise<{ added: number; error?: string }>
         const tmdbId = m.ids?.tmdb;
         if (!tmdbId || existingMovies.has(String(tmdbId))) continue;
         if (await isExcluded("movie", m.title, m.year ?? null, String(tmdbId), "tmdb")) continue;
-        db.prepare(
-          `INSERT INTO media_items (type, title, sort_title, year, external_ids, quality_profile_id, monitored, status)
-           VALUES ('movie', ?, ?, ?, ?, ?, 1, 'missing')`
-        ).run(m.title, m.title.toLowerCase(), m.year ?? null, JSON.stringify({ tmdb: String(tmdbId), trakt: String(m.ids?.trakt ?? "") }), qualityProfileId);
+        await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, year, external_ids, quality_profile_id, monitored, status)
+             VALUES ('movie', ?, ?, ?, ?, ?, 1, 'missing')`
+          )
+          .run(m.title, m.title.toLowerCase(), m.year ?? null, JSON.stringify({ tmdb: String(tmdbId), trakt: String(m.ids?.trakt ?? "") }), qualityProfileId);
         existingMovies.add(String(tmdbId));
         added++;
       } else if (entry.show) {
@@ -92,7 +94,7 @@ export async function runTraktSync(): Promise<{ added: number; error?: string }>
         if (!tmdbId || existingSeries.has(String(tmdbId))) continue;
         if (await isExcluded("series", s.title, s.year ?? null, String(tmdbId), "tmdb")) continue;
         const externalIds = { tmdb: String(tmdbId), trakt: String(s.ids?.trakt ?? "") };
-        const result = db
+        const result = await db
           .prepare(
             `INSERT INTO media_items (type, title, sort_title, year, external_ids, quality_profile_id, monitored, status)
              VALUES ('series', ?, ?, ?, ?, ?, 1, 'missing')`
@@ -101,11 +103,14 @@ export async function runTraktSync(): Promise<{ added: number; error?: string }>
 
         const mediaItemId = result.lastInsertRowid;
         const episodes = await fetchSeriesEpisodesFor(externalIds).catch(() => []);
-        const insertEp = db.prepare(
-          `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-           VALUES (?, ?, ?, ?, ?, ?, 1)`
-        );
-        for (const ep of episodes) insertEp.run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
+        for (const ep of episodes) {
+          await db
+            .prepare(
+              `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
+               VALUES (?, ?, ?, ?, ?, ?, 1)`
+            )
+            .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
+        }
 
         existingSeries.add(String(tmdbId));
         added++;

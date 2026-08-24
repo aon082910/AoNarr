@@ -1,4 +1,4 @@
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { getSetting } from "./settingsStore.js";
 import { isExcluded } from "./importExclusions.js";
 
@@ -23,15 +23,15 @@ function parseExternalIds(raw: string | null): Record<string, string> {
   }
 }
 
-function recentLibraryItems(type: string): { title: string; externalIds: Record<string, string> }[] {
-  const rows = db
+async function recentLibraryItems(type: string): Promise<{ title: string; externalIds: Record<string, string> }[]> {
+  const rows = (await db
     .prepare("SELECT title, external_ids FROM media_items WHERE type = ? ORDER BY added_at DESC LIMIT ?")
-    .all(type, SOURCE_SAMPLE_SIZE) as { title: string; external_ids: string | null }[];
+    .all(type, SOURCE_SAMPLE_SIZE)) as { title: string; external_ids: string | null }[];
   return rows.map((r) => ({ title: r.title, externalIds: parseExternalIds(r.external_ids) }));
 }
 
-function existingExternalIds(type: string, provider: string): Set<string> {
-  const rows = db.prepare("SELECT external_ids FROM media_items WHERE type = ?").all(type) as {
+async function existingExternalIds(type: string, provider: string): Promise<Set<string>> {
+  const rows = (await db.prepare("SELECT external_ids FROM media_items WHERE type = ?").all(type)) as {
     external_ids: string | null;
   }[];
   const ids = new Set<string>();
@@ -52,9 +52,9 @@ async function tmdbSimilar(kind: "movie" | "tv", tmdbId: string, apiKey: string)
 }
 
 async function recommendMovies(apiKey: string): Promise<Recommendation[]> {
-  const seen = existingExternalIds("movie", "tmdb");
+  const seen = await existingExternalIds("movie", "tmdb");
   const out: Recommendation[] = [];
-  for (const source of recentLibraryItems("movie")) {
+  for (const source of await recentLibraryItems("movie")) {
     const tmdbId = source.externalIds.tmdb;
     if (!tmdbId) continue;
     const results = await tmdbSimilar("movie", tmdbId, apiKey);
@@ -74,9 +74,9 @@ async function recommendMovies(apiKey: string): Promise<Recommendation[]> {
 }
 
 async function recommendSeries(apiKey: string): Promise<Recommendation[]> {
-  const seen = existingExternalIds("series", "tmdb");
+  const seen = await existingExternalIds("series", "tmdb");
   const out: Recommendation[] = [];
-  for (const source of recentLibraryItems("series")) {
+  for (const source of await recentLibraryItems("series")) {
     const tmdbId = source.externalIds.tmdb;
     if (!tmdbId) continue;
     const results = await tmdbSimilar("tv", tmdbId, apiKey);
@@ -97,12 +97,12 @@ async function recommendSeries(apiKey: string): Promise<Recommendation[]> {
 
 async function recommendArtists(apiKey: string): Promise<Recommendation[]> {
   const seenNames = new Set(
-    (db.prepare("SELECT title FROM media_items WHERE type = 'artist'").all() as { title: string }[]).map((r) =>
+    ((await db.prepare("SELECT title FROM media_items WHERE type = 'artist'").all()) as { title: string }[]).map((r) =>
       r.title.toLowerCase()
     )
   );
   const out: Recommendation[] = [];
-  for (const source of recentLibraryItems("artist")) {
+  for (const source of await recentLibraryItems("artist")) {
     const url = new URL("https://ws.audioscrobbler.com/2.0/");
     url.searchParams.set("method", "artist.getsimilar");
     url.searchParams.set("artist", source.title);

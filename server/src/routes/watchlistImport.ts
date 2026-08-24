@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { searchMetadata, fetchSeriesEpisodesFor } from "../services/metadata.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
@@ -40,7 +40,7 @@ watchlistImportRouter.post(
     if (rows.length > 500) throw new HttpError(400, "Too many rows in one import (max 500)");
 
     const qualityProfileId = (
-      db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get() as { id: number } | undefined
+      (await db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get()) as { id: number } | undefined
     )?.id ?? null;
 
     const results: RowResult[] = [];
@@ -57,12 +57,12 @@ watchlistImportRouter.post(
         const searchResults = await searchMetadata(row.type, query).catch(() => []);
         const best = searchResults[0];
         if (!best) {
-          queueForReview({ source: "watchlist", importListId: null, type: row.type, title: row.title, year: row.year });
+          await queueForReview({ source: "watchlist", importListId: null, type: row.type, title: row.title, year: row.year });
           results.push({ title: row.title, status: "not_found" });
           continue;
         }
 
-        const insertResult = db
+        const insertResult = await db
           .prepare(
             `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, quality_profile_id, monitored, status)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
@@ -81,11 +81,14 @@ watchlistImportRouter.post(
         if (row.type === "series") {
           const mediaItemId = insertResult.lastInsertRowid;
           const episodes = await fetchSeriesEpisodesFor(best.externalIds).catch(() => []);
-          const insertEp = db.prepare(
-            `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-             VALUES (?, ?, ?, ?, ?, ?, 1)`
-          );
-          for (const ep of episodes) insertEp.run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
+          for (const ep of episodes) {
+            await db
+              .prepare(
+                `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
+                 VALUES (?, ?, ?, ?, ?, ?, 1)`
+              )
+              .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
+          }
         }
 
         results.push({ title: row.title, status: "added" });

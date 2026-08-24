@@ -1,6 +1,6 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — 64 files converted and verified against a real Postgres container**, covering
+Status: **PostgreSQL — 68 files converted and verified against a real Postgres container**, covering
 auth, users, quality/library config, indexers, download clients, calendar events, saved library
 views, remote instances, friend libraries, library groups (including its `WITH RECURSIVE`
 nested-count rollup), person credits, custom formats (including TRaSH-Guides sync), collections
@@ -12,8 +12,9 @@ stats), web push subscriptions, the media-server watch webhook, library/media-se
 full recycle-bin/corrupt-media/auto-archival cluster, instance settings (including the TOTP 2FA and
 config-template export/import flows), the import-review queue, library media-compatibility analysis,
 duplicate-detection, release-group reputation tracking, custom-format release scoring, storage
-forecasting/disk-usage sampling, repeated-import detection, upgrade-candidate detection, and
-unmonitored/duplicate-file cleanup suggestions. 16 files remain unconverted (their own *other*
+forecasting/disk-usage sampling, repeated-import detection, upgrade-candidate detection,
+unmonitored/duplicate-file cleanup suggestions, Trakt list sync, TMDB/Last.fm recommendations, manual
+media import, and watchlist CSV import. 12 files remain unconverted (their own *other*
 queries, not the call sites into the services converted in Rounds 93–96 — see those rounds' notes
 below for the distinction); `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one
 yet — see "What's left" below for the exact remaining list, now narrower and more accurately scoped
@@ -22,17 +23,15 @@ is fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "Po
 explicit user decision). This document exists so a future round can pick this up without re-deriving
 the analysis below.
 
-## What's left (as of Round 96)
+## What's left (as of Round 97)
 
-The remaining 16 files are `routes/media.ts` (948 lines), `routes/metadata.ts`,
-`routes/watchlistImport.ts`, `routes/importLists.ts`, `services/importLists.ts`,
-`services/recommendations.ts`, `services/traktSync.ts`, `services/mediaServerImport.ts`,
-`services/starrImport.ts`, `routes/search.ts`, `services/importer.ts`, `services/scheduler.ts` (864
-lines), `routes/system.ts` (457 lines), `routes/metrics.ts`, `services/libraryScan.ts`, and
-`services/scheduledBackup.ts`. Their own *remaining* (non-`findPossibleDuplicates`/`isExcluded`/
-`isBlocklisted`/`scoreRelease`/`findRepeatedImports`/`findUpgradeCandidates`/etc.) database calls
-still need converting — but as Round 93 found, most of what made this list look unapproachable was
-**not actually true**.
+The remaining 12 files are `routes/media.ts` (948 lines), `routes/importLists.ts`,
+`services/importLists.ts`, `services/mediaServerImport.ts`, `services/starrImport.ts`,
+`routes/search.ts`, `services/importer.ts`, `services/scheduler.ts` (864 lines), `routes/system.ts`
+(457 lines), `routes/metrics.ts`, `services/libraryScan.ts`, and `services/scheduledBackup.ts`.
+Their own *remaining* (non-`findPossibleDuplicates`/`isExcluded`/`isBlocklisted`/`scoreRelease`/
+`findRepeatedImports`/`findUpgradeCandidates`/etc.) database calls still need converting — but as
+Round 93 found, most of what made this list look unapproachable was **not actually true**.
 
 **Correction to the Round 92 assessment above**: it claimed the small helper functions in this
 cluster (`findPossibleDuplicates`, `isExcluded`, `isBlocklisted`, `getGroupReputation`, etc.) were
@@ -55,7 +54,7 @@ every round since 84 has done, just in bigger files. `chooseBestResult()` in `sc
 lookup into a `Map` before a `.sort()`/`.filter()` runs, then have the callback do synchronous `Map`
 lookups instead of calling the async function directly.
 
-## Conversion plan for the remaining 16 files (as of Round 96)
+## Conversion plan for the remaining 12 files (as of Round 97)
 
 Mapped every import edge *among these files* (edges to already-converted or db-free files don't
 matter — the risk this session has consistently guarded against is a converted file's own queries
@@ -65,9 +64,9 @@ depends on inside this set is already converted, so no new caller/callee split i
 
 **Tier 1 — no edges into this set at all (true leaves, safe standalone rounds):** ~~`services/
 storageForecast.ts`~~, ~~`services/duplicates.ts`~~, ~~`services/upgradeCandidates.ts`~~, ~~`services/
-cleanupSuggestions.ts`~~ — **done in Round 96**, including a real, previously-latent bug it surfaced
-(see below). Still remaining in this tier: `services/traktSync.ts` (119), `routes/metadata.ts` (162),
-`services/recommendations.ts` (166), `routes/watchlistImport.ts` (100),
+cleanupSuggestions.ts`~~ (Round 96, surfaced a real previously-latent bug — see that round's notes),
+~~`services/traktSync.ts`~~, ~~`routes/metadata.ts`~~, ~~`services/recommendations.ts`~~,
+~~`routes/watchlistImport.ts`~~ — **all done as of Round 97**. Still remaining in this tier:
 `services/mediaServerImport.ts` (251), `services/importLists.ts` (301), `services/libraryScan.ts`
 (526 — already partially touched in Round 94 for the has_file rollup fix; the rest of its own CRUD
 queries are still on the old path). `services/scheduledBackup.ts` (54) is nominally a leaf too but is
@@ -77,22 +76,23 @@ Postgres) designed before converting, not just query ports. Scoping that out to 
 round rather than blocking the rest of Tier 1 on it.
 
 **Tier 2 — depend only on Tier 1:**
-`routes/importLists.ts` (68, → `services/importLists.ts`), `routes/metrics.ts` (89, → `services/
-duplicates.ts` + `services/upgradeCandidates.ts`, both now converted — `metrics.ts`'s own remaining
-queries are the only thing left there), `services/starrImport.ts` (454, → `services/
-mediaServerImport.ts`), `services/importer.ts` (564, → `services/libraryScan.ts`).
+`routes/importLists.ts` (68, → `services/importLists.ts`, still pending in Tier 1), `routes/metrics.ts`
+(89, → `services/duplicates.ts` + `services/upgradeCandidates.ts`, both now converted — `metrics.ts`'s
+own remaining queries are the only thing left there), `services/starrImport.ts` (454, →
+`services/mediaServerImport.ts`), `services/importer.ts` (564, → `services/libraryScan.ts`).
 
 **Tier 3 — depend on Tier 1+2:**
 `routes/system.ts` (457, → `cleanupSuggestions.ts`/`duplicates.ts`/`storageForecast.ts`/
-`traktSync.ts`/`upgradeCandidates.ts` — 4 of those 5 now converted, `traktSync.ts` still pending;
-Round 96 already fixed `system.ts`'s specific call sites into the newly-converted 4 without
-converting the rest of the file), `routes/media.ts` (948, → `libraryScan.ts` — the single largest
-remaining file).
+`traktSync.ts`/`upgradeCandidates.ts`, all now converted — Rounds 96/97 already fixed `system.ts`'s
+specific call sites into all 5 without converting the rest of the file), `routes/media.ts` (948, →
+`libraryScan.ts` — the single largest remaining file).
 
 **Tier 4:**
 `services/scheduler.ts` (864, → `importLists.ts`/`importer.ts`/`libraryScan.ts`/
-`scheduledBackup.ts`/`storageForecast.ts`/`traktSync.ts`/`upgradeCandidates.ts` — the scheduler that
-ties nearly every background job together, so it's last among the services; Round 96 already fixed
+`scheduledBackup.ts`/`storageForecast.ts`/`traktSync.ts`/`upgradeCandidates.ts`; `storageForecast.ts`/
+`traktSync.ts`/`upgradeCandidates.ts` now converted, Round 96/97 already fixed those specific call
+sites — the scheduler that ties nearly every background job together, so it's last among the
+services; Round 96 already fixed
 its `recordDiskUsageSamples`/`findUpgradeCandidates` call sites).
 
 **Tier 5:**
@@ -106,6 +106,24 @@ verification, following the same ritual every round since 79 has used (typecheck
 grep → build → live-verify both backends → update this doc + CHANGELOG.md → commit/push →
 rebuild/push Docker Hub tags). `services/scheduledBackup.ts`'s per-dialect backup logic is deferred
 to its own round after everything else, since it's a design question, not a conversion mop-up.
+
+## Progress (Round 97)
+
+Converted the rest of Tier 1's small leaves: `services/traktSync.ts`, `routes/metadata.ts`,
+`services/recommendations.ts` (finishing what Round 93 started — its `isExcluded`/`filterAsync`
+restructuring was already done, only `recentLibraryItems()`/`existingExternalIds()`'s own queries
+were still on the old path), and `routes/watchlistImport.ts`. `routes/metadata.ts`'s `/import` route
+carried 3 better-sqlite3-style synchronous `db.transaction(fn)(rows)` calls (episode/album/child
+batch inserts) — converted to the same `await db.transaction(async () => { for (...) { await
+db.prepare(...).run(...) } })` pattern already established for this shape of code.
+
+Verified live against a real Postgres container: manual media import (including the transaction-based
+child-episode insert path), Trakt sync's no-op-when-unconfigured path, recommendations' DB-backed
+`recentLibraryItems`/`existingExternalIds` queries running cleanly ahead of the (key-gated) external
+API calls, and watchlist import's full duplicate-skip → not-found → import-review-queue flow — the
+review-queue insert (`queueForReview`, converted in Round 91) is now correctly `await`-ed inline
+in the per-row loop instead of fire-and-forget, closing a small ordering gap. Same sequence
+regression-checked against SQLite on the same build with identical results.
 
 ## Progress (Round 96)
 
