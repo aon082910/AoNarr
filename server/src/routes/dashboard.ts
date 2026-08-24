@@ -24,6 +24,46 @@ dashboardRouter.get(
   })
 );
 
+/**
+ * Most recent library-content changes (grabbed/imported/archived/subtitle events from `history`),
+ * for the home dashboard's "Recently Changed" widget — a smaller, unauthenticated-safe sibling of
+ * activity.ts's admin-only `/timeline` (which also merges in Requests and isn't capped as tightly).
+ */
+dashboardRouter.get(
+  "/recent",
+  asyncHandler(async (req, res) => {
+    const allowedTypes = allowedTypesFor(req);
+    const rows = (await db
+      .prepare(
+        `SELECT h.event_type AS "eventType", h.data, h.created_at AS "createdAt",
+                m.id AS "mediaItemId", m.title AS "mediaTitle", m.type AS "mediaType"
+         FROM history h JOIN media_items m ON m.id = h.media_item_id
+         ORDER BY h.created_at DESC LIMIT 100`
+      )
+      .all()) as { eventType: string; data: string | null; createdAt: string; mediaItemId: number; mediaTitle: string; mediaType: string }[];
+
+    let entries = rows.map((row) => {
+      let detail: string | null = null;
+      try {
+        const parsed = row.data ? JSON.parse(row.data) : null;
+        detail = parsed?.title ?? parsed?.fileName ?? parsed?.reason ?? null;
+      } catch {
+        detail = null;
+      }
+      return {
+        timestamp: row.createdAt,
+        eventType: row.eventType,
+        mediaItemId: row.mediaItemId,
+        title: row.mediaTitle,
+        type: row.mediaType,
+        detail,
+      };
+    });
+    if (allowedTypes) entries = entries.filter((e) => allowedTypes.includes(e.type));
+    res.json(entries.slice(0, 15));
+  })
+);
+
 /** Per-type item counts, for the Library landing page's per-type cards — same access rules as
  * everything else here (household accounts only see counts for their allowed types). */
 dashboardRouter.get(

@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 112 — "Recently Changed" dashboard widget
+- Added a "Recently Changed" Dashboard widget (item #5 of the previously-scoped improvement list):
+  a table of the most recent grab/import/auto-archive/subtitle events across the whole library,
+  each row linking straight to the affected item. Reuses the existing `history` table (already
+  populated by `importer.ts`/`scheduler.ts`/`archival.ts`) rather than adding new tracking — no
+  schema change needed.
+- New `GET /api/dashboard/recent` (server/src/routes/dashboard.ts): a smaller, household-account-safe
+  sibling of `activity.ts`'s admin-only `/timeline` — same `history` join, capped to 15 rows, no
+  Requests merged in (this widget is about library content changes, not request activity).
+  Filtered by `allowedTypesFor(req)` like every other dashboard endpoint.
+- Slots into the existing widget/layout-customization system with no extra wiring — adding the
+  `recentlyChanged` entry to `widgetDefs` automatically made it reorderable/hideable/resizable via
+  the Dashboard's existing "Customize layout" panel.
+- Verified live against both SQLite and Postgres: seeded `history` rows directly (grabbed/imported
+  events against the Daft Punk artist added in Round 110's verification), confirmed the widget
+  renders the correct title/type/event/timestamp on both dialects and that its row navigates to the
+  right media item.
+
 ## Round 111 — Starr-style per-item and library download progress
 - Added Sonarr/Radarr-style progress to episodic (TV, Anime) and collection (Music, Books,
   Audiobooks, Comics, Manga, Online Videos, Courses) library types: each media tile (poster and

@@ -14,6 +14,22 @@ interface RecentlyWatchedEntry {
   watchedAt: string;
 }
 
+interface RecentlyChangedEntry {
+  timestamp: string;
+  eventType: string;
+  mediaItemId: number;
+  title: string;
+  type: string;
+  detail: string | null;
+}
+
+const RECENT_EVENT_LABELS: Record<string, string> = {
+  grabbed: "Grabbed",
+  imported: "Imported",
+  auto_archived: "Auto-archived",
+  subtitleDownloaded: "Subtitle downloaded",
+};
+
 interface UpcomingEntry {
   mediaItemId: number;
   mediaTitle: string;
@@ -40,6 +56,7 @@ export default function Dashboard() {
   const labelFor = (key: string) => mediaTypes.find((t) => t.key === key)?.label ?? key;
 
   const [recentlyAdded, setRecentlyAdded] = useState<MediaItem[]>([]);
+  const [recentlyChanged, setRecentlyChanged] = useState<RecentlyChangedEntry[]>([]);
   const [recentlyWatched, setRecentlyWatched] = useState<RecentlyWatchedEntry[]>([]);
   const [upcoming, setUpcoming] = useState<UpcomingEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -50,6 +67,7 @@ export default function Dashboard() {
     setLoading(true);
     Promise.all([
       api.get<MediaItem[]>("/dashboard/recently-added"),
+      api.get<RecentlyChangedEntry[]>("/dashboard/recent"),
       api.get<RecentlyWatchedEntry[]>("/dashboard/recently-watched"),
       auth.isAdmin
         ? api.get<UpcomingEntry[]>(`/wanted/calendar?start=${todayIso()}&end=${addDaysIso(14)}`)
@@ -57,8 +75,9 @@ export default function Dashboard() {
       api.get<Record<string, number>>("/dashboard/library-sizes"),
       api.get<Record<string, number>>("/dashboard/library-counts"),
     ])
-      .then(([added, watched, cal, sizes, counts]) => {
+      .then(([added, changed, watched, cal, sizes, counts]) => {
         setRecentlyAdded(added);
+        setRecentlyChanged(changed);
         setRecentlyWatched(watched);
         setUpcoming(cal);
         setLibrarySizes(sizes);
@@ -154,6 +173,39 @@ export default function Dashboard() {
                     <td>{entry.label}</td>
                     <td>{labelFor(entry.type)}</td>
                     <td>{new Date(entry.watchedAt).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        ) : null,
+    },
+    {
+      key: "recentlyChanged",
+      label: "Recently Changed",
+      render: () =>
+        recentlyChanged.length > 0 ? (
+          <>
+            <h2>Recently Changed</h2>
+            <table>
+              <thead>
+                <tr>
+                  <th>Title</th>
+                  <th>Type</th>
+                  <th>Event</th>
+                  <th>When</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentlyChanged.map((entry, idx) => (
+                  <tr key={idx} onClick={() => navigate(`/media/${entry.mediaItemId}`)} style={{ cursor: "pointer" }}>
+                    <td>
+                      {entry.title}
+                      {entry.detail ? ` — ${entry.detail}` : ""}
+                    </td>
+                    <td>{labelFor(entry.type)}</td>
+                    <td>{RECENT_EVENT_LABELS[entry.eventType] ?? entry.eventType}</td>
+                    <td>{new Date(entry.timestamp).toLocaleString()}</td>
                   </tr>
                 ))}
               </tbody>
