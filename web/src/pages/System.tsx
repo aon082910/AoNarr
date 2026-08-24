@@ -24,11 +24,29 @@ interface SystemStatus {
   diskSpace: DiskSpaceEntry[];
 }
 
+interface IndexerRecentHealth {
+  totalChecks: number;
+  successCount: number;
+  successRate: number | null;
+  avgResponseTimeMs: number | null;
+  lastCheckedAt: string | null;
+  lastSuccess: boolean | null;
+  lastError: string | null;
+}
+
 interface IndexerHealth {
   id: number;
   name: string;
   ok: boolean;
   error?: string;
+  /** Historical success rate over the last ~50 real search attempts — distinct from `ok` above,
+   * which is only a live "is it reachable right now" check. See services/indexerHealth.ts. */
+  recent?: IndexerRecentHealth;
+}
+
+interface ConfigWarning {
+  key: string;
+  message: string;
 }
 
 interface StuckQueueEntry {
@@ -69,6 +87,7 @@ interface DiskWarning {
 }
 
 interface HealthReport {
+  configWarnings: ConfigWarning[];
   indexers: IndexerHealth[];
   downloadClients: DownloadClientHealth[];
   stuckQueue: StuckQueueEntry[];
@@ -399,11 +418,22 @@ export default function System() {
       {!health && <p className="empty">Loading...</p>}
       {health && (
         <>
+          {health.configWarnings.length > 0 && (
+            <div className="form-panel" style={{ borderColor: "var(--danger)", marginBottom: 16 }}>
+              {health.configWarnings.map((w) => (
+                <p key={w.key} style={{ color: "var(--danger)", margin: "4px 0" }}>
+                  ⚠ {w.message}
+                </p>
+              ))}
+            </div>
+          )}
+
           <table>
             <thead>
               <tr>
                 <th>Indexer</th>
                 <th>Status</th>
+                <th>Recent success rate</th>
               </tr>
             </thead>
             <tbody>
@@ -415,11 +445,20 @@ export default function System() {
                       {i.ok ? "Reachable" : `Unreachable${i.error ? ` (${i.error})` : ""}`}
                     </span>
                   </td>
+                  <td title={i.recent?.lastError ?? undefined}>
+                    {i.recent && i.recent.totalChecks > 0 ? (
+                      <span className={`badge ${(i.recent.successRate ?? 0) >= 80 ? "ok" : (i.recent.successRate ?? 0) > 0 ? "" : "danger"}`}>
+                        {i.recent.successRate}% ({i.recent.totalChecks}){i.recent.avgResponseTimeMs != null ? ` · ${i.recent.avgResponseTimeMs}ms` : ""}
+                      </span>
+                    ) : (
+                      <span className="sub">No checks yet</span>
+                    )}
+                  </td>
                 </tr>
               ))}
               {health.indexers.length === 0 && (
                 <tr>
-                  <td colSpan={2} className="empty">
+                  <td colSpan={3} className="empty">
                     No enabled indexers.
                   </td>
                 </tr>

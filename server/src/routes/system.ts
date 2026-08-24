@@ -15,6 +15,7 @@ import { downloadClientFromRow, indexerFromRow, rootFolderFromRow } from "../db/
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { checkIndexerHealth } from "../services/indexerClient.js";
+import { attachIndexerHealth } from "../services/indexerHealth.js";
 import { runAutoArchival } from "../services/archival.js";
 import { runTraktSync } from "../services/traktSync.js";
 import { findRepeatedImports } from "../services/duplicates.js";
@@ -201,8 +202,17 @@ systemRouter.get(
   "/health",
   asyncHandler(async (_req, res) => {
     const indexers = ((await db.prepare("SELECT * FROM indexers WHERE enabled = 1").all()) as any[]).map(indexerFromRow);
+    // Historical recent-attempt data (from indexer_health, see services/indexerHealth.ts) alongside
+    // the live reachability check below — an indexer can pass a live "is it up right now" check
+    // while still having been unreliable over its last 50 real search attempts, and vice versa.
+    await attachIndexerHealth(indexers as any[]);
     const indexerHealth = await Promise.all(
-      indexers.map(async (idx) => ({ id: idx.id, name: idx.name, ...(await checkIndexerHealth(idx)) }))
+      indexers.map(async (idx: any) => ({
+        id: idx.id,
+        name: idx.name,
+        ...(await checkIndexerHealth(idx)),
+        recent: idx.health,
+      }))
     );
 
     const stuckQueueRows = (await db
@@ -251,7 +261,29 @@ systemRouter.get(
       )
     ).filter((w): w is NonNullable<typeof w> => w !== null);
 
+    // Config-completeness warnings — distinct from the reachability/rate checks above, which all
+    // assume something is already configured and only report on how well it's working. A fresh or
+    // partially set-up instance has none of those to report, so without this an admin who dismissed
+    // the onboarding checklist (web/src/pages/Onboarding.tsx) once has no ongoing signal that a
+    // whole library type still has, say, no root folder and will never actually import anything.
+    const [rootFolderCount, indexerCount, downloadClientCount] = await Promise.all([
+      db.prepare("SELECT COUNT(*) AS c FROM root_folders").get() as Promise<{ c: number }>,
+      db.prepare("SELECT COUNT(*) AS c FROM indexers WHERE enabled = 1").get() as Promise<{ c: number }>,
+      db.prepare("SELECT COUNT(*) AS c FROM download_clients WHERE enabled = 1").get() as Promise<{ c: number }>,
+    ]);
+    const configWarnings: { key: string; message: string }[] = [];
+    if (Number(rootFolderCount.c) === 0) {
+      configWarnings.push({ key: "no_root_folder", message: "No root folder configured — nothing has anywhere to import to yet." });
+    }
+    if (Number(indexerCount.c) === 0) {
+      configWarnings.push({ key: "no_indexer", message: "No enabled indexer configured — searches will never find anything." });
+    }
+    if (Number(downloadClientCount.c) === 0) {
+      configWarnings.push({ key: "no_download_client", message: "No enabled download client configured — grabs have nowhere to download to." });
+    }
+
     res.json({
+      configWarnings,
       indexers: indexerHealth,
       downloadClients: downloadClientHealth,
       stuckQueue: stuckQueueRows,

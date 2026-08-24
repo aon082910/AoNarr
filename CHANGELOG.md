@@ -3,6 +3,22 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 117 — health page: config-completeness warnings, historical indexer stats
+- Extended (rather than duplicated) the existing System → Health tab: it already covered live
+  reachability/disk-space/stuck-queue checks, but assumed the instance was already configured and
+  had no way to tell an admin "you never actually finished setup" once the onboarding checklist was
+  dismissed. `GET /api/system/health` now also returns `configWarnings` — flags no root folder, no
+  enabled indexer, and no enabled download client — rendered as a red banner at the top of the tab.
+- Wired Round 116's new per-indexer historical success-rate data (`indexer_health`) into the same
+  endpoint: the indexer table's existing "Status" column (a live reachability check) now sits next
+  to a "Recent success rate" column ("92% (50) · 340ms" style, with the last error on hover) — an
+  indexer can pass a live check while having failed most of its last 50 real searches, which the
+  old live-only check had no way to surface.
+- Verified live against both SQLite and Postgres: confirmed all three config warnings fire on a
+  fresh, fully-unconfigured instance, confirmed adding a root folder makes exactly that one warning
+  disappear (the other two persist correctly), and confirmed a test indexer's live/historical
+  health both render correctly and identically on both dialects.
+
 ## Round 116 — per-indexer health tracking
 - Added Sonarr/Radarr-style per-indexer health tracking: every real search attempt through
   `searchIndexer()` — manual "Search", scheduled auto-search, the wanted-list cycle, and the
