@@ -38,6 +38,16 @@ const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w342";
 const MUSICBRAINZ_USER_AGENT = "AoNarr/0.1 (self-hosted media manager)";
 const DISCOGS_USER_AGENT = "AoNarr/0.1 (self-hosted media manager)";
 
+/**
+ * A bare fetch() has no timeout — a single stalled request hangs forever. That's tolerable for a
+ * one-off user-triggered lookup, but fetchAlbumTracksFor is now also called in a tight per-album
+ * loop right after an artist/album import (see insertTracksForAlbum), where one hung request would
+ * otherwise block the entire artist add indefinitely.
+ */
+function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 10000): Promise<Response> {
+  return fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) });
+}
+
 function requireSetting(key: string, label: string): string {
   const value = getSetting(key);
   if (!value) throw new Error(`${label} is not configured. Add one in Settings.`);
@@ -405,7 +415,7 @@ async function fetchAlbumTracksMusicbrainz(releaseGroupMbid: string): Promise<Me
   const rgUrl = new URL(`https://musicbrainz.org/ws/2/release-group/${releaseGroupMbid}`);
   rgUrl.searchParams.set("inc", "releases");
   rgUrl.searchParams.set("fmt", "json");
-  const rgRes = await fetch(rgUrl.toString(), { headers: { "User-Agent": MUSICBRAINZ_USER_AGENT } });
+  const rgRes = await fetchWithTimeout(rgUrl.toString(), { headers: { "User-Agent": MUSICBRAINZ_USER_AGENT } });
   if (!rgRes.ok) throw new Error(`MusicBrainz release-group lookup failed: HTTP ${rgRes.status}`);
   const rgBody: any = await rgRes.json();
 
@@ -415,7 +425,7 @@ async function fetchAlbumTracksMusicbrainz(releaseGroupMbid: string): Promise<Me
   const relUrl = new URL(`https://musicbrainz.org/ws/2/release/${releaseId}`);
   relUrl.searchParams.set("inc", "recordings");
   relUrl.searchParams.set("fmt", "json");
-  const relRes = await fetch(relUrl.toString(), { headers: { "User-Agent": MUSICBRAINZ_USER_AGENT } });
+  const relRes = await fetchWithTimeout(relUrl.toString(), { headers: { "User-Agent": MUSICBRAINZ_USER_AGENT } });
   if (!relRes.ok) throw new Error(`MusicBrainz release lookup failed: HTTP ${relRes.status}`);
   const relBody: any = await relRes.json();
 
@@ -463,7 +473,7 @@ async function fetchArtistAlbumsDeezer(deezerArtistId: string): Promise<Metadata
 }
 
 async function fetchAlbumTracksDeezer(deezerAlbumId: string): Promise<MetadataTrack[]> {
-  const res = await fetch(`https://api.deezer.com/album/${deezerAlbumId}/tracks`);
+  const res = await fetchWithTimeout(`https://api.deezer.com/album/${deezerAlbumId}/tracks`);
   if (!res.ok) throw new Error(`Deezer track lookup failed: HTTP ${res.status}`);
   const body: any = await res.json();
 

@@ -10,6 +10,7 @@ import {
   METADATA_PROVIDERS,
   searchMetadata,
 } from "../services/metadata.js";
+import { insertTracksForAlbum } from "../services/importLists.js";
 import { getMediaTypeConfig } from "../services/mediaTypes.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { isExcluded } from "../services/importExclusions.js";
@@ -119,17 +120,31 @@ metadataRouter.post(
           // NULL, and since insertMany runs as one transaction, a single bad entry would otherwise
           // roll back every good entry in the batch along with it.
           const albums = result.albums.filter((a) => a.title);
+          const insertedAlbumIds: { id: number | bigint; externalId: string }[] = [];
           await db.transaction(async () => {
             for (const album of albums) {
-              await db
+              const insertResult = await db
                 .prepare(
                   `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored, poster_url)
                    VALUES (?, ?, ?, ?, ?, 1, ?)`
                 )
                 .run(mediaItemId, album.title, album.releaseDate, album.externalId ?? null, result.provider, album.posterUrl ?? null);
+              if (album.externalId && insertResult.lastInsertRowid != null) {
+                insertedAlbumIds.push({ id: insertResult.lastInsertRowid, externalId: album.externalId });
+              }
             }
           });
           childCount = albums.length;
+
+          // Track listings are fetched one album at a time (real network calls, not something
+          // that should hold a Postgres transaction's connection open for their entire duration —
+          // see insertTracksForAlbum's own note) after the albums themselves are safely committed,
+          // so an artist with dozens of albums doesn't leave its own add half-finished if one
+          // album's track fetch is slow or fails. Without this, a newly-added artist's albums sat
+          // with an empty track list until an admin clicked "Fetch tracks" on each one by hand.
+          for (const { id, externalId } of insertedAlbumIds) {
+            await insertTracksForAlbum(id, result.provider, externalId);
+          }
         }
       } else if (typeConfig.shape === "collection") {
         const result = await fetchCollectionChildrenFor(externalIds);

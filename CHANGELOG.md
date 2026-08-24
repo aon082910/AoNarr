@@ -3,6 +3,31 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 110 — music library auto track-matching
+- Fixed a real bug: adding an artist (via search or an import list) fetched and created its albums
+  but never fetched their tracks, so a newly-added artist's albums sat with an empty track list
+  until an admin opened each one and clicked "Fetch tracks" by hand. Both album-creation paths
+  (`POST /api/metadata/import`'s eager child-fetch, and the Trakt/IMDb/Last.fm import-list sync's
+  `insertArtistAlbums`) now call a new shared `insertTracksForAlbum()` helper for every album that
+  has a provider external id, right after its album row is committed.
+- Track fetches run *after* the album-insert transaction commits, not inside it — holding a
+  Postgres connection open across a whole artist's worth of sequential network calls would have
+  blocked other queries needing that same connection for as long as the slowest artist add took.
+- Found and fixed two real issues surfaced only by calling this fetch in a tight per-album loop
+  (previously it only ran one album at a time, from a manual button click): (1) MusicBrainz's
+  fetch calls had no timeout, so a single stalled request could hang an entire artist's import
+  indefinitely — added a 10s `AbortSignal.timeout` to the MusicBrainz and Deezer track-fetch
+  requests; (2) MusicBrainz enforces roughly 1 request/second and this loop was issuing 2 requests
+  per album back-to-back with no pause, producing a wall of HTTP 503s partway through any
+  multi-album artist — added a ~1.1s pause between MusicBrainz album fetches. A single album's
+  fetch failure (unsupported provider, timeout, rate limit) is still best-effort and doesn't block
+  the rest of the artist's albums or the add itself.
+- Verified live against both SQLite and Postgres backends: imported "Daft Punk" via the Deezer
+  provider on each, confirmed all 38 albums were created and all 266 of their tracks were
+  automatically populated with no manual "Fetch tracks" click, on both dialects identically. Also
+  confirmed against MusicBrainz (via a large-discography artist) that the new timeout aborts
+  cleanly instead of hanging, and that a run of provider errors no longer stalls the request.
+
 ## Round 109 — top-bar nav layout, dashboard widget resizing
 - Added a top-bar layout as an alternative to the left sidebar, toggled per-browser from the same
   "Layout options" panel Round 108 added: Library and the admin-only Manage/Configuration/System

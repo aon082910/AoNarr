@@ -2,7 +2,7 @@ import { log } from "./logger.js";
 import { db } from "../db/index.js";
 import { nowExpr } from "../db/asyncDb.js";
 import { getSetting } from "./settingsStore.js";
-import { fetchArtistAlbumsFor, fetchSeriesEpisodesFor, searchMetadata } from "./metadata.js";
+import { fetchAlbumTracksFor, fetchArtistAlbumsFor, fetchSeriesEpisodesFor, searchMetadata } from "./metadata.js";
 import { isExcluded } from "./importExclusions.js";
 import { findPossibleDuplicates } from "./duplicateCheck.js";
 import { queueForReview } from "./importReview.js";
@@ -49,16 +49,55 @@ async function insertSeriesEpisodes(mediaItemId: number | bigint | null, externa
   }
 }
 
+/**
+ * Fetches and upserts an album's track listing (best-effort — a single album's track fetch
+ * failing, e.g. an unsupported provider like Discogs/Last.fm, shouldn't block the rest of an
+ * artist's albums from being added).
+ */
+export async function insertTracksForAlbum(
+  subItemId: number | bigint,
+  provider: string,
+  externalId: string
+): Promise<void> {
+  try {
+    // MusicBrainz asks clients to stay at ~1 request/second; fetchAlbumTracksFor issues 2 requests
+    // per album, and this function is called back-to-back for every album an artist has, so without
+    // this pause a multi-album artist add gets rate-limited (HTTP 503) partway through.
+    if (provider === "musicbrainz") await new Promise((resolve) => setTimeout(resolve, 1100));
+    const tracks = await fetchAlbumTracksFor(provider, externalId);
+    await db.transaction(async () => {
+      for (const t of tracks) {
+        await db
+          .prepare(
+            `INSERT INTO tracks (sub_item_id, track_number, title, duration_seconds) VALUES (?, ?, ?, ?)
+             ON CONFLICT(sub_item_id, track_number) DO UPDATE SET title = excluded.title`
+          )
+          .run(subItemId, t.trackNumber, t.title, t.durationSeconds);
+      }
+    });
+  } catch (err) {
+    log.warn(`[importLists] failed to fetch tracks for sub-item ${subItemId}:`, (err as Error).message);
+  }
+}
+
 async function insertArtistAlbums(mediaItemId: number | bigint | null, externalIds: Record<string, string>) {
   const result = await fetchArtistAlbumsFor(externalIds).catch(() => null);
   if (!result) return;
+  const insertedAlbumIds: { id: number | bigint; externalId: string }[] = [];
   for (const album of result.albums) {
-    await db
+    const insertResult = await db
       .prepare(
         `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored, poster_url)
          VALUES (?, ?, ?, ?, ?, 1, ?)`
       )
       .run(mediaItemId, album.title, album.releaseDate, album.externalId ?? null, result.provider, album.posterUrl ?? null);
+    if (album.externalId && insertResult.lastInsertRowid != null) {
+      insertedAlbumIds.push({ id: insertResult.lastInsertRowid, externalId: album.externalId });
+    }
+  }
+
+  for (const { id, externalId } of insertedAlbumIds) {
+    await insertTracksForAlbum(id, result.provider, externalId);
   }
 }
 
