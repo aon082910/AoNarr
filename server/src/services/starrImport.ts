@@ -346,7 +346,7 @@ async function importCollectionData(
   const result: StarrCollectionImportResult = { parentsMatched: 0, parentsCreated: 0, childrenMatched: 0, childrenCreated: 0, childrenSkipped: 0 };
 
   const existingParents = db.prepare("SELECT * FROM media_items WHERE type = ?").all(type) as any[];
-  const qualityProfileId = defaultQualityProfileId();
+  const qualityProfileId = await defaultQualityProfileId();
   const knownChildTails = new Set(
     (
       db

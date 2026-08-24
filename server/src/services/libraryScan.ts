@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { getMediaTypeConfig, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
 import { rootFolderFromRow } from "../db/mappers.js";
 import { parseReleaseTitle } from "./releaseParser.js";
@@ -118,8 +118,8 @@ function walkForExtensions(dir: string, extensions: string[], knownPaths: Set<st
   }
 }
 
-function defaultQualityProfileId(): number | null {
-  const row = db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get() as { id: number } | undefined;
+async function defaultQualityProfileId(): Promise<number | null> {
+  const row = (await db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get()) as { id: number } | undefined;
   return row?.id ?? null;
 }
 
@@ -172,24 +172,26 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
   const typeConfig = getMediaTypeConfig(type);
   const result: ScanImportResult = { matched: 0, created: 0, skipped: 0, skippedFiles: [] };
 
-  const folders = (db.prepare("SELECT * FROM root_folders WHERE media_type = ?").all(type) as any[]).map(rootFolderFromRow);
+  const folders = ((await db.prepare("SELECT * FROM root_folders WHERE media_type = ?").all(type)) as any[]).map(rootFolderFromRow);
   if (folders.length === 0) return result;
 
   const knownPaths = new Set<string>([
-    ...(db.prepare("SELECT path FROM media_items WHERE path IS NOT NULL AND type = ?").all(type) as { path: string }[]).map((r) => r.path),
+    ...((await db.prepare("SELECT path FROM media_items WHERE path IS NOT NULL AND type = ?").all(type)) as { path: string }[]).map(
+      (r) => r.path
+    ),
     ...(
-      db
+      (await db
         .prepare(
           `SELECT e.file_path FROM episodes e JOIN media_items m ON m.id = e.media_item_id WHERE e.file_path IS NOT NULL AND m.type = ?`
         )
-        .all(type) as { file_path: string }[]
+        .all(type)) as { file_path: string }[]
     ).map((r) => r.file_path),
     ...(
-      db
+      (await db
         .prepare(
           `SELECT s.file_path FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE s.file_path IS NOT NULL AND m.type = ?`
         )
-        .all(type) as { file_path: string }[]
+        .all(type)) as { file_path: string }[]
     ).map((r) => r.file_path),
   ]);
 
@@ -202,20 +204,21 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
   if (typeConfig.shape === "collection" && typeConfig.multiFilePerChild) {
     const knownAlbumFolders = new Set(
       (
-        db
+        (await db
           .prepare(
             `SELECT s.file_path FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE s.file_path IS NOT NULL AND m.type = ?`
           )
-          .all(type) as { file_path: string }[]
+          .all(type)) as { file_path: string }[]
       ).map((r) => r.file_path)
     );
     files = files.filter((f) => !knownAlbumFolders.has(path.dirname(f)));
   }
 
-  const missingItems = db.prepare("SELECT * FROM media_items WHERE type = ? AND has_file = 0").all(type) as any[];
-  const seriesItems = typeConfig.shape === "episodic" ? (db.prepare("SELECT * FROM media_items WHERE type = ?").all(type) as any[]) : [];
-  const collectionParents = typeConfig.shape === "collection" ? (db.prepare("SELECT * FROM media_items WHERE type = ?").all(type) as any[]) : [];
-  const qualityProfileId = defaultQualityProfileId();
+  const missingItems = (await db.prepare("SELECT * FROM media_items WHERE type = ? AND has_file = 0").all(type)) as any[];
+  const seriesItems = typeConfig.shape === "episodic" ? ((await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[]) : [];
+  const collectionParents =
+    typeConfig.shape === "collection" ? ((await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[]) : [];
+  const qualityProfileId = await defaultQualityProfileId();
 
   for (const filePath of files) {
     if (signal?.aborted) break;
@@ -245,7 +248,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
           // branch already does for movies. Otherwise a fresh TV library with nothing pre-added
           // in AoNarr yet would skip every single file with nothing to show for it.
           const folder = folders.find((f) => filePath.startsWith(f.path));
-          const insertResult = db
+          const insertResult = await db
             .prepare(
               `INSERT INTO media_items (type, title, sort_title, root_folder_id, quality_profile_id, monitored, has_file, status)
                VALUES (?, ?, ?, ?, ?, 1, 0, 'unknown')`
@@ -257,21 +260,20 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
 
         const mediaInfo = await probeMediaInfo(filePath);
         const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
-        const existingEp = db
+        const existingEp = (await db
           .prepare("SELECT id FROM episodes WHERE media_item_id = ? AND season_number = ? AND episode_number = ?")
-          .get(seriesMatch.id, season, episode) as { id: number } | undefined;
+          .get(seriesMatch.id, season, episode)) as { id: number } | undefined;
         if (existingEp) {
-          db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?").run(
-            filePath,
-            quality,
-            mediaInfoJson,
-            existingEp.id
-          );
+          await db
+            .prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?")
+            .run(filePath, quality, mediaInfoJson, existingEp.id);
         } else {
-          db.prepare(
-            `INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path, quality, media_info)
-             VALUES (?, ?, ?, ?, 1, 1, ?, ?, ?)`
-          ).run(seriesMatch.id, season, episode, `Episode ${episode}`, filePath, quality, mediaInfoJson);
+          await db
+            .prepare(
+              `INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path, quality, media_info)
+               VALUES (?, ?, ?, ?, 1, 1, ?, ?, ?)`
+            )
+            .run(seriesMatch.id, season, episode, `Episode ${episode}`, filePath, quality, mediaInfoJson);
         }
         result.matched++;
       } else if (typeConfig.shape === "collection") {
@@ -298,7 +300,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
 
         let parentMatch = collectionParents.find((m) => titlesMatch(m.title, parentTitle));
         if (!parentMatch) {
-          const insertResult = db
+          const insertResult = await db
             .prepare(
               `INSERT INTO media_items (type, title, sort_title, root_folder_id, quality_profile_id, monitored, has_file, status)
                VALUES (?, ?, ?, ?, ?, 1, 0, 'unknown')`
@@ -308,7 +310,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
           collectionParents.push(parentMatch);
         }
 
-        const childSubItems = db.prepare("SELECT * FROM sub_items WHERE media_item_id = ?").all(parentMatch.id) as any[];
+        const childSubItems = (await db.prepare("SELECT * FROM sub_items WHERE media_item_id = ?").all(parentMatch.id)) as any[];
 
         if (typeConfig.multiFilePerChild) {
           // Album is whichever folder the file directly sits in (relSegments[0] = parent/artist,
@@ -324,14 +326,14 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
           }
           let childMatch = childSubItems.find((s) => titlesMatch(s.title, albumTitle));
           if (!childMatch) {
-            const insertResult = db
+            const insertResult = await db
               .prepare("INSERT INTO sub_items (media_item_id, title, monitored) VALUES (?, ?, 1)")
               .run(parentMatch.id, albumTitle);
             childMatch = { id: Number(insertResult.lastInsertRowid), title: albumTitle, has_file: 0 };
             childSubItems.push(childMatch);
           }
           if (!childMatch.has_file) {
-            db.prepare("UPDATE sub_items SET has_file = 1, file_path = ? WHERE id = ?").run(parentDir, childMatch.id);
+            await db.prepare("UPDATE sub_items SET has_file = 1, file_path = ? WHERE id = ?").run(parentDir, childMatch.id);
             childMatch.has_file = 1;
             result.matched++;
           } else {
@@ -354,17 +356,16 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
 
           const childMatch = childSubItems.find((s) => titlesMatch(s.title, childTitle));
           if (childMatch) {
-            db.prepare("UPDATE sub_items SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?").run(
-              filePath,
-              quality,
-              mediaInfoJson,
-              childMatch.id
-            );
+            await db
+              .prepare("UPDATE sub_items SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?")
+              .run(filePath, quality, mediaInfoJson, childMatch.id);
           } else {
-            db.prepare(
-              `INSERT INTO sub_items (media_item_id, title, monitored, has_file, file_path, quality, media_info)
-               VALUES (?, ?, 1, 1, ?, ?, ?)`
-            ).run(parentMatch.id, childTitle, filePath, quality, mediaInfoJson);
+            await db
+              .prepare(
+                `INSERT INTO sub_items (media_item_id, title, monitored, has_file, file_path, quality, media_info)
+                 VALUES (?, ?, 1, 1, ?, ?, ?)`
+              )
+              .run(parentMatch.id, childTitle, filePath, quality, mediaInfoJson);
           }
           result.matched++;
         }
@@ -382,20 +383,19 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
         const mediaInfo = await probeMediaInfo(filePath);
         const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
         if (match) {
-          db.prepare("UPDATE media_items SET has_file = 1, path = ?, quality = ?, media_info = ? WHERE id = ?").run(
-            filePath,
-            quality,
-            mediaInfoJson,
-            match.id
-          );
+          await db
+            .prepare("UPDATE media_items SET has_file = 1, path = ?, quality = ?, media_info = ? WHERE id = ?")
+            .run(filePath, quality, mediaInfoJson, match.id);
           match.has_file = 1;
           result.matched++;
         } else {
           const folder = folders.find((f) => filePath.startsWith(f.path));
-          db.prepare(
-            `INSERT INTO media_items (type, title, sort_title, year, path, root_folder_id, quality_profile_id, monitored, has_file, quality, media_info, status)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 'unknown')`
-          ).run(type, guessedTitle, guessedTitle.toLowerCase(), parsed.year, filePath, folder?.id ?? null, qualityProfileId, quality, mediaInfoJson);
+          await db
+            .prepare(
+              `INSERT INTO media_items (type, title, sort_title, year, path, root_folder_id, quality_profile_id, monitored, has_file, quality, media_info, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 'unknown')`
+            )
+            .run(type, guessedTitle, guessedTitle.toLowerCase(), parsed.year, filePath, folder?.id ?? null, qualityProfileId, quality, mediaInfoJson);
           result.created++;
         }
       }
@@ -415,13 +415,17 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
   // reads — so every episodic/collection item scanned in looked permanently "missing" even once
   // every episode/album was actually present on disk.
   if (typeConfig.shape === "episodic") {
-    db.prepare(
-      `UPDATE media_items SET has_file = 1 WHERE type = ? AND has_file = 0 AND id IN (SELECT DISTINCT media_item_id FROM episodes WHERE has_file = 1)`
-    ).run(type);
+    await db
+      .prepare(
+        `UPDATE media_items SET has_file = 1 WHERE type = ? AND has_file = 0 AND id IN (SELECT DISTINCT media_item_id FROM episodes WHERE has_file = 1)`
+      )
+      .run(type);
   } else if (typeConfig.shape === "collection") {
-    db.prepare(
-      `UPDATE media_items SET has_file = 1 WHERE type = ? AND has_file = 0 AND id IN (SELECT DISTINCT media_item_id FROM sub_items WHERE has_file = 1)`
-    ).run(type);
+    await db
+      .prepare(
+        `UPDATE media_items SET has_file = 1 WHERE type = ? AND has_file = 0 AND id IN (SELECT DISTINCT media_item_id FROM sub_items WHERE has_file = 1)`
+      )
+      .run(type);
   }
 
   return result;
@@ -440,7 +444,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
  * ids) keeps its title untouched, since a fuzzy title-only search could occasionally land on the
  * wrong result and this shouldn't silently rename something that was already correct. */
 export async function refreshLibraryMetadata(type: string, signal?: AbortSignal): Promise<{ updated: number; failed: number }> {
-  const items = db.prepare("SELECT * FROM media_items WHERE type = ?").all(type) as any[];
+  const items = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[];
   let updated = 0;
   let failed = 0;
 
@@ -454,19 +458,21 @@ export async function refreshLibraryMetadata(type: string, signal?: AbortSignal)
         continue;
       }
       const alreadyMatched = item.external_ids && item.external_ids !== "{}";
-      db.prepare(
-        `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), year = COALESCE(?, year),
-         release_date = COALESCE(?, release_date)
-         ${alreadyMatched ? "" : ", title = ?, sort_title = ?, external_ids = ?"}
-         WHERE id = ?`
-      ).run(
-        best.overview,
-        best.posterUrl,
-        best.year,
-        best.releaseDate ?? null,
-        ...(alreadyMatched ? [] : [best.title, best.title.toLowerCase(), JSON.stringify(best.externalIds ?? {})]),
-        item.id
-      );
+      await db
+        .prepare(
+          `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), year = COALESCE(?, year),
+           release_date = COALESCE(?, release_date)
+           ${alreadyMatched ? "" : ", title = ?, sort_title = ?, external_ids = ?"}
+           WHERE id = ?`
+        )
+        .run(
+          best.overview,
+          best.posterUrl,
+          best.year,
+          best.releaseDate ?? null,
+          ...(alreadyMatched ? [] : [best.title, best.title.toLowerCase(), JSON.stringify(best.externalIds ?? {})]),
+          item.id
+        );
       updated++;
     } catch {
       failed++;
@@ -484,19 +490,19 @@ export async function refreshLibraryMetadata(type: string, signal?: AbortSignal)
  * on every startup: each UPDATE is scoped to `has_file = 0` rows with at least one has_file=1 child,
  * so it's a no-op once every affected row has been fixed once.
  */
-export function backfillEpisodicAndCollectionHasFile(): void {
+export async function backfillEpisodicAndCollectionHasFile(): Promise<void> {
   let fixed = 0;
   for (const type of MEDIA_TYPE_KEYS) {
     const shape = getMediaTypeConfig(type).shape;
     if (shape === "episodic") {
-      const result = db
+      const result = await db
         .prepare(
           `UPDATE media_items SET has_file = 1 WHERE type = ? AND has_file = 0 AND id IN (SELECT DISTINCT media_item_id FROM episodes WHERE has_file = 1)`
         )
         .run(type);
       fixed += result.changes;
     } else if (shape === "collection") {
-      const result = db
+      const result = await db
         .prepare(
           `UPDATE media_items SET has_file = 1 WHERE type = ? AND has_file = 0 AND id IN (SELECT DISTINCT media_item_id FROM sub_items WHERE has_file = 1)`
         )

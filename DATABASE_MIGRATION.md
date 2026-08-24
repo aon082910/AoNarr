@@ -1,6 +1,6 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — 68 files converted and verified against a real Postgres container**, covering
+Status: **PostgreSQL — 71 files converted and verified against a real Postgres container**, covering
 auth, users, quality/library config, indexers, download clients, calendar events, saved library
 views, remote instances, friend libraries, library groups (including its `WITH RECURSIVE`
 nested-count rollup), person credits, custom formats (including TRaSH-Guides sync), collections
@@ -14,21 +14,22 @@ config-template export/import flows), the import-review queue, library media-com
 duplicate-detection, release-group reputation tracking, custom-format release scoring, storage
 forecasting/disk-usage sampling, repeated-import detection, upgrade-candidate detection,
 unmonitored/duplicate-file cleanup suggestions, Trakt list sync, TMDB/Last.fm recommendations, manual
-media import, and watchlist CSV import. 12 files remain unconverted (their own *other*
-queries, not the call sites into the services converted in Rounds 93–96 — see those rounds' notes
-below for the distinction); `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one
-yet — see "What's left" below for the exact remaining list, now narrower and more accurately scoped
-than earlier rounds estimated. MariaDB — scoped, not started, deliberately deferred until PostgreSQL
-is fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by
-explicit user decision). This document exists so a future round can pick this up without re-deriving
-the analysis below.
+media import, watchlist CSV import, media-server library import (Plex/Jellyfin/Emby movies + series),
+import-list syncing (Trakt/IMDb/Last.fm), and library scan-and-import (the filesystem scan that
+matches/creates movies, episodic shows, and collection/artist items, plus its has_file rollups). 9
+files remain unconverted (their own *other* queries, not the call sites into the services converted in
+Rounds 93–98 — see those rounds' notes below for the distinction); `AONARR_DATABASE_DRIVER=postgres`
+runs a real app, just not a complete one yet — see "What's left" below for the exact remaining list,
+now narrower and more accurately scoped than earlier rounds estimated. MariaDB — scoped, not started,
+deliberately deferred until PostgreSQL is fully done (see "The ask" below; narrowed from "MariaDB or
+PostgreSQL" to "PostgreSQL first" by explicit user decision). This document exists so a future round
+can pick this up without re-deriving the analysis below.
 
-## What's left (as of Round 97)
+## What's left (as of Round 98)
 
-The remaining 12 files are `routes/media.ts` (948 lines), `routes/importLists.ts`,
-`services/importLists.ts`, `services/mediaServerImport.ts`, `services/starrImport.ts`,
-`routes/search.ts`, `services/importer.ts`, `services/scheduler.ts` (864 lines), `routes/system.ts`
-(457 lines), `routes/metrics.ts`, `services/libraryScan.ts`, and `services/scheduledBackup.ts`.
+The remaining 9 files are `routes/media.ts` (948 lines), `routes/importLists.ts`,
+`services/starrImport.ts`, `routes/search.ts`, `services/importer.ts`, `services/scheduler.ts` (864
+lines), `routes/system.ts` (457 lines), `routes/metrics.ts`, and `services/scheduledBackup.ts`.
 Their own *remaining* (non-`findPossibleDuplicates`/`isExcluded`/`isBlocklisted`/`scoreRelease`/
 `findRepeatedImports`/`findUpgradeCandidates`/etc.) database calls still need converting — but as
 Round 93 found, most of what made this list look unapproachable was **not actually true**.
@@ -54,7 +55,7 @@ every round since 84 has done, just in bigger files. `chooseBestResult()` in `sc
 lookup into a `Map` before a `.sort()`/`.filter()` runs, then have the callback do synchronous `Map`
 lookups instead of calling the async function directly.
 
-## Conversion plan for the remaining 12 files (as of Round 97)
+## Conversion plan for the remaining 9 files (as of Round 98)
 
 Mapped every import edge *among these files* (edges to already-converted or db-free files don't
 matter — the risk this session has consistently guarded against is a converted file's own queries
@@ -66,20 +67,21 @@ depends on inside this set is already converted, so no new caller/callee split i
 storageForecast.ts`~~, ~~`services/duplicates.ts`~~, ~~`services/upgradeCandidates.ts`~~, ~~`services/
 cleanupSuggestions.ts`~~ (Round 96, surfaced a real previously-latent bug — see that round's notes),
 ~~`services/traktSync.ts`~~, ~~`routes/metadata.ts`~~, ~~`services/recommendations.ts`~~,
-~~`routes/watchlistImport.ts`~~ — **all done as of Round 97**. Still remaining in this tier:
-`services/mediaServerImport.ts` (251), `services/importLists.ts` (301), `services/libraryScan.ts`
-(526 — already partially touched in Round 94 for the has_file rollup fix; the rest of its own CRUD
-queries are still on the old path). `services/scheduledBackup.ts` (54) is nominally a leaf too but is
+~~`routes/watchlistImport.ts`~~ — **all done as of Round 97**. ~~`services/mediaServerImport.ts`~~,
+~~`services/importLists.ts`~~, ~~`services/libraryScan.ts`~~ — **all done as of Round 98**. Tier 1 is
+now fully converted except `services/scheduledBackup.ts` (54), which is nominally a leaf too but is
 **not** a simple await-wrapping job — it calls better-sqlite3's `Database.backup()` directly, which
 has no Postgres equivalent, so it needs real per-dialect backup logic (`pg_dump`-equivalent for
 Postgres) designed before converting, not just query ports. Scoping that out to its own dedicated
 round rather than blocking the rest of Tier 1 on it.
 
 **Tier 2 — depend only on Tier 1:**
-`routes/importLists.ts` (68, → `services/importLists.ts`, still pending in Tier 1), `routes/metrics.ts`
-(89, → `services/duplicates.ts` + `services/upgradeCandidates.ts`, both now converted — `metrics.ts`'s
-own remaining queries are the only thing left there), `services/starrImport.ts` (454, →
-`services/mediaServerImport.ts`), `services/importer.ts` (564, → `services/libraryScan.ts`).
+`routes/importLists.ts` (68, → `services/importLists.ts`, now converted as of Round 98),
+`routes/metrics.ts` (89, → `services/duplicates.ts` + `services/upgradeCandidates.ts`, both now
+converted — `metrics.ts`'s own remaining queries are the only thing left there), `services/
+starrImport.ts` (454, → `services/mediaServerImport.ts`, now converted as of Round 98 — one call site
+already fixed in `starrImport.ts` this round, the rest of the file's own queries remain), `services/
+importer.ts` (564, → `services/libraryScan.ts`, now converted as of Round 98).
 
 **Tier 3 — depend on Tier 1+2:**
 `routes/system.ts` (457, → `cleanupSuggestions.ts`/`duplicates.ts`/`storageForecast.ts`/
@@ -106,6 +108,33 @@ verification, following the same ritual every round since 79 has used (typecheck
 grep → build → live-verify both backends → update this doc + CHANGELOG.md → commit/push →
 rebuild/push Docker Hub tags). `services/scheduledBackup.ts`'s per-dialect backup logic is deferred
 to its own round after everything else, since it's a design question, not a conversion mop-up.
+
+## Progress (Round 98)
+
+Converted the rest of Tier 1: `services/mediaServerImport.ts` (Plex/Jellyfin/Emby movie + series
+library import — `defaultQualityProfileId()`, `importMovieItems()`, `importSeriesData()`, including
+its inner `resolveShow()` closure made `async`), `services/importLists.ts` (the service — Trakt/IMDb/
+Last.fm list syncing; `insertSeriesEpisodes()`/`insertArtistAlbums()`'s internal sync inserts converted
+to `for...of` + `await` loops), and `services/libraryScan.ts` (the filesystem scan-and-import — movie/
+episodic/collection matching and creation, plus the has_file rollup queries and concurrency lock added
+in earlier rounds, all now on the async path; `refreshLibraryMetadata()` and
+`backfillEpisodicAndCollectionHasFile()` also converted, the latter from a sync `void`-returning
+function to `async`). Fixed one call site in `services/starrImport.ts` (awaiting
+`defaultQualityProfileId()`) without converting the rest of that file — it stays Tier 2. Updated
+`server/src/index.ts` to `await backfillEpisodicAndCollectionHasFile()` since it's now async.
+
+**TypeScript fix**: `insertSeriesEpisodes()`/`insertArtistAlbums()` in `importLists.ts` took
+`mediaItemId: number | bigint`, but the new `AsyncDb` interface's `RunResult.lastInsertRowid` is
+`number | bigint | null` (unlike better-sqlite3's non-nullable original) — widened both parameter types
+to accept `null`.
+
+Live-verified against a fresh Postgres container: seeded root folders + a quality profile via `psql`,
+then exercised all three scan-import shapes through the app's real HTTP API — a TV episode file (series
+shape), a music album track (collection/artist shape, multiFilePerChild), and a movie file (single
+shape) — confirming via direct `psql` queries that each correctly created its `media_items` row with
+`has_file=1` and the right child rows (`episodes`/`sub_items`) and `file_path`. Regression-tested the
+identical sequence against the same image in SQLite mode via the app's own API (no shadow-DB split to
+work around there) — all three shapes matched.
 
 ## Progress (Round 97)
 

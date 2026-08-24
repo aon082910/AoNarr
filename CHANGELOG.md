@@ -3,6 +3,21 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 98
+- PostgreSQL support: converted `services/mediaServerImport.ts` (Plex/Jellyfin/Emby movie + series
+  library import), `services/importLists.ts` (Trakt/IMDb/Last.fm list syncing), and
+  `services/libraryScan.ts` (filesystem scan-and-import for movies, episodic shows, and
+  collection/artist items, including the has_file rollup and concurrency lock) — 71 files converted
+  so far, 9 remain
+- Fixed one call site in `services/starrImport.ts` to await the now-async `defaultQualityProfileId()`,
+  without converting the rest of that file
+- Widened `insertSeriesEpisodes()`/`insertArtistAlbums()`'s `mediaItemId` parameter type in
+  `importLists.ts` to accept `null`, matching the async DB driver's nullable `lastInsertRowid`
+- Verified live against a real Postgres container: TV episode, music album track, and movie file
+  scan-imports all correctly matched/created their `media_items` rows with the right has_file rollups
+  and child rows (`episodes`/`sub_items`) — same sequence regression-checked against SQLite on the
+  same build
+
 ## Round 97
 - PostgreSQL support: converted `services/traktSync.ts`, `routes/metadata.ts`,
   `services/recommendations.ts`, and `routes/watchlistImport.ts` — 68 files converted so far, 12 remain

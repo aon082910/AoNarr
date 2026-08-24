@@ -1,4 +1,4 @@
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { pathTail } from "./archival.js";
 import { fetchMediaServerMovies, fetchMediaServerSeries, type MediaServerLibraryItem, type MediaServerSeriesLibrary } from "./mediaServer.js";
 import { log } from "./logger.js";
@@ -22,8 +22,8 @@ export function externalIdsOverlap(a: Record<string, string> | null, b: Record<s
   return Object.entries(b).some(([provider, id]) => a[provider] === id);
 }
 
-export function defaultQualityProfileId(): number | null {
-  const row = db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get() as { id: number } | undefined;
+export async function defaultQualityProfileId(): Promise<number | null> {
+  const row = (await db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get()) as { id: number } | undefined;
   return row?.id ?? null;
 }
 
@@ -59,12 +59,12 @@ export async function importMovieItems(
   const result: MediaServerImportResult = { matched: 0, created: 0, skipped: 0 };
 
   const knownTails = new Set(
-    (db.prepare("SELECT path FROM media_items WHERE type = 'movie' AND path IS NOT NULL").all() as { path: string }[]).map((r) =>
+    ((await db.prepare("SELECT path FROM media_items WHERE type = 'movie' AND path IS NOT NULL").all()) as { path: string }[]).map((r) =>
       pathTail(r.path)
     )
   );
-  const missingItems = db.prepare("SELECT * FROM media_items WHERE type = 'movie' AND has_file = 0").all() as any[];
-  const qualityProfileId = defaultQualityProfileId();
+  const missingItems = (await db.prepare("SELECT * FROM media_items WHERE type = 'movie' AND has_file = 0").all()) as any[];
+  const qualityProfileId = await defaultQualityProfileId();
 
   for (const item of items) {
     if (signal?.aborted) break;
@@ -88,28 +88,32 @@ export async function importMovieItems(
     });
 
     if (match) {
-      db.prepare(
-        `UPDATE media_items SET has_file = 1, path = ?, poster_url = COALESCE(poster_url, ?),
-         overview = COALESCE(overview, ?), external_ids = COALESCE(NULLIF(external_ids, '{}'), ?)
-         WHERE id = ?`
-      ).run(item.path, item.posterUrl, item.overview, JSON.stringify(item.externalIds), match.id);
+      await db
+        .prepare(
+          `UPDATE media_items SET has_file = 1, path = ?, poster_url = COALESCE(poster_url, ?),
+           overview = COALESCE(overview, ?), external_ids = COALESCE(NULLIF(external_ids, '{}'), ?)
+           WHERE id = ?`
+        )
+        .run(item.path, item.posterUrl, item.overview, JSON.stringify(item.externalIds), match.id);
       match.has_file = 1;
       result.matched++;
     } else {
-      db.prepare(
-        `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, has_file, status)
-         VALUES ('movie', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 'unknown')`
-      ).run(
-        item.title,
-        item.title.toLowerCase(),
-        item.year,
-        item.overview,
-        item.posterUrl,
-        JSON.stringify(item.externalIds),
-        item.path,
-        rootFolderId,
-        qualityProfileId
-      );
+      await db
+        .prepare(
+          `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, has_file, status)
+           VALUES ('movie', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 'unknown')`
+        )
+        .run(
+          item.title,
+          item.title.toLowerCase(),
+          item.year,
+          item.overview,
+          item.posterUrl,
+          JSON.stringify(item.externalIds),
+          item.path,
+          rootFolderId,
+          qualityProfileId
+        );
       result.created++;
     }
   }
@@ -154,15 +158,15 @@ export async function importSeriesData(
 ): Promise<MediaServerSeriesImportResult> {
   const result: MediaServerSeriesImportResult = { showsMatched: 0, showsCreated: 0, episodesMatched: 0, episodesCreated: 0, episodesSkipped: 0 };
 
-  const existingShows = db.prepare("SELECT * FROM media_items WHERE type = ?").all(type) as any[];
-  const qualityProfileId = defaultQualityProfileId();
+  const existingShows = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[];
+  const qualityProfileId = await defaultQualityProfileId();
   const knownEpisodeTails = new Set(
     (
-      db
+      (await db
         .prepare(
           `SELECT e.file_path FROM episodes e JOIN media_items m ON m.id = e.media_item_id WHERE m.type = ? AND e.file_path IS NOT NULL`
         )
-        .all(type) as { file_path: string }[]
+        .all(type)) as { file_path: string }[]
     ).map((r) => pathTail(r.file_path))
   );
 
@@ -170,7 +174,7 @@ export async function importSeriesData(
   // per show id since every one of its episodes needs the same lookup.
   const resolvedShowIds = new Map<string, number>();
 
-  function resolveShow(showId: string): number | null {
+  async function resolveShow(showId: string): Promise<number | null> {
     if (resolvedShowIds.has(showId)) return resolvedShowIds.get(showId)!;
     const info = shows.get(showId);
     if (!info || !info.title) return null;
@@ -186,16 +190,18 @@ export async function importSeriesData(
     });
 
     if (match) {
-      db.prepare(
-        `UPDATE media_items SET poster_url = COALESCE(poster_url, ?), overview = COALESCE(overview, ?),
-         external_ids = COALESCE(NULLIF(external_ids, '{}'), ?) WHERE id = ?`
-      ).run(info.posterUrl, info.overview, JSON.stringify(info.externalIds), match.id);
+      await db
+        .prepare(
+          `UPDATE media_items SET poster_url = COALESCE(poster_url, ?), overview = COALESCE(overview, ?),
+           external_ids = COALESCE(NULLIF(external_ids, '{}'), ?) WHERE id = ?`
+        )
+        .run(info.posterUrl, info.overview, JSON.stringify(info.externalIds), match.id);
       result.showsMatched++;
       resolvedShowIds.set(showId, match.id);
       return match.id;
     }
 
-    const insertResult = db
+    const insertResult = await db
       .prepare(
         `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, has_file, status)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 'unknown')`
@@ -214,35 +220,41 @@ export async function importSeriesData(
       result.episodesSkipped++;
       continue;
     }
-    const mediaItemId = resolveShow(ep.showId);
+    const mediaItemId = await resolveShow(ep.showId);
     if (!mediaItemId) {
       result.episodesSkipped++;
       continue;
     }
 
-    const existingEp = db
+    const existingEp = (await db
       .prepare("SELECT id FROM episodes WHERE media_item_id = ? AND season_number = ? AND episode_number = ?")
-      .get(mediaItemId, ep.seasonNumber, ep.episodeNumber) as { id: number } | undefined;
+      .get(mediaItemId, ep.seasonNumber, ep.episodeNumber)) as { id: number } | undefined;
 
     if (existingEp) {
-      db.prepare(
-        "UPDATE episodes SET has_file = 1, file_path = ?, title = COALESCE(title, ?), overview = COALESCE(overview, ?) WHERE id = ?"
-      ).run(ep.path, ep.title, ep.overview, existingEp.id);
+      await db
+        .prepare(
+          "UPDATE episodes SET has_file = 1, file_path = ?, title = COALESCE(title, ?), overview = COALESCE(overview, ?) WHERE id = ?"
+        )
+        .run(ep.path, ep.title, ep.overview, existingEp.id);
       result.episodesMatched++;
     } else {
-      db.prepare(
-        `INSERT INTO episodes (media_item_id, season_number, episode_number, title, overview, monitored, has_file, file_path)
-         VALUES (?, ?, ?, ?, ?, 1, 1, ?)`
-      ).run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.overview, ep.path);
+      await db
+        .prepare(
+          `INSERT INTO episodes (media_item_id, season_number, episode_number, title, overview, monitored, has_file, file_path)
+           VALUES (?, ?, ?, ?, ?, 1, 1, ?)`
+        )
+        .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.overview, ep.path);
       result.episodesCreated++;
     }
   }
 
   // Any show that got at least one real episode counts as "has files" — matches how every other
   // import path (Scan & Import, a normal grab) treats an episodic item's own has_file flag.
-  db.prepare(
-    `UPDATE media_items SET has_file = 1 WHERE type = ? AND id IN (SELECT DISTINCT media_item_id FROM episodes WHERE has_file = 1)`
-  ).run(type);
+  await db
+    .prepare(
+      `UPDATE media_items SET has_file = 1 WHERE type = ? AND id IN (SELECT DISTINCT media_item_id FROM episodes WHERE has_file = 1)`
+    )
+    .run(type);
 
   log.info(
     `[mediaServerImport] ${type}: shows matched ${result.showsMatched}, created ${result.showsCreated}; episodes matched ${result.episodesMatched}, created ${result.episodesCreated}, skipped ${result.episodesSkipped}`

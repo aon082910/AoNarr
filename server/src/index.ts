@@ -77,7 +77,7 @@ await loadSettingsCache();
 await loadQualityCaches();
 await bootstrapAdminFromEnv();
 applySocksProxySetting();
-backfillEpisodicAndCollectionHasFile();
+await backfillEpisodicAndCollectionHasFile();
 
 const app = express();
 app.use(cors());

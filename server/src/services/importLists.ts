@@ -1,5 +1,6 @@
 import { log } from "./logger.js";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
+import { nowExpr } from "../db/asyncDb.js";
 import { getSetting } from "./settingsStore.js";
 import { fetchArtistAlbumsFor, fetchSeriesEpisodesFor, searchMetadata } from "./metadata.js";
 import { isExcluded } from "./importExclusions.js";
@@ -19,8 +20,8 @@ export interface ImportListRow {
   created_at: string;
 }
 
-function existingTmdbIds(type: string): Set<string> {
-  const rows = db.prepare("SELECT external_ids FROM media_items WHERE type = ?").all(type) as {
+async function existingTmdbIds(type: string): Promise<Set<string>> {
+  const rows = (await db.prepare("SELECT external_ids FROM media_items WHERE type = ?").all(type)) as {
     external_ids: string | null;
   }[];
   const ids = new Set<string>();
@@ -36,23 +37,29 @@ function existingTmdbIds(type: string): Set<string> {
   return ids;
 }
 
-async function insertSeriesEpisodes(mediaItemId: number | bigint, externalIds: Record<string, string>) {
+async function insertSeriesEpisodes(mediaItemId: number | bigint | null, externalIds: Record<string, string>) {
   const episodes = await fetchSeriesEpisodesFor(externalIds).catch(() => []);
-  const insertEp = db.prepare(
-    `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-     VALUES (?, ?, ?, ?, ?, ?, 1)`
-  );
-  for (const ep of episodes) insertEp.run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
+  for (const ep of episodes) {
+    await db
+      .prepare(
+        `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
+         VALUES (?, ?, ?, ?, ?, ?, 1)`
+      )
+      .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
+  }
 }
 
-async function insertArtistAlbums(mediaItemId: number | bigint, externalIds: Record<string, string>) {
+async function insertArtistAlbums(mediaItemId: number | bigint | null, externalIds: Record<string, string>) {
   const result = await fetchArtistAlbumsFor(externalIds).catch(() => null);
   if (!result) return;
-  const insertAlbum = db.prepare(
-    `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored)
-     VALUES (?, ?, ?, ?, ?, 1)`
-  );
-  for (const album of result.albums) insertAlbum.run(mediaItemId, album.title, album.releaseDate, album.externalId ?? null, result.provider);
+  for (const album of result.albums) {
+    await db
+      .prepare(
+        `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored)
+         VALUES (?, ?, ?, ?, ?, 1)`
+      )
+      .run(mediaItemId, album.title, album.releaseDate, album.externalId ?? null, result.provider);
+  }
 }
 
 interface TraktListTarget {
@@ -79,8 +86,8 @@ async function syncTraktList(list: ImportListRow, qualityProfileId: number | nul
   if (!res.ok) throw new Error(`Trakt list request failed: HTTP ${res.status}`);
   const items = (await res.json()) as any[];
 
-  const existingMovies = existingTmdbIds("movie");
-  const existingSeries = existingTmdbIds("series");
+  const existingMovies = await existingTmdbIds("movie");
+  const existingSeries = await existingTmdbIds("series");
   let added = 0;
 
   for (const entry of items) {
@@ -90,16 +97,18 @@ async function syncTraktList(list: ImportListRow, qualityProfileId: number | nul
         const tmdbId = m.ids?.tmdb;
         if (!tmdbId || existingMovies.has(String(tmdbId))) continue;
         if (await isExcluded("movie", m.title, m.year ?? null, String(tmdbId), "tmdb")) continue;
-        db.prepare(
-          `INSERT INTO media_items (type, title, sort_title, year, external_ids, quality_profile_id, monitored, status)
-           VALUES ('movie', ?, ?, ?, ?, ?, 1, 'missing')`
-        ).run(
-          m.title,
-          m.title.toLowerCase(),
-          m.year ?? null,
-          JSON.stringify({ tmdb: String(tmdbId), trakt: String(m.ids?.trakt ?? "") }),
-          qualityProfileId
-        );
+        await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, year, external_ids, quality_profile_id, monitored, status)
+             VALUES ('movie', ?, ?, ?, ?, ?, 1, 'missing')`
+          )
+          .run(
+            m.title,
+            m.title.toLowerCase(),
+            m.year ?? null,
+            JSON.stringify({ tmdb: String(tmdbId), trakt: String(m.ids?.trakt ?? "") }),
+            qualityProfileId
+          );
         existingMovies.add(String(tmdbId));
         added++;
       } else if (entry.show) {
@@ -108,7 +117,7 @@ async function syncTraktList(list: ImportListRow, qualityProfileId: number | nul
         if (!tmdbId || existingSeries.has(String(tmdbId))) continue;
         if (await isExcluded("series", s.title, s.year ?? null, String(tmdbId), "tmdb")) continue;
         const externalIds = { tmdb: String(tmdbId), trakt: String(s.ids?.trakt ?? "") };
-        const result = db
+        const result = await db
           .prepare(
             `INSERT INTO media_items (type, title, sort_title, year, external_ids, quality_profile_id, monitored, status)
              VALUES ('series', ?, ?, ?, ?, ?, 1, 'missing')`
@@ -172,11 +181,11 @@ async function syncImdbList(list: ImportListRow, qualityProfileId: number | null
       const results = await searchMetadata(type as any, query).catch(() => []);
       const best = results[0];
       if (!best) {
-        queueForReview({ source: list.name, importListId: list.id, type, title, year });
+        await queueForReview({ source: list.name, importListId: list.id, type, title, year });
         continue;
       }
 
-      const insertResult = db
+      const insertResult = await db
         .prepare(
           `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, quality_profile_id, monitored, status)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
@@ -243,7 +252,7 @@ async function syncLastfmList(list: ImportListRow, qualityProfileId: number | nu
       if (await isExcluded("artist", title, null, a.mbid ?? "", "lastfm")) continue;
 
       const externalIds = { lastfm: a.mbid || title };
-      const insertResult = db
+      const insertResult = await db
         .prepare(
           `INSERT INTO media_items (type, title, sort_title, external_ids, quality_profile_id, monitored, status)
            VALUES ('artist', ?, ?, ?, ?, 1, 'missing')`
@@ -262,7 +271,7 @@ async function syncLastfmList(list: ImportListRow, qualityProfileId: number | nu
 export async function syncImportList(list: ImportListRow): Promise<{ added: number; error?: string }> {
   const qualityProfileId =
     list.quality_profile_id ??
-    (db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get() as { id: number } | undefined)?.id ??
+    ((await db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get()) as { id: number } | undefined)?.id ??
     null;
 
   try {
@@ -272,23 +281,22 @@ export async function syncImportList(list: ImportListRow): Promise<{ added: numb
         : list.type === "lastfm"
           ? await syncLastfmList(list, qualityProfileId)
           : await syncImdbList(list, qualityProfileId);
-    db.prepare(
-      "UPDATE import_lists SET last_synced_at = datetime('now'), last_added_count = ?, last_error = NULL WHERE id = ?"
-    ).run(added, list.id);
+    await db
+      .prepare(`UPDATE import_lists SET last_synced_at = ${nowExpr(db)}, last_added_count = ?, last_error = NULL WHERE id = ?`)
+      .run(added, list.id);
     return { added };
   } catch (err) {
     const message = (err as Error).message;
-    db.prepare("UPDATE import_lists SET last_synced_at = datetime('now'), last_error = ? WHERE id = ?").run(
-      message,
-      list.id
-    );
+    await db
+      .prepare(`UPDATE import_lists SET last_synced_at = ${nowExpr(db)}, last_error = ? WHERE id = ?`)
+      .run(message, list.id);
     return { added: 0, error: message };
   }
 }
 
 /** Runs every enabled import list, called on the same interval as the search scheduler. */
 export async function runAllImportLists(signal?: AbortSignal): Promise<void> {
-  const lists = db.prepare("SELECT * FROM import_lists WHERE enabled = 1").all() as ImportListRow[];
+  const lists = (await db.prepare("SELECT * FROM import_lists WHERE enabled = 1").all()) as ImportListRow[];
   for (const list of lists) {
     if (signal?.aborted) {
       log.info("[importLists] cancelled");
