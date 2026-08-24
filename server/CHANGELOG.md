@@ -3,6 +3,26 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 91
+- PostgreSQL support: converted `routes/settings.ts` (instance settings, API key regen, TOTP 2FA,
+  config-template export/import) and `services/importReview.ts` + `routes/importReview.ts` — 52 files
+  converted so far, ~18 remain
+- Found and fixed a real, pre-existing bug that affected SQLite too, not just Postgres: several
+  `settings.ts` routes wrote the `settings` table via raw SQL instead of `setSetting()`, silently
+  bypassing the in-memory settings cache `requireAuth` reads on every request. In practice this meant
+  a freshly regenerated API key didn't work until the next server restart, and disabling TOTP 2FA
+  didn't take effect until restart either. Fixed by routing every settings write through
+  `setSetting()`/a new `deleteSetting()`, and added `getAllSettings()` so reads use the cache too
+- Found and fixed a genuine SQL portability bug: `queueForReview()`'s dedup check used SQLite's
+  `col IS ?` null-safe-equality-with-a-parameter syntax, which is a straight syntax error on Postgres
+  (its `IS` only accepts literal `NULL`/`TRUE`/`FALSE`). Fixed with the standard-SQL
+  `IS NOT DISTINCT FROM`, which both backends support with identical semantics
+- Verified live against a real Postgres container: confirmed both settings bugs existed pre-fix and
+  are gone post-fix (immediate API-key and TOTP-disable effect, no restart needed), a full
+  config-template export → import → export round-trip, and the import-review queue's list/counts/
+  resolve/dismiss routes — same sequence regression-checked against SQLite, where the pre-fix bugs
+  reproduced identically before the fix resolved them there too
+
 ## Round 90
 - PostgreSQL support: converted the recycle-bin/corrupt-media cluster deferred since Round 86/88 —
   `services/recycleBin.ts` + `routes/recycleBin.ts`, `services/corruptMediaCheck.ts` +

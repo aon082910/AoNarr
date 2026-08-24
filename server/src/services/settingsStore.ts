@@ -26,6 +26,11 @@ export function getSetting(key: string): string | null {
   return cache.get(key) ?? null;
 }
 
+export function getAllSettings(): Record<string, string> {
+  if (!cache) throw new Error("settings cache accessed before loadSettingsCache() completed — check startup ordering in index.ts");
+  return Object.fromEntries(cache);
+}
+
 export function setSetting(key: string, value: string): void {
   if (!cache) throw new Error("settings cache accessed before loadSettingsCache() completed — check startup ordering in index.ts");
   cache.set(key, value);
@@ -35,4 +40,12 @@ export function setSetting(key: string, value: string): void {
   )
     .run(key, value)
     .catch((err) => log.error(`[settingsStore] failed to persist "${key}":`, (err as Error).message));
+}
+
+export function deleteSetting(key: string): void {
+  if (!cache) throw new Error("settings cache accessed before loadSettingsCache() completed — check startup ordering in index.ts");
+  cache.delete(key);
+  db.prepare("DELETE FROM settings WHERE key = ?")
+    .run(key)
+    .catch((err) => log.error(`[settingsStore] failed to delete "${key}":`, (err as Error).message));
 }

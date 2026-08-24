@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
+import { nowExpr } from "../db/asyncDb.js";
 import { importReviewItemFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 
@@ -21,10 +22,10 @@ importReviewRouter.get(
     const status = (req.query.status as string) || "pending";
     const importListId = req.query.importListId as string | undefined;
     const rows = importListId
-      ? db
+      ? await db
           .prepare("SELECT * FROM import_review_items WHERE status = ? AND import_list_id = ? ORDER BY created_at DESC")
           .all(status, importListId)
-      : db.prepare("SELECT * FROM import_review_items WHERE status = ? ORDER BY created_at DESC").all(status);
+      : await db.prepare("SELECT * FROM import_review_items WHERE status = ? ORDER BY created_at DESC").all(status);
     res.json((rows as any[]).map(importReviewItemFromRow));
   })
 );
@@ -34,18 +35,20 @@ importReviewRouter.get(
 importReviewRouter.get(
   "/counts",
   asyncHandler(async (_req, res) => {
-    const rows = db
-      .prepare("SELECT import_list_id AS importListId, COUNT(*) AS count FROM import_review_items WHERE status = 'pending' AND import_list_id IS NOT NULL GROUP BY import_list_id")
-      .all();
-    res.json(rows);
+    const rows = (await db
+      .prepare(
+        `SELECT import_list_id AS "importListId", COUNT(*) AS count FROM import_review_items WHERE status = 'pending' AND import_list_id IS NOT NULL GROUP BY import_list_id`
+      )
+      .all()) as { importListId: number; count: number }[];
+    res.json(rows.map((r) => ({ importListId: r.importListId, count: Number(r.count) })));
   })
 );
 
 importReviewRouter.post(
   "/:id/resolve",
   asyncHandler(async (req, res) => {
-    const result = db
-      .prepare("UPDATE import_review_items SET status = 'resolved', resolved_at = datetime('now') WHERE id = ?")
+    const result = await db
+      .prepare(`UPDATE import_review_items SET status = 'resolved', resolved_at = ${nowExpr(db)} WHERE id = ?`)
       .run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Review item not found");
     res.status(204).send();
@@ -55,8 +58,8 @@ importReviewRouter.post(
 importReviewRouter.post(
   "/:id/dismiss",
   asyncHandler(async (req, res) => {
-    const result = db
-      .prepare("UPDATE import_review_items SET status = 'dismissed', resolved_at = datetime('now') WHERE id = ?")
+    const result = await db
+      .prepare(`UPDATE import_review_items SET status = 'dismissed', resolved_at = ${nowExpr(db)} WHERE id = ?`)
       .run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Review item not found");
     res.status(204).send();

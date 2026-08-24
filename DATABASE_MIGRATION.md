@@ -1,6 +1,6 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — 49 files converted and verified against a real Postgres container**, covering
+Status: **PostgreSQL — 52 files converted and verified against a real Postgres container**, covering
 auth, users, quality/library config, indexers, download clients, calendar events, saved library
 views, remote instances, friend libraries, library groups (including its `WITH RECURSIVE`
 nested-count rollup), person credits, custom formats (including TRaSH-Guides sync), collections
@@ -8,12 +8,57 @@ nested-count rollup), person credits, custom formats (including TRaSH-Guides syn
 import exclusions (route only), artwork selection, global library search, share links, activity
 (queue/history/timeline), the public calendar feed + token, the dashboard widgets, subtitle providers,
 the wanted/missing + calendar views, household requests (including auto-approval and per-user storage
-stats), web push subscriptions, the media-server watch webhook, library/media-server validation, and
-the full recycle-bin/corrupt-media/auto-archival cluster. Most of the app (~21 remaining files) still
-isn't converted; `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one yet.
-MariaDB — scoped, not started, deliberately deferred until PostgreSQL is fully done (see "The ask"
-below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by explicit user decision). This
-document exists so a future round can pick this up without re-deriving the analysis below.
+stats), web push subscriptions, the media-server watch webhook, library/media-server validation, the
+full recycle-bin/corrupt-media/auto-archival cluster, instance settings (including the TOTP 2FA and
+config-template export/import flows), and the import-review queue. Most of the app (~18 remaining
+files) still isn't converted; `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete
+one yet. MariaDB — scoped, not started, deliberately deferred until PostgreSQL is fully done (see "The
+ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by explicit user decision).
+This document exists so a future round can pick this up without re-deriving the analysis below.
+
+## Progress (Round 91)
+
+Converted `routes/settings.ts` (instance settings CRUD, API key regeneration, the TOTP 2FA setup/
+verify/disable/check-login flow, and the config-template export/import round-trip) plus
+`services/importReview.ts` + `routes/importReview.ts` (the review queue for titles a metadata search
+or import-list sync couldn't confidently match). `settings.ts` had no entanglement with the
+still-unconverted media-add/search pipeline, unlike most of what's left.
+
+**Found and fixed a real, pre-existing bug — not specific to Postgres, already present on SQLite
+too**: `settingsStore.ts`'s Round 80 in-memory cache design (`getSetting`/`setSetting`, documented as
+the deliberate exception to "convert every table's access to the async interface" since `getSetting`
+is called synchronously from `requireAuth` on every single request) is only correct if every write to
+the `settings` table goes through `setSetting()`. `routes/settings.ts` never did — `PUT /:key`, `POST
+/api-key/regenerate`, the TOTP secret cleanup, and the naming-template import loop all wrote via raw
+`db.prepare(...).run(...)` instead, silently bypassing the cache. In practice this meant a freshly
+regenerated API key didn't actually work until the next server restart (`requireAuth` kept checking
+the stale cached key), and disabling TOTP didn't take effect until restart either — both live,
+reproducible bugs caught by this round's own Postgres verification, that were equally broken under
+SQLite the whole time (the bug is in `settings.ts`'s bypass, not in anything backend-specific). Fixed
+by routing every one of those writes through `setSetting()` (and a new `deleteSetting()` added to
+`settingsStore.ts` for the TOTP secret cleanup, following the same cache+fire-and-forget-persist
+pattern), and by adding `getAllSettings()` so `GET /` and the template export's naming-template lookup
+read from the authoritative cache instead of a raw `SELECT` that could momentarily lag behind an
+in-flight write.
+
+**Also found and fixed a genuine SQL portability bug**: `queueForReview()`'s dedup check used
+`WHERE ... (import_list_id IS ?) AND ... (year IS ?)` — SQLite's `IS` operator does null-safe equality
+against a bound parameter (SQLite-specific), but Postgres's `IS` only accepts the literal keywords
+`NULL`/`TRUE`/`FALSE`/`UNKNOWN`, not a parameter; `col IS $1` is a straight syntax error there. Fixed
+with the standard-SQL `IS NOT DISTINCT FROM`, which both SQLite and Postgres support and has the exact
+same null-safe-equality semantics as SQLite's `IS ? ` — confirmed directly against Postgres via `psql`
+before trusting it in the app.
+
+Verified live against a real Postgres container (no admin-bootstrap env vars): confirmed the API-key
+bug existed pre-fix (a regenerated key failed on its very next request) and is gone post-fix (works
+immediately), same for TOTP disable (`check-login` reflected the disabled state on the very next
+request instead of needing a restart) — using real generated TOTP codes (HMAC-SHA1 computed by hand
+against the returned secret, not a mocked verifier) for setup/verify/check-login/disable, exercised a
+full config-template export → import → export round-trip confirming a naming template written inside
+the import's transaction was immediately visible both via `GET /settings` and the next export, and
+exercised the import-review list/counts/resolve/dismiss routes — same sequence regression-checked
+against SQLite on the same build, where the pre-fix bugs reproduced identically (confirming they were
+never Postgres-specific) and the fix resolved them there too.
 
 ## Progress (Round 90)
 
