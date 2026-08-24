@@ -69,7 +69,7 @@ mediaServerWebhookRouter.post(
     }
 
     if (signal) {
-      const matched = recordWatchEvent(signal);
+      const matched = await recordWatchEvent(signal);
       if (!matched) log.info(`[webhook] watch event for "${signal.filePath}" didn't match any library file`);
     }
 

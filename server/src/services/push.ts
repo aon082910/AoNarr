@@ -1,6 +1,6 @@
 import { log } from "./logger.js";
 import webpush from "web-push";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { getSetting, setSetting } from "./settingsStore.js";
 
 let configured = false;
@@ -24,15 +24,17 @@ export function ensureVapidKeys(): { publicKey: string; privateKey: string } {
   return { publicKey, privateKey };
 }
 
-export function saveSubscription(endpoint: string, p256dh: string, auth: string, userId: number | null): void {
-  db.prepare(
-    `INSERT INTO push_subscriptions (endpoint, p256dh, auth, user_id) VALUES (?, ?, ?, ?)
-     ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, user_id = excluded.user_id`
-  ).run(endpoint, p256dh, auth, userId);
+export async function saveSubscription(endpoint: string, p256dh: string, auth: string, userId: number | null): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO push_subscriptions (endpoint, p256dh, auth, user_id) VALUES (?, ?, ?, ?)
+       ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, user_id = excluded.user_id`
+    )
+    .run(endpoint, p256dh, auth, userId);
 }
 
-export function removeSubscription(endpoint: string): void {
-  db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?").run(endpoint);
+export async function removeSubscription(endpoint: string): Promise<void> {
+  await db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?").run(endpoint);
 }
 
 interface PushTarget {
@@ -48,8 +50,8 @@ interface PushTarget {
 export async function sendPush(title: string, body: string, userId?: number | null): Promise<void> {
   const targets =
     userId === undefined
-      ? (db.prepare("SELECT * FROM push_subscriptions WHERE user_id IS NULL").all() as PushTarget[])
-      : (db.prepare("SELECT * FROM push_subscriptions WHERE user_id = ?").all(userId) as PushTarget[]);
+      ? ((await db.prepare("SELECT * FROM push_subscriptions WHERE user_id IS NULL").all()) as PushTarget[])
+      : ((await db.prepare("SELECT * FROM push_subscriptions WHERE user_id = ?").all(userId)) as PushTarget[]);
   if (targets.length === 0) return;
   ensureVapidKeys();
 
@@ -62,7 +64,7 @@ export async function sendPush(title: string, body: string, userId?: number | nu
           payload
         );
       } catch (err: any) {
-        if (err?.statusCode === 404 || err?.statusCode === 410) removeSubscription(t.endpoint);
+        if (err?.statusCode === 404 || err?.statusCode === 410) await removeSubscription(t.endpoint);
         else log.warn("[push] send failed:", err?.message ?? err);
       }
     })

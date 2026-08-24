@@ -1,17 +1,55 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — 38 files converted and verified against a real Postgres container**, covering
+Status: **PostgreSQL — 44 files converted and verified against a real Postgres container**, covering
 auth, users, quality/library config, indexers, download clients, calendar events, saved library
 views, remote instances, friend libraries, library groups (including its `WITH RECURSIVE`
 nested-count rollup), person credits, custom formats (including TRaSH-Guides sync), collections
 (including its smart-filter query builder and item reordering transaction), album tracks, blocklist,
 import exclusions (route only), artwork selection, global library search, share links, activity
 (queue/history/timeline), the public calendar feed + token, the dashboard widgets, subtitle providers,
-and the wanted/missing + calendar views. Most of the app (~32 remaining files) still isn't converted;
-`AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one yet. MariaDB — scoped, not
-started, deliberately deferred until PostgreSQL is fully done (see "The ask" below; narrowed from
-"MariaDB or PostgreSQL" to "PostgreSQL first" by explicit user decision). This document exists so a
-future round can pick this up without re-deriving the analysis below.
+the wanted/missing + calendar views, household requests (including auto-approval and per-user storage
+stats), web push subscriptions, the media-server watch webhook, and library/media-server validation.
+Most of the app (~26 remaining files) still isn't converted; `AONARR_DATABASE_DRIVER=postgres` runs a
+real app, just not a complete one yet. MariaDB — scoped, not started, deliberately deferred until
+PostgreSQL is fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL
+first" by explicit user decision). This document exists so a future round can pick this up without
+re-deriving the analysis below.
+
+## Progress (Round 89)
+
+Converted 6 files across three self-contained pairs: `services/push.ts` + `routes/push.ts` (VAPID
+keys, web push subscribe/unsubscribe, send), `services/mediaServerWebhook.ts` +
+`routes/mediaServerWebhook.ts` (the Plex/Jellyfin/Emby watch-event webhook receiver and its admin
+token), and `services/libraryValidation.ts` (cross-references AoNarr's library against a configured
+media server's own reported files, called from the still-unconverted `system.ts` — safe since that
+call site already used `await`). Also converted `routes/requests.ts` (household media requests: list,
+submit with duplicate-detection and per-user pending-request caps, admin approve/reject, per-user
+storage-attribution stats, delete).
+
+Before converting `push.ts`, confirmed both its call sites (`services/notifications.ts` and
+`routes/requests.ts`) already treat `sendPush()` as a Promise (`.catch()` fire-and-forget or collected
+into a `jobs` array) even though it was synchronous-under-the-hood until now — so making its DB calls
+genuinely async carried none of the "unconverted caller doesn't await" risk that's blocked converting
+several other small services in recent rounds.
+
+`requests.ts`'s `approveRequestRow()` and the reject route both used `datetime('now')` inline in an
+UPDATE's SET clause — replaced with the `nowExpr(db)` helper from Round 79/80 rather than
+`nowOffsetExpr` (Round 86), since these need "right now," not a relative offset. Also applied
+`Number(...)` to two more `COUNT(*)` results (`requests.ts`'s per-status counts and pending-count
+check) proactively, per the established Round 84/86 bug class, before verification could catch them
+live.
+
+Verified live against a real Postgres container (no admin-bootstrap env vars): fetched the VAPID
+public key and round-tripped a push subscription, confirmed the webhook token endpoint and a
+Jellyfin-style watch payload correctly resolved to a seeded media item and immediately showed up in
+the already-converted dashboard's recently-watched (a genuine cross-file check, not just an isolated
+route test), exercised the full request lifecycle (submit via direct seed, per-user stats with correct
+numeric counts, approve with its named-parameter media-item insert, reject with its `nowExpr`
+resolution timestamp, delete), and confirmed `library-validation`'s "no media server configured" error
+path (its query path itself validated by code review + typecheck + the camelCase-alias grep, since
+exercising the success path needs a live media server, consistent with how other conditionally-gated
+services were verified in this migration) — same sequence regression-checked against SQLite on the
+same build with identical results.
 
 ## Progress (Round 88)
 

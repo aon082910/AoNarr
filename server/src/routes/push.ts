@@ -19,7 +19,7 @@ pushRouter.post(
       throw new HttpError(400, "endpoint and keys.p256dh/keys.auth are required");
     }
     const userId = req.auth?.isAdmin ? null : req.auth?.user?.id ?? null;
-    saveSubscription(b.endpoint, b.keys.p256dh, b.keys.auth, userId);
+    await saveSubscription(b.endpoint, b.keys.p256dh, b.keys.auth, userId);
     res.status(201).json({ subscribed: true });
   })
 );
@@ -29,7 +29,7 @@ pushRouter.post(
   asyncHandler(async (req, res) => {
     const endpoint = req.body?.endpoint;
     if (!endpoint) throw new HttpError(400, "endpoint is required");
-    removeSubscription(endpoint);
+    await removeSubscription(endpoint);
     res.status(204).send();
   })
 );

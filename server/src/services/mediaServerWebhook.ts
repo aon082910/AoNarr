@@ -1,4 +1,4 @@
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { pathTail } from "./archival.js";
 import { resolvePlexFilePath } from "./mediaServer.js";
 
@@ -41,32 +41,33 @@ export function parseJellyfinEmbyPayload(body: any): WebhookWatchSignal | null {
 /** Records a watch event and returns which library entity it matched, or null if nothing in the
  * library resolves to this file path (same tail-matching heuristic auto-archival uses, since the
  * media server and AoNarr often see the same file under different mount points). */
-export function recordWatchEvent(signal: WebhookWatchSignal): { mediaItemId: number; episodeId: number | null; subItemId: number | null } | null {
+export async function recordWatchEvent(
+  signal: WebhookWatchSignal
+): Promise<{ mediaItemId: number; episodeId: number | null; subItemId: number | null } | null> {
   const tail = pathTail(signal.filePath);
 
-  const item = db.prepare("SELECT id, path FROM media_items WHERE path IS NOT NULL").all().find((r: any) => pathTail(r.path) === tail) as
-    | { id: number }
-    | undefined;
+  const items = (await db.prepare("SELECT id, path FROM media_items WHERE path IS NOT NULL").all()) as { id: number; path: string }[];
+  const item = items.find((r) => pathTail(r.path) === tail);
   if (item) {
-    db.prepare("INSERT INTO watch_events (media_item_id) VALUES (?)").run(item.id);
+    await db.prepare("INSERT INTO watch_events (media_item_id) VALUES (?)").run(item.id);
     return { mediaItemId: item.id, episodeId: null, subItemId: null };
   }
 
-  const episode = db
+  const episodes = (await db
     .prepare("SELECT id, media_item_id, file_path FROM episodes WHERE file_path IS NOT NULL")
-    .all()
-    .find((r: any) => pathTail(r.file_path) === tail) as { id: number; media_item_id: number } | undefined;
+    .all()) as { id: number; media_item_id: number; file_path: string }[];
+  const episode = episodes.find((r) => pathTail(r.file_path) === tail);
   if (episode) {
-    db.prepare("INSERT INTO watch_events (media_item_id, episode_id) VALUES (?, ?)").run(episode.media_item_id, episode.id);
+    await db.prepare("INSERT INTO watch_events (media_item_id, episode_id) VALUES (?, ?)").run(episode.media_item_id, episode.id);
     return { mediaItemId: episode.media_item_id, episodeId: episode.id, subItemId: null };
   }
 
-  const subItem = db
+  const subItems = (await db
     .prepare("SELECT id, media_item_id, file_path FROM sub_items WHERE file_path IS NOT NULL")
-    .all()
-    .find((r: any) => pathTail(r.file_path) === tail) as { id: number; media_item_id: number } | undefined;
+    .all()) as { id: number; media_item_id: number; file_path: string }[];
+  const subItem = subItems.find((r) => pathTail(r.file_path) === tail);
   if (subItem) {
-    db.prepare("INSERT INTO watch_events (media_item_id, sub_item_id) VALUES (?, ?)").run(subItem.media_item_id, subItem.id);
+    await db.prepare("INSERT INTO watch_events (media_item_id, sub_item_id) VALUES (?, ?)").run(subItem.media_item_id, subItem.id);
     return { mediaItemId: subItem.media_item_id, episodeId: null, subItemId: subItem.id };
   }
 

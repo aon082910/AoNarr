@@ -1,4 +1,4 @@
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { fetchAllLibraryFiles } from "./mediaServer.js";
 import { pathTail } from "./archival.js";
 
@@ -24,22 +24,22 @@ export async function findLibraryMismatches(): Promise<LibraryMismatch[]> {
 
   const mismatches: LibraryMismatch[] = [];
 
-  const items = db
+  const items = (await db
     .prepare("SELECT id, title, path FROM media_items WHERE has_file = 1 AND type = 'movie'")
-    .all() as { id: number; title: string; path: string }[];
+    .all()) as { id: number; title: string; path: string }[];
   for (const item of items) {
     if (!serverTails.has(pathTail(item.path))) {
       mismatches.push({ mediaItemId: item.id, type: "movie", label: item.title, path: item.path });
     }
   }
 
-  const episodes = db
+  const episodes = (await db
     .prepare(
       `SELECT e.id, e.file_path, e.season_number, e.episode_number, m.id AS media_item_id, m.title AS parent_title
        FROM episodes e JOIN media_items m ON m.id = e.media_item_id
        WHERE e.has_file = 1 AND m.type = 'series'`
     )
-    .all() as { id: number; file_path: string; season_number: number; episode_number: number; media_item_id: number; parent_title: string }[];
+    .all()) as { id: number; file_path: string; season_number: number; episode_number: number; media_item_id: number; parent_title: string }[];
   for (const ep of episodes) {
     if (!serverTails.has(pathTail(ep.file_path))) {
       mismatches.push({

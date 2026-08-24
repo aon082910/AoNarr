@@ -3,6 +3,22 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 89
+- PostgreSQL support: converted `services/push.ts` + `routes/push.ts`, `services/mediaServerWebhook.ts`
+  + `routes/mediaServerWebhook.ts`, `services/libraryValidation.ts`, and `routes/requests.ts` to the
+  async DB interface — 44 files converted so far, ~26 remain
+- Confirmed `sendPush()`'s existing callers already treated it as a Promise before converting its DB
+  calls to genuinely async, avoiding the "unconverted caller doesn't await" risk that's blocked
+  several other small services in recent rounds
+- Replaced two inline `datetime('now')` UPDATEs in `requests.ts` with the `nowExpr(db)` helper, and
+  proactively applied `Number(...)` to two more `COUNT(*)` results per the established Round 84/86
+  aggregate-as-string bug class
+- Verified live against a real Postgres container: round-tripped a push subscription, confirmed a
+  Jellyfin-style watch webhook resolved to a seeded media item and immediately appeared in the
+  already-converted dashboard (a genuine cross-file check), and exercised the full request lifecycle
+  including auto-approval's named-parameter insert and per-user storage stats — same sequence
+  regression-checked against SQLite on the same build
+
 ## Round 88
 - PostgreSQL support: converted `routes/activity.ts`, `routes/calendarFeed.ts` (both the admin token
   router and public `.ics` feed), `routes/dashboard.ts`, `routes/subtitles.ts`, and `routes/wanted.ts`

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { Router } from "express";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
+import { nowExpr } from "../db/asyncDb.js";
 import { mediaItemFromRow, requestFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { requireAdmin } from "../middleware/auth.js";
@@ -12,8 +13,8 @@ export const requestsRouter = Router();
 
 /** Shared by the admin approve endpoint and auto-approval on submit — creates the real library
  * entry from a request row exactly the way adding media manually does. */
-function approveRequestRow(request: any, rootFolderId: number | null, qualityProfileId: number | null): number {
-  const mediaResult = db
+async function approveRequestRow(request: any, rootFolderId: number | null, qualityProfileId: number | null): Promise<number> {
+  const mediaResult = await db
     .prepare(
       `INSERT INTO media_items
        (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status)
@@ -32,9 +33,9 @@ function approveRequestRow(request: any, rootFolderId: number | null, qualityPro
     });
 
   const mediaItemId = Number(mediaResult.lastInsertRowid);
-  db.prepare(
-    "UPDATE requests SET status = 'approved', media_item_id = ?, resolved_at = datetime('now') WHERE id = ?"
-  ).run(mediaItemId, request.id);
+  await db
+    .prepare(`UPDATE requests SET status = 'approved', media_item_id = ?, resolved_at = ${nowExpr(db)} WHERE id = ?`)
+    .run(mediaItemId, request.id);
   return mediaItemId;
 }
 
@@ -50,18 +51,18 @@ function fileSize(filePath: string | null): number {
 /** Sums the on-disk size of everything under one media item (its own file for "single" shape, or
  * every downloaded episode/sub-item for "episodic"/"collection") — used to attribute storage
  * consumption back to the household user whose approved request created it. */
-function mediaItemStorageBytes(mediaItemId: number): number {
-  const item = db.prepare("SELECT path FROM media_items WHERE id = ?").get(mediaItemId) as { path: string | null } | undefined;
+async function mediaItemStorageBytes(mediaItemId: number): Promise<number> {
+  const item = (await db.prepare("SELECT path FROM media_items WHERE id = ?").get(mediaItemId)) as { path: string | null } | undefined;
   let total = fileSize(item?.path ?? null);
 
-  const episodes = db.prepare("SELECT file_path FROM episodes WHERE media_item_id = ? AND has_file = 1").all(mediaItemId) as {
+  const episodes = (await db.prepare("SELECT file_path FROM episodes WHERE media_item_id = ? AND has_file = 1").all(mediaItemId)) as {
     file_path: string | null;
   }[];
   for (const e of episodes) total += fileSize(e.file_path);
 
-  const subItems = db
+  const subItems = (await db
     .prepare("SELECT file_path FROM sub_items WHERE media_item_id = ? AND has_file = 1")
-    .all(mediaItemId) as { file_path: string | null }[];
+    .all(mediaItemId)) as { file_path: string | null }[];
   for (const s of subItems) total += fileSize(s.file_path);
 
   return total;
@@ -74,40 +75,41 @@ requestsRouter.get(
   "/stats",
   requireAdmin,
   asyncHandler(async (_req, res) => {
-    const users = db.prepare("SELECT id, username FROM users WHERE role = 'user'").all() as {
+    const users = (await db.prepare("SELECT id, username FROM users WHERE role = 'user'").all()) as {
       id: number;
       username: string;
     }[];
 
-    const stats = users.map((user) => {
-      const counts = db
-        .prepare(
-          `SELECT status, COUNT(*) AS c FROM requests WHERE user_id = ? GROUP BY status`
-        )
-        .all(user.id) as { status: string; c: number }[];
-      const byStatus: Record<string, number> = { pending: 0, approved: 0, rejected: 0 };
-      for (const row of counts) byStatus[row.status] = row.c;
-      const total = byStatus.pending + byStatus.approved + byStatus.rejected;
-      const resolved = byStatus.approved + byStatus.rejected;
+    const stats = await Promise.all(
+      users.map(async (user) => {
+        const counts = (await db
+          .prepare(`SELECT status, COUNT(*) AS c FROM requests WHERE user_id = ? GROUP BY status`)
+          .all(user.id)) as { status: string; c: number }[];
+        const byStatus: Record<string, number> = { pending: 0, approved: 0, rejected: 0 };
+        for (const row of counts) byStatus[row.status] = Number(row.c);
+        const total = byStatus.pending + byStatus.approved + byStatus.rejected;
+        const resolved = byStatus.approved + byStatus.rejected;
 
-      const approvedMediaItemIds = (
-        db
-          .prepare("SELECT media_item_id AS id FROM requests WHERE user_id = ? AND status = 'approved' AND media_item_id IS NOT NULL")
-          .all(user.id) as { id: number }[]
-      ).map((r) => r.id);
-      const storageBytes = approvedMediaItemIds.reduce((sum, id) => sum + mediaItemStorageBytes(id), 0);
+        const approvedMediaItemIds = (
+          (await db
+            .prepare("SELECT media_item_id AS id FROM requests WHERE user_id = ? AND status = 'approved' AND media_item_id IS NOT NULL")
+            .all(user.id)) as { id: number }[]
+        ).map((r) => r.id);
+        let storageBytes = 0;
+        for (const id of approvedMediaItemIds) storageBytes += await mediaItemStorageBytes(id);
 
-      return {
-        userId: user.id,
-        username: user.username,
-        totalRequests: total,
-        pending: byStatus.pending,
-        approved: byStatus.approved,
-        rejected: byStatus.rejected,
-        approvalRatePercent: resolved > 0 ? Math.round((byStatus.approved / resolved) * 100) : null,
-        storageBytes,
-      };
-    });
+        return {
+          userId: user.id,
+          username: user.username,
+          totalRequests: total,
+          pending: byStatus.pending,
+          approved: byStatus.approved,
+          rejected: byStatus.rejected,
+          approvalRatePercent: resolved > 0 ? Math.round((byStatus.approved / resolved) * 100) : null,
+          storageBytes,
+        };
+      })
+    );
 
     res.json(stats);
   })
@@ -122,10 +124,10 @@ requestsRouter.get(
   "/",
   asyncHandler(async (req, res) => {
     const rows = req.auth?.isAdmin
-      ? (db.prepare("SELECT * FROM requests ORDER BY created_at DESC").all() as any[])
-      : (db
+      ? ((await db.prepare("SELECT * FROM requests ORDER BY created_at DESC").all()) as any[])
+      : ((await db
           .prepare("SELECT * FROM requests WHERE user_id = ? ORDER BY created_at DESC")
-          .all(req.auth?.user?.id) as any[]);
+          .all(req.auth?.user?.id)) as any[]);
     res.json(rows.map(requestFromRow));
   })
 );
@@ -142,13 +144,13 @@ requestsRouter.post(
 
     if (!b.confirmDuplicate) {
       const needle = String(b.title).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-      const existing = db
+      const existing = (await db
         .prepare(
           `SELECT r.title, r.year, u.username FROM requests r JOIN users u ON u.id = r.user_id
            WHERE r.type = ? AND r.status IN ('pending', 'approved')
            ${b.year ? "AND (r.year IS NULL OR r.year = ?)" : ""}`
         )
-        .all(...(b.year ? [b.type, b.year] : [b.type])) as { title: string; year: number | null; username: string }[];
+        .all(...(b.year ? [b.type, b.year] : [b.type]))) as { title: string; year: number | null; username: string }[];
       const duplicate = existing.find((r) => r.title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() === needle);
       if (duplicate) {
         res.status(409).json({ duplicate });
@@ -157,11 +159,13 @@ requestsRouter.post(
     }
 
     if (user.maxPendingRequests !== null) {
-      const pendingCount = (
-        db.prepare("SELECT COUNT(*) AS c FROM requests WHERE user_id = ? AND status = 'pending'").get(user.id) as {
-          c: number;
-        }
-      ).c;
+      const pendingCount = Number(
+        (
+          (await db.prepare("SELECT COUNT(*) AS c FROM requests WHERE user_id = ? AND status = 'pending'").get(user.id)) as {
+            c: number;
+          }
+        ).c
+      );
       if (pendingCount >= user.maxPendingRequests) {
         throw new HttpError(
           400,
@@ -170,7 +174,7 @@ requestsRouter.post(
       }
     }
 
-    const result = db
+    const result = await db
       .prepare(
         `INSERT INTO requests (user_id, type, title, year, overview, poster_url, external_ids, note)
          VALUES (@userId, @type, @title, @year, @overview, @posterUrl, @externalIds, @note)`
@@ -186,11 +190,11 @@ requestsRouter.post(
         note: b.note ?? null,
       });
 
-    let row = db.prepare("SELECT * FROM requests WHERE id = ?").get(result.lastInsertRowid) as any;
+    let row = (await db.prepare("SELECT * FROM requests WHERE id = ?").get(result.lastInsertRowid)) as any;
     logAuditEvent(user.id, user.username, "request_submitted", b.title);
     if (user.autoApprove) {
-      approveRequestRow(row, null, null);
-      row = db.prepare("SELECT * FROM requests WHERE id = ?").get(result.lastInsertRowid);
+      await approveRequestRow(row, null, null);
+      row = await db.prepare("SELECT * FROM requests WHERE id = ?").get(result.lastInsertRowid);
       logAuditEvent(user.id, user.username, "request_auto_approved", b.title);
     }
     res.status(201).json(requestFromRow(row));
@@ -201,17 +205,17 @@ requestsRouter.post(
   "/:id/approve",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const request = db.prepare("SELECT * FROM requests WHERE id = ?").get(req.params.id) as any;
+    const request = (await db.prepare("SELECT * FROM requests WHERE id = ?").get(req.params.id)) as any;
     if (!request) throw new HttpError(404, "Request not found");
     if (request.status !== "pending") throw new HttpError(400, "Request has already been resolved");
 
     const b = req.body ?? {};
-    const mediaItemId = approveRequestRow(request, b.rootFolderId ?? null, b.qualityProfileId ?? null);
+    const mediaItemId = await approveRequestRow(request, b.rootFolderId ?? null, b.qualityProfileId ?? null);
     logAuditEvent(null, "admin", "request_approved", request.title);
     sendPush("Request approved", request.title, request.user_id).catch(() => {});
 
-    const mediaRow = db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId);
-    const requestRow = db.prepare("SELECT * FROM requests WHERE id = ?").get(req.params.id);
+    const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId);
+    const requestRow = await db.prepare("SELECT * FROM requests WHERE id = ?").get(req.params.id);
     res.json({ ...requestFromRow(requestRow), mediaItem: mediaItemFromRow(mediaRow) });
   })
 );
@@ -220,14 +224,14 @@ requestsRouter.post(
   "/:id/reject",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const request = db.prepare("SELECT * FROM requests WHERE id = ?").get(req.params.id);
+    const request = await db.prepare("SELECT * FROM requests WHERE id = ?").get(req.params.id);
     if (!request) throw new HttpError(404, "Request not found");
-    db.prepare("UPDATE requests SET status = 'rejected', resolved_at = datetime('now') WHERE id = ?").run(
-      req.params.id
-    );
+    await db
+      .prepare(`UPDATE requests SET status = 'rejected', resolved_at = ${nowExpr(db)} WHERE id = ?`)
+      .run(req.params.id);
     logAuditEvent(null, "admin", "request_rejected", (request as any).title);
     sendPush("Request rejected", (request as any).title, (request as any).user_id).catch(() => {});
-    const row = db.prepare("SELECT * FROM requests WHERE id = ?").get(req.params.id);
+    const row = await db.prepare("SELECT * FROM requests WHERE id = ?").get(req.params.id);
     res.json(requestFromRow(row));
   })
 );
@@ -235,12 +239,12 @@ requestsRouter.post(
 requestsRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
-    const request = db.prepare("SELECT * FROM requests WHERE id = ?").get(req.params.id) as any;
+    const request = (await db.prepare("SELECT * FROM requests WHERE id = ?").get(req.params.id)) as any;
     if (!request) throw new HttpError(404, "Request not found");
     if (!req.auth?.isAdmin && request.user_id !== req.auth?.user?.id) {
       throw new HttpError(403, "You can only cancel your own requests");
     }
-    db.prepare("DELETE FROM requests WHERE id = ?").run(req.params.id);
+    await db.prepare("DELETE FROM requests WHERE id = ?").run(req.params.id);
     res.status(204).send();
   })
 );
