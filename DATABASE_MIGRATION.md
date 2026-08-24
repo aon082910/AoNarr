@@ -1,15 +1,59 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — 28 files converted and verified against a real Postgres container**, covering
+Status: **PostgreSQL — 33 files converted and verified against a real Postgres container**, covering
 auth, users, quality/library config, indexers, download clients, calendar events, saved library
 views, remote instances, friend libraries, library groups (including its `WITH RECURSIVE`
 nested-count rollup), person credits, custom formats (including TRaSH-Guides sync), collections
-(including its smart-filter query builder and item reordering transaction), and album tracks. Most of
-the app (~42 remaining files) still isn't converted; `AONARR_DATABASE_DRIVER=postgres` runs a real
+(including its smart-filter query builder and item reordering transaction), album tracks, blocklist,
+import exclusions (route only), artwork selection, global library search, and share links. Most of
+the app (~37 remaining files) still isn't converted; `AONARR_DATABASE_DRIVER=postgres` runs a real
 app, just not a complete one yet. MariaDB — scoped, not started, deliberately deferred until
 PostgreSQL is fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL
 first" by explicit user decision). This document exists so a future round can pick this up without
 re-deriving the analysis below.
+
+## Progress (Round 87)
+
+Converted 5 small, self-contained route files: `routes/blocklist.ts`, `routes/importExclusions.ts`
+(the CRUD route only — its backing `services/importExclusions.ts` stays on the old sync path, see
+below), `routes/artwork.ts`, `routes/librarySearch.ts` (the app's global cross-library search), and
+`routes/shareLinks.ts` (both the admin-only and fully-public routers it exports).
+
+**New portability issue found**: `librarySearch.ts`'s query used plain `LIKE` for its search-term
+matching. SQLite's `LIKE` is case-insensitive for ASCII by default; Postgres's is case-sensitive — so
+the exact same query would silently return fewer results (or none) on Postgres for any query that
+didn't match the stored title's case. Fixed with a dialect-conditional operator (`ILIKE` on Postgres,
+`LIKE` on SQLite) rather than a wrapper-level translation, since not every `LIKE` in the codebase
+needs this (a handful of other converted/unconverted files use `LIKE` for exact substring flags where
+case sensitivity doesn't matter, e.g. matching a JSON key). Also quoted several more unquoted
+camelCase SQL aliases across these files (`AS mediaItemId`, `AS releaseTitle`, `AS createdAt`, etc.),
+the same Round 80 bug class — `librarySearch.ts`'s query was a `UNION ALL`, where only the first
+branch's aliases needed quoting since Postgres (like SQLite) takes the union's output column names
+from the first `SELECT`.
+
+**Deliberately NOT converted this round**: the surveyed remainder of the ~42 files fell into two
+buckets, both left alone. First, several small services (`services/blocklist.ts`,
+`services/importExclusions.ts`, `services/releaseGroupStats.ts`, `services/rootFolderSelect.ts`,
+`services/duplicateCheck.ts`) export synchronous helper functions called directly, with no `await`,
+from deep inside the still-unconverted search/import pipeline (`search.ts`, `importer.ts`,
+`media.ts`, `recommendations.ts`, `traktSync.ts`, etc.) — converting their DB calls to async now would
+leave those pipeline call sites firing unawaited promises against Postgres, the same risk class
+documented for `customFormatScoring.ts` in Round 85 and the recycle-bin cluster in Round 86. Second,
+`services/storageForecast.ts` and `services/duplicates.ts` are only called from `routes/system.ts` and
+`services/scheduler.ts`, both large, central, not-yet-converted files better tackled as their own
+dedicated round rather than piecemeal.
+
+Verified live against a real Postgres container (no admin-bootstrap env vars): seeded two movies
+directly via `psql`, confirmed `library-search` matches case-insensitively in both directions
+(lowercase query against a mixed-case title, and vice versa) via the new `ILIKE` path, selected
+artwork, created/listed/deleted a blocklist entry (confirming every quoted alias round-trips
+correctly, including the `JOIN`-derived `mediaTitle`), created/listed/deleted an import exclusion,
+and created/listed/deleted both an admin share link and its public token-based fetch — same sequence
+regression-checked against SQLite on the same build (lighter on data-dependent assertions there, since
+the image has no `sqlite3` CLI for direct seeding, but every route's success and 404 paths confirmed
+identical).
+
+## Progress (Round 86)
 
 ## Progress (Round 86)
 

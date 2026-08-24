@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { isValidMediaType } from "../services/mediaTypes.js";
@@ -10,10 +10,10 @@ importExclusionsRouter.use(requireAdmin);
 importExclusionsRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
-    const rows = db
+    const rows = await db
       .prepare(
-        `SELECT id, type, title, year, external_id AS externalId, external_provider AS externalProvider,
-                reason, created_at AS createdAt
+        `SELECT id, type, title, year, external_id AS "externalId", external_provider AS "externalProvider",
+                reason, created_at AS "createdAt"
          FROM import_exclusions ORDER BY created_at DESC`
       )
       .all();
@@ -27,7 +27,7 @@ importExclusionsRouter.post(
     const b = req.body ?? {};
     if (!b.type || !b.title) throw new HttpError(400, "type and title are required");
     if (!isValidMediaType(b.type)) throw new HttpError(400, `Unknown media type "${b.type}"`);
-    const result = db
+    const result = await db
       .prepare(
         `INSERT INTO import_exclusions (type, title, year, external_id, external_provider, reason)
          VALUES (?, ?, ?, ?, ?, ?)`
@@ -40,7 +40,7 @@ importExclusionsRouter.post(
 importExclusionsRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
-    const result = db.prepare("DELETE FROM import_exclusions WHERE id = ?").run(req.params.id);
+    const result = await db.prepare("DELETE FROM import_exclusions WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Exclusion not found");
     res.status(204).send();
   })

@@ -3,6 +3,25 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 87
+- PostgreSQL support: converted `routes/blocklist.ts`, `routes/importExclusions.ts` (CRUD route
+  only), `routes/artwork.ts`, `routes/librarySearch.ts`, and `routes/shareLinks.ts` to the async DB
+  interface — 33 files converted so far, ~37 remain
+- Found and fixed a real cross-dialect behavior difference: SQLite's `LIKE` is case-insensitive for
+  ASCII by default, Postgres's is case-sensitive. `librarySearch.ts`'s global search now uses a
+  dialect-conditional operator (`ILIKE` on Postgres) so search results stay identical across both
+  backends instead of Postgres silently missing case-mismatched matches
+- Quoted several more unquoted camelCase SQL aliases across this batch (same bug class as Round 80),
+  including in a `UNION ALL` query where only the first branch's aliases needed it
+- Deliberately left several small services unconverted (`blocklist.ts`, `importExclusions.ts`,
+  `releaseGroupStats.ts`, `rootFolderSelect.ts`, `duplicateCheck.ts` services, plus
+  `storageForecast.ts`/`duplicates.ts`) — all are called synchronously from the still-unconverted
+  search/import pipeline or from `system.ts`/`scheduler.ts`, so converting them now would leave those
+  callers unawaited on Postgres
+- Verified live against a real Postgres container: case-insensitive search in both directions,
+  artwork selection, full blocklist/import-exclusion/share-link CRUD (including the public
+  token-based share fetch) — same sequence regression-checked against SQLite on the same build
+
 ## Round 86
 - PostgreSQL support: converted `routes/collections.ts` (all 9 routes, including its smart-filter
   query builder and item-reorder transaction) and `routes/tracks.ts` (both routes) to the async DB
