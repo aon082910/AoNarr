@@ -123,10 +123,10 @@ metadataRouter.post(
             for (const album of albums) {
               await db
                 .prepare(
-                  `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored)
-                   VALUES (?, ?, ?, ?, ?, 1)`
+                  `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored, poster_url)
+                   VALUES (?, ?, ?, ?, ?, 1, ?)`
                 )
-                .run(mediaItemId, album.title, album.releaseDate, album.externalId ?? null, result.provider);
+                .run(mediaItemId, album.title, album.releaseDate, album.externalId ?? null, result.provider, album.posterUrl ?? null);
             }
           });
           childCount = albums.length;

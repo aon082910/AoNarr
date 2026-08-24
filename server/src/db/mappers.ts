@@ -68,6 +68,7 @@ export function subItemFromRow(row: any) {
     quality: row.quality,
     filePath: row.file_path,
     mediaInfo: row.media_info ? JSON.parse(row.media_info) : null,
+    posterUrl: row.poster_url ?? null,
   };
 }
 

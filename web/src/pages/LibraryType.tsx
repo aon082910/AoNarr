@@ -522,6 +522,20 @@ export function LibraryItemGrid({
     alert(`Tagged ${selected.size} item(s).`);
   }
 
+  async function bulkDelete() {
+    if (!confirm(`Remove ${selected.size} item(s) from AoNarr?`)) return;
+    const deleteFiles = confirm(
+      `Also delete their files? (moved to the Recycle Bin, not permanently gone)\n\nOK = delete files too\nCancel = just untrack, leave files on disk`
+    );
+    const result = await api.post<{ deleted: number; skipped: number }>("/media/bulk/delete", {
+      mediaItemIds: Array.from(selected),
+      deleteFiles,
+    });
+    setSelected(new Set());
+    alert(`Removed ${result.deleted} item(s)${result.skipped > 0 ? `, ${result.skipped} already gone` : ""}.`);
+    load();
+  }
+
   async function exportCsv() {
     await downloadFile(`/media/export.csv?type=${type}`, `aonarr-${type}.csv`);
   }
@@ -869,6 +883,9 @@ export function LibraryItemGrid({
           </button>
           <button className="secondary" onClick={bulkSearch}>
             Search selected
+          </button>
+          <button className="danger" onClick={bulkDelete}>
+            Remove
           </button>
           {tags.length > 0 && (
             <>

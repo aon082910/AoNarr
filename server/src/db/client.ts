@@ -71,6 +71,7 @@ ensureColumn("custom_formats", "trash_id", "trash_id TEXT");
 ensureColumn("recycle_bin", "restoring", "restoring INTEGER NOT NULL DEFAULT 0");
 ensureColumn("recycle_bin", "restore_error", "restore_error TEXT");
 ensureColumn("media_items", "release_date", "release_date TEXT");
+ensureColumn("sub_items", "poster_url", "poster_url TEXT");
 
 /**
  * indexers.protocol and download_clients.type originally shipped with a rigid `CHECK (... IN (...))`

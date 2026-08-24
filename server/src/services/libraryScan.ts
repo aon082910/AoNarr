@@ -22,6 +22,31 @@ function titlesMatch(a: string, b: string): boolean {
   return na === nb || na.includes(nb) || nb.includes(na);
 }
 
+/** Upserts one `tracks` row for a file inside a multiFilePerChild (Music) album folder — parses a
+ * leading "01 - " / "01." style track number out of the filename where present (same convention
+ * placeAlbumFiles() in importer.ts assumes for the download-import path), falling back to the next
+ * number after this album's current highest track for anything unnumbered. Shared by the live scan
+ * loop and backfillMissingAlbumTracks() below so both stay in sync. */
+async function upsertTrackFromFile(subItemId: number, filePath: string): Promise<void> {
+  const base = path.basename(filePath, path.extname(filePath));
+  const leadingNumber = base.match(/^(\d{1,3})\b/);
+  let trackNumber = leadingNumber ? Number(leadingNumber[1]) : null;
+  if (trackNumber === null || trackNumber === 0) {
+    const maxRow = (await db
+      .prepare("SELECT COALESCE(MAX(track_number), 0) AS m FROM tracks WHERE sub_item_id = ?")
+      .get(subItemId)) as { m: number };
+    trackNumber = Number(maxRow.m) + 1;
+  }
+  const trackTitle = guessTitleFromText(base.replace(/^\d{1,3}[\s._-]*/, "")) || base;
+  await db
+    .prepare(
+      `INSERT INTO tracks (sub_item_id, track_number, title, has_file, file_path)
+       VALUES (?, ?, ?, 1, ?)
+       ON CONFLICT (sub_item_id, track_number) DO UPDATE SET has_file = 1, file_path = excluded.file_path`
+    )
+    .run(subItemId, trackNumber, trackTitle, filePath);
+}
+
 /** Cuts a piece of text off at the first season/year/quality marker to get a plausible title —
  * the same "everything before the release metadata starts" heuristic release names use, just
  * applied to a plain filename (or folder name) instead of a scene-style release string. */
@@ -342,6 +367,12 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
             // forever (its containing folder join the knownAlbumFolders exclusion on the next run).
             result.skipped++;
           }
+
+          // A track row per file, not just the album-level has_file/file_path set above — without
+          // this the album detail page shows "0 have / 0 total, no track data available" forever
+          // for a Scan & Import-created album, since no metadata provider ever ran to populate the
+          // track list the way an Add Media search + fetchAlbumTracksFor() would.
+          await upsertTrackFromFile(childMatch.id, filePath);
         } else {
           const childTitle = guessTitleFromText(base);
           if (!childTitle) {
@@ -511,6 +542,49 @@ export async function backfillEpisodicAndCollectionHasFile(): Promise<void> {
     }
   }
   if (fixed > 0) log.info(`[libraryScan] startup data fix: corrected has_file on ${fixed} item(s) that had files but were still marked missing`);
+}
+
+/**
+ * One-time-per-startup data fix for albums that were Scan & Import-created before this round added
+ * per-file track-row insertion (see upsertTrackFromFile()) — those albums have `has_file = 1` and a
+ * `file_path` (the album folder) but zero rows in `tracks`, so the album detail page permanently
+ * showed "no track data available" even with every file right there on disk. Re-lists each such
+ * album's own folder and inserts the same guessed track rows the main scan loop now creates going
+ * forward. Safe to run unconditionally on every startup: scoped to albums with zero known tracks,
+ * so it's a no-op once every affected album has been backfilled once — and normal re-scans skip an
+ * already-known album folder entirely, so without this fix those albums would never self-heal.
+ */
+export async function backfillMissingAlbumTracks(): Promise<void> {
+  let fixed = 0;
+  for (const type of MEDIA_TYPE_KEYS) {
+    const cfg = getMediaTypeConfig(type);
+    if (cfg.shape !== "collection" || !cfg.multiFilePerChild) continue;
+
+    const albums = (await db
+      .prepare(
+        `SELECT s.id, s.file_path FROM sub_items s
+         JOIN media_items m ON m.id = s.media_item_id
+         WHERE m.type = ? AND s.has_file = 1 AND s.file_path IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM tracks t WHERE t.sub_item_id = s.id)`
+      )
+      .all(type)) as { id: number; file_path: string }[];
+
+    for (const album of albums) {
+      let files: string[];
+      try {
+        files = fs
+          .readdirSync(album.file_path, { withFileTypes: true })
+          .filter((e) => e.isFile() && cfg.extensions.includes(path.extname(e.name).toLowerCase()))
+          .map((e) => path.join(album.file_path, e.name));
+      } catch {
+        continue; // folder moved/removed since the scan — nothing to backfill from
+      }
+      if (files.length === 0) continue;
+      for (const filePath of files) await upsertTrackFromFile(album.id, filePath);
+      fixed++;
+    }
+  }
+  if (fixed > 0) log.info(`[libraryScan] startup data fix: backfilled track listings for ${fixed} previously-scanned album(s)`);
 }
 
 export async function scanAndImportAllLibraries(signal?: AbortSignal): Promise<void> {

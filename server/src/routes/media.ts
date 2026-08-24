@@ -79,6 +79,47 @@ mediaRouter.post(
   })
 );
 
+/** Bulk remove — the multi-select toolbar's "Remove" action. Same untrack-only-by-default /
+ * ?deleteFiles=1-to-also-recycle-files behavior as the single-item DELETE /:id route below, just
+ * looped over a whole selection; a missing/already-deleted id is skipped rather than failing the
+ * whole batch, since a stale selection (another admin deleted it moments earlier) shouldn't block
+ * removing the rest. */
+mediaRouter.post(
+  "/bulk/delete",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const { mediaItemIds, deleteFiles } = req.body ?? {};
+    if (!Array.isArray(mediaItemIds) || mediaItemIds.length === 0) {
+      throw new HttpError(400, "mediaItemIds is required");
+    }
+
+    let deleted = 0;
+    for (const id of mediaItemIds) {
+      const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(id)) as any;
+      if (!row) continue;
+
+      if (deleteFiles) {
+        if (row.path) await recycleFile(row.path, row.type, row.title, row.id);
+        const children = (
+          (await db.prepare("SELECT file_path FROM episodes WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id)) as any[]
+        ).concat(
+          (await db.prepare("SELECT file_path FROM sub_items WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id)) as any[]
+        );
+        for (const child of children) await recycleFile(child.file_path, row.type, row.title, row.id);
+      }
+
+      await db.prepare("DELETE FROM media_items WHERE id = ?").run(id);
+      deleted++;
+    }
+
+    if (deleted > 0) {
+      const actor = auditActor(req);
+      logAuditEvent(actor.userId, actor.username, "media_deleted", `${deleted} item(s) via bulk remove${deleteFiles ? " — files recycled" : ""}`);
+    }
+    res.json({ deleted, skipped: mediaItemIds.length - deleted });
+  })
+);
+
 mediaRouter.get(
   "/",
   asyncHandler(async (req, res) => {
@@ -942,6 +983,10 @@ mediaRouter.patch(
     if (b.filePath !== undefined) {
       sets.push("file_path = ?");
       values.push(b.filePath);
+    }
+    if (b.posterUrl !== undefined) {
+      sets.push("poster_url = ?");
+      values.push(b.posterUrl);
     }
     if (sets.length > 0) {
       values.push(req.params.subItemId);

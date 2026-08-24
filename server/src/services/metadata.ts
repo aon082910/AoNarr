@@ -25,6 +25,7 @@ export interface MetadataSubItem {
   title: string;
   releaseDate: string | null;
   externalId?: string;
+  posterUrl?: string | null;
 }
 
 export interface MetadataTrack {
@@ -457,6 +458,7 @@ async function fetchArtistAlbumsDeezer(deezerArtistId: string): Promise<Metadata
     title: al.title,
     releaseDate: al.release_date || null,
     externalId: String(al.id),
+    posterUrl: al.cover_medium || al.cover || null,
   }));
 }
 
@@ -509,7 +511,7 @@ async function fetchArtistAlbumsDiscogs(discogsArtistId: string): Promise<Metada
     if (r.role && r.role !== "Main") continue; // skip appearances/remixes credited to this artist
     if (seen.has(r.title)) continue;
     seen.add(r.title);
-    results.push({ title: r.title, releaseDate: r.year ? String(r.year) : null, externalId: String(r.id) });
+    results.push({ title: r.title, releaseDate: r.year ? String(r.year) : null, externalId: String(r.id), posterUrl: r.thumb || null });
   }
   return results;
 }
@@ -558,6 +560,7 @@ async function fetchArtistAlbumsLastfm(idOrName: string): Promise<MetadataSubIte
     title: al.name,
     releaseDate: null, // Last.fm's album endpoints don't include a release date
     externalId: al.mbid || al.name,
+    posterUrl: Array.isArray(al.image) ? al.image.find((i: any) => i.size === "large")?.["#text"] || null : null,
   }));
 }
 
@@ -933,6 +936,36 @@ async function searchMangaMangadex(query: string): Promise<MetadataSearchResult[
   });
 }
 
+/** MangaDex's own chapter feed for a manga — the actual chapter source (AniList is a
+ * database/tracker with no per-chapter listing), used to populate a manga's "collection" children
+ * the same way ComicVine populates a comic's Issues. Deduplicates by chapter number since the same
+ * chapter is routinely re-translated by multiple scanlation groups, keeping whichever the API
+ * returns first under the requested `order[chapter]=asc` sort. */
+async function fetchMangaChaptersMangadex(mangaId: string): Promise<MetadataSubItem[]> {
+  const url = new URL(`https://api.mangadex.org/manga/${mangaId}/feed`);
+  url.searchParams.set("translatedLanguage[]", "en");
+  url.searchParams.set("order[chapter]", "asc");
+  url.searchParams.set("limit", "500");
+
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`MangaDex chapter lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+
+  const seenChapters = new Set<string>();
+  const results: MetadataSubItem[] = [];
+  for (const c of body.data ?? []) {
+    const num = c.attributes?.chapter;
+    if (!num || seenChapters.has(num)) continue;
+    seenChapters.add(num);
+    results.push({
+      title: c.attributes.title ? `Chapter ${num} — ${c.attributes.title}` : `Chapter ${num}`,
+      releaseDate: c.attributes.publishAt ?? null,
+      externalId: c.id,
+    });
+  }
+  return results;
+}
+
 // ---------------------------------------------------------------------------
 // Provider registry + dispatch
 // ---------------------------------------------------------------------------
@@ -987,7 +1020,30 @@ export async function searchMetadata(
   }
   const fn = TYPE_SPECIFIC_SEARCH_FNS[chosen]?.[type] ?? SEARCH_FNS[chosen];
   if (!fn) throw new Error(`No search implementation for provider "${chosen}"`);
-  return fn(query);
+  const results = await fn(query);
+
+  // MusicBrainz — the default artist provider, kept as the default for its authoritative id (every
+  // downstream album/track lookup keys off it) — has no artist artwork of its own; its own search
+  // results always come back with posterUrl: null (see searchArtistsMusicbrainz above). Deezer's
+  // public search API needs no key and reliably has artist photos, so opportunistically backfill
+  // from it by name match rather than every scan-imported/refreshed artist staying posterless
+  // forever regardless of which of Discogs/Last.fm/Fanart.tv keys the user has configured.
+  if (type === "artist" && chosen === "musicbrainz" && results.some((r) => !r.posterUrl)) {
+    try {
+      const deezerResults = await searchArtistsDeezer(query);
+      const postersByName = new Map<string, string>();
+      for (const d of deezerResults) {
+        if (d.posterUrl) postersByName.set(d.title.toLowerCase(), d.posterUrl);
+      }
+      for (const r of results) {
+        if (!r.posterUrl) r.posterUrl = postersByName.get(r.title.toLowerCase()) ?? null;
+      }
+    } catch {
+      // best-effort enrichment only — a Deezer hiccup shouldn't break the MusicBrainz search itself
+    }
+  }
+
+  return results;
 }
 
 /** Dispatches to the right episode-fetch implementation based on which provider's id is present. */
@@ -1022,6 +1078,7 @@ export async function fetchCollectionChildrenFor(
   if (externalIds.openlibrary) return { provider: "openlibrary", children: await fetchAuthorBooksOpenlibrary(externalIds.openlibrary) };
   if (externalIds.googlebooks) return { provider: "googlebooks", children: await fetchAuthorBooksGoogleBooks(externalIds.googlebooks) };
   if (externalIds.comicvine) return { provider: "comicvine", children: await fetchComicIssuesComicVine(externalIds.comicvine) };
+  if (externalIds.mangadex) return { provider: "mangadex", children: await fetchMangaChaptersMangadex(externalIds.mangadex) };
   if (externalIds.youtube) return { provider: "youtube", children: await fetchChannelVideosYoutube(externalIds.youtube) };
   return { provider: null, children: [] };
 }

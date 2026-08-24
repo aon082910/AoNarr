@@ -3,6 +3,41 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 103 — GitHub issue fixes: music tracks/artwork, bulk remove, manga chapters
+- Fixed #9 (no track data): Scan & Import never created individual `tracks` rows for a Music
+  album folder, only the album-level has_file/file_path — the album detail page showed "0 have /
+  0 total, no track data available" forever even with every file on disk. Now parses a track
+  number/title per file during scan (same "01 - Song" convention the download-import path already
+  assumed) and upserts a `tracks` row for each one, via a portable `ON CONFLICT ... DO UPDATE` that
+  works unchanged on both SQLite and Postgres. Added a startup backfill
+  (`backfillMissingAlbumTracks()`) so already-scanned albums self-heal on the next restart instead
+  of needing a full library re-scan (which wouldn't have picked them up anyway — known album
+  folders are skipped on re-scan).
+- Fixed #7 (no artist poster artwork): MusicBrainz — the default artist metadata provider, kept
+  for its authoritative id — never returns artist artwork at all, so every scan-imported/refreshed
+  artist stayed posterless regardless of which of Discogs/Last.fm keys were configured. Now
+  opportunistically backfills a MusicBrainz result's missing poster from Deezer's public,
+  keyless API by name match.
+- Implemented #8 (album artwork): added a `poster_url` column to `sub_items`; Deezer/Discogs/
+  Last.fm album-listing fetches now capture cover art automatically when an artist is added via
+  search or an import list; added a manual "click to add/change cover art" affordance (Library
+  page's album table and the album detail page) for scan-imported albums or any provider that
+  doesn't have art.
+- Added #6 (bulk remove): a `POST /media/bulk/delete` endpoint and a "Remove" button in the
+  Library page's multi-select toolbar, alongside the existing Monitor/Unmonitor/Search actions —
+  supports the same untrack-only vs. also-delete-files choice as the single-item delete.
+- Investigated #5 (manga management): the media type, search providers, and frontend nav already
+  existed, but manga's default provider (AniList) has no per-chapter listing API, so every manga
+  added through the normal flow sat at "0 total" chapters forever — the same class of gap as #9.
+  Added a MangaDex chapter-feed fetcher and switched manga's default provider to MangaDex (which
+  has one), matching how Comics already defaults to ComicVine for the same reason.
+- Verified live against both a real Postgres 16 container and SQLite: scan-imported a multi-track
+  album and confirmed all tracks appear with correct numbers/titles; confirmed the startup backfill
+  recovers a previously-scanned album's tracks after clearing them; confirmed a MusicBrainz artist
+  search result gets backfilled with a real Deezer poster; confirmed manual and automatic album
+  artwork both persist; confirmed bulk delete removes multiple items in one call; confirmed adding
+  a manga via MangaDex populates a full real chapter list.
+
 ## Round 102 — PostgreSQL migration complete
 - Converted the last 3 files: `services/scheduler.ts` (auto-search/grab, queue polling, stalled-
   download cleanup, retry logic, video-channel checks), `routes/search.ts` (manual/bulk search and

@@ -5,7 +5,7 @@ import { config } from "./config.js";
 import { initDb } from "./db/index.js";
 import { loadSettingsCache } from "./services/settingsStore.js";
 import { loadQualityCaches } from "./services/quality.js";
-import { backfillEpisodicAndCollectionHasFile } from "./services/libraryScan.js";
+import { backfillEpisodicAndCollectionHasFile, backfillMissingAlbumTracks } from "./services/libraryScan.js";
 import { errorHandler, asyncHandler } from "./middleware/errorHandler.js";
 import { requireAuth } from "./middleware/auth.js";
 import { startScheduler } from "./services/scheduler.js";
@@ -78,6 +78,7 @@ await loadQualityCaches();
 await bootstrapAdminFromEnv();
 applySocksProxySetting();
 await backfillEpisodicAndCollectionHasFile();
+await backfillMissingAlbumTracks();
 
 const app = express();
 app.use(cors());

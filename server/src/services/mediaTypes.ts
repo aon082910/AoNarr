@@ -117,7 +117,12 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     extensions: COMIC_EXT,
     indexerCategory: "7020",
     metadataProviders: ["anilist", "mangadex"],
-    defaultProvider: "anilist",
+    // MangaDex, not AniList, is the default: AniList is a tracker/database with no per-chapter
+    // listing, so a manga matched through it would sit at "0 total" chapters forever (the same
+    // fetchCollectionChildrenFor() gap issue #5 ran into) — MangaDex's own chapter feed is what
+    // actually populates the Chapters list at add-time, mirroring how Comics defaults to ComicVine
+    // for the same reason.
+    defaultProvider: "mangadex",
   },
   rom: {
     key: "rom",

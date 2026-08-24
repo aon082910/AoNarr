@@ -57,6 +57,7 @@ interface SubItem {
   hasFile: 0 | 1;
   quality: string | null;
   mediaInfo: MediaInfo | null;
+  posterUrl: string | null;
 }
 
 type MediaDetailResponse = MediaItem & { children: Episode[] | SubItem[]; tags: Tag[] };
@@ -362,6 +363,18 @@ export default function MediaDetail() {
     try {
       await api.post(`/media/subitems/${sub.id}/download`, {});
       alert(`Sent "${sub.title}" to yt-dlp.`);
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    }
+  }
+
+  async function editSubItemCover(sub: SubItem) {
+    if (!item) return;
+    const url = prompt(`Cover art URL for "${sub.title}" (leave blank to remove):`, sub.posterUrl ?? "");
+    if (url === null) return;
+    try {
+      await api.patch(`/media/${item.id}/subitems/${sub.id}`, { posterUrl: url.trim() || null });
       load();
     } catch (e) {
       alert((e as Error).message);
@@ -1089,6 +1102,7 @@ export default function MediaDetail() {
           <table>
             <thead>
               <tr>
+                <th></th>
                 <th>Title</th>
                 <th>Release date</th>
                 <th>File</th>
@@ -1099,6 +1113,30 @@ export default function MediaDetail() {
             <tbody>
               {(item.children as SubItem[]).map((si) => (
                 <tr key={si.id} onClick={() => navigate(`/media/${item.id}/item/${si.id}`)} style={{ cursor: "pointer" }}>
+                  <td onClick={(e) => e.stopPropagation()}>
+                    <div
+                      onClick={() => isAdmin && editSubItemCover(si)}
+                      title={isAdmin ? "Click to add/change cover art" : undefined}
+                      style={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 4,
+                        overflow: "hidden",
+                        background: "var(--panel-2, rgba(255,255,255,0.06))",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        cursor: isAdmin ? "pointer" : "default",
+                        flexShrink: 0,
+                      }}
+                    >
+                      {si.posterUrl ? (
+                        <img src={si.posterUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      ) : (
+                        <span style={{ fontSize: "1.1rem", color: "var(--muted)" }}>♪</span>
+                      )}
+                    </div>
+                  </td>
                   <td>{si.title}</td>
                   <td>{si.releaseDate ?? "-"}</td>
                   <td>

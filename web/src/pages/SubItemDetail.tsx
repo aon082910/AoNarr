@@ -18,6 +18,7 @@ interface SubItemDetailResponse {
   quality: string | null;
   filePath: string | null;
   mediaInfo: MediaInfo | null;
+  posterUrl: string | null;
   parent: { id: number; title: string; type: string } | null;
 }
 
@@ -115,6 +116,20 @@ export default function SubItemDetail() {
     }
   }
 
+  async function editCover() {
+    if (!subItem) return;
+    const url = prompt("Cover art URL (leave blank to remove):", subItem.posterUrl ?? "");
+    if (url === null) return;
+    try {
+      const updated = await api.patch<SubItemDetailResponse>(`/media/${mediaId}/subitems/${subItemId}`, {
+        posterUrl: url.trim() || null,
+      });
+      setSubItem({ ...subItem, posterUrl: updated.posterUrl });
+    } catch (e) {
+      alert((e as Error).message);
+    }
+  }
+
   if (!subItem) return <p className="empty">Loading...</p>;
 
   const isYoutubeVideo = subItem.parent?.type === "video" && subItem.externalProvider === "youtube";
@@ -128,6 +143,29 @@ export default function SubItemDetail() {
         </p>
       )}
       <h1>{subItem.title}</h1>
+
+      <div
+        onClick={() => isAdmin && editCover()}
+        title={isAdmin ? "Click to add/change cover art" : undefined}
+        style={{
+          width: 120,
+          height: 120,
+          borderRadius: 6,
+          overflow: "hidden",
+          background: "var(--panel-2, rgba(255,255,255,0.06))",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: isAdmin ? "pointer" : "default",
+          marginBottom: 16,
+        }}
+      >
+        {subItem.posterUrl ? (
+          <img src={subItem.posterUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        ) : (
+          <span style={{ color: "var(--muted)" }}>{isAdmin ? "Add cover" : "No cover"}</span>
+        )}
+      </div>
 
       <table style={{ maxWidth: 640 }}>
         <tbody>

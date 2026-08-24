@@ -74,6 +74,7 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE recycle_bin ADD COLUMN IF NOT EXISTS restoring INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE recycle_bin ADD COLUMN IF NOT EXISTS restore_error TEXT`,
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS release_date TEXT`,
+  `ALTER TABLE sub_items ADD COLUMN IF NOT EXISTS poster_url TEXT`,
 ];
 
 /**
