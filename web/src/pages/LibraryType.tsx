@@ -13,17 +13,20 @@ type ViewMode = "poster" | "list";
 type PosterSize = "xsmall" | "small" | "medium" | "large" | "xlarge";
 type StatusFilter = "all" | "monitored" | "unmonitored" | "missing" | "downloaded" | "unmatched";
 
-/** An item counts as unmatched when it has no external provider ids at all — the state a Scan &
- * Import guess or a manually-added item sits in until something (a real search match, or the
- * Refresh button) actually links it to real metadata. */
-function isUnmatched(item: MediaItem): boolean {
-  if (!item.externalIds) return true;
-  try {
-    return Object.keys(JSON.parse(item.externalIds)).length === 0;
-  } catch {
-    return true;
-  }
+/** Page size for the server-side-paginated library grid/list — the "unmatched" status filter and
+ * every other sort/filter option are applied server-side too (see server/src/services/mediaQuery.ts)
+ * so this only bounds how many rows come down per request, not what's considered a match. */
+const PAGE_SIZE = 60;
+
+interface LibraryStats {
+  total: number;
+  haveCount: number;
+  missingCount: number;
+  childCount: number;
+  childHaveCount: number;
+  contentRatings: string[];
 }
+const EMPTY_STATS: LibraryStats = { total: 0, haveCount: 0, missingCount: 0, childCount: 0, childHaveCount: 0, contentRatings: [] };
 
 const POSTER_SIZE_PX: Record<PosterSize, number> = { xsmall: 90, small: 120, medium: 160, large: 220, xlarge: 300 };
 
@@ -123,7 +126,7 @@ export default function LibraryType() {
     } else {
       setGroupDetail(null);
       api.get<LibraryGroup[]>(`/library-groups?mediaType=${type}`).then(setChildGroups);
-      api.get<MediaItem[]>(`/media?type=${type}&groupId=none`).then((rows) => setUngroupedCount(rows.length));
+      api.get<{ total: number }>(`/media/stats?type=${type}&groupId=none`).then((stats) => setUngroupedCount(stats.total));
     }
   }, [isGrouped, type, groupId]);
 
@@ -300,6 +303,14 @@ export function LibraryItemGrid({
   const [listColumns, setListColumns] = useState<Set<ExtraField>>(() => loadFieldSet("aonarr_library_columns", DEFAULT_LIST_COLUMNS));
   const [posterFields, setPosterFields] = useState<Set<ExtraField>>(() => loadFieldSet("aonarr_library_poster_fields", DEFAULT_POSTER_FIELDS));
   const [contentRatingFilter, setContentRatingFilter] = useState<string | "all">("all");
+  const [page, setPage] = useState(0);
+  // stats.total is the library's unfiltered item count (for the "N total" header badge, which has
+  // always summed the whole type regardless of the current status/contentRating filter — see
+  // loadStats() below). filteredTotal is the *current filtered view's* row count, returned by the
+  // paginated list fetch itself — pagination controls must use this one, not stats.total, or a
+  // filter that narrows the result set below one page would still claim "Page 1 of 2".
+  const [stats, setStats] = useState<LibraryStats>(EMPTY_STATS);
+  const [filteredTotal, setFilteredTotal] = useState(0);
   const [savedViews, setSavedViews] = useState<SavedLibraryView[]>([]);
   const [activeViewId, setActiveViewId] = useState<number | "">("");
   const [loading, setLoading] = useState(true);
@@ -324,22 +335,44 @@ export function LibraryItemGrid({
   const navigate = useNavigate();
   const { auth } = useAuth();
 
-  function load() {
-    setLoading(true);
+  /** Server-driven filters/sort/pagination shared by load() and loadStats() — status/contentRating/
+   * sort/page only affect which rows come back and in what order, not the structural scope
+   * (type/groupId/tagId) stats are computed over, so loadStats() only needs the latter subset. */
+  function scopeParams() {
     const params = new URLSearchParams();
     params.set("type", type);
     if (groupId) params.set("groupId", groupId);
     if (tagFilter !== "all") params.set("tagId", String(tagFilter));
+    return params;
+  }
+
+  function load() {
+    setLoading(true);
+    const params = scopeParams();
+    if (statusFilter !== "all") params.set("status", statusFilter);
+    if (contentRatingFilter !== "all") params.set("contentRating", contentRatingFilter);
+    params.set("sort", sortKey);
+    params.set("limit", String(PAGE_SIZE));
+    params.set("offset", String(page * PAGE_SIZE));
     api
-      .get<MediaItem[]>(`/media?${params.toString()}`)
+      .get<{ items: MediaItem[]; total: number }>(`/media?${params.toString()}`)
       .then((data) => {
-        setItems(data);
+        setItems(data.items);
+        setFilteredTotal(data.total);
         setSelected(new Set());
       })
       .finally(() => setLoading(false));
   }
 
-  useEffect(load, [type, groupId, tagFilter]);
+  function loadStats() {
+    api.get<LibraryStats>(`/media/stats?${scopeParams().toString()}`).then(setStats);
+  }
+
+  useEffect(load, [type, groupId, tagFilter, statusFilter, contentRatingFilter, sortKey, page]);
+  useEffect(loadStats, [type, groupId, tagFilter]);
+  // Any filter/sort change re-points the page at a fresh result set — staying on, say, page 5 of a
+  // now-much-shorter filtered list would otherwise show a confusing "out of range" empty page.
+  useEffect(() => setPage(0), [type, groupId, tagFilter, statusFilter, contentRatingFilter, sortKey]);
   useEffect(() => {
     // Guarded against out-of-order responses: switching libraries quickly could let an earlier
     // type's slower-to-resolve request land after a later type's faster one, overwriting the
@@ -557,6 +590,7 @@ export function LibraryItemGrid({
     setSelected(new Set());
     alert(`Removed ${result.deleted} item(s)${result.skipped > 0 ? `, ${result.skipped} already gone` : ""}.`);
     load();
+    loadStats();
   }
 
   async function exportCsv() {
@@ -630,54 +664,26 @@ export function LibraryItemGrid({
       groupId: groupId && groupId !== "none" ? Number(groupId) : null,
     });
     load();
+    loadStats();
   }
 
-  const haveCount = items.filter((item) => item.hasFile).length;
-  const missingCount = items.length - haveCount;
-  // Sonarr/Radarr-style child-level totals (episodes actually downloaded vs. missing across the
-  // whole library) — distinct from haveCount/missingCount above, which is per-item (a series with
-  // 3/10 episodes still counts as one "have" item there). Only meaningful for episodic/collection
-  // shapes; items without childCount (still loading, or genuinely childless) are skipped rather
-  // than treated as 0/0.
-  const childTotal = items.reduce((sum, item) => sum + (item.childCount ?? 0), 0);
-  const childHave = items.reduce((sum, item) => sum + (item.childHaveCount ?? 0), 0);
-  const childMissing = childTotal - childHave;
-
-  const contentRatings = Array.from(new Set(items.map((i) => i.contentRating).filter((r): r is string => !!r))).sort();
-
-  const filtered = items.filter((item) => {
-    if (statusFilter === "monitored" && !item.monitored) return false;
-    if (statusFilter === "unmonitored" && item.monitored) return false;
-    if (statusFilter === "missing" && item.hasFile) return false;
-    if (statusFilter === "downloaded" && !item.hasFile) return false;
-    if (statusFilter === "unmatched" && !isUnmatched(item)) return false;
-    if (contentRatingFilter !== "all" && item.contentRating !== contentRatingFilter) return false;
-    return true;
-  });
-
-  const sorted = [...filtered].sort((a, b) => {
-    if (sortKey === "title") return a.title.localeCompare(b.title);
-    if (sortKey === "year") return (b.year ?? 0) - (a.year ?? 0);
-    if (sortKey === "status") return Number(b.hasFile) - Number(a.hasFile);
-    if (sortKey === "monitored") return Number(b.monitored) - Number(a.monitored);
-    if (sortKey === "quality") return (a.quality ?? "").localeCompare(b.quality ?? "");
-    if (sortKey === "contentRating") return (a.contentRating ?? "").localeCompare(b.contentRating ?? "");
-    return b.id - a.id;
-  });
+  const totalPages = Math.max(1, Math.ceil(filteredTotal / PAGE_SIZE));
 
   return (
     <div>
       <h1>{typeLabel}</h1>
       <p style={{ color: "var(--muted)" }}>
         {typeSize !== null && <>{formatBytes(typeSize)} on disk · </>}
-        <span className="badge ok">{haveCount} have</span>{" "}
-        <span className={`badge ${missingCount > 0 ? "danger" : ""}`}>{missingCount} missing</span>{" "}
-        <span className="badge">{items.length} total</span>
-        {hasChildren && childTotal > 0 && (
+        <span className="badge ok">{stats.haveCount} have</span>{" "}
+        <span className={`badge ${stats.missingCount > 0 ? "danger" : ""}`}>{stats.missingCount} missing</span>{" "}
+        <span className="badge">{stats.total} total</span>
+        {hasChildren && stats.childCount > 0 && (
           <>
             {" · "}
-            <span className="badge ok">{childHave} {childLabelPlural} downloaded</span>{" "}
-            <span className={`badge ${childMissing > 0 ? "danger" : ""}`}>{childMissing} {childLabelPlural} missing</span>
+            <span className="badge ok">{stats.childHaveCount} {childLabelPlural} downloaded</span>{" "}
+            <span className={`badge ${stats.childCount - stats.childHaveCount > 0 ? "danger" : ""}`}>
+              {stats.childCount - stats.childHaveCount} {childLabelPlural} missing
+            </span>
           </>
         )}
       </p>
@@ -724,10 +730,10 @@ export function LibraryItemGrid({
             ))}
           </select>
         )}
-        {contentRatings.length > 0 && (
+        {stats.contentRatings.length > 0 && (
           <select value={contentRatingFilter} onChange={(e) => setContentRatingFilter(e.target.value)} style={{ maxWidth: 160 }}>
             <option value="all">All content ratings</option>
-            {contentRatings.map((r) => (
+            {stats.contentRatings.map((r) => (
               <option key={r} value={r}>
                 {r}
               </option>
@@ -902,8 +908,8 @@ export function LibraryItemGrid({
         )}
         {auth.isAdmin && selectMode && (
           <>
-            <button className="secondary" onClick={() => setSelected(new Set(sorted.map((i) => i.id)))}>
-              Select all
+            <button className="secondary" onClick={() => setSelected(new Set(items.map((i) => i.id)))} title="Selects items on this page only">
+              Select all on page
             </button>
             <button className="secondary" onClick={() => setSelected(new Set())}>
               Select none
@@ -949,13 +955,13 @@ export function LibraryItemGrid({
       )}
 
       {loading && <p className="empty">Loading...</p>}
-      {!loading && sorted.length === 0 && (
+      {!loading && items.length === 0 && (
         <p className="empty">Nothing here yet. Add media from the "Add Media" tab.</p>
       )}
 
       {viewMode === "poster" ? (
         <div className="grid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${POSTER_SIZE_PX[posterSize]}px, 1fr))` }}>
-          {sorted.map((item) => (
+          {items.map((item) => (
             <div key={item.id} className="card" onClick={() => navigate(`/media/${item.id}`)} style={{ position: "relative" }}>
               {selectMode && (
                 <input
@@ -1007,7 +1013,7 @@ export function LibraryItemGrid({
             </tr>
           </thead>
           <tbody>
-            {sorted.map((item) => (
+            {items.map((item) => (
               <tr key={item.id} onClick={() => navigate(`/media/${item.id}`)} style={{ cursor: "pointer" }}>
                 {selectMode && (
                   <td>
@@ -1053,6 +1059,20 @@ export function LibraryItemGrid({
             ))}
           </tbody>
         </table>
+      )}
+
+      {!loading && filteredTotal > PAGE_SIZE && (
+        <div className="toolbar" style={{ justifyContent: "center", marginTop: 20 }}>
+          <button type="button" className="secondary" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}>
+            ← Previous
+          </button>
+          <span className="sub">
+            Page {page + 1} of {totalPages} ({filteredTotal} total)
+          </span>
+          <button type="button" className="secondary" onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}>
+            Next →
+          </button>
+        </div>
       )}
 
       {showMediaServerImport && (

@@ -8,6 +8,7 @@ import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { getMediaTypeConfig, isValidMediaType } from "../services/mediaTypes.js";
 import { attachChildCounts } from "../services/childCounts.js";
+import { buildMediaQuery, clampLimit, clampOffset, MEDIA_SORT_COLUMNS } from "../services/mediaQuery.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
@@ -121,46 +122,123 @@ mediaRouter.post(
   })
 );
 
+/**
+ * Server-side paginated/sorted/filtered list — the main Library page fetch. Returns
+ * `{ items, total }` rather than a bare array so the page can show real pagination controls and
+ * accurate counts without ever pulling a whole (possibly thousands-of-items) library type into the
+ * browser just to filter/sort/paginate it client-side.
+ */
 mediaRouter.get(
   "/",
+  asyncHandler(async (req, res) => {
+    const { type, tagId, groupId, sort, status, contentRating } = req.query as {
+      type?: MediaType;
+      tagId?: string;
+      groupId?: string;
+      sort?: string;
+      status?: string;
+      contentRating?: string;
+    };
+    const allowedTypes = allowedTypesFor(req);
+    if (allowedTypes && type && !allowedTypes.includes(type)) {
+      res.json({ items: [], total: 0 });
+      return;
+    }
+
+    const { where, params, fromClause } = buildMediaQuery({
+      type,
+      tagId,
+      groupId,
+      status,
+      contentRating,
+      allowedTypes,
+      maxContentRating: req.auth?.user?.maxContentRating,
+    });
+    if (where === null) {
+      res.json({ items: [], total: 0 });
+      return;
+    }
+
+    const limit = clampLimit(req.query.limit);
+    const offset = clampOffset(req.query.offset);
+    const orderBy = MEDIA_SORT_COLUMNS[sort ?? "added"] ?? MEDIA_SORT_COLUMNS.added;
+
+    const countRow = (await db.prepare(`SELECT COUNT(*) AS total FROM ${fromClause} WHERE ${where}`).get(...params)) as {
+      total: number | string;
+    };
+    const rows = (await db
+      .prepare(`SELECT m.* FROM ${fromClause} WHERE ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
+      .all(...params, limit, offset)) as any[];
+
+    const items = rows.map(mediaItemFromRow);
+    await attachChildCounts(items);
+    res.json({ items, total: Number(countRow.total) });
+  })
+);
+
+/**
+ * Structural-scope aggregate stats (total/have/missing item counts, child-level episode/album
+ * download totals, and the set of content ratings present) for the Library page's header badges —
+ * independent of the current page/sort/status-filter so they stay correct no matter which page of
+ * a paginated library the user is looking at. Deliberately NOT scoped by `status`/`contentRating`
+ * (those are per-view filters) to match the pre-pagination behavior, where the header always
+ * summed the type's full unfiltered item set. Registered before "/:id" for the same reason
+ * export.csv/export-bulk.zip are.
+ */
+mediaRouter.get(
+  "/stats",
   asyncHandler(async (req, res) => {
     const { type, tagId, groupId } = req.query as { type?: MediaType; tagId?: string; groupId?: string };
     const allowedTypes = allowedTypesFor(req);
     if (allowedTypes && type && !allowedTypes.includes(type)) {
-      res.json([]);
+      res.json({ total: 0, haveCount: 0, missingCount: 0, childCount: 0, childHaveCount: 0, contentRatings: [] });
       return;
     }
 
-    let rows: any[];
-    if (tagId) {
-      rows = await db
-        .prepare(
-          `SELECT m.* FROM media_items m
-           JOIN media_item_tags mit ON mit.media_item_id = m.id
-           WHERE mit.tag_id = ? ${type ? "AND m.type = ?" : ""}
-           ORDER BY m.sort_title`
-        )
-        .all(...(type ? [tagId, type] : [tagId]));
-    } else if (groupId === "none" && type) {
-      rows = await db.prepare("SELECT * FROM media_items WHERE type = ? AND group_id IS NULL ORDER BY sort_title").all(type);
-    } else if (groupId) {
-      rows = await db.prepare("SELECT * FROM media_items WHERE group_id = ? ORDER BY sort_title").all(groupId);
-    } else if (type) {
-      rows = await db.prepare("SELECT * FROM media_items WHERE type = ? ORDER BY sort_title").all(type);
-    } else {
-      rows = await db.prepare("SELECT * FROM media_items ORDER BY sort_title").all();
+    const { where, params, fromClause } = buildMediaQuery({
+      type,
+      tagId,
+      groupId,
+      allowedTypes,
+      maxContentRating: req.auth?.user?.maxContentRating,
+    });
+    if (where === null) {
+      res.json({ total: 0, haveCount: 0, missingCount: 0, childCount: 0, childHaveCount: 0, contentRatings: [] });
+      return;
     }
 
-    if (allowedTypes) {
-      rows = rows.filter((r) => allowedTypes.includes(r.type));
-    }
-    if (req.auth?.user?.maxContentRating) {
-      rows = rows.filter((r) => !isRatingBlocked(r.content_rating, req.auth!.user!.maxContentRating));
+    const totalsRow = (await db
+      .prepare(`SELECT COUNT(*) AS total, SUM(m.has_file) AS have FROM ${fromClause} WHERE ${where}`)
+      .get(...params)) as { total: number | string; have: number | string | null };
+    const ratingRows = (await db
+      .prepare(`SELECT DISTINCT m.content_rating AS rating FROM ${fromClause} WHERE ${where} AND m.content_rating IS NOT NULL ORDER BY m.content_rating`)
+      .all(...params)) as { rating: string }[];
+
+    let childCount = 0;
+    let childHaveCount = 0;
+    if (type) {
+      const shape = getMediaTypeConfig(type).shape;
+      if (shape === "episodic" || shape === "collection") {
+        const table = shape === "episodic" ? "episodes" : "sub_items";
+        const childRow = (await db
+          .prepare(
+            `SELECT COUNT(*) AS total, SUM(c.has_file) AS have FROM ${table} c
+             WHERE c.media_item_id IN (SELECT m.id FROM ${fromClause} WHERE ${where})`
+          )
+          .get(...params)) as { total: number | string; have: number | string | null };
+        childCount = Number(childRow?.total ?? 0);
+        childHaveCount = Number(childRow?.have ?? 0);
+      }
     }
 
-    const items = rows.map(mediaItemFromRow);
-    await attachChildCounts(items);
-    res.json(items);
+    res.json({
+      total: Number(totalsRow.total),
+      haveCount: Number(totalsRow.have ?? 0),
+      missingCount: Number(totalsRow.total) - Number(totalsRow.have ?? 0),
+      childCount,
+      childHaveCount,
+      contentRatings: ratingRows.map((r) => r.rating),
+    });
   })
 );
 

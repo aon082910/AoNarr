@@ -3,6 +3,34 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 113 — server-side library pagination
+- Item #2 of the previously-scoped improvement list: `GET /api/media` (the Library page's main
+  fetch) now returns `{ items, total }` with real `limit`/`offset`/`sort`/`status`/`contentRating`
+  query params instead of a bare array of every item of a type — a large library (thousands of
+  albums/books/ROMs) no longer pulls its entire contents into the browser just to show, filter, and
+  sort one page of tiles. Sort and every status filter (including "Unmatched") now run as SQL
+  conditions server-side; the Library page's local `.filter()`/`.sort()` over the full array is
+  gone.
+- Added `GET /api/media/stats` — a separate, lightweight aggregate endpoint (item/child totals, the
+  distinct content-rating list for the type's filter dropdown) that stays correct independent of
+  which page you're viewing, since the header "N have / N missing / N total" badges shouldn't
+  change just because you paged forward.
+- Added Prev/Next pagination controls to the Library page (60 items/page), shown only when a
+  filtered result set actually exceeds one page.
+- New shared `server/src/services/mediaQuery.ts` builds the WHERE/ORDER BY/params once for both the
+  list and stats routes, so they can't silently drift on what counts as "in scope" (type/tag/group
+  scoping, the per-user content-rating restriction, household `allowedTypes`).
+- Known, intentional behavior change: "Select all" (the bulk-select toolbar) now selects only the
+  current page's items rather than every item matching the current filter across the whole type —
+  renamed to "Select all on page" to make the new scope explicit, matching how paginated bulk
+  actions work elsewhere.
+- Verified live against both SQLite and Postgres: seeded 75 synthetic movies (25 flagged
+  downloaded), confirmed page 1/2 boundaries, title-sort ordering, the "Downloaded" status filter
+  (25 results, correctly collapsing to zero pagination controls since they fit on one page — caught
+  and fixed a real bug here where the pagination math was using the unfiltered stats total instead
+  of the filtered list's own total, which showed "Page 1 of 2" for a 25-item filtered result), and
+  the "Unmatched" filter (all 75, since none had external ids) — identical results on both dialects.
+
 ## Round 112 — "Recently Changed" dashboard widget
 - Added a "Recently Changed" Dashboard widget (item #5 of the previously-scoped improvement list):
   a table of the most recent grab/import/auto-archive/subtitle events across the whole library,
