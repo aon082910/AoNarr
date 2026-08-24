@@ -3,6 +3,32 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 115 — mobile-responsive layout pass (item #4 of the scoped improvement list)
+- Found and fixed a real, app-wide mobile bug: `.content` (a flex child of `.app`) has no
+  `min-width: 0`, so it defaults to `min-width: auto` — meaning it never shrinks below the
+  intrinsic width of whatever's inside it (a toolbar row, a table), forcing the whole `.app` wider
+  than the viewport instead of letting the sidebar+content fit. Measured directly on a 375px-wide
+  viewport: sidebar (220px, fixed) + content (317px, refusing to shrink) = 537px, causing
+  page-wide horizontal scroll on every single page in the app. One-line fix (`min-width: 0` on
+  `.content`) plus a `overflow-x: auto` safety net so any page with an unusually wide table/row
+  scrolls internally instead of forcing the layout wider again in the future.
+- The sidebar now defaults to collapsed on a first visit from a narrow (≤768px) viewport — a fixed
+  220px column left almost no room for content on a phone-sized screen otherwise. This only affects
+  a device's *first* visit (no saved preference yet); an existing collapsed/expanded choice is
+  never overridden. While expanded on a narrow viewport, the sidebar renders as a full-screen
+  overlay (`position: fixed; inset: 0`) instead of squeezing content into a ~150px sliver next to
+  it, dismissed the same way it's opened.
+- Bumped the sidebar's mobile "☰" show/hide toggle from a ~28px tap target to a proper 40×40px one.
+- Reduced `.content`'s padding on screens ≤640px (28px/36px down to 16px) so more of a small
+  screen's width goes to actual content.
+- Verified live in-browser at a 375×812 mobile viewport (with Chrome/Android UA emulation) across
+  Dashboard, Settings, and the Movies library (both poster-grid and list/table views, both the
+  sidebar and top-bar nav layouts): confirmed zero horizontal overflow on every page checked
+  (`window.innerWidth` now genuinely matches the viewport, versus 537px of forced overflow before
+  the fix), the sidebar auto-collapses on a fresh mobile visit and opens as a full-screen overlay,
+  and re-verified desktop (1280px) is completely unaffected — sidebar still defaults expanded, no
+  overflow, existing behavior unchanged.
+
 ## Round 114 — automated test suite (item #1 of the scoped improvement list)
 - Added a real automated test suite (vitest + supertest) for the server, starting with the highest-
   risk paths per the earlier scoping note: the duplicate-merge tool (`services/duplicateCheck.ts`)

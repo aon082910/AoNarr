@@ -72,8 +72,22 @@ body {
 
 .content {
   flex: 1;
+  /* A flex item defaults to min-width: auto, which means it won't shrink below its own content's
+     intrinsic width (a wide toolbar row, a table, ...) no matter how narrow the viewport is —
+     without this, .content was forcing .app wider than the screen on mobile (measured: 317px of
+     content + .sidebar's 220px = 537px on a 375px-wide viewport) instead of its children wrapping/
+     scrolling internally the way flex:1 is supposed to allow. */
+  min-width: 0;
   padding: 28px 36px;
   max-width: 1200px;
+  /* Safety net for any page with a wide table/toolbar this pass didn't hit directly — scrolls that
+     one section horizontally instead of the min-width fix above still not being enough to keep the
+     whole app from growing past the viewport. */
+  overflow-x: auto;
+}
+
+@media (max-width: 640px) {
+  .content { padding: 16px; }
 }
 
 /* Top-bar layout — an alternative to the default left sidebar (toggled per-browser). .app gets

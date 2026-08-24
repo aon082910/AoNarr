@@ -117,7 +117,15 @@ export default function App() {
   const isAdmin = auth.isAdmin;
   const [showOnboarding, setShowOnboarding] = useState(false);
   const mediaTypes = useMediaTypes().filter((t) => isAdmin || auth.user?.allowedTypes.includes(t.key));
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("aonarr_sidebar_collapsed") === "1");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    const stored = localStorage.getItem("aonarr_sidebar_collapsed");
+    if (stored !== null) return stored === "1";
+    // No saved preference yet (first visit on this device) — default collapsed on a narrow/mobile
+    // viewport, where the sidebar's fixed 220px would otherwise eat most of the screen. Desktop's
+    // default (expanded) is unchanged; this only picks a different first-run default, it never
+    // overrides a choice the user already made.
+    return typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches;
+  });
   const [customizingSidebar, setCustomizingSidebar] = useState(false);
   const [navPosition, setNavPosition] = useState<"side" | "top">(
     () => (localStorage.getItem("aonarr_nav_position") as "side" | "top") || "side"
@@ -269,11 +277,36 @@ export default function App() {
             className="secondary"
             onClick={() => setSidebarCollapsed((v) => !v)}
             title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
-            style={{ position: "fixed", top: 12, left: 12, zIndex: 30, padding: "4px 10px", margin: 0, display: sidebarCollapsed ? "block" : "none" }}
+            style={{
+              position: "fixed",
+              top: 12,
+              left: 12,
+              zIndex: 30,
+              padding: 0,
+              margin: 0,
+              width: 40,
+              height: 40,
+              fontSize: "1.1rem",
+              display: sidebarCollapsed ? "flex" : "none",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
           >
             ☰
           </button>
-          <nav className="sidebar" style={sidebarCollapsed ? { display: "none" } : undefined}>
+          {/* On a narrow viewport the sidebar sits above content as a full-width overlay while
+              expanded (rather than squeezing content into the leftover ~150px next to a fixed
+              220px column) — dismissed the same way it's opened, via the ☰ toggle. */}
+          <nav
+            className="sidebar"
+            style={
+              sidebarCollapsed
+                ? { display: "none" }
+                : window.matchMedia("(max-width: 768px)").matches
+                  ? { position: "fixed", inset: 0, width: "100%", zIndex: 25, overflowY: "auto" }
+                  : undefined
+            }
+          >
             <div className="brand" style={{ justifyContent: "space-between" }}>
               <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <img src="/icon.svg" alt="" width={28} height={28} />
