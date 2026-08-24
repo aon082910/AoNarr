@@ -26,6 +26,7 @@ import { runScheduledBackup } from "./scheduledBackup.js";
 import { purgeExpiredRecycleBinEntries } from "./recycleBin.js";
 import { syncFromProwlarr } from "./prowlarrSync.js";
 import { checkForCorruptMedia } from "./corruptMediaCheck.js";
+import { runScheduledDuplicateCheck } from "./duplicateCheck.js";
 import { getGroupReputation, recordGroupFailure } from "./releaseGroupStats.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
 import { findUpgradeCandidates } from "./upgradeCandidates.js";
@@ -812,6 +813,19 @@ export function startScheduler() {
     run: async (signal) => {
       const r = await checkForCorruptMedia(signal);
       if (r.corrupt > 0) log.info(`[scheduler] corrupt media check: ${r.corrupt} of ${r.checked} file(s) failed validation`);
+    },
+  });
+
+  registerJob({
+    key: "duplicateCheck",
+    name: "Duplicate Check",
+    scheduleType: "cron",
+    // Daily rather than corruptMediaCheck's weekly cadence — this only queries media_items, no
+    // file I/O, so it's cheap enough to run far more often than a job that opens every file.
+    defaultSchedule: "0 5 * * *",
+    run: async () => {
+      const r = await runScheduledDuplicateCheck();
+      if (r.newGroups > 0) log.info(`[scheduler] duplicate check: ${r.newGroups} new duplicate group(s) found`);
     },
   });
 

@@ -180,6 +180,7 @@ const DEFAULT_TEMPLATES = {
   grabbed: "{mediaTitle}\n{releaseTitle}",
   imported: "{mediaTitle}\n{fileName}",
   failed: "{mediaTitle}: {reason}",
+  duplicatesFound: "{count} new duplicate group(s) found: {titles}",
 };
 
 /** Renders a {token}-based template from Settings, falling back to the built-in default when
@@ -225,5 +226,18 @@ export async function notifyFailed(mediaTitle: string, reason: string): Promise<
     text: renderTemplate("notifyTemplateFailed", DEFAULT_TEMPLATES.failed, { mediaTitle, reason }),
     color: 0xe05c5c,
     payload: { event: "failed", mediaTitle, reason },
+  });
+}
+
+/** `sampleTitles` is a short preview (a handful of titles), not every new group — the full list is
+ * always available on the Duplicates page, this is just enough for the notification to be useful
+ * at a glance without becoming an unreadable wall of text for a library with dozens of new hits. */
+export async function notifyDuplicatesFound(count: number, sampleTitles: string[]): Promise<void> {
+  const titles = sampleTitles.join(", ") + (count > sampleTitles.length ? ", ..." : "");
+  await fanOut({
+    title: "Duplicates found",
+    text: renderTemplate("notifyTemplateDuplicatesFound", DEFAULT_TEMPLATES.duplicatesFound, { count: String(count), titles }),
+    color: 0xe0a95c,
+    payload: { event: "duplicatesFound", count, titles: sampleTitles },
   });
 }

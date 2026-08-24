@@ -2,6 +2,7 @@ import { db } from "../db/index.js";
 import { log } from "./logger.js";
 import { getMediaTypeConfig, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
 import { recycleFile } from "./recycleBin.js";
+import { notifyDuplicatesFound } from "./notifications.js";
 
 function normalizeTitle(title: string): string {
   return title
@@ -62,6 +63,10 @@ export interface DuplicateGroup {
   title: string;
   year: number | null;
   items: DuplicateGroupItem[];
+  /** Stable identity for this group — (type, normalized title, year) — used to gate scheduled
+   * re-notification (see runScheduledDuplicateCheck below) rather than re-notifying about the same
+   * still-unmerged group on every scan. */
+  key: string;
 }
 
 /**
@@ -91,7 +96,7 @@ export async function findDuplicateGroups(type?: string): Promise<DuplicateGroup
       byKey.get(key)!.push(row);
     }
 
-    for (const rowsInGroup of byKey.values()) {
+    for (const [groupKey, rowsInGroup] of byKey.entries()) {
       if (rowsInGroup.length < 2) continue;
 
       const items: DuplicateGroupItem[] = [];
@@ -126,7 +131,7 @@ export async function findDuplicateGroups(type?: string): Promise<DuplicateGroup
       })[0];
       best.suggestedKeeper = true;
 
-      groups.push({ type: t, title: rowsInGroup[0].title, year: rowsInGroup[0].year, items });
+      groups.push({ type: t, title: rowsInGroup[0].title, year: rowsInGroup[0].year, items, key: `${t}::${groupKey}` });
     }
   }
 
@@ -252,4 +257,39 @@ export async function mergeMediaItems(keeperId: number, loserIds: number[], dele
 
   log.info(`[duplicateCheck] merged ${merged} duplicate(s) of "${keeper.title}" into item ${keeperId}`);
   return { merged };
+}
+
+/**
+ * Scheduled counterpart to the Duplicates page's on-demand `findDuplicateGroups()` sweep — runs
+ * the same detection, but only notifies about groups not already recorded in
+ * `duplicate_group_seen`, so a still-unmerged group found last week doesn't notify again every
+ * time this job runs. A group's identity survives new items joining it (same normalized
+ * title+year), so merging away the duplication is what actually stops it from being "new" again —
+ * simply ignoring the notification does not, which is the intended behavior (a real unresolved
+ * duplicate should keep being visible on the Duplicates page even after its one-time notification).
+ */
+export async function runScheduledDuplicateCheck(): Promise<{ newGroups: number }> {
+  const groups = await findDuplicateGroups();
+  const newTitles: string[] = [];
+
+  for (const g of groups) {
+    const existing = await db.prepare("SELECT id FROM duplicate_group_seen WHERE type = ? AND normalized_key = ?").get(g.type, g.key);
+    if (existing) continue;
+
+    const insertIgnore =
+      db.dialect === "postgres"
+        ? "INSERT INTO duplicate_group_seen (type, normalized_key) VALUES (?, ?) ON CONFLICT DO NOTHING"
+        : "INSERT OR IGNORE INTO duplicate_group_seen (type, normalized_key) VALUES (?, ?)";
+    await db.prepare(insertIgnore).run(g.type, g.key);
+    newTitles.push(`${g.title}${g.year ? ` (${g.year})` : ""}`);
+  }
+
+  if (newTitles.length > 0) {
+    log.info(`[duplicateCheck] scheduled scan found ${newTitles.length} new duplicate group(s)`);
+    await notifyDuplicatesFound(newTitles.length, newTitles.slice(0, 5)).catch((err) =>
+      log.warn("[duplicateCheck] failed to send duplicates-found notification:", err.message)
+    );
+  }
+
+  return { newGroups: newTitles.length };
 }

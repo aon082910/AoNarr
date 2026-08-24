@@ -3,6 +3,26 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 118 — scheduled duplicate detection with notification
+- The duplicate-merge tool (Round 107) was manual-only — an admin had to remember to check the
+  Duplicates page. Added a daily scheduled job ("Duplicate Check", 5am, admin-configurable/run-now
+  via the existing Jobs page — registering it in `services/jobRegistry.ts` gets those controls for
+  free, no frontend changes needed) that runs the same `findDuplicateGroups()` sweep and sends a
+  notification through whichever channels are already configured (Discord/Slack/webhook/Telegram/
+  Pushover/...) when it finds a group that hasn't been notified about before.
+- New `duplicate_group_seen` table gates re-notification: a still-unmerged duplicate group keeps
+  showing on the Duplicates page (unchanged — that page is deliberately a live, stateless sweep,
+  merging is the only thing that actually resolves a duplicate) but won't notify again on every
+  daily run, only the first time it's seen. `DuplicateGroup` now carries a stable `key`
+  (`type::normalizedTitle::year`) used as that identity.
+- New `notifyDuplicatesFound(count, sampleTitles)` in `services/notifications.ts`, following the
+  exact same template/fanOut pattern as the existing `notifyGrabbed`/`notifyImported`/`notifyFailed`
+  — no new notification-channel plumbing needed, just one more thin wrapper.
+- Verified live against both SQLite and Postgres: seeded a duplicate pair via the API, ran the job
+  via `POST /api/jobs/duplicateCheck/run`, confirmed the "1 new duplicate group(s) found" log line
+  on the first run and confirmed a second run produced no further log/notification — identical
+  behavior on both dialects.
+
 ## Round 117 — health page: config-completeness warnings, historical indexer stats
 - Extended (rather than duplicated) the existing System → Health tab: it already covered live
   reachability/disk-space/stuck-queue checks, but assumed the instance was already configured and

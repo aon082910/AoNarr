@@ -267,6 +267,20 @@ CREATE TABLE IF NOT EXISTS recycle_bin (
 -- Settings — an admin confirms (recycle it) or dismisses (false positive, leave the file alone)
 -- each one. table_name/row_id identify the actual media_items/episodes/sub_items row so approving
 -- can run the exact same recycle-and-mark-missing logic the automatic path already uses.
+-- One row per duplicate group the scheduled duplicate-check job has already notified about — gates
+-- notifyDuplicatesFound() so the same still-unmerged group doesn't renotify on every scan (see
+-- runScheduledDuplicateCheck() in services/duplicateCheck.ts). Keyed on the same
+-- (type, normalized-title, year) identity findDuplicateGroups() already groups by, not on the
+-- member media_item ids, since a group's membership can change (a new duplicate joining) while its
+-- identity stays the same.
+CREATE TABLE IF NOT EXISTS duplicate_group_seen (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  type TEXT NOT NULL,
+  normalized_key TEXT NOT NULL,
+  first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(type, normalized_key)
+);
+
 CREATE TABLE IF NOT EXISTS corrupt_media_review (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   table_name TEXT NOT NULL, -- 'media_items' | 'episodes' | 'sub_items'
