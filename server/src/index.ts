@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import { initDb } from "./db/index.js";
 import { loadSettingsCache } from "./services/settingsStore.js";
 import { loadQualityCaches } from "./services/quality.js";
+import { backfillEpisodicAndCollectionHasFile } from "./services/libraryScan.js";
 import { errorHandler, asyncHandler } from "./middleware/errorHandler.js";
 import { requireAuth } from "./middleware/auth.js";
 import { startScheduler } from "./services/scheduler.js";
@@ -76,6 +77,7 @@ await loadSettingsCache();
 await loadQualityCaches();
 await bootstrapAdminFromEnv();
 applySocksProxySetting();
+backfillEpisodicAndCollectionHasFile();
 
 const app = express();
 app.use(cors());

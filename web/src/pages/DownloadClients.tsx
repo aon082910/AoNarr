@@ -4,7 +4,7 @@ import Modal from "../components/Modal.js";
 import type { DownloadClient } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 
-type ClientType = "qbittorrent" | "sabnzbd" | "http" | "ytdlp" | "realdebrid" | "alldebrid" | "blackhole";
+type ClientType = "qbittorrent" | "sabnzbd" | "http" | "ytdlp" | "realdebrid" | "alldebrid" | "blackhole" | "slskd";
 
 interface ClientHealthStats {
   uploadedTotalBytes: number;
@@ -29,7 +29,7 @@ export default function DownloadClients() {
   const [category, setCategory] = useState("aonarr");
   const [audioOnly, setAudioOnly] = useState(false);
 
-  const needsHost = type === "qbittorrent" || type === "sabnzbd";
+  const needsHost = type === "qbittorrent" || type === "sabnzbd" || type === "slskd";
   const needsWatchFolder = type === "blackhole";
 
   function load() {
@@ -109,6 +109,7 @@ export default function DownloadClients() {
           <option value="realdebrid">Real-Debrid</option>
           <option value="alldebrid">AllDebrid</option>
           <option value="blackhole">Blackhole (watch folder)</option>
+          <option value="slskd">Soulseek (via slskd)</option>
         </select>
 
         {needsHost && (
@@ -179,6 +180,19 @@ export default function DownloadClients() {
             <input type="checkbox" checked={audioOnly} onChange={(e) => setAudioOnly(e.target.checked)} />
             Audio only (extract to mp3 — for ripping music from a video)
           </label>
+        )}
+
+        {type === "slskd" && (
+          <>
+            <label>API key</label>
+            <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+            <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+              slskd's own configured API key (slskd.yml → web → authentication). AoNarr searches
+              Soulseek directly for Music library items and enqueues downloads through slskd, the
+              same way it talks to qBittorrent/SABnzbd — point slskd's own download directory at a
+              location AoNarr's importer can reach, the same as any other external client.
+            </p>
+          </>
         )}
 
         {needsHost && (

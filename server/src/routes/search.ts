@@ -17,6 +17,7 @@ import { scoreRelease } from "../services/customFormatScoring.js";
 import { log } from "../services/logger.js";
 import { sizeWithinQualityBounds } from "../services/quality.js";
 import { getBlocklistedTitles, isBlocklisted } from "../services/blocklist.js";
+import { searchSlskd } from "../services/soulseek.js";
 import { searchAndGrabTargets, type BulkSearchTarget } from "../services/scheduler.js";
 import type { SearchResult } from "../types/index.js";
 
@@ -92,6 +93,22 @@ searchRouter.get(
       indexerFromRow
     );
     const rawResults = await searchAllIndexers(indexers as any, query, item.type as any, true);
+
+    // Soulseek has no Torznab-style indexer — a configured, enabled slskd client is queried
+    // directly instead and its results merged in alongside the indexer ones. Music-shaped
+    // libraries only, since (user, filename) results from Soulseek only make sense there.
+    if (item.type === "artist") {
+      const slskdClients = (db.prepare("SELECT * FROM download_clients WHERE type = 'slskd' AND enabled = 1").all() as any[]).map(
+        downloadClientFromRow
+      );
+      for (const client of slskdClients) {
+        try {
+          rawResults.push(...(await searchSlskd(client as any, query)));
+        } catch (err) {
+          log.warn(`[search] slskd client "${client.name}" search failed:`, (err as Error).message);
+        }
+      }
+    }
 
     let allowedQualities: string[] = [];
     let cutoff = "";

@@ -3,6 +3,50 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 94 — GitHub issue fixes + Soulseek support
+- **Fixed #1 — AllDebrid grabs failing with "Magnet is not valid"**: the `alldebrid` client passed
+  an indexer's raw Torznab "get"/proxy `downloadUrl` straight to AllDebrid's magnet-upload endpoint
+  instead of resolving it first. Added a shared `resolveDownloadSource()` helper that follows a
+  redirect to a real `magnet:` URI (fetch can't follow a redirect to a non-http(s) scheme itself,
+  so this is done by hand with `redirect: "manual"`) or reads raw `.torrent` bytes when the proxy
+  serves the file directly instead of redirecting; `.torrent` bytes now upload via AllDebrid's
+  multipart `/magnet/upload/file` endpoint rather than the URI endpoint. Also fixed the same latent
+  issue in the `realdebrid` client, which had the same "not every proxy URL is a magnet" gap.
+  Verified against a local mock server covering direct magnet, single/multi-hop redirect-to-magnet,
+  and raw `.torrent` bytes.
+- **Fixed #2 — duplicate TV shows after scanning**: `POST /media/scan-import` had no guard against
+  two overlapping scans of the same type — a scheduled "Library Import" job firing while a manual
+  scan (or a duplicate click) was still in flight would race, both loading their own snapshot of
+  existing shows before either had inserted anything, both concluding "no match" for the same new
+  series, and both inserting their own duplicate row. `probeMediaInfo`'s per-file ffprobe subprocess
+  call is slow enough that this was an easy real-world race, not just a theoretical window. Fixed
+  with an in-process per-type lock in `scanAndImportLibrary` — a second overlapping call for the
+  same type now skips instead of racing. Verified live by firing two concurrent scan-import requests
+  against the same library type and confirming no duplicate rows resulted.
+- **Fixed #3 — TV shows shown as "Missing" despite having every episode**: the Library page's
+  "Missing" badge reads `hasFile` on the top-level media_items row, but `scanAndImportLibrary`'s
+  episodic/collection branches only ever set `has_file` on the *child* episode/sub_item row they
+  matched or created — never rolling it up to the parent series/collection, unlike
+  `mediaServerImport.ts`/`starrImport.ts`'s import paths, which already did this correctly. Added
+  the same rollup (`UPDATE media_items SET has_file = 1 WHERE ... id IN (SELECT DISTINCT
+  media_item_id FROM episodes/sub_items WHERE has_file = 1)`) to Scan & Import, plus a one-time
+  startup backfill (`backfillEpisodicAndCollectionHasFile()`, safe to run unconditionally on every
+  boot — each UPDATE is a no-op once already-fixed) so existing installs' already-affected shows get
+  corrected without needing a fresh re-scan. Verified live: scanned in a two-episode show and
+  confirmed `hasFile` flipped to `true` on the parent series row.
+- **Added #4 — Soulseek (via slskd) as a download client**: Soulseek has no Torznab indexer and no
+  real "download URL" — files are only (username, remote filename) pairs from Soulseek's own
+  search. Added a `slskd` download client type (host/port/API key, same shape as qBittorrent/
+  SABnzbd — a real external client AoNarr tracks progress on, not a debrid-style pull-to-self
+  client) plus `services/soulseek.ts`, which queries a configured slskd daemon's own search API
+  directly for Music-library searches and encodes each result's (username, filename, size) into a
+  `slskd://` pseudo-URI riding through AoNarr's existing "grab posts a downloadUrl back" contract
+  unchanged — no changes needed to the indexer/scheduler pipeline itself. Verified the URL encode/
+  decode round-trip and the search-response parsing against a local mock slskd server (covering
+  multiple peers, a peer with no free upload slot, and Windows-style remote paths); verified live
+  that creating a client, its host/port validation, and the search route's graceful failure when
+  slskd is unreachable all work correctly end to end.
+
 ## Round 93
 - PostgreSQL support: converted `services/blocklist.ts`, `services/rootFolderSelect.ts`,
   `services/releaseGroupStats.ts`, `services/duplicateCheck.ts`, and `services/importExclusions.ts` —

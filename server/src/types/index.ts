@@ -146,6 +146,6 @@ export interface SearchResult {
   leechers: number | null;
   publishDate: string | null;
   downloadUrl: string;
-  protocol: "torrent" | "usenet" | "http";
+  protocol: "torrent" | "usenet" | "http" | "slskd";
   category: string | null;
 }

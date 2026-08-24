@@ -129,7 +129,18 @@ export interface ScanImportResult {
   skipped: number;
   skippedFiles: string[];
   unsupported?: string;
+  alreadyRunning?: boolean;
 }
+
+/** Guards against two overlapping scans of the same type racing each other — e.g. a scheduled
+ * "Library Import" job firing while an admin's manual "Scan & Import" click (or a duplicate click)
+ * is still in flight. Both would otherwise load their own independent snapshot of existing
+ * series/collection parents before either had inserted anything, each conclude "no existing match"
+ * for the same new show, and both insert their own duplicate media_items row for it — this was the
+ * cause of library-wide duplicate TV shows reported after scanning. probeMediaInfo's per-file
+ * ffprobe call is slow enough (real subprocess I/O) that this race was easy to hit in practice, not
+ * just a theoretical window. */
+const scansInProgress = new Set<string>();
 
 /**
  * Scans a library type's root folder(s) for media files not already tracked by any media_item/
@@ -145,6 +156,19 @@ export interface ScanImportResult {
  * becomes one sub_item) or the file's own name (for everything else, one file per child).
  */
 export async function scanAndImportLibrary(type: string, signal?: AbortSignal): Promise<ScanImportResult> {
+  if (scansInProgress.has(type)) {
+    log.warn(`[libraryScan] a scan for "${type}" is already running — skipping this overlapping request`);
+    return { matched: 0, created: 0, skipped: 0, skippedFiles: [], alreadyRunning: true };
+  }
+  scansInProgress.add(type);
+  try {
+    return await scanAndImportLibraryInner(type, signal);
+  } finally {
+    scansInProgress.delete(type);
+  }
+}
+
+async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Promise<ScanImportResult> {
   const typeConfig = getMediaTypeConfig(type);
   const result: ScanImportResult = { matched: 0, created: 0, skipped: 0, skippedFiles: [] };
 
@@ -382,6 +406,24 @@ export async function scanAndImportLibrary(type: string, signal?: AbortSignal): 
     }
   }
 
+  // The episodic/collection branches above only ever set has_file on the child episode/sub_item
+  // row they just matched or created — never on the parent series/collection media_items row
+  // itself, since a parent can gain files one child at a time across many separate scan runs.
+  // Without this rollup (the same one mediaServerImport.ts/starrImport.ts already do after their
+  // own episode/sub-item import passes) a Scan & Import-created series or collection parent's
+  // has_file stayed 0 forever, which is what the Library page's hasFile-driven "Missing" badge
+  // reads — so every episodic/collection item scanned in looked permanently "missing" even once
+  // every episode/album was actually present on disk.
+  if (typeConfig.shape === "episodic") {
+    db.prepare(
+      `UPDATE media_items SET has_file = 1 WHERE type = ? AND has_file = 0 AND id IN (SELECT DISTINCT media_item_id FROM episodes WHERE has_file = 1)`
+    ).run(type);
+  } else if (typeConfig.shape === "collection") {
+    db.prepare(
+      `UPDATE media_items SET has_file = 1 WHERE type = ? AND has_file = 0 AND id IN (SELECT DISTINCT media_item_id FROM sub_items WHERE has_file = 1)`
+    ).run(type);
+  }
+
   return result;
 }
 
@@ -432,6 +474,37 @@ export async function refreshLibraryMetadata(type: string, signal?: AbortSignal)
   }
 
   return { updated, failed };
+}
+
+/**
+ * One-time-per-startup data fix for installs that hit the has_file rollup gap described above
+ * (fixed going forward in scanAndImportLibrary itself, as of this same change) — a Scan &
+ * Import-created series/collection parent whose children all have files, but whose own has_file
+ * never got flipped, so it still shows as "Missing" on the Library page. Safe to run unconditionally
+ * on every startup: each UPDATE is scoped to `has_file = 0` rows with at least one has_file=1 child,
+ * so it's a no-op once every affected row has been fixed once.
+ */
+export function backfillEpisodicAndCollectionHasFile(): void {
+  let fixed = 0;
+  for (const type of MEDIA_TYPE_KEYS) {
+    const shape = getMediaTypeConfig(type).shape;
+    if (shape === "episodic") {
+      const result = db
+        .prepare(
+          `UPDATE media_items SET has_file = 1 WHERE type = ? AND has_file = 0 AND id IN (SELECT DISTINCT media_item_id FROM episodes WHERE has_file = 1)`
+        )
+        .run(type);
+      fixed += result.changes;
+    } else if (shape === "collection") {
+      const result = db
+        .prepare(
+          `UPDATE media_items SET has_file = 1 WHERE type = ? AND has_file = 0 AND id IN (SELECT DISTINCT media_item_id FROM sub_items WHERE has_file = 1)`
+        )
+        .run(type);
+      fixed += result.changes;
+    }
+  }
+  if (fixed > 0) log.info(`[libraryScan] startup data fix: corrected has_file on ${fixed} item(s) that had files but were still marked missing`);
 }
 
 export async function scanAndImportAllLibraries(signal?: AbortSignal): Promise<void> {

@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { config } from "../config.js";
 import type { DownloadClient } from "../types/index.js";
+import { decodeSlskdDownloadUrl } from "./soulseek.js";
 
 export interface GrabResult {
   downloadId: string;
@@ -48,6 +49,39 @@ export interface ClientHealthStats {
 
 function sanitizeFilename(name: string): string {
   return name.replace(/[/\\?%*:|"<>]/g, "_").trim().slice(0, 180);
+}
+
+export type ResolvedDownloadSource = { kind: "magnet"; uri: string } | { kind: "torrent"; bytes: Buffer };
+
+/**
+ * Resolves an indexer's `downloadUrl` to something a debrid provider (Real-Debrid, AllDebrid) can
+ * actually consume — a real `magnet:` URI or raw `.torrent` bytes. A literal magnet needs no
+ * resolution; anything else is typically a Torznab "get"/proxy endpoint that either 302-redirects
+ * to a magnet link or serves the `.torrent` file directly, neither of which is safe to hand to a
+ * debrid provider's magnet-upload endpoint as-is (see the AllDebrid `MAGNET_INVALID_URI` reports
+ * this fixed — passing the proxy URL itself, rather than what it resolves to, was rejected outright).
+ * `fetch` is called with `redirect: "manual"` specifically so a redirect Location pointing at a
+ * `magnet:` URI can be read directly — the platform fetch implementation can't follow a redirect to
+ * a non-http(s) scheme at all (it would just fail the request), so redirects must be handled by hand
+ * here rather than left to the default `redirect: "follow"` behavior.
+ */
+async function resolveDownloadSource(downloadUrl: string): Promise<ResolvedDownloadSource> {
+  if (downloadUrl.startsWith("magnet:")) return { kind: "magnet", uri: downloadUrl };
+
+  let url = downloadUrl;
+  for (let redirects = 0; redirects < 5; redirects++) {
+    const res = await fetch(url, { redirect: "manual" });
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get("location");
+      if (!location) throw new Error(`Redirect from "${url}" had no Location header`);
+      if (location.startsWith("magnet:")) return { kind: "magnet", uri: location };
+      url = new URL(location, url).toString();
+      continue;
+    }
+    if (!res.ok) throw new Error(`Failed to resolve download URL: HTTP ${res.status}`);
+    return { kind: "torrent", bytes: Buffer.from(await res.arrayBuffer()) };
+  }
+  throw new Error(`Too many redirects resolving download URL "${downloadUrl}"`);
 }
 
 function baseUrl(client: DownloadClient): string {
@@ -404,28 +438,28 @@ class RealDebridAdapter implements DownloadClientAdapter {
     return { downloadId };
   }
 
-  /** Magnet URIs go straight to addMagnet; anything else is fetched and treated as raw .torrent
-   * bytes for addTorrent — covers indexer results that hand back a .torrent download URL instead
-   * of a magnet link. */
+  /** Magnet URIs go straight to addMagnet; anything else is resolved first (see
+   * resolveDownloadSource — an indexer's proxy/"get" endpoint commonly redirects to a magnet or
+   * serves .torrent bytes directly, neither of which addTorrent/addMagnet can be handed the raw
+   * proxy URL for). */
   private async addToRealDebrid(client: DownloadClient, downloadUrl: string): Promise<string> {
-    if (downloadUrl.startsWith("magnet:")) {
+    const source = await resolveDownloadSource(downloadUrl);
+
+    if (source.kind === "magnet") {
       const res = await fetch(`${this.base}/torrents/addMagnet`, {
         method: "POST",
         headers: { ...this.headers(client), "Content-Type": "application/x-www-form-urlencoded" },
-        body: `magnet=${encodeURIComponent(downloadUrl)}`,
+        body: `magnet=${encodeURIComponent(source.uri)}`,
       });
       if (!res.ok) throw new Error(`Real-Debrid addMagnet failed: HTTP ${res.status}`);
       const body: any = await res.json();
       return body.id;
     }
 
-    const torrentRes = await fetch(downloadUrl);
-    if (!torrentRes.ok) throw new Error(`Failed to fetch .torrent for Real-Debrid: HTTP ${torrentRes.status}`);
-    const torrentBytes = Buffer.from(await torrentRes.arrayBuffer());
     const addRes = await fetch(`${this.base}/torrents/addTorrent`, {
       method: "PUT",
       headers: this.headers(client),
-      body: torrentBytes,
+      body: source.bytes,
     });
     if (!addRes.ok) throw new Error(`Real-Debrid addTorrent failed: HTTP ${addRes.status}`);
     const addBody: any = await addRes.json();
@@ -462,6 +496,22 @@ class AllDebridAdapter implements DownloadClientAdapter {
     return body.data;
   }
 
+  /** .torrent bytes go through the multipart file-upload endpoint rather than /magnet/upload —
+   * AllDebrid's magnets[] param only accepts a magnet URI or an http(s) URL it fetches itself, not
+   * raw file bytes AoNarr already has in hand. */
+  private async callUploadFile(client: DownloadClient, bytes: Buffer, filename: string): Promise<any> {
+    const url = new URL(`${this.base}/magnet/upload/file`);
+    url.searchParams.set("agent", this.agent);
+    url.searchParams.set("apikey", client.apiKey ?? "");
+    const form = new FormData();
+    form.append("files[]", new Blob([bytes]), filename);
+    const res = await fetch(url.toString(), { method: "POST", body: form });
+    if (!res.ok) throw new Error(`AllDebrid request failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+    if (body.status === "error") throw new Error(`AllDebrid: ${body.error?.message ?? body.error?.code ?? "unknown error"}`);
+    return body.data;
+  }
+
   async addDownload(
     client: DownloadClient,
     downloadUrl: string,
@@ -473,10 +523,15 @@ class AllDebridAdapter implements DownloadClientAdapter {
 
     (async () => {
       try {
-        // AllDebrid's magnet/upload accepts either a magnet URI or an http(s) URL to a .torrent
-        // file through the same "magnets[]" param — unlike Real-Debrid, no separate endpoint/method
-        // needed per input shape.
-        const uploadData = await this.call(client, "/magnet/upload", { "magnets[]": downloadUrl });
+        // The indexer's downloadUrl is commonly a Torznab "get"/proxy endpoint, not a magnet or
+        // .torrent itself — resolveDownloadSource follows redirects (a Location pointing at a
+        // magnet: URI) and fetches raw bytes otherwise, since AllDebrid's magnets[] param rejects
+        // a bare proxy URL outright (this was the MAGNET_INVALID_URI bug reports).
+        const source = await resolveDownloadSource(downloadUrl);
+        const uploadData =
+          source.kind === "magnet"
+            ? await this.call(client, "/magnet/upload", { "magnets[]": source.uri })
+            : await this.callUploadFile(client, source.bytes, sanitizeFilename(releaseTitle || downloadId) + ".torrent");
         const magnetId = uploadData?.magnets?.[0]?.id;
         if (!magnetId) throw new Error(uploadData?.magnets?.[0]?.error?.message ?? "AllDebrid rejected the magnet");
 
@@ -570,6 +625,65 @@ class BlackholeAdapter implements DownloadClientAdapter {
   }
 }
 
+/**
+ * Soulseek, via a slskd daemon (client.host/port point at slskd's own web API, client.apiKey is
+ * slskd's configured API key). Unlike the debrid clients, AoNarr doesn't pull the file down itself
+ * — slskd performs the actual peer-to-peer transfer and saves into its own configured downloads
+ * directory, the same "real external client, AoNarr just tracks its progress" shape as qBittorrent/
+ * SABnzbd. Point slskd's download directory at one of AoNarr's root folders (or a path the importer
+ * can reach) the same way you would for any other external client.
+ *
+ * `downloadUrl` here is always the `slskd://username/filename` pseudo-URI services/soulseek.ts's
+ * searchSlskd() produces — Soulseek has no real download URL, only a (user, file) pair, so this is
+ * how that pair rides through AoNarr's existing "grab posts a downloadUrl back" contract without
+ * needing a special case throughout the rest of the search/grab pipeline.
+ */
+class SlskdAdapter implements DownloadClientAdapter {
+  private baseUrl(client: DownloadClient): string {
+    const scheme = client.useSsl ? "https" : "http";
+    return `${scheme}://${client.host}:${client.port}`;
+  }
+
+  private headers(client: DownloadClient): Record<string, string> {
+    return client.apiKey ? { "X-API-Key": client.apiKey } : {};
+  }
+
+  async addDownload(client: DownloadClient, downloadUrl: string): Promise<GrabResult> {
+    const { username, filename, size } = decodeSlskdDownloadUrl(downloadUrl);
+    const res = await fetch(`${this.baseUrl(client)}/api/v0/transfers/downloads/${encodeURIComponent(username)}`, {
+      method: "POST",
+      headers: { ...this.headers(client), "Content-Type": "application/json" },
+      body: JSON.stringify([{ filename, size }]),
+    });
+    if (!res.ok) throw new Error(`slskd enqueue failed: HTTP ${res.status}`);
+    // slskd tracks transfers by (username, filename), not a generated id — encode both into the
+    // downloadId so getStatus can look this specific transfer back up later.
+    return { downloadId: `${username} ${filename}` };
+  }
+
+  async getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
+    const wanted = new Set(downloadIds);
+    const res = await fetch(`${this.baseUrl(client)}/api/v0/transfers/downloads`, { headers: this.headers(client) });
+    if (!res.ok) throw new Error(`slskd status failed: HTTP ${res.status}`);
+    const users = (await res.json()) as { username: string; directories?: { files?: any[] }[] }[];
+
+    const updates: QueueStatusUpdate[] = [];
+    for (const u of users) {
+      for (const dir of u.directories ?? []) {
+        for (const f of dir.files ?? []) {
+          const downloadId = `${u.username} ${f.filename}`;
+          if (!wanted.has(downloadId)) continue;
+          const state = String(f.state ?? "");
+          const status = state.includes("Succeeded") ? "completed" : state.includes("Errored") || state.includes("Cancelled") ? "failed" : "downloading";
+          const progress = f.size > 0 ? Math.min((f.bytesTransferred ?? 0) / f.size, 1) : 0;
+          updates.push({ downloadId, progress, status });
+        }
+      }
+    }
+    return updates;
+  }
+}
+
 const adapters: Record<DownloadClient["type"], DownloadClientAdapter> = {
   qbittorrent: new QBittorrentAdapter(),
   sabnzbd: new SabnzbdAdapter(),
@@ -578,6 +692,7 @@ const adapters: Record<DownloadClient["type"], DownloadClientAdapter> = {
   realdebrid: new RealDebridAdapter(),
   alldebrid: new AllDebridAdapter(),
   blackhole: new BlackholeAdapter(),
+  slskd: new SlskdAdapter(),
 };
 
 export function getDownloadClientAdapter(type: DownloadClient["type"]): DownloadClientAdapter {

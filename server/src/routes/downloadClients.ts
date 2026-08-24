@@ -22,7 +22,7 @@ downloadClientsRouter.post(
   asyncHandler(async (req, res) => {
     const b = req.body ?? {};
     if (!b.name || !b.type) throw new HttpError(400, "name and type are required");
-    const needsHost = b.type === "qbittorrent" || b.type === "sabnzbd";
+    const needsHost = b.type === "qbittorrent" || b.type === "sabnzbd" || b.type === "slskd";
     if (needsHost && (!b.host || !b.port)) throw new HttpError(400, "host and port are required for this client type");
 
     const result = await db
