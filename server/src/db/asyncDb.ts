@@ -281,3 +281,13 @@ export function nowOffsetExpr(db: Pick<AsyncDb, "dialect">, days: number): strin
     ? `to_char((now() AT TIME ZONE 'UTC') + interval '${n} days', 'YYYY-MM-DD HH24:MI:SS')`
     : `datetime('now', '${n} days')`;
 }
+
+/** Same idea as `nowOffsetExpr`, but offset by a whole number of hours — for call sites (e.g. a
+ * "stuck longer than N hours" threshold) where a day granularity is too coarse. Same trusted-integer
+ * caveat applies. */
+export function nowOffsetHoursExpr(db: Pick<AsyncDb, "dialect">, hours: number): string {
+  const n = Math.trunc(hours);
+  return db.dialect === "postgres"
+    ? `to_char((now() AT TIME ZONE 'UTC') + interval '${n} hours', 'YYYY-MM-DD HH24:MI:SS')`
+    : `datetime('now', '${n} hours')`;
+}

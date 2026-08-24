@@ -3,7 +3,13 @@ import { requireAdmin } from "../middleware/auth.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
+import { nowOffsetHoursExpr } from "../db/asyncDb.js";
+// SQLite-only backup/restore endpoints below need the raw better-sqlite3 handle directly
+// (Database.backup(), .close(), file-swap) — no Postgres equivalent exists yet, same deferred
+// design question as services/scheduledBackup.ts. Everything else in this file uses the async `db`
+// above.
+import { db as sqliteDb } from "../db/client.js";
 import { config } from "../config.js";
 import { downloadClientFromRow, indexerFromRow, rootFolderFromRow } from "../db/mappers.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
@@ -83,7 +89,7 @@ systemRouter.post(
 systemRouter.get(
   "/network-stats",
   asyncHandler(async (_req, res) => {
-    const clients = (db.prepare("SELECT * FROM download_clients WHERE enabled = 1").all() as any[]).map(
+    const clients = ((await db.prepare("SELECT * FROM download_clients WHERE enabled = 1").all()) as any[]).map(
       downloadClientFromRow
     );
     const clientStats = await Promise.all(
@@ -101,9 +107,13 @@ systemRouter.get(
       })
     );
 
-    const queueByStatus = db
-      .prepare("SELECT status, COUNT(*) AS count, COALESCE(SUM(size), 0) AS totalBytes FROM queue GROUP BY status")
-      .all() as { status: string; count: number; totalBytes: number }[];
+    const queueByStatus = ((await db
+      .prepare('SELECT status, COUNT(*) AS count, COALESCE(SUM(size), 0) AS "totalBytes" FROM queue GROUP BY status')
+      .all()) as { status: string; count: number; totalBytes: number }[]).map((r) => ({
+      status: r.status,
+      count: Number(r.count),
+      totalBytes: Number(r.totalBytes),
+    }));
 
     res.json({ clients: clientStats, queueByStatus });
   })
@@ -124,28 +134,31 @@ const APP_VERSION = "0.1.0";
 systemRouter.get(
   "/status",
   asyncHandler(async (_req, res) => {
-    const counts = db.prepare("SELECT type, COUNT(*) as count FROM media_items GROUP BY type").all() as {
+    const counts = (await db.prepare("SELECT type, COUNT(*) as count FROM media_items GROUP BY type").all()) as {
       type: string;
       count: number;
     }[];
     const libraryCounts: Record<string, number> = { movie: 0, series: 0, artist: 0, author: 0 };
-    for (const c of counts) libraryCounts[c.type] = c.count;
+    for (const c of counts) libraryCounts[c.type] = Number(c.count);
 
-    const queueCount = (
-      db.prepare("SELECT COUNT(*) as c FROM queue WHERE status IN ('queued','downloading')").get() as {
-        c: number;
-      }
-    ).c;
+    const queueCount = Number(
+      (
+        (await db.prepare("SELECT COUNT(*) as c FROM queue WHERE status IN ('queued','downloading')").get()) as {
+          c: number;
+        }
+      ).c
+    );
 
-    const indexerCount = (db.prepare("SELECT COUNT(*) as c FROM indexers WHERE enabled = 1").get() as { c: number })
-      .c;
-    const downloadClientCount = (
-      db.prepare("SELECT COUNT(*) as c FROM download_clients WHERE enabled = 1").get() as { c: number }
-    ).c;
+    const indexerCount = Number(
+      ((await db.prepare("SELECT COUNT(*) as c FROM indexers WHERE enabled = 1").get()) as { c: number }).c
+    );
+    const downloadClientCount = Number(
+      ((await db.prepare("SELECT COUNT(*) as c FROM download_clients WHERE enabled = 1").get()) as { c: number }).c
+    );
 
     await recordDiskUsageSamples();
 
-    const folders = (db.prepare("SELECT * FROM root_folders").all() as any[]).map(rootFolderFromRow);
+    const folders = ((await db.prepare("SELECT * FROM root_folders").all()) as any[]).map(rootFolderFromRow);
     const diskSpace = await Promise.all(
       folders.map(async (f) => {
         const forecast = await getStorageForecast(f.id);
@@ -187,28 +200,28 @@ const STUCK_QUEUE_HOURS = 6;
 systemRouter.get(
   "/health",
   asyncHandler(async (_req, res) => {
-    const indexers = (db.prepare("SELECT * FROM indexers WHERE enabled = 1").all() as any[]).map(indexerFromRow);
+    const indexers = ((await db.prepare("SELECT * FROM indexers WHERE enabled = 1").all()) as any[]).map(indexerFromRow);
     const indexerHealth = await Promise.all(
       indexers.map(async (idx) => ({ id: idx.id, name: idx.name, ...(await checkIndexerHealth(idx)) }))
     );
 
-    const stuckQueueRows = db
+    const stuckQueueRows = (await db
       .prepare(
-        `SELECT q.id, q.title, q.status, q.added_at AS addedAt, m.title AS mediaTitle FROM queue q
+        `SELECT q.id, q.title, q.status, q.added_at AS "addedAt", m.title AS "mediaTitle" FROM queue q
          JOIN media_items m ON m.id = q.media_item_id
          WHERE q.status IN ('queued','downloading')
-         AND q.added_at <= datetime('now', ?)`
+         AND q.added_at <= ${nowOffsetHoursExpr(db, -STUCK_QUEUE_HOURS)}`
       )
-      .all(`-${STUCK_QUEUE_HOURS} hours`) as any[];
+      .all()) as any[];
 
-    const pendingRequests = (
-      db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get() as { c: number }
-    ).c;
+    const pendingRequests = Number(
+      ((await db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get()) as { c: number }).c
+    );
 
     const repeatedImports = await findRepeatedImports();
     const upgradeCandidates = await findUpgradeCandidates();
 
-    const downloadClients = (db.prepare("SELECT * FROM download_clients WHERE enabled = 1").all() as any[]).map(
+    const downloadClients = ((await db.prepare("SELECT * FROM download_clients WHERE enabled = 1").all()) as any[]).map(
       downloadClientFromRow
     );
     const downloadClientHealth = await Promise.all(
@@ -223,18 +236,20 @@ systemRouter.get(
     );
 
     const DISK_WARN_PERCENT_FREE = 10;
-    const rootFolders = db.prepare("SELECT id, path FROM root_folders").all() as { id: number; path: string }[];
-    const diskWarnings = rootFolders
-      .map((folder) => {
-        const latest = db
-          .prepare("SELECT free_bytes, total_bytes FROM disk_usage_samples WHERE root_folder_id = ? ORDER BY sampled_at DESC LIMIT 1")
-          .get(folder.id) as { free_bytes: number; total_bytes: number } | undefined;
-        if (!latest || !latest.total_bytes) return null;
-        const percentFree = (latest.free_bytes / latest.total_bytes) * 100;
-        if (percentFree >= DISK_WARN_PERCENT_FREE) return null;
-        return { rootFolderId: folder.id, path: folder.path, percentFree: Math.round(percentFree * 10) / 10 };
-      })
-      .filter((w): w is NonNullable<typeof w> => w !== null);
+    const rootFolders = (await db.prepare("SELECT id, path FROM root_folders").all()) as { id: number; path: string }[];
+    const diskWarnings = (
+      await Promise.all(
+        rootFolders.map(async (folder) => {
+          const latest = (await db
+            .prepare("SELECT free_bytes, total_bytes FROM disk_usage_samples WHERE root_folder_id = ? ORDER BY sampled_at DESC LIMIT 1")
+            .get(folder.id)) as { free_bytes: number; total_bytes: number } | undefined;
+          if (!latest || !Number(latest.total_bytes)) return null;
+          const percentFree = (Number(latest.free_bytes) / Number(latest.total_bytes)) * 100;
+          if (percentFree >= DISK_WARN_PERCENT_FREE) return null;
+          return { rootFolderId: folder.id, path: folder.path, percentFree: Math.round(percentFree * 10) / 10 };
+        })
+      )
+    ).filter((w): w is NonNullable<typeof w> => w !== null);
 
     res.json({
       indexers: indexerHealth,
@@ -280,15 +295,15 @@ systemRouter.get(
   "/orphaned-scan",
   asyncHandler(async (req, res) => {
     const full = req.query.full === "1";
-    const folders = (db.prepare("SELECT * FROM root_folders").all() as any[]).map(rootFolderFromRow);
+    const folders = ((await db.prepare("SELECT * FROM root_folders").all()) as any[]).map(rootFolderFromRow);
     const knownPaths = new Set<string>([
-      ...(db.prepare("SELECT path FROM media_items WHERE path IS NOT NULL").all() as { path: string }[]).map(
+      ...((await db.prepare("SELECT path FROM media_items WHERE path IS NOT NULL").all()) as { path: string }[]).map(
         (r) => r.path
       ),
-      ...(db.prepare("SELECT file_path FROM episodes WHERE file_path IS NOT NULL").all() as { file_path: string }[]).map(
+      ...((await db.prepare("SELECT file_path FROM episodes WHERE file_path IS NOT NULL").all()) as { file_path: string }[]).map(
         (r) => r.file_path
       ),
-      ...(db.prepare("SELECT file_path FROM sub_items WHERE file_path IS NOT NULL").all() as { file_path: string }[]).map(
+      ...((await db.prepare("SELECT file_path FROM sub_items WHERE file_path IS NOT NULL").all()) as { file_path: string }[]).map(
         (r) => r.file_path
       ),
     ]);
@@ -342,7 +357,7 @@ systemRouter.get(
         }
       };
       walk(folder.path);
-      db.prepare("UPDATE root_folders SET last_scanned_at = ? WHERE id = ?").run(scanStartedAt, folder.id);
+      await db.prepare("UPDATE root_folders SET last_scanned_at = ? WHERE id = ?").run(scanStartedAt, folder.id);
     }
 
     res.json({ orphaned, incremental: !full, skippedDirs });
@@ -403,7 +418,7 @@ systemRouter.get(
   "/backup",
   asyncHandler(async (req, res) => {
     const tmpFile = path.join(os.tmpdir(), `aonarr-backup-${Date.now()}.db`);
-    await db.backup(tmpFile);
+    await sqliteDb.backup(tmpFile);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "backup_downloaded");
@@ -444,7 +459,7 @@ systemRouter.post(
     res.json({ restored: true, message: "Restoring — the app will restart momentarily." });
 
     setTimeout(() => {
-      db.close();
+      sqliteDb.close();
       fs.writeFileSync(config.dbPath, body);
       for (const suffix of ["-wal", "-shm"]) {
         try {

@@ -1,6 +1,6 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — 75 files converted and verified against a real Postgres container**, covering
+Status: **PostgreSQL — 76 files converted and verified against a real Postgres container**, covering
 auth, users, quality/library config, indexers, download clients, calendar events, saved library
 views, remote instances, friend libraries, library groups (including its `WITH RECURSIVE`
 nested-count rollup), person credits, custom formats (including TRaSH-Guides sync), collections
@@ -17,21 +17,22 @@ unmonitored/duplicate-file cleanup suggestions, Trakt list sync, TMDB/Last.fm re
 media import, watchlist CSV import, media-server library import (Plex/Jellyfin/Emby movies + series),
 import-list syncing (Trakt/IMDb/Last.fm), library scan-and-import (the filesystem scan that
 matches/creates movies, episodic shows, and collection/artist items, plus its has_file rollups),
-import-list CRUD, Prometheus metrics, Radarr/Sonarr/Lidarr/Readarr library migration, and the
+import-list CRUD, Prometheus metrics, Radarr/Sonarr/Lidarr/Readarr library migration, the
 post-download file placement/manual-import pipeline (single/episodic/collection-shape file moves,
-season-pack imports, and multi-file album imports). 5 files remain unconverted (their own *other*
-queries, not the call sites into the services converted in Rounds 93–99 — see those rounds' notes
-below for the distinction); `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one
-yet — see "What's left" below for the exact remaining list, now narrower and more accurately scoped
-than earlier rounds estimated. MariaDB — scoped, not started, deliberately deferred until PostgreSQL
-is fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by
-explicit user decision). This document exists so a future round can pick this up without re-deriving
-the analysis below.
+season-pack imports, and multi-file album imports), and system status/network-stats/health/
+orphaned-file-scan. 4 files remain unconverted (their own *other* queries, not the call sites into the
+services converted in Rounds 93–100 — see those rounds' notes below for the distinction);
+`AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one yet — see "What's left"
+below for the exact remaining list, now narrower and more accurately scoped than earlier rounds
+estimated. MariaDB — scoped, not started, deliberately deferred until PostgreSQL is fully done (see
+"The ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by explicit user
+decision). This document exists so a future round can pick this up without re-deriving the analysis
+below.
 
-## What's left (as of Round 99)
+## What's left (as of Round 100)
 
-The remaining 5 files are `routes/media.ts` (948 lines), `routes/search.ts`, `services/scheduler.ts`
-(864 lines), `routes/system.ts` (457 lines), and `services/scheduledBackup.ts`. Their own *remaining*
+The remaining 4 files are `routes/media.ts` (948 lines), `routes/search.ts`, `services/scheduler.ts`
+(864 lines), and `services/scheduledBackup.ts`. Their own *remaining*
 (non-`findPossibleDuplicates`/`isExcluded`/`isBlocklisted`/`scoreRelease`/`findRepeatedImports`/
 `findUpgradeCandidates`/etc.) database calls still need converting — but as Round 93 found, most of
 what made this list look unapproachable was **not actually true**.
@@ -57,7 +58,7 @@ every round since 84 has done, just in bigger files. `chooseBestResult()` in `sc
 lookup into a `Map` before a `.sort()`/`.filter()` runs, then have the callback do synchronous `Map`
 lookups instead of calling the async function directly.
 
-## Conversion plan for the remaining 5 files (as of Round 99)
+## Conversion plan for the remaining 4 files (as of Round 100)
 
 Mapped every import edge *among these files* (edges to already-converted or db-free files don't
 matter — the risk this session has consistently guarded against is a converted file's own queries
@@ -83,11 +84,12 @@ converted, not just the one `starrImport.ts` call site fixed in Round 98 — the
 query, in `importCollectionData()`'s Lidarr/Readarr parent/child matching, turned out to be its only
 one, so the whole file is done).
 
-**Tier 3 — depend on Tier 1+2:**
-`routes/system.ts` (457, → `cleanupSuggestions.ts`/`duplicates.ts`/`storageForecast.ts`/
-`traktSync.ts`/`upgradeCandidates.ts`, all now converted — Rounds 96/97 already fixed `system.ts`'s
-specific call sites into all 5 without converting the rest of the file), `routes/media.ts` (948, →
-`libraryScan.ts` — the single largest remaining file).
+**Tier 3 — depend on Tier 1+2:** ~~`routes/system.ts`~~ — **done as of Round 100**, except its
+`/backup` and `/backup/restore` routes, which now deliberately import the raw sync `db` from
+`db/client.ts` (aliased `sqliteDb`) instead of converting — same structural exception as
+`services/scheduledBackup.ts` below, since `Database.backup()`/`.close()`/raw file-swap restore have
+no Postgres equivalent yet. Still remaining: `routes/media.ts` (948, → `libraryScan.ts` — the single
+largest remaining file, its own dedicated round next).
 
 **Tier 4:**
 `services/scheduler.ts` (864, → `importLists.ts`/`importer.ts`/`libraryScan.ts`/
@@ -108,6 +110,36 @@ verification, following the same ritual every round since 79 has used (typecheck
 grep → build → live-verify both backends → update this doc + CHANGELOG.md → commit/push →
 rebuild/push Docker Hub tags). `services/scheduledBackup.ts`'s per-dialect backup logic is deferred
 to its own round after everything else, since it's a design question, not a conversion mop-up.
+
+## Progress (Round 100)
+
+Converted `routes/system.ts`: `/network-stats`, `/status`, `/health`, and `/orphaned-scan` — all now
+on the async `db`. Fixed a real camelCase-alias risk (`AS totalBytes` on `/network-stats`'s
+queue-by-status query — quoted to `AS "totalBytes"`) and wrapped every raw `pg`-driver `COUNT(*)`/
+`SUM(*)` result in `Number(...)` (`/network-stats`'s `count`/`totalBytes`, `/status`'s 4 counters,
+`/health`'s `pendingRequests`). Restructured `/health`'s disk-warnings `.map()` (a synchronous
+predicate calling a DB read per root folder) into `Promise.all(...).then(.filter(...))` — same pattern
+used repeatedly since Round 93, not new restructuring. Added a new `nowOffsetHoursExpr(db, hours)`
+helper next to the existing `nowOffsetExpr` (day-granularity) in `db/asyncDb.ts`, since `/health`'s
+stuck-queue threshold is `-6 hours`, too fine-grained for the existing days-only helper — used it to
+replace `/health`'s `datetime('now', '-6 hours')` query-level call.
+
+**Deliberately left unconverted**: `/backup` and `/backup/restore`, which call better-sqlite3's
+`Database.backup()`/`.close()` and do a raw SQLite file swap directly — no Postgres equivalent exists
+yet, the same structural exception already tracked for `services/scheduledBackup.ts`. Rather than block
+the rest of the file on that design question, `system.ts` now imports the async `db` from
+`db/index.js` for every other route and separately imports the raw sync `db` from `db/client.js`
+(aliased `sqliteDb`) just for these two routes — the first time this session a single file has needed
+both imports side by side. `services/scheduledBackup.ts` remains queued for its own dedicated round to
+design real per-dialect backup/restore logic; when it lands, `system.ts`'s two routes should switch to
+call whatever that round produces instead of touching `sqliteDb` directly.
+
+Live-verified against a fresh Postgres container: seeded a stuck queue item (10 hours old, past the
+6-hour threshold) and a low-disk-space sample via `psql`, then confirmed `/system/network-stats`
+correctly summed queue bytes as a real number, `/system/health` correctly flagged the stuck item and
+the disk warning, and cross-checked the queue count against `/metrics`'s already-converted Prometheus
+counter. Regression-tested the identical sequence (plus `/system/backup`, downloading a real SQLite
+snapshot) against the same image in SQLite mode via the app's own API — matched.
 
 ## Progress (Round 99)
 

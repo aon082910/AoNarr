@@ -3,6 +3,20 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 100
+- PostgreSQL support: converted `routes/system.ts` (`/network-stats`, `/status`, `/health`,
+  `/orphaned-scan`) — 76 files converted so far, 4 remain
+- `/backup` and `/backup/restore` deliberately stay on the raw SQLite handle (`Database.backup()`,
+  file-swap restore) — no Postgres equivalent exists yet, tracked as the same open design question as
+  `services/scheduledBackup.ts`
+- Fixed a camelCase SQL alias (`AS totalBytes` → `AS "totalBytes"`) in `/network-stats` that would
+  have silently folded to lowercase and broken the JSON response under Postgres
+- Added `nowOffsetHoursExpr()` next to the existing day-granularity `nowOffsetExpr()` for `/health`'s
+  6-hour stuck-queue threshold
+- Verified live against a real Postgres container: a stuck queue item and a low-disk-space sample
+  correctly surfaced in `/system/health`'s warnings, cross-checked against `/metrics`'s Prometheus
+  counters — same sequence regression-checked against SQLite, including a real backup download
+
 ## Round 99
 - PostgreSQL support: converted `routes/importLists.ts`, `routes/metrics.ts`,
   `services/starrImport.ts` (Radarr/Sonarr/Lidarr/Readarr library migration), and
