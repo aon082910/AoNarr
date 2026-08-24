@@ -3,6 +3,23 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 90
+- PostgreSQL support: converted the recycle-bin/corrupt-media cluster deferred since Round 86/88 —
+  `services/recycleBin.ts` + `routes/recycleBin.ts`, `services/corruptMediaCheck.ts` +
+  `routes/corruptMediaReview.ts`, and `services/archival.ts` (auto-archival) — 49 files converted so
+  far, ~21 remain
+- Unblocked by recognizing the only thing standing in the way was `recycleFile()`'s 3 call sites in
+  the still-unconverted `routes/media.ts`, all already inside `async` handlers — adding `await` to
+  those 3 lines was enough to convert the whole cluster without touching `media.ts`'s own (much
+  larger) set of database calls
+- `recycleBin.ts`'s scheduled-purge query was one of the 5 files flagged in the original SQL-
+  portability audit for SQLite's `datetime('now', ?)` syntax — now using the `nowOffsetExpr()` helper
+  added in Round 86
+- Verified live against a real Postgres container: full delete-with-recycle → restore → re-delete →
+  purge lifecycle through `media.ts`'s converted call sites, confirming the file actually moves and
+  moves back on disk each time, plus the corrupt-media-review confirm/dismiss routes — same sequence
+  regression-checked against SQLite on the same build
+
 ## Round 89
 - PostgreSQL support: converted `services/push.ts` + `routes/push.ts`, `services/mediaServerWebhook.ts`
   + `routes/mediaServerWebhook.ts`, `services/libraryValidation.ts`, and `routes/requests.ts` to the

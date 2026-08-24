@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { probeMediaInfo } from "./ffprobe.js";
 import { recycleFile } from "./recycleBin.js";
 import { log } from "./logger.js";
@@ -64,17 +64,17 @@ export function isCorruptMediaReviewEnabled(): boolean {
   return getSetting("corruptMediaReviewEnabled") === "1";
 }
 
-export function recycleAndMarkMissing(
+export async function recycleAndMarkMissing(
   table: "media_items" | "episodes" | "sub_items",
   id: number,
   filePath: string,
   type: string,
   title: string,
   mediaItemId: number
-): void {
-  recycleFile(filePath, type, `${title} (corrupt)`, mediaItemId);
+): Promise<void> {
+  await recycleFile(filePath, type, `${title} (corrupt)`, mediaItemId);
   const pathCol = table === "media_items" ? "path" : "file_path";
-  db.prepare(`UPDATE ${table} SET has_file = 0, ${pathCol} = NULL, quality = NULL WHERE id = ?`).run(id);
+  await db.prepare(`UPDATE ${table} SET has_file = 0, ${pathCol} = NULL, quality = NULL WHERE id = ?`).run(id);
   log.warn(`[corruptMediaCheck] "${title}" failed validation — moved to recycle bin, marked missing`);
 }
 
@@ -90,19 +90,21 @@ async function handleCorrupt(
   if (isCorruptMediaReviewEnabled()) {
     // Leave the file and the DB row alone — has_file stays 1, so the item still shows as present
     // until an admin actually confirms it. Only the queue entry is new.
-    const existing = db
+    const existing = await db
       .prepare("SELECT id FROM corrupt_media_review WHERE table_name = ? AND row_id = ?")
       .get(table, id);
     if (!existing) {
-      db.prepare(
-        `INSERT INTO corrupt_media_review (table_name, row_id, media_item_id, media_type, file_path, title, reason)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).run(table, id, mediaItemId, type, filePath, title, reason);
+      await db
+        .prepare(
+          `INSERT INTO corrupt_media_review (table_name, row_id, media_item_id, media_type, file_path, title, reason)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(table, id, mediaItemId, type, filePath, title, reason);
       log.warn(`[corruptMediaCheck] "${title}" failed validation (${reason}) — queued for review`);
     }
     return;
   }
-  recycleAndMarkMissing(table, id, filePath, type, title, mediaItemId);
+  await recycleAndMarkMissing(table, id, filePath, type, title, mediaItemId);
 }
 
 /** Walks every file AoNarr thinks it has and validates it with ffprobe, moving anything that
@@ -113,7 +115,7 @@ export async function checkForCorruptMedia(signal?: AbortSignal): Promise<Corrup
   let checked = 0;
   let corrupt = 0;
 
-  const singleItems = db.prepare("SELECT id, type, title, path FROM media_items WHERE has_file = 1 AND path IS NOT NULL").all() as any[];
+  const singleItems = (await db.prepare("SELECT id, type, title, path FROM media_items WHERE has_file = 1 AND path IS NOT NULL").all()) as any[];
   for (const item of singleItems) {
     if (signal?.aborted) return { checked, corrupt };
     checked++;
@@ -124,12 +126,12 @@ export async function checkForCorruptMedia(signal?: AbortSignal): Promise<Corrup
     }
   }
 
-  const episodes = db
+  const episodes = (await db
     .prepare(
       `SELECT e.id, e.file_path, e.title, m.type, m.title AS media_title, m.id AS media_item_id
        FROM episodes e JOIN media_items m ON m.id = e.media_item_id WHERE e.has_file = 1 AND e.file_path IS NOT NULL`
     )
-    .all() as any[];
+    .all()) as any[];
   for (const ep of episodes) {
     if (signal?.aborted) return { checked, corrupt };
     checked++;
@@ -140,12 +142,12 @@ export async function checkForCorruptMedia(signal?: AbortSignal): Promise<Corrup
     }
   }
 
-  const subItems = db
+  const subItems = (await db
     .prepare(
       `SELECT s.id, s.file_path, s.title, m.type, m.title AS media_title, m.id AS media_item_id
        FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE s.has_file = 1 AND s.file_path IS NOT NULL`
     )
-    .all() as any[];
+    .all()) as any[];
   for (const sub of subItems) {
     if (signal?.aborted) return { checked, corrupt };
     // Only shapes with one file per child are meaningfully checkable this way (Music's

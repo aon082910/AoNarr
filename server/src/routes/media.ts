@@ -475,7 +475,7 @@ mediaRouter.post(
     const corrupt = !info || (looksLikeVideo && !info.videoCodec);
 
     if (corrupt) {
-      recycleFile(row.path, row.type, `${row.title} (corrupt)`, row.id);
+      await recycleFile(row.path, row.type, `${row.title} (corrupt)`, row.id);
       db.prepare("UPDATE media_items SET has_file = 0, path = NULL, quality = NULL WHERE id = ?").run(row.id);
     }
     res.json({ corrupt, checked: true });
@@ -720,13 +720,13 @@ mediaRouter.delete(
     // also recycle the item's file(s) (CASCADE drops episodes/sub_items too, so their
     // file_paths need collecting before the row goes).
     if (req.query.deleteFiles === "1") {
-      if (row.path) recycleFile(row.path, row.type, row.title, row.id);
+      if (row.path) await recycleFile(row.path, row.type, row.title, row.id);
       const children = (
         db.prepare("SELECT file_path FROM episodes WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id) as any[]
       ).concat(
         db.prepare("SELECT file_path FROM sub_items WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id) as any[]
       );
-      for (const child of children) recycleFile(child.file_path, row.type, row.title, row.id);
+      for (const child of children) await recycleFile(child.file_path, row.type, row.title, row.id);
     }
 
     const result = db.prepare("DELETE FROM media_items WHERE id = ?").run(req.params.id);

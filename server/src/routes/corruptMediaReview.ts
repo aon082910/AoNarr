@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { recycleAndMarkMissing } from "../services/corruptMediaCheck.js";
@@ -11,7 +11,7 @@ corruptMediaReviewRouter.use(requireAdmin);
 corruptMediaReviewRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
-    const rows = db.prepare("SELECT * FROM corrupt_media_review ORDER BY detected_at DESC").all() as any[];
+    const rows = (await db.prepare("SELECT * FROM corrupt_media_review ORDER BY detected_at DESC").all()) as any[];
     res.json(
       rows.map((r) => ({
         id: r.id,
@@ -31,11 +31,11 @@ corruptMediaReviewRouter.get(
 corruptMediaReviewRouter.post(
   "/:id/recycle",
   asyncHandler(async (req, res) => {
-    const row = db.prepare("SELECT * FROM corrupt_media_review WHERE id = ?").get(req.params.id) as any;
+    const row = (await db.prepare("SELECT * FROM corrupt_media_review WHERE id = ?").get(req.params.id)) as any;
     if (!row) throw new HttpError(404, "Review entry not found");
 
-    recycleAndMarkMissing(row.table_name, row.row_id, row.file_path, row.media_type, row.title, row.media_item_id);
-    db.prepare("DELETE FROM corrupt_media_review WHERE id = ?").run(req.params.id);
+    await recycleAndMarkMissing(row.table_name, row.row_id, row.file_path, row.media_type, row.title, row.media_item_id);
+    await db.prepare("DELETE FROM corrupt_media_review WHERE id = ?").run(req.params.id);
 
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "corrupt_media_recycled", row.title);
@@ -49,10 +49,10 @@ corruptMediaReviewRouter.post(
 corruptMediaReviewRouter.post(
   "/:id/dismiss",
   asyncHandler(async (req, res) => {
-    const row = db.prepare("SELECT * FROM corrupt_media_review WHERE id = ?").get(req.params.id) as any;
+    const row = (await db.prepare("SELECT * FROM corrupt_media_review WHERE id = ?").get(req.params.id)) as any;
     if (!row) throw new HttpError(404, "Review entry not found");
 
-    db.prepare("DELETE FROM corrupt_media_review WHERE id = ?").run(req.params.id);
+    await db.prepare("DELETE FROM corrupt_media_review WHERE id = ?").run(req.params.id);
 
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "corrupt_media_dismissed", row.title);

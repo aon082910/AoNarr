@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { purgeRecycleBinEntry, startRestoreFromRecycleBin } from "../services/recycleBin.js";
@@ -11,7 +11,7 @@ recycleBinRouter.use(requireAdmin);
 recycleBinRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
-    const rows = db.prepare("SELECT * FROM recycle_bin ORDER BY deleted_at DESC").all() as any[];
+    const rows = (await db.prepare("SELECT * FROM recycle_bin ORDER BY deleted_at DESC").all()) as any[];
     res.json(
       rows.map((r) => ({
         id: r.id,
@@ -33,13 +33,14 @@ recycleBinRouter.get(
  * copy rather than a rename) can take a while, and holding the HTTP request open for that used to
  * mean the whole server sat blocked on a synchronous copy for the duration — see recycleBin.ts's
  * startRestoreFromRecycleBin for the actual fix. Validation errors ("no such entry", "already
- * restoring") still throw synchronously here and 400 normally; everything past that point is
- * reflected in the row's restoring/restoreError fields on the next GET /. */
+ * restoring") reject before any of the actual file move starts, so they still 400 normally here;
+ * everything past that point is reflected in the row's restoring/restoreError fields on the next
+ * GET /. */
 recycleBinRouter.post(
   "/:id/restore",
   asyncHandler(async (req, res) => {
     try {
-      startRestoreFromRecycleBin(Number(req.params.id));
+      await startRestoreFromRecycleBin(Number(req.params.id));
     } catch (err) {
       throw new HttpError(400, (err as Error).message);
     }
@@ -50,7 +51,7 @@ recycleBinRouter.post(
 recycleBinRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
-    purgeRecycleBinEntry(Number(req.params.id));
+    await purgeRecycleBinEntry(Number(req.params.id));
     res.status(204).send();
   })
 );

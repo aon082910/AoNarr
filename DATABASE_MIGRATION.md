@@ -1,6 +1,6 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — 44 files converted and verified against a real Postgres container**, covering
+Status: **PostgreSQL — 49 files converted and verified against a real Postgres container**, covering
 auth, users, quality/library config, indexers, download clients, calendar events, saved library
 views, remote instances, friend libraries, library groups (including its `WITH RECURSIVE`
 nested-count rollup), person credits, custom formats (including TRaSH-Guides sync), collections
@@ -8,12 +8,53 @@ nested-count rollup), person credits, custom formats (including TRaSH-Guides syn
 import exclusions (route only), artwork selection, global library search, share links, activity
 (queue/history/timeline), the public calendar feed + token, the dashboard widgets, subtitle providers,
 the wanted/missing + calendar views, household requests (including auto-approval and per-user storage
-stats), web push subscriptions, the media-server watch webhook, and library/media-server validation.
-Most of the app (~26 remaining files) still isn't converted; `AONARR_DATABASE_DRIVER=postgres` runs a
-real app, just not a complete one yet. MariaDB — scoped, not started, deliberately deferred until
-PostgreSQL is fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL
-first" by explicit user decision). This document exists so a future round can pick this up without
-re-deriving the analysis below.
+stats), web push subscriptions, the media-server watch webhook, library/media-server validation, and
+the full recycle-bin/corrupt-media/auto-archival cluster. Most of the app (~21 remaining files) still
+isn't converted; `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one yet.
+MariaDB — scoped, not started, deliberately deferred until PostgreSQL is fully done (see "The ask"
+below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by explicit user decision). This
+document exists so a future round can pick this up without re-deriving the analysis below.
+
+## Progress (Round 90)
+
+Converted the recycle-bin/corrupt-media cluster deliberately deferred back in Round 86 and Round 88:
+`services/recycleBin.ts` + `routes/recycleBin.ts`, `services/corruptMediaCheck.ts` +
+`routes/corruptMediaReview.ts`, and `services/archival.ts` (auto-archival's retention-override lookup,
+history logging, and the actual move/recycle/delete). This was possible now because the blocking
+caller was only ever `recycleFile()` — every one of its unconverted call sites (`archival.ts` itself,
+and 3 in the still-unconverted `routes/media.ts`) already sits inside an `async` handler, so making
+`recycleFile()` genuinely async just meant adding `await` in front of 3 existing call sites in
+`media.ts` — no need to convert `media.ts`'s own (much larger) set of database calls to unblock this
+cluster. `services/archival.ts`'s `scheduler.ts` and `routes/system.ts` call sites, and
+`corruptMediaCheck.ts`'s `scheduler.ts` call site, were already correctly `await`-ing these
+(previously-synchronous-in-practice) functions as if they returned promises, so no changes were needed
+there either.
+
+`recycleBin.ts`'s `purgeExpiredRecycleBinEntries()` was one of the 5 files flagged in the original
+Round 79 SQL-portability audit as using SQLite's `datetime('now', ?)` modifier syntax — converted to
+the `nowOffsetExpr()` helper added in Round 86, the second of the 5 flagged files to actually use it
+(after `collections.ts`).
+
+`startRestoreFromRecycleBin()` had a doc comment promising it "throws synchronously... before any
+async work starts" for its cheap validation checks (missing entry, already restoring) — with the DB
+read now async, that's no longer literally synchronous, but the *behavioral* guarantee (validation
+rejects before the actual file-move work begins) still holds; updated the comment's wording rather
+than its meaning.
+
+Verified live against a real Postgres container (no admin-bootstrap env vars): created real on-disk
+test files, created media items pointing at them (via the still-shadow-SQLite-backed
+`metadata.ts`/`media.ts` create path — a deliberate reminder that an unconverted file's own reads/
+writes still land in the orphaned local SQLite database documented since Round 80, even though the
+callee functions it invokes, like `recycleFile()`, now correctly reach the real configured backend),
+exercised the full delete-with-recycle → list → restore → re-delete → purge lifecycle through
+`media.ts`'s converted call sites and confirmed the file actually moved and moved back on disk each
+time, and exercised the corrupt-media-review confirm/dismiss routes against directly-seeded Postgres
+rows (necessary since review entries have a real FK to `media_items`, unlike the shadow-SQLite-backed
+create path) — same sequence regression-checked against SQLite on the same build, where the single
+consistent database made the whole flow simpler to verify end to end (and additionally surfaced that
+`recycle_bin.media_item_id`'s `ON DELETE SET NULL` correctly nulls out once the parent row is actually
+gone — the Postgres run didn't show this because the shadow-SQLite delete never touched the real
+Postgres row, not because of any behavior difference between backends).
 
 ## Progress (Round 89)
 

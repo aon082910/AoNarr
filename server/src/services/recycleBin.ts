@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
+import { nowOffsetExpr } from "../db/asyncDb.js";
 import { config } from "../config.js";
 import { getSetting } from "./settingsStore.js";
 import { log } from "./logger.js";
@@ -30,7 +31,7 @@ export function isRecycleBinEnabled(): boolean {
  * deleting it outright, and records enough to restore it later. Falls back to a plain delete if
  * the recycle bin is disabled or the move itself fails (e.g. file already gone) — never throws,
  * since this runs inline with delete flows that shouldn't be blocked by a housekeeping feature. */
-export function recycleFile(filePath: string, mediaType: string, title: string, mediaItemId: number | null): void {
+export async function recycleFile(filePath: string, mediaType: string, title: string, mediaItemId: number | null): Promise<void> {
   if (!isRecycleBinEnabled()) {
     try {
       fs.unlinkSync(filePath);
@@ -47,10 +48,12 @@ export function recycleFile(filePath: string, mediaType: string, title: string, 
     const stamp = Date.now();
     const dest = path.join(destDir, `${stamp}-${path.basename(filePath)}`);
     moveFile(filePath, dest);
-    db.prepare(
-      `INSERT INTO recycle_bin (media_item_id, media_type, title, original_path, recycle_path, size_bytes)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(mediaItemId, mediaType, title, filePath, dest, stat.size);
+    await db
+      .prepare(
+        `INSERT INTO recycle_bin (media_item_id, media_type, title, original_path, recycle_path, size_bytes)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(mediaItemId, mediaType, title, filePath, dest, stat.size);
   } catch (err) {
     log.warn(`[recycleBin] failed to recycle "${filePath}", deleting instead:`, (err as Error).message);
     try {
@@ -83,29 +86,29 @@ async function moveFileAsync(src: string, dest: string): Promise<void> {
  * such entry" or "already restoring" — so the route can 400 those the normal way; everything after
  * that point resolves through the DB row instead of a thrown error, since by then the HTTP response
  * has already gone out. */
-export function startRestoreFromRecycleBin(id: number): void {
-  const row = db.prepare("SELECT * FROM recycle_bin WHERE id = ?").get(id) as
+export async function startRestoreFromRecycleBin(id: number): Promise<void> {
+  const row = (await db.prepare("SELECT * FROM recycle_bin WHERE id = ?").get(id)) as
     | { recycle_path: string; original_path: string; restoring: number }
     | undefined;
   if (!row) throw new Error("Recycle bin entry not found");
   if (row.restoring) throw new Error("This item is already being restored");
 
-  db.prepare("UPDATE recycle_bin SET restoring = 1, restore_error = NULL WHERE id = ?").run(id);
+  await db.prepare("UPDATE recycle_bin SET restoring = 1, restore_error = NULL WHERE id = ?").run(id);
 
   (async () => {
     try {
       await fsp.mkdir(path.dirname(row.original_path), { recursive: true });
       await moveFileAsync(row.recycle_path, row.original_path);
-      db.prepare("DELETE FROM recycle_bin WHERE id = ?").run(id);
+      await db.prepare("DELETE FROM recycle_bin WHERE id = ?").run(id);
     } catch (err) {
       log.warn(`[recycleBin] restore failed for entry ${id}:`, (err as Error).message);
-      db.prepare("UPDATE recycle_bin SET restoring = 0, restore_error = ? WHERE id = ?").run((err as Error).message, id);
+      await db.prepare("UPDATE recycle_bin SET restoring = 0, restore_error = ? WHERE id = ?").run((err as Error).message, id);
     }
   })();
 }
 
-export function purgeRecycleBinEntry(id: number): void {
-  const row = db.prepare("SELECT * FROM recycle_bin WHERE id = ?").get(id) as { recycle_path: string; restoring: number } | undefined;
+export async function purgeRecycleBinEntry(id: number): Promise<void> {
+  const row = (await db.prepare("SELECT * FROM recycle_bin WHERE id = ?").get(id)) as { recycle_path: string; restoring: number } | undefined;
   if (!row) return;
   if (row.restoring) throw new Error("This item is being restored — wait for that to finish first");
   try {
@@ -113,18 +116,18 @@ export function purgeRecycleBinEntry(id: number): void {
   } catch {
     // already gone
   }
-  db.prepare("DELETE FROM recycle_bin WHERE id = ?").run(id);
+  await db.prepare("DELETE FROM recycle_bin WHERE id = ?").run(id);
 }
 
 /** Scheduled cleanup: purges anything older than the configured retention. */
 export async function purgeExpiredRecycleBinEntries(): Promise<void> {
   const days = Math.max(1, parseInt(getSetting("recycleBinRetentionDays") ?? "30", 10) || 30);
-  const rows = db
-    .prepare(`SELECT id FROM recycle_bin WHERE deleted_at <= datetime('now', ?) AND restoring = 0`)
-    .all(`-${days} days`) as { id: number }[];
+  const rows = (await db
+    .prepare(`SELECT id FROM recycle_bin WHERE deleted_at <= ${nowOffsetExpr(db, -days)} AND restoring = 0`)
+    .all()) as { id: number }[];
   for (const row of rows) {
     try {
-      purgeRecycleBinEntry(row.id);
+      await purgeRecycleBinEntry(row.id);
     } catch (err) {
       log.warn(`[recycleBin] failed to purge expired entry ${row.id}:`, (err as Error).message);
     }
