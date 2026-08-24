@@ -532,8 +532,18 @@ class AllDebridAdapter implements DownloadClientAdapter {
           source.kind === "magnet"
             ? await this.call(client, "/magnet/upload", { "magnets[]": source.uri })
             : await this.callUploadFile(client, source.bytes, sanitizeFilename(releaseTitle || downloadId) + ".torrent");
-        const magnetId = uploadData?.magnets?.[0]?.id;
-        if (!magnetId) throw new Error(uploadData?.magnets?.[0]?.error?.message ?? "AllDebrid rejected the magnet");
+        // /magnet/upload's response nests its result under `magnets[]`; /magnet/upload/file — a
+        // different endpoint entirely, used for the .torrent-bytes case above — nests the exact
+        // same shape under `files[]` instead. Reading `magnets[]` unconditionally here meant every
+        // single .torrent upload was treated as a rejection even when AllDebrid had accepted it
+        // fine, since `magnets` simply doesn't exist in that endpoint's response at all — this was
+        // the reopened https://github.com/aon082910/AoNarr/issues/1 report ("the error has changed"
+        // after the redirect/torrent-bytes resolution fix: real per-item errors like
+        // MAGNET_INVALID_URI stopped surfacing, replaced by the generic fallback message below,
+        // because `entry` was always undefined for a torrent-file upload).
+        const entry = source.kind === "magnet" ? uploadData?.magnets?.[0] : uploadData?.files?.[0];
+        const magnetId = entry?.id;
+        if (!magnetId) throw new Error(entry?.error?.message ?? "AllDebrid rejected the magnet");
 
         // Poll AllDebrid's own caching progress until it's fully fetched on their end.
         let links: { link: string; filename: string }[] = [];

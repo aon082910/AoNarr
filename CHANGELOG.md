@@ -3,6 +3,19 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 104 — fix AllDebrid grabs failing on every .torrent-byte upload
+- Fixed #1 (reopened): every grab that resolved to raw `.torrent` bytes (rather than a magnet URI)
+  was silently treated as "AllDebrid rejected the magnet," even when AllDebrid had accepted it
+  fine — `/magnet/upload/file`'s response nests its result under `data.files[]`, not
+  `data.magnets[]` like `/magnet/upload` does, and the code always read `magnets[]` regardless of
+  which endpoint was actually called. This was the follow-up bug behind "the error has changed"
+  after the earlier redirect/torrent-bytes resolution fix: that fix correctly started resolving
+  proxy URLs to real magnets/torrent bytes and reaching AllDebrid successfully, but then
+  misparsed the file-upload response and reported a false failure on every one.
+- Verified against a local mock AllDebrid API server matching the documented response shapes for
+  both `/magnet/upload` (redirect-to-magnet case) and `/magnet/upload/file` (raw torrent-bytes
+  case, the actual bug) — both now report their grab as completed.
+
 ## Round 103 — GitHub issue fixes: music tracks/artwork, bulk remove, manga chapters
 - Fixed #9 (no track data): Scan & Import never created individual `tracks` rows for a Music
   album folder, only the album-level has_file/file_path — the album detail page showed "0 have /
