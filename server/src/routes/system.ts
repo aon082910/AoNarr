@@ -372,7 +372,7 @@ systemRouter.get(
 systemRouter.get(
   "/release-group-stats",
   asyncHandler(async (_req, res) => {
-    res.json(listReleaseGroupStats());
+    res.json(await listReleaseGroupStats());
   })
 );
 

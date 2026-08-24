@@ -1,28 +1,32 @@
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 
-export function recordGroupSuccess(releaseGroup: string | null): void {
+export async function recordGroupSuccess(releaseGroup: string | null): Promise<void> {
   if (!releaseGroup) return;
-  db.prepare(
-    `INSERT INTO release_group_stats (release_group, successes) VALUES (?, 1)
-     ON CONFLICT(release_group) DO UPDATE SET successes = successes + 1`
-  ).run(releaseGroup);
+  await db
+    .prepare(
+      `INSERT INTO release_group_stats (release_group, successes) VALUES (?, 1)
+       ON CONFLICT(release_group) DO UPDATE SET successes = successes + 1`
+    )
+    .run(releaseGroup);
 }
 
-export function recordGroupFailure(releaseGroup: string | null): void {
+export async function recordGroupFailure(releaseGroup: string | null): Promise<void> {
   if (!releaseGroup) return;
-  db.prepare(
-    `INSERT INTO release_group_stats (release_group, failures) VALUES (?, 1)
-     ON CONFLICT(release_group) DO UPDATE SET failures = failures + 1`
-  ).run(releaseGroup);
+  await db
+    .prepare(
+      `INSERT INTO release_group_stats (release_group, failures) VALUES (?, 1)
+       ON CONFLICT(release_group) DO UPDATE SET failures = failures + 1`
+    )
+    .run(releaseGroup);
 }
 
 /** Success rate in [0, 1] for tie-breaking search results; a group with no history at all gets a
  * neutral 0.5 rather than being penalized for being unproven, and a group needs at least 3 known
  * outcomes before its rate is trusted over "no data" — a single lucky/unlucky grab shouldn't
  * swing future ranking. */
-export function getGroupReputation(releaseGroup: string | null): number {
+export async function getGroupReputation(releaseGroup: string | null): Promise<number> {
   if (!releaseGroup) return 0.5;
-  const row = db.prepare("SELECT successes, failures FROM release_group_stats WHERE release_group = ?").get(releaseGroup) as
+  const row = (await db.prepare("SELECT successes, failures FROM release_group_stats WHERE release_group = ?").get(releaseGroup)) as
     | { successes: number; failures: number }
     | undefined;
   if (!row) return 0.5;
@@ -38,8 +42,8 @@ export interface ReleaseGroupStatsRow {
   successRate: number;
 }
 
-export function listReleaseGroupStats(): ReleaseGroupStatsRow[] {
-  const rows = db.prepare("SELECT * FROM release_group_stats").all() as {
+export async function listReleaseGroupStats(): Promise<ReleaseGroupStatsRow[]> {
+  const rows = (await db.prepare("SELECT * FROM release_group_stats").all()) as {
     release_group: string;
     successes: number;
     failures: number;

@@ -145,14 +145,22 @@ export async function getRecommendations(): Promise<{
     lastfmKey ? recommendArtists(lastfmKey).catch(() => []) : Promise.resolve([]),
   ]);
 
-  const notExcluded = (r: Recommendation) => {
+  const notExcluded = async (r: Recommendation) => {
     const provider = Object.keys(r.externalIds)[0];
-    return !isExcluded(r.type, r.title, r.year, provider ? r.externalIds[provider] : null, provider ?? null);
+    return !(await isExcluded(r.type, r.title, r.year, provider ? r.externalIds[provider] : null, provider ?? null));
   };
+  // isExcluded is DB-backed (async) — Array.filter's predicate can't await, so each list is
+  // checked in parallel first and filtered against the resulting boolean array instead.
+  async function filterAsync<T>(items: T[], predicate: (item: T) => Promise<boolean>): Promise<T[]> {
+    const keep = await Promise.all(items.map(predicate));
+    return items.filter((_, i) => keep[i]);
+  }
 
-  return {
-    movies: movies.filter(notExcluded),
-    series: series.filter(notExcluded),
-    artists: artists.filter(notExcluded),
-  };
+  const [filteredMovies, filteredSeries, filteredArtists] = await Promise.all([
+    filterAsync(movies, notExcluded),
+    filterAsync(series, notExcluded),
+    filterAsync(artists, notExcluded),
+  ]);
+
+  return { movies: filteredMovies, series: filteredSeries, artists: filteredArtists };
 }

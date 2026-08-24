@@ -1,4 +1,4 @@
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 
 function normalizeTitle(title: string): string {
   return title
@@ -20,13 +20,16 @@ export interface PossibleDuplicate {
  * year match when both sides have one (so "Dune" 1984 and "Dune" 2021 aren't flagged against
  * each other, but two "Dune (2021)" adds would be).
  */
-export function findPossibleDuplicates(type: string, title: string, year: number | null): PossibleDuplicate[] {
+export async function findPossibleDuplicates(type: string, title: string, year: number | null): Promise<PossibleDuplicate[]> {
   const needle = normalizeTitle(title);
   if (!needle) return [];
 
-  const candidates = db.prepare("SELECT id, title, year, poster_url FROM media_items WHERE type = ?").all(
-    type
-  ) as { id: number; title: string; year: number | null; poster_url: string | null }[];
+  const candidates = (await db.prepare("SELECT id, title, year, poster_url FROM media_items WHERE type = ?").all(type)) as {
+    id: number;
+    title: string;
+    year: number | null;
+    poster_url: string | null;
+  }[];
 
   return candidates
     .filter((c) => {

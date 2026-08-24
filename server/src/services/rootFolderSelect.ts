@@ -1,12 +1,12 @@
 import fs from "node:fs";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 
 /** When more than one root folder is configured for a media type and the caller didn't pick
  * one explicitly, auto-select the one with the most free disk space right now. */
-export function autoSelectRootFolderId(mediaType: string): number | null {
-  const folders = db
+export async function autoSelectRootFolderId(mediaType: string): Promise<number | null> {
+  const folders = (await db
     .prepare("SELECT id, path FROM root_folders WHERE media_type = ?")
-    .all(mediaType) as { id: number; path: string }[];
+    .all(mediaType)) as { id: number; path: string }[];
   if (folders.length === 0) return null;
   if (folders.length === 1) return folders[0].id;
 
@@ -29,11 +29,11 @@ export function autoSelectRootFolderId(mediaType: string): number | null {
  * cached percentage that could go stale between checks. An unreachable path (mount not present,
  * etc.) is never treated as "over quota" — that's a different problem for the health check to
  * surface, not a reason to silently stop grabbing. */
-export function isRootFolderOverQuota(rootFolderId: number | null): boolean {
+export async function isRootFolderOverQuota(rootFolderId: number | null): Promise<boolean> {
   if (!rootFolderId) return false;
-  const folder = db
+  const folder = (await db
     .prepare("SELECT path, quota_percent, pause_grabs_at_quota FROM root_folders WHERE id = ?")
-    .get(rootFolderId) as { path: string; quota_percent: number | null; pause_grabs_at_quota: number } | undefined;
+    .get(rootFolderId)) as { path: string; quota_percent: number | null; pause_grabs_at_quota: number } | undefined;
   if (!folder || !folder.pause_grabs_at_quota || folder.quota_percent === null) return false;
 
   try {

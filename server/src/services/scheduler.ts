@@ -79,7 +79,7 @@ interface ChosenResult {
  * scoring below the profile's minimum custom format score are rejected outright, mirroring
  * Sonarr/Radarr's "minimum custom format score" gate.
  */
-function chooseBestResult(
+async function chooseBestResult(
   results: SearchResult[],
   allowedQualities: string[],
   cutoff: string,
@@ -88,7 +88,7 @@ function chooseBestResult(
   target: { season: number; episode: number } | null,
   blocklisted: Set<string>,
   mediaType: string
-): ChosenResult | null {
+): Promise<ChosenResult | null> {
   const notBlocklisted = results.filter((r) => !blocklisted.has(r.title));
   const withParsed = notBlocklisted.map((r) => ({ result: r, parsed: parseReleaseTitle(r.title) }));
 
@@ -113,12 +113,20 @@ function chooseBestResult(
     .filter((c) => c.totalScore >= minFormatScore);
   if (candidates.length === 0) return null;
 
+  // getGroupReputation is now async (DB-backed) — a .sort() comparator can't await, so reputation
+  // for every distinct release group in play is precomputed into a plain Map first, and the
+  // comparator does a synchronous lookup against it.
+  const releaseGroups = new Set(candidates.map((c) => parseReleaseTitle(c.result.title).releaseGroup));
+  const reputationByGroup = new Map<string | null, number>(
+    await Promise.all(Array.from(releaseGroups).map(async (g) => [g, await getGroupReputation(g)] as const))
+  );
+
   candidates.sort(
     (a, b) =>
       b.totalScore - a.totalScore ||
       (b.result.seeders ?? 0) - (a.result.seeders ?? 0) ||
-      getGroupReputation(parseReleaseTitle(b.result.title).releaseGroup) -
-        getGroupReputation(parseReleaseTitle(a.result.title).releaseGroup) ||
+      (reputationByGroup.get(parseReleaseTitle(b.result.title).releaseGroup) ?? 0.5) -
+        (reputationByGroup.get(parseReleaseTitle(a.result.title).releaseGroup) ?? 0.5) ||
       preferredSizeDistance(best, a.result.size ?? null) - preferredSizeDistance(best, b.result.size ?? null)
   );
   const winner = candidates[0]?.result;
@@ -248,7 +256,7 @@ async function runAutoSearch(signal?: AbortSignal) {
       log.info("[scheduler] auto-search cancelled");
       return;
     }
-    if (isRootFolderOverQuota(item.rootFolderId)) {
+    if (await isRootFolderOverQuota(item.rootFolderId)) {
       log.info(`[scheduler] skipping "${item.title}": its root folder is at/over its configured quota`);
       continue;
     }
@@ -260,13 +268,13 @@ async function runAutoSearch(signal?: AbortSignal) {
 
     try {
       const shape = getMediaTypeConfig(item.type).shape;
-      const blocklisted = getBlocklistedTitles(item.id);
+      const blocklisted = await getBlocklistedTitles(item.id);
 
       if (shape === "single") {
         if (item.hasFile || isAlreadyQueued(item.id, null, null)) continue;
         const query = item.year ? `${item.title} ${item.year}` : item.title;
         const results = await searchAllIndexers(indexers, query, item.type);
-        const best = chooseBestResult(
+        const best = await chooseBestResult(
           results,
           allowedQualities,
           cutoff,
@@ -292,7 +300,7 @@ async function runAutoSearch(signal?: AbortSignal) {
           const episode = String(ep.episode_number).padStart(2, "0");
           const query = `${item.title} S${season}E${episode}`;
           const results = await searchAllIndexers(indexers, query, item.type);
-          const best = chooseBestResult(
+          const best = await chooseBestResult(
             results,
             allowedQualities,
             cutoff,
@@ -345,7 +353,7 @@ async function runAutoSearch(signal?: AbortSignal) {
 
           const query = `${item.title} ${sub.title}`;
           const results = await searchAllIndexers(indexers, query, item.type);
-          const best = chooseBestResult(
+          const best = await chooseBestResult(
             results,
             allowedQualities,
             cutoff,
@@ -399,7 +407,7 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
       const allowedQualities = profile?.allowedQualities ?? [];
       const cutoff = profile?.cutoff ?? "";
       const minFormatScore = profile?.minFormatScore ?? 0;
-      const blocklisted = getBlocklistedTitles(item.id);
+      const blocklisted = await getBlocklistedTitles(item.id);
 
       let query: string;
       let episodeTarget: { season: number; episode: number } | null = null;
@@ -423,7 +431,7 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
       }
 
       const searchResults = await searchAllIndexers(indexers, query, item.type);
-      const best = chooseBestResult(
+      const best = await chooseBestResult(
         searchResults,
         allowedQualities,
         cutoff,
@@ -565,7 +573,7 @@ async function retryFailedGrab(match: QueueItem, reason: string): Promise<void> 
     match.indexerId,
     reason
   );
-  recordGroupFailure(parseReleaseTitle(match.title).releaseGroup);
+  await recordGroupFailure(parseReleaseTitle(match.title).releaseGroup);
 
   if (!mediaRow || match.retryCount >= MAX_AUTO_RETRIES) {
     await notifyFailed(mediaTitle, reason);
@@ -575,7 +583,7 @@ async function retryFailedGrab(match: QueueItem, reason: string): Promise<void> 
   try {
     const item = mediaItemFromRow(mediaRow) as MediaItem;
     const profile = getQualityProfile(item.qualityProfileId);
-    const blocklisted = getBlocklistedTitles(item.id);
+    const blocklisted = await getBlocklistedTitles(item.id);
 
     let episodeTarget: { season: number; episode: number } | null = null;
     let query: string;
@@ -594,7 +602,7 @@ async function retryFailedGrab(match: QueueItem, reason: string): Promise<void> 
 
     const indexers = rowsToIndexers();
     const results = await searchAllIndexers(indexers, query, item.type);
-    const best = chooseBestResult(
+    const best = await chooseBestResult(
       results,
       profile?.allowedQualities ?? [],
       profile?.cutoff ?? "",

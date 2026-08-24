@@ -48,7 +48,7 @@ watchlistImportRouter.post(
     for (const row of rows) {
       if (!row.title) continue;
       try {
-        if (findPossibleDuplicates(row.type, row.title, row.year).length > 0) {
+        if ((await findPossibleDuplicates(row.type, row.title, row.year)).length > 0) {
           results.push({ title: row.title, status: "skipped_duplicate" });
           continue;
         }

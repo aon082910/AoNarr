@@ -89,7 +89,7 @@ async function syncTraktList(list: ImportListRow, qualityProfileId: number | nul
         const m = entry.movie;
         const tmdbId = m.ids?.tmdb;
         if (!tmdbId || existingMovies.has(String(tmdbId))) continue;
-        if (isExcluded("movie", m.title, m.year ?? null, String(tmdbId), "tmdb")) continue;
+        if (await isExcluded("movie", m.title, m.year ?? null, String(tmdbId), "tmdb")) continue;
         db.prepare(
           `INSERT INTO media_items (type, title, sort_title, year, external_ids, quality_profile_id, monitored, status)
            VALUES ('movie', ?, ?, ?, ?, ?, 1, 'missing')`
@@ -106,7 +106,7 @@ async function syncTraktList(list: ImportListRow, qualityProfileId: number | nul
         const s = entry.show;
         const tmdbId = s.ids?.tmdb;
         if (!tmdbId || existingSeries.has(String(tmdbId))) continue;
-        if (isExcluded("series", s.title, s.year ?? null, String(tmdbId), "tmdb")) continue;
+        if (await isExcluded("series", s.title, s.year ?? null, String(tmdbId), "tmdb")) continue;
         const externalIds = { tmdb: String(tmdbId), trakt: String(s.ids?.trakt ?? "") };
         const result = db
           .prepare(
@@ -165,8 +165,8 @@ async function syncImdbList(list: ImportListRow, qualityProfileId: number | null
     const type = titleType.includes("series") || titleType.includes("show") ? "series" : "movie";
 
     try {
-      if (findPossibleDuplicates(type as any, title, year).length > 0) continue;
-      if (isExcluded(type, title, year, "", "")) continue;
+      if ((await findPossibleDuplicates(type as any, title, year)).length > 0) continue;
+      if (await isExcluded(type, title, year, "", "")) continue;
 
       const query = year ? `${title} ${year}` : title;
       const results = await searchMetadata(type as any, query).catch(() => []);
@@ -239,8 +239,8 @@ async function syncLastfmList(list: ImportListRow, qualityProfileId: number | nu
     const title = a?.name;
     if (!title) continue;
     try {
-      if (findPossibleDuplicates("artist" as any, title, null).length > 0) continue;
-      if (isExcluded("artist", title, null, a.mbid ?? "", "lastfm")) continue;
+      if ((await findPossibleDuplicates("artist" as any, title, null)).length > 0) continue;
+      if (await isExcluded("artist", title, null, a.mbid ?? "", "lastfm")) continue;
 
       const externalIds = { lastfm: a.mbid || title };
       const insertResult = db

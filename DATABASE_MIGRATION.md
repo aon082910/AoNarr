@@ -1,61 +1,115 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — 54 files converted and verified against a real Postgres container**, covering
+Status: **PostgreSQL — 59 files converted and verified against a real Postgres container**, covering
 auth, users, quality/library config, indexers, download clients, calendar events, saved library
 views, remote instances, friend libraries, library groups (including its `WITH RECURSIVE`
 nested-count rollup), person credits, custom formats (including TRaSH-Guides sync), collections
 (including its smart-filter query builder and item reordering transaction), album tracks, blocklist,
-import exclusions (route only), artwork selection, global library search, share links, activity
+import exclusions, artwork selection, global library search, share links, activity
 (queue/history/timeline), the public calendar feed + token, the dashboard widgets, subtitle providers,
 the wanted/missing + calendar views, household requests (including auto-approval and per-user storage
 stats), web push subscriptions, the media-server watch webhook, library/media-server validation, the
 full recycle-bin/corrupt-media/auto-archival cluster, instance settings (including the TOTP 2FA and
-config-template export/import flows), the import-review queue, and library media-compatibility
-analysis. 26 files remain unconverted; `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a
-complete one yet — see "What's left" below for the exact remaining list and why it doesn't decompose
-into further small batches. MariaDB — scoped, not started, deliberately deferred until PostgreSQL is
-fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by
+config-template export/import flows), the import-review queue, library media-compatibility analysis,
+duplicate-detection, and release-group reputation tracking. 21 files remain unconverted (their own
+*other* queries, not the call sites into the 5 services converted in Round 93 — see Round 93's notes
+below for the distinction); `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one
+yet — see "What's left" below for the exact remaining list, now narrower and more accurately scoped
+than earlier rounds estimated. MariaDB — scoped, not started, deliberately deferred until PostgreSQL
+is fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "PostgreSQL first" by
 explicit user decision). This document exists so a future round can pick this up without re-deriving
 the analysis below.
 
-## What's left (as of Round 92)
+## What's left (as of Round 93)
 
-The remaining 26 files are one tightly-coupled cluster — the media-add and search/grab/scoring
-pipeline — that no longer decomposes into small, independently-safe batches the way every prior round
-did. Two sub-groups:
+The remaining 21 files are `routes/media.ts` (947 lines), `routes/metadata.ts`,
+`routes/watchlistImport.ts`, `routes/importLists.ts`, `services/importLists.ts`,
+`services/recommendations.ts`, `services/traktSync.ts`, `services/mediaServerImport.ts`,
+`services/starrImport.ts`, `routes/search.ts`, `services/importer.ts`,
+`services/customFormatScoring.ts`, `services/upgradeCandidates.ts`, `services/scheduler.ts` (853
+lines), `routes/system.ts` (457 lines), `routes/metrics.ts`, `services/duplicates.ts`,
+`services/storageForecast.ts`, `services/cleanupSuggestions.ts`, `services/libraryScan.ts`, and
+`services/scheduledBackup.ts`. Their own *remaining* (non-`findPossibleDuplicates`/`isExcluded`/
+`isBlocklisted`/etc.) database calls still need converting — but as Round 93 found, most of what made
+this list look unapproachable was **not actually true**.
 
-**The media-add pipeline** (creating/importing library items and deciding what NOT to add):
-`routes/media.ts` (947 lines — the single largest remaining file, and the one every recently-converted
-small service kept turning out to be blocked by), `routes/metadata.ts`, `routes/watchlistImport.ts`,
-`routes/importLists.ts`, `services/importLists.ts`, `services/duplicateCheck.ts`,
-`services/importExclusions.ts`, `services/recommendations.ts`, `services/traktSync.ts`,
-`services/mediaServerImport.ts`, `services/starrImport.ts`. Their small helper functions
-(`findPossibleDuplicates`, `isExcluded`) are called *inline* inside synchronous `.filter()`/`.some()`
-predicates and object-literal field values across these files — unlike the recycle-bin cluster's
-`recycleFile()` (Round 90) or `sendPush()` (Round 89), simply adding `await` at the call site isn't
-enough here; the surrounding synchronous control flow needs restructuring first.
+**Correction to the Round 92 assessment above**: it claimed the small helper functions in this
+cluster (`findPossibleDuplicates`, `isExcluded`, `isBlocklisted`, `getGroupReputation`, etc.) were
+called "inline inside synchronous `.filter()`/`.some()` predicates," implying every one of their ~25
+call sites needed control-flow restructuring before conversion. Round 93 checked every call site
+individually and found this was true for only **2 of them** — the rest were plain `for` loops, values
+computed before a `.map()`/object literal, or direct calls inside `async` route handlers, all
+trivially `await`-able with no restructuring. The lesson for whoever picks this up next: don't assume
+a function's *name* or its file's role in "the pipeline" predicts how hard its call sites are to
+convert — check each one. `services/scheduledBackup.ts` remains the one genuine structural exception:
+it calls better-sqlite3's `Database.backup()` directly, which has no Postgres equivalent at all (a
+real per-dialect backup strategy — `pg_dump`-equivalent logic for Postgres, unchanged `db.backup()`
+for SQLite — is needed there, not a query rewrite).
 
-**The search/grab/scoring pipeline**: `routes/search.ts`, `services/importer.ts`,
-`services/customFormatScoring.ts`, `services/upgradeCandidates.ts`, `services/blocklist.ts`,
-`services/releaseGroupStats.ts`, `services/rootFolderSelect.ts`, `services/scheduler.ts` (853 lines —
-the scheduler that ties nearly every background job together). Same shape of problem:
-`getGroupReputation()` is called inside a `.sort()` comparator in `scheduler.ts`, `isBlocklisted()`
-inside inline `if` conditions in `search.ts`, etc.
+What's actually left in each remaining file, now that the 5 easy services are extracted: their own
+CRUD/query logic (`media.ts`'s ~40 other routes, `search.ts`'s own indexer-search queries,
+`scheduler.ts`'s own history/queue/quality-profile reads, etc.) — ordinary conversion work of the kind
+every round since 84 has done, just in bigger files. `chooseBestResult()` in `scheduler.ts` (see Round
+93) is the template for the one real restructuring pattern likely to recur: precompute an async
+lookup into a `Map` before a `.sort()`/`.filter()` runs, then have the callback do synchronous `Map`
+lookups instead of calling the async function directly.
 
-Plus a handful of large, central route files that gate smaller already-identified services:
-`routes/system.ts` (457 lines — blocks `services/duplicates.ts`, `services/storageForecast.ts`,
-`services/cleanupSuggestions.ts`, `services/releaseGroupStats.ts`'s `listReleaseGroupStats`),
-`routes/metrics.ts` (blocks `services/duplicates.ts` too), and `services/scheduledBackup.ts` (blocked
-on something structural, not just caller-awaiting: it calls better-sqlite3's `Database.backup()`
-method directly, which has no Postgres equivalent at all — a real per-dialect backup strategy, not a
-query-portability fix, is needed there; `pg_dump`-equivalent logic for Postgres, unchanged
-`db.backup()` for SQLite).
+## Progress (Round 93)
 
-Converting this cluster will need an actual planned round (or several) that restructures the
-synchronous predicate/comparator usages into something `await`-compatible (e.g. pre-computing a
-lookup `Map` before the `.filter()`/`.sort()` runs, rather than calling an async function from inside
-the callback itself) — not the "convert an entry point, add `await` at its callers" pattern every
-round since Round 84 has used.
+Rather than converting one of the large remaining files, converted the 5 small, genuinely
+self-contained services identified across Rounds 89–92 as blocked only by their *callers* not
+awaiting them: `services/blocklist.ts`, `services/rootFolderSelect.ts`, `services/releaseGroupStats.ts`,
+`services/duplicateCheck.ts`, and `services/importExclusions.ts`. Then updated every one of their ~25
+call sites across 9 caller files (`routes/search.ts`, `routes/media.ts`, `routes/metadata.ts`,
+`routes/watchlistImport.ts`, `services/importLists.ts`, `services/traktSync.ts`,
+`services/recommendations.ts`, `services/importer.ts`, `services/scheduler.ts`, `routes/system.ts`) —
+without converting any of those 9 files' own other database calls, the same surgical pattern Round 90
+used for `recycleFile()`'s 3 call sites in `media.ts`.
+
+Re-examining every call site (rather than assuming from the earlier survey) found only 2 that
+genuinely needed restructuring, not the "most of them" Round 92 assumed:
+
+1. `scheduler.ts`'s `chooseBestResult()` used `getGroupReputation()` directly inside a `.sort()`
+   comparator (comparators can't `await`). Fixed by precomputing every distinct release group's
+   reputation into a `Map` before the sort, then having the comparator do a synchronous `Map.get()`
+   lookup — `chooseBestResult()` itself became `async`, and all 5 of its call sites (all already
+   inside `async` functions) just needed `await` added.
+2. `recommendations.ts` used `isExcluded()` as an `Array.filter()` predicate across 3 lists
+   (`.filter(notExcluded)`) — `filter()` can't await either. Fixed with a small local `filterAsync()`
+   helper (`Promise.all` the predicate over every item, then filter against the resulting boolean
+   array) rather than restructuring the whole function.
+
+Every other call site — `isBlocklisted`/`getBlocklistedTitles` in `search.ts` and `scheduler.ts`,
+`findPossibleDuplicates` in `media.ts`/`metadata.ts`/`watchlistImport.ts`/`importLists.ts`,
+`isExcluded` in `importLists.ts`/`traktSync.ts` (all inside plain `for` loops), `autoSelectRootFolderId`
+in `media.ts` (pulled out of an inline object-literal field into a `const` above it),
+`isRootFolderOverQuota` in `scheduler.ts`, `recordGroupSuccess`/`recordGroupFailure` in
+`importer.ts`/`scheduler.ts`, and `listReleaseGroupStats` in `system.ts` — needed nothing more than
+adding `await`.
+
+Verified live against a real Postgres container (no admin-bootstrap env vars): confirmed
+`isBlocklisted` correctly 400s a manual grab of a blocklisted release title and passes through a
+non-blocklisted one via `routes/search.ts` (itself still unconverted, seeded through its own
+shadow-SQLite create path — the same Round 80 "orphaned shadow database" caveat as ever, since
+`media.ts`/`search.ts` haven't been converted yet), `findPossibleDuplicates` correctly 409s a real
+duplicate title add and skips a duplicate watchlist-import row, `autoSelectRootFolderId` correctly
+returns `null` with no root folders configured, `listReleaseGroupStats` returns real per-group success
+rates, and the `recommendations.ts` `filterAsync` restructuring runs without error against empty
+result sets (no TMDB/Last.fm keys configured in the test environment — the exclusion-filtering logic
+itself already verified via `isExcluded`'s other call sites).
+
+**Also surfaced, and ruled out as unrelated to this round**: creating a media item with an explicit or
+auto-selected root folder 500s with a SQLite foreign-key error under Postgres — confirmed this
+reproduces identically with a hardcoded `rootFolderId` (bypassing `autoSelectRootFolderId` entirely),
+so it's the same pre-existing "`media.ts` still writes to the orphaned shadow SQLite while
+`routes/rootFolders.ts` (converted in Round 82) writes real root folders to Postgres" split documented
+since Round 80 — not a new bug, and not fixable without converting `media.ts` itself. Confirmed the
+same `autoSelectRootFolderId` code path (multiple root folders, real selection) works correctly on
+SQLite, where there's no database split to cause this.
+
+Same full sequence regression-checked against SQLite on the same build, where — with no shadow-database
+split to work around — the entire flow (blocklist create → grab-blocklisted 400 → duplicate-detect 409
+→ root-folder auto-select across two real folders) ran end to end against one consistent database.
 
 ## Progress (Round 92)
 

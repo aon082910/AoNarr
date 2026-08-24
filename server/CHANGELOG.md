@@ -3,6 +3,29 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 93
+- PostgreSQL support: converted `services/blocklist.ts`, `services/rootFolderSelect.ts`,
+  `services/releaseGroupStats.ts`, `services/duplicateCheck.ts`, and `services/importExclusions.ts` —
+  59 files converted so far, 21 remain
+- Corrected an overly pessimistic assessment from Round 92: re-checked every one of these 5 services'
+  ~25 call sites individually instead of assuming from their role in "the pipeline," and found only 2
+  genuinely needed control-flow restructuring — the rest were plain `for` loops or values computed
+  before a `.map()`, trivially `await`-able with no surrounding rewrite
+- Restructured `scheduler.ts`'s `chooseBestResult()`: `getGroupReputation()` was called directly
+  inside a `.sort()` comparator (which can't `await`) — fixed by precomputing every release group's
+  reputation into a `Map` before sorting, then doing synchronous lookups in the comparator
+- Restructured `recommendations.ts`'s exclusion filter (`isExcluded()` as an `Array.filter()`
+  predicate) with a small local `filterAsync()` helper
+- Updated every other call site (in `search.ts`, `media.ts`, `metadata.ts`, `watchlistImport.ts`,
+  `importLists.ts`, `traktSync.ts`, `importer.ts`, `scheduler.ts`, `system.ts`) with just `await` —
+  without converting those files' own other database calls, the same surgical pattern Round 90 used
+- Verified live against a real Postgres container: blocklist-grab rejection, duplicate-detection 409s,
+  root-folder auto-select, and per-group release stats all work correctly; ruled out an unrelated
+  pre-existing bug (adding media with a root folder 500s under Postgres, reproducing even with an
+  explicit `rootFolderId`) as the known "`media.ts` still writes to the orphaned shadow SQLite"
+  Round 80 caveat, not something introduced this round — confirmed working correctly on SQLite, where
+  there's no database split — full flow regression-checked against SQLite on the same build
+
 ## Round 92
 - PostgreSQL support: converted `services/mediaAnalysis.ts` + `routes/mediaAnalysis.ts` (the Library
   Analysis page) — 54 files converted so far, 26 remain

@@ -37,10 +37,12 @@ metadataRouter.get(
 
     try {
       const results = await searchMetadata(type, query, provider);
-      const annotated = results.map((r: any) => ({
-        ...r,
-        excluded: isExcluded(type, r.title, r.year ?? null),
-      }));
+      const annotated = await Promise.all(
+        results.map(async (r: any) => ({
+          ...r,
+          excluded: await isExcluded(type, r.title, r.year ?? null),
+        }))
+      );
       res.json(annotated);
     } catch (err) {
       throw new HttpError(400, (err as Error).message);
@@ -59,7 +61,7 @@ metadataRouter.post(
     if (!b.type || !b.title) throw new HttpError(400, "type and title are required");
 
     if (!b.confirmDuplicate) {
-      const duplicates = findPossibleDuplicates(b.type, b.title, b.year ?? null);
+      const duplicates = await findPossibleDuplicates(b.type, b.title, b.year ?? null);
       if (duplicates.length > 0) {
         res.status(409).json({ duplicates });
         return;

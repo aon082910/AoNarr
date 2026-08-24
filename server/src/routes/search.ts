@@ -104,7 +104,7 @@ searchRouter.get(
       }
     }
 
-    const blocklisted = getBlocklistedTitles(item.id);
+    const blocklisted = await getBlocklistedTitles(item.id);
     const annotated: AnnotatedSearchResult[] = rawResults.map((r) => {
       const parsed = parseReleaseTitle(r.title);
       const matchesTarget =
@@ -142,7 +142,7 @@ searchRouter.post(
     if (!b.downloadUrl || !b.downloadClientId) {
       throw new HttpError(400, "downloadUrl and downloadClientId are required");
     }
-    if (b.title && isBlocklisted(Number(req.params.mediaItemId), b.title)) {
+    if (b.title && (await isBlocklisted(Number(req.params.mediaItemId), b.title))) {
       throw new HttpError(400, "This release is blocklisted for this media item");
     }
 

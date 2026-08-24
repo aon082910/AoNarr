@@ -1,4 +1,4 @@
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 
 function normalizeTitle(title: string): string {
   return title
@@ -15,15 +15,15 @@ function normalizeTitle(title: string): string {
  * within the same media type — the same heuristic `findPossibleDuplicates` uses for the library
  * itself.
  */
-export function isExcluded(
+export async function isExcluded(
   type: string,
   title: string,
   year: number | null,
   externalId?: string | null,
   externalProvider?: string | null
-): boolean {
+): Promise<boolean> {
   if (externalId && externalProvider) {
-    const byExternalId = db
+    const byExternalId = await db
       .prepare("SELECT id FROM import_exclusions WHERE type = ? AND external_id = ? AND external_provider = ?")
       .get(type, externalId, externalProvider);
     if (byExternalId) return true;
@@ -31,7 +31,7 @@ export function isExcluded(
 
   const needle = normalizeTitle(title);
   if (!needle) return false;
-  const candidates = db.prepare("SELECT title, year FROM import_exclusions WHERE type = ?").all(type) as {
+  const candidates = (await db.prepare("SELECT title, year FROM import_exclusions WHERE type = ?").all(type)) as {
     title: string;
     year: number | null;
   }[];

@@ -79,7 +79,7 @@ export async function runTraktSync(): Promise<{ added: number; error?: string }>
         const m = entry.movie;
         const tmdbId = m.ids?.tmdb;
         if (!tmdbId || existingMovies.has(String(tmdbId))) continue;
-        if (isExcluded("movie", m.title, m.year ?? null, String(tmdbId), "tmdb")) continue;
+        if (await isExcluded("movie", m.title, m.year ?? null, String(tmdbId), "tmdb")) continue;
         db.prepare(
           `INSERT INTO media_items (type, title, sort_title, year, external_ids, quality_profile_id, monitored, status)
            VALUES ('movie', ?, ?, ?, ?, ?, 1, 'missing')`
@@ -90,7 +90,7 @@ export async function runTraktSync(): Promise<{ added: number; error?: string }>
         const s = entry.show;
         const tmdbId = s.ids?.tmdb;
         if (!tmdbId || existingSeries.has(String(tmdbId))) continue;
-        if (isExcluded("series", s.title, s.year ?? null, String(tmdbId), "tmdb")) continue;
+        if (await isExcluded("series", s.title, s.year ?? null, String(tmdbId), "tmdb")) continue;
         const externalIds = { tmdb: String(tmdbId), trakt: String(s.ids?.trakt ?? "") };
         const result = db
           .prepare(

@@ -544,13 +544,14 @@ mediaRouter.post(
     if (!isValidMediaType(b.type)) throw new HttpError(400, `Unknown media type "${b.type}"`);
 
     if (!b.confirmDuplicate) {
-      const duplicates = findPossibleDuplicates(b.type, b.title, b.year ?? null);
+      const duplicates = await findPossibleDuplicates(b.type, b.title, b.year ?? null);
       if (duplicates.length > 0) {
         res.status(409).json({ duplicates });
         return;
       }
     }
 
+    const rootFolderId = b.rootFolderId ?? (await autoSelectRootFolderId(b.type));
     const result = db
       .prepare(
         `INSERT INTO media_items
@@ -566,7 +567,7 @@ mediaRouter.post(
         posterUrl: b.posterUrl ?? null,
         externalIds: b.externalIds ? JSON.stringify(b.externalIds) : null,
         path: b.path ?? null,
-        rootFolderId: b.rootFolderId ?? autoSelectRootFolderId(b.type),
+        rootFolderId,
         qualityProfileId: b.qualityProfileId ?? null,
         monitored: b.monitored ?? 1,
         status: b.status ?? "unknown",

@@ -560,5 +560,5 @@ export async function importQueueItem(queueItemId: number): Promise<void> {
   }
 
   db.prepare("UPDATE queue SET status = 'imported', updated_at = datetime('now') WHERE id = ?").run(queueItemId);
-  recordGroupSuccess(parseReleaseTitle(queueItem.title).releaseGroup);
+  await recordGroupSuccess(parseReleaseTitle(queueItem.title).releaseGroup);
 }
