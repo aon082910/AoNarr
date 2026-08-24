@@ -13,6 +13,7 @@ import { searchAllIndexers } from "../services/indexerClient.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { parseReleaseTitle, releaseMatchesEpisode } from "../services/releaseParser.js";
 import { notifyGrabbed } from "../services/notifications.js";
+import { notifyQueueChanged } from "../services/realtime.js";
 import { scoreRelease } from "../services/customFormatScoring.js";
 import { log } from "../services/logger.js";
 import { sizeWithinQualityBounds } from "../services/quality.js";
@@ -197,6 +198,7 @@ searchRouter.post(
     notifyGrabbed(item.title, b.title ?? "Unknown release").catch((err) =>
       log.warn("[search] notification failed:", err.message)
     );
+    notifyQueueChanged();
 
     const queueRow = await db.prepare("SELECT * FROM queue WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(queueItemFromRow(queueRow));

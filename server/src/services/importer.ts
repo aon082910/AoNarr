@@ -6,6 +6,7 @@ import { nowExpr } from "../db/asyncDb.js";
 import { config } from "../config.js";
 import { mediaItemFromRow, queueItemFromRow, rootFolderFromRow } from "../db/mappers.js";
 import { notifyImported } from "./notifications.js";
+import { notifyQueueChanged } from "./realtime.js";
 import { parseReleaseTitle, releaseMatchesEpisode } from "./releaseParser.js";
 import {
   downloadSubtitleContent,
@@ -565,5 +566,6 @@ export async function importQueueItem(queueItemId: number): Promise<void> {
   }
 
   await db.prepare(`UPDATE queue SET status = 'imported', updated_at = ${nowExpr(db)} WHERE id = ?`).run(queueItemId);
+  notifyQueueChanged();
   await recordGroupSuccess(parseReleaseTitle(queueItem.title).releaseGroup);
 }

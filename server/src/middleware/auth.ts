@@ -29,9 +29,10 @@ declare global {
 
 /**
  * Two credential types are accepted: the instance-wide admin API key (`X-Api-Key`, same as every
- * Starr app), or a per-user session token (`X-Session-Token`) for restricted household accounts
- * created in Settings → Users. Whichever is present and valid populates `req.auth`; routes that
- * need admin-only access additionally apply `requireAdmin`.
+ * Starr app), or a per-user session token (`X-Session-Token`) — issued to any logged-in user,
+ * admin or a restricted household account created in Settings → Users; `req.auth.isAdmin` reflects
+ * the underlying user's role either way. Whichever is present and valid populates `req.auth`;
+ * routes that need admin-only access additionally apply `requireAdmin`.
  */
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (
@@ -66,7 +67,10 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     return;
   }
 
-  const sessionToken = req.header("X-Session-Token");
+  // Query-param fallback for both credential types exists for the same reason: an EventSource (the
+  // Activity page's live-queue stream, see routes/activity.ts's /stream) can't set a custom header
+  // on its request, so the browser client has to put the credential in the URL instead.
+  const sessionToken = req.header("X-Session-Token") ?? (req.query.sessionToken as string | undefined);
   if (sessionToken) {
     const user = await getSessionUser(sessionToken);
     if (user) {

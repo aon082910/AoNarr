@@ -8,6 +8,7 @@ import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { getMediaTypeConfig, isValidMediaType } from "../services/mediaTypes.js";
 import { attachChildCounts } from "../services/childCounts.js";
+import { notifyQueueChanged } from "../services/realtime.js";
 import { buildMediaQuery, clampLimit, clampOffset, MEDIA_SORT_COLUMNS } from "../services/mediaQuery.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
@@ -1041,6 +1042,7 @@ mediaRouter.post(
       JSON.stringify({ title: sub.title, source: sourceUrl })
     );
     notifyGrabbed(mediaItem.title, sub.title).catch((err) => log.warn("[media] notification failed:", err.message));
+    notifyQueueChanged();
 
     const queueRow = await db.prepare("SELECT * FROM queue WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(queueItemFromRow(queueRow));

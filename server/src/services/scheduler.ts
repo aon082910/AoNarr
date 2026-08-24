@@ -17,6 +17,7 @@ import {
 } from "../db/mappers.js";
 import { importQueueItem, ImportSkippedError } from "./importer.js";
 import { notifyFailed, notifyGrabbed } from "./notifications.js";
+import { notifyQueueChanged } from "./realtime.js";
 import { runAutoArchival } from "./archival.js";
 import { getBlocklistedTitles } from "./blocklist.js";
 import { runTraktSync } from "./traktSync.js";
@@ -174,6 +175,7 @@ async function grab(
   );
 
   await notifyGrabbed(mediaItem.title, best.title);
+  notifyQueueChanged();
   log.info(`[scheduler] grabbed "${best.title}" for "${mediaItem.title}"`);
 }
 
@@ -554,6 +556,7 @@ async function checkVideoChannels(): Promise<void> {
             JSON.stringify({ title: child.title, source: sourceUrl })
           );
           notifyGrabbed(channel.title, child.title).catch(() => {});
+          notifyQueueChanged();
         } catch (err) {
           log.warn(`[scheduler] failed to auto-download new video "${child.title}":`, (err as Error).message);
         }
@@ -677,6 +680,7 @@ async function pollQueue() {
             match.id
           );
         }
+        notifyQueueChanged();
 
         if (status.status === "completed") {
           try {
@@ -689,6 +693,7 @@ async function pollQueue() {
               await db.prepare(`UPDATE queue SET status = 'failed', updated_at = ${nowExpr(db)} WHERE id = ?`).run(
                 match.id
               );
+              notifyQueueChanged();
               await retryFailedGrab(match, (err as Error).message);
             }
           }
@@ -723,6 +728,7 @@ async function cleanupStalledDownloads(): Promise<void> {
     // AoNarr's own queue and retries the search; the stale entry may need manual cleanup at the
     // download client's own UI.
     await db.prepare(`UPDATE queue SET status = 'failed', updated_at = ${nowExpr(db)} WHERE id = ?`).run(item.id);
+    notifyQueueChanged();
     await retryFailedGrab(item, `Stalled: no progress for over ${thresholdHours}h`);
     log.info(`[scheduler] cleaned up stalled download "${item.title}"`);
   }

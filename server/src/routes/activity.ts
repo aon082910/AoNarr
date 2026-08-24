@@ -4,6 +4,7 @@ import { db } from "../db/index.js";
 import { downloadClientFromRow, historyEventFromRow, queueItemFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
+import { notifyQueueChanged, registerQueueStreamClient, unregisterQueueStreamClient } from "../services/realtime.js";
 
 export const activityRouter = Router();
 activityRouter.use(requireAdmin);
@@ -16,11 +17,44 @@ activityRouter.get(
   })
 );
 
+/**
+ * Server-Sent Events channel for live queue updates (see services/realtime.ts) — the Activity page
+ * opens this once and re-fetches GET /queue whenever a "queue" event arrives, instead of polling on
+ * a fixed timer. Auth goes through the same requireAuth middleware as every other /api route (an
+ * EventSource can't set the X-Api-Key header, so the browser client passes it as `?apikey=`, which
+ * requireAuth already accepts as a fallback for exactly this kind of case).
+ */
+activityRouter.get("/stream", (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.write(": connected\n\n");
+  registerQueueStreamClient(res);
+
+  // Keeps the connection from being silently dropped by an idle-timeout proxy between the browser
+  // and this server (nginx in the :web/:combined images, or a reverse proxy on Unraid).
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(": ping\n\n");
+    } catch {
+      clearInterval(heartbeat);
+    }
+  }, 30_000);
+
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    unregisterQueueStreamClient(res);
+  });
+});
+
 activityRouter.delete(
   "/queue/:id",
   asyncHandler(async (req, res) => {
     const result = await db.prepare("DELETE FROM queue WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Queue item not found");
+    notifyQueueChanged();
     res.status(204).send();
   })
 );
@@ -48,6 +82,7 @@ activityRouter.post(
       throw new HttpError(400, `Reordering isn't supported for "${client.type}" download clients`);
     }
     await adapter.setPriority(client, queueRow.download_id, priority);
+    notifyQueueChanged();
     res.json({ ok: true });
   })
 );

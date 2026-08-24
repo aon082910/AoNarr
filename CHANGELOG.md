@@ -3,6 +3,38 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 119 — real-time queue updates (Server-Sent Events)
+- The Activity page's queue table used to poll every 10s. Added a Server-Sent Events channel
+  (`GET /api/activity/stream`) that pushes a lightweight "queue changed" signal the moment a grab,
+  progress update, import, retry, stall-cleanup, priority change, or removal happens anywhere in
+  the app — the page re-fetches its existing `/activity/queue`/`/activity/timeline` endpoints
+  immediately on that signal instead of waiting for the next poll tick. The 10s poll is kept as a
+  30s fallback safety net (a proxy that blocks/buffers `text/event-stream`, or a dropped connection
+  EventSource's own auto-reconnect doesn't catch), not removed outright.
+- Chose SSE over a WebSocket specifically because it needed zero HTTP-server restructuring — it's
+  just another Express route, unlike `ws`, which would require rebuilding `index.ts` around
+  `http.createServer`+`WebSocketServer` instead of a plain `app.listen()`. Round 114's `app.ts`/
+  `index.ts` split (originally done for testability) made this a clean addition either way.
+- New `server/src/services/realtime.ts`: a small SSE client registry plus a throttled
+  `notifyQueueChanged()` (coalesced to at most one broadcast per 1.5s) — deliberately a "something
+  changed, go re-fetch" signal rather than trying to stream hand-serialized row diffs from the
+  9 different call sites that mutate the `queue` table (routes/media.ts, routes/search.ts,
+  services/scheduler.ts's `grab()` — the single choke point shared by manual/auto-search, retries,
+  and bulk-search/auto-upgrade — services/importer.ts, and routes/activity.ts itself).
+- Found and fixed a real auth gap while wiring the frontend: an `EventSource` can't set the
+  `X-Api-Key`/`X-Session-Token` headers the rest of the app's auth relies on, so the browser client
+  passes whichever credential the session actually has as a query param instead. `requireAuth`
+  already had a query-param fallback for the instance API key (`?apikey=`) but NOT for session
+  tokens — meaning an admin logged in normally via username/password (session token, not the
+  instance API key) would have silently gotten no live updates at all, only the fallback poll.
+  Added the matching `?sessionToken=` fallback in `middleware/auth.ts`.
+- Verified live against both SQLite and Postgres: opened the Activity page in-browser (confirmed
+  via network inspection that the SSE connection opens with `?sessionToken=` for a normal logged-in
+  admin session), inserted a queue row, deleted it through the now-instrumented `DELETE
+  /activity/queue/:id` route, and confirmed the page's queue table updated to "Nothing in the
+  queue" with no reload/manual refresh — genuine live push, not a coincidental poll tick — on both
+  dialects.
+
 ## Round 118 — scheduled duplicate detection with notification
 - The duplicate-merge tool (Round 107) was manual-only — an admin had to remember to check the
   Duplicates page. Added a daily scheduled job ("Duplicate Check", 5am, admin-configurable/run-now

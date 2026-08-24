@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api/client.js";
+import { api, getApiKey, getSessionToken } from "../api/client.js";
 import type { QueueItem } from "../types.js";
 
 interface TimelineEntry {
@@ -32,8 +32,27 @@ export default function Activity() {
 
   useEffect(() => {
     load();
-    const interval = setInterval(load, 10000);
-    return () => clearInterval(interval);
+    // 30s fallback poll — a safety net in case the SSE connection below never opens (e.g. a proxy
+    // in front of AoNarr that buffers/blocks text/event-stream) or drops without EventSource's own
+    // auto-reconnect kicking in for some reason. Real-time updates come from the "queue" event.
+    const interval = setInterval(load, 30000);
+
+    // /activity/stream is admin-only (same as every /activity route) and EventSource can't set the
+    // X-Api-Key/X-Session-Token headers, so whichever credential this session actually has travels
+    // as a query param instead — requireAuth accepts both as a fallback for exactly this case.
+    let stream: EventSource | null = null;
+    const apiKey = getApiKey();
+    const sessionToken = getSessionToken();
+    const authParam = apiKey ? `apikey=${encodeURIComponent(apiKey)}` : sessionToken ? `sessionToken=${encodeURIComponent(sessionToken)}` : null;
+    if (authParam) {
+      stream = new EventSource(`/api/activity/stream?${authParam}`);
+      stream.addEventListener("queue", load);
+    }
+
+    return () => {
+      clearInterval(interval);
+      stream?.close();
+    };
   }, []);
 
   async function remove(id: number) {
