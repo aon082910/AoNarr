@@ -1,4 +1,4 @@
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 
 interface ImportedEvent {
   itemId: number;
@@ -23,10 +23,10 @@ export interface RepeatedImport {
  * literally sitting side by side on disk — it reconstructs the pattern from the import history
  * instead, which is what actually indicates the behavior worth reviewing.
  */
-export function findRepeatedImports(): RepeatedImport[] {
-  const rows = db
+export async function findRepeatedImports(): Promise<RepeatedImport[]> {
+  const rows = (await db
     .prepare("SELECT media_item_id, data, created_at FROM history WHERE event_type = 'imported' ORDER BY created_at ASC")
-    .all() as { media_item_id: number; data: string | null; created_at: string }[];
+    .all()) as { media_item_id: number; data: string | null; created_at: string }[];
 
   const groups = new Map<string, { mediaItemId: number; episodeId?: number | null; subItemId?: number | null; qualities: (string | null)[] }>();
 
@@ -55,21 +55,21 @@ export function findRepeatedImports(): RepeatedImport[] {
   const out: RepeatedImport[] = [];
   for (const group of groups.values()) {
     if (group.qualities.length < 2) continue;
-    const mediaRow = db.prepare("SELECT title FROM media_items WHERE id = ?").get(group.mediaItemId) as
+    const mediaRow = (await db.prepare("SELECT title FROM media_items WHERE id = ?").get(group.mediaItemId)) as
       | { title: string }
       | undefined;
     if (!mediaRow) continue;
 
     let target = mediaRow.title;
     if (group.episodeId) {
-      const ep = db.prepare("SELECT season_number, episode_number FROM episodes WHERE id = ?").get(group.episodeId) as
+      const ep = (await db.prepare("SELECT season_number, episode_number FROM episodes WHERE id = ?").get(group.episodeId)) as
         | { season_number: number; episode_number: number }
         | undefined;
       if (ep) {
         target = `${mediaRow.title} S${String(ep.season_number).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}`;
       }
     } else if (group.subItemId) {
-      const sub = db.prepare("SELECT title FROM sub_items WHERE id = ?").get(group.subItemId) as
+      const sub = (await db.prepare("SELECT title FROM sub_items WHERE id = ?").get(group.subItemId)) as
         | { title: string }
         | undefined;
       if (sub) target = `${mediaRow.title} - ${sub.title}`;

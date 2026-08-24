@@ -113,7 +113,7 @@ CREATE TABLE IF NOT EXISTS queue (
   indexer_id INTEGER REFERENCES indexers(id) ON DELETE SET NULL,
   download_client_id INTEGER REFERENCES download_clients(id) ON DELETE SET NULL,
   download_id TEXT,
-  size INTEGER,
+  size BIGINT,
   quality TEXT,
   status TEXT NOT NULL DEFAULT 'queued',
   progress REAL NOT NULL DEFAULT 0,
@@ -241,7 +241,7 @@ CREATE TABLE IF NOT EXISTS recycle_bin (
   title TEXT NOT NULL,
   original_path TEXT NOT NULL,
   recycle_path TEXT NOT NULL,
-  size_bytes INTEGER,
+  size_bytes BIGINT,
   deleted_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
   restoring INTEGER NOT NULL DEFAULT 0, -- 1 while an async restore is in flight (large files move off the request thread)
   restore_error TEXT -- set if the last restore attempt failed, cleared on the next attempt
@@ -435,8 +435,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE TABLE IF NOT EXISTS disk_usage_samples (
   id SERIAL PRIMARY KEY,
   root_folder_id INTEGER NOT NULL REFERENCES root_folders(id) ON DELETE CASCADE,
-  free_bytes INTEGER NOT NULL,
-  total_bytes INTEGER NOT NULL,
+  free_bytes BIGINT NOT NULL,
+  total_bytes BIGINT NOT NULL,
   sampled_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
 );
 

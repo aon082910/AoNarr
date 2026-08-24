@@ -1,6 +1,6 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — 60 files converted and verified against a real Postgres container**, covering
+Status: **PostgreSQL — 64 files converted and verified against a real Postgres container**, covering
 auth, users, quality/library config, indexers, download clients, calendar events, saved library
 views, remote instances, friend libraries, library groups (including its `WITH RECURSIVE`
 nested-count rollup), person credits, custom formats (including TRaSH-Guides sync), collections
@@ -11,9 +11,10 @@ the wanted/missing + calendar views, household requests (including auto-approval
 stats), web push subscriptions, the media-server watch webhook, library/media-server validation, the
 full recycle-bin/corrupt-media/auto-archival cluster, instance settings (including the TOTP 2FA and
 config-template export/import flows), the import-review queue, library media-compatibility analysis,
-duplicate-detection, release-group reputation tracking, and custom-format release scoring. 20 files
-remain unconverted (their own *other* queries, not the call sites into the services converted in
-Rounds 93–95 — see those rounds' notes
+duplicate-detection, release-group reputation tracking, custom-format release scoring, storage
+forecasting/disk-usage sampling, repeated-import detection, upgrade-candidate detection, and
+unmonitored/duplicate-file cleanup suggestions. 16 files remain unconverted (their own *other*
+queries, not the call sites into the services converted in Rounds 93–96 — see those rounds' notes
 below for the distinction); `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one
 yet — see "What's left" below for the exact remaining list, now narrower and more accurately scoped
 than earlier rounds estimated. MariaDB — scoped, not started, deliberately deferred until PostgreSQL
@@ -21,18 +22,17 @@ is fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "Po
 explicit user decision). This document exists so a future round can pick this up without re-deriving
 the analysis below.
 
-## What's left (as of Round 95)
+## What's left (as of Round 96)
 
-The remaining 20 files are `routes/media.ts` (947 lines), `routes/metadata.ts`,
+The remaining 16 files are `routes/media.ts` (948 lines), `routes/metadata.ts`,
 `routes/watchlistImport.ts`, `routes/importLists.ts`, `services/importLists.ts`,
 `services/recommendations.ts`, `services/traktSync.ts`, `services/mediaServerImport.ts`,
-`services/starrImport.ts`, `routes/search.ts`, `services/importer.ts`,
-`services/upgradeCandidates.ts`, `services/scheduler.ts` (853
-lines), `routes/system.ts` (457 lines), `routes/metrics.ts`, `services/duplicates.ts`,
-`services/storageForecast.ts`, `services/cleanupSuggestions.ts`, `services/libraryScan.ts`, and
+`services/starrImport.ts`, `routes/search.ts`, `services/importer.ts`, `services/scheduler.ts` (864
+lines), `routes/system.ts` (457 lines), `routes/metrics.ts`, `services/libraryScan.ts`, and
 `services/scheduledBackup.ts`. Their own *remaining* (non-`findPossibleDuplicates`/`isExcluded`/
-`isBlocklisted`/`scoreRelease`/etc.) database calls still need converting — but as Round 93 found, most of what made
-this list look unapproachable was **not actually true**.
+`isBlocklisted`/`scoreRelease`/`findRepeatedImports`/`findUpgradeCandidates`/etc.) database calls
+still need converting — but as Round 93 found, most of what made this list look unapproachable was
+**not actually true**.
 
 **Correction to the Round 92 assessment above**: it claimed the small helper functions in this
 cluster (`findPossibleDuplicates`, `isExcluded`, `isBlocklisted`, `getGroupReputation`, etc.) were
@@ -54,6 +54,101 @@ every round since 84 has done, just in bigger files. `chooseBestResult()` in `sc
 93) is the template for the one real restructuring pattern likely to recur: precompute an async
 lookup into a `Map` before a `.sort()`/`.filter()` runs, then have the callback do synchronous `Map`
 lookups instead of calling the async function directly.
+
+## Conversion plan for the remaining 16 files (as of Round 96)
+
+Mapped every import edge *among these files* (edges to already-converted or db-free files don't
+matter — the risk this session has consistently guarded against is a converted file's own queries
+diverging from an unconverted callee's queries across two different databases under Postgres, not
+just "does it compile"). This gives a clean bottom-up order — convert a tier only once everything it
+depends on inside this set is already converted, so no new caller/callee split is ever introduced:
+
+**Tier 1 — no edges into this set at all (true leaves, safe standalone rounds):** ~~`services/
+storageForecast.ts`~~, ~~`services/duplicates.ts`~~, ~~`services/upgradeCandidates.ts`~~, ~~`services/
+cleanupSuggestions.ts`~~ — **done in Round 96**, including a real, previously-latent bug it surfaced
+(see below). Still remaining in this tier: `services/traktSync.ts` (119), `routes/metadata.ts` (162),
+`services/recommendations.ts` (166), `routes/watchlistImport.ts` (100),
+`services/mediaServerImport.ts` (251), `services/importLists.ts` (301), `services/libraryScan.ts`
+(526 — already partially touched in Round 94 for the has_file rollup fix; the rest of its own CRUD
+queries are still on the old path). `services/scheduledBackup.ts` (54) is nominally a leaf too but is
+**not** a simple await-wrapping job — it calls better-sqlite3's `Database.backup()` directly, which
+has no Postgres equivalent, so it needs real per-dialect backup logic (`pg_dump`-equivalent for
+Postgres) designed before converting, not just query ports. Scoping that out to its own dedicated
+round rather than blocking the rest of Tier 1 on it.
+
+**Tier 2 — depend only on Tier 1:**
+`routes/importLists.ts` (68, → `services/importLists.ts`), `routes/metrics.ts` (89, → `services/
+duplicates.ts` + `services/upgradeCandidates.ts`, both now converted — `metrics.ts`'s own remaining
+queries are the only thing left there), `services/starrImport.ts` (454, → `services/
+mediaServerImport.ts`), `services/importer.ts` (564, → `services/libraryScan.ts`).
+
+**Tier 3 — depend on Tier 1+2:**
+`routes/system.ts` (457, → `cleanupSuggestions.ts`/`duplicates.ts`/`storageForecast.ts`/
+`traktSync.ts`/`upgradeCandidates.ts` — 4 of those 5 now converted, `traktSync.ts` still pending;
+Round 96 already fixed `system.ts`'s specific call sites into the newly-converted 4 without
+converting the rest of the file), `routes/media.ts` (948, → `libraryScan.ts` — the single largest
+remaining file).
+
+**Tier 4:**
+`services/scheduler.ts` (864, → `importLists.ts`/`importer.ts`/`libraryScan.ts`/
+`scheduledBackup.ts`/`storageForecast.ts`/`traktSync.ts`/`upgradeCandidates.ts` — the scheduler that
+ties nearly every background job together, so it's last among the services; Round 96 already fixed
+its `recordDiskUsageSamples`/`findUpgradeCandidates` call sites).
+
+**Tier 5:**
+`routes/search.ts` (204, → `services/scheduler.ts`) — the very last file, since it depends on
+`chooseBestResult()` already living in a fully-converted `scheduler.ts`.
+
+Execution plan: work tier by tier, batching several small Tier 1 files per round (matching this
+session's established round size) and giving each large file (`starrImport.ts`, `importer.ts`,
+`system.ts`, `media.ts`, `scheduler.ts`) its own dedicated round with full live Postgres+SQLite
+verification, following the same ritual every round since 79 has used (typecheck → camelCase-alias
+grep → build → live-verify both backends → update this doc + CHANGELOG.md → commit/push →
+rebuild/push Docker Hub tags). `services/scheduledBackup.ts`'s per-dialect backup logic is deferred
+to its own round after everything else, since it's a design question, not a conversion mop-up.
+
+## Progress (Round 96)
+
+Converted the first Tier 1 batch from the plan above: `services/storageForecast.ts`,
+`services/duplicates.ts`, `services/upgradeCandidates.ts`, and `services/cleanupSuggestions.ts` — 4
+true leaves with no edges into the remaining unconverted set. Fixed every downstream call site across
+3 still-unconverted files that call into them (`routes/system.ts`'s `/status` and `/health` routes,
+`routes/metrics.ts`, `services/scheduler.ts`'s `runAutoUpgrade`), including one genuine `.map()`
+callback in `system.ts`'s `/status` route needing the same `Promise.all` restructuring pattern from
+Round 93/95 — without converting the rest of those 3 files, the same surgical pattern used
+repeatedly this session. Quoted several more unquoted camelCase SQL aliases found along the way
+(`mediaItemId`, `subTitle`, `addedAt`, `parentTitle`, `childTitle` across `upgradeCandidates.ts` and
+`cleanupSuggestions.ts`).
+
+**Found and fixed a serious, previously-latent Postgres schema bug, unrelated to the async
+conversion itself**: `schema.postgres.sql`'s translation of `schema.sql` mapped SQLite's `INTEGER`
+to Postgres's `INTEGER` literally for 4 byte-count columns (`queue.size`, `recycle_bin.size_bytes`,
+`disk_usage_samples.free_bytes`/`total_bytes`) — but SQLite's own `INTEGER` affinity is already
+64-bit with no separate `BIGINT` type at all, while Postgres's plain `INTEGER` is 32-bit (max
+~2.1GB). Live testing caught this by accident: `recordDiskUsageSamples()` silently failed on every
+call against a real ~1TB test filesystem (`free_bytes`/`total_bytes` values around 10^12 bytes, an
+order of magnitude past `INTEGER`'s range), caught by the function's own try/catch and never
+surfacing an error anywhere — the same silent-overflow risk applies to `queue.size` and
+`recycle_bin.size_bytes` for any real download/file over ~2GB (a routine 4K remux), meaning this bug
+has likely been silently corrupting or dropping size data on every Postgres deployment doing real
+downloads, entirely independent of and predating this migration's own async conversion work.
+Fixed both the fresh-install schema (`schema.postgres.sql`, `INTEGER` → `BIGINT` on all 4 columns)
+and existing installs via a new `TYPE_MIGRATIONS` list in `postgresSchema.ts` (`ALTER TABLE ... ALTER
+COLUMN ... TYPE BIGINT`, run unconditionally on every startup — safe and idempotent, Postgres doesn't
+error re-widening a column to the type it's already at).
+
+Verified live against a real Postgres container: confirmed a fresh install creates all 4 columns as
+`BIGINT` directly; separately downgraded them to `INTEGER` on a running instance to simulate an
+existing pre-fix install, confirmed `recordDiskUsageSamples()` failed exactly as predicted (`integer
+out of range`) against real ~1TB disk stats, then confirmed a single app restart's startup migration
+correctly widened all 4 columns back to `BIGINT` with no data loss and is safely idempotent across
+repeated restarts; then exercised every route end to end with the fix in place — disk usage sampling
+against a real filesystem (storing a real ~1TB byte value that would have overflowed before the fix),
+repeated-import detection, upgrade-candidate detection (with correct camelCase aliasing), and both
+cleanup-suggestion routes (unmonitored items, and byte-identical duplicate file detection against two
+real files written to disk) — same sequence regression-checked against SQLite on the same build,
+where the bug never existed in the first place (SQLite has no 32-bit `INTEGER` distinction), so
+everything ran end to end against a single consistent database from the start.
 
 ## Progress (Round 95)
 

@@ -3,6 +3,26 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 96
+- PostgreSQL support: converted `services/storageForecast.ts`, `services/duplicates.ts`,
+  `services/upgradeCandidates.ts`, and `services/cleanupSuggestions.ts` (the first Tier 1 batch of a
+  newly-written conversion plan for the remaining files) — 64 files converted so far, 16 remain
+- **Found and fixed a serious, previously-latent Postgres bug unrelated to this migration's own async
+  conversion work**: the schema translation mapped SQLite's `INTEGER` (already 64-bit) to Postgres's
+  `INTEGER` (32-bit, max ~2.1GB) literally for 4 byte-count columns — `queue.size`,
+  `recycle_bin.size_bytes`, `disk_usage_samples.free_bytes`/`total_bytes`. Any real download or file
+  over ~2GB (a routine 4K remux) would silently overflow on every Postgres deployment doing real
+  downloads. Caught live when disk-usage sampling failed against a real ~1TB test filesystem. Fixed
+  the fresh-install schema (`BIGINT` on all 4 columns) and added a startup migration that safely
+  widens existing installs' columns on next restart, verified to correctly recover real data with no
+  loss and to be idempotent across repeated restarts
+- Quoted several more unquoted camelCase SQL aliases found along the way
+- Verified live against a real Postgres container: simulated an existing pre-fix install, confirmed
+  the predicted overflow error, then confirmed the startup migration fixes it; exercised disk usage
+  sampling (a real ~1TB value that would have overflowed pre-fix), repeated-import detection,
+  upgrade-candidate detection, and both cleanup-suggestion routes end to end — same sequence
+  regression-checked against SQLite, where this bug class doesn't exist at all
+
 ## Round 95
 - PostgreSQL support: converted `services/customFormatScoring.ts` (deferred since Round 85 as
   "called from deep within the search/grab pipeline") — 60 files converted so far, 20 remain

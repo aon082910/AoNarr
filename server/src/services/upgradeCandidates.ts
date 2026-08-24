@@ -1,4 +1,4 @@
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { qualityRank } from "./quality.js";
 
 export interface UpgradeCandidate {
@@ -16,8 +16,8 @@ interface ProfileInfo {
   name: string;
 }
 
-function loadProfiles(): Map<number, ProfileInfo> {
-  const rows = db.prepare("SELECT id, name, cutoff FROM quality_profiles").all() as {
+async function loadProfiles(): Promise<Map<number, ProfileInfo>> {
+  const rows = (await db.prepare("SELECT id, name, cutoff FROM quality_profiles").all()) as {
     id: number;
     name: string;
     cutoff: string;
@@ -31,13 +31,13 @@ function loadProfiles(): Map<number, ProfileInfo> {
  * forever unless someone remembers to check. This surfaces anything currently below its current
  * profile's cutoff so it can be manually re-searched for an upgrade.
  */
-export function findUpgradeCandidates(): UpgradeCandidate[] {
-  const profiles = loadProfiles();
+export async function findUpgradeCandidates(): Promise<UpgradeCandidate[]> {
+  const profiles = await loadProfiles();
   const candidates: UpgradeCandidate[] = [];
 
-  const movies = db
+  const movies = (await db
     .prepare("SELECT id, title, quality, quality_profile_id FROM media_items WHERE has_file = 1 AND quality IS NOT NULL")
-    .all() as { id: number; title: string; quality: string; quality_profile_id: number | null }[];
+    .all()) as { id: number; title: string; quality: string; quality_profile_id: number | null }[];
   for (const m of movies) {
     const profile = m.quality_profile_id ? profiles.get(m.quality_profile_id) : undefined;
     if (!profile) continue;
@@ -46,13 +46,13 @@ export function findUpgradeCandidates(): UpgradeCandidate[] {
     }
   }
 
-  const episodes = db
+  const episodes = (await db
     .prepare(
-      `SELECT e.id, e.season_number, e.episode_number, e.quality, m.id AS mediaItemId, m.title, m.quality_profile_id
+      `SELECT e.id, e.season_number, e.episode_number, e.quality, m.id AS "mediaItemId", m.title, m.quality_profile_id
        FROM episodes e JOIN media_items m ON m.id = e.media_item_id
        WHERE e.has_file = 1 AND e.quality IS NOT NULL`
     )
-    .all() as {
+    .all()) as {
     id: number;
     season_number: number;
     episode_number: number;
@@ -76,13 +76,13 @@ export function findUpgradeCandidates(): UpgradeCandidate[] {
     }
   }
 
-  const subItems = db
+  const subItems = (await db
     .prepare(
-      `SELECT s.id, s.title AS subTitle, s.quality, m.id AS mediaItemId, m.title, m.quality_profile_id
+      `SELECT s.id, s.title AS "subTitle", s.quality, m.id AS "mediaItemId", m.title, m.quality_profile_id
        FROM sub_items s JOIN media_items m ON m.id = s.media_item_id
        WHERE s.has_file = 1 AND s.quality IS NOT NULL`
     )
-    .all() as {
+    .all()) as {
     id: number;
     subTitle: string;
     quality: string;

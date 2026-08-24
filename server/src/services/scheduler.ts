@@ -473,7 +473,7 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
  */
 async function runAutoUpgrade(): Promise<void> {
   if (getSetting("autoUpgradeEnabled") !== "1") return;
-  const candidates = findUpgradeCandidates();
+  const candidates = await findUpgradeCandidates();
   if (candidates.length === 0) return;
 
   const targets: BulkSearchTarget[] = candidates.map((c) => ({

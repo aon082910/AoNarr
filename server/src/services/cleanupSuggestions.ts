@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import crypto from "node:crypto";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 
 export interface UnmonitoredNoFileItem {
   id: number;
@@ -12,14 +12,14 @@ export interface UnmonitoredNoFileItem {
 
 /** Library items nobody's watching for and that never got a file — safe to delete outright
  * (nothing on disk references them), unlike anything with `has_file = 1`. */
-export function findUnmonitoredNoFile(): UnmonitoredNoFileItem[] {
-  const rows = db
+export async function findUnmonitoredNoFile(): Promise<UnmonitoredNoFileItem[]> {
+  const rows = (await db
     .prepare(
-      `SELECT id, type, title, year, added_at AS addedAt
+      `SELECT id, type, title, year, added_at AS "addedAt"
        FROM media_items WHERE monitored = 0 AND has_file = 0
        ORDER BY added_at`
     )
-    .all() as UnmonitoredNoFileItem[];
+    .all()) as UnmonitoredNoFileItem[];
   return rows;
 }
 
@@ -59,23 +59,23 @@ function partialHash(filePath: string, size: number): string | null {
   }
 }
 
-function collectFileRefs(): FileRef[] {
+async function collectFileRefs(): Promise<FileRef[]> {
   const refs: FileRef[] = [];
 
-  const items = db.prepare("SELECT id, title, path FROM media_items WHERE has_file = 1 AND path IS NOT NULL").all() as {
+  const items = (await db.prepare("SELECT id, title, path FROM media_items WHERE has_file = 1 AND path IS NOT NULL").all()) as {
     id: number;
     title: string;
     path: string;
   }[];
   for (const item of items) refs.push({ path: item.path, label: item.title, mediaItemId: item.id });
 
-  const episodes = db
+  const episodes = (await db
     .prepare(
-      `SELECT e.file_path AS path, m.title AS parentTitle, e.season_number AS s, e.episode_number AS ep, e.media_item_id AS mediaItemId
+      `SELECT e.file_path AS path, m.title AS "parentTitle", e.season_number AS s, e.episode_number AS ep, e.media_item_id AS "mediaItemId"
        FROM episodes e JOIN media_items m ON m.id = e.media_item_id
        WHERE e.has_file = 1 AND e.file_path IS NOT NULL`
     )
-    .all() as { path: string; parentTitle: string; s: number; ep: number; mediaItemId: number }[];
+    .all()) as { path: string; parentTitle: string; s: number; ep: number; mediaItemId: number }[];
   for (const e of episodes) {
     refs.push({
       path: e.path,
@@ -84,13 +84,13 @@ function collectFileRefs(): FileRef[] {
     });
   }
 
-  const subItems = db
+  const subItems = (await db
     .prepare(
-      `SELECT s.file_path AS path, m.title AS parentTitle, s.title AS childTitle, s.media_item_id AS mediaItemId
+      `SELECT s.file_path AS path, m.title AS "parentTitle", s.title AS "childTitle", s.media_item_id AS "mediaItemId"
        FROM sub_items s JOIN media_items m ON m.id = s.media_item_id
        WHERE s.has_file = 1 AND s.file_path IS NOT NULL`
     )
-    .all() as { path: string; parentTitle: string; childTitle: string; mediaItemId: number }[];
+    .all()) as { path: string; parentTitle: string; childTitle: string; mediaItemId: number }[];
   for (const s of subItems) {
     refs.push({ path: s.path, label: `${s.parentTitle} — ${s.childTitle}`, mediaItemId: s.mediaItemId });
   }
@@ -107,8 +107,8 @@ export interface DuplicateFileGroup {
  * but live at different paths — usually a re-import that landed in a new location without the old
  * one being cleaned up (e.g. after a naming template change). On-demand only, like the orphaned-
  * file scan; not run automatically. */
-export function findDuplicateFiles(): DuplicateFileGroup[] {
-  const refs = collectFileRefs();
+export async function findDuplicateFiles(): Promise<DuplicateFileGroup[]> {
+  const refs = await collectFileRefs();
   const bySize = new Map<number, FileRef[]>();
 
   for (const ref of refs) {

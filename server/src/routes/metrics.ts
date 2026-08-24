@@ -43,8 +43,8 @@ metricsRouter.get(
     const pendingRequests = (
       db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get() as { c: number }
     ).c;
-    const repeatedImports = findRepeatedImports().length;
-    const upgradeCandidates = findUpgradeCandidates().length;
+    const repeatedImports = (await findRepeatedImports()).length;
+    const upgradeCandidates = (await findUpgradeCandidates()).length;
 
     const folders = (db.prepare("SELECT * FROM root_folders").all() as any[]).map(rootFolderFromRow);
     const diskFree: { labels: Record<string, string>; value: number }[] = [];

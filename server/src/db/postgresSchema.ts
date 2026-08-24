@@ -76,9 +76,30 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS release_date TEXT`,
 ];
 
+/**
+ * Widens 4 byte-count columns from Postgres's default 32-bit `INTEGER` (max ~2.1GB) to `BIGINT` —
+ * `schema.postgres.sql`'s literal `INTEGER` translation of SQLite's `INTEGER` column type was wrong
+ * specifically for these, since SQLite's own `INTEGER` affinity is already 64-bit with no separate
+ * `BIGINT` needed, so nothing about porting the schema flagged this as needing a different type on
+ * Postgres. In practice this meant any real download over ~2GB (a routine remux) silently failed to
+ * record its size — `queue.size`, `recycle_bin.size_bytes`, and both `disk_usage_samples` columns
+ * hold real byte counts, not megabytes. `ALTER COLUMN ... TYPE BIGINT` is a safe no-op to run on
+ * every startup once a column is already `BIGINT` (Postgres doesn't error re-widening to the same
+ * type), so this doesn't need separate migration-tracking bookkeeping.
+ */
+const TYPE_MIGRATIONS: string[] = [
+  `ALTER TABLE queue ALTER COLUMN size TYPE BIGINT`,
+  `ALTER TABLE recycle_bin ALTER COLUMN size_bytes TYPE BIGINT`,
+  `ALTER TABLE disk_usage_samples ALTER COLUMN free_bytes TYPE BIGINT`,
+  `ALTER TABLE disk_usage_samples ALTER COLUMN total_bytes TYPE BIGINT`,
+];
+
 export async function migratePostgresSchema(db: AsyncDb): Promise<void> {
   await db.exec(SCHEMA_SQL);
   for (const stmt of COLUMN_MIGRATIONS) {
+    await db.exec(stmt);
+  }
+  for (const stmt of TYPE_MIGRATIONS) {
     await db.exec(stmt);
   }
 }

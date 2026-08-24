@@ -143,24 +143,26 @@ systemRouter.get(
       db.prepare("SELECT COUNT(*) as c FROM download_clients WHERE enabled = 1").get() as { c: number }
     ).c;
 
-    recordDiskUsageSamples();
+    await recordDiskUsageSamples();
 
     const folders = (db.prepare("SELECT * FROM root_folders").all() as any[]).map(rootFolderFromRow);
-    const diskSpace = folders.map((f) => {
-      const forecast = getStorageForecast(f.id);
-      try {
-        const stat = fs.statfsSync(f.path);
-        return {
-          path: f.path,
-          mediaType: f.mediaType,
-          freeBytes: stat.bfree * stat.bsize,
-          totalBytes: stat.blocks * stat.bsize,
-          daysUntilFull: forecast?.daysUntilFull ?? null,
-        };
-      } catch {
-        return { path: f.path, mediaType: f.mediaType, freeBytes: null, totalBytes: null, daysUntilFull: null };
-      }
-    });
+    const diskSpace = await Promise.all(
+      folders.map(async (f) => {
+        const forecast = await getStorageForecast(f.id);
+        try {
+          const stat = fs.statfsSync(f.path);
+          return {
+            path: f.path,
+            mediaType: f.mediaType,
+            freeBytes: stat.bfree * stat.bsize,
+            totalBytes: stat.blocks * stat.bsize,
+            daysUntilFull: forecast?.daysUntilFull ?? null,
+          };
+        } catch {
+          return { path: f.path, mediaType: f.mediaType, freeBytes: null, totalBytes: null, daysUntilFull: null };
+        }
+      })
+    );
 
     res.json({
       version: APP_VERSION,
@@ -203,8 +205,8 @@ systemRouter.get(
       db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get() as { c: number }
     ).c;
 
-    const repeatedImports = findRepeatedImports();
-    const upgradeCandidates = findUpgradeCandidates();
+    const repeatedImports = await findRepeatedImports();
+    const upgradeCandidates = await findUpgradeCandidates();
 
     const downloadClients = (db.prepare("SELECT * FROM download_clients WHERE enabled = 1").all() as any[]).map(
       downloadClientFromRow
@@ -352,7 +354,7 @@ systemRouter.get(
 systemRouter.get(
   "/cleanup/unmonitored",
   asyncHandler(async (_req, res) => {
-    res.json(findUnmonitoredNoFile());
+    res.json(await findUnmonitoredNoFile());
   })
 );
 
@@ -362,7 +364,7 @@ systemRouter.get(
 systemRouter.get(
   "/cleanup/duplicate-files",
   asyncHandler(async (_req, res) => {
-    res.json(findDuplicateFiles());
+    res.json(await findDuplicateFiles());
   })
 );
 
