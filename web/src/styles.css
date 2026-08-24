@@ -48,16 +48,16 @@ body {
   flex-shrink: 0;
 }
 
-.sidebar .brand {
+.brand {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 1.4rem;
   font-weight: 700;
-  padding: 0 20px 16px;
   color: var(--accent);
 }
-.sidebar .brand img { border-radius: 6px; flex-shrink: 0; }
+.brand img { border-radius: 6px; flex-shrink: 0; }
+.sidebar .brand { padding: 0 20px 16px; }
 
 .sidebar a {
   display: block;
@@ -75,6 +75,33 @@ body {
   padding: 28px 36px;
   max-width: 1200px;
 }
+
+/* Top-bar layout — an alternative to the default left sidebar (toggled per-browser). .app gets
+   flex-direction: column instead of its default row so the bar sits above .content full-width
+   rather than beside it. */
+.app.app--top { flex-direction: column; }
+.topbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  padding: 10px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.topbar .brand { padding: 0; margin-right: 8px; font-size: 1.2rem; }
+.topbar > a {
+  color: var(--muted);
+  text-decoration: none;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+.topbar > a:hover { color: var(--text); background: rgba(255,255,255,0.03); }
+.topbar > a.active { color: var(--text); background: var(--accent-dim); }
+.topbar-spacer { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+.topbar-spacer a { color: var(--muted); text-decoration: none; padding: 6px 10px; font-size: 0.85rem; }
+.topbar-spacer a:hover { color: var(--text); }
 
 h1 { font-size: 1.6rem; margin: 0 0 20px; }
 h2 { font-size: 1.2rem; margin: 24px 0 12px; }
@@ -251,6 +278,21 @@ button.select-like:hover { background: rgba(255,255,255,0.04); opacity: 1; }
 .dropdown-menu button:hover { background: rgba(255,255,255,0.06); }
 .dropdown-menu button:disabled { opacity: 0.5; cursor: default; }
 .dropdown-menu .dropdown-divider { height: 1px; background: var(--border); margin: 4px 2px; }
+/* A dropdown menu whose items are page links (the top-bar layout's Library/Manage/Configuration/
+   System menus) rather than actions — same box as .dropdown-menu button so the two are visually
+   identical regardless of which one a given menu happens to use. */
+.dropdown-menu a {
+  display: block;
+  background: transparent;
+  color: var(--text);
+  text-decoration: none;
+  text-align: left;
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 0.9rem;
+}
+.dropdown-menu a:hover { background: rgba(255,255,255,0.06); }
+.dropdown-menu a.active { background: var(--accent-dim); }
 
 /* Settings.tsx and System.tsx's own tab-switcher row — every tab button shares the same
    margin-top so they were already aligned with each other, but the default button's
@@ -266,6 +308,22 @@ button.select-like:hover { background: rgba(255,255,255,0.04); opacity: 1; }
   padding: 20px;
   max-width: 480px;
   margin-bottom: 24px;
+}
+
+/* Dashboard's widget grid — a half-width widget spans one column (sitting side by side with
+   another half-width one), a full-width widget spans both. Collapses to one column below 900px
+   so a half-width widget's table/grid never gets squeezed into an unreadable sliver. */
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 28px;
+  align-items: start;
+}
+.dashboard-widget-full { grid-column: 1 / -1; }
+.dashboard-widget-half { grid-column: span 1; }
+@media (max-width: 900px) {
+  .dashboard-grid { grid-template-columns: 1fr; }
+  .dashboard-widget-half { grid-column: 1 / -1; }
 }
 
 .empty { color: var(--muted); padding: 24px 0; }

@@ -3,6 +3,29 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 109 — top-bar nav layout, dashboard widget resizing
+- Added a top-bar layout as an alternative to the left sidebar, toggled per-browser from the same
+  "Layout options" panel Round 108 added: Library and the admin-only Manage/Configuration/System
+  sections render as click-to-open dropdowns instead of the sidebar's inline accordion, since a
+  horizontal bar has no room to expand a section in place. The section reorder/hide customization
+  from Round 108 applies to both layouts — the same saved order/visibility, just rendered
+  differently depending on which one is active.
+- Added per-widget sizing to the Dashboard's "Customize layout" panel: each widget can be set to
+  full-width or half-width, with two half-width widgets sitting side by side (collapsing back to
+  one column under 900px so a half-width table/grid never gets squeezed unreadable). Extended the
+  shared layout-customization hook with a `sizes` map alongside the existing order/hidden state.
+- Fixed a real bug caught while building the top-bar layout's own settings panel: embedding the
+  reorder/hide/resize controls inside the existing `DropdownMenu` component closed the whole menu
+  on the *first* click inside it (checkbox, ↑/↓ button, or select), since that component closes on
+  any click bubbling up from its contents — fine for a menu of one-shot actions, unusable for a
+  multi-step settings panel. Built a plain toggle + positioned panel for this one case instead,
+  confirmed live that clicking a reorder button now keeps the panel open.
+- Verified live in-browser: switching to the top bar renders correctly (dropdowns open, Library
+  shows every media type, admin groups show their links) and switching back to the sidebar is
+  clean; a reorder click inside the top bar's settings panel applies immediately without closing
+  it; two widgets set to half-width render side by side and a reload keeps both the layout mode
+  and the widget sizes.
+
 ## Round 108 — UI polish: layout bugs, layout options, metadata merge
 - Fixed a real navigation bug: switching from a grouped library (Online Videos, ROMs, Adult) to a
   flat one (Music, Movies, ...) left the previous type's group state sitting around, so the flat

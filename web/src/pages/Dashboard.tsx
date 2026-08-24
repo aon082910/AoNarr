@@ -203,7 +203,7 @@ export default function Dashboard() {
       : []),
   ];
 
-  const { orderedItems, visibleItems, hidden, moveUp, moveDown, toggleHidden } = useCustomizableLayout(
+  const { orderedItems, visibleItems, hidden, moveUp, moveDown, toggleHidden, setSize, sizeOf } = useCustomizableLayout(
     "aonarr_dashboard_widgets",
     widgetDefs.map((w) => ({ key: w.key, label: w.label }))
   );
@@ -219,9 +219,10 @@ export default function Dashboard() {
       </div>
 
       {customizing && (
-        <div className="form-panel" style={{ maxWidth: 420, marginBottom: 20 }}>
+        <div className="form-panel" style={{ maxWidth: 480, marginBottom: 20 }}>
           <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
-            Reorder or hide widgets — saved on this device.
+            Reorder, hide, or resize widgets — saved on this device. Two half-width widgets sit
+            side by side; a full-width one takes the whole row.
           </p>
           {orderedItems.map((item, idx) => (
             <div key={item.key} className="toolbar" style={{ justifyContent: "space-between", marginBottom: 4 }}>
@@ -230,6 +231,14 @@ export default function Dashboard() {
                 {item.label}
               </label>
               <div style={{ display: "flex", gap: 4 }}>
+                <select
+                  value={sizeOf(item.key)}
+                  onChange={(e) => setSize(item.key, e.target.value as "full" | "half")}
+                  style={{ height: 28, padding: "0 24px 0 8px", fontSize: "0.8rem" }}
+                >
+                  <option value="full">Full width</option>
+                  <option value="half">Half width</option>
+                </select>
                 <button type="button" className="secondary" onClick={() => moveUp(item.key)} disabled={idx === 0} style={{ padding: "4px 10px" }}>
                   ↑
                 </button>
@@ -249,8 +258,15 @@ export default function Dashboard() {
       )}
 
       {loading && <p className="empty">Loading...</p>}
-      {!loading &&
-        visibleItems.map((item) => <div key={item.key} style={{ marginBottom: 24 }}>{widgetByKey.get(item.key)?.render()}</div>)}
+      {!loading && (
+        <div className="dashboard-grid">
+          {visibleItems.map((item) => (
+            <div key={item.key} className={sizeOf(item.key) === "half" ? "dashboard-widget-half" : "dashboard-widget-full"}>
+              {widgetByKey.get(item.key)?.render()}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
