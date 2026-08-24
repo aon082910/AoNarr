@@ -3,6 +3,29 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 106 — fix movie import duplicates (#10)
+- Fixed #10: movies (and only movies/ROMs/Adult — the "single" shape) could get duplicated by
+  every import path (Scan & Import, and Plex/Jellyfin/Emby/Radarr media-server import) because
+  each one matched a candidate file/item against *only currently-missing* movies (`has_file = 0`)
+  instead of every movie of that type — the same title/episodic/collection import paths already
+  matched against everything, this was the one place that didn't. Once a movie had a file, it
+  became invisible to future matching, so a second copy, a re-scan, or a later media-server sync
+  seeing the same movie again always created a brand new row instead of recognizing it.
+  Newly-created movies were also never added back to the in-memory list a scan matches new files
+  against, so two files for the same brand-new movie in one scan (a sample + the real file, two
+  quality variants) each created their own row too.
+- Now matches against every movie of the type regardless of file status; a match on an
+  already-has-a-file movie is recognized (not duplicated) without overwriting its existing file —
+  the extra file is left on disk and reported in the scan's skip log instead. Audited every other
+  import path (import lists, watchlist CSV import, Starr's Lidarr/Readarr collection import, Add
+  Media search) for the same class of bug — all of them already matched correctly (by external id,
+  or via a fresh per-item duplicate check), this was isolated to the two single-shape paths.
+- Existing duplicate rows from before this fix aren't automatically merged — use the Library page's
+  multi-select "Remove" action (added in Round 103) to manually clean those up.
+- Verified live against both Postgres and SQLite: two files for one new movie in one scan now
+  create exactly one row; a later scan/import seeing an already-imported movie again also stays at
+  one row, with its original file path preserved.
+
 ## Round 105 — surface why Scan & Import skips files, retry flaky ffprobe reads
 - Scan & Import previously logged only a bare `skipped: N` count with no indication of which
   files were skipped or why — a file with an unparseable filename, wrong folder depth, or outside

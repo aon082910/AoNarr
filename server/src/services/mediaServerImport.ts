@@ -63,7 +63,12 @@ export async function importMovieItems(
       pathTail(r.path)
     )
   );
-  const missingItems = (await db.prepare("SELECT * FROM media_items WHERE type = 'movie' AND has_file = 0").all()) as any[];
+  // Matched against ALL movies, not just has_file=0 ones — same reasoning as importSeriesData's
+  // existingShows below (which already gets this right). Filtering to only-missing here meant an
+  // already-imported movie became invisible to this match the moment it had a file, so a second
+  // media-server item for the same movie (a re-scan, a slightly different path/tail, a duplicate
+  // library entry on the media-server side) always fell to "no match" and created a new row.
+  const allMovies = (await db.prepare("SELECT * FROM media_items WHERE type = 'movie'").all()) as any[];
   const qualityProfileId = await defaultQualityProfileId();
 
   for (const item of items) {
@@ -78,7 +83,7 @@ export async function importMovieItems(
     }
 
     let externalIds: Record<string, string> = {};
-    const match = missingItems.find((m) => {
+    const match = allMovies.find((m) => {
       try {
         externalIds = m.external_ids ? JSON.parse(m.external_ids) : {};
       } catch {
@@ -90,7 +95,7 @@ export async function importMovieItems(
     if (match) {
       await db
         .prepare(
-          `UPDATE media_items SET has_file = 1, path = ?, poster_url = COALESCE(poster_url, ?),
+          `UPDATE media_items SET has_file = 1, path = COALESCE(path, ?), poster_url = COALESCE(poster_url, ?),
            overview = COALESCE(overview, ?), external_ids = COALESCE(NULLIF(external_ids, '{}'), ?)
            WHERE id = ?`
         )
@@ -98,7 +103,7 @@ export async function importMovieItems(
       match.has_file = 1;
       result.matched++;
     } else {
-      await db
+      const insertResult = await db
         .prepare(
           `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, has_file, status)
            VALUES ('movie', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 'unknown')`
@@ -114,6 +119,10 @@ export async function importMovieItems(
           rootFolderId,
           qualityProfileId
         );
+      // Pushed into the same array this import matches against — without this, two media-server
+      // items for the same new movie in one batch each create their own row instead of the second
+      // one matching the first's.
+      allMovies.push({ id: Number(insertResult.lastInsertRowid), title: item.title, year: item.year, external_ids: JSON.stringify(item.externalIds), has_file: 1 });
       result.created++;
     }
   }

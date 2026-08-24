@@ -244,7 +244,13 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
     files = files.filter((f) => !knownAlbumFolders.has(path.dirname(f)));
   }
 
-  const missingItems = (await db.prepare("SELECT * FROM media_items WHERE type = ? AND has_file = 0").all(type)) as any[];
+  // Matched against ALL items of this type, not just has_file=0 ones — same reasoning as
+  // seriesItems/collectionParents below. Filtering to only-missing here was the root cause of
+  // movies (and other single-shape types) getting duplicated: an already-imported movie is
+  // invisible to this match once it has a file, so a second file that guesses the same title
+  // (an extra copy, a sample left behind, a re-download) always fell to the "no match" branch and
+  // created a brand new row instead of being recognized as the same movie.
+  const singleShapeItems = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[];
   const seriesItems = typeConfig.shape === "episodic" ? ((await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[]) : [];
   const collectionParents =
     typeConfig.shape === "collection" ? ((await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[]) : [];
@@ -415,7 +421,20 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
         const parsed = parseReleaseTitle(base);
         const quality = parsed.quality === "Unknown" ? null : parsed.quality;
 
-        const match = missingItems.find((m) => titlesMatch(m.title, guessedTitle));
+        const match = singleShapeItems.find((m) => titlesMatch(m.title, guessedTitle));
+        if (match && match.has_file && match.path !== filePath) {
+          // Already has a different file — most likely an extra copy, a sample, or a re-download
+          // sitting alongside the one already tracked. Matching (not creating a new row) but not
+          // overwriting an existing good file with this one is the safer default; the file is left
+          // on disk, untouched, for manual review rather than silently duplicated or clobbered.
+          result.skipped++;
+          result.skippedFiles.push({
+            path: filePath,
+            reason: `matched existing movie "${match.title}" which already has a file — left in place rather than duplicating or overwriting`,
+          });
+          continue;
+        }
+
         const mediaInfo = await probeMediaInfo(filePath);
         const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
         if (match) {
@@ -423,15 +442,20 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
             .prepare("UPDATE media_items SET has_file = 1, path = ?, quality = ?, media_info = ? WHERE id = ?")
             .run(filePath, quality, mediaInfoJson, match.id);
           match.has_file = 1;
+          match.path = filePath;
           result.matched++;
         } else {
           const folder = folders.find((f) => filePath.startsWith(f.path));
-          await db
+          const insertResult = await db
             .prepare(
               `INSERT INTO media_items (type, title, sort_title, year, path, root_folder_id, quality_profile_id, monitored, has_file, quality, media_info, status)
                VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 'unknown')`
             )
             .run(type, guessedTitle, guessedTitle.toLowerCase(), parsed.year, filePath, folder?.id ?? null, qualityProfileId, quality, mediaInfoJson);
+          // Pushed into the same array this scan matches against — without this, two files in one
+          // scan that both guess the same new title (e.g. a movie's main file and its sample) each
+          // create their own row instead of the second one matching the first's.
+          singleShapeItems.push({ id: Number(insertResult.lastInsertRowid), title: guessedTitle, has_file: 1, path: filePath });
           result.created++;
         }
       }
