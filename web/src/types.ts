@@ -80,6 +80,11 @@ export interface MediaItem {
   addedAt: string;
   mediaInfo: MediaInfo | null;
   contentRating: string | null;
+  /** Episode/album-level download progress for "episodic"/"collection"-shape types (series, anime,
+   * music, books, ...) — absent for "single"-shape types (movies, ROMs, adult), which have no
+   * children and whose own hasFile is the whole picture. */
+  childCount?: number;
+  childHaveCount?: number;
 }
 
 export interface Indexer {

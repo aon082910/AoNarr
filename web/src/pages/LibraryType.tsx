@@ -285,6 +285,10 @@ export function LibraryItemGrid({
 }) {
   const [items, setItems] = useState<MediaItem[]>([]);
   const [typeSize, setTypeSize] = useState<number | null>(null);
+  const mediaTypes = useMediaTypes();
+  const typeInfo = mediaTypes.find((t) => t.key === type);
+  const hasChildren = typeInfo?.shape === "episodic" || typeInfo?.shape === "collection";
+  const childLabelPlural = typeInfo?.shape === "episodic" ? "episodes" : `${(typeInfo?.childLabel ?? "item").toLowerCase()}s`;
   const [tags, setTags] = useState<Tag[]>([]);
   const [tagFilter, setTagFilter] = useState<number | "all">("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(
@@ -630,6 +634,14 @@ export function LibraryItemGrid({
 
   const haveCount = items.filter((item) => item.hasFile).length;
   const missingCount = items.length - haveCount;
+  // Sonarr/Radarr-style child-level totals (episodes actually downloaded vs. missing across the
+  // whole library) — distinct from haveCount/missingCount above, which is per-item (a series with
+  // 3/10 episodes still counts as one "have" item there). Only meaningful for episodic/collection
+  // shapes; items without childCount (still loading, or genuinely childless) are skipped rather
+  // than treated as 0/0.
+  const childTotal = items.reduce((sum, item) => sum + (item.childCount ?? 0), 0);
+  const childHave = items.reduce((sum, item) => sum + (item.childHaveCount ?? 0), 0);
+  const childMissing = childTotal - childHave;
 
   const contentRatings = Array.from(new Set(items.map((i) => i.contentRating).filter((r): r is string => !!r))).sort();
 
@@ -661,6 +673,13 @@ export function LibraryItemGrid({
         <span className="badge ok">{haveCount} have</span>{" "}
         <span className={`badge ${missingCount > 0 ? "danger" : ""}`}>{missingCount} missing</span>{" "}
         <span className="badge">{items.length} total</span>
+        {hasChildren && childTotal > 0 && (
+          <>
+            {" · "}
+            <span className="badge ok">{childHave} {childLabelPlural} downloaded</span>{" "}
+            <span className={`badge ${childMissing > 0 ? "danger" : ""}`}>{childMissing} {childLabelPlural} missing</span>
+          </>
+        )}
       </p>
       {groupDetail && (
         <p style={{ color: "var(--muted)" }}>
@@ -959,6 +978,16 @@ export function LibraryItemGrid({
                     .filter(Boolean)
                     .join(" · ")}
                 </div>
+                {typeof item.childCount === "number" && item.childCount > 0 && (
+                  <div style={{ marginTop: 6 }} title={`${item.childHaveCount ?? 0}/${item.childCount} ${childLabelPlural} downloaded`}>
+                    <div className="progress-bar" style={{ width: "100%" }}>
+                      <div style={{ width: `${Math.round(((item.childHaveCount ?? 0) / item.childCount) * 100)}%` }} />
+                    </div>
+                    <div className="sub">
+                      {item.childHaveCount ?? 0}/{item.childCount}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           ))}
@@ -969,6 +998,7 @@ export function LibraryItemGrid({
             <tr>
               {selectMode && <th></th>}
               <th>Title</th>
+              {hasChildren && <th>Progress</th>}
               {(Object.keys(EXTRA_FIELD_LABELS) as ExtraField[])
                 .filter((f) => listColumns.has(f))
                 .map((f) => (
@@ -990,6 +1020,22 @@ export function LibraryItemGrid({
                   </td>
                 )}
                 <td>{item.title}</td>
+                {hasChildren && (
+                  <td>
+                    {typeof item.childCount === "number" && item.childCount > 0 ? (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <div className="progress-bar">
+                          <div style={{ width: `${Math.round(((item.childHaveCount ?? 0) / item.childCount) * 100)}%` }} />
+                        </div>
+                        <span className="sub">
+                          {item.childHaveCount ?? 0}/{item.childCount}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="sub">—</span>
+                    )}
+                  </td>
+                )}
                 {(Object.keys(EXTRA_FIELD_LABELS) as ExtraField[])
                   .filter((f) => listColumns.has(f))
                   .map((f) =>

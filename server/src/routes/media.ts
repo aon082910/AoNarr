@@ -7,6 +7,7 @@ import { episodeFromRow, mediaItemFromRow, queueItemFromRow, subItemFromRow, tag
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { getMediaTypeConfig, isValidMediaType } from "../services/mediaTypes.js";
+import { attachChildCounts } from "../services/childCounts.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
@@ -157,7 +158,9 @@ mediaRouter.get(
       rows = rows.filter((r) => !isRatingBlocked(r.content_rating, req.auth!.user!.maxContentRating));
     }
 
-    res.json(rows.map(mediaItemFromRow));
+    const items = rows.map(mediaItemFromRow);
+    await attachChildCounts(items);
+    res.json(items);
   })
 );
 

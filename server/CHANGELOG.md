@@ -3,6 +3,27 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 111 — Starr-style per-item and library download progress
+- Added Sonarr/Radarr-style progress to episodic (TV, Anime) and collection (Music, Books,
+  Audiobooks, Comics, Manga, Online Videos, Courses) library types: each media tile (poster and
+  list view) now shows a progress bar and an "X/Y" count of how many of its episodes/albums/issues
+  are actually downloaded versus missing, not just the item-level "has at least one file" badge
+  that already existed. "single"-shape types (Movies, ROMs, Adult) are unaffected — one file per
+  item means their existing Downloaded/Missing badge is already the full picture.
+- Added the same child-level rollup to each library's header stats: alongside the existing
+  item-level "N have / N missing / N total" badges, episodic/collection libraries now also show a
+  library-wide "N episodes/albums/... downloaded" / "N missing" total — the library-level aggregate
+  Sonarr/Radarr both surface, which AoNarr's per-item-only counts couldn't answer before (e.g. "3/10
+  episodes" per show doesn't tell you how many episodes are missing across the whole library).
+- New shared `attachChildCounts()` (server/src/services/childCounts.ts) computes these via one
+  grouped aggregate query per shape (`episodes`/`sub_items`, chunked by 500 ids) rather than one
+  query per item, and is attached to every `GET /api/media` response.
+- Verified live against both SQLite and Postgres: imported artists via search (Daft Punk/Deezer,
+  38 albums; Radiohead/MusicBrainz, 100 albums), confirmed the Music library's poster tiles, list
+  view, and header stats all render the correct per-item and library-wide "0/38"/"0/100"/"138
+  albums missing" figures on both dialects, and confirmed a single-shape library (Movies) shows
+  neither the progress bar nor the child-count header badge.
+
 ## Round 110 — music library auto track-matching
 - Fixed a real bug: adding an artist (via search or an import list) fetched and created its albums
   but never fetched their tracks, so a newly-added artist's albums sat with an empty track list
