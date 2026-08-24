@@ -107,10 +107,13 @@ async function chooseBestResult(
   const best = allowedQualities.length > 0 ? pickBestAllowedQuality(qualities, allowedQualities, cutoff) : qualities[0];
   if (!best) return null;
 
-  const candidates = relevant
-    .filter(({ parsed }) => parsed.quality === best)
-    .map(({ result }) => ({ result, ...scoreRelease(result.title, result.size ?? null, qualityProfileId, mediaType) }))
-    .filter((c) => c.totalScore >= minFormatScore);
+  const candidates = (
+    await Promise.all(
+      relevant
+        .filter(({ parsed }) => parsed.quality === best)
+        .map(async ({ result }) => ({ result, ...(await scoreRelease(result.title, result.size ?? null, qualityProfileId, mediaType)) }))
+    )
+  ).filter((c) => c.totalScore >= minFormatScore);
   if (candidates.length === 0) return null;
 
   // getGroupReputation is now async (DB-backed) — a .sort() comparator can't await, so reputation

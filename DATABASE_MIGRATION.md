@@ -1,6 +1,6 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — 59 files converted and verified against a real Postgres container**, covering
+Status: **PostgreSQL — 60 files converted and verified against a real Postgres container**, covering
 auth, users, quality/library config, indexers, download clients, calendar events, saved library
 views, remote instances, friend libraries, library groups (including its `WITH RECURSIVE`
 nested-count rollup), person credits, custom formats (including TRaSH-Guides sync), collections
@@ -11,8 +11,9 @@ the wanted/missing + calendar views, household requests (including auto-approval
 stats), web push subscriptions, the media-server watch webhook, library/media-server validation, the
 full recycle-bin/corrupt-media/auto-archival cluster, instance settings (including the TOTP 2FA and
 config-template export/import flows), the import-review queue, library media-compatibility analysis,
-duplicate-detection, and release-group reputation tracking. 21 files remain unconverted (their own
-*other* queries, not the call sites into the 5 services converted in Round 93 — see Round 93's notes
+duplicate-detection, release-group reputation tracking, and custom-format release scoring. 20 files
+remain unconverted (their own *other* queries, not the call sites into the services converted in
+Rounds 93–95 — see those rounds' notes
 below for the distinction); `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one
 yet — see "What's left" below for the exact remaining list, now narrower and more accurately scoped
 than earlier rounds estimated. MariaDB — scoped, not started, deliberately deferred until PostgreSQL
@@ -20,17 +21,17 @@ is fully done (see "The ask" below; narrowed from "MariaDB or PostgreSQL" to "Po
 explicit user decision). This document exists so a future round can pick this up without re-deriving
 the analysis below.
 
-## What's left (as of Round 93)
+## What's left (as of Round 95)
 
-The remaining 21 files are `routes/media.ts` (947 lines), `routes/metadata.ts`,
+The remaining 20 files are `routes/media.ts` (947 lines), `routes/metadata.ts`,
 `routes/watchlistImport.ts`, `routes/importLists.ts`, `services/importLists.ts`,
 `services/recommendations.ts`, `services/traktSync.ts`, `services/mediaServerImport.ts`,
 `services/starrImport.ts`, `routes/search.ts`, `services/importer.ts`,
-`services/customFormatScoring.ts`, `services/upgradeCandidates.ts`, `services/scheduler.ts` (853
+`services/upgradeCandidates.ts`, `services/scheduler.ts` (853
 lines), `routes/system.ts` (457 lines), `routes/metrics.ts`, `services/duplicates.ts`,
 `services/storageForecast.ts`, `services/cleanupSuggestions.ts`, `services/libraryScan.ts`, and
 `services/scheduledBackup.ts`. Their own *remaining* (non-`findPossibleDuplicates`/`isExcluded`/
-`isBlocklisted`/etc.) database calls still need converting — but as Round 93 found, most of what made
+`isBlocklisted`/`scoreRelease`/etc.) database calls still need converting — but as Round 93 found, most of what made
 this list look unapproachable was **not actually true**.
 
 **Correction to the Round 92 assessment above**: it claimed the small helper functions in this
@@ -53,6 +54,30 @@ every round since 84 has done, just in bigger files. `chooseBestResult()` in `sc
 93) is the template for the one real restructuring pattern likely to recur: precompute an async
 lookup into a `Map` before a `.sort()`/`.filter()` runs, then have the callback do synchronous `Map`
 lookups instead of calling the async function directly.
+
+## Progress (Round 95)
+
+Converted `services/customFormatScoring.ts` — the release-scoring function deferred all the way
+back in Round 85 as "called synchronously from deep within the search/grab pipeline." As with
+Round 93's services, re-checking its actual 2 call sites (not assumed from its role in the pipeline)
+found they were tractable: `routes/search.ts`'s manual-search annotation and
+`services/scheduler.ts`'s `chooseBestResult()` (itself made async in Round 93) both called it inside
+a plain synchronous `.map()` callback — fixed with the same `Promise.all(items.map(async ...))`
+restructuring already used twice in Round 93 (`metadata.ts`, `recommendations.ts`), not a deeper
+rewrite.
+
+Verified live end to end against SQLite (a real search, not a mocked one): created a movie, a custom
+format matching `REMUX` in the title, a quality profile with a score for that format, and a local
+mock RSS indexer; ran a real manual search and confirmed the returned result correctly carried
+`formatScore: 75` and `formatMatches: ["Remux Format"]` — the exact score configured, proving both
+the async conversion and the `Promise.all` restructuring work correctly together. Postgres
+verification for this round was necessarily lighter than usual: `routes/search.ts` and
+`services/scheduler.ts` (both still unconverted) read the media item/indexers they need for a search
+through the old synchronous shadow-SQLite path (the Round 80 caveat), so a live end-to-end search
+can't be driven from outside the app in Postgres mode the way it can under SQLite's single
+consistent database — `scoreRelease()`'s own two queries are unchanged from already Postgres-verified
+patterns (same tables/columns as `customFormats.ts`'s already-converted scores routes from Round 85),
+and the typecheck + camelCase-alias grep both passed clean.
 
 ## Progress (Round 93)
 

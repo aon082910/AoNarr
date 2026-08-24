@@ -122,7 +122,7 @@ searchRouter.get(
     }
 
     const blocklisted = await getBlocklistedTitles(item.id);
-    const annotated: AnnotatedSearchResult[] = rawResults.map((r) => {
+    const annotated: AnnotatedSearchResult[] = await Promise.all(rawResults.map(async (r) => {
       const parsed = parseReleaseTitle(r.title);
       const matchesTarget =
         targetSeason !== null && targetEpisode !== null
@@ -130,7 +130,7 @@ searchRouter.get(
           : targetSeason !== null
             ? parsed.seasonNumber === targetSeason
             : true;
-      const { totalScore, matches } = scoreRelease(r.title, r.size ?? null, item.qualityProfileId, item.type);
+      const { totalScore, matches } = await scoreRelease(r.title, r.size ?? null, item.qualityProfileId, item.type);
       return {
         ...r,
         parsedQuality: parsed.quality,
@@ -141,7 +141,7 @@ searchRouter.get(
         formatMatches: matches.map((m) => m.name),
         blocklisted: blocklisted.has(r.title),
       };
-    });
+    }));
 
     res.json(annotated);
   })

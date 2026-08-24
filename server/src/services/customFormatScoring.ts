@@ -1,4 +1,4 @@
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
 import { parseReleaseTitle, type ReleaseFlag } from "./releaseParser.js";
 
 export interface ConditionGroup {
@@ -118,13 +118,13 @@ export function formatMatches(groups: ConditionGroup[], title: string, sizeBytes
  * `mediaTypes` restriction (the default) applies to every library type, matching the pre-scoping
  * behavior every existing custom format already has.
  */
-export function scoreRelease(
+export async function scoreRelease(
   releaseTitle: string,
   releaseSizeBytes: number | null,
   qualityProfileId: number | null,
   mediaType: string | null = null
-): ReleaseScore {
-  const formats = db.prepare("SELECT * FROM custom_formats").all() as {
+): Promise<ReleaseScore> {
+  const formats = (await db.prepare("SELECT * FROM custom_formats").all()) as {
     id: number;
     name: string;
     patterns: string;
@@ -153,11 +153,11 @@ export function scoreRelease(
 
     let score = 0;
     if (qualityProfileId) {
-      const row = db
+      const row = (await db
         .prepare(
           "SELECT score FROM quality_profile_format_scores WHERE quality_profile_id = ? AND custom_format_id = ?"
         )
-        .get(qualityProfileId, format.id) as { score: number } | undefined;
+        .get(qualityProfileId, format.id)) as { score: number } | undefined;
       score = row?.score ?? 0;
     }
 

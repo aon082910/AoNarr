@@ -3,6 +3,22 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 95
+- PostgreSQL support: converted `services/customFormatScoring.ts` (deferred since Round 85 as
+  "called from deep within the search/grab pipeline") — 60 files converted so far, 20 remain
+- Its 2 call sites (`routes/search.ts`'s manual-search annotation, `services/scheduler.ts`'s
+  `chooseBestResult()`) turned out to be the same tractable shape Round 93 found repeatedly: a plain
+  synchronous `.map()` callback, fixed with the same `Promise.all(items.map(async ...))`
+  restructuring already used twice last round
+- Verified live end to end against SQLite with a real search (not mocked): created a movie, a custom
+  format matching a release title pattern, a scored quality profile, and a local mock RSS indexer,
+  then confirmed a real manual search correctly returned the configured `formatScore`/`formatMatches`
+- Postgres verification this round was necessarily lighter: `search.ts`/`scheduler.ts` (both still
+  unconverted) read what a search needs through the Round 80 shadow-SQLite path, so a live
+  end-to-end search can't be driven from outside the app under Postgres the way it can under
+  SQLite's single database — `scoreRelease()`'s own queries are unchanged from already
+  Postgres-verified patterns from Round 85, and typecheck + the alias-risk grep both passed clean
+
 ## Round 94 — GitHub issue fixes + Soulseek support
 - **Fixed #1 — AllDebrid grabs failing with "Magnet is not valid"**: the `alldebrid` client passed
   an indexer's raw Torznab "get"/proxy `downloadUrl` straight to AllDebrid's magnet-upload endpoint
