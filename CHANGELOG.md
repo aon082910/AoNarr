@@ -3,6 +3,19 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 101
+- PostgreSQL support: converted `routes/media.ts` — the largest remaining file (~40 routes: item
+  CRUD, tags, bulk monitor/tag, CSV export/import, metadata export, corrupt-file check, rematch,
+  watch-state, episodes, sub-items/tracks, yt-dlp direct download) — 77 files converted so far, 3
+  remain
+- Converted `bulk/monitor` and `bulk/tag`'s better-sqlite3 synchronous transaction-closure pattern to
+  the async `db.transaction(async () => {...})` pattern used since Round 90
+- Converted 2 `INSERT OR IGNORE` call sites (`media_item_tags`) to the dialect-conditional
+  `ON CONFLICT DO NOTHING` pattern
+- Verified live against a real Postgres container: full CRUD across movie/series/artist shapes, tags
+  (single-item and bulk), episodes, sub-items, watch-state, and CSV export — same sequence
+  regression-checked against SQLite
+
 ## Round 100
 - PostgreSQL support: converted `routes/system.ts` (`/network-stats`, `/status`, `/health`,
   `/orphaned-scan`) — 76 files converted so far, 4 remain

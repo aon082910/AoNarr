@@ -1,6 +1,6 @@
 # External Database Support — Scoping Document
 
-Status: **PostgreSQL — 76 files converted and verified against a real Postgres container**, covering
+Status: **PostgreSQL — 77 files converted and verified against a real Postgres container**, covering
 auth, users, quality/library config, indexers, download clients, calendar events, saved library
 views, remote instances, friend libraries, library groups (including its `WITH RECURSIVE`
 nested-count rollup), person credits, custom formats (including TRaSH-Guides sync), collections
@@ -19,9 +19,12 @@ import-list syncing (Trakt/IMDb/Last.fm), library scan-and-import (the filesyste
 matches/creates movies, episodic shows, and collection/artist items, plus its has_file rollups),
 import-list CRUD, Prometheus metrics, Radarr/Sonarr/Lidarr/Readarr library migration, the
 post-download file placement/manual-import pipeline (single/episodic/collection-shape file moves,
-season-pack imports, and multi-file album imports), and system status/network-stats/health/
-orphaned-file-scan. 4 files remain unconverted (their own *other* queries, not the call sites into the
-services converted in Rounds 93–100 — see those rounds' notes below for the distinction);
+season-pack imports, and multi-file album imports), system status/network-stats/health/
+orphaned-file-scan, and the full media library CRUD surface (item CRUD, tags, bulk monitor/tag,
+CSV export/import, metadata export (.nfo/.json/.plexmatch/Calibre .opf), corrupt-file check,
+metadata-provider fetch, rematch, watch-state, episodes, sub-items/tracks, and the yt-dlp direct
+sub-item download). 3 files remain unconverted (their own *other* queries, not the call sites into the
+services converted in Rounds 93–101 — see those rounds' notes below for the distinction);
 `AONARR_DATABASE_DRIVER=postgres` runs a real app, just not a complete one yet — see "What's left"
 below for the exact remaining list, now narrower and more accurately scoped than earlier rounds
 estimated. MariaDB — scoped, not started, deliberately deferred until PostgreSQL is fully done (see
@@ -29,10 +32,10 @@ estimated. MariaDB — scoped, not started, deliberately deferred until PostgreS
 decision). This document exists so a future round can pick this up without re-deriving the analysis
 below.
 
-## What's left (as of Round 100)
+## What's left (as of Round 101)
 
-The remaining 4 files are `routes/media.ts` (948 lines), `routes/search.ts`, `services/scheduler.ts`
-(864 lines), and `services/scheduledBackup.ts`. Their own *remaining*
+The remaining 3 files are `routes/search.ts`, `services/scheduler.ts` (864 lines), and
+`services/scheduledBackup.ts`. Their own *remaining*
 (non-`findPossibleDuplicates`/`isExcluded`/`isBlocklisted`/`scoreRelease`/`findRepeatedImports`/
 `findUpgradeCandidates`/etc.) database calls still need converting — but as Round 93 found, most of
 what made this list look unapproachable was **not actually true**.
@@ -58,7 +61,7 @@ every round since 84 has done, just in bigger files. `chooseBestResult()` in `sc
 lookup into a `Map` before a `.sort()`/`.filter()` runs, then have the callback do synchronous `Map`
 lookups instead of calling the async function directly.
 
-## Conversion plan for the remaining 4 files (as of Round 100)
+## Conversion plan for the remaining 3 files (as of Round 101)
 
 Mapped every import edge *among these files* (edges to already-converted or db-free files don't
 matter — the risk this session has consistently guarded against is a converted file's own queries
@@ -88,8 +91,10 @@ one, so the whole file is done).
 `/backup` and `/backup/restore` routes, which now deliberately import the raw sync `db` from
 `db/client.ts` (aliased `sqliteDb`) instead of converting — same structural exception as
 `services/scheduledBackup.ts` below, since `Database.backup()`/`.close()`/raw file-swap restore have
-no Postgres equivalent yet. Still remaining: `routes/media.ts` (948, → `libraryScan.ts` — the single
-largest remaining file, its own dedicated round next).
+no Postgres equivalent yet. ~~`routes/media.ts`~~ — **done as of Round 101** (the single largest
+remaining file, ~40 routes, its own dedicated round; no restructuring needed — every db call was a
+direct call inside an already-`async` handler or a plain sequential step, same as every Tier 1/2 round
+before it).
 
 **Tier 4:**
 `services/scheduler.ts` (864, → `importLists.ts`/`importer.ts`/`libraryScan.ts`/
@@ -110,6 +115,32 @@ verification, following the same ritual every round since 79 has used (typecheck
 grep → build → live-verify both backends → update this doc + CHANGELOG.md → commit/push →
 rebuild/push Docker Hub tags). `services/scheduledBackup.ts`'s per-dialect backup logic is deferred
 to its own round after everything else, since it's a design question, not a conversion mop-up.
+
+## Progress (Round 101)
+
+Converted `routes/media.ts` (948 lines, ~40 routes) — the single largest remaining file. Covers: item
+CRUD (`GET /`, `GET /:id`, `POST /`, `PATCH /:id`, `DELETE /:id`), tags (attach/detach, plus
+`getTagsForMediaItem()` made `async`), bulk operations (`bulk/monitor`, `bulk/tag` — both converted
+from better-sqlite3's synchronous `db.transaction((ids) => {...})` closure-call pattern to `await
+db.transaction(async () => { for (...) await ... })`, the same async-transaction pattern established
+since Round 90), CSV export/bulk-import, metadata export (.nfo/.json/.plexmatch for the general case,
+Calibre .opf for book-shaped libraries), corrupt-file check, per-item metadata-provider fetch, rematch
+(interactive re-search), watch-state (get/set, with a `datetime('now')` insert replaced by
+`nowExpr(db)`), episodes (create/get/patch, season-level bulk monitor), and sub-items/tracks
+(create/get/patch, plus the yt-dlp direct-download route for Online Videos sub-items).
+
+**Two `INSERT OR IGNORE` call sites** (`bulk/tag` and `/:id/tags`, both inserting into
+`media_item_tags`) converted to the same `db.dialect === "postgres" ? "... ON CONFLICT DO NOTHING" :
+"INSERT OR IGNORE ..."` conditional established in `routes/collections.ts`. No new restructuring
+pattern was needed anywhere else in the file — every remaining db call was a direct call inside an
+already-`async` handler, consistent with every Tier 1/2/3 round since 93.
+
+Live-verified against a fresh Postgres container: created a movie/series/artist item across all three
+shapes, attached a tag via both the single-item and bulk-tag routes (confirmed via `psql` that all 3
+`media_item_tags` rows landed correctly through the `ON CONFLICT DO NOTHING` path), added an episode
+and a sub-item, set watch-state, bulk-monitored 3 items in one transaction, exercised season-level
+episode monitoring and rematch, exported the CSV, and deleted an item. Regression-tested the identical
+sequence against the same image in SQLite mode via the app's own API — matched.
 
 ## Progress (Round 100)
 

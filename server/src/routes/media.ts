@@ -1,7 +1,8 @@
 import { Router } from "express";
 import multer from "multer";
 import { log } from "../services/logger.js";
-import { db } from "../db/client.js";
+import { db } from "../db/index.js";
+import { nowExpr } from "../db/asyncDb.js";
 import { episodeFromRow, mediaItemFromRow, queueItemFromRow, subItemFromRow, tagFromRow, trackFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { requireAdmin } from "../middleware/auth.js";
@@ -30,15 +31,15 @@ function allowedTypesFor(req: import("express").Request): string[] | null {
   return req.auth?.user?.allowedTypes ?? [];
 }
 
-function getTagsForMediaItem(mediaItemId: number) {
-  const rows = db
+async function getTagsForMediaItem(mediaItemId: number) {
+  const rows = (await db
     .prepare(
       `SELECT t.* FROM tags t
        JOIN media_item_tags mit ON mit.tag_id = t.id
        WHERE mit.media_item_id = ?
        ORDER BY t.name`
     )
-    .all(mediaItemId) as any[];
+    .all(mediaItemId)) as any[];
   return rows.map(tagFromRow);
 }
 
@@ -50,11 +51,10 @@ mediaRouter.post(
     if (!Array.isArray(mediaItemIds) || mediaItemIds.length === 0) {
       throw new HttpError(400, "mediaItemIds is required");
     }
-    const update = db.prepare("UPDATE media_items SET monitored = ? WHERE id = ?");
-    const run = db.transaction((ids: number[]) => {
-      for (const id of ids) update.run(monitored ? 1 : 0, id);
+    await db.transaction(async () => {
+      const update = db.prepare("UPDATE media_items SET monitored = ? WHERE id = ?");
+      for (const id of mediaItemIds) await update.run(monitored ? 1 : 0, id);
     });
-    run(mediaItemIds);
     res.json({ updated: mediaItemIds.length });
   })
 );
@@ -67,11 +67,14 @@ mediaRouter.post(
     if (!Array.isArray(mediaItemIds) || mediaItemIds.length === 0 || !tagId) {
       throw new HttpError(400, "mediaItemIds and tagId are required");
     }
-    const insert = db.prepare("INSERT OR IGNORE INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?)");
-    const run = db.transaction((ids: number[]) => {
-      for (const id of ids) insert.run(id, tagId);
+    const insertSql =
+      db.dialect === "postgres"
+        ? "INSERT INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING"
+        : "INSERT OR IGNORE INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?)";
+    await db.transaction(async () => {
+      const insert = db.prepare(insertSql);
+      for (const id of mediaItemIds) await insert.run(id, tagId);
     });
-    run(mediaItemIds);
     res.json({ tagged: mediaItemIds.length });
   })
 );
@@ -88,7 +91,7 @@ mediaRouter.get(
 
     let rows: any[];
     if (tagId) {
-      rows = db
+      rows = await db
         .prepare(
           `SELECT m.* FROM media_items m
            JOIN media_item_tags mit ON mit.media_item_id = m.id
@@ -97,13 +100,13 @@ mediaRouter.get(
         )
         .all(...(type ? [tagId, type] : [tagId]));
     } else if (groupId === "none" && type) {
-      rows = db.prepare("SELECT * FROM media_items WHERE type = ? AND group_id IS NULL ORDER BY sort_title").all(type);
+      rows = await db.prepare("SELECT * FROM media_items WHERE type = ? AND group_id IS NULL ORDER BY sort_title").all(type);
     } else if (groupId) {
-      rows = db.prepare("SELECT * FROM media_items WHERE group_id = ? ORDER BY sort_title").all(groupId);
+      rows = await db.prepare("SELECT * FROM media_items WHERE group_id = ? ORDER BY sort_title").all(groupId);
     } else if (type) {
-      rows = db.prepare("SELECT * FROM media_items WHERE type = ? ORDER BY sort_title").all(type);
+      rows = await db.prepare("SELECT * FROM media_items WHERE type = ? ORDER BY sort_title").all(type);
     } else {
-      rows = db.prepare("SELECT * FROM media_items ORDER BY sort_title").all();
+      rows = await db.prepare("SELECT * FROM media_items ORDER BY sort_title").all();
     }
 
     if (allowedTypes) {
@@ -171,8 +174,8 @@ mediaRouter.get(
   asyncHandler(async (req, res) => {
     const { type } = req.query as { type?: MediaType };
     const rows = type
-      ? (db.prepare("SELECT * FROM media_items WHERE type = ? ORDER BY sort_title").all(type) as any[])
-      : (db.prepare("SELECT * FROM media_items ORDER BY type, sort_title").all() as any[]);
+      ? ((await db.prepare("SELECT * FROM media_items WHERE type = ? ORDER BY sort_title").all(type)) as any[])
+      : ((await db.prepare("SELECT * FROM media_items ORDER BY type, sort_title").all()) as any[]);
     const items = rows.map(mediaItemFromRow);
 
     const header = ["id", "type", "title", "year", "monitored", "qualityProfileId", "hasFile", "quality", "status", "path"];
@@ -220,13 +223,13 @@ mediaRouter.post(
 
     for (const row of rows.slice(1)) {
       const id = Number(row[idIdx]);
-      if (!id || !db.prepare("SELECT id FROM media_items WHERE id = ?").get(id)) {
+      if (!id || !(await db.prepare("SELECT id FROM media_items WHERE id = ?").get(id))) {
         skipped++;
         continue;
       }
       const monitored = monitoredIdx !== -1 && row[monitoredIdx] !== "" ? Number(row[monitoredIdx]) : null;
       const qualityProfileId = qualityProfileIdx !== -1 && row[qualityProfileIdx] !== "" ? Number(row[qualityProfileIdx]) : null;
-      update.run(monitored, qualityProfileId, id);
+      await update.run(monitored, qualityProfileId, id);
       updated++;
     }
 
@@ -293,7 +296,7 @@ mediaRouter.get(
     if (!type) throw new HttpError(400, "type is required");
     const fmt = format === "json" ? "json" : format === "plexmatch" ? "plexmatch" : "nfo";
 
-    const rows = db.prepare("SELECT * FROM media_items WHERE type = ?").all(type) as any[];
+    const rows = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[];
     const zip = new AdmZip();
     for (const row of rows) {
       const item = toExportable(row);
@@ -325,7 +328,7 @@ mediaRouter.get(
     const { type } = req.query as { type?: string };
     if (!type) throw new HttpError(400, "type is required");
 
-    const rows = db.prepare("SELECT * FROM media_items WHERE type = ?").all(type) as any[];
+    const rows = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[];
     const zip = new AdmZip();
     for (const row of rows) {
       const item = toExportable(row);
@@ -342,7 +345,7 @@ mediaRouter.get(
 mediaRouter.get(
   "/:id",
   asyncHandler(async (req, res) => {
-    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Media item not found");
 
     const item = mediaItemFromRow(row);
@@ -356,16 +359,16 @@ mediaRouter.get(
     const shape = getMediaTypeConfig(item.type).shape;
     let children: unknown[] = [];
     if (shape === "episodic") {
-      children = (db
+      children = ((await db
         .prepare("SELECT * FROM episodes WHERE media_item_id = ? ORDER BY season_number, episode_number")
-        .all(item.id) as any[]).map(episodeFromRow);
+        .all(item.id)) as any[]).map(episodeFromRow);
     } else if (shape === "collection") {
-      children = (db
+      children = ((await db
         .prepare("SELECT * FROM sub_items WHERE media_item_id = ? ORDER BY release_date")
-        .all(item.id) as any[]).map(subItemFromRow);
+        .all(item.id)) as any[]).map(subItemFromRow);
     }
 
-    res.json({ ...item, children, tags: getTagsForMediaItem(item.id) });
+    res.json({ ...item, children, tags: await getTagsForMediaItem(item.id) });
   })
 );
 
@@ -395,7 +398,7 @@ mediaRouter.get(
   "/:id/export",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Media item not found");
     const item = toExportable(row);
     const format = req.query.format === "json" ? "json" : req.query.format === "plexmatch" ? "plexmatch" : "nfo";
@@ -411,7 +414,7 @@ mediaRouter.get(
 mediaRouter.get(
   "/:id/cast",
   asyncHandler(async (req, res) => {
-    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Media item not found");
     const item = mediaItemFromRow(row);
     const allowedTypes = allowedTypesFor(req);
@@ -435,7 +438,7 @@ mediaRouter.get(
 mediaRouter.get(
   "/:id/trailer",
   asyncHandler(async (req, res) => {
-    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Media item not found");
     const item = mediaItemFromRow(row);
     const allowedTypes = allowedTypesFor(req);
@@ -463,7 +466,7 @@ mediaRouter.post(
   "/:id/check-corrupt",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id) as any;
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id)) as any;
     if (!row) throw new HttpError(404, "Media item not found");
     if (!row.has_file || !row.path) {
       res.json({ corrupt: false, checked: false, reason: "No file on record for this item" });
@@ -476,7 +479,7 @@ mediaRouter.post(
 
     if (corrupt) {
       await recycleFile(row.path, row.type, `${row.title} (corrupt)`, row.id);
-      db.prepare("UPDATE media_items SET has_file = 0, path = NULL, quality = NULL WHERE id = ?").run(row.id);
+      await db.prepare("UPDATE media_items SET has_file = 0, path = NULL, quality = NULL WHERE id = ?").run(row.id);
     }
     res.json({ corrupt, checked: true });
   })
@@ -486,7 +489,7 @@ mediaRouter.post(
   "/:id/metadata/fetch",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Media item not found");
     const item = mediaItemFromRow(row);
 
@@ -502,9 +505,9 @@ mediaRouter.post(
     if (!best) throw new HttpError(404, `No "${provider}" result found for "${item.title}"`);
 
     const extra = { ...item.extraMetadata, [provider]: best };
-    db.prepare("UPDATE media_items SET extra_metadata = ? WHERE id = ?").run(JSON.stringify(extra), req.params.id);
+    await db.prepare("UPDATE media_items SET extra_metadata = ? WHERE id = ?").run(JSON.stringify(extra), req.params.id);
 
-    const updated = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    const updated = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
     res.json(mediaItemFromRow(updated));
   })
 );
@@ -515,11 +518,12 @@ mediaRouter.post(
   asyncHandler(async (req, res) => {
     const tagId = req.body?.tagId;
     if (!tagId) throw new HttpError(400, "tagId is required");
-    db.prepare("INSERT OR IGNORE INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?)").run(
-      req.params.id,
-      tagId
-    );
-    res.status(201).json(getTagsForMediaItem(Number(req.params.id)));
+    const insertSql =
+      db.dialect === "postgres"
+        ? "INSERT INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING"
+        : "INSERT OR IGNORE INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?)";
+    await db.prepare(insertSql).run(req.params.id, tagId);
+    res.status(201).json(await getTagsForMediaItem(Number(req.params.id)));
   })
 );
 
@@ -527,7 +531,7 @@ mediaRouter.delete(
   "/:id/tags/:tagId",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    db.prepare("DELETE FROM media_item_tags WHERE media_item_id = ? AND tag_id = ?").run(
+    await db.prepare("DELETE FROM media_item_tags WHERE media_item_id = ? AND tag_id = ?").run(
       req.params.id,
       req.params.tagId
     );
@@ -552,7 +556,7 @@ mediaRouter.post(
     }
 
     const rootFolderId = b.rootFolderId ?? (await autoSelectRootFolderId(b.type));
-    const result = db
+    const result = await db
       .prepare(
         `INSERT INTO media_items
          (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, status, group_id)
@@ -574,7 +578,7 @@ mediaRouter.post(
         groupId: b.groupId ?? null,
       });
 
-    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(result.lastInsertRowid);
+    const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(result.lastInsertRowid);
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "media_added", `${b.title} (${b.type})`);
     res.status(201).json(mediaItemFromRow(row));
@@ -585,7 +589,7 @@ mediaRouter.patch(
   "/:id",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const existing = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    const existing = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
     if (!existing) throw new HttpError(404, "Media item not found");
 
     const b = req.body ?? {};
@@ -615,10 +619,10 @@ mediaRouter.patch(
     }
     if (sets.length > 0) {
       values.push(req.params.id);
-      db.prepare(`UPDATE media_items SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+      await db.prepare(`UPDATE media_items SET ${sets.join(", ")} WHERE id = ?`).run(...values);
     }
 
-    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
     res.json(mediaItemFromRow(row));
   })
 );
@@ -637,26 +641,28 @@ mediaRouter.post(
   "/:id/rematch",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const existing = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    const existing = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
     if (!existing) throw new HttpError(404, "Media item not found");
 
     const b = req.body ?? {};
     if (!b.title) throw new HttpError(400, "title is required");
 
-    db.prepare(
-      "UPDATE media_items SET title = ?, sort_title = ?, year = ?, overview = ?, poster_url = ?, external_ids = ?, release_date = ? WHERE id = ?"
-    ).run(
-      b.title,
-      b.title.toLowerCase(),
-      b.year ?? null,
-      b.overview ?? null,
-      b.posterUrl ?? null,
-      b.externalIds ? JSON.stringify(b.externalIds) : null,
-      b.releaseDate ?? null,
-      req.params.id
-    );
+    await db
+      .prepare(
+        "UPDATE media_items SET title = ?, sort_title = ?, year = ?, overview = ?, poster_url = ?, external_ids = ?, release_date = ? WHERE id = ?"
+      )
+      .run(
+        b.title,
+        b.title.toLowerCase(),
+        b.year ?? null,
+        b.overview ?? null,
+        b.posterUrl ?? null,
+        b.externalIds ? JSON.stringify(b.externalIds) : null,
+        b.releaseDate ?? null,
+        req.params.id
+      );
 
-    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "media_rematched", `"${(existing as any).title}" → "${b.title}"`);
     res.json(mediaItemFromRow(row));
@@ -674,11 +680,11 @@ mediaRouter.post(
 mediaRouter.get(
   "/:id/watch-state",
   asyncHandler(async (req, res) => {
-    const row = db
+    const row = (await db
       .prepare(
         "SELECT watched_at FROM watch_events WHERE media_item_id = ? AND episode_id IS NULL AND sub_item_id IS NULL ORDER BY watched_at DESC LIMIT 1"
       )
-      .get(req.params.id) as { watched_at: string } | undefined;
+      .get(req.params.id)) as { watched_at: string } | undefined;
     res.json({ watched: !!row, watchedAt: row?.watched_at ?? null });
   })
 );
@@ -687,14 +693,14 @@ mediaRouter.patch(
   "/:id/watch-state",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id) as any;
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id)) as any;
     if (!row) throw new HttpError(404, "Media item not found");
     const watched = !!req.body?.watched;
 
     if (watched) {
-      db.prepare("INSERT INTO watch_events (media_item_id, watched_at) VALUES (?, datetime('now'))").run(row.id);
+      await db.prepare(`INSERT INTO watch_events (media_item_id, watched_at) VALUES (?, ${nowExpr(db)})`).run(row.id);
     } else {
-      db.prepare("DELETE FROM watch_events WHERE media_item_id = ? AND episode_id IS NULL AND sub_item_id IS NULL").run(row.id);
+      await db.prepare("DELETE FROM watch_events WHERE media_item_id = ? AND episode_id IS NULL AND sub_item_id IS NULL").run(row.id);
     }
 
     let mediaServerError: string | null = null;
@@ -714,7 +720,7 @@ mediaRouter.delete(
   "/:id",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const row = db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id) as any;
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id)) as any;
     if (!row) throw new HttpError(404, "Media item not found");
 
     // Default behavior stays "untrack only, leave files on disk" — opt in with ?deleteFiles=1 to
@@ -723,14 +729,14 @@ mediaRouter.delete(
     if (req.query.deleteFiles === "1") {
       if (row.path) await recycleFile(row.path, row.type, row.title, row.id);
       const children = (
-        db.prepare("SELECT file_path FROM episodes WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id) as any[]
+        (await db.prepare("SELECT file_path FROM episodes WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id)) as any[]
       ).concat(
-        db.prepare("SELECT file_path FROM sub_items WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id) as any[]
+        (await db.prepare("SELECT file_path FROM sub_items WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id)) as any[]
       );
       for (const child of children) await recycleFile(child.file_path, row.type, row.title, row.id);
     }
 
-    const result = db.prepare("DELETE FROM media_items WHERE id = ?").run(req.params.id);
+    const result = await db.prepare("DELETE FROM media_items WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Media item not found");
     const actor = auditActor(req);
     logAuditEvent(
@@ -749,13 +755,13 @@ mediaRouter.post(
   requireAdmin,
   asyncHandler(async (req, res) => {
     const b = req.body ?? {};
-    const result = db
+    const result = await db
       .prepare(
         `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, monitored)
          VALUES (?, ?, ?, ?, ?, ?)`
       )
       .run(req.params.id, b.seasonNumber, b.episodeNumber, b.title ?? null, b.airDate ?? null, b.monitored ?? 1);
-    const row = db.prepare("SELECT * FROM episodes WHERE id = ?").get(result.lastInsertRowid);
+    const row = await db.prepare("SELECT * FROM episodes WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(episodeFromRow(row));
   })
 );
@@ -764,11 +770,11 @@ mediaRouter.post(
 mediaRouter.get(
   "/:id/episodes/:episodeId",
   asyncHandler(async (req, res) => {
-    const row = db
+    const row = await db
       .prepare("SELECT * FROM episodes WHERE id = ? AND media_item_id = ?")
       .get(req.params.episodeId, req.params.id);
     if (!row) throw new HttpError(404, "Episode not found");
-    const parentRow = db.prepare("SELECT id, title, type FROM media_items WHERE id = ?").get(req.params.id) as any;
+    const parentRow = (await db.prepare("SELECT id, title, type FROM media_items WHERE id = ?").get(req.params.id)) as any;
     res.json({ ...episodeFromRow(row), parent: parentRow ? { id: parentRow.id, title: parentRow.title, type: parentRow.type } : null });
   })
 );
@@ -794,9 +800,9 @@ mediaRouter.patch(
     }
     if (sets.length > 0) {
       values.push(req.params.episodeId);
-      db.prepare(`UPDATE episodes SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+      await db.prepare(`UPDATE episodes SET ${sets.join(", ")} WHERE id = ?`).run(...values);
     }
-    const row = db.prepare("SELECT * FROM episodes WHERE id = ?").get(req.params.episodeId);
+    const row = await db.prepare("SELECT * FROM episodes WHERE id = ?").get(req.params.episodeId);
     if (!row) throw new HttpError(404, "Episode not found");
     res.json(episodeFromRow(row));
   })
@@ -808,11 +814,11 @@ mediaRouter.patch(
   requireAdmin,
   asyncHandler(async (req, res) => {
     const monitored = req.body?.monitored ? 1 : 0;
-    const result = db
+    const result = await db
       .prepare("UPDATE episodes SET monitored = ? WHERE media_item_id = ? AND season_number = ?")
       .run(monitored, req.params.id, req.params.seasonNumber);
     if (result.changes === 0) throw new HttpError(404, "No episodes found for that season");
-    const rows = db
+    const rows = await db
       .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND season_number = ? ORDER BY episode_number")
       .all(req.params.id, req.params.seasonNumber);
     res.json(rows.map(episodeFromRow));
@@ -823,11 +829,11 @@ mediaRouter.patch(
 mediaRouter.get(
   "/:id/subitems/:subItemId",
   asyncHandler(async (req, res) => {
-    const row = db
+    const row = await db
       .prepare("SELECT * FROM sub_items WHERE id = ? AND media_item_id = ?")
       .get(req.params.subItemId, req.params.id);
     if (!row) throw new HttpError(404, "Sub-item not found");
-    const parentRow = db.prepare("SELECT id, title, type FROM media_items WHERE id = ?").get(req.params.id) as any;
+    const parentRow = (await db.prepare("SELECT id, title, type FROM media_items WHERE id = ?").get(req.params.id)) as any;
     res.json({ ...subItemFromRow(row), parent: parentRow ? { id: parentRow.id, title: parentRow.title, type: parentRow.type } : null });
   })
 );
@@ -836,15 +842,15 @@ mediaRouter.get(
 mediaRouter.get(
   "/:id/subitems/:subItemId/tracks/:trackId",
   asyncHandler(async (req, res) => {
-    const row = db
+    const row = await db
       .prepare("SELECT * FROM tracks WHERE id = ? AND sub_item_id = ?")
       .get(req.params.trackId, req.params.subItemId);
     if (!row) throw new HttpError(404, "Track not found");
-    const subItemRow = db
+    const subItemRow = (await db
       .prepare("SELECT id, title FROM sub_items WHERE id = ? AND media_item_id = ?")
-      .get(req.params.subItemId, req.params.id) as any;
+      .get(req.params.subItemId, req.params.id)) as any;
     if (!subItemRow) throw new HttpError(404, "Sub-item not found");
-    const parentRow = db.prepare("SELECT id, title, type FROM media_items WHERE id = ?").get(req.params.id) as any;
+    const parentRow = (await db.prepare("SELECT id, title, type FROM media_items WHERE id = ?").get(req.params.id)) as any;
     res.json({
       ...trackFromRow(row),
       subItem: { id: subItemRow.id, title: subItemRow.title },
@@ -860,13 +866,13 @@ mediaRouter.post(
   asyncHandler(async (req, res) => {
     const b = req.body ?? {};
     if (!b.title) throw new HttpError(400, "title is required");
-    const result = db
+    const result = await db
       .prepare(
         `INSERT INTO sub_items (media_item_id, title, release_date, monitored)
          VALUES (?, ?, ?, ?)`
       )
       .run(req.params.id, b.title, b.releaseDate ?? null, b.monitored ?? 1);
-    const row = db.prepare("SELECT * FROM sub_items WHERE id = ?").get(result.lastInsertRowid);
+    const row = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(subItemFromRow(row));
   })
 );
@@ -881,14 +887,14 @@ mediaRouter.post(
   "/subitems/:subItemId/download",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const sub = db.prepare("SELECT * FROM sub_items WHERE id = ?").get(req.params.subItemId) as any;
+    const sub = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(req.params.subItemId)) as any;
     if (!sub) throw new HttpError(404, "Sub-item not found");
     if (!sub.external_id) throw new HttpError(400, "This item has no source video id to download from");
 
-    const mediaItem = db.prepare("SELECT * FROM media_items WHERE id = ?").get(sub.media_item_id) as any;
+    const mediaItem = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(sub.media_item_id)) as any;
     if (!mediaItem) throw new HttpError(404, "Media item not found");
 
-    const clientRow = db.prepare("SELECT * FROM download_clients WHERE type = 'ytdlp' AND enabled = 1 LIMIT 1").get();
+    const clientRow = await db.prepare("SELECT * FROM download_clients WHERE type = 'ytdlp' AND enabled = 1 LIMIT 1").get();
     if (!clientRow) throw new HttpError(400, "No enabled yt-dlp download client configured — add one in Download Clients");
     const client = clientRow as any;
 
@@ -900,20 +906,20 @@ mediaRouter.post(
     const adapter = getDownloadClientAdapter(client.type);
     const grab = await adapter.addDownload(client, sourceUrl, client.category, sub.title);
 
-    const result = db
+    const result = await db
       .prepare(
         `INSERT INTO queue (media_item_id, episode_id, sub_item_id, title, indexer_id, download_client_id, download_id, size, quality, status)
          VALUES (?, NULL, ?, ?, NULL, ?, ?, 0, NULL, 'queued')`
       )
       .run(sub.media_item_id, sub.id, sub.title, client.id, grab.downloadId);
 
-    db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
+    await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
       sub.media_item_id,
       JSON.stringify({ title: sub.title, source: sourceUrl })
     );
     notifyGrabbed(mediaItem.title, sub.title).catch((err) => log.warn("[media] notification failed:", err.message));
 
-    const queueRow = db.prepare("SELECT * FROM queue WHERE id = ?").get(result.lastInsertRowid);
+    const queueRow = await db.prepare("SELECT * FROM queue WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(queueItemFromRow(queueRow));
   })
 );
@@ -939,9 +945,9 @@ mediaRouter.patch(
     }
     if (sets.length > 0) {
       values.push(req.params.subItemId);
-      db.prepare(`UPDATE sub_items SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+      await db.prepare(`UPDATE sub_items SET ${sets.join(", ")} WHERE id = ?`).run(...values);
     }
-    const row = db.prepare("SELECT * FROM sub_items WHERE id = ?").get(req.params.subItemId);
+    const row = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(req.params.subItemId);
     if (!row) throw new HttpError(404, "Sub-item not found");
     res.json(subItemFromRow(row));
   })
