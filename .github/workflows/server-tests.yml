@@ -1,0 +1,71 @@
+name: Server tests
+
+on:
+  push:
+    paths:
+      - "server/**"
+      - ".github/workflows/server-tests.yml"
+  pull_request:
+    paths:
+      - "server/**"
+      - ".github/workflows/server-tests.yml"
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+        working-directory: server
+      - run: npm run typecheck
+        working-directory: server
+
+  # Every test file gets a brand-new temp-dir SQLite database (see tests/helpers/testDb.ts) — no
+  # service container needed for this leg.
+  test-sqlite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+        working-directory: server
+      - run: npm test
+        working-directory: server
+
+  # Same test suite, same assertions — only the backend changes. A test file's public schema is
+  # dropped and recreated before that file's own app startup runs (see testDb.ts), so files share
+  # one live Postgres without leaking state between them (vitest.config.ts also disables file
+  # parallelism for exactly this reason).
+  test-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: aonarr
+          POSTGRES_PASSWORD: aonarr
+          POSTGRES_DB: aonarr
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aonarr"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AONARR_DATABASE_DRIVER: postgres
+      AONARR_DATABASE_URL: postgres://aonarr:aonarr@localhost:5432/aonarr
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+        working-directory: server
+      - run: npm test
+        working-directory: server

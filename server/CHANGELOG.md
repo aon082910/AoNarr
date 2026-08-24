@@ -3,6 +3,38 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 114 — automated test suite (item #1 of the scoped improvement list)
+- Added a real automated test suite (vitest + supertest) for the server, starting with the highest-
+  risk paths per the earlier scoping note: the duplicate-merge tool (`services/duplicateCheck.ts`)
+  and the pagination/filtering work from Round 113 (`GET /api/media`, `GET /api/media/stats`).
+  Deliberately not aiming for full coverage in one round — this establishes the harness and pattern
+  for tests to keep accumulating against, same as this session's own manual practice of verifying
+  everything against real backends rather than mocks.
+- Split `server/src/index.ts` into `src/app.ts` (a `createApp()` that does all DB/settings/route
+  init and returns the Express app, but never calls `.listen()` or starts the cron scheduler) and a
+  now-thin `index.ts` that just calls `createApp()` then listens — this is what makes the routes
+  actually testable with supertest without a real running server or background jobs firing during
+  tests. No behavior change for production; same init order, same listen call.
+- New `server/tests/helpers/testDb.ts`: gives every test file a real, fully-isolated database —
+  SQLite gets a fresh temp-dir file per test file; Postgres (when `AONARR_DATABASE_DRIVER=postgres`
+  is set, e.g. in CI) gets its `public` schema dropped and recreated before that file's app startup
+  runs, so the normal schema-create + default-seed path runs against a genuinely clean database
+  every time, matching first-boot production behavior exactly.
+- New GitHub Actions workflow (`.github/workflows/server-tests.yml`, only in this branch/PR — not
+  something Claude Code can trigger) runs typecheck plus the full test suite against BOTH a fresh
+  SQLite file and a live Postgres service container on every push/PR touching `server/**`, so future
+  rounds get automatic dual-dialect regression coverage instead of relying solely on manual `docker
+  compose` verification.
+- A real dialect bug was caught while building this: one of the new tests used SQLite-only
+  `datetime('now')` in a raw INSERT, which failed against Postgres with `function datetime(unknown)
+  does not exist` — fixed by using the existing portable `nowExpr(db)` helper instead. The bug was
+  in the new test code, not the app itself, but it's exactly the kind of dialect-drift mistake this
+  suite exists to catch before it reaches app code.
+- Verified live: ran the full 11-test suite via `npm test` inside a Node 20 container (matching the
+  Docker image's pinned Node version, since the local host's Node 26 has no prebuilt `better-sqlite3`
+  binary yet) against both SQLite and a real Postgres 16 container — all 11 pass on both after the
+  `datetime()` fix above.
+
 ## Round 113 — server-side library pagination
 - Item #2 of the previously-scoped improvement list: `GET /api/media` (the Library page's main
   fetch) now returns `{ items, total }` with real `limit`/`offset`/`sort`/`status`/`contentRating`
