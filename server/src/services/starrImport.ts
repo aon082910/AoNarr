@@ -64,11 +64,13 @@ export async function fetchRadarrMovies(baseUrl: string, apiKey: string): Promis
   const movies = (await starrGet(baseUrl, apiKey, "movie")) as RadarrMovie[];
   const results: MediaServerLibraryItem[] = [];
   for (const m of movies) {
-    if (!m.hasFile || !m.title) continue;
-    const filePath = m.movieFile?.path || (m.path && m.movieFile?.relativePath ? `${m.path}/${m.movieFile.relativePath}` : null);
-    if (!filePath) continue;
+    if (!m.title) continue;
+    // Downloaded movies carry a real file path; a monitored-but-not-yet-downloaded movie has none —
+    // imported anyway (with path null) so AoNarr picks it up as monitored+missing and searches for
+    // it, rather than silently dropping everything Radarr hasn't grabbed yet.
+    const filePath = m.hasFile ? m.movieFile?.path || (m.path && m.movieFile?.relativePath ? `${m.path}/${m.movieFile.relativePath}` : null) : null;
     results.push({
-      mediaServerId: filePath,
+      mediaServerId: filePath || `radarr:${m.tmdbId ?? m.title}`,
       path: filePath,
       title: m.title,
       year: m.year ?? null,
@@ -144,9 +146,9 @@ export async function fetchSonarrSeries(
     const filesById = new Map(files.map((f) => [f.id, f.path]));
 
     for (const ep of eps) {
-      if (!ep.hasFile || !ep.episodeFileId) continue;
-      const path = filesById.get(ep.episodeFileId);
-      if (!path) continue;
+      // Same reasoning as Radarr above — a monitored-but-not-yet-downloaded episode has no file
+      // yet, imported anyway with path null so it shows up in AoNarr as monitored+missing.
+      const path = ep.hasFile && ep.episodeFileId ? filesById.get(ep.episodeFileId) ?? null : null;
       episodes.push({
         showId,
         path,
@@ -189,7 +191,8 @@ interface StarrChildItem {
   parentId: string;
   title: string;
   releaseDate: string | null;
-  path: string;
+  // Null for a monitored-but-not-yet-downloaded album/book — see MediaServerLibraryItem.path.
+  path: string | null;
   externalId: string | null;
 }
 
@@ -252,11 +255,12 @@ async function fetchLidarrLibrary(
     }
 
     for (const album of albums) {
+      if (!album.title) continue;
       const trackFile = firstFilePathByAlbum.get(album.id);
-      if (!trackFile || !album.title) continue;
-      // The album folder is the track file's own directory — Lidarr doesn't return it directly.
-      const folderPath = trackFile.replace(/\\/g, "/").split("/").slice(0, -1).join("/");
-      if (!folderPath) continue;
+      // The album folder is the track file's own directory — Lidarr doesn't return it directly, so
+      // a monitored-but-not-yet-downloaded album (no track file yet) has no path to derive one
+      // from; imported anyway with path null so it still shows up as monitored+missing.
+      const folderPath = trackFile ? trackFile.replace(/\\/g, "/").split("/").slice(0, -1).join("/") || null : null;
       children.push({
         parentId,
         title: album.title,
@@ -317,13 +321,12 @@ async function fetchReadarrLibrary(
     const filePathByBook = new Map(files.map((f) => [f.bookId, f.path]));
 
     for (const book of books) {
-      const filePath = filePathByBook.get(book.id);
-      if (!filePath || !book.title) continue;
+      if (!book.title) continue;
       children.push({
         parentId,
         title: book.title,
         releaseDate: book.releaseDate ?? null,
-        path: filePath,
+        path: filePathByBook.get(book.id) ?? null,
         externalId: book.foreignBookId ?? null,
       });
     }
@@ -399,7 +402,7 @@ async function importCollectionData(
 
   for (const child of children) {
     if (signal?.aborted) break;
-    if (knownChildTails.has(pathTail(child.path))) {
+    if (child.path && knownChildTails.has(pathTail(child.path))) {
       result.childrenSkipped++;
       continue;
     }
@@ -414,15 +417,20 @@ async function importCollectionData(
       .get(mediaItemId, child.title)) as { id: number } | undefined;
 
     if (existingChild) {
-      await db.prepare("UPDATE sub_items SET has_file = 1, file_path = ? WHERE id = ?").run(child.path, existingChild.id);
-      result.childrenMatched++;
+      // A child already tracked (from a prior import or Scan & Import) that's still missing on the
+      // Starr side (child.path null) is left alone — has_file/file_path only ever move forward from
+      // an actual download, never get reset back to missing by a re-import.
+      if (child.path) {
+        await db.prepare("UPDATE sub_items SET has_file = 1, file_path = ? WHERE id = ?").run(child.path, existingChild.id);
+        result.childrenMatched++;
+      }
     } else {
       await db
         .prepare(
           `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored, has_file, file_path)
-         VALUES (?, ?, ?, ?, ?, 1, 1, ?)`
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?)`
         )
-        .run(mediaItemId, child.title, child.releaseDate, child.externalId, child.externalId ? externalProvider : null, child.path);
+        .run(mediaItemId, child.title, child.releaseDate, child.externalId, child.externalId ? externalProvider : null, child.path ? 1 : 0, child.path);
       result.childrenCreated++;
     }
   }

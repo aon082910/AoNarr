@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 146 — fix oversized root folder checkbox, and Radarr/Sonarr import dropping missing items
+- Fixed the "Pause grabs at quota" checkbox on a root folder's edit tile (Round 143 regression) —
+  it was missing the `width: auto` override every other checkbox in the codebase sets, so it
+  inherited the global `input { width: 100% }` rule and rendered stretched to the full field width
+  instead of a normal-sized checkbox.
+- Fixed Radarr/Sonarr/Lidarr/Readarr import (the "Import from Radarr" etc. button on a library
+  page) silently dropping everything the source app hasn't downloaded yet — it only ever fetched
+  movies/episodes/albums/books that already had a file, so a monitored-but-still-wanted item in
+  Radarr never made it into AoNarr at all, missing or otherwise. Now imports those too, as
+  monitored+missing (no file path) — AoNarr's own wanted/missing search picks them up the same way
+  it would anything added directly, instead of only ever importing what's already on disk. An
+  already-downloaded match is never downgraded back to missing by a later import that happens to
+  see it without a file that round.
+- Verified live: ran the Radarr import against a mock Radarr instance returning one downloaded and
+  one monitored-but-missing movie — confirmed both landed in AoNarr, the missing one as
+  `hasFile: 0, monitored: 1` (the same state AoNarr's wanted/missing search already filters on
+  everywhere else), and that re-running the import doesn't reset an already-downloaded match.
+
 ## Round 145 — custom columns for the library list view
 - New Custom Columns page (Configuration → Custom Columns, admin-only): define any field from an
   item's metadata as a column, by dot-path — e.g. `mediaInfo.videoCodec`, `mediaInfo.hdrFormat`,

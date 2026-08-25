@@ -1497,6 +1497,7 @@ export default function Settings() {
                     type="checkbox"
                     checked={!!f.pauseGrabsAtQuota}
                     onChange={(e) => updateFolderQuota(f.id, "pauseGrabsAtQuota", e.target.checked)}
+                    style={{ width: "auto" }}
                   />
                   Pause grabs at quota
                 </label>

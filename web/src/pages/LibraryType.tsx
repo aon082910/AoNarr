@@ -1227,8 +1227,11 @@ export function LibraryItemGrid({
             metadata, matching against anything already in this library first (by path, then external id, then
             title{type === "movie" || type === "series" || type === "anime" ? "/year" : ""}
             {type !== "movie" && type !== "artist" && type !== "author" && "/season/episode"}) and creating a new
-            entry for anything genuinely new. The URL and API key are only used for this one import, not saved.
-            Runs in the background; check the Logs page for the result.
+            entry for anything genuinely new. Anything {starrAppName} has monitored but hasn't downloaded yet
+            comes in too, as monitored+missing — AoNarr picks those up in its own wanted/missing search the same
+            as anything added directly, it doesn't only import what's already on disk. The URL and API key are
+            only used for this one import, not saved. Runs in the background; check the Logs page for the
+            result.
           </p>
           {starrImportFolders.length === 0 ? (
             <p className="empty">No root folder configured for this library yet — add one in Settings first.</p>

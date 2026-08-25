@@ -112,7 +112,10 @@ interface MediaServerItem {
 
 export interface MediaServerLibraryItem {
   mediaServerId: string;
-  path: string;
+  // A media server (Plex/Jellyfin/Emby) only ever reports files it actually has, so this is always
+  // set for that source — null is only possible for a Starr (Radarr/Sonarr) source reporting a
+  // monitored-but-not-yet-downloaded item, which the media-server sources never produce.
+  path: string | null;
   title: string;
   year: number | null;
   overview: string | null;
@@ -230,7 +233,8 @@ export interface MediaServerShowInfo {
 
 export interface MediaServerEpisodeItem {
   showId: string;
-  path: string;
+  // Null only for a Starr-sourced monitored-but-missing episode — see MediaServerLibraryItem.path.
+  path: string | null;
   seasonNumber: number;
   episodeNumber: number;
   title: string | null;

@@ -77,7 +77,7 @@ export async function importMovieItems(
       result.skipped++;
       continue;
     }
-    if (knownTails.has(pathTail(item.path))) {
+    if (item.path && knownTails.has(pathTail(item.path))) {
       result.skipped++;
       continue;
     }
@@ -93,20 +93,34 @@ export async function importMovieItems(
     });
 
     if (match) {
-      await db
-        .prepare(
-          `UPDATE media_items SET has_file = 1, path = COALESCE(path, ?), poster_url = COALESCE(poster_url, ?),
-           overview = COALESCE(overview, ?), external_ids = COALESCE(NULLIF(external_ids, '{}'), ?)
-           WHERE id = ?`
-        )
-        .run(item.path, item.posterUrl, item.overview, JSON.stringify(item.externalIds), match.id);
-      match.has_file = 1;
-      result.matched++;
+      // A match already tracked as downloaded (or a media-server source, always has a path) gets
+      // has_file/path updated; a Starr-sourced monitored-but-missing item (item.path null) only
+      // fills in metadata, never downgrades an existing match's has_file back to missing.
+      if (item.path) {
+        await db
+          .prepare(
+            `UPDATE media_items SET has_file = 1, path = COALESCE(path, ?), poster_url = COALESCE(poster_url, ?),
+             overview = COALESCE(overview, ?), external_ids = COALESCE(NULLIF(external_ids, '{}'), ?)
+             WHERE id = ?`
+          )
+          .run(item.path, item.posterUrl, item.overview, JSON.stringify(item.externalIds), match.id);
+        match.has_file = 1;
+        result.matched++;
+      } else {
+        await db
+          .prepare(
+            `UPDATE media_items SET poster_url = COALESCE(poster_url, ?), overview = COALESCE(overview, ?),
+             external_ids = COALESCE(NULLIF(external_ids, '{}'), ?)
+             WHERE id = ?`
+          )
+          .run(item.posterUrl, item.overview, JSON.stringify(item.externalIds), match.id);
+        result.matched++;
+      }
     } else {
       const insertResult = await db
         .prepare(
           `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, has_file, status)
-           VALUES ('movie', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 'unknown')`
+           VALUES ('movie', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 'unknown')`
         )
         .run(
           item.title,
@@ -117,12 +131,19 @@ export async function importMovieItems(
           JSON.stringify(item.externalIds),
           item.path,
           rootFolderId,
-          qualityProfileId
+          qualityProfileId,
+          item.path ? 1 : 0
         );
       // Pushed into the same array this import matches against — without this, two media-server
       // items for the same new movie in one batch each create their own row instead of the second
       // one matching the first's.
-      allMovies.push({ id: Number(insertResult.lastInsertRowid), title: item.title, year: item.year, external_ids: JSON.stringify(item.externalIds), has_file: 1 });
+      allMovies.push({
+        id: Number(insertResult.lastInsertRowid),
+        title: item.title,
+        year: item.year,
+        external_ids: JSON.stringify(item.externalIds),
+        has_file: item.path ? 1 : 0,
+      });
       result.created++;
     }
   }
@@ -225,7 +246,7 @@ export async function importSeriesData(
 
   for (const ep of episodes) {
     if (signal?.aborted) break;
-    if (knownEpisodeTails.has(pathTail(ep.path))) {
+    if (ep.path && knownEpisodeTails.has(pathTail(ep.path))) {
       result.episodesSkipped++;
       continue;
     }
@@ -240,19 +261,29 @@ export async function importSeriesData(
       .get(mediaItemId, ep.seasonNumber, ep.episodeNumber)) as { id: number } | undefined;
 
     if (existingEp) {
-      await db
-        .prepare(
-          "UPDATE episodes SET has_file = 1, file_path = ?, title = COALESCE(title, ?), overview = COALESCE(overview, ?) WHERE id = ?"
-        )
-        .run(ep.path, ep.title, ep.overview, existingEp.id);
-      result.episodesMatched++;
+      // Same reasoning as importMovieItems' match branch — a Starr-sourced monitored-but-missing
+      // episode (ep.path null) only fills in title/overview, never resets an already-downloaded
+      // episode's has_file back to missing.
+      if (ep.path) {
+        await db
+          .prepare(
+            "UPDATE episodes SET has_file = 1, file_path = ?, title = COALESCE(title, ?), overview = COALESCE(overview, ?) WHERE id = ?"
+          )
+          .run(ep.path, ep.title, ep.overview, existingEp.id);
+        result.episodesMatched++;
+      } else {
+        await db
+          .prepare("UPDATE episodes SET title = COALESCE(title, ?), overview = COALESCE(overview, ?) WHERE id = ?")
+          .run(ep.title, ep.overview, existingEp.id);
+        result.episodesMatched++;
+      }
     } else {
       await db
         .prepare(
           `INSERT INTO episodes (media_item_id, season_number, episode_number, title, overview, monitored, has_file, file_path)
-           VALUES (?, ?, ?, ?, ?, 1, 1, ?)`
+           VALUES (?, ?, ?, ?, ?, 1, ?, ?)`
         )
-        .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.overview, ep.path);
+        .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.overview, ep.path ? 1 : 0, ep.path);
       result.episodesCreated++;
     }
   }
