@@ -14,7 +14,7 @@ import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { CONTENT_RATING_ORDER, isRatingBlocked } from "../services/contentRatings.js";
-import { fetchCastFor, fetchTrailerFor, searchMetadata } from "../services/metadata.js";
+import { fetchCastFor, fetchTmdbCollectionFor, fetchTrailerFor, searchMetadata } from "../services/metadata.js";
 import { pushWatchState } from "../services/mediaServer.js";
 import { scanAndImportLibrary, refreshLibraryMetadata, logScanResult } from "../services/libraryScan.js";
 import { notifyGrabbed } from "../services/notifications.js";
@@ -553,6 +553,52 @@ mediaRouter.get(
     } catch (err) {
       throw new HttpError(400, (err as Error).message);
     }
+  })
+);
+
+/**
+ * A movie's TMDB franchise/collection (e.g. "The Lord of the Rings Collection"), if it belongs to
+ * one, with each part cross-referenced against the library by TMDB id so the detail page can show
+ * "already have it" vs offer a one-click add — the same add path Recommendations already uses.
+ */
+mediaRouter.get(
+  "/:id/collection",
+  asyncHandler(async (req, res) => {
+    const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    if (!row) throw new HttpError(404, "Media item not found");
+    const item = mediaItemFromRow(row);
+    const allowedTypes = allowedTypesFor(req);
+    if (allowedTypes && !allowedTypes.includes(item.type)) {
+      throw new HttpError(403, "You don't have access to this library");
+    }
+    if (item.type !== "movie") throw new HttpError(400, "Collections are only available for movies");
+
+    const externalIds = item.externalIds ? JSON.parse(item.externalIds) : {};
+    let collection;
+    try {
+      collection = await fetchTmdbCollectionFor(externalIds);
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+    if (!collection) {
+      res.json(null);
+      return;
+    }
+
+    const libraryRows = (await db.prepare("SELECT id, title, external_ids FROM media_items WHERE type = 'movie'").all()) as any[];
+    const byTmdbId = new Map<string, { id: number; title: string }>();
+    for (const r of libraryRows) {
+      const ids = r.external_ids ? JSON.parse(r.external_ids) : {};
+      if (ids.tmdb) byTmdbId.set(String(ids.tmdb), { id: r.id, title: r.title });
+    }
+
+    res.json({
+      ...collection,
+      parts: collection.parts.map((p) => ({
+        ...p,
+        libraryItemId: byTmdbId.get(String(p.tmdbId))?.id ?? null,
+      })),
+    });
   })
 );
 

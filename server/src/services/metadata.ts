@@ -1188,6 +1188,62 @@ export async function fetchCastFor(type: MediaType, externalIds: Record<string, 
   throw new Error(`Cast lookup isn't available for "${type}"`);
 }
 
+// ---------------------------------------------------------------------------
+// TMDB collections (movie franchises, e.g. "The Lord of the Rings Collection") — a movie's own
+// /movie/{id} details response carries its collection membership (search results don't), so this
+// is a separate lookup from the search/add flow, same shape as cast/artwork.
+// ---------------------------------------------------------------------------
+
+export interface TmdbCollectionPart {
+  tmdbId: number;
+  title: string;
+  year: number | null;
+  overview: string | null;
+  posterUrl: string | null;
+  releaseDate: string | null;
+}
+
+export interface TmdbCollection {
+  id: number;
+  name: string;
+  overview: string | null;
+  posterUrl: string | null;
+  parts: TmdbCollectionPart[];
+}
+
+/** Null when the movie isn't part of a TMDB collection at all (most movies aren't) — not an error. */
+export async function fetchTmdbCollectionFor(externalIds: Record<string, string>): Promise<TmdbCollection | null> {
+  if (!externalIds.tmdb) throw new Error("Collection lookup needs a TMDB id — this item doesn't have one");
+  const key = requireSetting("tmdbApiKey", "TMDB API key");
+
+  const detailRes = await fetch(`https://api.themoviedb.org/3/movie/${externalIds.tmdb}?api_key=${key}`);
+  if (!detailRes.ok) throw new Error(`TMDB movie lookup failed: HTTP ${detailRes.status}`);
+  const detail: any = await detailRes.json();
+  const collectionId = detail.belongs_to_collection?.id;
+  if (!collectionId) return null;
+
+  const collectionRes = await fetch(`https://api.themoviedb.org/3/collection/${collectionId}?api_key=${key}`);
+  if (!collectionRes.ok) throw new Error(`TMDB collection lookup failed: HTTP ${collectionRes.status}`);
+  const collection: any = await collectionRes.json();
+
+  return {
+    id: collection.id,
+    name: collection.name,
+    overview: collection.overview || null,
+    posterUrl: collection.poster_path ? `${TMDB_IMAGE_BASE}${collection.poster_path}` : null,
+    parts: (collection.parts ?? [])
+      .map((p: any) => ({
+        tmdbId: p.id,
+        title: p.title,
+        year: p.release_date ? Number(p.release_date.slice(0, 4)) : null,
+        overview: p.overview || null,
+        posterUrl: p.poster_path ? `${TMDB_IMAGE_BASE}${p.poster_path}` : null,
+        releaseDate: p.release_date || null,
+      }))
+      .sort((a: TmdbCollectionPart, b: TmdbCollectionPart) => (a.releaseDate ?? "9999").localeCompare(b.releaseDate ?? "9999")),
+  };
+}
+
 export interface PersonCredit {
   tmdbId: number;
   title: string;

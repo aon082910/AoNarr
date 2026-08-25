@@ -3,6 +3,27 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 131 — TMDB collection browsing (2nd of the Starr feature-gap list)
+- A movie's detail page now shows its TMDB franchise/collection (e.g. "The Lord of the Rings
+  Collection"), if it belongs to one, with every other entry in the collection alongside it —
+  poster, title, year, and either an "In library" badge (linking straight to it) or a one-click
+  "Add" button for anything missing, reusing the same `/metadata/import` add path Recommendations
+  already uses (same quality profile/root folder as the movie you're viewing). New
+  `fetchTmdbCollectionFor()` in `services/metadata.ts` (a movie's collection membership only comes
+  back from TMDB's `/movie/{id}` details endpoint, not search results, so this is a separate
+  lookup) and `GET /api/media/:id/collection`, which also cross-references every part against the
+  library by TMDB id.
+- A movie with no TMDB collection (most movies) or with a collection but no other released
+  entries yet just shows nothing extra — no empty section, no error.
+- Verified live: seeded a movie with a fake TMDB id, confirmed the route correctly wraps a TMDB
+  401 (invalid/placeholder key, no real key available in this environment) as a clean 400 instead
+  of crashing, confirmed a non-movie type is rejected with a clear message, and confirmed the
+  detail page renders normally with no console errors when the collection fetch fails — the
+  section just doesn't appear, exactly as intended. A real end-to-end fetch against live TMDB data
+  (a movie that actually belongs to a collection) isn't verified here for lack of a real TMDB API
+  key in this dev environment — same disclosed limitation as prior rounds that depended on a
+  third-party credential this environment doesn't have.
+
 ## Round 130 — minimum availability (1st of the Starr feature-gap list)
 - Added Radarr-style "minimum availability" gating for single-file libraries (Movies, ROMs,
   Adult — Movies is the real driving case): `announced` (default, today's behavior) searches as

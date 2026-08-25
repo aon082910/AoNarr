@@ -33,6 +33,24 @@ interface CastMember {
   photoUrl: string | null;
 }
 
+interface TmdbCollectionPart {
+  tmdbId: number;
+  title: string;
+  year: number | null;
+  overview: string | null;
+  posterUrl: string | null;
+  releaseDate: string | null;
+  libraryItemId: number | null;
+}
+
+interface TmdbCollection {
+  id: number;
+  name: string;
+  overview: string | null;
+  posterUrl: string | null;
+  parts: TmdbCollectionPart[];
+}
+
 export interface Episode {
   id: number;
   seasonNumber: number;
@@ -129,6 +147,8 @@ export default function MediaDetail() {
   const [collectionToAdd, setCollectionToAdd] = useState<number | "">("");
 
   const [cast, setCast] = useState<CastMember[] | null>(null);
+  const [tmdbCollection, setTmdbCollection] = useState<TmdbCollection | null>(null);
+  const [addingCollectionPart, setAddingCollectionPart] = useState<number | null>(null);
   const [trailerUrl, setTrailerUrl] = useState<string | null>(null);
   const [watched, setWatched] = useState(false);
   const [watchStateError, setWatchStateError] = useState<string | null>(null);
@@ -152,6 +172,14 @@ export default function MediaDetail() {
       .then(setCast)
       .catch(() => setCast([]));
   }, [id]);
+  useEffect(() => {
+    setTmdbCollection(null);
+    if (item?.type !== "movie") return;
+    api
+      .get<TmdbCollection | null>(`/media/${id}/collection`)
+      .then(setTmdbCollection)
+      .catch(() => setTmdbCollection(null));
+  }, [id, item?.type]);
   useEffect(() => {
     setTrailerUrl(null);
     api
@@ -183,6 +211,29 @@ export default function MediaDetail() {
     await api.post(`/collections/${collectionToAdd}/items`, { mediaItemId: item.id });
     setCollectionToAdd("");
     alert("Added to collection.");
+  }
+
+  async function addCollectionPart(part: TmdbCollectionPart) {
+    setAddingCollectionPart(part.tmdbId);
+    try {
+      const created = await api.post<MediaItem>("/metadata/import", {
+        type: "movie",
+        title: part.title,
+        year: part.year,
+        overview: part.overview,
+        posterUrl: part.posterUrl,
+        externalIds: { tmdb: String(part.tmdbId) },
+        releaseDate: part.releaseDate,
+        qualityProfileId: item?.qualityProfileId ?? null,
+        rootFolderId: item?.rootFolderId ?? null,
+        monitored: 1,
+      });
+      navigate(`/media/${created.id}`);
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setAddingCollectionPart(null);
+    }
   }
 
   async function addTagToItem() {
@@ -645,6 +696,53 @@ export default function MediaDetail() {
                 </div>
                 <div style={{ fontSize: "0.75rem", marginTop: 4 }}>{c.name}</div>
                 {c.character && <div style={{ fontSize: "0.7rem", color: "var(--muted)" }}>{c.character}</div>}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {tmdbCollection && tmdbCollection.parts.length > 1 && (
+        <>
+          <h2>{tmdbCollection.name}</h2>
+          {tmdbCollection.overview && (
+            <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>{tmdbCollection.overview}</p>
+          )}
+          <div style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 8, marginBottom: 12 }}>
+            {tmdbCollection.parts.map((p) => (
+              <div key={p.tmdbId} style={{ flex: "0 0 120px", textAlign: "center" }}>
+                <div
+                  className="poster"
+                  style={{
+                    width: 120,
+                    height: 180,
+                    cursor: p.libraryItemId ? "pointer" : "default",
+                    ...(p.posterUrl
+                      ? { backgroundImage: `url(${p.posterUrl})`, backgroundSize: "cover", backgroundPosition: "center", backgroundRepeat: "no-repeat" }
+                      : {}),
+                  }}
+                  onClick={() => p.libraryItemId && navigate(`/media/${p.libraryItemId}`)}
+                >
+                  {!p.posterUrl && "No poster"}
+                </div>
+                <div style={{ fontSize: "0.8rem", marginTop: 4 }}>
+                  {p.title} {p.year ? `(${p.year})` : ""}
+                </div>
+                {isAdmin &&
+                  (p.libraryItemId ? (
+                    <span className="badge ok" style={{ marginTop: 4, display: "inline-block" }}>
+                      In library
+                    </span>
+                  ) : (
+                    <button
+                      className="secondary"
+                      style={{ marginTop: 4 }}
+                      disabled={addingCollectionPart === p.tmdbId}
+                      onClick={() => addCollectionPart(p)}
+                    >
+                      {addingCollectionPart === p.tmdbId ? "Adding..." : "Add"}
+                    </button>
+                  ))}
               </div>
             ))}
           </div>
