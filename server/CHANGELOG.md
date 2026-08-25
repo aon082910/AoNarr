@@ -3,6 +3,32 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 123 — Recommendations view-more, calendar day pages, Duplicates dismiss + richer info
+- Recommendations page: each section (Movies/TV Shows/Music) now shows 12 items initially with a
+  "View more" button revealing the rest — the backend already returns up to ~25 per section (5
+  library items × 5 similar results each), the UI just dumped all of them in one unbounded grid.
+- Added a real, bookmarkable/shareable per-day calendar page (`/calendar/:date`) alongside the
+  existing month view's click-to-expand inline panel — "Open day page" link added to that panel.
+  Every entry now gets a clear description via a new shared `describeCalendarEntry()` (e.g. "New
+  episode — S01E05 - Title", "Album release — Title", "Book release — Title", vs. the old generic
+  label), used by both the month view's panel and the new day page so they stay consistent. Note:
+  AoNarr stores one `release_date` per movie/collection-child, not a theatrical/digital/physical
+  split — TMDB does expose per-region/type release dates via a separate endpoint, but wiring that
+  in needs a schema change and is scoped as follow-up work, not attempted here.
+- Duplicates page: added a "Not a duplicate — keep both" action (new `POST /api/duplicates/dismiss`)
+  — marks a group's identity as dismissed so `findDuplicateGroups()` stops returning it (and the
+  Round 118 scheduled notification job stops flagging it too) without touching either item, unlike
+  Merge. New `duplicate_group_seen.dismissed` column (added via the established `ensureColumn`/
+  `ADD COLUMN IF NOT EXISTS` pattern, not a fresh table, since Round 118's table already exists).
+  Also added more per-item info to the comparison table: quality, monitored status, and which
+  metadata providers each item is actually matched to (the clearest signal for telling a genuine
+  duplicate — both matched the same tmdb id — from two different works that just share a
+  title/year).
+- Added 2 new automated tests (`dismissDuplicateGroup` hides a group without touching either item;
+  dismissing twice doesn't error) to the existing `duplicateCheck.test.ts` suite — full suite (13
+  tests) passes identically on both SQLite and Postgres, confirming the `ON CONFLICT ... DO UPDATE`
+  dismiss upsert (valid standard syntax on both dialects, no branch needed) works on both.
+
 ## Round 122 — nav reorder, topbar dropdown fixes, library tile-view width, cast photo crop bug
 - Reordered top-level nav: Dashboard, Search, Library, Account — Search now renders as its own
   hardcoded link between Dashboard and Library (previously after Library along with everything

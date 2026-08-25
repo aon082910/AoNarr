@@ -38,6 +38,14 @@ export default function Duplicates() {
   }
   useEffect(load, [typeFilter]);
 
+  async function dismiss(g: DuplicateGroup) {
+    if (!confirm(`Mark "${g.title}"${g.year ? ` (${g.year})` : ""} as not a duplicate? Both items stay in your library untouched, and this group won't be flagged again.`)) {
+      return;
+    }
+    await api.post("/duplicates/dismiss", { key: g.key });
+    setGroups((prev) => prev?.filter((group) => group.key !== g.key) ?? null);
+  }
+
   async function merge(g: DuplicateGroup) {
     const key = groupKey(g);
     const keeperId = keeperByGroup[key];
@@ -107,7 +115,10 @@ export default function Duplicates() {
                   <th></th>
                   <th>Title</th>
                   <th>File</th>
+                  <th>Quality</th>
+                  <th>Matched to</th>
                   <th>{g.items.some((i) => i.childCount > 0) ? "Children" : ""}</th>
+                  <th>Monitored</th>
                   <th>Added</th>
                 </tr>
               </thead>
@@ -140,7 +151,16 @@ export default function Duplicates() {
                         </div>
                       )}
                     </td>
+                    <td>{item.quality ?? "-"}</td>
+                    <td>
+                      {item.matchedProviders.length > 0 ? (
+                        item.matchedProviders.join(", ")
+                      ) : (
+                        <span className="badge danger">Unmatched</span>
+                      )}
+                    </td>
                     <td>{item.childCount > 0 ? item.childCount : ""}</td>
+                    <td>{item.monitored ? "Yes" : "No"}</td>
                     <td>{item.addedAt ? new Date(item.addedAt).toLocaleDateString() : "-"}</td>
                   </tr>
                 ))}
@@ -149,6 +169,9 @@ export default function Duplicates() {
             <div className="toolbar" style={{ marginTop: 8 }}>
               <button onClick={() => merge(g)} disabled={merging === key}>
                 {merging === key ? "Merging..." : `Merge ${g.items.length - 1} into the kept item`}
+              </button>
+              <button className="secondary" onClick={() => dismiss(g)} title="Both items stay in your library, untouched">
+                Not a duplicate — keep both
               </button>
             </div>
           </div>

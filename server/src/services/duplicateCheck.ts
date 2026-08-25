@@ -56,6 +56,13 @@ export interface DuplicateGroupItem {
   addedAt: string | null;
   childCount: number;
   suggestedKeeper: boolean;
+  quality: string | null;
+  contentRating: string | null;
+  /** Which metadata providers (tmdb, tvdb, musicbrainz, ...) this item is actually matched to —
+   * the admin's clearest signal for telling a genuine duplicate ("both matched the same tmdb id")
+   * apart from two different works that just happen to share a title/year (matched to different
+   * ids, or one/both entirely unmatched). */
+  matchedProviders: string[];
 }
 
 export interface DuplicateGroup {
@@ -83,6 +90,14 @@ export async function findDuplicateGroups(type?: string): Promise<DuplicateGroup
   const types = type ? [type] : MEDIA_TYPE_KEYS;
   const groups: DuplicateGroup[] = [];
 
+  // normalized_key already stores the full `${type}::${normalizedTitle}::${year}` composite (see
+  // runScheduledDuplicateCheck's insert, which writes g.key there directly) — not just the
+  // title/year portion — so this compares directly against it rather than re-prefixing with type.
+  const dismissedRows = (await db.prepare("SELECT normalized_key FROM duplicate_group_seen WHERE dismissed = 1").all()) as {
+    normalized_key: string;
+  }[];
+  const dismissedKeys = new Set(dismissedRows.map((r) => r.normalized_key));
+
   for (const t of types) {
     const shape = getMediaTypeConfig(t).shape;
     const rows = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(t)) as any[];
@@ -98,6 +113,7 @@ export async function findDuplicateGroups(type?: string): Promise<DuplicateGroup
 
     for (const [groupKey, rowsInGroup] of byKey.entries()) {
       if (rowsInGroup.length < 2) continue;
+      if (dismissedKeys.has(`${t}::${groupKey}`)) continue;
 
       const items: DuplicateGroupItem[] = [];
       for (const row of rowsInGroup) {
@@ -107,6 +123,12 @@ export async function findDuplicateGroups(type?: string): Promise<DuplicateGroup
             : shape === "collection"
               ? Number(((await db.prepare("SELECT COUNT(*) AS c FROM sub_items WHERE media_item_id = ?").get(row.id)) as { c: number }).c)
               : 0;
+        let matchedProviders: string[] = [];
+        try {
+          matchedProviders = row.external_ids ? Object.keys(JSON.parse(row.external_ids)) : [];
+        } catch {
+          matchedProviders = [];
+        }
         items.push({
           id: row.id,
           title: row.title,
@@ -118,6 +140,9 @@ export async function findDuplicateGroups(type?: string): Promise<DuplicateGroup
           addedAt: row.added_at,
           childCount,
           suggestedKeeper: false,
+          quality: row.quality,
+          contentRating: row.content_rating,
+          matchedProviders,
         });
       }
 
@@ -136,6 +161,26 @@ export async function findDuplicateGroups(type?: string): Promise<DuplicateGroup
   }
 
   return groups;
+}
+
+/**
+ * "Not a duplicate" / "remove from list, keep both" — marks a group's identity as dismissed so
+ * `findDuplicateGroups()` stops returning it (both items stay in the library untouched, unlike
+ * `mergeMediaItems`) and the scheduled notification job (Round 118) also stops flagging it. Upserts
+ * rather than a plain UPDATE since a group the scheduled job has never run across yet (dismissed
+ * directly from the Duplicates page before its next daily scan) has no existing row to update.
+ */
+export async function dismissDuplicateGroup(groupKey: string): Promise<void> {
+  // ON CONFLICT ... DO UPDATE is valid standard syntax on both SQLite and Postgres — no dialect
+  // branch needed here (unlike the plain OR IGNORE/DO NOTHING upserts elsewhere in this file,
+  // which do need one since SQLite's "OR IGNORE" isn't Postgres syntax).
+  const type = groupKey.split("::")[0];
+  await db
+    .prepare(
+      `INSERT INTO duplicate_group_seen (type, normalized_key, dismissed) VALUES (?, ?, 1)
+       ON CONFLICT (type, normalized_key) DO UPDATE SET dismissed = 1`
+    )
+    .run(type, groupKey);
 }
 
 /** Tables that reference media_items.id and should follow the item to the keeper on merge rather

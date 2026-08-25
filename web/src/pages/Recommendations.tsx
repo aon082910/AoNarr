@@ -25,6 +25,7 @@ export default function Recommendations() {
   const [profiles, setProfiles] = useState<QualityProfile[]>([]);
   const [adding, setAdding] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     api.get<QualityProfile[]>("/quality-profiles").then(setProfiles);
@@ -68,9 +69,13 @@ export default function Recommendations() {
     setDismissed((prev) => new Set(prev).add(key));
   }
 
-  function section(title: string, items: Recommendation[]) {
-    const visible = items.filter((r) => !dismissed.has(`${r.type}-${r.title}`));
-    if (visible.length === 0) return null;
+  const INITIAL_VISIBLE_COUNT = 12;
+
+  function section(key: string, title: string, items: Recommendation[]) {
+    const all = items.filter((r) => !dismissed.has(`${r.type}-${r.title}`));
+    if (all.length === 0) return null;
+    const isExpanded = expanded.has(key);
+    const visible = isExpanded ? all : all.slice(0, INITIAL_VISIBLE_COUNT);
     return (
       <>
         <h2>{title}</h2>
@@ -99,6 +104,15 @@ export default function Recommendations() {
             </div>
           ))}
         </div>
+        {!isExpanded && all.length > INITIAL_VISIBLE_COUNT && (
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => setExpanded((prev) => new Set(prev).add(key))}
+          >
+            View more ({all.length - INITIAL_VISIBLE_COUNT} more)
+          </button>
+        )}
       </>
     );
   }
@@ -120,9 +134,9 @@ export default function Recommendations() {
           configured) and recommendations will appear here.
         </p>
       )}
-      {data && section("Movies", data.movies)}
-      {data && section("TV Shows", data.series)}
-      {data && section("Music", data.artists)}
+      {data && section("movies", "Movies", data.movies)}
+      {data && section("series", "TV Shows", data.series)}
+      {data && section("artists", "Music", data.artists)}
     </div>
   );
 }

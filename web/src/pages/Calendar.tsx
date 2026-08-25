@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client.js";
+import { describeCalendarEntry } from "../utils/calendarDescriptions.js";
 
 interface CalendarEntry {
   mediaItemId: number;
@@ -258,13 +259,18 @@ export default function Calendar() {
 
           {selectedDay && (
             <div className="form-panel" style={{ marginTop: 16 }}>
-              <h2 style={{ marginTop: 0 }}>{selectedDay}</h2>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <h2 style={{ marginTop: 0 }}>{selectedDay}</h2>
+                <button className="secondary" onClick={() => navigate(`/calendar/${selectedDay}`)}>
+                  Open day page
+                </button>
+              </div>
               {(grouped.get(selectedDay) ?? []).length === 0 && <p className="empty">Nothing scheduled.</p>}
               <table>
                 <thead>
                   <tr>
                     <th>Title</th>
-                    <th>Item</th>
+                    <th>What's happening</th>
                     <th>Status</th>
                     <th></th>
                   </tr>
@@ -273,7 +279,7 @@ export default function Calendar() {
                   {(grouped.get(selectedDay) ?? []).map((entry, idx) => (
                     <tr key={idx}>
                       <td>{entry.mediaTitle}</td>
-                      <td>{entry.kind === "event" ? entry.label : entry.label}</td>
+                      <td>{describeCalendarEntry(entry)}</td>
                       <td>
                         {entry.kind === "event" ? (
                           <span className="badge">Custom date</span>

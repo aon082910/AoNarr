@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { findDuplicateGroups, mergeMediaItems } from "../services/duplicateCheck.js";
+import { dismissDuplicateGroup, findDuplicateGroups, mergeMediaItems } from "../services/duplicateCheck.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 
 export const duplicatesRouter = Router();
@@ -35,5 +35,20 @@ duplicatesRouter.post(
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "media_duplicates_merged", `merged ${result.merged} duplicate(s) into item ${keeperId}`);
     res.json(result);
+  })
+);
+
+/** POST /api/duplicates/dismiss — "not a duplicate" / "remove from list, keep both": marks a
+ * group's identity as dismissed so it stops appearing here (and stops triggering the scheduled
+ * notification job) without touching either item — unlike /merge, nothing is deleted. */
+duplicatesRouter.post(
+  "/dismiss",
+  asyncHandler(async (req, res) => {
+    const { key } = req.body ?? {};
+    if (!key || typeof key !== "string") throw new HttpError(400, "key is required");
+    await dismissDuplicateGroup(key);
+    const actor = auditActor(req);
+    logAuditEvent(actor.userId, actor.username, "media_duplicates_dismissed", `dismissed duplicate group "${key}"`);
+    res.status(204).send();
   })
 );

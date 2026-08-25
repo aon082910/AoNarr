@@ -12,6 +12,7 @@ import SubItemDetail from "./pages/SubItemDetail.js";
 import TrackDetail from "./pages/TrackDetail.js";
 import AddMedia from "./pages/AddMedia.js";
 import Calendar from "./pages/Calendar.js";
+import CalendarDay from "./pages/CalendarDay.js";
 import Missing from "./pages/Missing.js";
 import Indexers from "./pages/Indexers.js";
 import DownloadClients from "./pages/DownloadClients.js";
@@ -438,6 +439,7 @@ export default function App() {
           {isAdmin && <Route path="/import-review" element={<ImportReview />} />}
           {isAdmin && <Route path="/import-lists" element={<ImportLists />} />}
           {isAdmin && <Route path="/calendar" element={<Calendar />} />}
+          {isAdmin && <Route path="/calendar/:date" element={<CalendarDay />} />}
           {isAdmin && <Route path="/missing" element={<Missing />} />}
           {isAdmin && <Route path="/activity" element={<Activity />} />}
           {isAdmin && <Route path="/indexers" element={<Indexers />} />}

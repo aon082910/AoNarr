@@ -72,6 +72,7 @@ ensureColumn("recycle_bin", "restoring", "restoring INTEGER NOT NULL DEFAULT 0")
 ensureColumn("recycle_bin", "restore_error", "restore_error TEXT");
 ensureColumn("media_items", "release_date", "release_date TEXT");
 ensureColumn("sub_items", "poster_url", "poster_url TEXT");
+ensureColumn("duplicate_group_seen", "dismissed", "dismissed INTEGER NOT NULL DEFAULT 0");
 
 /**
  * indexers.protocol and download_clients.type originally shipped with a rigid `CHECK (... IN (...))`

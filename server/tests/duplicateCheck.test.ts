@@ -119,4 +119,40 @@ describe("duplicateCheck", () => {
     const keeperRow = (await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(keeperId)) as any;
     expect(keeperRow.has_file).toBe(1); // rollup: keeper now has at least one file'd episode
   });
+
+  it("dismissDuplicateGroup removes a group from findDuplicateGroups without touching either item", async () => {
+    const { findDuplicateGroups, dismissDuplicateGroup } = await import("../src/services/duplicateCheck.js");
+
+    const idA = await insertMovie("Not Actually A Duplicate", 2022, 0);
+    const idB = await insertMovie("Not Actually A Duplicate", 2022, 1);
+
+    const before = await findDuplicateGroups("movie");
+    const group = before.find((g) => g.title === "Not Actually A Duplicate");
+    expect(group).toBeDefined();
+    expect(group!.items).toHaveLength(2);
+
+    await dismissDuplicateGroup(group!.key);
+
+    const after = await findDuplicateGroups("movie");
+    expect(after.find((g) => g.title === "Not Actually A Duplicate")).toBeUndefined();
+
+    // Dismissing only hides the group from the sweep — neither item is deleted or modified.
+    const rowA = await db.prepare("SELECT id FROM media_items WHERE id = ?").get(idA);
+    const rowB = await db.prepare("SELECT id FROM media_items WHERE id = ?").get(idB);
+    expect(rowA).toBeDefined();
+    expect(rowB).toBeDefined();
+  });
+
+  it("dismissDuplicateGroup is idempotent (dismissing twice doesn't error)", async () => {
+    const { findDuplicateGroups, dismissDuplicateGroup } = await import("../src/services/duplicateCheck.js");
+
+    await insertMovie("Dismiss Twice", 2021, 0);
+    await insertMovie("Dismiss Twice", 2021, 1);
+
+    const groups = await findDuplicateGroups("movie");
+    const group = groups.find((g) => g.title === "Dismiss Twice")!;
+
+    await dismissDuplicateGroup(group.key);
+    await expect(dismissDuplicateGroup(group.key)).resolves.not.toThrow();
+  });
 });

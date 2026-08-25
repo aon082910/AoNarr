@@ -376,11 +376,15 @@ export interface DuplicateGroupItem {
   addedAt: string | null;
   childCount: number;
   suggestedKeeper: boolean;
+  quality: string | null;
+  contentRating: string | null;
+  matchedProviders: string[];
 }
 
 export interface DuplicateGroup {
   type: MediaType;
   title: string;
   year: number | null;
+  key: string;
   items: DuplicateGroupItem[];
 }
