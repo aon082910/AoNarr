@@ -76,6 +76,8 @@ ensureColumn("duplicate_group_seen", "dismissed", "dismissed INTEGER NOT NULL DE
 ensureColumn("media_items", "minimum_availability", "minimum_availability TEXT");
 ensureColumn("media_items", "series_type", "series_type TEXT");
 ensureColumn("library_groups", "logo_url", "logo_url TEXT");
+ensureColumn("sub_items", "series_name", "series_name TEXT");
+ensureColumn("sub_items", "series_position", "series_position REAL");
 
 /**
  * indexers.protocol and download_clients.type originally shipped with a rigid `CHECK (... IN (...))`

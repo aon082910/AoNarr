@@ -68,7 +68,9 @@ CREATE TABLE IF NOT EXISTS sub_items (
   monitored INTEGER NOT NULL DEFAULT 1,
   has_file INTEGER NOT NULL DEFAULT 0,
   quality TEXT,
-  file_path TEXT
+  file_path TEXT,
+  series_name TEXT,
+  series_position REAL
 );
 
 -- protocol/type are intentionally unconstrained (not a fixed CHECK list) — same reasoning as

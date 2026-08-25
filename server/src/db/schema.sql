@@ -68,7 +68,10 @@ CREATE TABLE IF NOT EXISTS sub_items (
   monitored INTEGER NOT NULL DEFAULT 1,
   has_file INTEGER NOT NULL DEFAULT 0,
   quality TEXT,
-  file_path TEXT
+  file_path TEXT,
+  series_name TEXT, -- admin-tagged (no provider populates this today); links books across the
+                     -- same or different parent authors that belong to one series
+  series_position REAL -- non-integer allowed (e.g. 2.5) for a novella/interstitial between two mainline books
 );
 
 -- protocol/type are intentionally unconstrained (not a fixed CHECK list) — same reasoning as

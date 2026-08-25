@@ -1108,16 +1108,46 @@ mediaRouter.patch(
   })
 );
 
-/** Single sub-item's full data plus its parent's title/type, for the album/book/issue detail page. */
+/** Single sub-item's full data plus its parent's title/type, for the album/book/issue detail page.
+ * Also resolves "series" siblings — other sub_items tagged with the same series_name (admin-set,
+ * no provider populates this today), regardless of which media_item/author they belong to, so a
+ * series can span one author's own bibliography (the common case) or a shared-universe anthology
+ * across different authors. The equivalent of Movies' TMDB Collection widget, one level down. */
 mediaRouter.get(
   "/:id/subitems/:subItemId",
   asyncHandler(async (req, res) => {
-    const row = await db
+    const row = (await db
       .prepare("SELECT * FROM sub_items WHERE id = ? AND media_item_id = ?")
-      .get(req.params.subItemId, req.params.id);
+      .get(req.params.subItemId, req.params.id)) as any;
     if (!row) throw new HttpError(404, "Sub-item not found");
     const parentRow = (await db.prepare("SELECT id, title, type FROM media_items WHERE id = ?").get(req.params.id)) as any;
-    res.json({ ...subItemFromRow(row), parent: parentRow ? { id: parentRow.id, title: parentRow.title, type: parentRow.type } : null });
+
+    let series: any[] = [];
+    if (row.series_name) {
+      const siblingRows = (await db
+        .prepare(
+          `SELECT s.id, s.media_item_id, s.title, s.series_position, s.poster_url, s.has_file, m.title AS parent_title
+           FROM sub_items s JOIN media_items m ON m.id = s.media_item_id
+           WHERE LOWER(s.series_name) = LOWER(?) AND s.id != ?
+           ORDER BY s.series_position ASC, s.title ASC`
+        )
+        .all(row.series_name, row.id)) as any[];
+      series = siblingRows.map((s) => ({
+        id: s.id,
+        mediaItemId: s.media_item_id,
+        title: s.title,
+        seriesPosition: s.series_position,
+        posterUrl: s.poster_url,
+        hasFile: s.has_file,
+        parentTitle: s.parent_title,
+      }));
+    }
+
+    res.json({
+      ...subItemFromRow(row),
+      parent: parentRow ? { id: parentRow.id, title: parentRow.title, type: parentRow.type } : null,
+      series,
+    });
   })
 );
 
@@ -1230,6 +1260,14 @@ mediaRouter.patch(
     if (b.posterUrl !== undefined) {
       sets.push("poster_url = ?");
       values.push(b.posterUrl);
+    }
+    if (b.seriesName !== undefined) {
+      sets.push("series_name = ?");
+      values.push(b.seriesName || null);
+    }
+    if (b.seriesPosition !== undefined) {
+      sets.push("series_position = ?");
+      values.push(b.seriesPosition === null || b.seriesPosition === "" ? null : Number(b.seriesPosition));
     }
     if (sets.length > 0) {
       values.push(req.params.subItemId);

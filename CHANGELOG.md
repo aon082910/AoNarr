@@ -3,6 +3,28 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 155 — series linking for Books/Audiobooks; Comics/Manga already had it
+- **New "Series" feature for Books and Audiobooks** — the one-level-down equivalent of Movies' TMDB
+  Collection widget, since a book's own unit is a `sub_item` (Books/Audiobooks group by Author,
+  each book is a child), not a top-level media item the way a movie is. Set a series name + numeric
+  position (non-integer allowed, e.g. `2.5` for an interstitial novella) on a book's own page —
+  it then shows every other book tagged with the same series name (matched case-insensitively,
+  admin-tagged since no provider exposes clean series data for any of Books/Audiobooks' six
+  providers today — see the per-provider audit in this round's dev notes) as a linked poster strip,
+  same visual pattern as the movie Collection widget. Deliberately spans different authors, not
+  just siblings under one parent — covers both the common case (a series entirely by one author)
+  and shared-universe anthologies across authors, without extra configuration either way.
+- **Comics and Manga don't need new code** — AoNarr's existing manual Collections feature
+  (`collections`/`collection_items`, its own browse page, ordering, M3U/JSON export) already does
+  exactly this: any media_item of any type can belong to any collection, unrestricted. Linking
+  comic volumes/reboots or related manga together as a "series" already works today by creating a
+  Collection and adding them to it — confirmed by reading the existing route/schema rather than
+  building a redundant parallel system.
+- Verified live: tagged two books under two *different* authors with the same series name (one
+  upper-case, one lower-case, to prove the case-insensitive match), confirmed each book's page
+  correctly links to the other as a series sibling with the right parent-author label, in both
+  directions.
+
 ## Round 154 — AudNexus author bio/photo enrichment
 - Wired in **AudNexus** (audnex.us), the free/open community API Round 153 identified as not
   fitting AoNarr's search-provider model — it has no book list at all, only a name/bio/photo per

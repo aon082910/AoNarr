@@ -6,6 +6,16 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { MediaInfo, SearchResult, Track } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
 
+interface SeriesSibling {
+  id: number;
+  mediaItemId: number;
+  title: string;
+  seriesPosition: number | null;
+  posterUrl: string | null;
+  hasFile: 0 | 1;
+  parentTitle: string;
+}
+
 interface SubItemDetailResponse {
   id: number;
   mediaItemId: number;
@@ -19,7 +29,10 @@ interface SubItemDetailResponse {
   filePath: string | null;
   mediaInfo: MediaInfo | null;
   posterUrl: string | null;
+  seriesName: string | null;
+  seriesPosition: number | null;
   parent: { id: number; title: string; type: string } | null;
+  series: SeriesSibling[];
 }
 
 export default function SubItemDetail() {
@@ -134,7 +147,7 @@ export default function SubItemDetail() {
         // The scan-isbn response is a bare sub_items row (no `parent`) — merge onto the existing
         // state rather than replacing it wholesale, or the breadcrumb and this very button (which
         // depends on subItem.parent.type) would disappear the instant a scan succeeds.
-        if (result.subItem) setSubItem({ ...subItem, ...result.subItem, parent: subItem.parent });
+        if (result.subItem) setSubItem({ ...subItem, ...result.subItem, parent: subItem.parent, series: subItem.series });
       }
     } catch (e) {
       alert((e as Error).message);
@@ -152,6 +165,26 @@ export default function SubItemDetail() {
         posterUrl: url.trim() || null,
       });
       setSubItem({ ...subItem, posterUrl: updated.posterUrl });
+    } catch (e) {
+      alert((e as Error).message);
+    }
+  }
+
+  async function editSeries() {
+    if (!subItem) return;
+    const name = prompt("Series name (leave blank to remove from a series):", subItem.seriesName ?? "");
+    if (name === null) return;
+    let position: number | null = subItem.seriesPosition;
+    if (name.trim()) {
+      const posInput = prompt('Position in series (e.g. "1", "2.5" for an interstitial — leave blank for none):', subItem.seriesPosition != null ? String(subItem.seriesPosition) : "");
+      if (posInput === null) return;
+      position = posInput.trim() ? Number(posInput.trim()) : null;
+    } else {
+      position = null;
+    }
+    try {
+      await api.patch(`/media/${mediaId}/subitems/${subItemId}`, { seriesName: name.trim() || null, seriesPosition: position });
+      load();
     } catch (e) {
       alert((e as Error).message);
     }
@@ -236,8 +269,59 @@ export default function SubItemDetail() {
               </td>
             </tr>
           )}
+          {(subItem.seriesName || isAdmin) && (
+            <tr>
+              <th>Series</th>
+              <td
+                onClick={() => isAdmin && editSeries()}
+                title={isAdmin ? "Click to set/change this item's series" : undefined}
+                style={{ cursor: isAdmin ? "pointer" : "default" }}
+              >
+                {subItem.seriesName
+                  ? `${subItem.seriesName}${subItem.seriesPosition != null ? ` #${subItem.seriesPosition}` : ""}`
+                  : isAdmin
+                    ? "Not part of a series — click to set one"
+                    : "-"}
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
+
+      {subItem.series.length > 0 && (
+        <>
+          <h2>{subItem.seriesName}</h2>
+          <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>Other books in this series.</p>
+          <div style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 8, marginBottom: 12 }}>
+            {subItem.series.map((s) => (
+              <div key={s.id} style={{ flex: "0 0 120px", textAlign: "center" }}>
+                <Link to={`/media/${s.mediaItemId}/item/${s.id}`}>
+                  <div
+                    className="poster"
+                    style={{
+                      width: 120,
+                      height: 180,
+                      ...(s.posterUrl
+                        ? { backgroundImage: `url(${s.posterUrl})`, backgroundSize: "cover", backgroundPosition: "center", backgroundRepeat: "no-repeat" }
+                        : {}),
+                    }}
+                  >
+                    {!s.posterUrl && "No cover"}
+                  </div>
+                  <div style={{ fontSize: "0.8rem", marginTop: 4, color: "var(--text)" }}>
+                    {s.seriesPosition != null ? `#${s.seriesPosition} — ` : ""}
+                    {s.title}
+                  </div>
+                </Link>
+                <div style={{ fontSize: "0.72rem", color: "var(--muted)" }}>{s.parentTitle}</div>
+                <span className={`badge ${s.hasFile ? "ok" : ""}`} style={{ marginTop: 2, display: "inline-block" }}>
+                  {s.hasFile ? "Downloaded" : "Missing"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       {isAdmin && (
         <div className="toolbar" style={{ marginTop: 16 }}>
