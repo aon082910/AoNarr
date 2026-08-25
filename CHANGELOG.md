@@ -3,6 +3,40 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 122 — nav reorder, topbar dropdown fixes, library tile-view width, cast photo crop bug
+- Reordered top-level nav: Dashboard, Search, Library, Account — Search now renders as its own
+  hardcoded link between Dashboard and Library (previously after Library along with everything
+  else). Moved Requests and Collections into the Manage group, What's New into System. Every admin
+  group's links (Manage/Configuration/System) now sort alphabetically via `.sort()` on the array,
+  not just a one-time manual reorder — stays alphabetical if a page is ever added to a group later.
+- Fixed two real, precisely-diagnosed topbar bugs (live-measured via computed styles, not guessed):
+  the "Library ▾" dropdown trigger sat 8px lower than its sibling `<a>` nav links — root cause was
+  the base `button` rule's `margin-top: 16px` (meant for a button under a stacked label) still
+  applying inside the topbar's flex-centered row, which `align-items: center` then split in half
+  visually. The trigger also had a distinctly darker background than its siblings — it inherited
+  `.select-like`'s `background: var(--input-bg)` (near-black, designed for toolbar select/input
+  contexts), while plain nav links are transparent over the topbar's own lighter `--panel` grey.
+  New `.topbar-trigger` class resets both; verified live the trigger is now pixel-identical in
+  height/top position to a sibling link and matches its transparent background.
+- Library pages (poster/list view) now stretch to the full available width instead of being capped
+  at the app-wide 1200px `.content` max-width (meant for text-heavy pages) — verified at 1920px
+  viewport: grid width went from a 1200px cap to 1848px.
+- Fixed the poster-size `<select>`'s text being clipped by its own dropdown arrow (`maxWidth: 140`
+  wasn't wide enough for "X-large posters" plus the arrow's reserved padding) — widened to 190px.
+- Added a "N per page" dropdown (30/60/100/250, namespaced per library type like the sort/status
+  fix in Round 121) to the library pagination bar — now shown whenever a library has at least one
+  item, not only once already paginated, so it's actually discoverable.
+- Fixed a real, previously-unnoticed bug: cast photos on Media Detail and the Person page rendered
+  zoomed into a small top-left corner instead of the whole photo. Root cause: both used
+  `className="poster"` without the `.card` ancestor the shared `.card .poster` CSS rule requires to
+  apply its `background-size: cover; background-position: center` — outside that ancestor, the rule
+  never applied at all, so a real photo (typically several hundred px) rendered at native resolution
+  anchored top-left, showing only a small crop. Fixed by setting the same background properties
+  inline directly on the two affected divs. Audited every other `className="poster"` site in the
+  codebase (8 more files) — all already sit inside a proper `.card` ancestor, so this was isolated
+  to exactly these two spots.
+- Frontend-only round — no server/DB changes, so no dual-dialect verification needed this time.
+
 ## Round 121 — library filter/pagination regressions, AllDebrid "no files" fix
 - Fixed a real regression from Round 113's pagination work: the status filter's `localStorage` key
   (`aonarr_library_status`) was global, not per library type — picking "Downloaded" on Movies

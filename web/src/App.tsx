@@ -102,7 +102,7 @@ function SidebarGroup({ label, links, defaultOpen }: { label: string; links: Nav
  * sidebar's vertical list does. */
 function TopbarGroup({ label, links }: { label: string; links: NavLinkDef[] }) {
   return (
-    <DropdownMenu label={label}>
+    <DropdownMenu label={label} buttonClassName="topbar-trigger">
       {links.map((l) => (
         <NavLink key={l.to} to={l.to} end={l.end}>
           {l.label}
@@ -114,6 +114,7 @@ function TopbarGroup({ label, links }: { label: string; links: NavLinkDef[] }) {
 
 export default function App() {
   const { auth, logout } = useAuth();
+  const { pathname } = useLocation();
   const isAdmin = auth.isAdmin;
   const [showOnboarding, setShowOnboarding] = useState(false);
   const mediaTypes = useMediaTypes().filter((t) => isAdmin || auth.user?.allowedTypes.includes(t.key));
@@ -150,13 +151,10 @@ export default function App() {
     { to: "/library", label: "Overview", end: true },
     ...mediaTypes.map((t) => ({ to: `/library/${t.key}`, label: t.label })),
   ];
-  const standaloneLinks: NavLinkDef[] = [
-    { to: "/search", label: "Search" },
-    { to: "/collections", label: "Collections" },
-    { to: "/requests", label: "Requests" },
-    { to: "/changelog", label: "What's New" },
-    { to: "/account", label: "Account" },
-  ];
+  // Search is rendered as its own hardcoded link (like Dashboard) rather than living in this array,
+  // since it belongs between Dashboard and Library in the fixed top-level order — everything else
+  // that isn't Library renders after Library, so it can't get there through this array alone.
+  const standaloneLinks: NavLinkDef[] = [{ to: "/account", label: "Account" }];
 
   // Only the admin-only section groups are reorderable — Library stays pinned right after
   // Dashboard since every account (including household logins) relies on it being there, and
@@ -169,40 +167,43 @@ export default function App() {
       label: "Manage",
       links: [
         { to: "/add", label: "Add Media" },
-        { to: "/recommendations", label: "Recommendations" },
-        { to: "/watchlist-import", label: "Watchlist Import" },
-        { to: "/import-review", label: "Import Review" },
-        { to: "/import-lists", label: "Import Lists" },
-        { to: "/calendar", label: "Calendar" },
-        { to: "/missing", label: "Missing" },
         { to: "/activity", label: "Activity" },
-      ],
+        { to: "/calendar", label: "Calendar" },
+        { to: "/collections", label: "Collections" },
+        { to: "/import-lists", label: "Import Lists" },
+        { to: "/import-review", label: "Import Review" },
+        { to: "/missing", label: "Missing" },
+        { to: "/recommendations", label: "Recommendations" },
+        { to: "/requests", label: "Requests" },
+        { to: "/watchlist-import", label: "Watchlist Import" },
+      ].sort((a, b) => a.label.localeCompare(b.label)),
     },
     {
       key: "configuration",
       label: "Configuration",
       links: [
-        { to: "/indexers", label: "Indexers" },
         { to: "/download-clients", label: "Download Clients" },
-        { to: "/users", label: "Users" },
+        { to: "/indexers", label: "Indexers" },
         { to: "/settings", label: "Settings" },
-      ],
+        { to: "/users", label: "Users" },
+      ].sort((a, b) => a.label.localeCompare(b.label)),
     },
     {
       key: "system",
       label: "System",
       links: [
-        { to: "/system", label: "Status & Health" },
-        { to: "/jobs", label: "Jobs" },
-        { to: "/recycle-bin", label: "Recycle Bin" },
-        { to: "/duplicates", label: "Duplicates" },
-        { to: "/network-stats", label: "Network Stats" },
-        { to: "/media-analyzer", label: "Media Analyzer" },
-        { to: "/audit-log", label: "Audit Log" },
         { to: "/api-docs", label: "API Docs" },
-        { to: "/remote-library", label: "Remote Library" },
+        { to: "/audit-log", label: "Audit Log" },
+        { to: "/duplicates", label: "Duplicates" },
         { to: "/friend-libraries", label: "Friend Libraries" },
-      ],
+        { to: "/jobs", label: "Jobs" },
+        { to: "/media-analyzer", label: "Media Analyzer" },
+        { to: "/network-stats", label: "Network Stats" },
+        { to: "/recycle-bin", label: "Recycle Bin" },
+        { to: "/remote-library", label: "Remote Library" },
+        { to: "/system", label: "Status & Health" },
+        { to: "/changelog", label: "What's New" },
+      ].sort((a, b) => a.label.localeCompare(b.label)),
     },
   ];
   const { orderedItems: orderedGroups, visibleItems: visibleGroups, hidden: hiddenGroups, moveUp: moveGroupUp, moveDown: moveGroupDown, toggleHidden: toggleGroupHidden } =
@@ -333,6 +334,7 @@ export default function App() {
             <NavLink to="/" end>
               Dashboard
             </NavLink>
+            <NavLink to="/search">Search</NavLink>
 
             <SidebarGroup label="Library" links={libraryLinks} defaultOpen />
 
@@ -373,6 +375,7 @@ export default function App() {
           <NavLink to="/" end>
             Dashboard
           </NavLink>
+          <NavLink to="/search">Search</NavLink>
           <TopbarGroup label="Library" links={libraryLinks} />
           {standaloneLinks.map((l) => (
             <NavLink key={l.to} to={l.to}>
@@ -402,7 +405,11 @@ export default function App() {
         </header>
       )}
 
-      <main className="content" id="main-content" tabIndex={-1}>
+      <main
+        className={pathname.startsWith("/library") ? "content content--wide" : "content"}
+        id="main-content"
+        tabIndex={-1}
+      >
         <Routes>
           <Route
             path="/"

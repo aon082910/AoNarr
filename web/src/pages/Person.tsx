@@ -42,7 +42,17 @@ export default function Person() {
       <div style={{ display: "flex", gap: 20, marginBottom: 16 }}>
         <div
           className="poster"
-          style={{ width: 150, height: 200, flexShrink: 0, ...(person.photoUrl ? { backgroundImage: `url(${person.photoUrl})` } : {}) }}
+          style={{
+            width: 150,
+            height: 200,
+            flexShrink: 0,
+            // Same fix as the Media Detail page's cast row: .card .poster's background-size: cover
+            // never applies here (no .card ancestor), so without this the photo rendered at native
+            // resolution anchored top-left — a small zoomed-in crop instead of the whole photo.
+            ...(person.photoUrl
+              ? { backgroundImage: `url(${person.photoUrl})`, backgroundSize: "cover", backgroundPosition: "center", backgroundRepeat: "no-repeat" }
+              : {}),
+          }}
         >
           {!person.photoUrl && "No photo"}
         </div>

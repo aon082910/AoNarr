@@ -13,10 +13,12 @@ type ViewMode = "poster" | "list";
 type PosterSize = "xsmall" | "small" | "medium" | "large" | "xlarge";
 type StatusFilter = "all" | "monitored" | "unmonitored" | "missing" | "downloaded" | "unmatched";
 
-/** Page size for the server-side-paginated library grid/list — the "unmatched" status filter and
- * every other sort/filter option are applied server-side too (see server/src/services/mediaQuery.ts)
- * so this only bounds how many rows come down per request, not what's considered a match. */
-const PAGE_SIZE = 60;
+/** Page size options for the server-side-paginated library grid/list, and the default when a type
+ * has no saved preference yet — the "unmatched" status filter and every other sort/filter option
+ * are applied server-side too (see server/src/services/mediaQuery.ts) so this only bounds how many
+ * rows come down per request, not what's considered a match. */
+const PAGE_SIZE_OPTIONS = [30, 60, 100, 250] as const;
+const DEFAULT_PAGE_SIZE = 60;
 
 interface LibraryStats {
   total: number;
@@ -303,6 +305,9 @@ export function LibraryItemGrid({
     () => (localStorage.getItem(`aonarr_library_status_${type}`) as StatusFilter) || "all"
   );
   const [sortKey, setSortKey] = useState<SortKey>(() => (localStorage.getItem(`aonarr_library_sort_${type}`) as SortKey) || "added");
+  const [pageSize, setPageSize] = useState<number>(
+    () => Number(localStorage.getItem(`aonarr_library_page_size_${type}`)) || DEFAULT_PAGE_SIZE
+  );
   const [viewMode, setViewMode] = useState<ViewMode>(() => (localStorage.getItem("aonarr_library_view") as ViewMode) || "poster");
   const [posterSize, setPosterSize] = useState<PosterSize>(() => (localStorage.getItem("aonarr_library_poster_size") as PosterSize) || "medium");
   const [listColumns, setListColumns] = useState<Set<ExtraField>>(() => loadFieldSet("aonarr_library_columns", DEFAULT_LIST_COLUMNS));
@@ -374,8 +379,8 @@ export function LibraryItemGrid({
     if (statusFilter !== "all") params.set("status", statusFilter);
     if (contentRatingFilter !== "all") params.set("contentRating", contentRatingFilter);
     params.set("sort", sortKey);
-    params.set("limit", String(PAGE_SIZE));
-    params.set("offset", String(page * PAGE_SIZE));
+    params.set("limit", String(pageSize));
+    params.set("offset", String(page * pageSize));
     api
       .get<{ items: MediaItem[]; total: number }>(`/media?${params.toString()}`)
       .then((data) => {
@@ -390,7 +395,7 @@ export function LibraryItemGrid({
     api.get<LibraryStats>(`/media/stats?${scopeParams().toString()}`).then(setStats);
   }
 
-  useEffect(load, [type, groupId, tagFilter, statusFilter, contentRatingFilter, sortKey, page]);
+  useEffect(load, [type, groupId, tagFilter, statusFilter, contentRatingFilter, sortKey, page, pageSize]);
   useEffect(loadStats, [type, groupId, tagFilter]);
   // Any filter/sort change re-points the page at a fresh result set — staying on, say, page 5 of a
   // now-much-shorter filtered list would otherwise show a confusing "out of range" empty page.
@@ -405,7 +410,7 @@ export function LibraryItemGrid({
       return;
     }
     setPage(0);
-  }, [type, groupId, tagFilter, statusFilter, contentRatingFilter, sortKey]);
+  }, [type, groupId, tagFilter, statusFilter, contentRatingFilter, sortKey, pageSize]);
   useEffect(() => {
     // Guarded against out-of-order responses: switching libraries quickly could let an earlier
     // type's slower-to-resolve request land after a later type's faster one, overwriting the
@@ -564,14 +569,18 @@ export function LibraryItemGrid({
   useEffect(() => {
     localStorage.setItem(`aonarr_library_status_${type}`, statusFilter);
   }, [statusFilter, type]);
+  useEffect(() => {
+    localStorage.setItem(`aonarr_library_page_size_${type}`, String(pageSize));
+  }, [pageSize, type]);
   // The component instance is reused (not remounted) when navigating between library types on the
   // same route (e.g. Movies -> Series both match `/library/:type`), so the lazy useState
   // initializers above only ever run once — without this, switching type wouldn't pick up that
-  // type's own remembered sort/status and would just keep showing whichever library's filter was
-  // active before the switch.
+  // type's own remembered sort/status/page-size and would just keep showing whichever library's
+  // filter was active before the switch.
   useEffect(() => {
     setStatusFilter((localStorage.getItem(`aonarr_library_status_${type}`) as StatusFilter) || "all");
     setSortKey((localStorage.getItem(`aonarr_library_sort_${type}`) as SortKey) || "added");
+    setPageSize(Number(localStorage.getItem(`aonarr_library_page_size_${type}`)) || DEFAULT_PAGE_SIZE);
   }, [type]);
   useEffect(() => {
     localStorage.setItem("aonarr_library_columns", JSON.stringify(Array.from(listColumns)));
@@ -709,7 +718,7 @@ export function LibraryItemGrid({
     loadStats();
   }
 
-  const totalPages = Math.max(1, Math.ceil(filteredTotal / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(filteredTotal / pageSize));
 
   return (
     <div>
@@ -783,7 +792,7 @@ export function LibraryItemGrid({
           </select>
         )}
         {viewMode === "poster" && (
-          <select value={posterSize} onChange={(e) => setPosterSize(e.target.value as PosterSize)} style={{ maxWidth: 140 }}>
+          <select value={posterSize} onChange={(e) => setPosterSize(e.target.value as PosterSize)} style={{ maxWidth: 190 }}>
             <option value="xsmall">X-small posters</option>
             <option value="small">Small posters</option>
             <option value="medium">Medium posters</option>
@@ -1103,17 +1112,38 @@ export function LibraryItemGrid({
         </table>
       )}
 
-      {!loading && filteredTotal > PAGE_SIZE && (
+      {!loading && filteredTotal > 0 && (
         <div className="toolbar" style={{ justifyContent: "center", marginTop: 20 }}>
-          <button type="button" className="secondary" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}>
-            ← Previous
-          </button>
-          <span className="sub">
-            Page {page + 1} of {totalPages} ({filteredTotal} total)
-          </span>
-          <button type="button" className="secondary" onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}>
-            Next →
-          </button>
+          {filteredTotal > pageSize && (
+            <>
+              <button type="button" className="secondary" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}>
+                ← Previous
+              </button>
+              <span className="sub">
+                Page {page + 1} of {totalPages} ({filteredTotal} total)
+              </span>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                disabled={page >= totalPages - 1}
+              >
+                Next →
+              </button>
+            </>
+          )}
+          <select
+            value={pageSize}
+            onChange={(e) => setPageSize(Number(e.target.value))}
+            style={{ maxWidth: 140 }}
+            title="Items per page"
+          >
+            {PAGE_SIZE_OPTIONS.map((n) => (
+              <option key={n} value={n}>
+                {n} per page
+              </option>
+            ))}
+          </select>
         </div>
       )}
 

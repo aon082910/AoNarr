@@ -110,6 +110,12 @@ body {
   .content { padding: 16px; }
 }
 
+/* Library pages (poster/list grid) — the 1200px cap above is right for text-heavy pages (forms,
+   tables, settings) but was capping the poster grid to ~6 columns at medium size even on a much
+   wider screen, wasting the rest of the row. Library pages alone get to use the full available
+   width instead. */
+.content--wide { max-width: none; }
+
 /* Top-bar layout — an alternative to the default left sidebar (toggled per-browser). .app gets
    flex-direction: column instead of its default row so the bar sits above .content full-width
    rather than beside it. */
@@ -133,6 +139,33 @@ body {
 }
 .topbar > a:hover { color: var(--text); background: rgba(255,255,255,0.03); }
 .topbar > a.active { color: var(--text); background: var(--accent-dim); }
+/* A DropdownMenu trigger (e.g. "Library ▾") sitting in the topbar next to plain <a> nav links —
+   overrides the default .select-like trigger style (an input-like near-black background + border,
+   meant for toolbar contexts elsewhere) so it matches its .topbar > a siblings exactly instead of
+   looking like a distinct black button among grey ones, and matches their padding/no-border box so
+   it doesn't sit visibly taller/lower than them either. */
+.topbar > .dropdown {
+  /* Pinned to the exact same height as a sibling .topbar > a (measured: 32px) — .dropdown is an
+     inline-flex wrapper around the trigger button, and letting its height come purely from content
+     left it a few px taller/shorter than the plain links next to it depending on the browser's
+     inline-box metrics, which is what made the trigger look vertically offset from its siblings. */
+  height: 32px;
+}
+.topbar-trigger {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  /* The base button rule's margin-top: 16px (meant for a button following a stacked label) was
+     still applying here — inside this flex-centered wrapper that shifted the button visibly
+     downward instead of removing it entirely, which is what actually caused the "trigger sits
+     lower than its sibling links" misalignment; the height mismatch fixed above was only part of it. */
+  margin-top: 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  height: 100%;
+}
+.topbar-trigger:hover { color: var(--text); background: rgba(255,255,255,0.03); }
 .topbar-spacer { margin-left: auto; display: flex; align-items: center; gap: 4px; }
 .topbar-spacer a { color: var(--muted); text-decoration: none; padding: 6px 10px; font-size: 0.85rem; }
 .topbar-spacer a:hover { color: var(--text); }

@@ -612,7 +612,14 @@ export default function MediaDetail() {
                   style={{
                     width: 90,
                     height: 120,
-                    ...(c.photoUrl ? { backgroundImage: `url(${c.photoUrl})` } : {}),
+                    // The shared .card .poster rule (background-size: cover, centered) is scoped to
+                    // a .card ancestor this row doesn't have, so it silently never applied here —
+                    // without an explicit background-size the photo rendered at its native
+                    // resolution anchored top-left, showing only a small zoomed-in corner of the
+                    // person's face instead of the whole photo scaled to fit the frame.
+                    ...(c.photoUrl
+                      ? { backgroundImage: `url(${c.photoUrl})`, backgroundSize: "cover", backgroundPosition: "center", backgroundRepeat: "no-repeat" }
+                      : {}),
                   }}
                 >
                   {!c.photoUrl && "No photo"}
