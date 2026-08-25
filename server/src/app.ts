@@ -37,6 +37,7 @@ import { discoverRouter } from "./routes/discover.js";
 import { aiProvidersRouter } from "./routes/aiProviders.js";
 import { customColumnsRouter } from "./routes/customColumns.js";
 import { iptvRouter, iptvPublicRouter } from "./routes/iptv.js";
+import { opdsTokenRouter, opdsPublicRouter } from "./routes/opds.js";
 import { blocklistRouter } from "./routes/blocklist.js";
 import { recommendationsRouter } from "./routes/recommendations.js";
 import { auditLogRouter } from "./routes/auditLog.js";
@@ -111,6 +112,8 @@ export async function createApp(): Promise<Express> {
   // otherwise reject them.
   app.use("/api/iptv", iptvPublicRouter);
   app.use("/api/iptv", iptvRouter);
+  app.use("/api/settings/opds-token", opdsTokenRouter);
+  app.use("/api/opds", opdsPublicRouter);
   app.use("/api/media", mediaRouter);
   app.use("/api/indexers", indexersRouter);
   app.use("/api/download-clients", downloadClientsRouter);

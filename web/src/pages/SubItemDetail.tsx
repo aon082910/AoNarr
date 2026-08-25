@@ -49,6 +49,7 @@ export default function SubItemDetail() {
   const [tracks, setTracks] = useState<Track[] | null>(null);
   const [loadingTracks, setLoadingTracks] = useState(false);
   const [scanningIsbn, setScanningIsbn] = useState(false);
+  const [sendingToKindle, setSendingToKindle] = useState(false);
 
   function load() {
     api.get<SubItemDetailResponse>(`/media/${mediaId}/subitems/${subItemId}`).then(setSubItem);
@@ -153,6 +154,19 @@ export default function SubItemDetail() {
       alert((e as Error).message);
     } finally {
       setScanningIsbn(false);
+    }
+  }
+
+  async function sendToKindle() {
+    if (!subItem) return;
+    setSendingToKindle(true);
+    try {
+      await api.post(`/media/${mediaId}/subitems/${subItemId}/send-to-kindle`, {});
+      alert(`Sent "${subItem.title}" to your Kindle.`);
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setSendingToKindle(false);
     }
   }
 
@@ -338,6 +352,11 @@ export default function SubItemDetail() {
           {subItem.parent?.type === "author" && subItem.hasFile && (
             <button className="secondary" onClick={scanIsbn} disabled={scanningIsbn} title="Scans the file's first and last 15 pages (PDF) or its EPUB metadata for an ISBN, then matches it via Open Library">
               {scanningIsbn ? "Scanning..." : "Scan for ISBN"}
+            </button>
+          )}
+          {subItem.hasFile && subItem.parent?.type !== "audiobook" && (
+            <button className="secondary" onClick={sendToKindle} disabled={sendingToKindle} title="Emails this file to your Kindle's Send to Kindle address (set in Settings → General)">
+              {sendingToKindle ? "Sending..." : "Send to Kindle"}
             </button>
           )}
           <button className="secondary" onClick={() => navigate(-1)}>

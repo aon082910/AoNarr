@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { Router } from "express";
 import multer from "multer";
 import { log } from "../services/logger.js";
@@ -40,6 +42,8 @@ import { auditActor, logAuditEvent } from "../services/audit.js";
 import { getSetting } from "../services/settingsStore.js";
 import { renameLibraryFiles, renameOneMediaItem } from "../services/importer.js";
 import { extractIsbnFromBookFile, fetchBookByIsbn } from "../services/bookIsbnScan.js";
+import { sendEmailWithAttachment } from "../services/smtp.js";
+import { CONTENT_TYPES } from "../services/rangeStream.js";
 import AdmZip from "adm-zip";
 import type { MediaType } from "../types/index.js";
 
@@ -1317,5 +1321,61 @@ mediaRouter.post(
 
     const row = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(sub.id);
     res.json({ found: true, isbn, matched: true, subItem: subItemFromRow(row) });
+  })
+);
+
+// Amazon's own Send-to-Kindle attachment cap — reject up front rather than let the SMTP send fail
+// partway through (or silently be dropped by the receiving side) on an oversized file.
+const KINDLE_MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+
+/**
+ * Emails a sub-item's downloaded file to the configured Kindle "Send to Kindle" address as an
+ * attachment, reusing the same SMTP settings the notification providers use (Settings →
+ * Notifications) with `to` overridden to the Kindle address instead of `smtpTo`.
+ */
+mediaRouter.post(
+  "/:id/subitems/:subItemId/send-to-kindle",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const sub = (await db.prepare("SELECT * FROM sub_items WHERE id = ? AND media_item_id = ?").get(req.params.subItemId, req.params.id)) as any;
+    if (!sub) throw new HttpError(404, "Sub-item not found");
+    if (!sub.file_path) throw new HttpError(400, "This item has no downloaded file to send yet");
+
+    const kindleAddress = getSetting("kindleEmailAddress");
+    if (!kindleAddress) throw new HttpError(400, "No Kindle email address set — add one in Settings → General");
+
+    const smtpHost = getSetting("smtpHost");
+    const smtpFrom = getSetting("smtpFrom");
+    if (!smtpHost || !smtpFrom) throw new HttpError(400, "SMTP isn't configured — set it up in Settings → Notifications first");
+
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(sub.file_path);
+    } catch {
+      throw new HttpError(404, "File not found on disk");
+    }
+    if (stat.size > KINDLE_MAX_ATTACHMENT_BYTES) {
+      throw new HttpError(400, `File is too large to email (${(stat.size / 1024 / 1024).toFixed(1)} MB, Kindle's limit is 50 MB)`);
+    }
+
+    const ext = path.extname(sub.file_path).toLowerCase();
+    const filename = `${sub.title}${ext}`.replace(/[/\\]/g, "_");
+
+    await sendEmailWithAttachment(
+      {
+        host: smtpHost,
+        port: Number(getSetting("smtpPort") || 587),
+        secure: getSetting("smtpSecure") === "1",
+        username: getSetting("smtpUsername") || undefined,
+        password: getSetting("smtpPassword") || undefined,
+        from: smtpFrom,
+        to: kindleAddress,
+      },
+      sub.title,
+      `Sent from AoNarr: ${sub.title}`,
+      { filename, content: fs.readFileSync(sub.file_path), contentType: CONTENT_TYPES[ext] ?? "application/octet-stream" }
+    );
+
+    res.json({ sent: true });
   })
 );

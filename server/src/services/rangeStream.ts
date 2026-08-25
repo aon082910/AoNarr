@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Request, Response } from "express";
 
-const CONTENT_TYPES: Record<string, string> = {
+export const CONTENT_TYPES: Record<string, string> = {
   ".mkv": "video/x-matroska",
   ".mp4": "video/mp4",
   ".m4v": "video/mp4",
@@ -10,6 +10,20 @@ const CONTENT_TYPES: Record<string, string> = {
   ".mov": "video/quicktime",
   ".wmv": "video/x-ms-wmv",
   ".ts": "video/mp2t",
+  // Added for the OPDS download route (routes/opds.ts) — book/comic/audiobook formats, harmless to
+  // share with the video-only IPTV stream route since extensions never collide with the above.
+  ".epub": "application/epub+zip",
+  ".mobi": "application/x-mobipocket-ebook",
+  ".azw3": "application/vnd.amazon.ebook",
+  ".pdf": "application/pdf",
+  ".cbz": "application/vnd.comicbook+zip",
+  ".cbr": "application/vnd.comicbook-rar",
+  ".mp3": "audio/mpeg",
+  ".m4a": "audio/mp4",
+  ".m4b": "audio/mp4",
+  ".flac": "audio/flac",
+  ".ogg": "audio/ogg",
+  ".wav": "audio/wav",
 };
 
 /**

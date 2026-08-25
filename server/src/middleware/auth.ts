@@ -47,7 +47,8 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     req.path === "/webhooks/media-server" ||
     req.path.startsWith("/share/") ||
     req.path.startsWith("/iptv/m3u/") ||
-    req.path.startsWith("/iptv/stream/")
+    req.path.startsWith("/iptv/stream/") ||
+    req.path.startsWith("/opds")
   ) {
     next();
     return;

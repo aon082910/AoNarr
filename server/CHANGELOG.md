@@ -3,6 +3,31 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 156 — OPDS catalog feed + Send to Kindle
+- **OPDS catalog** (`GET /api/opds`, token-gated the same way the `.ics` calendar feed and IPTV
+  M3U/stream routes already are — see Settings → General → "OPDS Catalog") — lets any e-reader app
+  that already speaks OPDS (KOReader, Moon+ Reader, Marvin, etc.) browse and download straight from
+  Books/Authors, Audiobooks, Comics, and Manga without a separate reading app, the same idea as
+  pointing one at a Calibre server. Three-level Atom navigation (root → type → parent item →
+  acquisition entries); Audiobooks branch to exposing each individual `tracks` row as its own
+  acquisition entry instead of the sub_item, since a `multiFilePerChild` sub_item's `file_path` is
+  the whole album folder, not a single downloadable file. Downloads stream through the existing
+  Range-support helper (`rangeStream.ts`) so large files/audiobooks support resumable downloads,
+  same as IPTV streams already do.
+- **Send to Kindle** — a "Send to Kindle" button on a book/comic/manga's own page (Settings → General
+  → "Send to Kindle" for the destination address) emails the downloaded file as an attachment to a
+  configured Kindle address, reusing the existing SMTP notification settings with the recipient
+  overridden. Required adding MIME multipart/mixed message-building (`sendEmailWithAttachment` in
+  `smtp.ts`, alongside the existing plain-text `sendEmail`) since the hand-rolled SMTP client had no
+  attachment support before. Rejects files over 50MB (Amazon's own Send-to-Kindle attachment cap)
+  up front rather than failing partway through the send. Not offered for Audiobooks for the same
+  `multiFilePerChild` reason OPDS branches on — there's no single file to attach.
+- Verified live: fetched the real OPDS root feed and confirmed valid Atom XML with all four type
+  entries, confirmed the token gate rejects a request with no token, confirmed the per-type feed
+  queries real library data (empty in this dev instance, correctly so), and confirmed the Send to
+  Kindle route's error path (unknown sub-item → 404) and the new Kindle-address setting both round-
+  trip through Settings correctly.
+
 ## Round 155 — series linking for Books/Audiobooks; Comics/Manga already had it
 - **New "Series" feature for Books and Audiobooks** — the one-level-down equivalent of Movies' TMDB
   Collection widget, since a book's own unit is a `sub_item` (Books/Audiobooks group by Author,

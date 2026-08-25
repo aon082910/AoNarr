@@ -273,6 +273,7 @@ export default function Settings() {
   const [totpCode, setTotpCode] = useState("");
   const [totpDisableCode, setTotpDisableCode] = useState("");
   const [tab, setTab] = useState("general");
+  const [opdsUrl, setOpdsUrl] = useState<string | null>(null);
 
   const [folderPath, setFolderPath] = useState("");
   const [showFolderPicker, setShowFolderPicker] = useState(false);
@@ -576,6 +577,17 @@ export default function Settings() {
     setSettings((prev) => ({ ...prev, apiKey: result.value }));
   }
 
+  async function showOpdsUrl() {
+    const result = await api.get<{ token: string }>("/settings/opds-token");
+    setOpdsUrl(`${window.location.origin}/api/opds?token=${result.token}`);
+  }
+
+  async function regenerateOpdsToken() {
+    if (!confirm("Regenerate the OPDS catalog URL? Any e-reader app already connected will stop working until you reconnect with the new URL.")) return;
+    const result = await api.post<{ token: string }>("/settings/opds-token/regenerate", {});
+    setOpdsUrl(`${window.location.origin}/api/opds?token=${result.token}`);
+  }
+
   async function startTotpSetup() {
     const result = await api.post<{ secret: string; otpauthUrl: string }>("/settings/totp/setup", {});
     setTotpSetup(result);
@@ -840,6 +852,50 @@ export default function Settings() {
             Set up 2FA
           </button>
         )}
+      </div>
+
+      <h2>OPDS Catalog</h2>
+      <div className="form-panel">
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          Exposes Books/Authors, Audiobooks, Comics, and Manga as an OPDS feed — point an e-reader
+          app that speaks OPDS (KOReader, Moon+ Reader, Marvin, etc.) at the URL below to browse
+          and download straight from your library.
+        </p>
+        {opdsUrl ? (
+          <>
+            <label>Catalog URL</label>
+            <input value={opdsUrl} readOnly onFocus={(e) => e.target.select()} />
+            <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+              Includes a dedicated token, not your API key — anyone with this URL can browse and
+              download from these libraries, nothing else.
+            </p>
+            <button type="button" className="danger" onClick={regenerateOpdsToken}>
+              Regenerate URL
+            </button>
+          </>
+        ) : (
+          <button type="button" onClick={showOpdsUrl}>
+            Show catalog URL...
+          </button>
+        )}
+      </div>
+
+      <h2>Send to Kindle</h2>
+      <div className="form-panel">
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          Lets you email a book/comic/audiobook file to a Kindle "Send to Kindle" address (found in
+          your Amazon account's Content &amp; Devices settings) straight from its detail page.
+          Reuses the Email (SMTP) notification settings above — set your Kindle address as an
+          approved sender on Amazon's side first, since Amazon only accepts mail from addresses you
+          allow.
+        </p>
+        <label>Kindle email address</label>
+        <input
+          key={settings.kindleEmailAddress ?? "kindle-email-empty"}
+          defaultValue={settings.kindleEmailAddress ?? ""}
+          placeholder="yourname@kindle.com"
+          onBlur={(e) => saveSetting("kindleEmailAddress", e.target.value)}
+        />
       </div>
 
       <h2>Recycle Bin</h2>
