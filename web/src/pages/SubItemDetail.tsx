@@ -35,6 +35,7 @@ export default function SubItemDetail() {
   const [error, setError] = useState<string | null>(null);
   const [tracks, setTracks] = useState<Track[] | null>(null);
   const [loadingTracks, setLoadingTracks] = useState(false);
+  const [scanningIsbn, setScanningIsbn] = useState(false);
 
   function load() {
     api.get<SubItemDetailResponse>(`/media/${mediaId}/subitems/${subItemId}`).then(setSubItem);
@@ -113,6 +114,32 @@ export default function SubItemDetail() {
       load();
     } catch (e) {
       alert((e as Error).message);
+    }
+  }
+
+  async function scanIsbn() {
+    if (!subItem) return;
+    setScanningIsbn(true);
+    try {
+      const result = await api.post<{ found: boolean; isbn?: string; matched?: boolean; subItem?: SubItemDetailResponse }>(
+        `/media/${mediaId}/subitems/${subItemId}/scan-isbn`,
+        {}
+      );
+      if (!result.found) {
+        alert("No ISBN found in this file's first/last 15 pages (or its EPUB metadata).");
+      } else if (!result.matched) {
+        alert(`Found ISBN ${result.isbn}, but couldn't find a matching book on Open Library.`);
+      } else {
+        alert(`Found ISBN ${result.isbn} — matched and updated from Open Library.`);
+        // The scan-isbn response is a bare sub_items row (no `parent`) — merge onto the existing
+        // state rather than replacing it wholesale, or the breadcrumb and this very button (which
+        // depends on subItem.parent.type) would disappear the instant a scan succeeds.
+        if (result.subItem) setSubItem({ ...subItem, ...result.subItem, parent: subItem.parent });
+      }
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setScanningIsbn(false);
     }
   }
 
@@ -222,6 +249,11 @@ export default function SubItemDetail() {
           ) : (
             <button onClick={runSearch} disabled={searching}>
               {searching ? "Searching..." : "Search"}
+            </button>
+          )}
+          {subItem.parent?.type === "author" && subItem.hasFile && (
+            <button className="secondary" onClick={scanIsbn} disabled={scanningIsbn} title="Scans the file's first and last 15 pages (PDF) or its EPUB metadata for an ISBN, then matches it via Open Library">
+              {scanningIsbn ? "Scanning..." : "Scan for ISBN"}
             </button>
           )}
           <button className="secondary" onClick={() => navigate(-1)}>

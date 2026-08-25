@@ -3,6 +3,34 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 138 — Book ISBN scan-to-match (1st of the earlier AI-matching request)
+- Added "Scan for ISBN" on a book's own page (Books library): scans the downloaded file's first
+  and last 15 pages (PDF) or its embedded metadata (EPUB's OPF `dc:identifier`) for an ISBN, then
+  looks it up directly via Open Library's ISBN endpoint (a key-value lookup, not a fuzzy search —
+  no API key needed, trustworthy enough to apply without a confirmation step, the same trust level
+  a subtitle's exact moviehash match already gets) and updates the book's title/release date/cover/
+  external id from the result. New `services/bookIsbnScan.ts`, `POST /api/media/:id/subitems/
+  :subItemId/scan-isbn`, new `pdf-parse` dependency for the PDF text layer.
+- ISBN-10 and ISBN-13 are both detected (a labeled "ISBN ..." occurrence tried first, then any
+  bare 10/13-digit run) and checksum-validated before being trusted — a three-number run that
+  merely looks ISBN-shaped doesn't get treated as one. `.mobi`/`.azw3` aren't supported (no
+  practical pure-JS parser for either); a scanned-image-only PDF with no text layer at all is
+  correctly treated as "not found" rather than guessed at, since no OCR is attempted this round.
+- Verified thoroughly, not just by code review: unit-tested the ISBN regex+checksum logic directly
+  (5 cases, including deliberately rejecting an invalid checksum); built a real EPUB fixture (a
+  genuine zip with container.xml + OPF) and confirmed extraction end-to-end; hand-built two real
+  40-page PDFs to specifically prove the "first/last 15 pages" restriction itself works, not just
+  that ISBN detection works somewhere in the document — one test placed a valid ISBN on an
+  excluded middle page (correctly NOT found) and a different valid ISBN within the last-15 range
+  (correctly found), the other confirmed the same for the first-15 range. Ran the full route live
+  against a real book (a genuine EPUB with a real-world ISBN) and a real, live Open Library API
+  call — confirmed via both a direct API call and a real UI click that it correctly renamed the
+  book, set its release date/cover/external id, and persisted. Also caught and fixed a real bug
+  this live UI test surfaced: the scan response (a bare sub_items row, no `parent` field) was
+  replacing the whole frontend state wholesale, silently losing the parent-breadcrumb context and
+  making the "Scan for ISBN" button itself disappear after first use — fixed by merging the
+  response onto existing state instead of replacing it.
+
 ## Round 137 — Plex watchlist sync (8th and final Starr feature-gap list item)
 - Added Plex watchlist auto-sync, mirroring the existing Trakt List Sync pattern: adds anything new
   in the configured Plex account's watchlist as a monitored library item (movies as single items,

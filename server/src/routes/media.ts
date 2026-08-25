@@ -24,6 +24,7 @@ import { probeMediaInfo } from "../services/ffprobe.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { getSetting } from "../services/settingsStore.js";
 import { renameLibraryFiles } from "../services/importer.js";
+import { extractIsbnFromBookFile, fetchBookByIsbn } from "../services/bookIsbnScan.js";
 import AdmZip from "adm-zip";
 import type { MediaType } from "../types/index.js";
 
@@ -1148,5 +1149,46 @@ mediaRouter.patch(
     const row = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(req.params.subItemId);
     if (!row) throw new HttpError(404, "Sub-item not found");
     res.json(subItemFromRow(row));
+  })
+);
+
+/**
+ * Scans a downloaded book's own file for an ISBN (its first/last 15 pages for a PDF, its OPF
+ * metadata for an EPUB — see bookIsbnScan.ts) and, if found, looks it up directly via Open
+ * Library's ISBN endpoint and applies the match (title/release date/poster/external id) without a
+ * separate confirmation step, the same trust level a subtitle's exact moviehash match gets — a
+ * checksum-valid ISBN resolved through a direct key lookup isn't a fuzzy guess.
+ */
+mediaRouter.post(
+  "/:id/subitems/:subItemId/scan-isbn",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const sub = (await db.prepare("SELECT * FROM sub_items WHERE id = ? AND media_item_id = ?").get(req.params.subItemId, req.params.id)) as any;
+    if (!sub) throw new HttpError(404, "Sub-item not found");
+    if (!sub.file_path) throw new HttpError(400, "This book has no downloaded file to scan yet");
+
+    const isbn = await extractIsbnFromBookFile(sub.file_path);
+    if (!isbn) {
+      res.json({ found: false });
+      return;
+    }
+
+    let match;
+    try {
+      match = await fetchBookByIsbn(isbn);
+    } catch (err) {
+      throw new HttpError(502, (err as Error).message);
+    }
+    if (!match) {
+      res.json({ found: true, isbn, matched: false });
+      return;
+    }
+
+    await db
+      .prepare("UPDATE sub_items SET title = ?, release_date = ?, poster_url = ?, external_id = ?, external_provider = ? WHERE id = ?")
+      .run(match.title, match.releaseDate, match.posterUrl, match.externalId, match.externalProvider, sub.id);
+
+    const row = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(sub.id);
+    res.json({ found: true, isbn, matched: true, subItem: subItemFromRow(row) });
   })
 );
