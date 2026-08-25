@@ -34,6 +34,7 @@ import ImportReview from "./pages/ImportReview.js";
 import { useAuth } from "./context/AuthContext.js";
 import NotificationsToggle from "./components/NotificationsToggle.js";
 import ThemeToggle from "./components/ThemeToggle.js";
+import LayoutWidthToggle from "./components/LayoutWidthToggle.js";
 import CommandPalette from "./components/CommandPalette.js";
 import DropdownMenu from "./components/DropdownMenu.js";
 import ApiDocs from "./pages/ApiDocs.js";
@@ -374,6 +375,7 @@ export default function App() {
 
             <div style={{ marginTop: "auto", display: "flex", flexDirection: "column" }}>
               <ThemeToggle />
+              <LayoutWidthToggle />
               <NotificationsToggle />
               <a onClick={logout} style={{ cursor: "pointer" }}>
                 Log out
@@ -414,6 +416,7 @@ export default function App() {
               </>
             )}
             <ThemeToggle />
+            <LayoutWidthToggle />
             <NotificationsToggle />
             <a onClick={logout} style={{ cursor: "pointer" }}>
               Log out
@@ -422,11 +425,7 @@ export default function App() {
         </header>
       )}
 
-      <main
-        className={pathname.startsWith("/library") ? "content content--wide" : "content"}
-        id="main-content"
-        tabIndex={-1}
-      >
+      <main className="content" id="main-content" tabIndex={-1}>
         <Routes>
           <Route
             path="/"

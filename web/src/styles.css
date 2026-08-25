@@ -99,7 +99,10 @@ body {
      scrolling internally the way flex:1 is supposed to allow. */
   min-width: 0;
   padding: 28px 36px;
+  /* Centered is the default layout-width preference (Settings → topbar toggle) — capped and
+     centered in the remaining space next to the sidebar. */
   max-width: 1200px;
+  margin: 0 auto;
   /* Safety net for any page with a wide table/toolbar this pass didn't hit directly — scrolls that
      one section horizontally instead of the min-width fix above still not being enough to keep the
      whole app from growing past the viewport. */
@@ -110,11 +113,9 @@ body {
   .content { padding: 16px; }
 }
 
-/* Library pages (poster/list grid) — the 1200px cap above is right for text-heavy pages (forms,
-   tables, settings) but was capping the poster grid to ~6 columns at medium size even on a much
-   wider screen, wasting the rest of the row. Library pages alone get to use the full available
-   width instead. */
-.content--wide { max-width: none; }
+/* Full-width layout preference — stored per-browser (localStorage) and toggled from the topbar,
+   applies to every page instead of the old library-pages-only special case. */
+:root[data-layout-width="full"] .content { max-width: none; margin: 0; }
 
 /* Top-bar layout — an alternative to the default left sidebar (toggled per-browser). .app gets
    flex-direction: column instead of its default row so the bar sits above .content full-width

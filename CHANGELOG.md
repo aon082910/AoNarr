@@ -3,6 +3,16 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 144 — site-wide full-width/centered layout toggle
+- New "Switch to full-width layout" / "Switch to centered layout" link next to the theme toggle
+  (sidebar footer, or topbar when using the top-nav layout) — applies to every page instead of
+  the old hardcoded rule that only gave library pages the full-width treatment. Stored per-browser
+  in localStorage (`aonarr_layout_width`) and applied before React renders, same mechanism as the
+  dark/light theme toggle, so there's no flash of the wrong width on load.
+- Centered (capped at 1200px, actually centered via margin: 0 auto now — previously the 1200px cap
+  existed but nothing centered it, it just sat flush against the sidebar with empty space to the
+  right) is the default; full-width removes the cap entirely, same as library pages already got.
+
 ## Round 143 — per-instance tiles for Root Folders, Quality, and Subtitle Providers
 - Root Folders (Settings → Library Sync), Quality Definitions/Quality Profiles/Custom Formats
   (Settings → Quality), and Subtitle Providers (Settings → Import & Subtitles) no longer nest an

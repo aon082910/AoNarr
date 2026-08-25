@@ -8,10 +8,12 @@
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <title>AoNarr</title>
     <script>
-      // Applied before React renders to avoid a flash of the wrong theme on load.
+      // Applied before React renders to avoid a flash of the wrong theme/layout on load.
       try {
         var t = localStorage.getItem("aonarr_theme");
         if (t === "light") document.documentElement.setAttribute("data-theme", "light");
+        var w = localStorage.getItem("aonarr_layout_width");
+        if (w === "full") document.documentElement.setAttribute("data-layout-width", "full");
       } catch (e) {}
     </script>
   </head>
