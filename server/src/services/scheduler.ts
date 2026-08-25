@@ -26,6 +26,7 @@ import { recordDiskUsageSamples } from "./storageForecast.js";
 import { runScheduledBackup } from "./scheduledBackup.js";
 import { purgeExpiredRecycleBinEntries } from "./recycleBin.js";
 import { syncFromProwlarr } from "./prowlarrSync.js";
+import { syncFromJackett } from "./jackettSync.js";
 import { checkForCorruptMedia } from "./corruptMediaCheck.js";
 import { runScheduledDuplicateCheck } from "./duplicateCheck.js";
 import { getGroupReputation, recordGroupFailure } from "./releaseGroupStats.js";
@@ -843,6 +844,18 @@ export function startScheduler() {
       const r = await syncFromProwlarr();
       if (r.error) log.warn(`[scheduler] Prowlarr sync: ${r.error}`);
       else if (r.synced > 0) log.info(`[scheduler] Prowlarr sync: ${r.synced} indexer(s)`);
+    },
+  });
+
+  registerJob({
+    key: "jackettSync",
+    name: "Jackett Indexer Sync",
+    scheduleType: "cron",
+    defaultSchedule: "0 */6 * * *",
+    run: async () => {
+      const r = await syncFromJackett();
+      if (r.error) log.warn(`[scheduler] Jackett sync: ${r.error}`);
+      else if (r.synced > 0) log.info(`[scheduler] Jackett sync: ${r.synced} indexer(s)`);
     },
   });
 

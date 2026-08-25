@@ -6,6 +6,7 @@ import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { searchIndexer } from "../services/indexerClient.js";
 import { attachIndexerHealth } from "../services/indexerHealth.js";
 import { syncFromProwlarr } from "../services/prowlarrSync.js";
+import { syncFromJackett } from "../services/jackettSync.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 
 export const indexersRouter = Router();
@@ -25,6 +26,15 @@ indexersRouter.post(
   "/prowlarr-sync",
   asyncHandler(async (_req, res) => {
     const result = await syncFromProwlarr();
+    if (result.error) throw new HttpError(400, result.error);
+    res.json(result);
+  })
+);
+
+indexersRouter.post(
+  "/jackett-sync",
+  asyncHandler(async (_req, res) => {
+    const result = await syncFromJackett();
     if (result.error) throw new HttpError(400, result.error);
     res.json(result);
   })

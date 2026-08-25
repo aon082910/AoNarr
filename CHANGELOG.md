@@ -3,6 +3,23 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 125 — Jackett indexer sync
+- Added a Jackett equivalent of the existing Prowlarr indexer sync — new `services/jackettSync.ts`,
+  mirroring `prowlarrSync.ts`'s pattern (pull the configured-indexer list, mirror into AoNarr's
+  `indexers` table via each indexer's own Torznab proxy URL, match existing rows on a stashed
+  provider id so re-running updates rather than duplicates) but adapted to Jackett's real
+  differences: string slug ids instead of Prowlarr's integers, no protocol field since Jackett is
+  torrent-only (no Usenet), and a different per-indexer Torznab proxy path
+  (`/api/v2.0/indexers/{id}/results/torznab`, `/configured=true` on the list endpoint, `X-Api-Key`
+  header instead of Prowlarr's own header name).
+- New `POST /api/indexers/jackett-sync` route, "Sync from Jackett" button on the Indexers page, a
+  scheduled `jackettSync` job (every 6 hours, same cadence as Prowlarr's), and a "Jackett Sync"
+  settings panel (URL + API key) next to the existing Prowlarr one.
+- Verified live against both SQLite and Postgres: confirmed the missing-config error ("Jackett URL
+  and API key must both be set") from both the manual sync button and the scheduled job, and the
+  unreachable-host error ("Failed to reach Jackett: fetch failed") from the manual sync route —
+  identical on both dialects, and both Sync buttons render correctly on the Indexers page.
+
 ## Round 124 — media server sync options decoupled from auto-archival
 - Watch status previously only got refreshed on a schedule as a side effect of the auto-archival
   job (`archiveEnabled`) — an admin who wanted AoNarr to track what's been watched (e.g. to feed

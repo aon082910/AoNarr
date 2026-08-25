@@ -9,6 +9,7 @@ export default function Indexers() {
   const [indexers, setIndexers] = useState<Indexer[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [syncingProwlarr, setSyncingProwlarr] = useState(false);
+  const [syncingJackett, setSyncingJackett] = useState(false);
   const [name, setName] = useState("");
   const [protocol, setProtocol] = useState<Protocol>("torznab");
   const [url, setUrl] = useState("");
@@ -79,6 +80,19 @@ export default function Indexers() {
     }
   }
 
+  async function syncJackett() {
+    setSyncingJackett(true);
+    try {
+      const result = await api.post<{ synced: number }>("/indexers/jackett-sync", {});
+      alert(`Synced ${result.synced} indexer(s) from Jackett.`);
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setSyncingJackett(false);
+    }
+  }
+
   async function test(id: number) {
     const result = await api.post<{ ok: boolean; resultCount?: number; error?: string }>(`/indexers/${id}/test`);
     setTestResults((prev) => ({
@@ -114,6 +128,9 @@ export default function Indexers() {
         </button>
         <button type="button" className="secondary" onClick={syncProwlarr} disabled={syncingProwlarr}>
           {syncingProwlarr ? "Syncing..." : "Sync from Prowlarr"}
+        </button>
+        <button type="button" className="secondary" onClick={syncJackett} disabled={syncingJackett}>
+          {syncingJackett ? "Syncing..." : "Sync from Jackett"}
         </button>
       </div>
 

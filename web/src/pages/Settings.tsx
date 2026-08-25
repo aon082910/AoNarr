@@ -1221,6 +1221,29 @@ export default function Settings() {
         />
       </div>
 
+      <h2>Jackett Sync</h2>
+      <div className="form-panel">
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          Mirrors your Jackett instance's configured indexer list into AoNarr — searches go through
+          Jackett's own per-indexer Torznab proxy, so indexer credentials stay managed there.
+          Jackett is torrent-only (no Usenet indexers). Runs on a schedule (see Jobs), or sync
+          immediately from the Indexers page.
+        </p>
+        <label>Jackett URL</label>
+        <input
+          key={settings.jackettUrl ?? "jackett-url-empty"}
+          defaultValue={settings.jackettUrl ?? ""}
+          placeholder="http://jackett:9117"
+          onBlur={(e) => saveSetting("jackettUrl", e.target.value)}
+        />
+        <label>Jackett API key</label>
+        <input
+          key={settings.jackettApiKey ?? "jackett-key-empty"}
+          defaultValue={settings.jackettApiKey ?? ""}
+          onBlur={(e) => saveSetting("jackettApiKey", e.target.value)}
+        />
+      </div>
+
       <h2>FlareSolverr</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
