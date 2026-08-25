@@ -25,6 +25,7 @@ import CollectionDetail from "./pages/CollectionDetail.js";
 import Requests from "./pages/Requests.js";
 import Discover from "./pages/Discover.js";
 import AiProviders from "./pages/AiProviders.js";
+import IptvPlaylists from "./pages/IptvPlaylists.js";
 import Users from "./pages/Users.js";
 import Recommendations from "./pages/Recommendations.js";
 import AuditLog from "./pages/AuditLog.js";
@@ -184,6 +185,7 @@ export default function App() {
         { to: "/calendar", label: "Calendar" },
         { to: "/collections", label: "Collections" },
         { to: "/discover", label: "Discover" },
+        { to: "/iptv-playlists", label: "IPTV Playlists" },
         { to: "/import-lists", label: "Import Lists" },
         { to: "/import-review", label: "Import Review" },
         { to: "/missing", label: "Missing" },
@@ -447,6 +449,7 @@ export default function App() {
           <Route path="/requests" element={<Requests />} />
           <Route path="/discover" element={<Discover />} />
           {isAdmin && <Route path="/ai-providers" element={<AiProviders />} />}
+          {isAdmin && <Route path="/iptv-playlists" element={<IptvPlaylists />} />}
           <Route path="/changelog" element={<Changelog />} />
           <Route path="/account" element={<Account />} />
           {isAdmin && <Route path="/add" element={<AddMedia />} />}

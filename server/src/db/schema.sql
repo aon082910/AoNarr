@@ -157,6 +157,34 @@ CREATE TABLE IF NOT EXISTS subtitle_providers (
 -- AI provider instances for AI-assisted matching features (e.g. a scanned-book vision fallback) —
 -- type is unconstrained (not a fixed CHECK list) for the same reason indexers.protocol/
 -- download_clients.type are: the valid set ("local"/"cloud") lives at the application layer.
+-- Custom IPTV-style playlists (M3U feeds a media server like Plex/Jellyfin subscribes to as a
+-- live-TV/tuner source) — an item is either an AoNarr library reference (media_item_id/episode_id,
+-- streamed from its own downloaded file) or a raw external stream URL, so a playlist can mix
+-- AoNarr content with actual live IPTV feeds. filler_url is always a plain URL the admin supplies
+-- themselves (their own legally-hosted bumper/promo content) — AoNarr never sources or scrapes
+-- "free" commercial content from anywhere, deliberately, for the same reason the DDL indexer and
+-- Custom subtitle provider never ship scrapers: it would mean bypassing someone else's terms of
+-- service (or, here, actual copyright) on AoNarr's behalf.
+CREATE TABLE IF NOT EXISTS iptv_playlists (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  insert_after_minutes INTEGER,
+  insert_after_each_item INTEGER NOT NULL DEFAULT 0,
+  filler_url TEXT
+);
+
+CREATE TABLE IF NOT EXISTS iptv_playlist_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  playlist_id INTEGER NOT NULL REFERENCES iptv_playlists(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL DEFAULT 0,
+  title TEXT NOT NULL,
+  external_url TEXT,
+  media_item_id INTEGER REFERENCES media_items(id) ON DELETE CASCADE,
+  episode_id INTEGER REFERENCES episodes(id) ON DELETE CASCADE,
+  duration_seconds INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS ai_providers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,

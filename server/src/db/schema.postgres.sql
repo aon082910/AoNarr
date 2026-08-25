@@ -154,6 +154,26 @@ CREATE TABLE IF NOT EXISTS subtitle_providers (
   enabled INTEGER NOT NULL DEFAULT 1
 );
 
+CREATE TABLE IF NOT EXISTS iptv_playlists (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  insert_after_minutes INTEGER,
+  insert_after_each_item INTEGER NOT NULL DEFAULT 0,
+  filler_url TEXT
+);
+
+CREATE TABLE IF NOT EXISTS iptv_playlist_items (
+  id SERIAL PRIMARY KEY,
+  playlist_id INTEGER NOT NULL REFERENCES iptv_playlists(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL DEFAULT 0,
+  title TEXT NOT NULL,
+  external_url TEXT,
+  media_item_id INTEGER REFERENCES media_items(id) ON DELETE CASCADE,
+  episode_id INTEGER REFERENCES episodes(id) ON DELETE CASCADE,
+  duration_seconds INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS ai_providers (
   id SERIAL PRIMARY KEY,
   name TEXT NOT NULL,

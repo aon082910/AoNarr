@@ -35,6 +35,7 @@ import { usersRouter } from "./routes/users.js";
 import { requestsRouter } from "./routes/requests.js";
 import { discoverRouter } from "./routes/discover.js";
 import { aiProvidersRouter } from "./routes/aiProviders.js";
+import { iptvRouter, iptvPublicRouter } from "./routes/iptv.js";
 import { blocklistRouter } from "./routes/blocklist.js";
 import { recommendationsRouter } from "./routes/recommendations.js";
 import { auditLogRouter } from "./routes/auditLog.js";
@@ -102,6 +103,12 @@ export async function createApp(): Promise<Express> {
   app.use("/api/requests", requestsRouter);
   app.use("/api/discover", discoverRouter);
   app.use("/api/ai-providers", aiProvidersRouter);
+  // Public (token-gated) routes mounted before the admin router at the same base path — their own
+  // specific sub-paths (/m3u/:id, /stream/:kind/:id) are what requireAuth's exemption list
+  // actually matches on, so they need to be reachable before iptvRouter's requireAdmin gate would
+  // otherwise reject them.
+  app.use("/api/iptv", iptvPublicRouter);
+  app.use("/api/iptv", iptvRouter);
   app.use("/api/media", mediaRouter);
   app.use("/api/indexers", indexersRouter);
   app.use("/api/download-clients", downloadClientsRouter);

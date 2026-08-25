@@ -3,6 +3,38 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 140 — IPTV playlist manager (last item from the earlier punch list)
+- Added a new IPTV Playlists page: build custom M3U playlists a media server (Plex, Jellyfin, etc.)
+  can subscribe to as a live-TV/tuner source. An item is either an AoNarr library reference (a
+  movie or TV episode, streamed from its own downloaded file) or a raw external stream URL, so a
+  playlist can mix AoNarr content with actual external IPTV feeds. New `iptv_playlists`/
+  `iptv_playlist_items` tables, `GET /api/iptv/m3u/:id` (the feed itself) and `GET /api/iptv/stream/
+  :kind/:id` (serves a library item's file), both gated by their own dedicated token — same
+  pattern as the existing `.ics` calendar feed — since a media server subscribes with a plain URL
+  and can't send AoNarr's normal auth headers. New `services/rangeStream.ts` adds real HTTP Range
+  (206 Partial Content) support, needed for a player to seek within a stream instead of only ever
+  playing from the start — nothing in AoNarr served files this way before.
+- Optional filler insertion, either after every item or after N accumulated minutes of an item's
+  own duration — the filler is always a plain URL the admin supplies themselves. As discussed
+  earlier in this same conversation, AoNarr does not and will not source or scrape "free
+  commercials found online" — that would mean redistributing content without the rights to, not a
+  defensible feature regardless of framing. What's built is playlist management with an
+  insertion *mechanism* the admin points at their own legally-held content, not an ad network.
+- Verified thoroughly and live: created a real playlist mixing an external URL item and a library-
+  referenced movie, fetched the actual M3U output and confirmed the filler was correctly
+  interleaved after each item; confirmed the resolved library-item stream URL round-tripped
+  through a genuinely wrong first attempt — the initial `req.protocol`/`req.get("host")`-based
+  origin came back missing the port (nginx's `$host` proxy variable drops it), a real bug caught
+  by testing against the actual proxied stack rather than assumed correct — fixed by preferring
+  the existing (previously unused anywhere server-side) "External URL" setting instead. Confirmed
+  the fix live with the corrected port present in the feed. Streamed a real 5MB test file through
+  the range endpoint both with and without a `Range` header, confirmed the 206/Content-Range
+  response for a partial request, and confirmed the returned bytes are a byte-exact match (via
+  checksum) against the correct slice of the source file. Confirmed missing/wrong tokens are
+  rejected on both the feed and stream endpoints. Confirmed drag-free Up/Down item reordering via
+  a real UI click. Confirmed the new tables migrate cleanly on both SQLite and a fresh Postgres
+  container.
+
 ## Round 139 — AI provider infrastructure (2nd of the earlier AI-matching request)
 - Added a new AI Providers page (Configuration): manage multiple AI provider instances, each
   either "local" (an Ollama-style chat API — no key required, though one's accepted for setups

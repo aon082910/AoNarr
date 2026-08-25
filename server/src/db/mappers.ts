@@ -262,6 +262,30 @@ export function subtitleProviderFromRow(row: any) {
   };
 }
 
+export function iptvPlaylistFromRow(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    enabled: row.enabled,
+    insertAfterMinutes: row.insert_after_minutes,
+    insertAfterEachItem: row.insert_after_each_item,
+    fillerUrl: row.filler_url,
+  };
+}
+
+export function iptvPlaylistItemFromRow(row: any) {
+  return {
+    id: row.id,
+    playlistId: row.playlist_id,
+    position: row.position,
+    title: row.title,
+    externalUrl: row.external_url,
+    mediaItemId: row.media_item_id,
+    episodeId: row.episode_id,
+    durationSeconds: row.duration_seconds,
+  };
+}
+
 export function aiProviderFromRow(row: any) {
   return {
     id: row.id,
