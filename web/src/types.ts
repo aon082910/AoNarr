@@ -87,6 +87,7 @@ export interface MediaItem {
   childHaveCount?: number;
   releaseDate: string | null;
   minimumAvailability: "announced" | "inCinemas" | "released" | null;
+  seriesType: "standard" | "daily" | null;
 }
 
 export interface Indexer {

@@ -18,6 +18,7 @@ const TOKENS_BY_SHAPE: Record<MediaShape, TokenOption[]> = {
     { token: "{season:00}", label: "Season (zero-padded)" },
     { token: "{episode:00}", label: "Episode (zero-padded)" },
     { token: "{absoluteEpisode:000}", label: "Absolute episode (anime-style)" },
+    { token: "{airDate}", label: "Air date, YYYY-MM-DD (for daily/talk-show series)" },
   ],
   collection: [
     { token: "{parentTitle}", label: "Artist/Author/Creator" },
@@ -27,7 +28,7 @@ const TOKENS_BY_SHAPE: Record<MediaShape, TokenOption[]> = {
 
 const PREVIEW_VARS_BY_SHAPE: Record<MediaShape, Record<string, string | number>> = {
   single: { title: "Example Movie", year: 2020 },
-  episodic: { parentTitle: "Example Show", season: 1, episode: 5, absoluteEpisode: 5 },
+  episodic: { parentTitle: "Example Show", season: 1, episode: 5, absoluteEpisode: 5, airDate: "2026-08-25" },
   collection: { parentTitle: "Example Artist", childTitle: "Example Album" },
 };
 

@@ -75,8 +75,8 @@ metadataRouter.post(
     const result = await db
       .prepare(
         `INSERT INTO media_items
-         (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability)
-         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability)`
+         (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability, series_type)
+         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability, @seriesType)`
       )
       .run({
         type: b.type,
@@ -93,6 +93,7 @@ metadataRouter.post(
         groupId: b.groupId ?? null,
         releaseDate: b.releaseDate ?? null,
         minimumAvailability: b.minimumAvailability ?? getSetting("defaultMinimumAvailability") ?? "announced",
+        seriesType: b.seriesType ?? null,
       });
 
     const mediaItemId = result.lastInsertRowid;

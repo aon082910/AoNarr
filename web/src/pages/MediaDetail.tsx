@@ -621,6 +621,25 @@ export default function MediaDetail() {
                     </td>
                   </tr>
                 )}
+                {shape === "episodic" && (
+                  <tr>
+                    <th>Series type</th>
+                    <td>
+                      <select
+                        value={item.seriesType ?? "standard"}
+                        onChange={async (e) => {
+                          const updated = await api.patch<MediaItem>(`/media/${item.id}`, { seriesType: e.target.value });
+                          setItem({ ...item, seriesType: updated.seriesType });
+                        }}
+                        style={{ maxWidth: 260 }}
+                        title="Daily searches/matches releases by air date (e.g. talk shows, news) instead of season/episode"
+                      >
+                        <option value="standard">Standard — season/episode</option>
+                        <option value="daily">Daily — air date (talk shows, news)</option>
+                      </select>
+                    </td>
+                  </tr>
+                )}
                 {rootFolder && (
                   <tr>
                     <th>Root folder</th>

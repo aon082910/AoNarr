@@ -13,6 +13,10 @@ export interface ParsedRelease {
   flags: ReleaseFlag[]; // proper/repack/edition tags found in the title
   languages: string[]; // lowercased audio/subtitle language tags found in the title, e.g. ["french","multi"]
   releaseGroup: string | null; // the tag after the final hyphen, e.g. "RARBG"
+  /** YYYY-MM-DD, when the title carries a full date (daily/talk-show releases are named by air
+   * date instead of season/episode, e.g. "Show.Name.2024.08.25.1080p...") — null otherwise. Only
+   * consulted for "daily"-type series; harmless to detect unconditionally on everything else. */
+  airDate: string | null;
 }
 
 // Group 3 (hyphenated range end, e.g. "S01E01-E03"/"S01E01-03") and group 4 (a chain of bare
@@ -26,6 +30,10 @@ const SEASON_EP_X_FORMAT = /\b0*(\d{1,2})x0*(\d{1,3})\b/i;
 const SEASON_ONLY = /\bS(\d{1,2})\b(?!\s*E\d)/i;
 const FULL_SEASON_HINT = /\b(complete|season\s?\d{1,2}|full season)\b/i;
 const YEAR = /\b(19|20)\d{2}\b/;
+// Matches "2024.08.25", "2024-08-25", or "2024 08 25" — the three separators scene releases
+// actually use; month/day are sanity-range-checked below since this alone can't tell a real date
+// apart from three coincidentally date-shaped numbers.
+const AIR_DATE = /\b((?:19|20)\d{2})[.\-\s](\d{1,2})[.\-\s](\d{1,2})\b/;
 
 const RESOLUTION_2160 = /\b(2160p|4k|uhd)\b/i;
 const RESOLUTION_1080 = /\b1080p\b/i;
@@ -169,6 +177,16 @@ export function parseReleaseTitle(title: string): ParsedRelease {
   const yearMatch = title.match(YEAR);
   const year = yearMatch ? Number(yearMatch[0]) : null;
 
+  let airDate: string | null = null;
+  const dateMatch = title.match(AIR_DATE);
+  if (dateMatch) {
+    const month = Number(dateMatch[2]);
+    const day = Number(dateMatch[3]);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      airDate = `${dateMatch[1]}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  }
+
   return {
     seasonNumber,
     episodeNumbers,
@@ -180,6 +198,7 @@ export function parseReleaseTitle(title: string): ParsedRelease {
     flags: detectFlags(title),
     languages: detectLanguages(title),
     releaseGroup: detectReleaseGroup(title),
+    airDate,
   };
 }
 
@@ -193,4 +212,10 @@ export function releaseMatchesEpisode(
   if (parsed.episodeNumbers) return parsed.episodeNumbers.includes(episodeNumber);
   if (parsed.isFullSeason) return parsed.seasonNumber === seasonNumber;
   return false;
+}
+
+/** Same idea as releaseMatchesEpisode, for "daily"-type series (talk shows, news) whose releases
+ * are named by air date instead of season/episode — see AIR_DATE above. */
+export function releaseMatchesAirDate(parsed: ParsedRelease, airDate: string): boolean {
+  return parsed.airDate === airDate;
 }

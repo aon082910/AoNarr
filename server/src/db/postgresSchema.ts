@@ -77,6 +77,7 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE sub_items ADD COLUMN IF NOT EXISTS poster_url TEXT`,
   `ALTER TABLE duplicate_group_seen ADD COLUMN IF NOT EXISTS dismissed INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS minimum_availability TEXT`,
+  `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS series_type TEXT`,
 ];
 
 /**

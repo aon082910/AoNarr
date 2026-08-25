@@ -7,7 +7,7 @@ import { config } from "../config.js";
 import { mediaItemFromRow, queueItemFromRow, rootFolderFromRow } from "../db/mappers.js";
 import { notifyImported } from "./notifications.js";
 import { notifyQueueChanged } from "./realtime.js";
-import { parseReleaseTitle, releaseMatchesEpisode } from "./releaseParser.js";
+import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import {
   downloadSubtitleContent,
   downloadSubtitleFromUrl,
@@ -174,7 +174,7 @@ function scoreByTokenOverlap(filePaths: string[], releaseTitle: string): FileCan
 export function findDownloadedFile(
   releaseTitle: string,
   mediaType: MediaType,
-  target?: { season: number; episode: number }
+  target?: { season: number; episode: number } | { airDate: string }
 ): string | null {
   const extensions = getMediaTypeConfig(mediaType).extensions;
   const candidates = walk(config.downloadsDir, extensions, 4);
@@ -183,7 +183,8 @@ export function findDownloadedFile(
   if (target) {
     const episodeMatches = candidates.filter((filePath) => {
       const relative = path.relative(config.downloadsDir, filePath);
-      return releaseMatchesEpisode(parseReleaseTitle(relative), target.season, target.episode);
+      const parsed = parseReleaseTitle(relative);
+      return "airDate" in target ? releaseMatchesAirDate(parsed, target.airDate) : releaseMatchesEpisode(parsed, target.season, target.episode);
     });
     if (episodeMatches.length > 0) {
       const scored = scoreByTokenOverlap(episodeMatches, releaseTitle);
@@ -228,10 +229,7 @@ function moveFile(src: string, dest: string): void {
 
 export class ImportSkippedError extends Error {}
 
-interface EpisodeTarget {
-  season: number;
-  episode: number;
-}
+type EpisodeTarget = { season: number; episode: number } | { airDate: string };
 
 /**
  * Moves a source file into the right root-folder location for a media item (and, for episodic/
@@ -293,6 +291,7 @@ export async function placeFile(params: {
       season: epRow.season_number,
       episode: epRow.episode_number,
       absoluteEpisode,
+      airDate: epRow.air_date ?? "",
     });
     ({ destPath, fileLabel } = resolveDest(rootFolder.path, segments, ext, sourceFile, getNamingEnabled(item.type)));
   } else if (typeConfig.shape === "collection" && subItemId && !typeConfig.multiFilePerChild) {
@@ -555,7 +554,9 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
   if (typeConfig.shape === "episodic" && queueItem.episodeId) {
     const epRow = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(queueItem.episodeId)) as any;
     if (!epRow) throw new Error(`Episode ${queueItem.episodeId} not found`);
-    episodeTarget = { season: epRow.season_number, episode: epRow.episode_number };
+    episodeTarget = item.seriesType === "daily" && epRow.air_date
+      ? { airDate: epRow.air_date }
+      : { season: epRow.season_number, episode: epRow.episode_number };
   }
 
   let sourceFile: string | null;

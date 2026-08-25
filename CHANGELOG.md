@@ -3,6 +3,33 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 132 — daily/talk-show series type (3rd of the Starr feature-gap list)
+- Added Sonarr-style "series type" for episodic libraries (TV Shows, Anime): "Standard" (default,
+  unchanged behavior) searches and matches releases by season/episode; "Daily" searches and
+  matches by air date instead — talk shows, news, and similar content are released as
+  `Show.Name.2024.08.25.1080p...`, not `S01E05`, so season/episode matching never finds them.
+  New `series_type` column on `media_items`, editable per item on its detail page (a "Series type"
+  row next to the movie-only "Minimum availability" one from two rounds ago).
+- `releaseParser.ts` now detects a full date (`2024.08.25`/`2024-08-25`/`2024 08 25`, month/day
+  range-checked to avoid false-matching an unrelated three-number run) alongside the existing
+  season/episode detection, and a new `releaseMatchesAirDate()` — both the scheduler's auto-search
+  and the importer's downloaded-file matching branch on the item's series type to use date-based
+  or season/episode-based matching, whichever applies.
+- New `{airDate}` naming token (`YYYY-MM-DD`) available in the naming-template picker for episodic
+  libraries, so a daily show's files can be named by date instead of season/episode if desired —
+  the naming template is still one setting per media type (not per-series), so a household mixing
+  daily and standard shows in the same TV Shows library needs a template that works for both, or
+  to accept the standard one applying to daily shows' folder structure too; only search/matching
+  is fully per-series-independent this round.
+- Verified live: confirmed date detection and matching directly (both `.`/`-` separators, correctly
+  rejecting a plain movie release with no month/day pair, correctly leaving a normal S01E05
+  release's `airDate` null); seeded a series item and changed its "Series type" to Daily via a
+  real UI click, confirmed it persisted; confirmed the `{airDate}` token appears in the naming
+  picker with a working live preview; confirmed the new column migrates cleanly on both SQLite and
+  a fresh Postgres container. The actual scheduler search-query change (building a date-based query
+  instead of S/E) is verified by code review — no indexers configured in this dev environment to
+  drive a live auto-search run against.
+
 ## Round 131 — TMDB collection browsing (2nd of the Starr feature-gap list)
 - A movie's detail page now shows its TMDB franchise/collection (e.g. "The Lord of the Rings
   Collection"), if it belongs to one, with every other entry in the collection alongside it —

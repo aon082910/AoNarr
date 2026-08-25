@@ -74,6 +74,7 @@ ensureColumn("media_items", "release_date", "release_date TEXT");
 ensureColumn("sub_items", "poster_url", "poster_url TEXT");
 ensureColumn("duplicate_group_seen", "dismissed", "dismissed INTEGER NOT NULL DEFAULT 0");
 ensureColumn("media_items", "minimum_availability", "minimum_availability TEXT");
+ensureColumn("media_items", "series_type", "series_type TEXT");
 
 /**
  * indexers.protocol and download_clients.type originally shipped with a rigid `CHECK (... IN (...))`

@@ -729,8 +729,8 @@ mediaRouter.post(
     const result = await db
       .prepare(
         `INSERT INTO media_items
-         (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability)
-         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @path, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability)`
+         (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability, series_type)
+         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @path, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability, @seriesType)`
       )
       .run({
         type: b.type,
@@ -748,6 +748,7 @@ mediaRouter.post(
         groupId: b.groupId ?? null,
         releaseDate: b.releaseDate ?? null,
         minimumAvailability: b.minimumAvailability ?? getSetting("defaultMinimumAvailability") ?? "announced",
+        seriesType: b.seriesType ?? null,
       });
 
     const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(result.lastInsertRowid);
@@ -782,6 +783,7 @@ mediaRouter.patch(
       content_rating: b.contentRating,
       group_id: b.groupId,
       minimum_availability: b.minimumAvailability,
+      series_type: b.seriesType,
     };
     const sets: string[] = [];
     const values: any[] = [];

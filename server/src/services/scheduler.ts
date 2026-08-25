@@ -4,7 +4,7 @@ import { nowExpr, nowOffsetHoursExpr } from "../db/asyncDb.js";
 import { config } from "../config.js";
 import { searchAllIndexers } from "./indexerClient.js";
 import { getDownloadClientAdapter } from "./downloadClient.js";
-import { parseReleaseTitle, releaseMatchesEpisode } from "./releaseParser.js";
+import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import { pickBestAllowedQuality, preferredSizeDistance, sizeWithinQualityBounds } from "./quality.js";
 import { scoreRelease } from "./customFormatScoring.js";
 import { getMediaTypeConfig } from "./mediaTypes.js";
@@ -115,16 +115,18 @@ async function chooseBestResult(
   cutoff: string,
   qualityProfileId: number | null,
   minFormatScore: number,
-  target: { season: number; episode: number } | null,
+  target: { season: number; episode: number } | { airDate: string } | null,
   blocklisted: Set<string>,
   mediaType: string
 ): Promise<ChosenResult | null> {
   const notBlocklisted = results.filter((r) => !blocklisted.has(r.title));
   const withParsed = notBlocklisted.map((r) => ({ result: r, parsed: parseReleaseTitle(r.title) }));
 
-  const episodeFiltered = target
-    ? withParsed.filter(({ parsed }) => releaseMatchesEpisode(parsed, target.season, target.episode))
-    : withParsed;
+  const episodeFiltered = !target
+    ? withParsed
+    : "airDate" in target
+    ? withParsed.filter(({ parsed }) => releaseMatchesAirDate(parsed, target.airDate))
+    : withParsed.filter(({ parsed }) => releaseMatchesEpisode(parsed, target.season, target.episode));
 
   // Drop releases whose size doesn't fit their claimed quality's configured size range — usually
   // a mislabeled or fake release (e.g. a 200MB file claiming to be 1080p).
@@ -334,11 +336,13 @@ async function runAutoSearch(signal?: AbortSignal) {
           .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND monitored = 1 AND has_file = 0")
           .all(item.id)) as any[];
 
+        const isDaily = item.seriesType === "daily";
         for (const ep of episodes) {
           if (await isAlreadyQueued(item.id, ep.id, null)) continue;
-          const season = String(ep.season_number).padStart(2, "0");
-          const episode = String(ep.episode_number).padStart(2, "0");
-          const query = `${item.title} S${season}E${episode}`;
+          if (isDaily && !ep.air_date) continue; // nothing to search by yet (air date not known)
+          const query = isDaily
+            ? `${item.title} ${ep.air_date}`
+            : `${item.title} S${String(ep.season_number).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}`;
           const results = await searchAllIndexers(indexers, query, item.type);
           const best = await chooseBestResult(
             results,
@@ -346,7 +350,7 @@ async function runAutoSearch(signal?: AbortSignal) {
             cutoff,
             item.qualityProfileId,
             minFormatScore,
-            { season: ep.season_number, episode: ep.episode_number },
+            isDaily ? { airDate: ep.air_date } : { season: ep.season_number, episode: ep.episode_number },
             blocklisted,
             item.type
           );

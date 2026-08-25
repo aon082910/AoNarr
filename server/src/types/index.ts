@@ -27,6 +27,9 @@ export interface MediaItem {
    * — an approximation of a digital/home release window since AoNarr only stores one release date
    * per item, not TMDB's separate per-type release dates. */
   minimumAvailability: "announced" | "inCinemas" | "released" | null;
+  /** "daily" (talk shows, news — named/searched by air date instead of season/episode) vs
+   * null/"standard" (the default). Only meaningful for "episodic"-shape types (series, anime). */
+  seriesType: "standard" | "daily" | null;
 }
 
 export interface Episode {
