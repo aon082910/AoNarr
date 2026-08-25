@@ -1,5 +1,6 @@
 import { db } from "../db/index.js";
 import { probeMediaInfo, type MediaInfo } from "./ffprobe.js";
+import { isProbeableFile } from "./mediaTypes.js";
 import { log } from "./logger.js";
 
 export interface CompatibilityNote {
@@ -281,6 +282,7 @@ export async function runLibraryAnalysis(type?: string, signal?: AbortSignal): P
   }[];
   for (const row of singleRows) {
     if (signal?.aborted) return { probed, failed };
+    if (!isProbeableFile(row.path)) continue;
     const info = await probeMediaInfo(row.path);
     if (!info) {
       failed++;
@@ -296,6 +298,7 @@ export async function runLibraryAnalysis(type?: string, signal?: AbortSignal): P
     .all(...(type ? [type] : []))) as { id: number; file_path: string }[];
   for (const row of epRows) {
     if (signal?.aborted) return { probed, failed };
+    if (!isProbeableFile(row.file_path)) continue;
     const info = await probeMediaInfo(row.file_path);
     if (!info) {
       failed++;
@@ -311,6 +314,7 @@ export async function runLibraryAnalysis(type?: string, signal?: AbortSignal): P
     .all(...(type ? [type] : []))) as { id: number; file_path: string }[];
   for (const row of subRows) {
     if (signal?.aborted) return { probed, failed };
+    if (!isProbeableFile(row.file_path)) continue;
     const info = await probeMediaInfo(row.file_path);
     if (!info) {
       failed++;

@@ -36,6 +36,7 @@ export function libraryGroupFromRow(row: any) {
     kind: row.kind,
     name: row.name,
     overview: row.overview,
+    logoUrl: row.logo_url,
     parentGroupId: row.parent_group_id,
   };
 }

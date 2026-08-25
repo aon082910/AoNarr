@@ -309,6 +309,7 @@ CREATE TABLE IF NOT EXISTS library_groups (
   name TEXT NOT NULL,
   sort_name TEXT NOT NULL,
   overview TEXT, -- optional user-entered description for this group's own page (e.g. what a System/Company/Site/Creator is)
+  logo_url TEXT, -- auto-fetched (site favicon / IGDB platform logo) or manually set; shown over the group's tile
   parent_group_id INTEGER REFERENCES library_groups(id) ON DELETE CASCADE,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

@@ -17,6 +17,7 @@ export interface LibraryGroup {
   kind: string;
   name: string;
   overview: string | null;
+  logoUrl: string | null;
   parentGroupId: number | null;
   itemCount?: number;
   haveCount?: number;

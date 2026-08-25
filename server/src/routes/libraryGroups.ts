@@ -11,6 +11,19 @@ function sortName(name: string): string {
   return name.toLowerCase();
 }
 
+/** Derives a favicon URL from a site's own domain via Google's public favicon passthrough — the
+ * small icon a site exposes specifically for external identification (same as a browser tab),
+ * not scraped artwork. Accepts a bare domain or a full URL. */
+function faviconUrlFor(website: string): string | null {
+  try {
+    const hostname = website.includes("://") ? new URL(website).hostname : website.replace(/^www\./, "").split("/")[0];
+    if (!hostname) return null;
+    return `https://www.google.com/s2/favicons?sz=128&domain=${encodeURIComponent(hostname)}`;
+  } catch {
+    return null;
+  }
+}
+
 /** Depth (0-indexed) a group sits at within its type's groupLevels, from its `kind`. */
 function levelIndex(mediaType: string, kind: string): number {
   const levels = getMediaTypeConfig(mediaType).groupLevels ?? [];
@@ -96,7 +109,7 @@ libraryGroupsRouter.post(
   "/",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const { mediaType, kind, name, parentGroupId } = req.body ?? {};
+    const { mediaType, kind, name, parentGroupId, website, logoUrl } = req.body ?? {};
     if (!mediaType || !isValidMediaType(mediaType)) throw new HttpError(400, "mediaType is required");
     if (!name || typeof name !== "string") throw new HttpError(400, "name is required");
     const depth = levelIndex(mediaType, kind);
@@ -111,9 +124,14 @@ libraryGroupsRouter.post(
       }
     }
 
+    // logoUrl is a direct hot-linked URL the caller already resolved (e.g. AddMedia.tsx passing
+    // IGDB's own platform logo for a new ROM System group); website is a domain to derive a
+    // favicon from instead (a new Site group for Online Videos/Adult). logoUrl wins if both given.
+    const resolvedLogoUrl = logoUrl || (website ? faviconUrlFor(website) : null);
+
     const result = await db
-      .prepare("INSERT INTO library_groups (media_type, kind, name, sort_name, parent_group_id) VALUES (?, ?, ?, ?, ?)")
-      .run(mediaType, kind, name.trim(), sortName(name), parentGroupId ?? null);
+      .prepare("INSERT INTO library_groups (media_type, kind, name, sort_name, parent_group_id, logo_url) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(mediaType, kind, name.trim(), sortName(name), parentGroupId ?? null, resolvedLogoUrl);
     const row = await db.prepare("SELECT * FROM library_groups WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(libraryGroupFromRow(row));
   })
@@ -125,11 +143,19 @@ libraryGroupsRouter.patch(
   asyncHandler(async (req, res) => {
     const existing = await db.prepare("SELECT * FROM library_groups WHERE id = ?").get(req.params.id);
     if (!existing) throw new HttpError(404, "Group not found");
-    const { name, overview } = req.body ?? {};
+    const { name, overview, website, logoUrl } = req.body ?? {};
     if (!name || typeof name !== "string") throw new HttpError(400, "name is required");
+    const nextLogoUrl =
+      logoUrl !== undefined ? logoUrl || null : website !== undefined ? faviconUrlFor(website) : (existing as any).logo_url;
     await db
-      .prepare("UPDATE library_groups SET name = ?, sort_name = ?, overview = ? WHERE id = ?")
-      .run(name.trim(), sortName(name), overview !== undefined ? overview || null : (existing as any).overview, req.params.id);
+      .prepare("UPDATE library_groups SET name = ?, sort_name = ?, overview = ?, logo_url = ? WHERE id = ?")
+      .run(
+        name.trim(),
+        sortName(name),
+        overview !== undefined ? overview || null : (existing as any).overview,
+        nextLogoUrl,
+        req.params.id
+      );
     res.json(libraryGroupFromRow(await db.prepare("SELECT * FROM library_groups WHERE id = ?").get(req.params.id)));
   })
 );

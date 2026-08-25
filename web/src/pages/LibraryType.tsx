@@ -117,6 +117,7 @@ export default function LibraryType() {
   const [ungroupedCount, setUngroupedCount] = useState(0);
   const [editingOverview, setEditingOverview] = useState(false);
   const [overviewDraft, setOverviewDraft] = useState("");
+  const [logoUrlDraft, setLogoUrlDraft] = useState("");
 
   const currentKind = groupDetail ? groupDetail.group.kind : groupLevels[0];
   const nextKind = groupDetail ? groupDetail.nextKind : groupLevels[1] ?? (groupLevels.length === 1 ? null : groupLevels[0]);
@@ -152,8 +153,9 @@ export default function LibraryType() {
     const updated = await api.patch<LibraryGroup>(`/library-groups/${groupDetail.group.id}`, {
       name: groupDetail.group.name,
       overview: overviewDraft.trim() || null,
+      logoUrl: logoUrlDraft.trim() || null,
     });
-    setGroupDetail({ ...groupDetail, group: { ...groupDetail.group, overview: updated.overview } });
+    setGroupDetail({ ...groupDetail, group: { ...groupDetail.group, overview: updated.overview, logoUrl: updated.logoUrl } });
     setEditingOverview(false);
   }
 
@@ -208,6 +210,9 @@ export default function LibraryType() {
 
         {groupDetail && !editingOverview && (
           <div style={{ marginBottom: 12 }}>
+            {groupDetail.group.logoUrl && (
+              <img src={groupDetail.group.logoUrl} alt="" style={{ width: 48, height: 48, objectFit: "contain", marginBottom: 8 }} />
+            )}
             {groupDetail.group.overview ? (
               <p>{groupDetail.group.overview}</p>
             ) : (
@@ -219,6 +224,7 @@ export default function LibraryType() {
                 className="secondary"
                 onClick={() => {
                   setOverviewDraft(groupDetail.group.overview ?? "");
+                  setLogoUrlDraft(groupDetail.group.logoUrl ?? "");
                   setEditingOverview(true);
                 }}
               >
@@ -235,6 +241,13 @@ export default function LibraryType() {
               rows={3}
               style={{ width: "100%", maxWidth: 480 }}
               placeholder={`What is "${groupDetail.group.name}"?`}
+            />
+            <label>Logo URL (shown on this group's tile — auto-fetched when available, override here)</label>
+            <input
+              value={logoUrlDraft}
+              onChange={(e) => setLogoUrlDraft(e.target.value)}
+              style={{ width: "100%", maxWidth: 480 }}
+              placeholder="https://..."
             />
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
               <button type="button" onClick={saveOverview}>
@@ -261,6 +274,16 @@ export default function LibraryType() {
               onClick={() => navigate(`/library/${type}/g/${g.id}`)}
               style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20, cursor: "pointer", position: "relative" }}
             >
+              {g.logoUrl && (
+                <img
+                  src={g.logoUrl}
+                  alt=""
+                  style={{ width: 40, height: 40, objectFit: "contain", marginBottom: 8 }}
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).style.display = "none";
+                  }}
+                />
+              )}
               <div style={{ fontWeight: 600 }}>{g.name}</div>
               <div style={{ fontSize: "0.75rem", color: "var(--muted)", marginTop: 4 }}>
                 {(g.itemCount ?? 0) > 0 ? `${g.haveCount}/${g.itemCount}` : "empty"}

@@ -805,6 +805,84 @@ async function searchRomsIgdb(query: string): Promise<MetadataSearchResult[]> {
   }));
 }
 
+export interface RomDetails {
+  overview: string | null;
+  system: string | null;
+  maker: string | null;
+  /** IGDB's own platform logo, for the System group's tile — RAWG has no equivalent asset, so a
+   * RAWG-sourced game falls back to an opportunistic name-match lookup against IGDB if IGDB
+   * credentials happen to also be configured (best-effort, not required). */
+  systemLogoUrl: string | null;
+}
+
+function igdbImageUrl(url: string | undefined, size: string): string | null {
+  return url ? `https:${url.replace("t_thumb", size)}` : null;
+}
+
+/** Neither RAWG's nor IGDB's search/list endpoint returns overview/platform/developer — those only
+ * come back from a per-game detail lookup, so this is a separate call the client makes once, after
+ * the user picks a search result on Add Media, rather than bloating every search result with it. */
+export async function fetchRomDetailsFor(externalIds: Record<string, string>): Promise<RomDetails | null> {
+  if (externalIds.rawg) return fetchRomDetailsRawg(externalIds.rawg);
+  if (externalIds.igdb) return fetchRomDetailsIgdb(externalIds.igdb);
+  return null;
+}
+
+async function fetchRomDetailsRawg(id: string): Promise<RomDetails> {
+  const key = requireSetting("rawgApiKey", "RAWG API key");
+  const res = await fetch(`https://api.rawg.io/api/games/${id}?key=${key}`);
+  if (!res.ok) throw new Error(`RAWG game lookup failed: HTTP ${res.status}`);
+  const g: any = await res.json();
+  const system = g.platforms?.[0]?.platform?.name ?? null;
+  const systemLogoUrl = system ? await fetchIgdbPlatformLogo(system).catch(() => null) : null;
+  return {
+    overview: g.description_raw ? String(g.description_raw).trim() || null : null,
+    system,
+    maker: g.developers?.[0]?.name ?? g.publishers?.[0]?.name ?? null,
+    systemLogoUrl,
+  };
+}
+
+async function fetchRomDetailsIgdb(id: string): Promise<RomDetails> {
+  const clientId = requireSetting("igdbClientId", "IGDB Client ID");
+  const token = await getIgdbToken();
+  const res = await fetch("https://api.igdb.com/v4/games", {
+    method: "POST",
+    headers: { "Client-ID": clientId, Authorization: `Bearer ${token}`, "Content-Type": "text/plain" },
+    body: `fields summary,platforms.name,platforms.platform_logo.url,involved_companies.company.name,involved_companies.developer,involved_companies.publisher; where id = ${Number(id)};`,
+  });
+  if (!res.ok) throw new Error(`IGDB game lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  const g = body?.[0];
+  if (!g) return { overview: null, system: null, maker: null, systemLogoUrl: null };
+  const companies: any[] = g.involved_companies ?? [];
+  const developer = companies.find((c) => c.developer)?.company?.name;
+  const publisher = companies.find((c) => c.publisher)?.company?.name;
+  return {
+    overview: g.summary ? String(g.summary).trim() || null : null,
+    system: g.platforms?.[0]?.name ?? null,
+    maker: developer ?? publisher ?? null,
+    systemLogoUrl: igdbImageUrl(g.platforms?.[0]?.platform_logo?.url, "t_logo_med"),
+  };
+}
+
+/** Opportunistic platform-logo lookup by name, for a RAWG-sourced game (RAWG itself has no
+ * platform-logo asset) — silently unavailable if IGDB credentials aren't configured, since this
+ * is only ever a nice-to-have on top of RAWG being the chosen provider. */
+async function fetchIgdbPlatformLogo(platformName: string): Promise<string | null> {
+  if (!getSetting("igdbClientId") || !getSetting("igdbClientSecret")) return null;
+  const clientId = requireSetting("igdbClientId", "IGDB Client ID");
+  const token = await getIgdbToken();
+  const res = await fetch("https://api.igdb.com/v4/platforms", {
+    method: "POST",
+    headers: { "Client-ID": clientId, Authorization: `Bearer ${token}`, "Content-Type": "text/plain" },
+    body: `search "${platformName.replace(/"/g, '\\"')}"; fields platform_logo.url; limit 1;`,
+  });
+  if (!res.ok) return null;
+  const body: any = await res.json();
+  return igdbImageUrl(body?.[0]?.platform_logo?.url, "t_logo_med");
+}
+
 // ---------------------------------------------------------------------------
 // Online Videos: YouTube Data API (search finds a channel; children are that
 // channel's uploaded videos)

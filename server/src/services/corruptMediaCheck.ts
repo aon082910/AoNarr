@@ -3,7 +3,7 @@ import { db } from "../db/index.js";
 import { probeMediaInfo } from "./ffprobe.js";
 import { recycleFile } from "./recycleBin.js";
 import { log } from "./logger.js";
-import { getMediaTypeConfig } from "./mediaTypes.js";
+import { getMediaTypeConfig, isProbeableFile } from "./mediaTypes.js";
 import { getSetting } from "./settingsStore.js";
 
 export interface CorruptCheckResult {
@@ -42,6 +42,13 @@ async function isStillBeingWritten(filePath: string): Promise<boolean> {
  * plain boolean would lose exactly the information a reviewer needs to judge a flagged file. */
 async function corruptReason(filePath: string, type: string): Promise<string | null> {
   if (!fs.existsSync(filePath)) return "File is missing from disk";
+
+  // ffprobe only understands real video/audio containers — an ebook, comic archive, ROM, etc. is
+  // never going to probe successfully no matter how healthy it is, which without this check meant
+  // every single Books/Comics/Manga/ROMs file in the library would eventually get flagged
+  // "corrupt" and recycled by this job. Nothing to validate this way for those, so just trust that
+  // the file existing on disk (checked above) means it's fine.
+  if (!isProbeableFile(filePath)) return null;
 
   // Probe first — the fast path for the overwhelming majority of files, which are fine, so the
   // stability check and retry below only ever run for a file that's already failed once (paying

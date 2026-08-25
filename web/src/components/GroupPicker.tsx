@@ -58,14 +58,20 @@ export default function GroupPicker({
 
   async function selectAt(levelIdx: number, value: string) {
     if (value === NEW_VALUE) {
-      const name = prompt(`New ${GROUP_KIND_LABEL[groupLevels[levelIdx]] ?? groupLevels[levelIdx]}:`);
+      const kind = groupLevels[levelIdx];
+      const name = prompt(`New ${GROUP_KIND_LABEL[kind] ?? kind}:`);
       if (!name?.trim()) return;
+      // A "site" group's tile shows a logo — asking for the site's own URL here lets the server
+      // fetch its favicon (the icon the site itself exposes for external identification, same as
+      // a browser tab) rather than leaving the tile with no artwork until someone sets it by hand.
+      const website = kind === "site" ? prompt(`${name.trim()}'s website (optional, used to fetch a logo):`) : null;
       const parentGroupId = levelIdx === 0 ? null : chain[levelIdx - 1];
       const created = await api.post<LibraryGroup>("/library-groups", {
         mediaType: type,
-        kind: groupLevels[levelIdx],
+        kind,
         name: name.trim(),
         parentGroupId,
+        website: website?.trim() || undefined,
       });
       setOptionsAtLevel((prev) => {
         const next = [...prev];

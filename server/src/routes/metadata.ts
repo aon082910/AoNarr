@@ -6,6 +6,7 @@ import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import {
   fetchArtistAlbumsFor,
   fetchCollectionChildrenFor,
+  fetchRomDetailsFor,
   fetchSeriesEpisodesFor,
   METADATA_PROVIDERS,
   searchMetadata,
@@ -46,6 +47,25 @@ metadataRouter.get(
         }))
       );
       res.json(annotated);
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+  })
+);
+
+/** Overview + System (platform) + Maker (developer/publisher) for one ROM search result, fetched
+ * on demand once the user picks it on Add Media — RAWG/IGDB's search endpoints don't return this,
+ * only their per-game detail lookup does. Used to auto-fill the overview field and pre-select/
+ * create the System → Maker group chain instead of making the user type both by hand. */
+metadataRouter.get(
+  "/rom-details",
+  asyncHandler(async (req, res) => {
+    const provider = req.query.provider as string | undefined;
+    const externalId = req.query.externalId as string | undefined;
+    if (!provider || !externalId) throw new HttpError(400, "provider and externalId are required");
+    try {
+      const details = await fetchRomDetailsFor({ [provider]: externalId });
+      res.json(details ?? { overview: null, system: null, maker: null });
     } catch (err) {
       throw new HttpError(400, (err as Error).message);
     }

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { db } from "../db/index.js";
-import { getMediaTypeConfig, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
+import { getMediaTypeConfig, isProbeableFile, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
 import { rootFolderFromRow } from "../db/mappers.js";
 import { parseReleaseTitle } from "./releaseParser.js";
 import { probeMediaInfo } from "./ffprobe.js";
@@ -185,20 +185,24 @@ const scansInProgress = new Set<string>();
  * `multiFilePerChild` types like Music, where an album is a folder of tracks — the whole folder
  * becomes one sub_item) or the file's own name (for everything else, one file per child).
  */
-export async function scanAndImportLibrary(type: string, signal?: AbortSignal): Promise<ScanImportResult> {
-  if (scansInProgress.has(type)) {
+/** `onlyTitle`, when given, scopes the scan to just the one item with that title — every file
+ * whose guessed title/parent-folder title doesn't match it is skipped without touching the
+ * database (no new item gets created for it), rather than the normal whole-library behavior of
+ * importing anything it finds. Used by the per-item "Scan & Import" button on a media page. */
+export async function scanAndImportLibrary(type: string, signal?: AbortSignal, onlyTitle?: string): Promise<ScanImportResult> {
+  if (!onlyTitle && scansInProgress.has(type)) {
     log.warn(`[libraryScan] a scan for "${type}" is already running — skipping this overlapping request`);
     return { matched: 0, created: 0, skipped: 0, skippedFiles: [], alreadyRunning: true };
   }
-  scansInProgress.add(type);
+  if (!onlyTitle) scansInProgress.add(type);
   try {
-    return await scanAndImportLibraryInner(type, signal);
+    return await scanAndImportLibraryInner(type, signal, onlyTitle);
   } finally {
-    scansInProgress.delete(type);
+    if (!onlyTitle) scansInProgress.delete(type);
   }
 }
 
-async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Promise<ScanImportResult> {
+async function scanAndImportLibraryInner(type: string, signal?: AbortSignal, onlyTitle?: string): Promise<ScanImportResult> {
   const typeConfig = getMediaTypeConfig(type);
   const result: ScanImportResult = { matched: 0, created: 0, skipped: 0, skippedFiles: [] };
 
@@ -275,6 +279,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
           result.skippedFiles.push({ path: filePath, reason: "couldn't guess a series title from the filename or folder" });
           continue;
         }
+        if (onlyTitle && !titlesMatch(guessedTitle, onlyTitle)) continue;
         const parsed = parseReleaseTitle(base);
         const quality = parsed.quality === "Unknown" ? null : parsed.quality;
 
@@ -294,7 +299,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
           seriesItems.push(seriesMatch);
         }
 
-        const mediaInfo = await probeMediaInfo(filePath);
+        const mediaInfo = isProbeableFile(filePath) ? await probeMediaInfo(filePath) : null;
         const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
         const existingEp = (await db
           .prepare("SELECT id FROM episodes WHERE media_item_id = ? AND season_number = ? AND episode_number = ?")
@@ -333,6 +338,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
           result.skippedFiles.push({ path: filePath, reason: `couldn't guess a title from the parent folder name "${relSegments[0]}"` });
           continue;
         }
+        if (onlyTitle && !titlesMatch(parentTitle, onlyTitle)) continue;
 
         let parentMatch = collectionParents.find((m) => titlesMatch(m.title, parentTitle));
         if (!parentMatch) {
@@ -393,7 +399,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
           }
           const parsed = parseReleaseTitle(base);
           const quality = parsed.quality === "Unknown" ? null : parsed.quality;
-          const mediaInfo = await probeMediaInfo(filePath);
+          const mediaInfo = isProbeableFile(filePath) ? await probeMediaInfo(filePath) : null;
           const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
 
           const childMatch = childSubItems.find((s) => titlesMatch(s.title, childTitle));
@@ -418,6 +424,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
           result.skippedFiles.push({ path: filePath, reason: `couldn't guess a title from the filename "${base}"` });
           continue;
         }
+        if (onlyTitle && !titlesMatch(guessedTitle, onlyTitle)) continue;
         const parsed = parseReleaseTitle(base);
         const quality = parsed.quality === "Unknown" ? null : parsed.quality;
 
@@ -435,7 +442,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
           continue;
         }
 
-        const mediaInfo = await probeMediaInfo(filePath);
+        const mediaInfo = isProbeableFile(filePath) ? await probeMediaInfo(filePath) : null;
         const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
         if (match) {
           await db
@@ -512,44 +519,77 @@ export async function refreshLibraryMetadata(type: string, signal?: AbortSignal)
 
   for (const item of items) {
     if (signal?.aborted) break;
-    try {
-      const results = await searchMetadata(type as any, item.title);
-      const best = results[0];
-      if (!best) {
-        failed++;
-        continue;
-      }
-      const alreadyMatched = item.external_ids && item.external_ids !== "{}";
-      await db
-        .prepare(
-          `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), year = COALESCE(?, year),
-           release_date = COALESCE(?, release_date)
-           ${alreadyMatched ? "" : ", title = ?, sort_title = ?, external_ids = ?"}
-           WHERE id = ?`
-        )
-        .run(
-          best.overview,
-          best.posterUrl,
-          best.year,
-          best.releaseDate ?? null,
-          ...(alreadyMatched ? [] : [best.title, best.title.toLowerCase(), JSON.stringify(best.externalIds ?? {})]),
-          item.id
-        );
+    const result = await refreshOneItem(item, type, typeConfig);
+    if (result.ok) {
       updated++;
-
-      // Backfills any episode/child the provider now lists that this item doesn't have yet —
-      // e.g. a show Scan & Import or a Starr import only ever created rows for downloaded files
-      // for, or a season that's aired since this item was first added — as monitored+missing, the
-      // same state a normal Add Media gives every episode/child up front. Never touches an
-      // existing row's has_file/file_path, so this can't un-download anything.
-      const externalIdsForChildren = alreadyMatched ? JSON.parse(item.external_ids) : best.externalIds ?? {};
-      childrenAdded += await syncMissingChildren(item.id, typeConfig, externalIdsForChildren);
-    } catch {
+      childrenAdded += result.childrenAdded;
+    } else {
       failed++;
     }
   }
 
   return { updated, failed, childrenAdded };
+}
+
+/** Re-pulls one item's own overview/poster/year from its metadata provider and backfills any
+ * episode/child it's missing — the single-item unit of work shared by refreshLibraryMetadata's
+ * whole-library loop above and the per-item "Refresh" button on a media page. */
+async function refreshOneItem(
+  item: any,
+  type: string,
+  typeConfig: ReturnType<typeof getMediaTypeConfig>
+): Promise<{ ok: true; childrenAdded: number } | { ok: false }> {
+  try {
+    const results = await searchMetadata(type as any, item.title);
+    const best = results[0];
+    if (!best) return { ok: false };
+
+    const alreadyMatched = item.external_ids && item.external_ids !== "{}";
+    await db
+      .prepare(
+        `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), year = COALESCE(?, year),
+         release_date = COALESCE(?, release_date)
+         ${alreadyMatched ? "" : ", title = ?, sort_title = ?, external_ids = ?"}
+         WHERE id = ?`
+      )
+      .run(
+        best.overview,
+        best.posterUrl,
+        best.year,
+        best.releaseDate ?? null,
+        ...(alreadyMatched ? [] : [best.title, best.title.toLowerCase(), JSON.stringify(best.externalIds ?? {})]),
+        item.id
+      );
+
+    // Backfills any episode/child the provider now lists that this item doesn't have yet —
+    // e.g. a show Scan & Import or a Starr import only ever created rows for downloaded files
+    // for, or a season that's aired since this item was first added — as monitored+missing, the
+    // same state a normal Add Media gives every episode/child up front. Never touches an
+    // existing row's has_file/file_path, so this can't un-download anything.
+    const externalIdsForChildren = alreadyMatched ? JSON.parse(item.external_ids) : best.externalIds ?? {};
+    const childrenAdded = await syncMissingChildren(item.id, typeConfig, externalIdsForChildren);
+    return { ok: true, childrenAdded };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/** Per-item version of refreshLibraryMetadata, for the "Refresh" button on a single media page. */
+export async function refreshOneMediaItem(mediaItemId: number): Promise<{ ok: boolean; childrenAdded: number }> {
+  const item = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId)) as any;
+  if (!item) return { ok: false, childrenAdded: 0 };
+  const typeConfig = getMediaTypeConfig(item.type);
+  const result = await refreshOneItem(item, item.type, typeConfig);
+  return result.ok ? { ok: true, childrenAdded: result.childrenAdded } : { ok: false, childrenAdded: 0 };
+}
+
+/** Per-item version of scanAndImportLibrary, for the "Scan & Import" button on a single media
+ * page — scopes the whole-library scan to just this item's own title, same reasoning as
+ * scanAndImportLibrary's onlyTitle param. */
+export async function scanAndImportOneMediaItem(mediaItemId: number, signal?: AbortSignal): Promise<ScanImportResult> {
+  const item = (await db.prepare("SELECT type, title FROM media_items WHERE id = ?").get(mediaItemId)) as { type: string; title: string } | undefined;
+  if (!item) return { matched: 0, created: 0, skipped: 0, skippedFiles: [] };
+  return scanAndImportLibrary(item.type, signal, item.title);
 }
 
 /** Inserts any episode/child a metadata provider lists that isn't already tracked for this item —

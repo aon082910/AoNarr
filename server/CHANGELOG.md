@@ -3,6 +3,51 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 148 — ROM metadata auto-fetch, merge-table fixes, ffprobe safety fixes, per-item scan/refresh, group logos
+- **ROMs Add Media now auto-fetches System, Maker, and Overview.** RAWG/IGDB's search results never
+  carried these (only their per-game detail lookup does) — picking a search result now follows up
+  with that detail lookup, fills in Overview, and resolves/creates the System → Maker group chain
+  automatically (find-or-create by name, same pattern Courses already used for its Site group)
+  instead of leaving both blank for the admin to type by hand every time.
+- **Fixed the "Additional Metadata Sources" merge table's alignment** — cells defaulted to
+  `vertical-align: middle`, so a row with a tall Overview cell next to a short Year cell put their
+  radio buttons at different heights instead of a straight line down the row; now pinned to the
+  top consistently, and an empty/unavailable cell's "—" lines up under the radios in populated
+  cells instead of sitting flush left.
+- **Fixed the merge table not going away after "Apply merged metadata"** — it kept showing the same
+  stale fetched data forever (looking like Apply had silently failed) because the underlying fetched
+  data was never cleared, only the item's own fields were updated. Apply now also clears it, both
+  client-side and in the stored `extra_metadata`, so the table collapses back to just the "Fetch
+  from X" buttons.
+- **Fixed a real corrupt-media false-positive/data-loss risk**: ffprobe was being run against every
+  file regardless of type, including ebooks/comics/ROMs, which it can never successfully read. For
+  Scan & Import this only produced a noisy `[ffprobe] could not probe ...` warning (the bug
+  reported: scanning a Books library logged this for every .epub) — but the exact same unconditional
+  probe also ran inside the scheduled Corrupt Media Check job and the per-item "Check for
+  corruption" button, which would have eventually flagged and recycled every single Books/Comics/
+  Manga/ROMs file in the library as corrupt, since ffprobe failing on those was guaranteed, not a
+  real fault. Both now skip ffprobe entirely for a file extension it was never going to understand,
+  based on the same real video/audio container list used for other capability gating.
+- **Added per-item "Scan & Import" and "Refresh" buttons** to a media item's own page, alongside the
+  existing library-wide versions on the Library page — Radarr/Sonarr-style single-item actions
+  instead of only being able to re-run either across an entire library. Scan & Import is scoped to
+  just this item's own title (won't create unrelated new items); Refresh re-pulls this item's own
+  metadata and backfills any missing episodes/children (Round 147's fix), scoped to just this item.
+- **Site/system logos on group tiles** (Online Videos, Adult, ROMs): a new Logo URL on
+  `library_groups`, shown above a group's name on its tile. Auto-fetched — a new "Site" group
+  (Online Videos/Adult) optionally asks for the site's own website and derives a favicon from it (the
+  small icon a site exposes for exactly this kind of external identification, not scraped artwork);
+  a new ROM "System" group created via Add Media gets IGDB's own platform logo automatically (RAWG-
+  sourced games get an opportunistic name-matched IGDB lookup too, if IGDB is also configured, since
+  RAWG has no comparable asset). A group's own page also has a manual Logo URL override field for
+  anything auto-fetch didn't get right.
+- Verified live: created a real system+maker group chain via the new website/logoUrl POST params,
+  confirmed the favicon/logo round-trips and renders at 40×40 above the tile's name; confirmed the
+  merge table's radio buttons land on the exact same pixel row across columns and the table
+  disappears (with `extra_metadata` actually cleared server-side) after Apply; confirmed a fake ROM
+  item with a `.json` "file" is no longer flagged corrupt by Check for corruption (previously would
+  have been recycled); confirmed the per-item Scan & Import/Refresh buttons render and respond.
+
 ## Round 147 — Refresh now backfills missing episodes/children, friendly Custom Columns picker
 - Fixed "Refresh" (the per-library button, and the scheduled Library Refresh job) only ever
   updating an item's own overview/poster/year — for an episodic or collection-shape library

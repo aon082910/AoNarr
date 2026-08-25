@@ -19,7 +19,7 @@ import {
 import { unpackDownloadedArchives } from "./archiveExtract.js";
 import { syncSubtitleToVideo } from "./subtitleSync.js";
 import { DEFAULT_SHAPE_TEMPLATES, renderTemplate } from "./naming.js";
-import { getMediaTypeConfig } from "./mediaTypes.js";
+import { getMediaTypeConfig, isProbeableFile } from "./mediaTypes.js";
 import { getSetting } from "./settingsStore.js";
 import { probeMediaInfo } from "./ffprobe.js";
 import { recordGroupSuccess } from "./releaseGroupStats.js";
@@ -330,7 +330,7 @@ export async function placeFile(params: {
     await tryDownloadSubtitle(destPath, item.id);
   }
 
-  const mediaInfo = await probeMediaInfo(destPath);
+  const mediaInfo = isProbeableFile(destPath) ? await probeMediaInfo(destPath) : null;
   const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
 
   if (typeConfig.shape === "single") {
@@ -431,7 +431,7 @@ export async function placeAlbumFiles(params: {
   }
 
   const anchorDest = path.join(destFolder, sanitizeForPath(path.basename(anchorFile)));
-  const mediaInfo = movedCount > 0 ? await probeMediaInfo(anchorDest) : null;
+  const mediaInfo = movedCount > 0 && isProbeableFile(anchorDest) ? await probeMediaInfo(anchorDest) : null;
 
   await db.prepare("UPDATE sub_items SET has_file = ?, file_path = ?, quality = ?, media_info = ? WHERE id = ?").run(
     movedCount > 0 ? 1 : 0,

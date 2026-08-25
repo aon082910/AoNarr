@@ -37,6 +37,18 @@ const AUDIOBOOK_EXT = [".m4b", ".mp3", ".m4a"];
 const COMIC_EXT = [".cbz", ".cbr", ".pdf"];
 const ROM_EXT = [".zip", ".7z", ".nes", ".sfc", ".smc", ".gba", ".gbc", ".gb", ".n64", ".z64", ".nds", ".3ds", ".iso", ".chd"];
 
+/** Extensions ffprobe can actually read (real video/audio containers) — used to skip pointlessly
+ * running ffprobe against a file it was never going to understand (an ebook, comic archive, ROM,
+ * etc.), which just produced a scary-looking "[ffprobe] could not probe ..." warning in the logs
+ * for something that was never broken. */
+const PROBEABLE_EXT = new Set([...VIDEO_EXT, ...AUDIO_EXT, ".m4b"]);
+
+export function isProbeableFile(filePath: string): boolean {
+  const dot = filePath.lastIndexOf(".");
+  if (dot === -1) return false;
+  return PROBEABLE_EXT.has(filePath.slice(dot).toLowerCase());
+}
+
 export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
   movie: {
     key: "movie",

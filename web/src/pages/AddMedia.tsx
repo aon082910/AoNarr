@@ -88,6 +88,8 @@ export default function AddMedia() {
   const [courseLoading, setCourseLoading] = useState(false);
   const [courseSiteGroupId, setCourseSiteGroupId] = useState<number | null>(null);
   const [groupId, setGroupId] = useState<number | null>(null);
+  const [romGroupChain, setRomGroupChain] = useState<(number | null)[] | null>(null);
+  const [romDetailsLoading, setRomDetailsLoading] = useState(false);
 
   const activeTypeInfo = mediaTypes.find((t) => t.key === type);
 
@@ -148,11 +150,57 @@ export default function AddMedia() {
     }
   }
 
+  async function findOrCreateGroup(
+    mediaType: MediaType,
+    kind: string,
+    name: string,
+    parentGroupId: number | null,
+    logoUrl?: string | null
+  ): Promise<number> {
+    const groups = await api.get<LibraryGroup[]>(
+      `/library-groups?mediaType=${mediaType}${parentGroupId ? `&parentId=${parentGroupId}` : ""}`
+    );
+    const existing = groups.find((g) => g.name.toLowerCase() === name.toLowerCase());
+    if (existing) return existing.id;
+    const created = await api.post<LibraryGroup>("/library-groups", { mediaType, kind, name, parentGroupId, logoUrl });
+    return created.id;
+  }
+
   function selectResult(result: MetadataSearchResult) {
     setSelected(result);
     setTitle(result.title);
     setYear(result.year ? String(result.year) : "");
     setOverview(result.overview ?? "");
+    setRomGroupChain(null);
+
+    // RAWG/IGDB's search results don't carry overview/platform/developer — only their per-game
+    // detail lookup does, so this is a follow-up call rather than something selectResult already
+    // has. Auto-fills the overview (search results always sent it as null) and resolves/creates
+    // the System → Maker group chain, same as detectCourseSite does for a single-level Site group.
+    if (type === "rom" && result.externalIds) {
+      const [provider, externalId] = Object.entries(result.externalIds)[0] ?? [];
+      if (provider && externalId) {
+        setRomDetailsLoading(true);
+        api
+          .get<{ overview: string | null; system: string | null; maker: string | null; systemLogoUrl: string | null }>(
+            `/metadata/rom-details?provider=${provider}&externalId=${encodeURIComponent(externalId)}`
+          )
+          .then(async (details) => {
+            if (details.overview) setOverview(details.overview);
+            if (details.system) {
+              const systemId = await findOrCreateGroup("rom", "system", details.system, null, details.systemLogoUrl);
+              const makerId = details.maker ? await findOrCreateGroup("rom", "maker", details.maker, systemId) : null;
+              setRomGroupChain([systemId, makerId]);
+            }
+          })
+          .catch(() => {
+            // Best-effort enrichment — a failed lookup (rate limit, missing key, network hiccup)
+            // just leaves overview/group exactly where selectResult's basic fields already put
+            // them, same as if this follow-up fetch had never run.
+          })
+          .finally(() => setRomDetailsLoading(false));
+      }
+    }
   }
 
   async function doImport(confirmDuplicate = false) {
@@ -382,15 +430,20 @@ export default function AddMedia() {
           <label>Overview</label>
           <textarea value={overview} onChange={(e) => setOverview(e.target.value)} rows={3} />
 
+          {type === "rom" && romDetailsLoading && (
+            <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>Looking up system/maker...</p>
+          )}
           {activeTypeInfo && activeTypeInfo.groupLevels.length > 0 && (
             <GroupPicker
-              key={type === "course" ? courseSiteGroupId ?? "unset" : "default"}
+              key={type === "course" ? courseSiteGroupId ?? "unset" : type === "rom" ? romGroupChain?.join(",") ?? "unset" : "default"}
               type={type}
               groupLevels={activeTypeInfo.groupLevels}
               initialChain={
                 type === "course" && courseSiteGroupId
                   ? [courseSiteGroupId, ...activeTypeInfo.groupLevels.slice(1).map(() => null)]
-                  : undefined
+                  : type === "rom" && romGroupChain
+                    ? romGroupChain
+                    : undefined
               }
               onChange={setGroupId}
             />

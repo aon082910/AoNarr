@@ -6,7 +6,7 @@ import { nowExpr } from "../db/asyncDb.js";
 import { episodeFromRow, mediaItemFromRow, queueItemFromRow, subItemFromRow, tagFromRow, trackFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { requireAdmin } from "../middleware/auth.js";
-import { getMediaTypeConfig, isValidMediaType } from "../services/mediaTypes.js";
+import { getMediaTypeConfig, isProbeableFile, isValidMediaType } from "../services/mediaTypes.js";
 import { attachChildCounts } from "../services/childCounts.js";
 import { notifyQueueChanged } from "../services/realtime.js";
 import { buildMediaQuery, clampLimit, clampOffset, MEDIA_SORT_COLUMNS } from "../services/mediaQuery.js";
@@ -16,7 +16,13 @@ import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { CONTENT_RATING_ORDER, isRatingBlocked } from "../services/contentRatings.js";
 import { fetchCastFor, fetchTmdbCollectionFor, fetchTrailerFor, searchMetadata } from "../services/metadata.js";
 import { pushWatchState } from "../services/mediaServer.js";
-import { scanAndImportLibrary, refreshLibraryMetadata, logScanResult } from "../services/libraryScan.js";
+import {
+  scanAndImportLibrary,
+  scanAndImportOneMediaItem,
+  refreshLibraryMetadata,
+  refreshOneMediaItem,
+  logScanResult,
+} from "../services/libraryScan.js";
 import { notifyGrabbed } from "../services/notifications.js";
 import { recycleFile } from "../services/recycleBin.js";
 import { buildCalibreOpf, buildJson, buildNfo, buildPlexMatch, fetchPosterBuffer, safeFileName, type ExportableItem } from "../services/metadataExport.js";
@@ -414,6 +420,32 @@ mediaRouter.post(
   })
 );
 
+/** Per-item versions of the two buttons above — scoped to just this media item's own folder/title
+ * instead of the whole library, same as Radarr/Sonarr's own per-item "Search"/"Refresh" actions.
+ * Awaited rather than fire-and-forget: a single item is fast enough not to risk a gateway timeout,
+ * and the caller (the media page) wants to know the actual result to show/refresh immediately. */
+mediaRouter.post(
+  "/:id/scan-import",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const row = await db.prepare("SELECT id FROM media_items WHERE id = ?").get(req.params.id);
+    if (!row) throw new HttpError(404, "Media item not found");
+    const result = await scanAndImportOneMediaItem(Number(req.params.id));
+    res.json(result);
+  })
+);
+
+mediaRouter.post(
+  "/:id/refresh",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const row = await db.prepare("SELECT id FROM media_items WHERE id = ?").get(req.params.id);
+    if (!row) throw new HttpError(404, "Media item not found");
+    const result = await refreshOneMediaItem(Number(req.params.id));
+    res.json(result);
+  })
+);
+
 /** Bulk metadata export: a .zip of one file per item, scoped by ?type=. Registered before the
  * "/:id" route below so "export-bulk.zip" isn't swallowed as an :id value. */
 mediaRouter.get(
@@ -647,6 +679,11 @@ mediaRouter.post(
       return;
     }
 
+    if (!isProbeableFile(row.path)) {
+      res.json({ corrupt: false, checked: false, reason: "This file type isn't something ffprobe can validate" });
+      return;
+    }
+
     const info = await probeMediaInfo(row.path);
     const looksLikeVideo = ["movie", "series", "anime", "video", "course", "adult"].includes(row.type);
     const corrupt = !info || (looksLikeVideo && !info.videoCodec);
@@ -804,6 +841,10 @@ mediaRouter.patch(
       group_id: b.groupId,
       minimum_availability: b.minimumAvailability,
       series_type: b.seriesType,
+      // Lets the "Apply merge" button (MediaDetail.tsx) clear the supplemental-provider scratch
+      // data (usually to {}) once it's been folded into the item's own fields, so the merge table
+      // doesn't keep showing stale fetched data forever after being applied.
+      extra_metadata: b.extraMetadata !== undefined ? JSON.stringify(b.extraMetadata) : undefined,
     };
     const sets: string[] = [];
     const values: any[] = [];

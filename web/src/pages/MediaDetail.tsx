@@ -153,6 +153,8 @@ export default function MediaDetail() {
   const [watched, setWatched] = useState(false);
   const [watchStateError, setWatchStateError] = useState<string | null>(null);
   const [showSearchMatch, setShowSearchMatch] = useState(false);
+  const [scanningItem, setScanningItem] = useState(false);
+  const [refreshingItem, setRefreshingItem] = useState(false);
 
   function load() {
     api.get<MediaDetailResponse>(`/media/${id}`).then(setItem);
@@ -292,6 +294,38 @@ export default function MediaDetail() {
     setItem({ ...item, contentRating: updated.contentRating });
   }
 
+  async function scanImportItem() {
+    if (!item) return;
+    setScanningItem(true);
+    try {
+      const result = await api.post<{ matched: number; created: number; skipped: number }>(`/media/${item.id}/scan-import`, {});
+      alert(`Scan & Import complete — matched ${result.matched}, created ${result.created}, skipped ${result.skipped}.`);
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setScanningItem(false);
+    }
+  }
+
+  async function refreshItem() {
+    if (!item) return;
+    setRefreshingItem(true);
+    try {
+      const result = await api.post<{ ok: boolean; childrenAdded: number }>(`/media/${item.id}/refresh`, {});
+      alert(
+        result.ok
+          ? `Refreshed — ${result.childrenAdded} episode(s)/child(ren) added.`
+          : "Couldn't find this item on its metadata provider — nothing was refreshed."
+      );
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setRefreshingItem(false);
+    }
+  }
+
   async function checkCorrupt() {
     if (!item) return;
     const result = await api.post<{ corrupt: boolean; checked: boolean; reason?: string }>(`/media/${item.id}/check-corrupt`, {});
@@ -346,6 +380,10 @@ export default function MediaDetail() {
         year: mergedValue(item, "year", mergeChoice.year),
         overview: mergedValue(item, "overview", mergeChoice.overview),
         posterUrl: mergedValue(item, "posterUrl", mergeChoice.posterUrl),
+        // Clears the fetched-from-other-providers scratch data now that it's been folded into the
+        // item's own fields — without this the merge table kept showing the same stale fetch
+        // results forever, looking like "Apply" hadn't done anything.
+        extraMetadata: {},
       };
       await api.patch(`/media/${item.id}`, payload);
       setItem({ ...item, ...payload });
@@ -866,6 +904,22 @@ export default function MediaDetail() {
           <button onClick={toggleImport} className="secondary">
             {showImport ? "Hide manual import" : "Manual Import"}
           </button>
+          <button
+            className="secondary"
+            onClick={scanImportItem}
+            disabled={scanningItem}
+            title="Scan this item's root folder for a file matching just this title, same as the library-wide Scan & Import but scoped to this one item"
+          >
+            {scanningItem ? "Scanning..." : "Scan & Import"}
+          </button>
+          <button
+            className="secondary"
+            onClick={refreshItem}
+            disabled={refreshingItem}
+            title="Re-pull this item's own metadata and any missing episodes/children from its metadata provider"
+          >
+            {refreshingItem ? "Refreshing..." : "Refresh"}
+          </button>
           {shape === "single" && item.hasFile && (
             <button className="secondary" onClick={checkCorrupt}>
               Check for corruption
@@ -954,21 +1008,21 @@ export default function MediaDetail() {
                 render: (value: string | number | null) => ReactNode
               ) => (
                 <tr>
-                  <th style={{ whiteSpace: "nowrap" }}>{label}</th>
-                  <td>
+                  <th style={{ whiteSpace: "nowrap", verticalAlign: "top" }}>{label}</th>
+                  <td style={{ verticalAlign: "top" }}>
                     <label style={{ display: "flex", alignItems: "flex-start", gap: 6, cursor: "pointer" }}>
                       <input
                         type="radio"
                         name={`merge-${field}`}
                         checked={mergeChoice[field] === "current"}
                         onChange={() => setMergeChoice((prev) => ({ ...prev, [field]: "current" }))}
-                        style={{ marginTop: 4 }}
+                        style={{ marginTop: 4, flexShrink: 0 }}
                       />
                       {render(item[field])}
                     </label>
                   </td>
                   {providers.map(([provider, data]) => (
-                    <td key={provider}>
+                    <td key={provider} style={{ verticalAlign: "top" }}>
                       {data[field] != null && data[field] !== "" ? (
                         <label style={{ display: "flex", alignItems: "flex-start", gap: 6, cursor: "pointer" }}>
                           <input
@@ -976,12 +1030,15 @@ export default function MediaDetail() {
                             name={`merge-${field}`}
                             checked={mergeChoice[field] === provider}
                             onChange={() => setMergeChoice((prev) => ({ ...prev, [field]: provider }))}
-                            style={{ marginTop: 4 }}
+                            style={{ marginTop: 4, flexShrink: 0 }}
                           />
                           {render(data[field])}
                         </label>
                       ) : (
-                        <span style={{ color: "var(--muted)" }}>—</span>
+                        <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                          <span style={{ display: "inline-block", width: 13, flexShrink: 0 }} />
+                          <span style={{ color: "var(--muted)" }}>—</span>
+                        </div>
                       )}
                     </td>
                   ))}
