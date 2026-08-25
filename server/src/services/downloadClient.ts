@@ -585,7 +585,13 @@ class AllDebridAdapter implements DownloadClientAdapter {
         let links: { link: string; filename: string }[] = [];
         for (;;) {
           const statusData = await this.call(client, "/magnet/status", { id: String(magnetId) }, "https://api.alldebrid.com/v4.1");
-          const magnet = statusData?.magnets;
+          // `data.magnets` is always an array — even filtered down to one id — never a bare object.
+          // Reading it as a single object meant `magnet.statusCode` was always undefined, so neither
+          // the failure check nor the "Ready" check ever fired: the loop just polled forever without
+          // ever erroring or completing, which is exactly the "grab started but stuck" symptom
+          // reported after the previous fix (that one was real too — this is a second, independent
+          // bug in the same polling loop, not a regression from it).
+          const magnet = Array.isArray(statusData?.magnets) ? statusData.magnets[0] : statusData?.magnets;
           if (!magnet) throw new Error("AllDebrid returned no status for this magnet");
           if (magnet.statusCode >= 5) throw new Error(`AllDebrid reported "${magnet.status}"`);
           if (magnet.statusCode === 4) {

@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 128 — AllDebrid grabs hanging forever (4th pass on #1)
+- Found a second, independent bug in the same `/magnet/status` polling loop the previous round's
+  fix touched: AllDebrid's `data.magnets` is **always an array** — even filtered down to a single
+  `id` — never a bare object. The code read it as a single object (`magnet.statusCode`), which was
+  always `undefined`, so neither the "Ready" check (`=== 4`) nor the failure check (`>= 5`) ever
+  fired. The loop just polled every 5 seconds forever, never erroring and never completing — the
+  exact "grab started but stuck" symptom from the reporter's Unraid throughput screenshot on
+  https://github.com/aon082910/AoNarr/issues/1, which predates the previous round's fix and was
+  never actually explained by it. Fixed by indexing `magnets[0]` (`server/src/services/
+  downloadClient.ts`), confirmed against AllDebrid's own documented `/v4.1/magnet/status` response
+  shape.
+- Double-checked the other two AllDebrid response readers this round touches indirectly
+  (`/magnet/files`, `/link/unlock`) against AllDebrid's docs — both already match the documented
+  shape, no further bugs found there.
+- Still no live AllDebrid premium account to test end-to-end against; this fix is verified against
+  documented API shapes and by inspection of the polling loop's control flow, same disclosed
+  limitation as the previous three rounds on this issue.
+
 ## Round 127 — tile+popup pattern rolled out to remaining settings pages
 - Following confirmation on the Notifications template, applied the same tile-grid + popup pattern
   to the rest of the punch-list's 12 pages. Settings.tsx's other six tabs (Metadata Providers,
