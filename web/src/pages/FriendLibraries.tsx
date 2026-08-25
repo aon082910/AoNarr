@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
+import Modal from "../components/Modal.js";
 
 interface FriendLibrary {
   id: number;
@@ -20,6 +21,7 @@ const TYPE_LABELS: Record<FriendLibrary["type"], string> = { plex: "Plex", jelly
 
 export default function FriendLibraries() {
   const [libraries, setLibraries] = useState<FriendLibrary[]>([]);
+  const [mode, setMode] = useState<"add" | number | null>(null);
   const [name, setName] = useState("");
   const [type, setType] = useState<FriendLibrary["type"]>("plex");
   const [url, setUrl] = useState("");
@@ -35,13 +37,31 @@ export default function FriendLibraries() {
   }
   useEffect(load, []);
 
-  async function addLibrary(e: FormEvent) {
-    e.preventDefault();
-    if (!name || !url || !token) return;
-    await api.post("/friend-libraries", { name, type, url, token });
+  function openAdd() {
     setName("");
+    setType("plex");
     setUrl("");
     setToken("");
+    setMode("add");
+  }
+
+  function openEdit(l: FriendLibrary) {
+    setName(l.name);
+    setType(l.type);
+    setUrl(l.url);
+    setToken("");
+    setMode(l.id);
+  }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (!name || !url || (mode === "add" && !token)) return;
+    if (mode === "add") {
+      await api.post("/friend-libraries", { name, type, url, token });
+    } else if (typeof mode === "number") {
+      await api.patch(`/friend-libraries/${mode}`, { name, type, url, ...(token ? { token } : {}) });
+    }
+    setMode(null);
     load();
   }
 
@@ -51,6 +71,7 @@ export default function FriendLibraries() {
       setSelectedId("");
       setMissing(null);
     }
+    setMode(null);
     load();
   }
 
@@ -69,6 +90,8 @@ export default function FriendLibraries() {
     }
   }
 
+  const editingLibrary = typeof mode === "number" ? libraries.find((l) => l.id === mode) ?? null : null;
+
   return (
     <div>
       <h1>Friend Libraries</h1>
@@ -76,59 +99,67 @@ export default function FriendLibraries() {
         A friend's own Plex/Jellyfin/Emby server, shared with you — different from the media
         server AoNarr manages its own library against in Settings. Compare their library against
         yours by title/year to see what they have that you don't, and add anything you want
-        straight from the result.
+        straight from the result. Click a tile to edit that library.
       </p>
 
-      <form className="form-panel" onSubmit={addLibrary}>
-        <label>Name</label>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Alex's Plex" required />
-        <label>Type</label>
-        <select value={type} onChange={(e) => setType(e.target.value as FriendLibrary["type"])}>
-          <option value="plex">Plex</option>
-          <option value="jellyfin">Jellyfin</option>
-          <option value="emby">Emby</option>
-        </select>
-        <label>URL (base, as reachable from this instance)</label>
-        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://192.168.1.60:32400" required />
-        <label>Token / API key</label>
-        <input
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-          placeholder={type === "plex" ? "X-Plex-Token, from your friend's account" : "API key, from your friend's server"}
-          required
-        />
-        <button type="submit">Add friend library</button>
-      </form>
-
+      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", marginBottom: 16 }}>
+        <div className="card" onClick={openAdd} style={{ padding: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ fontWeight: 600 }}>+ Add friend library</div>
+        </div>
+        {libraries.map((l) => (
+          <div key={l.id} className="card" style={{ padding: 16 }}>
+            <div onClick={() => openEdit(l)}>
+              <div style={{ fontWeight: 600 }}>{l.name}</div>
+              <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: 4 }}>
+                {TYPE_LABELS[l.type]} · {l.url}
+              </div>
+            </div>
+            <button
+              className="secondary"
+              style={{ marginTop: 8 }}
+              onClick={(e) => {
+                e.stopPropagation();
+                compare(l.id);
+              }}
+              disabled={loading && selectedId === l.id}
+            >
+              {loading && selectedId === l.id ? "Comparing..." : "Compare"}
+            </button>
+          </div>
+        ))}
+      </div>
       {libraries.length === 0 && <p className="empty">No friend libraries configured yet.</p>}
-      {libraries.length > 0 && (
-        <table style={{ marginBottom: 20 }}>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Type</th>
-              <th>URL</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {libraries.map((l) => (
-              <tr key={l.id}>
-                <td>{l.name}</td>
-                <td>{TYPE_LABELS[l.type]}</td>
-                <td>{l.url}</td>
-                <td style={{ display: "flex", gap: 6 }}>
-                  <button className="secondary" onClick={() => compare(l.id)} disabled={loading && selectedId === l.id}>
-                    {loading && selectedId === l.id ? "Comparing..." : "Compare"}
-                  </button>
-                  <button className="danger" onClick={() => removeLibrary(l.id)}>
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+
+      {mode !== null && (mode === "add" || editingLibrary) && (
+        <Modal title={mode === "add" ? "Add Friend Library" : `Edit — ${editingLibrary!.name}`} onClose={() => setMode(null)}>
+          <form className="form-panel" onSubmit={submit} style={{ padding: 0 }}>
+            <label>Name</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Alex's Plex" required />
+            <label>Type</label>
+            <select value={type} onChange={(e) => setType(e.target.value as FriendLibrary["type"])}>
+              <option value="plex">Plex</option>
+              <option value="jellyfin">Jellyfin</option>
+              <option value="emby">Emby</option>
+            </select>
+            <label>URL (base, as reachable from this instance)</label>
+            <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://192.168.1.60:32400" required />
+            <label>Token / API key{mode !== "add" && " (leave blank to keep current)"}</label>
+            <input
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder={type === "plex" ? "X-Plex-Token, from your friend's account" : "API key, from your friend's server"}
+              required={mode === "add"}
+            />
+            <div className="toolbar" style={{ justifyContent: "space-between", marginTop: 8 }}>
+              <button type="submit">{mode === "add" ? "Add friend library" : "Save"}</button>
+              {mode !== "add" && (
+                <button type="button" className="danger" onClick={() => removeLibrary(mode as number)}>
+                  Delete
+                </button>
+              )}
+            </div>
+          </form>
+        </Modal>
       )}
 
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, downloadFile, uploadRaw } from "../api/client.js";
 import FolderPicker from "../components/FolderPicker.js";
+import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
 import { formatBytes } from "../utils/format.js";
 
 interface DiskSpaceEntry {
@@ -591,150 +592,166 @@ export default function System() {
 
       </div>
       <div style={{ display: tab === "backups" ? undefined : "none" }}>
-      <h2>Backup &amp; Restore</h2>
-      <div className="form-panel">
-        <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
-          The backup is a full snapshot of the database — library, settings, indexers, quality
-          profiles, users, everything except files on disk. Restoring replaces the running
-          database and restarts the app; the database in place just before a restore is always
-          kept as a <code>.pre-restore</code> copy.
-        </p>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={downloadBackup} disabled={backingUp} className="secondary">
-            {backingUp ? "Preparing..." : "Download backup"}
-          </button>
-          <button
-            onClick={() => restoreInputRef.current?.click()}
-            disabled={restoring}
-            className="danger"
-          >
-            {restoring ? "Restoring..." : "Restore from backup..."}
-          </button>
-          <input
-            ref={restoreInputRef}
-            type="file"
-            accept=".db"
-            style={{ display: "none" }}
-            onChange={(e) => e.target.files?.[0] && restoreBackup(e.target.files[0])}
-          />
-        </div>
-      </div>
+      <SettingsSectionTiles
+        sections={[
+          {
+            key: "backupRestore",
+            label: "Backup & Restore",
+            description: "Download or restore a full database snapshot",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
+                  The backup is a full snapshot of the database — library, settings, indexers, quality
+                  profiles, users, everything except files on disk. Restoring replaces the running
+                  database and restarts the app; the database in place just before a restore is always
+                  kept as a <code>.pre-restore</code> copy.
+                </p>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={downloadBackup} disabled={backingUp} className="secondary">
+                    {backingUp ? "Preparing..." : "Download backup"}
+                  </button>
+                  <button
+                    onClick={() => restoreInputRef.current?.click()}
+                    disabled={restoring}
+                    className="danger"
+                  >
+                    {restoring ? "Restoring..." : "Restore from backup..."}
+                  </button>
+                  <input
+                    ref={restoreInputRef}
+                    type="file"
+                    accept=".db"
+                    style={{ display: "none" }}
+                    onChange={(e) => e.target.files?.[0] && restoreBackup(e.target.files[0])}
+                  />
+                </div>
+              </div>
+            ),
+          },
+          {
+            key: "scheduledBackups",
+            label: "Scheduled Backups",
+            description: "Periodic local + optional S3 backups",
+            badge: settings.backupEnabled === "1" ? "Enabled" : "Disabled",
+            badgeOk: settings.backupEnabled === "1",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
+                  Periodically writes a timestamped copy of the same database snapshot into a folder on
+                  disk (e.g. a mapped Unraid share), keeping only the most recent N copies. Runs on an
+                  hourly check, so a new backup lands within an hour of the configured interval elapsing.
+                </p>
+                <label>Enable scheduled backups</label>
+                <select
+                  key={settings.backupEnabled ?? "backup-enabled-empty"}
+                  defaultValue={settings.backupEnabled ?? "0"}
+                  onChange={(e) => saveSetting("backupEnabled", e.target.value)}
+                >
+                  <option value="0">Disabled</option>
+                  <option value="1">Enabled</option>
+                </select>
+                <label>Backup directory (path inside the container)</label>
+                <div className="toolbar">
+                  <input
+                    key={settings.backupDir ?? "backup-dir-empty"}
+                    defaultValue={settings.backupDir ?? ""}
+                    placeholder="/backups"
+                    onBlur={(e) => saveSetting("backupDir", e.target.value)}
+                    style={{ flex: 1 }}
+                  />
+                  <button type="button" className="secondary" onClick={() => setShowBackupDirPicker(true)}>
+                    Browse...
+                  </button>
+                </div>
+                {showBackupDirPicker && (
+                  <FolderPicker
+                    initialPath={settings.backupDir || "/"}
+                    onClose={() => setShowBackupDirPicker(false)}
+                    onSelect={(p) => {
+                      saveSetting("backupDir", p);
+                      setShowBackupDirPicker(false);
+                    }}
+                  />
+                )}
+                <label>Interval (hours)</label>
+                <input
+                  type="number"
+                  min={1}
+                  style={{ maxWidth: 120 }}
+                  key={settings.backupIntervalHours ?? "backup-interval-empty"}
+                  defaultValue={settings.backupIntervalHours ?? "24"}
+                  onBlur={(e) => saveSetting("backupIntervalHours", e.target.value)}
+                />
+                <label>Keep last N backups</label>
+                <input
+                  type="number"
+                  min={1}
+                  style={{ maxWidth: 120 }}
+                  key={settings.backupKeepCount ?? "backup-keep-empty"}
+                  defaultValue={settings.backupKeepCount ?? "7"}
+                  onBlur={(e) => saveSetting("backupKeepCount", e.target.value)}
+                />
 
-      <h2>Scheduled Backups</h2>
-      <div className="form-panel">
-        <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
-          Periodically writes a timestamped copy of the same database snapshot into a folder on
-          disk (e.g. a mapped Unraid share), keeping only the most recent N copies. Runs on an
-          hourly check, so a new backup lands within an hour of the configured interval elapsing.
-        </p>
-        <label>Enable scheduled backups</label>
-        <select
-          key={settings.backupEnabled ?? "backup-enabled-empty"}
-          defaultValue={settings.backupEnabled ?? "0"}
-          onChange={(e) => saveSetting("backupEnabled", e.target.value)}
-        >
-          <option value="0">Disabled</option>
-          <option value="1">Enabled</option>
-        </select>
-        <label>Backup directory (path inside the container)</label>
-        <div className="toolbar">
-          <input
-            key={settings.backupDir ?? "backup-dir-empty"}
-            defaultValue={settings.backupDir ?? ""}
-            placeholder="/backups"
-            onBlur={(e) => saveSetting("backupDir", e.target.value)}
-            style={{ flex: 1 }}
-          />
-          <button type="button" className="secondary" onClick={() => setShowBackupDirPicker(true)}>
-            Browse...
-          </button>
-        </div>
-        {showBackupDirPicker && (
-          <FolderPicker
-            initialPath={settings.backupDir || "/"}
-            onClose={() => setShowBackupDirPicker(false)}
-            onSelect={(p) => {
-              saveSetting("backupDir", p);
-              setShowBackupDirPicker(false);
-            }}
-          />
-        )}
-        <label>Interval (hours)</label>
-        <input
-          type="number"
-          min={1}
-          style={{ maxWidth: 120 }}
-          key={settings.backupIntervalHours ?? "backup-interval-empty"}
-          defaultValue={settings.backupIntervalHours ?? "24"}
-          onBlur={(e) => saveSetting("backupIntervalHours", e.target.value)}
-        />
-        <label>Keep last N backups</label>
-        <input
-          type="number"
-          min={1}
-          style={{ maxWidth: 120 }}
-          key={settings.backupKeepCount ?? "backup-keep-empty"}
-          defaultValue={settings.backupKeepCount ?? "7"}
-          onBlur={(e) => saveSetting("backupKeepCount", e.target.value)}
-        />
-
-        <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
-          Optionally also upload each scheduled backup to an S3-compatible bucket (AWS S3, MinIO,
-          Backblaze B2, etc.) so it survives the host itself dying, not just a bad DB write. Uses
-          the same interval/keep-count above; remote objects are rotated the same way.
-        </p>
-        <label>Upload to S3</label>
-        <select
-          key={settings.s3Enabled ?? "s3-enabled-empty"}
-          defaultValue={settings.s3Enabled ?? "0"}
-          onChange={(e) => saveSetting("s3Enabled", e.target.value)}
-        >
-          <option value="0">Disabled</option>
-          <option value="1">Enabled</option>
-        </select>
-        <label>Bucket</label>
-        <input
-          key={settings.s3Bucket ?? "s3-bucket-empty"}
-          defaultValue={settings.s3Bucket ?? ""}
-          placeholder="my-aonarr-backups"
-          onBlur={(e) => saveSetting("s3Bucket", e.target.value)}
-        />
-        <label>Region</label>
-        <input
-          key={settings.s3Region ?? "s3-region-empty"}
-          defaultValue={settings.s3Region ?? ""}
-          placeholder="us-east-1"
-          onBlur={(e) => saveSetting("s3Region", e.target.value)}
-        />
-        <label>Custom endpoint (blank for AWS S3; set for MinIO/B2/etc.)</label>
-        <input
-          key={settings.s3Endpoint ?? "s3-endpoint-empty"}
-          defaultValue={settings.s3Endpoint ?? ""}
-          placeholder="https://s3.us-west-000.backblazeb2.com"
-          onBlur={(e) => saveSetting("s3Endpoint", e.target.value)}
-        />
-        <label>Access key ID</label>
-        <input
-          key={settings.s3AccessKeyId ?? "s3-access-key-empty"}
-          defaultValue={settings.s3AccessKeyId ?? ""}
-          onBlur={(e) => saveSetting("s3AccessKeyId", e.target.value)}
-        />
-        <label>Secret access key</label>
-        <input
-          type="password"
-          key={settings.s3SecretAccessKey ?? "s3-secret-key-empty"}
-          defaultValue={settings.s3SecretAccessKey ?? ""}
-          onBlur={(e) => saveSetting("s3SecretAccessKey", e.target.value)}
-        />
-        <label>Key prefix (optional folder path within the bucket)</label>
-        <input
-          key={settings.s3Prefix ?? "s3-prefix-empty"}
-          defaultValue={settings.s3Prefix ?? ""}
-          placeholder="aonarr-backups"
-          onBlur={(e) => saveSetting("s3Prefix", e.target.value)}
-        />
-      </div>
-
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+                  Optionally also upload each scheduled backup to an S3-compatible bucket (AWS S3, MinIO,
+                  Backblaze B2, etc.) so it survives the host itself dying, not just a bad DB write. Uses
+                  the same interval/keep-count above; remote objects are rotated the same way.
+                </p>
+                <label>Upload to S3</label>
+                <select
+                  key={settings.s3Enabled ?? "s3-enabled-empty"}
+                  defaultValue={settings.s3Enabled ?? "0"}
+                  onChange={(e) => saveSetting("s3Enabled", e.target.value)}
+                >
+                  <option value="0">Disabled</option>
+                  <option value="1">Enabled</option>
+                </select>
+                <label>Bucket</label>
+                <input
+                  key={settings.s3Bucket ?? "s3-bucket-empty"}
+                  defaultValue={settings.s3Bucket ?? ""}
+                  placeholder="my-aonarr-backups"
+                  onBlur={(e) => saveSetting("s3Bucket", e.target.value)}
+                />
+                <label>Region</label>
+                <input
+                  key={settings.s3Region ?? "s3-region-empty"}
+                  defaultValue={settings.s3Region ?? ""}
+                  placeholder="us-east-1"
+                  onBlur={(e) => saveSetting("s3Region", e.target.value)}
+                />
+                <label>Custom endpoint (blank for AWS S3; set for MinIO/B2/etc.)</label>
+                <input
+                  key={settings.s3Endpoint ?? "s3-endpoint-empty"}
+                  defaultValue={settings.s3Endpoint ?? ""}
+                  placeholder="https://s3.us-west-000.backblazeb2.com"
+                  onBlur={(e) => saveSetting("s3Endpoint", e.target.value)}
+                />
+                <label>Access key ID</label>
+                <input
+                  key={settings.s3AccessKeyId ?? "s3-access-key-empty"}
+                  defaultValue={settings.s3AccessKeyId ?? ""}
+                  onBlur={(e) => saveSetting("s3AccessKeyId", e.target.value)}
+                />
+                <label>Secret access key</label>
+                <input
+                  type="password"
+                  key={settings.s3SecretAccessKey ?? "s3-secret-key-empty"}
+                  defaultValue={settings.s3SecretAccessKey ?? ""}
+                  onBlur={(e) => saveSetting("s3SecretAccessKey", e.target.value)}
+                />
+                <label>Key prefix (optional folder path within the bucket)</label>
+                <input
+                  key={settings.s3Prefix ?? "s3-prefix-empty"}
+                  defaultValue={settings.s3Prefix ?? ""}
+                  placeholder="aonarr-backups"
+                  onBlur={(e) => saveSetting("s3Prefix", e.target.value)}
+                />
+              </div>
+            ),
+          },
+        ]}
+      />
       </div>
       <div style={{ display: tab === "maintenance" ? undefined : "none" }}>
       <h2>Maintenance</h2>

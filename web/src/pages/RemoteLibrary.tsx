@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client.js";
+import Modal from "../components/Modal.js";
 
 interface RemoteInstance {
   id: number;
@@ -25,6 +26,7 @@ interface RemoteMediaTypeInfo {
 
 export default function RemoteLibrary() {
   const [instances, setInstances] = useState<RemoteInstance[]>([]);
+  const [mode, setMode] = useState<"add" | number | null>(null);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -41,13 +43,29 @@ export default function RemoteLibrary() {
   }
   useEffect(load, []);
 
-  async function addInstance(e: FormEvent) {
-    e.preventDefault();
-    if (!name || !url || !apiKey) return;
-    await api.post("/remote-instances", { name, url, apiKey });
+  function openAdd() {
     setName("");
     setUrl("");
     setApiKey("");
+    setMode("add");
+  }
+
+  function openEdit(i: RemoteInstance) {
+    setName(i.name);
+    setUrl(i.url);
+    setApiKey("");
+    setMode(i.id);
+  }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (!name || !url || (mode === "add" && !apiKey)) return;
+    if (mode === "add") {
+      await api.post("/remote-instances", { name, url, apiKey });
+    } else if (typeof mode === "number") {
+      await api.patch(`/remote-instances/${mode}`, { name, url, ...(apiKey ? { apiKey } : {}) });
+    }
+    setMode(null);
     load();
   }
 
@@ -57,6 +75,7 @@ export default function RemoteLibrary() {
       setSelectedId("");
       setItems(null);
     }
+    setMode(null);
     load();
   }
 
@@ -85,49 +104,49 @@ export default function RemoteLibrary() {
     }
   }
 
+  const editingInstance = typeof mode === "number" ? instances.find((i) => i.id === mode) ?? null : null;
+
   return (
     <div>
       <h1>Remote Library</h1>
       <p style={{ color: "var(--muted)" }}>
         Browse another AoNarr instance's library read-only — useful for a household running
         separate instances per location. Nothing here can be added, edited, or grabbed; it's just
-        a window into the remote instance's own library.
+        a window into the remote instance's own library. Click a tile to edit that instance.
       </p>
 
-      <form className="form-panel" onSubmit={addInstance}>
-        <label>Name</label>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Cabin AoNarr" required />
-        <label>URL (base, e.g. http://192.168.1.50:9876)</label>
-        <input value={url} onChange={(e) => setUrl(e.target.value)} required />
-        <label>API key</label>
-        <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} required />
-        <button type="submit">Add remote instance</button>
-      </form>
-
+      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", marginBottom: 20 }}>
+        <div className="card" onClick={openAdd} style={{ padding: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ fontWeight: 600 }}>+ Add remote instance</div>
+        </div>
+        {instances.map((i) => (
+          <div key={i.id} className="card" onClick={() => openEdit(i)} style={{ padding: 16 }}>
+            <div style={{ fontWeight: 600 }}>{i.name}</div>
+            <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: 4 }}>{i.url}</div>
+          </div>
+        ))}
+      </div>
       {instances.length === 0 && <p className="empty">No remote instances configured yet.</p>}
-      {instances.length > 0 && (
-        <table style={{ marginBottom: 20 }}>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>URL</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {instances.map((i) => (
-              <tr key={i.id}>
-                <td>{i.name}</td>
-                <td>{i.url}</td>
-                <td>
-                  <button className="danger" onClick={() => removeInstance(i.id)}>
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+
+      {mode !== null && (mode === "add" || editingInstance) && (
+        <Modal title={mode === "add" ? "Add Remote Instance" : `Edit — ${editingInstance!.name}`} onClose={() => setMode(null)}>
+          <form className="form-panel" onSubmit={submit} style={{ padding: 0 }}>
+            <label>Name</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Cabin AoNarr" required />
+            <label>URL (base, e.g. http://192.168.1.50:9876)</label>
+            <input value={url} onChange={(e) => setUrl(e.target.value)} required />
+            <label>API key{mode !== "add" && " (leave blank to keep current)"}</label>
+            <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} required={mode === "add"} />
+            <div className="toolbar" style={{ justifyContent: "space-between", marginTop: 8 }}>
+              <button type="submit">{mode === "add" ? "Add remote instance" : "Save"}</button>
+              {mode !== "add" && (
+                <button type="button" className="danger" onClick={() => removeInstance(mode as number)}>
+                  Delete
+                </button>
+              )}
+            </div>
+          </form>
+        </Modal>
       )}
 
       {instances.length > 0 && (

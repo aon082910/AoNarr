@@ -31,6 +31,34 @@ remoteInstancesRouter.post(
   })
 );
 
+remoteInstancesRouter.patch(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    const b = req.body ?? {};
+    const sets: string[] = [];
+    const values: any[] = [];
+    if (b.name !== undefined) {
+      sets.push("name = ?");
+      values.push(b.name);
+    }
+    if (b.url !== undefined) {
+      sets.push("url = ?");
+      values.push(String(b.url).replace(/\/+$/, ""));
+    }
+    if (b.apiKey) {
+      sets.push("api_key = ?");
+      values.push(b.apiKey);
+    }
+    if (sets.length > 0) {
+      values.push(req.params.id);
+      await db.prepare(`UPDATE remote_instances SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+    }
+    const row = await db.prepare("SELECT * FROM remote_instances WHERE id = ?").get(req.params.id);
+    if (!row) throw new HttpError(404, "Remote instance not found");
+    res.json(fromRow(row));
+  })
+);
+
 remoteInstancesRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {

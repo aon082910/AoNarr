@@ -33,6 +33,41 @@ friendLibrariesRouter.post(
   })
 );
 
+friendLibrariesRouter.patch(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    const b = req.body ?? {};
+    if (b.type !== undefined && !["plex", "jellyfin", "emby"].includes(b.type)) {
+      throw new HttpError(400, "type must be plex, jellyfin or emby");
+    }
+    const sets: string[] = [];
+    const values: any[] = [];
+    if (b.name !== undefined) {
+      sets.push("name = ?");
+      values.push(b.name);
+    }
+    if (b.type !== undefined) {
+      sets.push("type = ?");
+      values.push(b.type);
+    }
+    if (b.url !== undefined) {
+      sets.push("url = ?");
+      values.push(String(b.url).replace(/\/+$/, ""));
+    }
+    if (b.token) {
+      sets.push("token = ?");
+      values.push(b.token);
+    }
+    if (sets.length > 0) {
+      values.push(req.params.id);
+      await db.prepare(`UPDATE friend_libraries SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+    }
+    const row = await db.prepare("SELECT * FROM friend_libraries WHERE id = ?").get(req.params.id);
+    if (!row) throw new HttpError(404, "Friend library not found");
+    res.json(fromRow(row));
+  })
+);
+
 friendLibrariesRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {

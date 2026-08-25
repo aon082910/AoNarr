@@ -3,6 +3,33 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 127 — tile+popup pattern rolled out to remaining settings pages
+- Following confirmation on the Notifications template, applied the same tile-grid + popup pattern
+  to the rest of the punch-list's 12 pages. Settings.tsx's other six tabs (Metadata Providers,
+  Media Management, Indexer Options, Library Sync, Quality, Import & Subtitles) now render each
+  logical section as a tile that opens a `Modal` popup, instead of one long unbroken vertical page.
+- New `SettingsSectionTiles` component (`components/SettingsSectionTiles.tsx`) generalizes last
+  round's `SettingsProviderTiles` for sections whose content isn't a flat key/value field list —
+  Root Folders, Quality Profiles, Custom Formats, and similar sections keep their own existing
+  table/CRUD UI verbatim inside the tile's popup; only the entry point changed, not the section's
+  own logic.
+- Metadata Providers additionally got a `SettingsProviderTiles` instance (13 providers: TMDB, OMDb,
+  TVDB, Trakt, Discogs, Google Books, Last.fm, Fanart.tv, Comic Vine, RAWG, IGDB, YouTube Data API,
+  ThePornDB) — same pattern as Notifications, since it's a flat provider-key list.
+- Download Clients, Users, Remote Library, and Friend Libraries pages converted from an "+Add"
+  modal plus a table of existing entries to a tile grid where each existing entry is itself a tile;
+  clicking one opens a full edit popup (pre-filled, Save/Delete) instead of the previous
+  add-only-with-inline-delete pattern — Remote Library and Friend Libraries needed new `PATCH
+  /api/remote-instances/:id` and `PATCH /api/friend-libraries/:id` routes added server-side since
+  only create/delete existed before. Users' Active Sessions and Request Stats tables became their
+  own tiles via `SettingsSectionTiles` for consistency with the rest of the page. System page's
+  Backups tab (Backup & Restore, Scheduled Backups) converted the same way.
+- Verified live in-browser end-to-end: all converted pages render their tiles with correct
+  labels/descriptions/badges; a metadata provider tile (TMDB) saves correctly through a real
+  click+type+Tab flow; Root Folders' full add-form+table renders intact inside its popup; a
+  download client's full add → edit (pre-filled) → delete cycle round-trips correctly against the
+  live API.
+
 ## Round 126 — tile+popup settings pattern (Notifications template)
 - Long settings pages with many similar "provider" integrations (Notifications had 9: Discord,
   Slack, Generic Webhook, Telegram, Pushover, SMTP, Matrix, Twilio, Custom Script) used to be one
