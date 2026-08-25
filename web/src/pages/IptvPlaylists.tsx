@@ -8,7 +8,6 @@ interface Playlist {
   enabled: 0 | 1;
   insertAfterMinutes: number | null;
   insertAfterEachItem: 0 | 1;
-  fillerUrl: string | null;
   itemCount: number;
 }
 
@@ -23,14 +22,32 @@ interface PlaylistItem {
   durationSeconds: number | null;
 }
 
+interface FillerClip {
+  id: number;
+  name: string;
+  url: string;
+  category: string | null;
+  enabled: 0 | 1;
+}
+
+interface AttachedFiller {
+  attachmentId: number;
+  fillerClipId: number;
+  name: string;
+  url: string;
+  category: string | null;
+  position: number;
+}
+
 export default function IptvPlaylists() {
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [fillerClips, setFillerClips] = useState<FillerClip[]>([]);
   const [token, setToken] = useState("");
+
   const [mode, setMode] = useState<"add" | number | null>(null);
   const [name, setName] = useState("");
   const [insertAfterMinutes, setInsertAfterMinutes] = useState("");
   const [insertAfterEachItem, setInsertAfterEachItem] = useState(false);
-  const [fillerUrl, setFillerUrl] = useState("");
 
   const [items, setItems] = useState<PlaylistItem[] | null>(null);
   const [itemTitle, setItemTitle] = useState("");
@@ -39,8 +56,17 @@ export default function IptvPlaylists() {
   const [itemRefId, setItemRefId] = useState("");
   const [itemDuration, setItemDuration] = useState("");
 
+  const [attachedFillers, setAttachedFillers] = useState<AttachedFiller[] | null>(null);
+  const [fillerToAttach, setFillerToAttach] = useState("");
+
+  const [clipMode, setClipMode] = useState<"add" | number | null>(null);
+  const [clipName, setClipName] = useState("");
+  const [clipUrl, setClipUrl] = useState("");
+  const [clipCategory, setClipCategory] = useState("");
+
   function load() {
     api.get<Playlist[]>("/iptv/playlists").then(setPlaylists);
+    api.get<FillerClip[]>("/iptv/filler-clips").then(setFillerClips);
     api.get<{ token: string }>("/iptv/token").then((r) => setToken(r.token));
   }
   useEffect(load, []);
@@ -49,12 +75,16 @@ export default function IptvPlaylists() {
     api.get<PlaylistItem[]>(`/iptv/playlists/${playlistId}/items`).then(setItems);
   }
 
+  function loadFillers(playlistId: number) {
+    api.get<AttachedFiller[]>(`/iptv/playlists/${playlistId}/fillers`).then(setAttachedFillers);
+  }
+
   function resetForm() {
     setName("");
     setInsertAfterMinutes("");
     setInsertAfterEachItem(false);
-    setFillerUrl("");
     setItems(null);
+    setAttachedFillers(null);
     resetItemForm();
   }
 
@@ -75,9 +105,9 @@ export default function IptvPlaylists() {
     setName(p.name);
     setInsertAfterMinutes(p.insertAfterMinutes != null ? String(p.insertAfterMinutes) : "");
     setInsertAfterEachItem(!!p.insertAfterEachItem);
-    setFillerUrl(p.fillerUrl ?? "");
     setMode(p.id);
     loadItems(p.id);
+    loadFillers(p.id);
   }
 
   async function submit(e: FormEvent) {
@@ -87,12 +117,12 @@ export default function IptvPlaylists() {
       name,
       insertAfterMinutes: insertAfterMinutes ? Number(insertAfterMinutes) : null,
       insertAfterEachItem,
-      fillerUrl: fillerUrl || null,
     };
     if (mode === "add") {
       const created = await api.post<Playlist>("/iptv/playlists", body);
       setMode(created.id);
       loadItems(created.id);
+      loadFillers(created.id);
     } else if (typeof mode === "number") {
       await api.patch(`/iptv/playlists/${mode}`, body);
     }
@@ -138,9 +168,60 @@ export default function IptvPlaylists() {
     load();
   }
 
+  async function attachFiller() {
+    if (typeof mode !== "number" || !fillerToAttach) return;
+    await api.post(`/iptv/playlists/${mode}/fillers`, { fillerClipId: Number(fillerToAttach) });
+    setFillerToAttach("");
+    loadFillers(mode);
+  }
+
+  async function detachFiller(attachmentId: number) {
+    if (typeof mode !== "number") return;
+    await api.del(`/iptv/playlists/${mode}/fillers/${attachmentId}`);
+    loadFillers(mode);
+  }
+
+  function resetClipForm() {
+    setClipName("");
+    setClipUrl("");
+    setClipCategory("");
+  }
+
+  function openAddClip() {
+    resetClipForm();
+    setClipMode("add");
+  }
+
+  function openEditClip(c: FillerClip) {
+    setClipName(c.name);
+    setClipUrl(c.url);
+    setClipCategory(c.category ?? "");
+    setClipMode(c.id);
+  }
+
+  async function submitClip(e: FormEvent) {
+    e.preventDefault();
+    if (!clipName || !clipUrl) return;
+    const body = { name: clipName, url: clipUrl, category: clipCategory || null };
+    if (clipMode === "add") {
+      await api.post("/iptv/filler-clips", body);
+    } else if (typeof clipMode === "number") {
+      await api.patch(`/iptv/filler-clips/${clipMode}`, body);
+    }
+    setClipMode(null);
+    load();
+  }
+
+  async function removeClip(id: number) {
+    await api.del(`/iptv/filler-clips/${id}`);
+    setClipMode(null);
+    load();
+  }
+
   const editingPlaylist = typeof mode === "number" ? playlists.find((p) => p.id === mode) ?? null : null;
-  const feedUrl =
-    typeof mode === "number" && token ? `${window.location.origin}/api/iptv/m3u/${mode}?token=${token}` : null;
+  const editingClip = typeof clipMode === "number" ? fillerClips.find((c) => c.id === clipMode) ?? null : null;
+  const feedUrl = typeof mode === "number" && token ? `${window.location.origin}/api/iptv/m3u/${mode}?token=${token}` : null;
+  const attachableClips = fillerClips.filter((c) => !(attachedFillers ?? []).some((a) => a.fillerClipId === c.id));
 
   return (
     <div>
@@ -149,8 +230,9 @@ export default function IptvPlaylists() {
         Custom M3U playlists a media server (Plex, Jellyfin, etc.) can subscribe to as a live-TV/
         tuner source — mixing AoNarr library items (streamed from their own downloaded files) with
         raw external stream URLs. Optionally insert a filler clip after each item or after a
-        configured number of minutes — the filler is always a URL you supply yourself; AoNarr
-        never sources or scrapes commercial content from anywhere. Click a tile to manage it.
+        configured number of minutes, rotating through whichever clips a playlist has attached from
+        the library below — every clip is a URL you supply yourself; AoNarr never sources or
+        scrapes commercial content from anywhere.
       </p>
       <p style={{ color: "var(--muted)" }}>
         The library-item stream URLs embedded inside a feed are built from Settings → General's
@@ -159,6 +241,7 @@ export default function IptvPlaylists() {
         unset and it falls back to a guess that may be missing your port behind a reverse proxy.
       </p>
 
+      <h2>Playlists</h2>
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", marginBottom: 16 }}>
         <div className="card" onClick={openAdd} style={{ padding: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ fontWeight: 600 }}>+ Add playlist</div>
@@ -176,6 +259,48 @@ export default function IptvPlaylists() {
         ))}
       </div>
       {playlists.length === 0 && <p className="empty">No IPTV playlists configured yet.</p>}
+
+      <h2>Filler Clips</h2>
+      <p style={{ color: "var(--muted)" }}>
+        A reusable library of your own clips — attach any number of these to a playlist above and
+        it'll rotate through them at each insertion point instead of always using the same one.
+      </p>
+      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", marginBottom: 16 }}>
+        <div className="card" onClick={openAddClip} style={{ padding: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ fontWeight: 600 }}>+ Add filler clip</div>
+        </div>
+        {fillerClips.map((c) => (
+          <div key={c.id} className="card" onClick={() => openEditClip(c)} style={{ padding: 16 }}>
+            <div style={{ fontWeight: 600 }}>{c.name}</div>
+            {c.category && <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: 4 }}>{c.category}</div>}
+            <span className={`badge ${c.enabled ? "ok" : ""}`} style={{ marginTop: 8, display: "inline-block" }}>
+              {c.enabled ? "Enabled" : "Disabled"}
+            </span>
+          </div>
+        ))}
+      </div>
+      {fillerClips.length === 0 && <p className="empty">No filler clips added yet.</p>}
+
+      {clipMode !== null && (clipMode === "add" || editingClip) && (
+        <Modal title={clipMode === "add" ? "Add Filler Clip" : `Edit — ${editingClip?.name ?? ""}`} onClose={() => setClipMode(null)}>
+          <form className="form-panel" onSubmit={submitClip} style={{ padding: 0 }}>
+            <label>Name</label>
+            <input value={clipName} onChange={(e) => setClipName(e.target.value)} required />
+            <label>URL (your own content)</label>
+            <input value={clipUrl} onChange={(e) => setClipUrl(e.target.value)} placeholder="https://example.com/my-bumper.mp4" required />
+            <label>Category (optional)</label>
+            <input value={clipCategory} onChange={(e) => setClipCategory(e.target.value)} placeholder="e.g. intro, mid-roll" />
+            <div className="toolbar" style={{ justifyContent: "space-between", marginTop: 8 }}>
+              <button type="submit">{clipMode === "add" ? "Add clip" : "Save"}</button>
+              {clipMode !== "add" && (
+                <button type="button" className="danger" onClick={() => removeClip(clipMode)}>
+                  Delete
+                </button>
+              )}
+            </div>
+          </form>
+        </Modal>
+      )}
 
       {mode !== null && (mode === "add" || editingPlaylist) && (
         <Modal title={mode === "add" ? "Add Playlist" : `Edit — ${editingPlaylist?.name ?? ""}`} onClose={() => setMode(null)} maxWidth={760}>
@@ -198,8 +323,6 @@ export default function IptvPlaylists() {
                 />
               </>
             )}
-            <label>Filler URL (your own content — leave blank to never insert one)</label>
-            <input value={fillerUrl} onChange={(e) => setFillerUrl(e.target.value)} placeholder="https://example.com/my-bumper.mp4" />
             <button type="submit">{mode === "add" ? "Create playlist" : "Save"}</button>
           </form>
 
@@ -210,6 +333,48 @@ export default function IptvPlaylists() {
                   <label>Feed URL — paste into Plex/Jellyfin's Live TV / tuner source setup</label>
                   <input value={feedUrl} readOnly onFocus={(e) => e.target.select()} />
                 </div>
+              )}
+
+              <h3>Filler clips for this playlist</h3>
+              <div className="toolbar">
+                <select value={fillerToAttach} onChange={(e) => setFillerToAttach(e.target.value)} style={{ flex: 1 }}>
+                  <option value="">Select a clip to attach...</option>
+                  {attachableClips.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+                <button type="button" className="secondary" disabled={!fillerToAttach} onClick={attachFiller}>
+                  Attach
+                </button>
+              </div>
+              {(attachedFillers ?? []).length === 0 && (
+                <p className="empty">No filler clips attached — nothing will be inserted even if enabled above.</p>
+              )}
+              {(attachedFillers ?? []).length > 0 && (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Rotation #</th>
+                      <th>Name</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(attachedFillers ?? []).map((f, idx) => (
+                      <tr key={f.attachmentId}>
+                        <td>{idx + 1}</td>
+                        <td>{f.name}</td>
+                        <td>
+                          <button className="danger" onClick={() => detachFiller(f.attachmentId)}>
+                            Detach
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               )}
 
               <h3>Items</h3>

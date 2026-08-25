@@ -269,7 +269,6 @@ export function iptvPlaylistFromRow(row: any) {
     enabled: row.enabled,
     insertAfterMinutes: row.insert_after_minutes,
     insertAfterEachItem: row.insert_after_each_item,
-    fillerUrl: row.filler_url,
   };
 }
 
@@ -283,6 +282,16 @@ export function iptvPlaylistItemFromRow(row: any) {
     mediaItemId: row.media_item_id,
     episodeId: row.episode_id,
     durationSeconds: row.duration_seconds,
+  };
+}
+
+export function iptvFillerClipFromRow(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    url: row.url,
+    category: row.category,
+    enabled: row.enabled,
   };
 }
 

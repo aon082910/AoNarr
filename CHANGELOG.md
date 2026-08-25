@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 141 — filler clip library for IPTV playlists
+- Replaced the single "Filler URL" text field on an IPTV playlist with a proper reusable filler
+  clip library: add any number of clips (name, URL, optional category) once, then attach any
+  subset to a given playlist — at each insertion point the feed rotates round-robin through
+  whichever clips that playlist has attached, instead of always repeating the same one. New
+  `iptv_filler_clips` and `iptv_playlist_fillers` tables/CRUD; `filler_url` on `iptv_playlists` is
+  no longer read or written (left in the schema, just unused, rather than a migration to drop it).
+  A playlist with no clips attached still never inserts anything, same as before.
+- Still the same boundary from earlier in this conversation: every clip is a plain URL the admin
+  supplies themselves, exactly like before — this round is entirely about managing *your own*
+  content better, not about sourcing any.
+- Verified live: created two real clips and a playlist with three items via the API, attached both
+  clips, fetched the actual M3U output and confirmed the rotation is genuinely round-robin (A, B,
+  A across the three insertion points, not just "the same clip every time" with different
+  bookkeeping); confirmed the attach/detach UI and the playlist's rotation-order table render and
+  behave correctly through real UI clicks; confirmed the two new tables migrate cleanly on both
+  SQLite and a fresh Postgres container.
+
 ## Round 140 — IPTV playlist manager (last item from the earlier punch list)
 - Added a new IPTV Playlists page: build custom M3U playlists a media server (Plex, Jellyfin, etc.)
   can subscribe to as a live-TV/tuner source. An item is either an AoNarr library reference (a

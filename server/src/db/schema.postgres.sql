@@ -174,6 +174,21 @@ CREATE TABLE IF NOT EXISTS iptv_playlist_items (
   duration_seconds INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS iptv_filler_clips (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  url TEXT NOT NULL,
+  category TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS iptv_playlist_fillers (
+  id SERIAL PRIMARY KEY,
+  playlist_id INTEGER NOT NULL REFERENCES iptv_playlists(id) ON DELETE CASCADE,
+  filler_clip_id INTEGER NOT NULL REFERENCES iptv_filler_clips(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS ai_providers (
   id SERIAL PRIMARY KEY,
   name TEXT NOT NULL,
