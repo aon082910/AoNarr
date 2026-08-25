@@ -154,6 +154,41 @@ async function searchSeriesTmdb(query: string): Promise<MetadataSearchResult[]> 
   }));
 }
 
+// ---------------------------------------------------------------------------
+// Discover — TMDB's trending endpoint, for a browse/discover page (Overseerr/Jellyseerr-style)
+// instead of only search-then-request. Movies and TV only; TMDB has no equivalent trending concept
+// for the other library types.
+// ---------------------------------------------------------------------------
+
+export async function fetchTrendingMovies(): Promise<MetadataSearchResult[]> {
+  const key = requireSetting("tmdbApiKey", "TMDB API key");
+  const res = await fetch(`https://api.themoviedb.org/3/trending/movie/week?api_key=${key}`);
+  if (!res.ok) throw new Error(`TMDB trending movies failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  return (body.results ?? []).map((r: any) => ({
+    title: r.title,
+    year: r.release_date ? Number(r.release_date.slice(0, 4)) : null,
+    overview: r.overview || null,
+    posterUrl: r.poster_path ? `${TMDB_IMAGE_BASE}${r.poster_path}` : null,
+    externalIds: { tmdb: String(r.id) },
+    releaseDate: r.release_date || null,
+  }));
+}
+
+export async function fetchTrendingSeries(): Promise<MetadataSearchResult[]> {
+  const key = requireSetting("tmdbApiKey", "TMDB API key");
+  const res = await fetch(`https://api.themoviedb.org/3/trending/tv/week?api_key=${key}`);
+  if (!res.ok) throw new Error(`TMDB trending series failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  return (body.results ?? []).map((r: any) => ({
+    title: r.name,
+    year: r.first_air_date ? Number(r.first_air_date.slice(0, 4)) : null,
+    overview: r.overview || null,
+    posterUrl: r.poster_path ? `${TMDB_IMAGE_BASE}${r.poster_path}` : null,
+    externalIds: { tmdb: String(r.id) },
+  }));
+}
+
 async function fetchSeriesEpisodesTmdb(tmdbId: string): Promise<MetadataEpisode[]> {
   const key = requireSetting("tmdbApiKey", "TMDB API key");
   const detailUrl = new URL(`https://api.themoviedb.org/3/tv/${tmdbId}`);

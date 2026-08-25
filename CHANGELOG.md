@@ -3,6 +3,29 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 136 — Discover page (7th of the Starr feature-gap list)
+- Added a new Discover page (Overseerr/Jellyseerr-style): trending movies and TV this week from
+  TMDB, browsable with posters instead of only search-then-request. Each tile is cross-referenced
+  against the library by TMDB id and shows "In library" when already there; otherwise admins get a
+  one-click "Add" (straight into the library, same `/metadata/import` path other add flows use)
+  and household accounts get "Request" (submits through the existing request queue, including its
+  duplicate-request confirmation). New `GET /api/discover` scopes results to whichever of
+  Movies/TV the requesting account actually has access to (or both, for an admin) and skips the
+  TMDB calls entirely if neither library is accessible.
+- Fixed an adjacent, pre-existing gap this surfaced: household accounts had no navigation link to
+  the Requests page at all — the page itself already rendered a full submission form for them
+  (`Requests.tsx`'s `!auth.isAdmin` branch), but nothing in the sidebar/topbar ever pointed at it,
+  so the only way in was typing the URL by hand. Household accounts now see "Discover" and
+  "Requests" as their own nav links, alongside "Account" — an admin's equivalent links stay in the
+  existing "Manage" group, unchanged.
+- Verified live: confirmed the page renders cleanly with a clear, non-crashing error when no TMDB
+  key is configured (this dev environment has none); confirmed the "Discover" nav link appears in
+  the admin "Manage" group; created a real household test account, logged in as it, and confirmed
+  it independently sees "Discover" and "Requests" in its own nav (previously entirely absent) and
+  that Discover's copy correctly reads "Request" instead of "Add" for that role. An actual populated
+  trending list (needing a real TMDB key) isn't exercised end-to-end here — same disclosed
+  limitation as other rounds depending on third-party credentials this dev environment lacks.
+
 ## Round 135 — automatic subtitle sync (6th of the Starr feature-gap list)
 - Added Bazarr-style subtitle timing sync: after a subtitle downloads, AoNarr re-aligns its
   timestamps against the video's own audio track using `ffsubsync` (voice-activity detection,

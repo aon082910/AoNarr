@@ -23,6 +23,7 @@ import GlobalSearch from "./pages/GlobalSearch.js";
 import Collections from "./pages/Collections.js";
 import CollectionDetail from "./pages/CollectionDetail.js";
 import Requests from "./pages/Requests.js";
+import Discover from "./pages/Discover.js";
 import Users from "./pages/Users.js";
 import Recommendations from "./pages/Recommendations.js";
 import AuditLog from "./pages/AuditLog.js";
@@ -155,7 +156,17 @@ export default function App() {
   // Search is rendered as its own hardcoded link (like Dashboard) rather than living in this array,
   // since it belongs between Dashboard and Library in the fixed top-level order — everything else
   // that isn't Library renders after Library, so it can't get there through this array alone.
-  const standaloneLinks: NavLinkDef[] = [{ to: "/account", label: "Account" }];
+  // Admins reach Discover/Requests through the "Manage" group below; household accounts have no
+  // such group at all, so without these they'd have no way to reach either page short of typing
+  // the URL by hand — Requests.tsx already renders a full submission form for them, it just had no
+  // nav link pointing at it before Discover made that gap obvious.
+  const standaloneLinks: NavLinkDef[] = isAdmin
+    ? [{ to: "/account", label: "Account" }]
+    : [
+        { to: "/discover", label: "Discover" },
+        { to: "/requests", label: "Requests" },
+        { to: "/account", label: "Account" },
+      ];
 
   // Only the admin-only section groups are reorderable — Library stays pinned right after
   // Dashboard since every account (including household logins) relies on it being there, and
@@ -171,6 +182,7 @@ export default function App() {
         { to: "/activity", label: "Activity" },
         { to: "/calendar", label: "Calendar" },
         { to: "/collections", label: "Collections" },
+        { to: "/discover", label: "Discover" },
         { to: "/import-lists", label: "Import Lists" },
         { to: "/import-review", label: "Import Review" },
         { to: "/missing", label: "Missing" },
@@ -431,6 +443,7 @@ export default function App() {
           <Route path="/collections" element={<Collections />} />
           <Route path="/collections/:id" element={<CollectionDetail />} />
           <Route path="/requests" element={<Requests />} />
+          <Route path="/discover" element={<Discover />} />
           <Route path="/changelog" element={<Changelog />} />
           <Route path="/account" element={<Account />} />
           {isAdmin && <Route path="/add" element={<AddMedia />} />}

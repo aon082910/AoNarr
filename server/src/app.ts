@@ -33,6 +33,7 @@ import { collectionsRouter } from "./routes/collections.js";
 import { authRouter } from "./routes/authRoutes.js";
 import { usersRouter } from "./routes/users.js";
 import { requestsRouter } from "./routes/requests.js";
+import { discoverRouter } from "./routes/discover.js";
 import { blocklistRouter } from "./routes/blocklist.js";
 import { recommendationsRouter } from "./routes/recommendations.js";
 import { auditLogRouter } from "./routes/auditLog.js";
@@ -98,6 +99,7 @@ export async function createApp(): Promise<Express> {
   app.use("/api/auth", authRouter);
   app.use("/api/users", usersRouter);
   app.use("/api/requests", requestsRouter);
+  app.use("/api/discover", discoverRouter);
   app.use("/api/media", mediaRouter);
   app.use("/api/indexers", indexersRouter);
   app.use("/api/download-clients", downloadClientsRouter);
