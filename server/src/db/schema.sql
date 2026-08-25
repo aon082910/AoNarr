@@ -214,6 +214,14 @@ CREATE TABLE IF NOT EXISTS ai_providers (
   is_default INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS custom_columns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  media_type TEXT, -- NULL = shown for every library type
+  label TEXT NOT NULL,
+  path TEXT NOT NULL, -- dot-path into the item, e.g. "mediaInfo.videoCodec" or "extraMetadata.tmdb.overview"
+  position INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

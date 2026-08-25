@@ -25,6 +25,7 @@ import CollectionDetail from "./pages/CollectionDetail.js";
 import Requests from "./pages/Requests.js";
 import Discover from "./pages/Discover.js";
 import AiProviders from "./pages/AiProviders.js";
+import CustomColumns from "./pages/CustomColumns.js";
 import IptvPlaylists from "./pages/IptvPlaylists.js";
 import Users from "./pages/Users.js";
 import Recommendations from "./pages/Recommendations.js";
@@ -200,6 +201,7 @@ export default function App() {
       label: "Configuration",
       links: [
         { to: "/ai-providers", label: "AI Providers" },
+        { to: "/custom-columns", label: "Custom Columns" },
         { to: "/download-clients", label: "Download Clients" },
         { to: "/indexers", label: "Indexers" },
         { to: "/settings", label: "Settings" },
@@ -448,6 +450,7 @@ export default function App() {
           <Route path="/requests" element={<Requests />} />
           <Route path="/discover" element={<Discover />} />
           {isAdmin && <Route path="/ai-providers" element={<AiProviders />} />}
+          {isAdmin && <Route path="/custom-columns" element={<CustomColumns />} />}
           {isAdmin && <Route path="/iptv-playlists" element={<IptvPlaylists />} />}
           <Route path="/changelog" element={<Changelog />} />
           <Route path="/account" element={<Account />} />

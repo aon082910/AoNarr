@@ -3,6 +3,21 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 145 — custom columns for the library list view
+- New Custom Columns page (Configuration → Custom Columns, admin-only): define any field from an
+  item's metadata as a column, by dot-path — e.g. `mediaInfo.videoCodec`, `mediaInfo.hdrFormat`,
+  `mediaInfo.bitrateKbps` for technical media info, or `extraMetadata.tmdb.overview` for a specific
+  metadata provider's data. Scope a column to one library type or leave it blank for all types.
+- New `custom_columns` table (id, media_type nullable, label, path, position) + `/api/custom-
+  columns` CRUD, admin-only like Tags/AI Providers.
+- A library page's "Columns" dropdown (list view) and "Poster info" dropdown (poster view) now list
+  every custom column configured for that type (or for all types) alongside the built-in fields
+  (Year, Status, Monitored, ...) — pick one and it renders as a real table column or poster info
+  line, resolved via the dot-path against the item (mediaInfo, extraMetadata, or any other field).
+- Verified live: created a "Video Codec" column pointed at `mediaInfo.videoCodec` with no library
+  type set, confirmed it appeared in the Movies library's Columns dropdown and rendered as a real
+  table column when toggled on, then deleted it.
+
 ## Round 144 — site-wide full-width/centered layout toggle
 - New "Switch to full-width layout" / "Switch to centered layout" link next to the theme toggle
   (sidebar footer, or topbar when using the top-nav layout) — applies to every page instead of

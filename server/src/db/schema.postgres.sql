@@ -200,6 +200,14 @@ CREATE TABLE IF NOT EXISTS ai_providers (
   is_default INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS custom_columns (
+  id SERIAL PRIMARY KEY,
+  media_type TEXT,
+  label TEXT NOT NULL,
+  path TEXT NOT NULL,
+  position INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

@@ -358,6 +358,14 @@ export interface SavedLibraryView {
   createdAt: string;
 }
 
+export interface CustomColumn {
+  id: number;
+  mediaType: MediaType | null;
+  label: string;
+  path: string;
+  position: number;
+}
+
 export interface CorruptMediaReviewEntry {
   id: number;
   mediaItemId: number;

@@ -308,6 +308,16 @@ export function aiProviderFromRow(row: any) {
   };
 }
 
+export function customColumnFromRow(row: any) {
+  return {
+    id: row.id,
+    mediaType: row.media_type,
+    label: row.label,
+    path: row.path,
+    position: row.position,
+  };
+}
+
 export function savedLibraryViewFromRow(row: any) {
   return {
     id: row.id,

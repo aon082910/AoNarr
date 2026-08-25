@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { api, downloadFile, uploadFormFile } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
-import type { LibraryGroup, MediaItem, RootFolder, SavedLibraryView, Tag } from "../types.js";
+import type { CustomColumn, LibraryGroup, MediaItem, RootFolder, SavedLibraryView, Tag } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 import DropdownMenu from "../components/DropdownMenu.js";
 import Modal from "../components/Modal.js";
@@ -34,8 +34,10 @@ const POSTER_SIZE_PX: Record<PosterSize, number> = { xsmall: 90, small: 120, med
 
 // "Title" is always shown (the primary column/label) — everything here is optional and
 // user-toggleable, for both the list view's columns and the extra info line under each poster.
-type ExtraField = "year" | "status" | "monitored" | "quality" | "contentRating" | "added";
-const EXTRA_FIELD_LABELS: Record<ExtraField, string> = {
+// Widened to a plain string (rather than a fixed union) so admin-defined custom columns (Settings
+// → Configuration → Custom Columns) can slot in alongside the built-ins as "custom:<id>" keys.
+type ExtraField = string;
+const EXTRA_FIELD_LABELS: Record<string, string> = {
   year: "Year",
   status: "Status",
   monitored: "Monitored",
@@ -57,13 +59,26 @@ function loadFieldSet(key: string, fallback: ExtraField[]): Set<ExtraField> {
   }
 }
 
-function fieldValue(item: MediaItem, field: ExtraField): string {
+/** Resolves a dot-path (e.g. "mediaInfo.videoCodec") against an arbitrary object — used for
+ * admin-defined custom columns, which point at any field in an item's metadata. */
+function getByPath(obj: any, path: string): unknown {
+  return path.split(".").reduce((acc: any, key) => (acc == null ? undefined : acc[key]), obj);
+}
+
+function fieldValue(item: MediaItem, field: ExtraField, customColumns: CustomColumn[]): string {
   if (field === "year") return item.year ? String(item.year) : "";
   if (field === "status") return item.hasFile ? "downloaded" : "missing";
   if (field === "monitored") return item.monitored ? "monitored" : "unmonitored";
   if (field === "quality") return item.quality ?? "";
   if (field === "contentRating") return item.contentRating ?? "";
   if (field === "added") return new Date(item.addedAt).toLocaleDateString();
+  if (field.startsWith("custom:")) {
+    const col = customColumns.find((c) => c.id === Number(field.slice(7)));
+    if (!col) return "";
+    const val = getByPath(item, col.path);
+    if (val === null || val === undefined) return "";
+    return typeof val === "object" ? JSON.stringify(val) : String(val);
+  }
   return "";
 }
 
@@ -338,6 +353,7 @@ export function LibraryItemGrid({
   // filter that narrows the result set below one page would still claim "Page 1 of 2".
   const [stats, setStats] = useState<LibraryStats>(EMPTY_STATS);
   const [filteredTotal, setFilteredTotal] = useState(0);
+  const [customColumns, setCustomColumns] = useState<CustomColumn[]>([]);
   const [savedViews, setSavedViews] = useState<SavedLibraryView[]>([]);
   const [activeViewId, setActiveViewId] = useState<number | "">("");
   const [loading, setLoading] = useState(true);
@@ -428,6 +444,18 @@ export function LibraryItemGrid({
     setActiveViewId("");
     api.get<SavedLibraryView[]>(`/library-views?mediaType=${type}`).then(setSavedViews);
   }, [type]);
+  useEffect(() => {
+    if (auth.isAdmin) api.get<CustomColumn[]>("/custom-columns").then(setCustomColumns);
+  }, [auth.isAdmin]);
+
+  const customColumnsForType = customColumns.filter((c) => !c.mediaType || c.mediaType === type);
+  const allFieldKeys: ExtraField[] = [...Object.keys(EXTRA_FIELD_LABELS), ...customColumnsForType.map((c) => `custom:${c.id}`)];
+  function fieldLabel(field: ExtraField): string {
+    if (field.startsWith("custom:")) {
+      return customColumnsForType.find((c) => c.id === Number(field.slice(7)))?.label ?? field;
+    }
+    return EXTRA_FIELD_LABELS[field] ?? field;
+  }
 
   function applyView(view: SavedLibraryView) {
     const c = view.config;
@@ -831,27 +859,27 @@ export function LibraryItemGrid({
         )}
         {viewMode === "poster" ? (
           <DropdownMenu label="Poster info">
-            {(Object.keys(EXTRA_FIELD_LABELS) as ExtraField[]).map((field) => (
+            {allFieldKeys.map((field) => (
               <label
                 key={field}
                 style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", cursor: "pointer" }}
                 onClick={(e) => e.stopPropagation()}
               >
                 <input type="checkbox" checked={posterFields.has(field)} onChange={() => togglePosterField(field)} style={{ width: "auto" }} />
-                {EXTRA_FIELD_LABELS[field]}
+                {fieldLabel(field)}
               </label>
             ))}
           </DropdownMenu>
         ) : (
           <DropdownMenu label="Columns">
-            {(Object.keys(EXTRA_FIELD_LABELS) as ExtraField[]).map((field) => (
+            {allFieldKeys.map((field) => (
               <label
                 key={field}
                 style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", cursor: "pointer" }}
                 onClick={(e) => e.stopPropagation()}
               >
                 <input type="checkbox" checked={listColumns.has(field)} onChange={() => toggleListColumn(field)} style={{ width: "auto" }} />
-                {EXTRA_FIELD_LABELS[field]}
+                {fieldLabel(field)}
               </label>
             ))}
           </DropdownMenu>
@@ -1029,9 +1057,9 @@ export function LibraryItemGrid({
               <div className="meta">
                 <div className="title">{item.title}</div>
                 <div className="sub">
-                  {(Object.keys(EXTRA_FIELD_LABELS) as ExtraField[])
+                  {allFieldKeys
                     .filter((f) => posterFields.has(f))
-                    .map((f) => (f === "monitored" && item.monitored ? "" : fieldValue(item, f)))
+                    .map((f) => (f === "monitored" && item.monitored ? "" : fieldValue(item, f, customColumnsForType)))
                     .filter(Boolean)
                     .join(" · ")}
                 </div>
@@ -1056,10 +1084,10 @@ export function LibraryItemGrid({
               {selectMode && <th></th>}
               <th>Title</th>
               {hasChildren && <th>Progress</th>}
-              {(Object.keys(EXTRA_FIELD_LABELS) as ExtraField[])
+              {allFieldKeys
                 .filter((f) => listColumns.has(f))
                 .map((f) => (
-                  <th key={f}>{EXTRA_FIELD_LABELS[f]}</th>
+                  <th key={f}>{fieldLabel(f)}</th>
                 ))}
             </tr>
           </thead>
@@ -1093,7 +1121,7 @@ export function LibraryItemGrid({
                     )}
                   </td>
                 )}
-                {(Object.keys(EXTRA_FIELD_LABELS) as ExtraField[])
+                {allFieldKeys
                   .filter((f) => listColumns.has(f))
                   .map((f) =>
                     f === "status" ? (
@@ -1103,7 +1131,7 @@ export function LibraryItemGrid({
                     ) : f === "monitored" ? (
                       <td key={f}>{item.monitored ? "Yes" : "No"}</td>
                     ) : (
-                      <td key={f}>{fieldValue(item, f)}</td>
+                      <td key={f}>{fieldValue(item, f, customColumnsForType)}</td>
                     )
                   )}
               </tr>
