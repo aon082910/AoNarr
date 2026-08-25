@@ -839,6 +839,59 @@ async function fetchAuthorBooksGoodreads(authorId: string): Promise<MetadataSubI
   }));
 }
 
+/** AudNexus (audnex.us) — a free, open, community-run API built specifically to enrich Audible
+ * author data with a real bio and photo, which Audible's own catalog search doesn't return at all
+ * (see searchAuthorsAudible above, which has no bio/image fields to draw from). Not a book-search
+ * provider in its own right — it only ever has an author's name, bio, and photo, no book list — so
+ * this is offered as a "Fetch from audnexus" enrichment source (Additional Metadata Sources on the
+ * media page) rather than a primary Add Media search provider, the same role Fanart.tv plays for
+ * movies/series/artists. `/authors?name=` returns dozens of loosely name-matched candidates with no
+ * bio/photo (a person-directory lookup, not a search-relevance-ranked one) — this filters to exact
+ * name matches first, then only fetches the (bio-carrying) full detail for a handful of candidates
+ * rather than every loose match, since the caller only ever uses the first result anyway. */
+async function searchAuthorsAudnexus(query: string): Promise<MetadataSearchResult[]> {
+  const url = new URL("https://api.audnex.us/authors");
+  url.searchParams.set("name", query);
+  url.searchParams.set("region", "us");
+
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`AudNexus search failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+
+  const seenAsins = new Set<string>();
+  const candidates: { asin: string; name: string }[] = [];
+  for (const a of body ?? []) {
+    if (!a?.asin || seenAsins.has(a.asin)) continue;
+    seenAsins.add(a.asin);
+    candidates.push(a);
+  }
+  candidates.sort((a, b) => {
+    const aExact = a.name?.toLowerCase() === query.toLowerCase() ? 0 : 1;
+    const bExact = b.name?.toLowerCase() === query.toLowerCase() ? 0 : 1;
+    return aExact - bExact;
+  });
+
+  const results = await Promise.all(
+    candidates.slice(0, 5).map(async (c): Promise<MetadataSearchResult | null> => {
+      try {
+        const detailRes = await fetch(`https://api.audnex.us/authors/${c.asin}`);
+        if (!detailRes.ok) return null;
+        const detail: any = await detailRes.json();
+        return {
+          title: detail.name ?? c.name,
+          year: null,
+          overview: detail.description || null,
+          posterUrl: detail.image || null,
+          externalIds: { audnexus: c.asin },
+        };
+      } catch {
+        return null;
+      }
+    })
+  );
+  return results.filter((r): r is MetadataSearchResult => r !== null);
+}
+
 // ---------------------------------------------------------------------------
 // Audiobooks: Audible — audiobook.metadataProviders previously only reused the
 // book providers (Open Library/Google Books have no audio-edition concept at
@@ -1526,6 +1579,7 @@ const SEARCH_FNS: Record<string, (query: string) => Promise<MetadataSearchResult
   hardcover: searchAuthorsHardcover,
   goodreads: searchAuthorsGoodreads,
   audible: searchAuthorsAudible,
+  audnexus: searchAuthorsAudnexus,
   comicvine: searchComicsComicVine,
   rawg: searchRomsRawg,
   igdb: searchRomsIgdb,

@@ -53,6 +53,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   hardcover: "Hardcover",
   goodreads: "Goodreads",
   audible: "Audible",
+  audnexus: "AudNexus",
   comicvine: "Comic Vine",
   rawg: "RAWG",
   igdb: "IGDB",

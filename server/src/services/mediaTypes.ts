@@ -95,7 +95,11 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     childLabel: "Book",
     extensions: BOOK_EXT,
     indexerCategory: "7000",
-    metadataProviders: ["openlibrary", "googlebooks", "itunes", "hardcover", "goodreads"],
+    // audnexus has no book-search/list capability of its own — it's an author bio/photo
+    // enrichment source only (see searchAuthorsAudnexus), included here so "Fetch from audnexus"
+    // shows up as an Additional Metadata Source on an author's own page, the same role Fanart.tv
+    // plays for movies/series/artists.
+    metadataProviders: ["openlibrary", "googlebooks", "itunes", "hardcover", "goodreads", "audnexus"],
     defaultProvider: "openlibrary",
   },
   audiobook: {
@@ -107,8 +111,9 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     indexerCategory: "3030",
     // Reuses the book-metadata providers too (a narrated edition still shares the same underlying
     // work), plus Audible, which is audiobook-specific — the first provider actually built for
-    // this type rather than borrowed from Books.
-    metadataProviders: ["openlibrary", "googlebooks", "audible"],
+    // this type rather than borrowed from Books — and audnexus for author bio/photo enrichment
+    // (same non-search, enrichment-only role as in Books above).
+    metadataProviders: ["openlibrary", "googlebooks", "audible", "audnexus"],
     defaultProvider: "openlibrary",
     multiFilePerChild: true,
   },

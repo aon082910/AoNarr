@@ -3,6 +3,22 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 154 — AudNexus author bio/photo enrichment
+- Wired in **AudNexus** (audnex.us), the free/open community API Round 153 identified as not
+  fitting AoNarr's search-provider model — it has no book list at all, only a name/bio/photo per
+  author. Added as an "Additional Metadata Sources" enrichment option instead ("Fetch from
+  audnexus"), the same role Fanart.tv plays for movies/series/artists: fetches a real bio and
+  author photo to pick from in the merge table, without needing to be the item's primary match.
+  Available on both Books and Audiobooks.
+- AudNexus's `/authors?name=` endpoint is a loose name-directory lookup, not relevance-ranked
+  search (a query for one name returns dozens of only-partially-matching people) — results are
+  sorted to prefer an exact case-insensitive name match first, and only the first handful get a
+  follow-up detail call (the only one that actually returns bio/photo) rather than fetching every
+  loose match.
+- Verified live: real bio text and author photo URL came back for a live query, and the full
+  "Fetch from audnexus" → merge-table → pick-a-field flow worked end-to-end on an actual author
+  item.
+
 ## Round 153 — iTunes, Hardcover, Goodreads, and Audible metadata providers
 - **Four new metadata providers**, sourced from surveying what BookOrbit (a self-hosted book/
   audiobook/comic manager) wires up: **iTunes** (Books, keyless, Apple's public Search API),
