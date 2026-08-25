@@ -16,6 +16,7 @@ import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { isExcluded } from "../services/importExclusions.js";
 import { log } from "../services/logger.js";
 import { logAuditEvent } from "../services/audit.js";
+import { getSetting } from "../services/settingsStore.js";
 import type { MediaType } from "../types/index.js";
 
 export const metadataRouter = Router();
@@ -74,8 +75,8 @@ metadataRouter.post(
     const result = await db
       .prepare(
         `INSERT INTO media_items
-         (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status, group_id, release_date)
-         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate)`
+         (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability)
+         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability)`
       )
       .run({
         type: b.type,
@@ -91,6 +92,7 @@ metadataRouter.post(
         status: "unknown",
         groupId: b.groupId ?? null,
         releaseDate: b.releaseDate ?? null,
+        minimumAvailability: b.minimumAvailability ?? getSetting("defaultMinimumAvailability") ?? "announced",
       });
 
     const mediaItemId = result.lastInsertRowid;

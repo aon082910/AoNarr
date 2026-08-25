@@ -20,6 +20,13 @@ export interface MediaItem {
   quality: string | null;
   status: string; // e.g. "continuing", "ended", "announced", "released"
   addedAt: string;
+  releaseDate: string | null;
+  /** Radarr-style search gate for "single"-shape types (movies): null/"announced" searches as
+   * soon as added (today's behavior), "inCinemas" waits until releaseDate has passed, "released"
+   * waits releaseDate plus the configured delay (settings' minimumAvailabilityReleasedDelayDays)
+   * — an approximation of a digital/home release window since AoNarr only stores one release date
+   * per item, not TMDB's separate per-type release dates. */
+  minimumAvailability: "announced" | "inCinemas" | "released" | null;
 }
 
 export interface Episode {

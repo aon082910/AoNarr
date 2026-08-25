@@ -22,6 +22,7 @@ import { recycleFile } from "../services/recycleBin.js";
 import { buildCalibreOpf, buildJson, buildNfo, buildPlexMatch, fetchPosterBuffer, safeFileName, type ExportableItem } from "../services/metadataExport.js";
 import { probeMediaInfo } from "../services/ffprobe.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
+import { getSetting } from "../services/settingsStore.js";
 import AdmZip from "adm-zip";
 import type { MediaType } from "../types/index.js";
 
@@ -682,8 +683,8 @@ mediaRouter.post(
     const result = await db
       .prepare(
         `INSERT INTO media_items
-         (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, status, group_id)
-         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @path, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId)`
+         (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability)
+         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @path, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability)`
       )
       .run({
         type: b.type,
@@ -699,6 +700,8 @@ mediaRouter.post(
         monitored: b.monitored ?? 1,
         status: b.status ?? "unknown",
         groupId: b.groupId ?? null,
+        releaseDate: b.releaseDate ?? null,
+        minimumAvailability: b.minimumAvailability ?? getSetting("defaultMinimumAvailability") ?? "announced",
       });
 
     const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(result.lastInsertRowid);
@@ -732,6 +735,7 @@ mediaRouter.patch(
       status: b.status,
       content_rating: b.contentRating,
       group_id: b.groupId,
+      minimum_availability: b.minimumAvailability,
     };
     const sets: string[] = [];
     const values: any[] = [];

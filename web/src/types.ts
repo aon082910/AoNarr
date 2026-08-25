@@ -85,6 +85,8 @@ export interface MediaItem {
    * children and whose own hasFile is the whole picture. */
   childCount?: number;
   childHaveCount?: number;
+  releaseDate: string | null;
+  minimumAvailability: "announced" | "inCinemas" | "released" | null;
 }
 
 export interface Indexer {

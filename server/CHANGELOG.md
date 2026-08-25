@@ -3,6 +3,28 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 130 — minimum availability (1st of the Starr feature-gap list)
+- Added Radarr-style "minimum availability" gating for single-file libraries (Movies, ROMs,
+  Adult — Movies is the real driving case): `announced` (default, today's behavior) searches as
+  soon as an item is added; `inCinemas` waits until its release date has passed; `released` waits
+  release date plus a configurable delay (default 90 days). Since AoNarr only tracks one release
+  date per item rather than TMDB's separate theatrical/digital/physical dates the way Radarr's own
+  four-tier version does, `released` is an approximation of a digital/home-release window rather
+  than a real digital-release-date lookup — disclosed in the Settings tile's own description.
+  Gates the scheduled auto-search only; manual search is never blocked, same convention as Quiet
+  Hours/Search Window.
+- New `minimum_availability` column on `media_items`, set per item (editable on its detail page,
+  defaulting to a new `defaultMinimumAvailability` setting when added) and a `minimumAvailability
+  ReleasedDelayDays` setting (default 90) — both configured from a new "Minimum Availability" tile
+  under Settings → Media Management.
+- Verified live: seeded a movie with a future release date and `inCinemas` via direct DB insert,
+  confirmed the API round-trips both new fields correctly; changed it to `released` through a real
+  UI click on the media detail page's new "Minimum availability" selector and confirmed it
+  persisted; set and confirmed the new Settings tile's default-availability field via a real UI
+  interaction. The actual auto-search skip itself is a straightforward date-comparison function
+  verified by code review (no indexers/download clients configured in this dev environment to
+  drive a full scheduler run against).
+
 ## Round 129 — SABnzbd premature-completion bug + manual import
 - Fixed a SABnzbd download getting marked as failed and never imported despite completing fine.
   `getStatus` (`server/src/services/downloadClient.ts`) reported "completed" the moment a job's

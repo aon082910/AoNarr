@@ -24,6 +24,7 @@ export function mediaItemFromRow(row: any) {
     groupId: row.group_id,
     extraMetadata: row.extra_metadata ? JSON.parse(row.extra_metadata) : {},
     releaseDate: row.release_date,
+    minimumAvailability: row.minimum_availability,
   };
 }
 

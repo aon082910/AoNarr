@@ -44,6 +44,30 @@ async function rowsToIndexers(): Promise<Indexer[]> {
   return ((await db.prepare("SELECT * FROM indexers").all()) as any[]).map(indexerFromRow);
 }
 
+/**
+ * Radarr-style "minimum availability" gate for "single"-shape items (movies, ROMs, adult — Movies
+ * is the real driving case): "announced"/null searches as soon as the item's added, same as
+ * always. "inCinemas" waits until releaseDate has passed. "released" waits releaseDate plus a
+ * configurable delay (default 90 days), an approximation of a digital/home-release window since
+ * AoNarr only stores one release date per item, not TMDB's separate theatrical/digital/physical
+ * dates the way Radarr's own four-tier version does. An item with no releaseDate at all is never
+ * gated — there's nothing to wait on, so it behaves like "announced".
+ */
+function isReleaseAvailableForSearch(item: MediaItem): boolean {
+  const availability = item.minimumAvailability;
+  if (!availability || availability === "announced") return true;
+  if (!item.releaseDate) return true;
+  const releaseDate = new Date(item.releaseDate);
+  if (isNaN(releaseDate.getTime())) return true;
+
+  const threshold = new Date(releaseDate);
+  if (availability === "released") {
+    const delayDays = Math.max(0, parseInt(getSetting("minimumAvailabilityReleasedDelayDays") ?? "90", 10) || 90);
+    threshold.setDate(threshold.getDate() + delayDays);
+  }
+  return threshold.getTime() <= Date.now();
+}
+
 async function rowsToDownloadClients(): Promise<DownloadClient[]> {
   return ((await db.prepare("SELECT * FROM download_clients WHERE enabled = 1").all()) as any[]).map(
     downloadClientFromRow
@@ -284,6 +308,10 @@ async function runAutoSearch(signal?: AbortSignal) {
 
       if (shape === "single") {
         if (item.hasFile || (await isAlreadyQueued(item.id, null, null))) continue;
+        if (!isReleaseAvailableForSearch(item)) {
+          log.info(`[scheduler] skipping "${item.title}": not yet available per its minimum-availability setting`);
+          continue;
+        }
         const query = item.year ? `${item.title} ${item.year}` : item.title;
         const results = await searchAllIndexers(indexers, query, item.type);
         const best = await chooseBestResult(

@@ -551,6 +551,25 @@ export default function MediaDetail() {
                     <td>{qualityProfile.name}</td>
                   </tr>
                 )}
+                {shape === "single" && (
+                  <tr>
+                    <th>Minimum availability</th>
+                    <td>
+                      <select
+                        value={item.minimumAvailability ?? "announced"}
+                        onChange={async (e) => {
+                          const updated = await api.patch<MediaItem>(`/media/${item.id}`, { minimumAvailability: e.target.value });
+                          setItem({ ...item, minimumAvailability: updated.minimumAvailability });
+                        }}
+                        style={{ maxWidth: 260 }}
+                      >
+                        <option value="announced">Announced — search immediately</option>
+                        <option value="inCinemas">In cinemas — wait for the release date</option>
+                        <option value="released">Released — wait release date + delay</option>
+                      </select>
+                    </td>
+                  </tr>
+                )}
                 {rootFolder && (
                   <tr>
                     <th>Root folder</th>

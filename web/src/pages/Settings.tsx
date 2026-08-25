@@ -984,6 +984,43 @@ export default function Settings() {
             ),
           },
           {
+            key: "minimumAvailability",
+            label: "Minimum Availability",
+            description: "Delay auto-search until a movie actually releases",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Applies to single-file libraries (Movies, ROMs, Adult) — set per item on its own
+                  page, defaulting to whatever's chosen here when added. "Announced" searches as
+                  soon as it's added, same as always. "In cinemas" waits until the release date
+                  AoNarr has on file has passed. "Released" waits release date plus the delay below
+                  — an approximation of a digital/home-release window, since AoNarr only tracks one
+                  release date per item rather than separate theatrical/digital/physical dates.
+                  This only gates the scheduled auto-search; a manual search is never blocked.
+                </p>
+                <label>Default for newly-added movies</label>
+                <select
+                  key={settings.defaultMinimumAvailability ?? "min-avail-empty"}
+                  defaultValue={settings.defaultMinimumAvailability ?? "announced"}
+                  onChange={(e) => saveSetting("defaultMinimumAvailability", e.target.value)}
+                >
+                  <option value="announced">Announced — search immediately</option>
+                  <option value="inCinemas">In cinemas — wait for the release date</option>
+                  <option value="released">Released — wait release date + delay below</option>
+                </select>
+                <label>"Released" delay (days after release date)</label>
+                <input
+                  type="number"
+                  min={0}
+                  style={{ maxWidth: 120 }}
+                  key={settings.minimumAvailabilityReleasedDelayDays ?? "min-avail-delay-empty"}
+                  defaultValue={settings.minimumAvailabilityReleasedDelayDays ?? "90"}
+                  onBlur={(e) => saveSetting("minimumAvailabilityReleasedDelayDays", e.target.value)}
+                />
+              </div>
+            ),
+          },
+          {
             key: "mediaServerSync",
             label: "Media Server Sync",
             description: "Watch-status sync, library scans, and auto-archival",
