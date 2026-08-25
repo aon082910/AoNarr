@@ -1254,17 +1254,152 @@ async function fetchArtworkFanart(kind: "movies" | "tv" | "music", id: string): 
   };
 }
 
+/** RAWG's screenshots endpoint is a separate per-game call (not in the search/list response) —
+ * real distinct images, unlike a provider that only offers size variants of one poster. */
+async function fetchArtworkRawg(id: string): Promise<ArtworkOptions> {
+  const key = requireSetting("rawgApiKey", "RAWG API key");
+  const res = await fetch(`https://api.rawg.io/api/games/${id}/screenshots?key=${key}`);
+  if (!res.ok) throw new Error(`RAWG screenshots lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  return { posters: (body.results ?? []).map((s: any) => s.image).filter(Boolean), backgrounds: [], logos: [] };
+}
+
+/** IGDB's cover/artworks/screenshots are all separate array fields on the same game — cover +
+ * artworks are genuinely different poster-shaped images, screenshots go in backgrounds. */
+async function fetchArtworkIgdb(id: string): Promise<ArtworkOptions> {
+  const clientId = requireSetting("igdbClientId", "IGDB Client ID");
+  const token = await getIgdbToken();
+  const res = await fetch("https://api.igdb.com/v4/games", {
+    method: "POST",
+    headers: { "Client-ID": clientId, Authorization: `Bearer ${token}`, "Content-Type": "text/plain" },
+    body: `fields cover.url,artworks.url,screenshots.url; where id = ${Number(id)};`,
+  });
+  if (!res.ok) throw new Error(`IGDB artwork lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  const g = body?.[0];
+  if (!g) return { posters: [], backgrounds: [], logos: [] };
+  const posters = [g.cover, ...(g.artworks ?? [])].map((x: any) => igdbImageUrl(x?.url, "t_cover_big")).filter((u): u is string => !!u);
+  const backgrounds = (g.screenshots ?? [])
+    .map((s: any) => igdbImageUrl(s?.url, "t_screenshot_huge"))
+    .filter((u: string | null): u is string => !!u);
+  return { posters, backgrounds, logos: [] };
+}
+
+async function fetchArtworkRom(externalIds: Record<string, string>): Promise<ArtworkOptions> {
+  if (externalIds.rawg) return fetchArtworkRawg(externalIds.rawg);
+  if (externalIds.igdb) return fetchArtworkIgdb(externalIds.igdb);
+  return { posters: [], backgrounds: [], logos: [] };
+}
+
+/** MangaDex's /cover endpoint returns every cover a manga has (often several — per-volume or
+ * per-locale reprints), genuinely distinct images unlike a size-variant-only provider. AniList's
+ * bannerImage is a second, different piece of art (not a resized coverImage), so it's a real
+ * background candidate rather than a duplicate. */
+async function fetchArtworkManga(externalIds: Record<string, string>): Promise<ArtworkOptions> {
+  const posters: string[] = [];
+  const backgrounds: string[] = [];
+
+  if (externalIds.mangadex) {
+    const res = await fetch(`https://api.mangadex.org/cover?manga[]=${encodeURIComponent(externalIds.mangadex)}&limit=100`);
+    if (res.ok) {
+      const body: any = await res.json();
+      for (const c of body.data ?? []) {
+        const fileName = c.attributes?.fileName;
+        if (fileName) posters.push(`https://uploads.mangadex.org/covers/${externalIds.mangadex}/${fileName}`);
+      }
+    }
+  }
+
+  if (externalIds.anilist) {
+    const query = `query($id:Int){Media(id:$id,type:MANGA){coverImage{extraLarge} bannerImage}}`;
+    const res = await fetch("https://graphql.anilist.co", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, variables: { id: Number(externalIds.anilist) } }),
+    });
+    if (res.ok) {
+      const body: any = await res.json();
+      const media = body?.data?.Media;
+      if (media?.coverImage?.extraLarge) posters.push(media.coverImage.extraLarge);
+      if (media?.bannerImage) backgrounds.push(media.bannerImage);
+    }
+  }
+
+  return { posters, backgrounds, logos: [] };
+}
+
+/** ComicVine's `image` object on a volume is only size variants of the same single cover — real
+ * "choices" in the sense of different resolutions to pick from, not distinct artwork the way
+ * RAWG/MangaDex offer, but still more useful than the one medium_url search already stored. */
+async function fetchArtworkComicComicVine(volumeId: string): Promise<ArtworkOptions> {
+  const key = requireSetting("comicVineApiKey", "Comic Vine API key");
+  const url = new URL("https://comicvine.gamespot.com/api/volumes/");
+  url.searchParams.set("api_key", key);
+  url.searchParams.set("format", "json");
+  url.searchParams.set("filter", `id:${volumeId}`);
+  url.searchParams.set("field_list", "image");
+  const res = await fetch(url.toString(), { headers: { "User-Agent": COMICVINE_USER_AGENT } });
+  if (!res.ok) throw new Error(`Comic Vine volume lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  const image = body.results?.[0]?.image;
+  const posters = [image?.super_url, image?.original_url, image?.screen_large_url, image?.medium_url].filter(Boolean);
+  return { posters, backgrounds: [], logos: [] };
+}
+
+/** A channel's own uploaded-video thumbnails aren't "artwork" for the channel itself — the
+ * closest YouTube has is its branding banner (a real second image, not a thumbnail size variant)
+ * plus the channel thumbnail's own size steps as poster choices. */
+async function fetchArtworkVideoYoutube(channelId: string): Promise<ArtworkOptions> {
+  const key = requireSetting("youtubeApiKey", "YouTube Data API key");
+  const res = await fetch(
+    `https://www.googleapis.com/youtube/v3/channels?part=snippet,brandingSettings&id=${encodeURIComponent(channelId)}&key=${key}`
+  );
+  if (!res.ok) throw new Error(`YouTube channel lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  const channel = body.items?.[0];
+  if (!channel) return { posters: [], backgrounds: [], logos: [] };
+  const thumbs = channel.snippet?.thumbnails ?? {};
+  const posters = [thumbs.high?.url, thumbs.medium?.url, thumbs.default?.url].filter(Boolean);
+  const banner = channel.brandingSettings?.image?.bannerExternalUrl;
+  return { posters, backgrounds: banner ? [`${banner}=w1707`] : [], logos: [] };
+}
+
+/** ThePornDB's scene detail carries a full `posters` array plus a separate `background` image —
+ * the search response only ever surfaced posters[0], so this is genuinely more than what's
+ * already stored, not a duplicate lookup. */
+async function fetchArtworkAdultThePornDb(sceneId: string): Promise<ArtworkOptions> {
+  const key = requireSetting("thePornDbApiKey", "ThePornDB API key");
+  const res = await fetch(`https://api.metadataapi.net/scenes/${sceneId}`, {
+    headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+  });
+  if (!res.ok) throw new Error(`ThePornDB scene lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  const s = body.data ?? body;
+  const posters: string[] = (s.posters ?? []).map((p: any) => p.url).filter(Boolean);
+  if (posters.length === 0 && s.image) posters.push(s.image);
+  const backgrounds: string[] = [s.background?.large, s.background?.url].filter(Boolean);
+  return { posters, backgrounds, logos: [] };
+}
+
 /**
  * Fanart.tv only supports lookup by an already-known TMDB (movies), TVDB (series), or
  * MusicBrainz (artists) id — there's no search-by-title, so this enriches an item already in the
- * library rather than being offered as an Add Media search provider.
+ * library rather than being offered as an Add Media search provider. Every other type's artwork
+ * comes from that type's own metadata provider instead of Fanart.tv, which has no coverage
+ * outside movies/TV/music — see the individual fetchArtwork* functions above for what each
+ * provider genuinely offers beyond the one poster already stored from search.
  */
 export async function fetchArtworkFor(type: MediaType, externalIds: Record<string, string>): Promise<ArtworkOptions> {
   if (type === "movie" && externalIds.tmdb) return fetchArtworkFanart("movies", externalIds.tmdb);
   if (type === "series" && externalIds.tvdb) return fetchArtworkFanart("tv", externalIds.tvdb);
   if (type === "artist" && externalIds.musicbrainz) return fetchArtworkFanart("music", externalIds.musicbrainz);
+  if (type === "rom") return fetchArtworkRom(externalIds);
+  if (type === "manga") return fetchArtworkManga(externalIds);
+  if (type === "comic" && externalIds.comicvine) return fetchArtworkComicComicVine(externalIds.comicvine);
+  if (type === "video" && externalIds.youtube) return fetchArtworkVideoYoutube(externalIds.youtube);
+  if (type === "adult" && externalIds.theporndb) return fetchArtworkAdultThePornDb(externalIds.theporndb);
   throw new Error(
-    "Artwork lookup needs a TMDB id (movies), TVDB id (series), or MusicBrainz id (artists) — this item doesn't have one"
+    "Artwork lookup isn't available for this item — either this library type has no artwork source, or this item is missing the id it needs"
   );
 }
 

@@ -1,3 +1,5 @@
+import { getMediaTypeConfig } from "./mediaTypes.js";
+
 function escapeXml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -12,9 +14,14 @@ export interface ExportableItem {
 }
 
 /** Kodi/Jellyfin/Emby-style .nfo sidecar — the same shape services/nfoParser.ts already reads
- * back in, so an exported file round-trips through Import Media's "Load NFO" unchanged. */
+ * back in, so an exported file round-trips through Import Media's "Load NFO" unchanged. Root tag
+ * follows shape, not a hardcoded type list: episodic (series/anime) and collection (Music/Books/
+ * Comics/Manga/Online Videos/Courses/...) types are all a parent-with-children folder on disk, the
+ * same structural shape Kodi's tvshow.nfo describes — "movie" is only right for a single-file item
+ * (Movies/ROMs/Adult). */
 export function buildNfo(item: ExportableItem): string {
-  const root = item.type === "series" || item.type === "anime" ? "tvshow" : "movie";
+  const shape = getMediaTypeConfig(item.type).shape;
+  const root = shape === "episodic" || shape === "collection" ? "tvshow" : "movie";
   const uniqueIds = Object.entries(item.externalIds ?? {})
     .map(([provider, id]) => `  <uniqueid type="${escapeXml(provider)}">${escapeXml(id)}</uniqueid>`)
     .join("\n");

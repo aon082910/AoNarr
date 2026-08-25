@@ -3,6 +3,36 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 150 — artwork search, NFO/Plex export, and ROM indexer breadth for the secondary libraries
+- **Artwork search extended beyond movie/series/artist (Fanart.tv)** to ROMs, Manga, Comics, Online
+  Videos, and Adult, each pulling from that type's own metadata provider instead: RAWG screenshots
+  + IGDB cover/artworks/screenshots for ROMs, MangaDex's full cover list (often several per manga)
+  + AniList's banner art for Manga, ComicVine's volume image at several resolutions for Comics, a
+  YouTube channel's branding banner + thumbnail sizes for Online Videos, and ThePornDB's full
+  posters array + background (previously only `posters[0]` was ever stored) for Adult. Courses has
+  no metadata provider at all (manual-only), so there's genuinely nothing to fetch artwork from —
+  the button is correctly absent there, not just hidden. The artwork picker also now shows a
+  Backgrounds/banners section (click to use as the poster) for types that actually have one.
+- **"Export for Plex" (.plexmatch) button** was hidden for every type except movie/series/anime —
+  the server route itself was never type-gated, so this un-gates the button everywhere; a type
+  whose external ids aren't tmdb/imdb/tvdb (i.e. everything but movie/series/anime) still exports
+  something (title/year), it's just less useful since Plex has no native library type for e.g. ROMs
+  — the button's tooltip now says so directly instead of implying it'll always help.
+- **NFO export's root tag now follows shape, not a hardcoded type list** — `<tvshow>` for episodic
+  (series/anime) and collection-shape types (Music/Books/Comics/Manga/Online Videos/Courses/...),
+  `<movie>` only for single-file items (Movies/ROMs/Adult), matching how each is actually organized
+  on disk (a parent-with-children folder vs. one file) rather than only ever describing TV shows
+  correctly and silently mislabeling every other multi-child type as a movie.
+- **ROM indexer search broadened from one category to `1000,4050`** (Console + PC/Games) — Torznab's
+  `cat=` param already accepts a comma-separated list natively, so this needed no code change, only
+  the config value; previously PC/Games (4050) alone meant every console release was invisible to
+  search.
+- Verified live: confirmed a Comic item's NFO now exports `<tvshow>` (previously would've been
+  `<movie>`) while a Movie's still exports `<movie>`; confirmed the Artwork button appears and
+  correctly dispatches to the new ComicVine artwork path (reached the "API key not configured"
+  error specific to that provider, not the old blanket "needs a TMDB/TVDB/MusicBrainz id" message);
+  confirmed "Export for Plex" renders for a Comic item.
+
 ## Round 149 — Courses site logos
 - Round 148's site-logo feature (favicon shown above a Site group's tile) covered Online Videos and
   Adult but missed Courses — its auto-detected Site group (Coursera/Udemy/edX, from the course URL

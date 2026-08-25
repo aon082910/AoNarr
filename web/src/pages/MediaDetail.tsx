@@ -940,23 +940,23 @@ export default function MediaDetail() {
               Search for a different match...
             </button>
           )}
-          {(item.type === "movie" || item.type === "series" || item.type === "anime") && (
-            <button
-              className="secondary"
-              onClick={() => downloadFile(`/media/${item.id}/export?format=plexmatch`, `.plexmatch`)}
-              title="Rename this file to exactly .plexmatch and place it in this item's own folder for Plex to pick it up"
-            >
-              Export for Plex
-            </button>
-          )}
+          <button
+            className="secondary"
+            onClick={() => downloadFile(`/media/${item.id}/export?format=plexmatch`, `.plexmatch`)}
+            title="Rename this file to exactly .plexmatch and place it in this item's own folder for Plex to pick it up. Only useful if this item's own folder is inside a library Plex is scanning as a Movie or TV Show section — Plex has no native library type for the other AoNarr libraries."
+          >
+            Export for Plex
+          </button>
           {typeInfo && typeInfo.groupLevels.length > 0 && (
             <button onClick={() => setShowMove((v) => !v)} className="secondary">
               {showMove ? "Cancel move" : "Move to group..."}
             </button>
           )}
-          {/* Fanart.tv only supports lookup by a known TMDB/TVDB/MusicBrainz id, i.e. exactly these
-              three types — this isn't a UI simplification, it's a real capability limit. */}
-          {(item.type === "movie" || item.type === "series" || item.type === "artist") && (
+          {/* Movie/series/artist go through Fanart.tv; rom/manga/comic/video/adult each pull extra
+              artwork from their own metadata provider instead (see fetchArtworkFor in metadata.ts).
+              Author/audiobook/course have no artwork source at all — Open Library/Google Books/
+              manual-only don't expose a second image to fetch, so there's nothing to offer. */}
+          {["movie", "series", "artist", "rom", "manga", "comic", "video", "adult"].includes(item.type) && (
             <button onClick={toggleArtwork} className="secondary">
               {showArtwork ? "Hide artwork" : "Artwork"}
             </button>
@@ -1089,21 +1089,37 @@ export default function MediaDetail() {
 
       {showArtwork && (
         <>
-          <h2>Artwork (via Fanart.tv)</h2>
+          <h2>Artwork</h2>
           {loadingArtwork && <p className="empty">Loading...</p>}
           {artworkError && <p style={{ color: "var(--danger)" }}>{artworkError}</p>}
           {artworkOptions && !loadingArtwork && (
             <>
-              {artworkOptions.posters.length === 0 && (
-                <p className="empty">No posters found on Fanart.tv for this item.</p>
+              {artworkOptions.posters.length === 0 && artworkOptions.backgrounds.length === 0 && (
+                <p className="empty">No extra artwork found for this item.</p>
               )}
-              <div className="grid">
-                {artworkOptions.posters.map((url, idx) => (
-                  <div key={idx} className="card" onClick={() => selectArtwork(url)}>
-                    <div className="poster" style={{ backgroundImage: `url(${url})` }} />
+              {artworkOptions.posters.length > 0 && (
+                <div className="grid">
+                  {artworkOptions.posters.map((url, idx) => (
+                    <div key={idx} className="card" onClick={() => selectArtwork(url)}>
+                      <div className="poster" style={{ backgroundImage: `url(${url})` }} />
+                    </div>
+                  ))}
+                </div>
+              )}
+              {artworkOptions.backgrounds.length > 0 && (
+                <>
+                  <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginBottom: 8 }}>
+                    Backgrounds/banners — click to use as this item's poster too.
+                  </p>
+                  <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
+                    {artworkOptions.backgrounds.map((url, idx) => (
+                      <div key={idx} className="card" onClick={() => selectArtwork(url)} style={{ padding: 0 }}>
+                        <div style={{ aspectRatio: "16/9", backgroundImage: `url(${url})`, backgroundSize: "cover", backgroundPosition: "center", borderRadius: 6 }} />
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                </>
+              )}
             </>
           )}
         </>
