@@ -4,6 +4,22 @@ export interface SubtitleSearchResult {
   fileId: number | null;
   downloadUrl: string;
   provider: string;
+  /** Only ever populated for OpenSubtitles results — "custom" providers have no equivalent
+   * concept AoNarr can generically read via a dot-path field mapping. */
+  hearingImpaired?: boolean;
+  foreignPartsOnly?: boolean;
+  movieHashMatch?: boolean;
+  downloadCount?: number;
+}
+
+/** "" (no preference — don't filter, OpenSubtitles' own default) / "exclude" / "only". Maps
+ * directly to OpenSubtitles' own `hearing_impaired`/`foreign_parts_only` query param values. */
+export type SubtitleFilterPref = "" | "exclude" | "only";
+
+export interface SubtitleSearchOptions {
+  hearingImpaired?: SubtitleFilterPref;
+  /** "Forced" subtitles (foreign-dialogue-only) — OpenSubtitles calls this foreign_parts_only. */
+  foreignPartsOnly?: SubtitleFilterPref;
 }
 
 /**
@@ -13,11 +29,14 @@ export interface SubtitleSearchResult {
 export async function searchSubtitles(
   apiKey: string,
   fileName: string,
-  languages: string
+  languages: string,
+  options: SubtitleSearchOptions = {}
 ): Promise<SubtitleSearchResult[]> {
   const url = new URL("https://api.opensubtitles.com/api/v1/subtitles");
   url.searchParams.set("query", fileName);
   url.searchParams.set("languages", languages);
+  if (options.hearingImpaired) url.searchParams.set("hearing_impaired", options.hearingImpaired);
+  if (options.foreignPartsOnly) url.searchParams.set("foreign_parts_only", options.foreignPartsOnly);
 
   const res = await fetch(url.toString(), {
     headers: { "Api-Key": apiKey, "Content-Type": "application/json" },
@@ -34,7 +53,28 @@ export async function searchSubtitles(
     fileId: d.attributes?.files?.[0]?.file_id ?? null,
     downloadUrl: d.attributes?.url ?? "",
     provider: "opensubtitles",
+    hearingImpaired: !!d.attributes?.hearing_impaired,
+    foreignPartsOnly: !!d.attributes?.foreign_parts_only,
+    movieHashMatch: !!d.attributes?.moviehash_match,
+    downloadCount: Number(d.attributes?.download_count ?? 0),
   }));
+}
+
+/**
+ * Picks the best candidate from a set of OpenSubtitles results: an exact moviehash match is
+ * always the most reliable signal available (the file itself matched byte-for-byte against a
+ * known release), so it wins outright regardless of popularity; otherwise the most-downloaded
+ * result is used as a popularity/trust proxy, since OpenSubtitles' v1 API doesn't expose a single
+ * normalized "confidence" score the way a hash match does. Falls back to the first result with a
+ * fileId (the old behavior) when neither signal is available (e.g. a "custom" provider result,
+ * which never carries these fields).
+ */
+export function pickBestSubtitle(results: SubtitleSearchResult[]): SubtitleSearchResult | undefined {
+  const withFile = results.filter((r) => r.fileId !== null || r.provider === "custom");
+  if (withFile.length === 0) return undefined;
+  const hashMatch = withFile.find((r) => r.movieHashMatch);
+  if (hashMatch) return hashMatch;
+  return [...withFile].sort((a, b) => (b.downloadCount ?? 0) - (a.downloadCount ?? 0))[0];
 }
 
 /**

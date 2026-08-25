@@ -58,15 +58,14 @@ subtitlesRouter.get(
       .get()) as any;
     if (!provider) throw new HttpError(400, "No enabled subtitle provider configured");
 
+    const parsedConfig = provider.config ? JSON.parse(provider.config) : {};
     const results =
       provider.type === "custom"
-        ? await searchCustomSubtitles(
-            JSON.parse(provider.config ?? "{}") as CustomSubtitleProviderConfig,
-            provider.api_key,
-            fileName,
-            provider.languages
-          )
-        : await searchSubtitles(provider.api_key, fileName, provider.languages);
+        ? await searchCustomSubtitles(parsedConfig as CustomSubtitleProviderConfig, provider.api_key, fileName, provider.languages)
+        : await searchSubtitles(provider.api_key, fileName, provider.languages, {
+            hearingImpaired: parsedConfig.hearingImpaired,
+            foreignPartsOnly: parsedConfig.foreignPartsOnly,
+          });
     res.json(results);
   })
 );

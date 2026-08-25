@@ -11,6 +11,7 @@ import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from 
 import {
   downloadSubtitleContent,
   downloadSubtitleFromUrl,
+  pickBestSubtitle,
   searchCustomSubtitles,
   searchSubtitles,
   type CustomSubtitleProviderConfig,
@@ -38,15 +39,19 @@ async function tryDownloadSubtitle(videoPath: string, mediaItemId: number): Prom
 
   try {
     const isCustom = provider.type === "custom";
+    const parsedConfig = provider.config ? JSON.parse(provider.config) : {};
     const results = isCustom
       ? await searchCustomSubtitles(
-          JSON.parse(provider.config ?? "{}") as CustomSubtitleProviderConfig,
+          parsedConfig as CustomSubtitleProviderConfig,
           provider.api_key,
           path.basename(videoPath),
           provider.languages
         )
-      : await searchSubtitles(provider.api_key!, path.basename(videoPath), provider.languages);
-    const best = isCustom ? results[0] : results.find((r) => r.fileId !== null);
+      : await searchSubtitles(provider.api_key!, path.basename(videoPath), provider.languages, {
+          hearingImpaired: parsedConfig.hearingImpaired,
+          foreignPartsOnly: parsedConfig.foreignPartsOnly,
+        });
+    const best = pickBestSubtitle(results);
     if (!best) return;
 
     const content = isCustom

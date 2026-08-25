@@ -3,6 +3,27 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 134 — subtitle hearing-impaired/forced preference + smarter pick (5th of the list)
+- Added Bazarr-style subtitle refinements to the existing OpenSubtitles integration: an
+  OpenSubtitles provider can now require or exclude hearing-impaired subtitles, and separately
+  require or exclude "forced" (foreign-dialogue-only) subtitles, via two new selects on its add
+  form — stored in the provider's existing `config` JSON column (previously only used by Custom
+  providers) and passed straight through as OpenSubtitles' own `hearing_impaired`/
+  `foreign_parts_only` query params.
+- Replaced the "just take the first result with a file id" pick with `pickBestSubtitle()`: an
+  exact moviehash match (OpenSubtitles' own byte-for-byte file match, the most reliable signal
+  available) wins outright when present; otherwise the most-downloaded result is used as a
+  popularity/trust proxy, since OpenSubtitles' v1 API has no single normalized confidence score
+  the way a hash match does. A "custom" provider (no such fields to read) still just takes the
+  first result, unchanged.
+- Verified: unit-tested `pickBestSubtitle()` directly — hash match wins over a much-more-downloaded
+  non-match, highest download count wins when no hash match exists, custom-provider behavior is
+  byte-for-byte unchanged; added a real OpenSubtitles provider through the Settings UI with both
+  new selects set (Exclude hearing-impaired, Require forced) via real clicks and confirmed the
+  exact preference values round-tripped into the database's stored config. An actual live
+  OpenSubtitles search/download isn't verified here for lack of a real API key in this dev
+  environment — same disclosed limitation as other rounds depending on third-party credentials.
+
 ## Round 133 — bulk "Rename Files" (4th of the Starr feature-gap list)
 - Added Sonarr/Radarr-style "Rename Files" — a bulk action (System → Maintenance, optionally
   scoped to one library type) that retroactively re-renames every already-imported file whose

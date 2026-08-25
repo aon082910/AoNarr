@@ -266,6 +266,8 @@ export default function Settings() {
   const [subDownloadUrlField, setSubDownloadUrlField] = useState("downloadUrl");
   const [subLanguageField, setSubLanguageField] = useState("language");
   const [subReleaseField, setSubReleaseField] = useState("release");
+  const [subHearingImpaired, setSubHearingImpaired] = useState("");
+  const [subForeignPartsOnly, setSubForeignPartsOnly] = useState("");
 
   const [tagName, setTagName] = useState("");
 
@@ -646,7 +648,16 @@ export default function Settings() {
     e.preventDefault();
     if (subType === "opensubtitles") {
       if (!subApiKey) return;
-      await api.post("/subtitles/providers", { name: subName, type: subType, apiKey: subApiKey, languages: subLanguages });
+      await api.post("/subtitles/providers", {
+        name: subName,
+        type: subType,
+        apiKey: subApiKey,
+        languages: subLanguages,
+        config: {
+          ...(subHearingImpaired ? { hearingImpaired: subHearingImpaired } : {}),
+          ...(subForeignPartsOnly ? { foreignPartsOnly: subForeignPartsOnly } : {}),
+        },
+      });
     } else {
       if (!subSearchUrlTemplate || !subDownloadUrlField) return;
       await api.post("/subtitles/providers", {
@@ -2095,6 +2106,18 @@ export default function Settings() {
                     <>
                       <label>OpenSubtitles API key</label>
                       <input value={subApiKey} onChange={(e) => setSubApiKey(e.target.value)} required />
+                      <label>Hearing-impaired subtitles</label>
+                      <select value={subHearingImpaired} onChange={(e) => setSubHearingImpaired(e.target.value)}>
+                        <option value="">No preference (either)</option>
+                        <option value="exclude">Exclude</option>
+                        <option value="only">Require</option>
+                      </select>
+                      <label>Forced subtitles (foreign-dialogue-only)</label>
+                      <select value={subForeignPartsOnly} onChange={(e) => setSubForeignPartsOnly(e.target.value)}>
+                        <option value="">No preference (either)</option>
+                        <option value="exclude">Exclude</option>
+                        <option value="only">Require</option>
+                      </select>
                     </>
                   ) : (
                     <>
