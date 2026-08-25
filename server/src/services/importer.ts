@@ -198,6 +198,23 @@ export function findDownloadedFile(
   return best.score >= 0.4 ? best.filePath : null;
 }
 
+/**
+ * Lists every file under the downloads directory whose extension matches the given media type,
+ * newest-first, for the Activity page's manual-import picker — the same universe of files
+ * `findDownloadedFile` searches, just without the fuzzy title match/score threshold, since a
+ * manual pick means the admin is choosing by eye instead.
+ */
+export function listDownloadedFileCandidates(mediaType: MediaType): { path: string; size: number; mtimeMs: number }[] {
+  const extensions = getMediaTypeConfig(mediaType).extensions;
+  const candidates = walk(config.downloadsDir, extensions, 4);
+  return candidates
+    .map((filePath) => {
+      const stat = fs.statSync(filePath);
+      return { path: filePath, size: stat.size, mtimeMs: stat.mtimeMs };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
 function moveFile(src: string, dest: string): void {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   try {
@@ -517,8 +534,14 @@ export async function placeSeasonPackFiles(params: {
   return { destFolder, episodeCount: importedCount };
 }
 
-/** Locates, moves, and links the downloaded file(s) for a completed queue entry. Throws on failure. */
-export async function importQueueItem(queueItemId: number): Promise<void> {
+/**
+ * Locates, moves, and links the downloaded file(s) for a completed queue entry. Throws on failure.
+ * `manualSourceFile`, when given, skips the automatic `findDownloadedFile` fuzzy match entirely and
+ * uses that exact path instead — the manual-import path (Activity page) for a file the automatic
+ * matcher couldn't find or picked wrong; it's the admin's own explicit choice at that point, so no
+ * confidence threshold applies the way it does for the automatic match.
+ */
+export async function importQueueItem(queueItemId: number, manualSourceFile?: string): Promise<void> {
   const queueRow = await db.prepare("SELECT * FROM queue WHERE id = ?").get(queueItemId);
   if (!queueRow) throw new Error(`Queue item ${queueItemId} not found`);
   const queueItem = queueItemFromRow(queueRow);
@@ -535,8 +558,21 @@ export async function importQueueItem(queueItemId: number): Promise<void> {
     episodeTarget = { season: epRow.season_number, episode: epRow.episode_number };
   }
 
-  await unpackDownloadedArchives();
-  const sourceFile = findDownloadedFile(queueItem.title, item.type, episodeTarget);
+  let sourceFile: string | null;
+  if (manualSourceFile) {
+    const resolvedDownloadsDir = path.resolve(config.downloadsDir);
+    const resolved = path.resolve(manualSourceFile);
+    if (resolved !== resolvedDownloadsDir && !resolved.startsWith(resolvedDownloadsDir + path.sep)) {
+      throw new Error("Selected file must be inside the downloads directory");
+    }
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+      throw new Error("Selected file no longer exists");
+    }
+    sourceFile = resolved;
+  } else {
+    await unpackDownloadedArchives();
+    sourceFile = findDownloadedFile(queueItem.title, item.type, episodeTarget);
+  }
   if (!sourceFile) {
     throw new Error(`No matching file found in downloads directory for "${queueItem.title}"`);
   }

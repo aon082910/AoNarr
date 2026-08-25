@@ -210,22 +210,64 @@ class SabnzbdAdapter implements DownloadClientAdapter {
     return { downloadId };
   }
 
-  async getStatus(client: DownloadClient, _downloadIds: string[]): Promise<QueueStatusUpdate[]> {
-    const url = new URL(`${baseUrl(client)}/api`);
-    url.searchParams.set("mode", "queue");
-    url.searchParams.set("apikey", client.apiKey ?? "");
-    url.searchParams.set("output", "json");
+  /**
+   * SABnzbd reaches 100% progress well before a job is actually done — it still has to verify,
+   * repair, extract, and move the result, all while sitting in the queue with `percentage: "100"`
+   * and a `status` like "Verifying"/"Repairing"/"Extracting"/"Moving"/"Running" (a post-processing
+   * script). Reporting "completed" the moment percentage hits 100 (the previous behavior) had the
+   * importer race that post-processing and fail to find the final file — which surfaced as "grab
+   * succeeded, import failed, marked as failed" for a download that, moments later, finished fine.
+   * A job only truly finishes once it leaves the queue entirely and appears in SABnzbd's history,
+   * so real completion (and real failure) is only detected there — the queue is checked first
+   * since most active downloads are still there, and only the ids that have disappeared from it
+   * get looked up in history.
+   */
+  async getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
+    const queueUrl = new URL(`${baseUrl(client)}/api`);
+    queueUrl.searchParams.set("mode", "queue");
+    queueUrl.searchParams.set("apikey", client.apiKey ?? "");
+    queueUrl.searchParams.set("output", "json");
+    const queueRes = await fetch(queueUrl.toString());
+    if (!queueRes.ok) throw new Error(`SABnzbd status failed: HTTP ${queueRes.status}`);
+    const queueBody: any = await queueRes.json();
+    const slots: any[] = queueBody?.queue?.slots ?? [];
 
-    const res = await fetch(url.toString());
-    if (!res.ok) throw new Error(`SABnzbd status failed: HTTP ${res.status}`);
-    const body: any = await res.json();
-    const slots: any[] = body?.queue?.slots ?? [];
+    const updates: QueueStatusUpdate[] = [];
+    const inQueueIds = new Set<string>();
+    for (const s of slots) {
+      inQueueIds.add(s.nzo_id);
+      updates.push({
+        downloadId: s.nzo_id,
+        progress: s.percentage ? Number(s.percentage) / 100 : 0,
+        status: s.status === "Failed" ? "failed" : "downloading",
+      });
+    }
 
-    return slots.map((s) => ({
-      downloadId: s.nzo_id,
-      progress: s.percentage ? Number(s.percentage) / 100 : 0,
-      status: s.status === "Failed" ? "failed" : s.percentage === "100" ? "completed" : "downloading",
-    }));
+    const missingIds = downloadIds.filter((id) => !inQueueIds.has(id));
+    if (missingIds.length > 0) {
+      const historyUrl = new URL(`${baseUrl(client)}/api`);
+      historyUrl.searchParams.set("mode", "history");
+      historyUrl.searchParams.set("apikey", client.apiKey ?? "");
+      historyUrl.searchParams.set("output", "json");
+      historyUrl.searchParams.set("nzo_ids", missingIds.join(","));
+      const historyRes = await fetch(historyUrl.toString());
+      if (historyRes.ok) {
+        const historyBody: any = await historyRes.json();
+        const historySlots: any[] = historyBody?.history?.slots ?? [];
+        for (const h of historySlots) {
+          updates.push({
+            downloadId: h.nzo_id,
+            progress: 1,
+            status: h.status === "Failed" ? "failed" : "completed",
+          });
+        }
+      }
+      // An id found in neither the queue nor history (not indexed yet, or genuinely gone) is left
+      // out of the result entirely — the caller leaves that queue row untouched until next poll,
+      // same as it already does for any id this adapter simply doesn't report on.
+    }
+
+    return updates;
   }
 
   /** SABnzbd doesn't have a "move to top" call directly, but setting priority to Force (2, the

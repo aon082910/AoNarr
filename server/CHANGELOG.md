@@ -3,6 +3,37 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 129 — SABnzbd premature-completion bug + manual import
+- Fixed a SABnzbd download getting marked as failed and never imported despite completing fine.
+  `getStatus` (`server/src/services/downloadClient.ts`) reported "completed" the moment a job's
+  queue percentage hit 100 — but SABnzbd still has to verify/repair/extract/move the result after
+  that, all while sitting in the queue at 100% with a status like "Extracting" or "Repairing". The
+  importer raced that post-processing, didn't find the final file yet, and the queue item got
+  marked failed on the very first (premature) attempt — never retried, since a failed import moves
+  on to searching for a different release instead of re-trying the same one. Real completion (and
+  real failure) can only be told apart once a job actually leaves the queue and lands in SABnzbd's
+  history, so `getStatus` now checks the queue first and, for any id that's disappeared from it,
+  looks it up in history instead of guessing from percentage alone.
+- Added manual-import to the Activity page for exactly this kind of case (or any other reason the
+  automatic matcher can't find/place a file on its own): a "Retry import" button re-runs the
+  automatic matcher against a `failed`/`completed` queue row, and a "Manual import..." button opens
+  a picker listing every file in the downloads directory matching that library's file types
+  (newest first) so the admin can point AoNarr at the right one directly, bypassing the fuzzy
+  title-match entirely. New `POST /api/activity/queue/:id/retry-import`, `GET
+  /api/activity/queue/:id/import-candidates`, and `POST /api/activity/queue/:id/manual-import`
+  routes; the last two reuse `importer.ts`'s existing placement logic via a new optional
+  `manualSourceFile` argument on `importQueueItem`, with a path-traversal guard confirming the
+  picked file is actually inside the downloads directory.
+- Verified live end-to-end against a real SQLite instance: seeded a failed queue item plus a
+  correctly-named file, confirmed "Retry import" found it via the existing fuzzy matcher and
+  imported it; seeded a second failed item with a deliberately unrelated filename the fuzzy matcher
+  would never pick, confirmed "Manual import..." lists it and importing it via a real UI click
+  works; confirmed the path-traversal guard rejects a file outside the downloads directory (tried
+  `/etc/passwd`). No live SABnzbd instance available to reproduce the original race directly — the
+  `getStatus` fix is verified by code inspection and against SABnzbd's documented API behavior
+  (queue percentage reaching 100% while `status` is still a post-processing stage, then the job
+  disappearing from the queue into history on true completion).
+
 ## Round 128 — AllDebrid grabs hanging forever (4th pass on #1)
 - Found a second, independent bug in the same `/magnet/status` polling loop the previous round's
   fix touched: AllDebrid's `data.magnets` is **always an array** — even filtered down to a single

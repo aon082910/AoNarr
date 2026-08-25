@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
 import { api, getApiKey, getSessionToken } from "../api/client.js";
+import Modal from "../components/Modal.js";
 import type { QueueItem } from "../types.js";
+
+interface ImportCandidate {
+  path: string;
+  size: number;
+  mtimeMs: number;
+}
 
 interface TimelineEntry {
   timestamp: string;
@@ -24,6 +31,11 @@ const TIMELINE_LABELS: Record<string, string> = {
 export default function Activity() {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
+  const [retrying, setRetrying] = useState<number | null>(null);
+  const [manualImportFor, setManualImportFor] = useState<QueueItem | null>(null);
+  const [candidates, setCandidates] = useState<ImportCandidate[] | null>(null);
+  const [candidatesError, setCandidatesError] = useState<string | null>(null);
+  const [importing, setImporting] = useState<string | null>(null);
 
   function load() {
     api.get<QueueItem[]>("/activity/queue").then(setQueue);
@@ -67,6 +79,48 @@ export default function Activity() {
     } catch (e) {
       alert((e as Error).message);
     }
+  }
+
+  async function retryImport(id: number) {
+    setRetrying(id);
+    try {
+      await api.post(`/activity/queue/${id}/retry-import`, {});
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setRetrying(null);
+    }
+  }
+
+  function openManualImport(item: QueueItem) {
+    setManualImportFor(item);
+    setCandidates(null);
+    setCandidatesError(null);
+    api
+      .get<ImportCandidate[]>(`/activity/queue/${item.id}/import-candidates`)
+      .then(setCandidates)
+      .catch((e) => setCandidatesError((e as Error).message));
+  }
+
+  async function manualImport(sourceFile: string) {
+    if (!manualImportFor) return;
+    setImporting(sourceFile);
+    try {
+      await api.post(`/activity/queue/${manualImportFor.id}/manual-import`, { sourceFile });
+      setManualImportFor(null);
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setImporting(null);
+    }
+  }
+
+  function formatSize(bytes: number): string {
+    if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(2)} GB`;
+    if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
+    return `${(bytes / 1e3).toFixed(0)} KB`;
   }
 
   return (
@@ -122,6 +176,16 @@ export default function Activity() {
                       Prioritize
                     </button>
                   )}
+                  {(q.status === "failed" || q.status === "completed") && (
+                    <>
+                      <button className="secondary" disabled={retrying === q.id} onClick={() => retryImport(q.id)}>
+                        {retrying === q.id ? "Retrying..." : "Retry import"}
+                      </button>
+                      <button className="secondary" onClick={() => openManualImport(q)}>
+                        Manual import...
+                      </button>
+                    </>
+                  )}
                   <button className="danger" onClick={() => remove(q.id)}>
                     Remove
                   </button>
@@ -171,6 +235,45 @@ export default function Activity() {
             ))}
           </tbody>
         </table>
+      )}
+
+      {manualImportFor && (
+        <Modal title={`Manual import — ${manualImportFor.title}`} onClose={() => setManualImportFor(null)} maxWidth={640}>
+          <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
+            Files found in the downloads directory matching this library's file types, newest
+            first. Pick the one that's actually this download if AoNarr couldn't find or match it
+            automatically.
+          </p>
+          {candidatesError && <p style={{ color: "var(--danger)" }}>{candidatesError}</p>}
+          {candidates === null && !candidatesError && <p className="empty">Loading...</p>}
+          {candidates !== null && candidates.length === 0 && (
+            <p className="empty">No matching files found in the downloads directory.</p>
+          )}
+          {candidates !== null && candidates.length > 0 && (
+            <table>
+              <thead>
+                <tr>
+                  <th>Path</th>
+                  <th>Size</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {candidates.map((c) => (
+                  <tr key={c.path}>
+                    <td style={{ fontFamily: "monospace", fontSize: "0.8rem", wordBreak: "break-all" }}>{c.path}</td>
+                    <td>{formatSize(c.size)}</td>
+                    <td>
+                      <button disabled={importing === c.path} onClick={() => manualImport(c.path)}>
+                        {importing === c.path ? "Importing..." : "Import"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Modal>
       )}
     </div>
   );

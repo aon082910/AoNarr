@@ -1,9 +1,10 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
-import { downloadClientFromRow, historyEventFromRow, queueItemFromRow } from "../db/mappers.js";
+import { downloadClientFromRow, historyEventFromRow, mediaItemFromRow, queueItemFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
+import { importQueueItem, listDownloadedFileCandidates } from "../services/importer.js";
 import { notifyQueueChanged, registerQueueStreamClient, unregisterQueueStreamClient } from "../services/realtime.js";
 
 export const activityRouter = Router();
@@ -84,6 +85,58 @@ activityRouter.post(
     await adapter.setPriority(client, queueRow.download_id, priority);
     notifyQueueChanged();
     res.json({ ok: true });
+  })
+);
+
+/** Re-runs the automatic importer against a queue item — for a "completed" or "failed" row whose
+ * file wasn't found or matched the first time (e.g. it finished extracting/repairing moments after
+ * AoNarr gave up, or a transient filesystem hiccup) but should resolve cleanly now without needing
+ * the admin to pick a file by hand. */
+activityRouter.post(
+  "/queue/:id/retry-import",
+  asyncHandler(async (req, res) => {
+    const queueRow = await db.prepare("SELECT * FROM queue WHERE id = ?").get(req.params.id);
+    if (!queueRow) throw new HttpError(404, "Queue item not found");
+    try {
+      await importQueueItem(Number(req.params.id));
+      res.json({ ok: true });
+    } catch (err) {
+      throw new HttpError(422, (err as Error).message);
+    }
+  })
+);
+
+/** Lists files in the downloads directory that could plausibly be this queue item's download, for
+ * the Activity page's "Manual import..." picker — same extension universe the automatic matcher
+ * searches, just without its fuzzy-match score cutoff, since the admin is choosing by eye. */
+activityRouter.get(
+  "/queue/:id/import-candidates",
+  asyncHandler(async (req, res) => {
+    const queueRow = (await db.prepare("SELECT * FROM queue WHERE id = ?").get(req.params.id)) as any;
+    if (!queueRow) throw new HttpError(404, "Queue item not found");
+    const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(queueRow.media_item_id);
+    if (!mediaRow) throw new HttpError(404, "Media item not found");
+    const item = mediaItemFromRow(mediaRow);
+    res.json(listDownloadedFileCandidates(item.type));
+  })
+);
+
+/** Imports a queue item using an explicit file path the admin picked, bypassing the automatic
+ * fuzzy title match entirely — the escape hatch for when it can't find or misidentifies the file
+ * on its own. */
+activityRouter.post(
+  "/queue/:id/manual-import",
+  asyncHandler(async (req, res) => {
+    const sourceFile = req.body?.sourceFile;
+    if (!sourceFile || typeof sourceFile !== "string") throw new HttpError(400, "sourceFile is required");
+    const queueRow = await db.prepare("SELECT * FROM queue WHERE id = ?").get(req.params.id);
+    if (!queueRow) throw new HttpError(404, "Queue item not found");
+    try {
+      await importQueueItem(Number(req.params.id), sourceFile);
+      res.json({ ok: true });
+    } catch (err) {
+      throw new HttpError(422, (err as Error).message);
+    }
   })
 );
 
