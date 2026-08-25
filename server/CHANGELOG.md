@@ -3,6 +3,17 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 149 — Courses site logos
+- Round 148's site-logo feature (favicon shown above a Site group's tile) covered Online Videos and
+  Adult but missed Courses — its auto-detected Site group (Coursera/Udemy/edX, from the course URL
+  importer) was created without the `website` param the favicon fetch needs, so it never got a logo.
+  Now passes it through, same as everywhere else; an existing Coursera/Udemy/edX group from before
+  this fix gets backfilled with a logo the next time a course URL from that site is imported, rather
+  than staying tile-less until someone edits it by hand. The generic tile-rendering code (Round 148)
+  already worked for any group type, so this was purely a missing `website` param, not new rendering.
+- Verified live: created a Coursera Site group through the same `website` param the course-URL
+  import path now sends, confirmed the favicon renders on the Courses library tile.
+
 ## Round 148 — ROM metadata auto-fetch, merge-table fixes, ffprobe safety fixes, per-item scan/refresh, group logos
 - **ROMs Add Media now auto-fetches System, Maker, and Overview.** RAWG/IGDB's search results never
   carried these (only their per-game detail lookup does) — picking a search result now follows up

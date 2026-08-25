@@ -24,11 +24,11 @@ const COURSE_SITE_NAMES: Record<string, string> = {
   "edx.org": "edX",
 };
 
-function detectCourseSite(url: string): string | null {
+function detectCourseSite(url: string): { name: string; domain: string } | null {
   try {
     const hostname = new URL(url).hostname.replace(/^www\./, "");
     for (const [domain, name] of Object.entries(COURSE_SITE_NAMES)) {
-      if (hostname === domain || hostname.endsWith(`.${domain}`)) return name;
+      if (hostname === domain || hostname.endsWith(`.${domain}`)) return { name, domain };
     }
   } catch {
     // not a valid URL — caller already validated this before getting here
@@ -289,8 +289,19 @@ export default function AddMedia() {
       const site = detectCourseSite(courseUrl.trim());
       if (site) {
         const groups = await api.get<LibraryGroup[]>("/library-groups?mediaType=course");
-        const existing = groups.find((g) => g.name.toLowerCase() === site.toLowerCase());
-        const group = existing ?? (await api.post<LibraryGroup>("/library-groups", { mediaType: "course", kind: "site", name: site }));
+        const existing = groups.find((g) => g.name.toLowerCase() === site.name.toLowerCase());
+        // A Site group created before this feature existed has no logo yet — backfill it here
+        // rather than leaving it tile-less forever until someone happens to edit the group by hand.
+        const group =
+          existing && !existing.logoUrl
+            ? await api.patch<LibraryGroup>(`/library-groups/${existing.id}`, { name: existing.name, website: site.domain })
+            : existing ??
+              (await api.post<LibraryGroup>("/library-groups", {
+                mediaType: "course",
+                kind: "site",
+                name: site.name,
+                website: site.domain,
+              }));
         setCourseSiteGroupId(group.id);
       }
     } catch (err) {
