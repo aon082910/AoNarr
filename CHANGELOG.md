@@ -3,6 +3,34 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 121 — library filter/pagination regressions, AllDebrid "no files" fix
+- Fixed a real regression from Round 113's pagination work: the status filter's `localStorage` key
+  (`aonarr_library_status`) was global, not per library type — picking "Downloaded" on Movies
+  silently made every other library (Series, Music, ...) load with the same `has_file = 1` filter
+  applied, since they all read/wrote the same key. Namespaced per type
+  (`aonarr_library_status_${type}`/`aonarr_library_sort_${type}`), plus a re-sync effect for the
+  case where the component doesn't remount when switching type on the same route.
+- Fixed a second regression from the same round: pagination's `page` lived in plain React state,
+  invisible to the URL — navigating to a media item and back reset the library to page 1 no matter
+  which page was actually being browsed. `page` now lives in the URL (`?page=N`) via
+  `useSearchParams`, so browser back/forward restores it like any other navigable state. Verified
+  live: set Movies to "Downloaded" (correctly showed only the 1 downloaded item), navigated to
+  Series (correctly showed all 65 unfiltered), paged to page 2, opened an item, pressed back —
+  landed back on `?page=2`, not page 1.
+- Fixed GitHub issue #1's third recurrence (AllDebrid grabs failing) — the real root cause this
+  time: AllDebrid's `/magnet/status` endpoint stopped including a `links` field entirely as of
+  their v4.1 API (file/link data moved to a dedicated `POST /v4/magnet/files` endpoint) — the
+  adapter was still reading `magnet.links` from the v4.1 status response, which had already gone
+  from "has the wrong shape" (the previous two fixes) to "doesn't exist there at all", producing
+  "AllDebrid reported no files" on every grab that actually finished caching successfully. Added
+  `callFiles()`, which calls the dedicated endpoint and recursively flattens its file-tree response
+  (files carry `n`/`s`/`l`; folders carry `n`/`e` with nested children) into the flat link list the
+  rest of the download loop already expects.
+- Verified the fix against AllDebrid's documented v4/v4.1 API response shapes (via their published
+  docs, since testing requires a live premium account this environment doesn't have) — commented on
+  the issue explaining the root cause and asking the reporter to confirm against their real setup
+  before closing, rather than claiming it's resolved a third time without their confirmation.
+
 ## Round 120 — accessibility pass
 - `Modal.tsx` (used by every "Add X" flow across the app) now: traps Tab/Shift+Tab focus within the
   dialog instead of letting it escape to inert page content behind the overlay, closes on Escape,

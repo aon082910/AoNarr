@@ -496,6 +496,42 @@ class AllDebridAdapter implements DownloadClientAdapter {
     return body.data;
   }
 
+  /**
+   * `/magnet/status` on the v4.1 base URL (used below for polling caching progress) no longer
+   * includes a `links` field at all as of AllDebrid's v4.1 API — file/link data was split out into
+   * this dedicated endpoint. Reading `magnet.links` from the v4.1 status response (the previous
+   * bug — statusCode reached 4/"Ready" correctly, but `links` was always empty since it doesn't
+   * exist there anymore) is what produced "AllDebrid reported no files" on every single grab
+   * despite AllDebrid having genuinely finished caching the magnet.
+   *
+   * Response entries are a tree: a file has `n` (name)/`s` (size)/`l` (direct link); a folder has
+   * `n`/`e` (child entries, files or nested folders) and no `l` — recursed here into one flat list.
+   */
+  private async callFiles(client: DownloadClient, magnetId: string): Promise<{ link: string; filename: string }[]> {
+    const url = new URL(`${this.base}/magnet/files`);
+    url.searchParams.set("agent", this.agent);
+    url.searchParams.set("apikey", client.apiKey ?? "");
+    const res = await fetch(url.toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ "id[]": magnetId }),
+    });
+    if (!res.ok) throw new Error(`AllDebrid request failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+    if (body.status === "error") throw new Error(`AllDebrid: ${body.error?.message ?? body.error?.code ?? "unknown error"}`);
+
+    const entries: any[] = body.data?.magnets?.[0]?.files ?? [];
+    const flat: { link: string; filename: string }[] = [];
+    function walk(nodes: any[]) {
+      for (const node of nodes) {
+        if (node.l) flat.push({ link: node.l, filename: node.n });
+        else if (Array.isArray(node.e)) walk(node.e);
+      }
+    }
+    walk(entries);
+    return flat;
+  }
+
   /** .torrent bytes go through the multipart file-upload endpoint rather than /magnet/upload —
    * AllDebrid's magnets[] param only accepts a magnet URI or an http(s) URL it fetches itself, not
    * raw file bytes AoNarr already has in hand. */
@@ -553,7 +589,7 @@ class AllDebridAdapter implements DownloadClientAdapter {
           if (!magnet) throw new Error("AllDebrid returned no status for this magnet");
           if (magnet.statusCode >= 5) throw new Error(`AllDebrid reported "${magnet.status}"`);
           if (magnet.statusCode === 4) {
-            links = (magnet.links ?? []).map((l: any) => ({ link: l.link, filename: l.filename }));
+            links = await this.callFiles(client, String(magnetId));
             break;
           }
           const total = magnet.size || 1;

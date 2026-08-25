@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, downloadFile, uploadFormFile } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
@@ -295,16 +295,37 @@ export function LibraryItemGrid({
   const childLabelPlural = typeInfo?.shape === "episodic" ? "episodes" : `${(typeInfo?.childLabel ?? "item").toLowerCase()}s`;
   const [tags, setTags] = useState<Tag[]>([]);
   const [tagFilter, setTagFilter] = useState<number | "all">("all");
+  // Bug fix: these two used to be stored under one global key shared by every library type — the
+  // moment a user picked "Downloaded" on Movies, that leaked into Series/Music/every other library
+  // they visited afterward, since they all read/wrote the same key. Namespaced per type so each
+  // library remembers its own filter/sort independently.
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(
-    () => (localStorage.getItem("aonarr_library_status") as StatusFilter) || "all"
+    () => (localStorage.getItem(`aonarr_library_status_${type}`) as StatusFilter) || "all"
   );
-  const [sortKey, setSortKey] = useState<SortKey>(() => (localStorage.getItem("aonarr_library_sort") as SortKey) || "added");
+  const [sortKey, setSortKey] = useState<SortKey>(() => (localStorage.getItem(`aonarr_library_sort_${type}`) as SortKey) || "added");
   const [viewMode, setViewMode] = useState<ViewMode>(() => (localStorage.getItem("aonarr_library_view") as ViewMode) || "poster");
   const [posterSize, setPosterSize] = useState<PosterSize>(() => (localStorage.getItem("aonarr_library_poster_size") as PosterSize) || "medium");
   const [listColumns, setListColumns] = useState<Set<ExtraField>>(() => loadFieldSet("aonarr_library_columns", DEFAULT_LIST_COLUMNS));
   const [posterFields, setPosterFields] = useState<Set<ExtraField>>(() => loadFieldSet("aonarr_library_poster_fields", DEFAULT_POSTER_FIELDS));
   const [contentRatingFilter, setContentRatingFilter] = useState<string | "all">("all");
-  const [page, setPage] = useState(0);
+  // Bug fix: page used to be plain useState, invisible to the URL — navigating to a media item and
+  // back (a real route change/remount, unlike switching library type) reset it to page 1 every
+  // time, no matter which page the user had actually scrolled to. Stored in the URL instead, so
+  // browser back/forward restores it exactly like any other navigable state.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const page = Math.max(0, Number(searchParams.get("page") ?? "1") - 1);
+  function setPage(updater: number | ((prev: number) => number), replace = true) {
+    setSearchParams(
+      (prev) => {
+        const nextPage = typeof updater === "function" ? updater(page) : updater;
+        const next = new URLSearchParams(prev);
+        if (nextPage <= 0) next.delete("page");
+        else next.set("page", String(nextPage + 1));
+        return next;
+      },
+      { replace }
+    );
+  }
   // stats.total is the library's unfiltered item count (for the "N total" header badge, which has
   // always summed the whole type regardless of the current status/contentRating filter — see
   // loadStats() below). filteredTotal is the *current filtered view's* row count, returned by the
@@ -373,7 +394,18 @@ export function LibraryItemGrid({
   useEffect(loadStats, [type, groupId, tagFilter]);
   // Any filter/sort change re-points the page at a fresh result set — staying on, say, page 5 of a
   // now-much-shorter filtered list would otherwise show a confusing "out of range" empty page.
-  useEffect(() => setPage(0), [type, groupId, tagFilter, statusFilter, contentRatingFilter, sortKey]);
+  // Skipped on the very first render (the `hasMountedRef` guard) — this effect's own dependencies
+  // are also true on initial mount, and firing there would strip a deep-linked/back-navigated
+  // `?page=3` back down to page 1 before the user ever sees it, defeating the whole point of
+  // storing page in the URL in the first place.
+  const hasMountedRef = useRef(false);
+  useEffect(() => {
+    if (!hasMountedRef.current) {
+      hasMountedRef.current = true;
+      return;
+    }
+    setPage(0);
+  }, [type, groupId, tagFilter, statusFilter, contentRatingFilter, sortKey]);
   useEffect(() => {
     // Guarded against out-of-order responses: switching libraries quickly could let an earlier
     // type's slower-to-resolve request land after a later type's faster one, overwriting the
@@ -527,11 +559,20 @@ export function LibraryItemGrid({
     localStorage.setItem("aonarr_library_poster_size", posterSize);
   }, [posterSize]);
   useEffect(() => {
-    localStorage.setItem("aonarr_library_sort", sortKey);
-  }, [sortKey]);
+    localStorage.setItem(`aonarr_library_sort_${type}`, sortKey);
+  }, [sortKey, type]);
   useEffect(() => {
-    localStorage.setItem("aonarr_library_status", statusFilter);
-  }, [statusFilter]);
+    localStorage.setItem(`aonarr_library_status_${type}`, statusFilter);
+  }, [statusFilter, type]);
+  // The component instance is reused (not remounted) when navigating between library types on the
+  // same route (e.g. Movies -> Series both match `/library/:type`), so the lazy useState
+  // initializers above only ever run once — without this, switching type wouldn't pick up that
+  // type's own remembered sort/status and would just keep showing whichever library's filter was
+  // active before the switch.
+  useEffect(() => {
+    setStatusFilter((localStorage.getItem(`aonarr_library_status_${type}`) as StatusFilter) || "all");
+    setSortKey((localStorage.getItem(`aonarr_library_sort_${type}`) as SortKey) || "added");
+  }, [type]);
   useEffect(() => {
     localStorage.setItem("aonarr_library_columns", JSON.stringify(Array.from(listColumns)));
   }, [listColumns]);
