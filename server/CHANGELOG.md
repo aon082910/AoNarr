@@ -3,6 +3,31 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 151 — ScreenScraper, TheGamesDB, Vimeo providers, and manual lessons for Courses
+- **ScreenScraper and TheGamesDB** added as ROM metadata providers alongside RAWG/IGDB — both are
+  retro/emulation-focused (unlike RAWG/IGDB, which skew modern), so they cover older/obscure
+  systems RAWG/IGDB's box art and overview data often miss. ScreenScraper needs a registered dev
+  account (id/password) plus your own optional account credentials (raises the anonymous rate
+  limit); TheGamesDB just needs a free API key. Both plug into search, the System/Maker auto-fetch
+  on Add Media (Round 148), and artwork search (Round 150) the same way RAWG/IGDB already do.
+- **Vimeo** added as an Online Videos provider alongside YouTube — search finds a Vimeo user
+  (channel), picking one imports their uploaded videos as children, same "search finds a channel,
+  children are its uploads" shape YouTube already has. Also wired into artwork search.
+- **Courses can now add lessons manually and Manual Import them**, closing the real gap behind
+  "turn the URL scraper into search" (there's no public search API any course platform offers, so
+  that's not something to safely build — see the discussion that led here). A course has no
+  metadata provider, so it never had any children (lessons) for Manual Import's "Target lesson"
+  dropdown to offer — a new "+ Add lesson" field on the Manual Import panel creates one with just a
+  title (the same minimal shape Scan & Import itself creates when it guesses a child from a
+  filename), which then shows up immediately as a Manual Import target. Generic to any collection-
+  shape type, not special-cased to Courses, though Courses is the one that actually needed it since
+  every other collection type gets its children from a metadata fetch already.
+- Verified live: confirmed all three new providers' search dispatch reaches their real code path
+  (each failed only on its own "API key not configured" message, not a generic invalid-provider
+  error) and that their tiles/fields render correctly in Settings; confirmed adding a Course lesson
+  end-to-end — the lesson appears in the Target dropdown immediately and is auto-selected, ready for
+  Manual Import to attach a file to it.
+
 ## Round 150 — artwork search, NFO/Plex export, and ROM indexer breadth for the secondary libraries
 - **Artwork search extended beyond movie/series/artist (Fanart.tv)** to ROMs, Manga, Comics, Online
   Videos, and Adult, each pulling from that type's own metadata provider instead: RAWG screenshots

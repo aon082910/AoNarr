@@ -212,11 +212,37 @@ const METADATA_PROVIDERS: SettingsProviderDef[] = [
     isConfigured: (s) => !!s.igdbClientId && !!s.igdbClientSecret,
   },
   {
+    key: "screenscraper",
+    label: "ScreenScraper",
+    description: "ROMs, retro/emulation-focused — better older-system coverage than RAWG/IGDB",
+    fields: [
+      { key: "screenscraperDevId", label: "Dev ID", placeholder: "screenscraper.fr — register a dev account for these" },
+      { key: "screenscraperDevPassword", label: "Dev Password" },
+      { key: "screenscraperUserId", label: "Your account username (optional, raises rate limits)" },
+      { key: "screenscraperUserPassword", label: "Your account password (optional)" },
+    ],
+    isConfigured: (s) => !!s.screenscraperDevId && !!s.screenscraperDevPassword,
+  },
+  {
+    key: "thegamesdb",
+    label: "TheGamesDB",
+    description: "ROMs, retro/emulation-focused",
+    fields: [{ key: "theGamesDbApiKey", label: "API key", placeholder: "forums.thegamesdb.net — request an API key" }],
+    isConfigured: (s) => !!s.theGamesDbApiKey,
+  },
+  {
     key: "youtube",
     label: "YouTube Data API",
     description: "Online videos",
     fields: [{ key: "youtubeApiKey", label: "API key", placeholder: "console.cloud.google.com — enable YouTube Data API v3" }],
     isConfigured: (s) => !!s.youtubeApiKey,
+  },
+  {
+    key: "vimeo",
+    label: "Vimeo",
+    description: "Online videos, alternative to YouTube",
+    fields: [{ key: "vimeoAccessToken", label: "Access token", placeholder: "developer.vimeo.com/apps — create an app, generate a personal access token" }],
+    isConfigured: (s) => !!s.vimeoAccessToken,
   },
   {
     key: "theporndb",

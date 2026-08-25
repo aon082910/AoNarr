@@ -147,7 +147,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     // covering its own subcategories (1010 NDS, 1020 PSP, 1030 Wii, 1040/1050 Xbox/360, 1060
     // Wiiware/VC, 1070 Xbox One, 1080 PS3, 1090 Other) without needing every one spelled out.
     indexerCategory: "1000,4050",
-    metadataProviders: ["rawg", "igdb"],
+    metadataProviders: ["rawg", "igdb", "screenscraper", "thegamesdb"],
     defaultProvider: "rawg",
     groupLevels: ["system", "maker"],
   },
@@ -158,7 +158,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     childLabel: "Video",
     extensions: VIDEO_EXT,
     indexerCategory: "5000",
-    metadataProviders: ["youtube"],
+    metadataProviders: ["youtube", "vimeo"],
     defaultProvider: "youtube",
     groupLevels: ["site"],
   },

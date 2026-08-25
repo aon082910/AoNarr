@@ -52,7 +52,10 @@ const PROVIDER_LABELS: Record<string, string> = {
   comicvine: "Comic Vine",
   rawg: "RAWG",
   igdb: "IGDB",
+  screenscraper: "ScreenScraper",
+  thegamesdb: "TheGamesDB",
   youtube: "YouTube",
+  vimeo: "Vimeo",
   theporndb: "ThePornDB",
 };
 

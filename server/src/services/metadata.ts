@@ -825,6 +825,8 @@ function igdbImageUrl(url: string | undefined, size: string): string | null {
 export async function fetchRomDetailsFor(externalIds: Record<string, string>): Promise<RomDetails | null> {
   if (externalIds.rawg) return fetchRomDetailsRawg(externalIds.rawg);
   if (externalIds.igdb) return fetchRomDetailsIgdb(externalIds.igdb);
+  if (externalIds.screenscraper) return fetchRomDetailsScreenscraper(externalIds.screenscraper);
+  if (externalIds.thegamesdb) return fetchRomDetailsTheGamesDb(externalIds.thegamesdb);
   return null;
 }
 
@@ -881,6 +883,158 @@ async function fetchIgdbPlatformLogo(platformName: string): Promise<string | nul
   if (!res.ok) return null;
   const body: any = await res.json();
   return igdbImageUrl(body?.[0]?.platform_logo?.url, "t_logo_med");
+}
+
+// ---------------------------------------------------------------------------
+// ROMs (continued): ScreenScraper, TheGamesDB — both retro/emulation-focused,
+// unlike RAWG/IGDB which skew modern-game — for better box-art/older-system coverage.
+// ---------------------------------------------------------------------------
+
+/** ScreenScraper requires a registered "dev" app id/password (approved by their team, not
+ * something AoNarr ships baked in) plus the admin's own account id/password — same shape every
+ * other Skyscraper/EmulationStation-style tool asks a self-hoster to supply. User creds are
+ * optional (ScreenScraper allows anonymous, heavily rate-limited requests without them). */
+function screenscraperCreds(): { devid: string; devpassword: string; ssid: string; sspassword: string } {
+  return {
+    devid: requireSetting("screenscraperDevId", "ScreenScraper Dev ID"),
+    devpassword: requireSetting("screenscraperDevPassword", "ScreenScraper Dev Password"),
+    ssid: getSetting("screenscraperUserId") ?? "",
+    sspassword: getSetting("screenscraperUserPassword") ?? "",
+  };
+}
+
+function screenscraperParams(creds: ReturnType<typeof screenscraperCreds>): URLSearchParams {
+  const params = new URLSearchParams({ devid: creds.devid, devpassword: creds.devpassword, softname: "AoNarr", output: "json" });
+  if (creds.ssid) params.set("ssid", creds.ssid);
+  if (creds.sspassword) params.set("sspassword", creds.sspassword);
+  return params;
+}
+
+/** Region/language fields on ScreenScraper come back as an array of {region/langue, text} — "wor"
+ * (world) is the most game-agnostic pick, falling back to whatever's first. */
+function screenscraperLocalized(entries: any[] | undefined, keyField: "region" | "langue", preferred: string): string | null {
+  if (!entries || entries.length === 0) return null;
+  return entries.find((e) => e[keyField] === preferred)?.text ?? entries[0]?.text ?? null;
+}
+
+async function searchRomsScreenscraper(query: string): Promise<MetadataSearchResult[]> {
+  const url = new URL("https://api.screenscraper.fr/api2/jeuRecherche.php");
+  url.search = screenscraperParams(screenscraperCreds()).toString();
+  url.searchParams.set("recherche", query);
+
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`ScreenScraper search failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  const games: any[] = body?.response?.jeux ?? [];
+
+  return games.map((g) => {
+    const dateStr = screenscraperLocalized(g.dates, "region", "wor");
+    const boxart = (g.medias ?? []).find((m: any) => m.type === "box-2D" || m.type === "box-3D")?.url ?? null;
+    return {
+      title: screenscraperLocalized(g.noms, "region", "wor") ?? g.nom ?? "Unknown",
+      year: dateStr ? Number(String(dateStr).slice(0, 4)) || null : null,
+      overview: screenscraperLocalized(g.synopsis, "langue", "en"),
+      posterUrl: boxart,
+      externalIds: { screenscraper: String(g.id) },
+    };
+  });
+}
+
+async function fetchScreenscraperGame(id: string): Promise<any | null> {
+  const url = new URL("https://api.screenscraper.fr/api2/jeuInfos.php");
+  url.search = screenscraperParams(screenscraperCreds()).toString();
+  url.searchParams.set("gameid", id);
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`ScreenScraper game lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  return body?.response?.jeu ?? null;
+}
+
+async function fetchRomDetailsScreenscraper(id: string): Promise<RomDetails> {
+  const g = await fetchScreenscraperGame(id);
+  if (!g) return { overview: null, system: null, maker: null, systemLogoUrl: null };
+  const system = g.systeme?.text ?? null;
+  const wheel = (g.medias ?? []).find((m: any) => m.type === "wheel" || m.type === "wheel-hd")?.url ?? null;
+  return {
+    overview: screenscraperLocalized(g.synopsis, "langue", "en"),
+    system,
+    maker: g.developpeur?.text ?? g.editeur?.text ?? null,
+    systemLogoUrl: wheel ?? (system ? await fetchIgdbPlatformLogo(system).catch(() => null) : null),
+  };
+}
+
+async function fetchArtworkScreenscraper(id: string): Promise<ArtworkOptions> {
+  const g = await fetchScreenscraperGame(id);
+  const medias: any[] = g?.medias ?? [];
+  const posters = medias.filter((m) => m.type === "box-2D" || m.type === "box-3D" || m.type === "box-texture").map((m) => m.url).filter(Boolean);
+  const backgrounds = medias.filter((m) => m.type === "fanart" || m.type === "ss" || m.type === "screenshot").map((m) => m.url).filter(Boolean);
+  return { posters, backgrounds, logos: [] };
+}
+
+async function searchRomsTheGamesDb(query: string): Promise<MetadataSearchResult[]> {
+  const key = requireSetting("theGamesDbApiKey", "TheGamesDB API key");
+  const url = new URL("https://api.thegamesdb.net/v1/Games/ByGameName");
+  url.searchParams.set("apikey", key);
+  url.searchParams.set("name", query);
+  url.searchParams.set("fields", "overview");
+  url.searchParams.set("include", "boxart");
+
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`TheGamesDB search failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  const games: any[] = body?.data?.games ?? [];
+  const boxartBase = body?.include?.boxart?.base_url?.medium ?? body?.include?.boxart?.base_url?.original ?? null;
+  const boxartData = body?.include?.boxart?.data ?? {};
+
+  return games.map((g) => {
+    const art = (boxartData[String(g.id)] ?? []).find((b: any) => b.side === "front") ?? boxartData[String(g.id)]?.[0];
+    return {
+      title: g.game_title,
+      year: g.release_date ? Number(String(g.release_date).slice(0, 4)) || null : null,
+      overview: g.overview || null,
+      posterUrl: art && boxartBase ? `${boxartBase}${art.filename}` : null,
+      externalIds: { thegamesdb: String(g.id) },
+    };
+  });
+}
+
+async function fetchRomDetailsTheGamesDb(id: string): Promise<RomDetails> {
+  const key = requireSetting("theGamesDbApiKey", "TheGamesDB API key");
+  const url = new URL("https://api.thegamesdb.net/v1/Games/ByGameID");
+  url.searchParams.set("apikey", key);
+  url.searchParams.set("id", id);
+  url.searchParams.set("fields", "overview,developers,publishers");
+  url.searchParams.set("include", "developers,publishers,platform");
+
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`TheGamesDB game lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  const g = body?.data?.games?.[0];
+  if (!g) return { overview: null, system: null, maker: null, systemLogoUrl: null };
+  const system = body?.include?.platform?.data?.[String(g.platform)]?.name ?? null;
+  const developer = body?.include?.developers?.data?.[String(g.developers?.[0])]?.name;
+  const publisher = body?.include?.publishers?.data?.[String(g.publishers?.[0])]?.name;
+  return {
+    overview: g.overview || null,
+    system,
+    maker: developer ?? publisher ?? null,
+    systemLogoUrl: system ? await fetchIgdbPlatformLogo(system).catch(() => null) : null,
+  };
+}
+
+async function fetchArtworkTheGamesDb(id: string): Promise<ArtworkOptions> {
+  const key = requireSetting("theGamesDbApiKey", "TheGamesDB API key");
+  const url = new URL("https://api.thegamesdb.net/v1/Games/Images");
+  url.searchParams.set("apikey", key);
+  url.searchParams.set("games_id", id);
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`TheGamesDB images lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  const base = body?.data?.base_url?.large ?? body?.data?.base_url?.original ?? body?.data?.base_url?.medium ?? "";
+  const images: any[] = body?.data?.images?.[String(id)] ?? [];
+  const posters = images.filter((i) => i.type === "boxart").map((i) => `${base}${i.filename}`);
+  const backgrounds = images.filter((i) => i.type === "fanart" || i.type === "screenshot").map((i) => `${base}${i.filename}`);
+  return { posters, backgrounds, logos: [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -948,6 +1102,67 @@ async function fetchChannelVideosYoutube(channelId: string): Promise<MetadataSub
   } while (pageToken && videos.length < 500); // safety cap against runaway channels
 
   return videos;
+}
+
+const VIMEO_ACCEPT = "application/vnd.vimeo.*+json;version=3.4";
+
+async function searchVideosVimeo(query: string): Promise<MetadataSearchResult[]> {
+  const token = requireSetting("vimeoAccessToken", "Vimeo access token");
+  const url = new URL("https://api.vimeo.com/users");
+  url.searchParams.set("query", query);
+  url.searchParams.set("per_page", "15");
+
+  const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}`, Accept: VIMEO_ACCEPT } });
+  if (!res.ok) throw new Error(`Vimeo search failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+
+  return (body.data ?? []).map((u: any) => {
+    const sizes = u.pictures?.sizes ?? [];
+    return {
+      title: u.name,
+      year: u.created_time ? Number(String(u.created_time).slice(0, 4)) : null,
+      overview: u.bio || null,
+      posterUrl: sizes[sizes.length - 1]?.link ?? null,
+      externalIds: { vimeo: String(u.uri ?? "").replace("/users/", "") },
+    };
+  });
+}
+
+async function fetchChannelVideosVimeo(userId: string): Promise<MetadataSubItem[]> {
+  const token = requireSetting("vimeoAccessToken", "Vimeo access token");
+  const videos: MetadataSubItem[] = [];
+  let page = 1;
+  for (;;) {
+    const url = new URL(`https://api.vimeo.com/users/${encodeURIComponent(userId)}/videos`);
+    url.searchParams.set("per_page", "50");
+    url.searchParams.set("page", String(page));
+
+    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}`, Accept: VIMEO_ACCEPT } });
+    if (!res.ok) throw new Error(`Vimeo videos lookup failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+
+    for (const v of body.data ?? []) {
+      videos.push({
+        title: v.name,
+        releaseDate: v.release_time ? String(v.release_time).slice(0, 10) : null,
+        externalId: String(v.uri ?? "").replace("/videos/", ""),
+      });
+    }
+    if (!body.paging?.next || videos.length >= 500) break; // safety cap against runaway channels
+    page++;
+  }
+  return videos;
+}
+
+async function fetchArtworkVideoVimeo(userId: string): Promise<ArtworkOptions> {
+  const token = requireSetting("vimeoAccessToken", "Vimeo access token");
+  const res = await fetch(`https://api.vimeo.com/users/${encodeURIComponent(userId)}`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: VIMEO_ACCEPT },
+  });
+  if (!res.ok) throw new Error(`Vimeo user lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  const posters = (body.pictures?.sizes ?? []).map((s: any) => s.link).filter(Boolean);
+  return { posters, backgrounds: [], logos: [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -1111,7 +1326,10 @@ const SEARCH_FNS: Record<string, (query: string) => Promise<MetadataSearchResult
   comicvine: searchComicsComicVine,
   rawg: searchRomsRawg,
   igdb: searchRomsIgdb,
+  screenscraper: searchRomsScreenscraper,
+  thegamesdb: searchRomsTheGamesDb,
   youtube: searchVideosYoutube,
+  vimeo: searchVideosVimeo,
   theporndb: searchAdultThePornDb,
   mangadex: searchMangaMangadex,
 };
@@ -1203,6 +1421,7 @@ export async function fetchCollectionChildrenFor(
   if (externalIds.comicvine) return { provider: "comicvine", children: await fetchComicIssuesComicVine(externalIds.comicvine) };
   if (externalIds.mangadex) return { provider: "mangadex", children: await fetchMangaChaptersMangadex(externalIds.mangadex) };
   if (externalIds.youtube) return { provider: "youtube", children: await fetchChannelVideosYoutube(externalIds.youtube) };
+  if (externalIds.vimeo) return { provider: "vimeo", children: await fetchChannelVideosVimeo(externalIds.vimeo) };
   return { provider: null, children: [] };
 }
 
@@ -1288,6 +1507,8 @@ async function fetchArtworkIgdb(id: string): Promise<ArtworkOptions> {
 async function fetchArtworkRom(externalIds: Record<string, string>): Promise<ArtworkOptions> {
   if (externalIds.rawg) return fetchArtworkRawg(externalIds.rawg);
   if (externalIds.igdb) return fetchArtworkIgdb(externalIds.igdb);
+  if (externalIds.screenscraper) return fetchArtworkScreenscraper(externalIds.screenscraper);
+  if (externalIds.thegamesdb) return fetchArtworkTheGamesDb(externalIds.thegamesdb);
   return { posters: [], backgrounds: [], logos: [] };
 }
 
@@ -1397,6 +1618,7 @@ export async function fetchArtworkFor(type: MediaType, externalIds: Record<strin
   if (type === "manga") return fetchArtworkManga(externalIds);
   if (type === "comic" && externalIds.comicvine) return fetchArtworkComicComicVine(externalIds.comicvine);
   if (type === "video" && externalIds.youtube) return fetchArtworkVideoYoutube(externalIds.youtube);
+  if (type === "video" && externalIds.vimeo) return fetchArtworkVideoVimeo(externalIds.vimeo);
   if (type === "adult" && externalIds.theporndb) return fetchArtworkAdultThePornDb(externalIds.theporndb);
   throw new Error(
     "Artwork lookup isn't available for this item — either this library type has no artwork source, or this item is missing the id it needs"

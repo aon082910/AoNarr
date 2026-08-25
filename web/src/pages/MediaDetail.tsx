@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, downloadFile } from "../api/client.js";
 import GroupPicker from "../components/GroupPicker.js";
@@ -131,6 +131,8 @@ export default function MediaDetail() {
   const [browseEntries, setBrowseEntries] = useState<BrowseEntry[]>([]);
   const [importEpisodeId, setImportEpisodeId] = useState<number | "">("");
   const [importSubItemId, setImportSubItemId] = useState<number | "">("");
+  const [newChildTitle, setNewChildTitle] = useState("");
+  const [addingChild, setAddingChild] = useState(false);
 
   const [allTags, setAllTags] = useState<Tag[]>([]);
   const [rootFolders, setRootFolders] = useState<RootFolder[]>([]);
@@ -536,6 +538,27 @@ export default function MediaDetail() {
     const next = !showImport;
     setShowImport(next);
     if (next) browse("");
+  }
+
+  /** For a collection-shape item with no metadata provider (Courses, or any manually-managed
+   * library) there's otherwise no way to get a lesson/child into the "Target ..." dropdown below
+   * for Manual Import to attach a file to — a provider-backed type gets its children from a
+   * fetch, Courses never has one. Lets the admin add just a title, same minimal shape Scan &
+   * Import itself creates a child with when it guesses one from a filename. */
+  async function addChild(e: FormEvent) {
+    e.preventDefault();
+    if (!item || !newChildTitle.trim()) return;
+    setAddingChild(true);
+    try {
+      const created = await api.post<SubItem>(`/media/${item.id}/subitems`, { title: newChildTitle.trim() });
+      setNewChildTitle("");
+      setImportSubItemId(created.id);
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setAddingChild(false);
+    }
   }
 
   async function manualImport(entry: BrowseEntry) {
@@ -1148,6 +1171,20 @@ export default function MediaDetail() {
             )}
             {shape === "collection" && (
               <>
+                {/* Nothing to pick below until a child exists — a provider-backed type (Comics,
+                    Manga, Online Videos) already gets its children from a metadata fetch, but
+                    Courses has no provider at all, so this is the only way to get one at all. */}
+                <form className="toolbar" onSubmit={addChild} style={{ marginBottom: 8 }}>
+                  <input
+                    value={newChildTitle}
+                    onChange={(e) => setNewChildTitle(e.target.value)}
+                    placeholder={`New ${childLabel.toLowerCase()} title`}
+                    style={{ flex: 1 }}
+                  />
+                  <button type="submit" className="secondary" disabled={addingChild || !newChildTitle.trim()}>
+                    {addingChild ? "Adding..." : `+ Add ${childLabel.toLowerCase()}`}
+                  </button>
+                </form>
                 <label>Target {childLabel.toLowerCase()}</label>
                 <select
                   value={importSubItemId}
