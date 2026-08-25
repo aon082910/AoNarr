@@ -3,6 +3,22 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 143 — per-instance tiles for Root Folders, Quality, and Subtitle Providers
+- Root Folders (Settings → Library Sync), Quality Definitions/Quality Profiles/Custom Formats
+  (Settings → Quality), and Subtitle Providers (Settings → Import & Subtitles) no longer nest an
+  add-form + one giant table inside a single tile's popup. Each already-configured instance now
+  gets its own tile directly on the tab's grid (path/name + a short status line, e.g. free space
+  or over-quota warning, cutoff, or applies-to), with its own popup to edit or delete just that
+  one; a separate "+ Add ..." tile is the entry point for configuring a new one.
+- Quality Definitions keeps its inherent worst-to-best rank order (tiles render in rank order,
+  each showing "Rank N of 15" and Move up/down controls in its popup — reordering still works the
+  same as the old table did) since quality-profile cutoff/allowed-quality logic depends on it.
+- Custom Formats' "Format Scores" (score each format per quality profile) was pulled out of the
+  Custom Formats tile into its own standalone tile, since it's profile-centric rather than
+  format-centric and didn't fit inside a single format's edit popup.
+- No backend changes — this only restructures how Settings.tsx builds the tile grids for these
+  four sections; all the same API endpoints and handlers are reused unchanged.
+
 ## Round 142 — simplified Naming popup
 - The Naming tile's popup (Settings → Media Management) listed every library type with its current
   template previewed inline — simplified to just the library name and a "Config" button per type;

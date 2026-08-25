@@ -1465,93 +1465,81 @@ export default function Settings() {
               </div>
             ),
           },
-          {
-            key: "rootFolders",
-            label: "Root Folders",
-            description: "Where each library type's files live",
-            badge: `${rootFolders.length} folder${rootFolders.length === 1 ? "" : "s"}`,
-            badgeOk: rootFolders.length > 0,
-            maxWidth: 820,
+          ...rootFolders.map((f) => ({
+            key: `rootFolder-${f.id}`,
+            label: f.path,
+            description: mediaTypes.find((t) => t.key === f.mediaType)?.label ?? f.mediaType,
+            badge:
+              typeof f.percentUsed === "number" && f.quotaPercent != null && f.percentUsed >= f.quotaPercent
+                ? `${f.percentUsed}% used — over quota`
+                : typeof f.freeBytes === "number"
+                  ? `${formatBytes(f.freeBytes)} free`
+                  : undefined,
+            badgeOk: !(typeof f.percentUsed === "number" && f.quotaPercent != null && f.percentUsed >= f.quotaPercent),
+            maxWidth: 480,
             render: () => (
-              <div>
-                <form className="form-panel" onSubmit={addFolder}>
-                  <label>Path</label>
-                  <div className="toolbar">
-                    <input value={folderPath} onChange={(e) => setFolderPath(e.target.value)} placeholder="/media/movies" required style={{ flex: 1 }} />
-                    <button type="button" className="secondary" onClick={() => setShowFolderPicker(true)}>
-                      Browse...
-                    </button>
-                  </div>
-                  {showFolderPicker && (
-                    <FolderPicker
-                      initialPath={folderPath || "/media"}
-                      onClose={() => setShowFolderPicker(false)}
-                      onSelect={(p) => {
-                        setFolderPath(p);
-                        setShowFolderPicker(false);
-                      }}
-                    />
-                  )}
-                  <label>Media type</label>
-                  <select value={folderType} onChange={(e) => setFolderType(e.target.value as MediaType)}>
-                    {mediaTypes.map((t) => (
-                      <option key={t.key} value={t.key}>
-                        {t.label}
-                      </option>
-                    ))}
-                  </select>
-                  <button type="submit">Add root folder</button>
-                </form>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Path</th>
-                      <th>Type</th>
-                      <th>Free space</th>
-                      <th>Quota %</th>
-                      <th>Pause grabs at quota</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rootFolders.map((f) => (
-                      <tr key={f.id}>
-                        <td>{f.path}</td>
-                        <td>{mediaTypes.find((t) => t.key === f.mediaType)?.label ?? f.mediaType}</td>
-                        <td>
-                          {typeof f.freeBytes === "number" ? formatBytes(f.freeBytes) : "unknown"}
-                          {typeof f.percentUsed === "number" && f.quotaPercent != null && f.percentUsed >= f.quotaPercent && (
-                            <span className="badge" style={{ marginLeft: 6, background: "var(--danger)" }}>
-                              {f.percentUsed}% used — over quota
-                            </span>
-                          )}
-                        </td>
-                        <td>
-                          <input
-                            type="number"
-                            style={{ width: 70 }}
-                            defaultValue={f.quotaPercent ?? ""}
-                            placeholder="off"
-                            onBlur={(e) => updateFolderQuota(f.id, "quotaPercent", e.target.value === "" ? null : Number(e.target.value))}
-                          />
-                        </td>
-                        <td>
-                          <input
-                            type="checkbox"
-                            checked={!!f.pauseGrabsAtQuota}
-                            onChange={(e) => updateFolderQuota(f.id, "pauseGrabsAtQuota", e.target.checked)}
-                          />
-                        </td>
-                        <td>
-                          <button className="danger" onClick={() => removeFolder(f.id)}>
-                            Delete
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="form-panel">
+                <label>Path</label>
+                <input value={f.path} disabled />
+                <label>Media type</label>
+                <input value={mediaTypes.find((t) => t.key === f.mediaType)?.label ?? f.mediaType} disabled />
+                <label>Free space</label>
+                <input value={typeof f.freeBytes === "number" ? formatBytes(f.freeBytes) : "unknown"} disabled />
+                <label>Quota % (pause/warn when used space reaches this)</label>
+                <input
+                  type="number"
+                  defaultValue={f.quotaPercent ?? ""}
+                  placeholder="off"
+                  onBlur={(e) => updateFolderQuota(f.id, "quotaPercent", e.target.value === "" ? null : Number(e.target.value))}
+                />
+                <label className="toolbar" style={{ gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={!!f.pauseGrabsAtQuota}
+                    onChange={(e) => updateFolderQuota(f.id, "pauseGrabsAtQuota", e.target.checked)}
+                  />
+                  Pause grabs at quota
+                </label>
+                <button className="danger" onClick={() => removeFolder(f.id)}>
+                  Delete root folder
+                </button>
               </div>
+            ),
+          })),
+          {
+            key: "addRootFolder",
+            label: "+ Add Root Folder",
+            description: "Configure a new root folder",
+            maxWidth: 480,
+            render: () => (
+              <form className="form-panel" onSubmit={addFolder}>
+                <label>Path</label>
+                <div className="toolbar">
+                  <input value={folderPath} onChange={(e) => setFolderPath(e.target.value)} placeholder="/media/movies" required style={{ flex: 1 }} />
+                  <button type="button" className="secondary" onClick={() => setShowFolderPicker(true)}>
+                    Browse...
+                  </button>
+                </div>
+                {showFolderPicker && (
+                  <FolderPicker
+                    initialPath={folderPath || "/media"}
+                    onClose={() => setShowFolderPicker(false)}
+                    onSelect={(p) => {
+                      setFolderPath(p);
+                      setShowFolderPicker(false);
+                    }}
+                  />
+                )}
+                <label>Media type</label>
+                <select value={folderType} onChange={(e) => setFolderType(e.target.value as MediaType)}>
+                  {mediaTypes.map((t) => (
+                    <option key={t.key} value={t.key}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+                <button type="submit">Add root folder</button>
+              </form>
             ),
           },
           {
@@ -1629,159 +1617,175 @@ export default function Settings() {
       <div style={{ display: tab === "quality" ? undefined : "none" }}>
       <SettingsSectionTiles
         sections={[
-          {
-            key: "qualityDefinitions",
-            label: "Quality Definitions",
-            description: "Rank, rename, and size-bound each quality",
-            badge: `${qualities.length} qualities`,
-            badgeOk: qualities.length > 0,
-            maxWidth: 880,
+          ...qualities.map((q, idx) => ({
+            key: `quality-${q.id}`,
+            label: q.name,
+            description: `Rank ${idx + 1} of ${qualities.length} (worst to best)`,
+            maxWidth: 420,
             render: () => (
-              <div>
-                <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
-                  Worst to best. Reorder to change how releases rank against each other; rename freely
-                  (used as the name shown everywhere, including release parsing output). Min/max size (MB)
-                  is optional and rejects releases parsed as this quality whose size falls outside it —
-                  useful for catching mislabeled or fake releases. Preferred size is a soft target only —
-                  used to break ties between otherwise-equal releases at this quality, closer wins; it
-                  doesn't reject anything the way min/max do.
+              <div className="form-panel">
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Reorder to change how releases rank against each other. Min/max size (MB) is optional
+                  and rejects releases parsed as this quality whose size falls outside it. Preferred size
+                  is a soft target only, used to break ties between otherwise-equal releases at this
+                  quality.
                 </p>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Rank</th>
-                      <th>Name</th>
-                      <th>Min size (MB)</th>
-                      <th>Max size (MB)</th>
-                      <th>Preferred size (MB)</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {qualities.map((q, idx) => (
-                      <tr key={q.id}>
-                        <td>{idx + 1}</td>
-                        <td>
-                          <input
-                            defaultValue={q.name}
-                            onBlur={(e) => e.target.value !== q.name && renameQuality(q.id, e.target.value)}
-                          />
-                        </td>
-                        <td>
-                          <input
-                            type="number"
-                            style={{ width: 100 }}
-                            defaultValue={q.minSizeMb ?? ""}
-                            onBlur={(e) => saveQualitySize(q.id, "minSizeMb", e.target.value)}
-                          />
-                        </td>
-                        <td>
-                          <input
-                            type="number"
-                            style={{ width: 100 }}
-                            defaultValue={q.maxSizeMb ?? ""}
-                            onBlur={(e) => saveQualitySize(q.id, "maxSizeMb", e.target.value)}
-                          />
-                        </td>
-                        <td>
-                          <input
-                            type="number"
-                            style={{ width: 100 }}
-                            defaultValue={q.preferredSizeMb ?? ""}
-                            onBlur={(e) => saveQualitySize(q.id, "preferredSizeMb", e.target.value)}
-                          />
-                        </td>
-                        <td className="toolbar">
-                          <button className="secondary" disabled={idx === 0} onClick={() => moveQuality(idx, -1)}>
-                            Up
-                          </button>
-                          <button className="secondary" disabled={idx === qualities.length - 1} onClick={() => moveQuality(idx, 1)}>
-                            Down
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <label>Name</label>
+                <input
+                  defaultValue={q.name}
+                  onBlur={(e) => e.target.value !== q.name && renameQuality(q.id, e.target.value)}
+                />
+                <label>Min size (MB)</label>
+                <input
+                  type="number"
+                  defaultValue={q.minSizeMb ?? ""}
+                  onBlur={(e) => saveQualitySize(q.id, "minSizeMb", e.target.value)}
+                />
+                <label>Max size (MB)</label>
+                <input
+                  type="number"
+                  defaultValue={q.maxSizeMb ?? ""}
+                  onBlur={(e) => saveQualitySize(q.id, "maxSizeMb", e.target.value)}
+                />
+                <label>Preferred size (MB)</label>
+                <input
+                  type="number"
+                  defaultValue={q.preferredSizeMb ?? ""}
+                  onBlur={(e) => saveQualitySize(q.id, "preferredSizeMb", e.target.value)}
+                />
+                <div className="toolbar">
+                  <button className="secondary" disabled={idx === 0} onClick={() => moveQuality(idx, -1)}>
+                    Move up
+                  </button>
+                  <button className="secondary" disabled={idx === qualities.length - 1} onClick={() => moveQuality(idx, 1)}>
+                    Move down
+                  </button>
+                </div>
               </div>
             ),
-          },
-          {
-            key: "qualityProfiles",
-            label: "Quality Profiles",
-            description: "Named allowed-quality sets with a cutoff",
-            badge: `${profiles.length} profile${profiles.length === 1 ? "" : "s"}`,
-            badgeOk: profiles.length > 0,
-            maxWidth: 720,
+          })),
+          ...profiles.map((p) => ({
+            key: `profile-${p.id}`,
+            label: p.name,
+            description: `Cutoff: ${p.cutoff}`,
+            maxWidth: 480,
             render: () => (
-              <div>
-                <form className="form-panel" onSubmit={addProfile}>
-                  <label>Name</label>
-                  <input value={profileName} onChange={(e) => setProfileName(e.target.value)} required />
-                  <label>Allowed qualities</label>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 8 }}>
-                    {qualities.map((q) => (
-                      <label key={q.id} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.85rem", margin: 0 }}>
-                        <input
-                          type="checkbox"
-                          checked={profileQualities.has(q.name)}
-                          onChange={() => toggleProfileQuality(q.name)}
-                          style={{ width: "auto" }}
-                        />
-                        {q.name}
-                      </label>
-                    ))}
-                  </div>
-                  <label>Cutoff (stop upgrading at)</label>
-                  <select value={profileCutoff} onChange={(e) => setProfileCutoff(e.target.value)}>
-                    {qualities.map((q) => (
-                      <option key={q.id} value={q.name}>
-                        {q.name}
-                      </option>
-                    ))}
-                  </select>
-                  <button type="submit">Add quality profile</button>
-                </form>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Cutoff</th>
-                      <th>Min format score</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {profiles.map((p) => (
-                      <tr key={p.id}>
-                        <td>{p.name}</td>
-                        <td>{p.cutoff}</td>
-                        <td>
-                          <input
-                            type="number"
-                            defaultValue={p.minFormatScore}
-                            style={{ width: 80 }}
-                            onBlur={(e) => saveMinFormatScore(p.id, Number(e.target.value))}
-                          />
-                        </td>
-                        <td>
-                          <button className="danger" onClick={() => removeProfile(p.id)}>
-                            Delete
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="form-panel">
+                <label>Name</label>
+                <input value={p.name} disabled />
+                <label>Allowed qualities</label>
+                <input value={p.allowedQualities.join(", ")} disabled />
+                <label>Cutoff (stop upgrading at)</label>
+                <input value={p.cutoff} disabled />
+                <label>Min format score</label>
+                <input
+                  type="number"
+                  defaultValue={p.minFormatScore}
+                  onBlur={(e) => saveMinFormatScore(p.id, Number(e.target.value))}
+                />
+                <button className="danger" onClick={() => removeProfile(p.id)}>
+                  Delete quality profile
+                </button>
               </div>
             ),
-          },
+          })),
           {
-            key: "customFormats",
-            label: "Custom Formats",
+            key: "addQualityProfile",
+            label: "+ Add Quality Profile",
+            description: "Create a named allowed-quality set with a cutoff",
+            maxWidth: 480,
+            render: () => (
+              <form className="form-panel" onSubmit={addProfile}>
+                <label>Name</label>
+                <input value={profileName} onChange={(e) => setProfileName(e.target.value)} required />
+                <label>Allowed qualities</label>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 8 }}>
+                  {qualities.map((q) => (
+                    <label key={q.id} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.85rem", margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={profileQualities.has(q.name)}
+                        onChange={() => toggleProfileQuality(q.name)}
+                        style={{ width: "auto" }}
+                      />
+                      {q.name}
+                    </label>
+                  ))}
+                </div>
+                <label>Cutoff (stop upgrading at)</label>
+                <select value={profileCutoff} onChange={(e) => setProfileCutoff(e.target.value)}>
+                  {qualities.map((q) => (
+                    <option key={q.id} value={q.name}>
+                      {q.name}
+                    </option>
+                  ))}
+                </select>
+                <button type="submit">Add quality profile</button>
+              </form>
+            ),
+          },
+          ...customFormats.map((f) => ({
+            key: `customFormat-${f.id}`,
+            label: f.name,
+            description: f.mediaTypes.length === 0 ? "Applies to all libraries" : f.mediaTypes.join(", "),
+            maxWidth: 560,
+            render: () => (
+              <div className="form-panel">
+                <label>Name</label>
+                <input value={f.name} disabled />
+                <label>Conditions</label>
+                <textarea
+                  disabled
+                  rows={4}
+                  value={f.conditionGroups
+                    .map((g) => {
+                      const body =
+                        g.type === "size"
+                          ? `SIZE ${g.minMb ?? ""}-${g.maxMb ?? ""}MB`
+                          : g.type === "language"
+                          ? `LANG (${(g.languages ?? []).join(" OR ")})`
+                          : g.type === "releaseGroup"
+                          ? `GROUP (${(g.patterns ?? []).join(" OR ")})`
+                          : g.type === "source"
+                          ? `SOURCE (${(g.sources ?? []).join(" OR ")})`
+                          : g.type === "resolution"
+                          ? `RESOLUTION (${(g.resolutions ?? []).join(" OR ")})`
+                          : g.type === "year"
+                          ? `YEAR ${g.minYear ?? ""}-${g.maxYear ?? ""}`
+                          : g.type === "releaseFlags"
+                          ? `FLAGS (${(g.flags ?? []).join(" OR ")})`
+                          : `(${(g.patterns ?? []).join(" OR ")})`;
+                      return `${g.negate ? "NOT " : ""}${body}`;
+                    })
+                    .join(" AND\n")}
+                />
+                <label>Applies to (leave all unchecked for every library)</label>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 8 }}>
+                  {mediaTypes.map((t) => (
+                    <label key={t.key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.85rem", margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={f.mediaTypes.includes(t.key)}
+                        onChange={(e) => {
+                          const next = e.target.checked ? [...f.mediaTypes, t.key] : f.mediaTypes.filter((k) => k !== t.key);
+                          saveCustomFormatMediaTypes(f.id, next);
+                        }}
+                        style={{ width: "auto" }}
+                      />
+                      {t.label}
+                    </label>
+                  ))}
+                </div>
+                <button className="danger" onClick={() => removeCustomFormat(f.id)}>
+                  Delete custom format
+                </button>
+              </div>
+            ),
+          })),
+          {
+            key: "addCustomFormat",
+            label: "+ Add Custom Format",
             description: "Score releases up/down by matching conditions",
-            badge: `${customFormats.length} format${customFormats.length === 1 ? "" : "s"}`,
-            badgeOk: customFormats.length > 0,
             maxWidth: 880,
             render: () => (
               <div>
@@ -1806,7 +1810,7 @@ export default function Settings() {
                   <code>NOT LANG: french</code>
                   <br />
                   means "(Remux or Bluray source) and not x265 and 2160p and not French". Assign scores per
-                  quality profile below.
+                  quality profile from the Format Scores tile.
                 </p>
                 <form className="form-panel" onSubmit={addCustomFormat}>
                   <label>Name</label>
@@ -1869,78 +1873,21 @@ export default function Settings() {
                     Import
                   </button>
                 </div>
-
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Conditions</th>
-                      <th>Applies to</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {customFormats.map((f) => (
-                      <tr key={f.id}>
-                        <td>{f.name}</td>
-                        <td>
-                          {f.conditionGroups
-                            .map((g) => {
-                              const body =
-                                g.type === "size"
-                                  ? `SIZE ${g.minMb ?? ""}-${g.maxMb ?? ""}MB`
-                                  : g.type === "language"
-                                  ? `LANG (${(g.languages ?? []).join(" OR ")})`
-                                  : g.type === "releaseGroup"
-                                  ? `GROUP (${(g.patterns ?? []).join(" OR ")})`
-                                  : g.type === "source"
-                                  ? `SOURCE (${(g.sources ?? []).join(" OR ")})`
-                                  : g.type === "resolution"
-                                  ? `RESOLUTION (${(g.resolutions ?? []).join(" OR ")})`
-                                  : g.type === "year"
-                                  ? `YEAR ${g.minYear ?? ""}-${g.maxYear ?? ""}`
-                                  : g.type === "releaseFlags"
-                                  ? `FLAGS (${(g.flags ?? []).join(" OR ")})`
-                                  : `(${(g.patterns ?? []).join(" OR ")})`;
-                              return `${g.negate ? "NOT " : ""}${body}`;
-                            })
-                            .join(" AND ")}
-                        </td>
-                        <td>
-                          <select
-                            multiple
-                            value={f.mediaTypes}
-                            onChange={(e) =>
-                              saveCustomFormatMediaTypes(
-                                f.id,
-                                Array.from(e.target.selectedOptions).map((o) => o.value as MediaType)
-                              )
-                            }
-                            style={{ minWidth: 140, height: 60 }}
-                            title="Ctrl/Cmd-click to select multiple; select none for every library"
-                          >
-                            {mediaTypes.map((t) => (
-                              <option key={t.key} value={t.key}>
-                                {t.label}
-                              </option>
-                            ))}
-                          </select>
-                          {f.mediaTypes.length === 0 && <div style={{ fontSize: "0.75rem", color: "var(--muted)" }}>all libraries</div>}
-                        </td>
-                        <td>
-                          <button className="danger" onClick={() => removeCustomFormat(f.id)}>
-                            Delete
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {customFormats.length === 0 && <p className="empty">No custom formats yet.</p>}
-
+              </div>
+            ),
+          },
+          {
+            key: "formatScores",
+            label: "Format Scores",
+            description: "Per-quality-profile score for each custom format",
+            maxWidth: 620,
+            render: () => (
+              <div>
+                {(customFormats.length === 0 || profiles.length === 0) && (
+                  <p className="empty">Add at least one custom format and one quality profile first.</p>
+                )}
                 {customFormats.length > 0 && profiles.length > 0 && (
                   <>
-                    <h3>Format Scores</h3>
                     <label>Quality profile</label>
                     <select
                       value={scoreProfileId}
@@ -2078,21 +2025,11 @@ export default function Settings() {
             ),
           },
           {
-            key: "subtitleProviders",
-            label: "Subtitle Providers",
-            description: "OpenSubtitles or a custom JSON search API",
-            badge: `${providers.length} provider${providers.length === 1 ? "" : "s"}`,
-            badgeOk: providers.length > 0,
-            maxWidth: 680,
+            key: "subtitleSync",
+            label: "Subtitle Timing Sync",
+            description: "Re-align subtitle timing after download",
             render: () => (
               <div>
-                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
-                  OpenSubtitles is a hosted API and needs an API key. "Custom" points at any subtitle search
-                  API you have access to that returns JSON and a directly-downloadable file URL per result —
-                  useful for a legitimate provider with its own public API. AoNarr doesn't ship scrapers for
-                  sites without a public API (e.g. Subscene/Addic7ed), since that would mean bypassing their
-                  terms of service; use Custom instead if your provider has an API of its own.
-                </p>
                 <label>Sync subtitle timing after download</label>
                 <select
                   key={settings.subtitleSyncEnabled ?? "sub-sync-empty"}
@@ -2107,6 +2044,43 @@ export default function Settings() {
                   entirely local, no external API. Skipped for an OpenSubtitles exact moviehash
                   match (already trustworthy); applies to everything else, including Custom
                   provider results, which carry no confidence signal to check.
+                </p>
+              </div>
+            ),
+          },
+          ...providers.map((p) => ({
+            key: `subtitleProvider-${p.id}`,
+            label: p.name,
+            description: p.type === "custom" ? "Custom (JSON API)" : "OpenSubtitles",
+            badge: p.languages || undefined,
+            maxWidth: 420,
+            render: () => (
+              <div className="form-panel">
+                <label>Name</label>
+                <input value={p.name} disabled />
+                <label>Type</label>
+                <input value={p.type === "custom" ? "Custom (JSON API)" : "OpenSubtitles"} disabled />
+                <label>Languages</label>
+                <input value={p.languages} disabled />
+                <button className="danger" onClick={() => removeProvider(p.id)}>
+                  Delete subtitle provider
+                </button>
+              </div>
+            ),
+          })),
+          {
+            key: "addSubtitleProvider",
+            label: "+ Add Subtitle Provider",
+            description: "OpenSubtitles or a custom JSON search API",
+            maxWidth: 680,
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  OpenSubtitles is a hosted API and needs an API key. "Custom" points at any subtitle search
+                  API you have access to that returns JSON and a directly-downloadable file URL per result —
+                  useful for a legitimate provider with its own public API. AoNarr doesn't ship scrapers for
+                  sites without a public API (e.g. Subscene/Addic7ed), since that would mean bypassing their
+                  terms of service; use Custom instead if your provider has an API of its own.
                 </p>
                 <form className="form-panel" onSubmit={addProvider}>
                   <label>Provider type</label>
@@ -2160,30 +2134,6 @@ export default function Settings() {
                   <input value={subLanguages} onChange={(e) => setSubLanguages(e.target.value)} />
                   <button type="submit">Add subtitle provider</button>
                 </form>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Languages</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {providers.map((p) => (
-                      <tr key={p.id}>
-                        <td>{p.name}</td>
-                        <td>{p.type === "custom" ? "Custom" : "OpenSubtitles"}</td>
-                        <td>{p.languages}</td>
-                        <td>
-                          <button className="danger" onClick={() => removeProvider(p.id)}>
-                            Delete
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
               </div>
             ),
           },
