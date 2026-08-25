@@ -3,6 +3,28 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 147 — Refresh now backfills missing episodes/children, friendly Custom Columns picker
+- Fixed "Refresh" (the per-library button, and the scheduled Library Refresh job) only ever
+  updating an item's own overview/poster/year — for an episodic or collection-shape library
+  (TV/Anime/Music/Books/Comics/Manga/Online Videos), it never touched episodes/albums/books/etc.,
+  so a show added via Scan & Import or a Starr import (which only ever create rows for files that
+  already exist) kept showing just its downloaded episodes forever, with no way to discover the
+  rest of the season from inside AoNarr. Refresh now also re-pulls the full episode/child list from
+  the item's metadata provider and inserts any it doesn't have yet, as monitored+missing — same
+  state a normal Add Media gives every episode/child up front, so AoNarr's own search picks them
+  up. Never touches an existing row's has_file/file_path, so nothing already downloaded can be
+  reset back to missing by a later refresh.
+- Custom Columns' "Metadata path" free-text field replaced with a "Field" dropdown of the actual
+  human-readable options (Video codec, Audio codec, HDR format, Bitrate, Frame rate, ...) that
+  fills in the underlying path for you; a "Custom (advanced)" option at the bottom still allows a
+  hand-typed path for anything not listed (e.g. a specific metadata provider's own data). A
+  column's tile now shows its friendly field name instead of the raw dot-path too.
+- Verified live: pruned a 73-episode show (added via metadata import, tvmaze provider) down to 2
+  episodes to simulate a file-only import, ran Refresh, confirmed all 71 missing episodes came back
+  with no duplicates and the existing 2 left untouched; confirmed the Custom Columns add form shows
+  friendly names, auto-fills the label, and the advanced path input only appears when "Custom" is
+  selected.
+
 ## Round 146 — fix oversized root folder checkbox, and Radarr/Sonarr import dropping missing items
 - Fixed the "Pause grabs at quota" checkbox on a root folder's edit tile (Round 143 regression) —
   it was missing the `width: auto` override every other checkbox in the codebase sets, so it

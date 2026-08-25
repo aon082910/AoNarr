@@ -5,7 +5,7 @@ import { getMediaTypeConfig, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
 import { rootFolderFromRow } from "../db/mappers.js";
 import { parseReleaseTitle } from "./releaseParser.js";
 import { probeMediaInfo } from "./ffprobe.js";
-import { searchMetadata } from "./metadata.js";
+import { searchMetadata, fetchSeriesEpisodesFor, fetchArtistAlbumsFor, fetchCollectionChildrenFor } from "./metadata.js";
 import { log } from "./logger.js";
 
 function normalizeForMatch(s: string): string {
@@ -503,10 +503,12 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal): Pr
  * correctly filled in from the real provider result. An item that's already matched (has external
  * ids) keeps its title untouched, since a fuzzy title-only search could occasionally land on the
  * wrong result and this shouldn't silently rename something that was already correct. */
-export async function refreshLibraryMetadata(type: string, signal?: AbortSignal): Promise<{ updated: number; failed: number }> {
+export async function refreshLibraryMetadata(type: string, signal?: AbortSignal): Promise<{ updated: number; failed: number; childrenAdded: number }> {
   const items = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[];
+  const typeConfig = getMediaTypeConfig(type as any);
   let updated = 0;
   let failed = 0;
+  let childrenAdded = 0;
 
   for (const item of items) {
     if (signal?.aborted) break;
@@ -534,12 +536,92 @@ export async function refreshLibraryMetadata(type: string, signal?: AbortSignal)
           item.id
         );
       updated++;
+
+      // Backfills any episode/child the provider now lists that this item doesn't have yet —
+      // e.g. a show Scan & Import or a Starr import only ever created rows for downloaded files
+      // for, or a season that's aired since this item was first added — as monitored+missing, the
+      // same state a normal Add Media gives every episode/child up front. Never touches an
+      // existing row's has_file/file_path, so this can't un-download anything.
+      const externalIdsForChildren = alreadyMatched ? JSON.parse(item.external_ids) : best.externalIds ?? {};
+      childrenAdded += await syncMissingChildren(item.id, typeConfig, externalIdsForChildren);
     } catch {
       failed++;
     }
   }
 
-  return { updated, failed };
+  return { updated, failed, childrenAdded };
+}
+
+/** Inserts any episode/child a metadata provider lists that isn't already tracked for this item —
+ * shared by refreshLibraryMetadata above (existing items) and the same shape the initial "Add
+ * Media" import (routes/metadata.ts) uses for a brand new one. Returns how many were added. */
+async function syncMissingChildren(
+  mediaItemId: number,
+  typeConfig: ReturnType<typeof getMediaTypeConfig>,
+  externalIds: Record<string, string>
+): Promise<number> {
+  if (Object.keys(externalIds).length === 0) return 0;
+
+  if (typeConfig.shape === "episodic") {
+    const episodes = await fetchSeriesEpisodesFor(externalIds).catch(() => []);
+    if (episodes.length === 0) return 0;
+    const existing = (await db
+      .prepare("SELECT season_number, episode_number FROM episodes WHERE media_item_id = ?")
+      .all(mediaItemId)) as { season_number: number; episode_number: number }[];
+    const known = new Set(existing.map((e) => `${e.season_number}:${e.episode_number}`));
+    let added = 0;
+    for (const ep of episodes) {
+      if (known.has(`${ep.seasonNumber}:${ep.episodeNumber}`)) continue;
+      await db
+        .prepare(
+          `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
+           VALUES (?, ?, ?, ?, ?, ?, 1)`
+        )
+        .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
+      added++;
+    }
+    return added;
+  }
+
+  if (typeConfig.shape === "collection" && typeConfig.multiFilePerChild) {
+    const result = await fetchArtistAlbumsFor(externalIds).catch(() => null);
+    if (!result || result.albums.length === 0) return 0;
+    const existing = (await db.prepare("SELECT title FROM sub_items WHERE media_item_id = ?").all(mediaItemId)) as { title: string }[];
+    const known = new Set(existing.map((s) => s.title));
+    let added = 0;
+    for (const album of result.albums) {
+      if (!album.title || known.has(album.title)) continue;
+      await db
+        .prepare(
+          `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored, poster_url)
+           VALUES (?, ?, ?, ?, ?, 1, ?)`
+        )
+        .run(mediaItemId, album.title, album.releaseDate, album.externalId ?? null, result.provider, album.posterUrl ?? null);
+      added++;
+    }
+    return added;
+  }
+
+  if (typeConfig.shape === "collection") {
+    const result = await fetchCollectionChildrenFor(externalIds).catch(() => ({ provider: null, children: [] }));
+    if (result.children.length === 0) return 0;
+    const existing = (await db.prepare("SELECT title FROM sub_items WHERE media_item_id = ?").all(mediaItemId)) as { title: string }[];
+    const known = new Set(existing.map((s) => s.title));
+    let added = 0;
+    for (const child of result.children) {
+      if (!child.title || known.has(child.title)) continue;
+      await db
+        .prepare(
+          `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored)
+           VALUES (?, ?, ?, ?, ?, 1)`
+        )
+        .run(mediaItemId, child.title, child.releaseDate, child.externalId ?? null, result.provider);
+      added++;
+    }
+    return added;
+  }
+
+  return 0;
 }
 
 /**
@@ -649,6 +731,9 @@ export async function refreshAllLibraries(signal?: AbortSignal): Promise<void> {
   for (const type of MEDIA_TYPE_KEYS) {
     if (signal?.aborted) return;
     const result = await refreshLibraryMetadata(type, signal);
-    if (result.updated > 0) log.info(`[libraryScan] refreshed "${type}": ${result.updated} updated, ${result.failed} failed`);
+    if (result.updated > 0)
+      log.info(
+        `[libraryScan] refreshed "${type}": ${result.updated} updated, ${result.failed} failed, ${result.childrenAdded} episode(s)/child(ren) added`
+      );
   }
 }

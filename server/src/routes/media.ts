@@ -406,7 +406,9 @@ mediaRouter.post(
     const type = req.query.type as string | undefined;
     if (!type || !isValidMediaType(type)) throw new HttpError(400, "A valid type is required");
     refreshLibraryMetadata(type)
-      .then((result) => log.info(`[refresh] "${type}": updated ${result.updated}, failed ${result.failed}`))
+      .then((result) =>
+        log.info(`[refresh] "${type}": updated ${result.updated}, failed ${result.failed}, episodes/children added ${result.childrenAdded}`)
+      )
       .catch((err) => log.warn(`[refresh] "${type}" failed:`, (err as Error).message));
     res.json({ started: true });
   })
