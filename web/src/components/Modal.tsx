@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 /** Shared popup shell — dark overlay + centered panel. Used by every "Add X" flow that used to be
  * an always-visible inline form at the top of its list page (Starr-app style: a button opens
@@ -14,6 +14,60 @@ export default function Modal({
   children: ReactNode;
   maxWidth?: number;
 }) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const titleId = useRef(`modal-title-${Math.random().toString(36).slice(2)}`).current;
+
+  useEffect(() => {
+    // Whatever had focus when the modal opened (almost always the button that triggered it) gets
+    // it back on close — without this, focus silently drops to <body>, leaving a keyboard user
+    // with no idea where they are on the page.
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    // The panel itself is focused first, THEN autofocus hands off to the first real field — this
+    // guarantees focus starts somewhere inside the dialog even for a modal with no focusable
+    // content (a confirm-only dialog), which a plain "focus the first input" approach would miss.
+    // Searched within contentRef (the children only), not the whole panel — the header's own close
+    // button sits earlier in the DOM than any form field, so searching the whole panel would always
+    // focus "✕" first regardless of what the modal's actual content is.
+    panelRef.current?.focus();
+    const firstField = contentRef.current?.querySelector<HTMLElement>(
+      "input:not([type=hidden]), textarea, select, button:not([disabled])"
+    );
+    firstField?.focus();
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      // A focus trap: Tab/Shift+Tab cycle within the dialog's own focusable elements instead of
+      // escaping to whatever's behind the overlay — a screen reader or keyboard-only user tabbing
+      // past the last field would otherwise land on inert page content they can't see is covered.
+      if (e.key === "Tab" && panelRef.current) {
+        const focusable = Array.from(
+          panelRef.current.querySelectorAll<HTMLElement>(
+            'a[href], button:not([disabled]), textarea, input:not([disabled]), select, [tabindex]:not([tabindex="-1"])'
+          )
+        ).filter((el) => el.offsetParent !== null);
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      previouslyFocused?.focus();
+    };
+  }, [onClose]);
+
   return (
     <div
       onClick={onClose}
@@ -29,17 +83,24 @@ export default function Modal({
       }}
     >
       <div
+        ref={panelRef}
         onClick={(e) => e.stopPropagation()}
         className="form-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
         style={{ maxWidth, width: "90%", maxHeight: "80vh", overflowY: "auto", position: "relative" }}
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-          <h2 style={{ margin: 0 }}>{title}</h2>
-          <button type="button" className="secondary" onClick={onClose} style={{ padding: "2px 10px" }}>
+          <h2 id={titleId} style={{ margin: 0 }}>
+            {title}
+          </h2>
+          <button type="button" className="secondary" onClick={onClose} aria-label="Close dialog" style={{ padding: "2px 10px" }}>
             ✕
           </button>
         </div>
-        {children}
+        <div ref={contentRef}>{children}</div>
       </div>
     </div>
   );

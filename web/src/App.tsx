@@ -235,6 +235,7 @@ export default function App() {
               className="secondary"
               onClick={() => moveGroupUp(item.key)}
               disabled={idx === 0}
+              aria-label={`Move ${item.label} up`}
               style={{ padding: "1px 7px", margin: 0, fontSize: "0.75rem" }}
             >
               ↑
@@ -244,6 +245,7 @@ export default function App() {
               className="secondary"
               onClick={() => moveGroupDown(item.key)}
               disabled={idx === orderedGroups.length - 1}
+              aria-label={`Move ${item.label} down`}
               style={{ padding: "1px 7px", margin: 0, fontSize: "0.75rem" }}
             >
               ↓
@@ -267,6 +269,9 @@ export default function App() {
 
   return (
     <div className={navPosition === "top" ? "app app--top" : "app"}>
+      <a href="#main-content" className="skip-link">
+        Skip to main content
+      </a>
       <ScrollToTop />
       <CommandPalette />
 
@@ -397,7 +402,7 @@ export default function App() {
         </header>
       )}
 
-      <main className="content">
+      <main className="content" id="main-content" tabIndex={-1}>
         <Routes>
           <Route
             path="/"

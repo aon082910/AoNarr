@@ -117,8 +117,15 @@ export default function RecycleBin() {
         const isOpen = openType === type;
         return (
           <div key={type} style={{ marginBottom: 12 }}>
-            <h2 style={{ cursor: "pointer" }} onClick={() => setOpenType(isOpen ? null : type)}>
-              {isOpen ? "▾" : "▸"} {label} ({items.length})
+            <h2>
+              <button
+                type="button"
+                onClick={() => setOpenType(isOpen ? null : type)}
+                aria-expanded={isOpen}
+                style={{ background: "transparent", border: "none", padding: 0, margin: 0, color: "inherit", font: "inherit", cursor: "pointer" }}
+              >
+                {isOpen ? "▾" : "▸"} {label} ({items.length})
+              </button>
             </h2>
             {isOpen && (
               <table>

@@ -291,7 +291,14 @@ export default function Dashboard() {
                   <option value="full">Full width</option>
                   <option value="half">Half width</option>
                 </select>
-                <button type="button" className="secondary" onClick={() => moveUp(item.key)} disabled={idx === 0} style={{ padding: "4px 10px" }}>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => moveUp(item.key)}
+                  disabled={idx === 0}
+                  aria-label={`Move ${item.label} up`}
+                  style={{ padding: "4px 10px" }}
+                >
                   ↑
                 </button>
                 <button
@@ -299,6 +306,7 @@ export default function Dashboard() {
                   className="secondary"
                   onClick={() => moveDown(item.key)}
                   disabled={idx === orderedItems.length - 1}
+                  aria-label={`Move ${item.label} down`}
                   style={{ padding: "4px 10px" }}
                 >
                   ↓

@@ -38,6 +38,26 @@ body {
   min-height: 100vh;
 }
 
+/* Off-screen until keyboard-focused (Tab from a fresh page load lands here first) — lets a
+   keyboard/screen-reader user jump straight past the sidebar/topbar nav to the actual page content
+   instead of tabbing through every nav link first on every single page. */
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 8px;
+  z-index: 2000;
+  background: var(--accent);
+  color: white;
+  padding: 10px 16px;
+  border-radius: 0 0 6px 6px;
+  text-decoration: none;
+  font-size: 0.9rem;
+  transition: top 0.15s ease;
+}
+.skip-link:focus {
+  top: 0;
+}
+
 .sidebar {
   width: 220px;
   background: var(--panel);

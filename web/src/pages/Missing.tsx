@@ -134,10 +134,17 @@ function EpisodesBySeries({
         const isOpen = openSeries.has(seriesId);
         return (
           <div key={id} style={{ marginBottom: 8 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => toggleOpen(seriesId)}>
-              <strong>
-                {isOpen ? "▾" : "▸"} {group.title} ({group.rows.length})
-              </strong>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <button
+                type="button"
+                onClick={() => toggleOpen(seriesId)}
+                aria-expanded={isOpen}
+                style={{ background: "transparent", border: "none", padding: 0, margin: 0, color: "inherit", font: "inherit", cursor: "pointer" }}
+              >
+                <strong>
+                  {isOpen ? "▾" : "▸"} {group.title} ({group.rows.length})
+                </strong>
+              </button>
               <button
                 className="secondary"
                 style={{ fontSize: "0.8rem" }}

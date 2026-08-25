@@ -252,6 +252,7 @@ export default function LibraryType() {
                 <button
                   type="button"
                   className="danger"
+                  aria-label={`Delete ${g.name}`}
                   style={{ position: "absolute", top: 4, right: 4, padding: "1px 6px", fontSize: "0.7rem" }}
                   onClick={(e) => deleteGroup(g, e)}
                 >

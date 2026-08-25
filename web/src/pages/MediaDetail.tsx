@@ -1086,12 +1086,29 @@ export default function MediaDetail() {
                       alignItems: "center",
                       gap: 10,
                       padding: "12px 16px",
-                      cursor: "pointer",
                     }}
-                    onClick={() => toggleSeasonOpen(seasonNumber)}
                   >
-                    <span style={{ fontSize: "0.8rem", color: "var(--muted)" }}>{isOpen ? "▾" : "▸"}</span>
-                    <h3 style={{ margin: 0, flex: 1 }}>Season {seasonNumber}</h3>
+                    <button
+                      type="button"
+                      onClick={() => toggleSeasonOpen(seasonNumber)}
+                      aria-expanded={isOpen}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        flex: 1,
+                        background: "transparent",
+                        border: "none",
+                        padding: 0,
+                        margin: 0,
+                        color: "inherit",
+                        font: "inherit",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <span style={{ fontSize: "0.8rem", color: "var(--muted)" }}>{isOpen ? "▾" : "▸"}</span>
+                      <h3 style={{ margin: 0 }}>Season {seasonNumber}</h3>
+                    </button>
                     <span className="badge ok">{seasonHave}</span>
                     <span className="badge">{seasonEpisodes.length}</span>
                     {isAdmin && (

@@ -3,6 +3,41 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 120 — accessibility pass
+- `Modal.tsx` (used by every "Add X" flow across the app) now: traps Tab/Shift+Tab focus within the
+  dialog instead of letting it escape to inert page content behind the overlay, closes on Escape,
+  restores focus to whatever triggered it on close, has `role="dialog"`/`aria-modal="true"`/
+  `aria-labelledby`, and its close button has `aria-label="Close dialog"`. Caught and fixed a real
+  bug while building this: initial autofocus first landed on the header's own "✕" close button
+  (earlier in the DOM than any form field) instead of the modal's first real field — fixed by
+  searching only within the content area, not the whole panel.
+- `DropdownMenu.tsx` (used by every "View"/"Columns"/menu-style control) now closes on Escape and
+  returns focus to its trigger button, and the trigger has `aria-haspopup="true"`/
+  `aria-expanded={open}`; the menu itself has `role="menu"`.
+- Fixed three genuinely keyboard-inaccessible controls — not just missing labels, but controls a
+  keyboard/screen-reader user could not activate at all, since they were `onClick` handlers on a
+  plain `<div>`/`<h2>`/`<span>` rather than a real `<button>`: the Missing page's per-series
+  disclosure toggle, the Recycle Bin's per-type disclosure toggle, and Media Detail's per-season
+  episode disclosure toggle. All three are now real `<button>`s with `aria-expanded`, visually
+  unchanged (background/border/padding reset inline) but keyboard-operable and correctly announced.
+- Added `aria-label`s to icon-only buttons that had none: the sidebar/dashboard-widget reorder
+  ↑/↓ buttons and the library group delete "✕" button (the sidebar's own "☰" and "⚙" toggles
+  already had a `title`, so weren't touched).
+- Added a "Skip to main content" link — off-screen until keyboard-focused, the first focusable
+  element on every page — so a keyboard/screen-reader user can jump past the sidebar/topbar nav
+  instead of tabbing through every nav link on every single page.
+- **Known gap, deliberately out of scope this round**: `<label>` elements across the app (~193
+  instances) are visually adjacent to their `<input>` but not explicitly associated via
+  `htmlFor`/`id` — a screen reader can't reliably tell which label goes with which field. Fixing
+  this properly requires touching each of ~193 sites individually (generating a stable id per
+  field, many inside `.map()` loops needing a per-iteration id) — a mechanical sweep at that scale
+  risked more from rushed/inconsistent edits than it was worth in one pass. Flagging as known
+  follow-up work rather than claiming it's fixed.
+- Verified live in-browser: confirmed initial modal focus lands on the first real field (not the
+  close button) after the fix, confirmed Escape closes the modal, confirmed the DropdownMenu's
+  `aria-haspopup`/`aria-expanded` attributes are present and toggle correctly, and confirmed the
+  skip link and its `#main-content` target both exist and are wired correctly.
+
 ## Round 119 — real-time queue updates (Server-Sent Events)
 - The Activity page's queue table used to poll every 10s. Added a Server-Sent Events channel
   (`GET /api/activity/stream`) that pushes a lightweight "queue changed" signal the moment a grab,
