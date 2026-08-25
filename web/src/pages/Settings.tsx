@@ -174,6 +174,13 @@ const METADATA_PROVIDERS: SettingsProviderDef[] = [
     isConfigured: (s) => !!s.googleBooksApiKey,
   },
   {
+    key: "hardcover",
+    label: "Hardcover",
+    description: "Authors, alternative to Open Library/Google Books",
+    fields: [{ key: "hardcoverApiToken", label: "API token", placeholder: "hardcover.app/account/api" }],
+    isConfigured: (s) => !!s.hardcoverApiToken,
+  },
+  {
     key: "lastfm",
     label: "Last.fm",
     description: "Artists",
@@ -908,9 +915,13 @@ export default function Settings() {
       <div style={{ display: tab === "metadata" ? undefined : "none" }}>
       <h2>Metadata Providers</h2>
       <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
-        MusicBrainz, Open Library, Deezer, and TVmaze need no key. Add keys/tokens below for the
-        rest as you need them — Add Media lets you pick a provider per search regardless of the
-        default set here.
+        MusicBrainz, Open Library, Deezer, TVmaze, iTunes, Goodreads, and Audible need no key. Add
+        keys/tokens below for the rest as you need them — Add Media lets you pick a provider per
+        search regardless of the default set here. Goodreads has no public API anymore, so that one
+        reads its still-public pages instead of calling an API — more fragile than everything else
+        on this page, since it can break without notice if Goodreads changes their site. Audible
+        similarly has no official API; it uses the same unofficial endpoint several established
+        open-source audiobook tools already rely on.
       </p>
       <SettingsProviderTiles providers={METADATA_PROVIDERS} settings={settings} saveSetting={saveSetting} />
       <div className="form-panel">

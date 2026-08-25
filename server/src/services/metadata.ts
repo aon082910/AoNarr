@@ -1,3 +1,4 @@
+import * as cheerio from "cheerio";
 import { getSetting } from "./settingsStore.js";
 import { MEDIA_TYPES, getMediaTypeConfig } from "./mediaTypes.js";
 import type { MediaType } from "../types/index.js";
@@ -692,6 +693,204 @@ async function fetchAuthorBooksGoogleBooks(authorName: string): Promise<Metadata
   }));
 }
 
+/** Apple's iTunes Search API — public, keyless, official. Searches ebooks by title/keyword like
+ * Google Books, so the same author-grouping trick applies: dedupe results by author name to
+ * surface authors (this type's search unit), re-query with attribute=authorTerm for their works. */
+async function searchAuthorsItunes(query: string): Promise<MetadataSearchResult[]> {
+  const url = new URL("https://itunes.apple.com/search");
+  url.searchParams.set("term", query);
+  url.searchParams.set("entity", "ebook");
+  url.searchParams.set("limit", "25");
+
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`iTunes search failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+
+  const seen = new Map<string, MetadataSearchResult>();
+  for (const b of body.results ?? []) {
+    const author = b.artistName;
+    if (!author || seen.has(author)) continue;
+    seen.set(author, {
+      title: author,
+      year: null,
+      overview: b.trackName ? `Known for: ${b.trackName}` : null,
+      posterUrl: b.artworkUrl100 ? b.artworkUrl100.replace("100x100", "600x600") : null,
+      externalIds: { itunes: author },
+    });
+  }
+  return Array.from(seen.values());
+}
+
+async function fetchAuthorBooksItunes(authorName: string): Promise<MetadataSubItem[]> {
+  const url = new URL("https://itunes.apple.com/search");
+  url.searchParams.set("term", authorName);
+  url.searchParams.set("entity", "ebook");
+  url.searchParams.set("attribute", "authorTerm");
+  url.searchParams.set("limit", "50");
+
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`iTunes works lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+
+  return (body.results ?? [])
+    .filter((b: any) => b.artistName === authorName)
+    .map((b: any) => ({ title: b.trackName ?? "Untitled", releaseDate: b.releaseDate ? String(b.releaseDate).slice(0, 10) : null }));
+}
+
+/** hardcover.app's GraphQL API (Typesense-backed search) — needs the admin's own API token from
+ * their account. Field shapes are documented but this hasn't been exercised against a live key,
+ * so it's implemented defensively (lots of `?.` fallbacks) the same way this file already treats
+ * every other provider whose exact response shape can't be verified without real credentials. */
+async function hardcoverGraphql(query: string, variables: Record<string, unknown>): Promise<any> {
+  const token = requireSetting("hardcoverApiToken", "Hardcover API token");
+  const res = await fetch("https://api.hardcover.app/v1/graphql", {
+    method: "POST",
+    headers: { Authorization: token.startsWith("Bearer ") ? token : `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ query, variables }),
+  });
+  if (!res.ok) throw new Error(`Hardcover search failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  if (body.errors?.length) throw new Error(`Hardcover search failed: ${body.errors[0]?.message ?? "unknown error"}`);
+  return body.data;
+}
+
+async function searchAuthorsHardcover(query: string): Promise<MetadataSearchResult[]> {
+  const data = await hardcoverGraphql(
+    `query ($q: String!) { search(query: $q, query_type: "Author", per_page: 15) { results } }`,
+    { q: query }
+  );
+  const hits: any[] = data?.search?.results?.hits ?? [];
+  return hits.map((h) => {
+    const doc = h.document ?? h;
+    return {
+      title: doc.name ?? "Unknown",
+      year: null,
+      overview: doc.bio ?? null,
+      posterUrl: doc.image?.url ?? null,
+      externalIds: { hardcover: String(doc.id) },
+    };
+  });
+}
+
+async function fetchAuthorBooksHardcover(authorId: string): Promise<MetadataSubItem[]> {
+  const data = await hardcoverGraphql(
+    `query ($id: Int!) { authors(where: {id: {_eq: $id}}) { contributions { book { id title release_date } } } }`,
+    { id: Number(authorId) }
+  );
+  const contributions: any[] = data?.authors?.[0]?.contributions ?? [];
+  return contributions
+    .filter((c) => c.book?.title)
+    .map((c) => ({ title: c.book.title, releaseDate: c.book.release_date ?? null }));
+}
+
+/** Goodreads shut down its public API years ago — this parses its still-public (no login
+ * required) search/author pages instead, same trade-off BookOrbit and most other "Goodreads
+ * metadata" tools make today. Fragile by nature (breaks whenever Goodreads changes its markup,
+ * with no advance notice) — the selectors below were verified against a live fetch of both the
+ * search page and an author's book-list page at the time this was written, not guessed blind. */
+const GOODREADS_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
+
+function parseGoodreadsBookRows($: cheerio.CheerioAPI): { title: string; authorId: string | null; authorName: string; coverUrl: string | null; year: number | null }[] {
+  const rows: ReturnType<typeof parseGoodreadsBookRows> = [];
+  $('tr[itemtype="http://schema.org/Book"]').each((_, el) => {
+    const row = $(el);
+    const title = row.find("a.bookTitle span[itemprop='name']").first().text().trim();
+    if (!title) return;
+    const authorLink = row.find("a.authorName").first();
+    const authorHref = authorLink.attr("href") ?? "";
+    const authorId = authorHref.match(/\/author\/show\/([^?]+)/)?.[1] ?? null;
+    const authorName = authorLink.find("span[itemprop='name']").text().trim();
+    const coverUrl = row.find("img.bookCover").attr("src") ?? null;
+    const infoText = row.find(".greyText.smallText.uitext").first().text();
+    const yearMatch = infoText.match(/published\s+(\d{4})/);
+    rows.push({ title, authorId, authorName, coverUrl, year: yearMatch ? Number(yearMatch[1]) : null });
+  });
+  return rows;
+}
+
+async function searchAuthorsGoodreads(query: string): Promise<MetadataSearchResult[]> {
+  const url = new URL("https://www.goodreads.com/search");
+  url.searchParams.set("q", query);
+  const res = await fetch(url.toString(), { headers: { "User-Agent": GOODREADS_USER_AGENT } });
+  if (!res.ok) throw new Error(`Goodreads search failed: HTTP ${res.status}`);
+  const $ = cheerio.load(await res.text());
+
+  const seen = new Map<string, MetadataSearchResult>();
+  for (const row of parseGoodreadsBookRows($)) {
+    if (!row.authorId || !row.authorName || seen.has(row.authorId)) continue;
+    seen.set(row.authorId, {
+      title: row.authorName,
+      year: null,
+      overview: `Known for: ${row.title}`,
+      posterUrl: null, // the book cover isn't the author's own photo
+      externalIds: { goodreads: row.authorId },
+    });
+  }
+  return Array.from(seen.values());
+}
+
+async function fetchAuthorBooksGoodreads(authorId: string): Promise<MetadataSubItem[]> {
+  const res = await fetch(`https://www.goodreads.com/author/list/${authorId}`, { headers: { "User-Agent": GOODREADS_USER_AGENT } });
+  if (!res.ok) throw new Error(`Goodreads author book list failed: HTTP ${res.status}`);
+  const $ = cheerio.load(await res.text());
+  return parseGoodreadsBookRows($).map((row) => ({
+    title: row.title,
+    releaseDate: row.year ? `${row.year}-01-01` : null,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Audiobooks: Audible — audiobook.metadataProviders previously only reused the
+// book providers (Open Library/Google Books have no audio-edition concept at
+// all), so this is the first provider actually built for audiobooks specifically.
+// ---------------------------------------------------------------------------
+
+/** Audible has no official public metadata API — this is the same undocumented
+ * api.audible.com JSON endpoint several established open-source audiobook tools already use
+ * (e.g. the `audible` Python package, audiobookshelf's own Audible provider) — a real JSON API,
+ * not HTML scraping, just not one Audible/Amazon formally publishes or supports. */
+async function searchAuthorsAudible(query: string): Promise<MetadataSearchResult[]> {
+  const url = new URL("https://api.audible.com/1.0/catalog/products");
+  url.searchParams.set("keywords", query);
+  url.searchParams.set("num_results", "25");
+  url.searchParams.set("products_sort_by", "Relevance");
+  url.searchParams.set("response_groups", "product_desc,media,contributors");
+
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`Audible search failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+
+  const seen = new Map<string, MetadataSearchResult>();
+  for (const p of body.products ?? []) {
+    const author = p.authors?.[0]?.name;
+    if (!author || seen.has(author)) continue;
+    seen.set(author, {
+      title: author,
+      year: null,
+      overview: p.title ? `Known for: ${p.title}` : null,
+      posterUrl: p.product_images?.["500"] ?? null,
+      externalIds: { audible: author },
+    });
+  }
+  return Array.from(seen.values());
+}
+
+async function fetchAuthorBooksAudible(authorName: string): Promise<MetadataSubItem[]> {
+  const url = new URL("https://api.audible.com/1.0/catalog/products");
+  url.searchParams.set("keywords", authorName);
+  url.searchParams.set("num_results", "50");
+  url.searchParams.set("products_sort_by", "Relevance");
+  url.searchParams.set("response_groups", "product_desc,contributors");
+
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`Audible works lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+
+  return (body.products ?? [])
+    .filter((p: any) => p.authors?.some((a: any) => a.name === authorName))
+    .map((p: any) => ({ title: p.title ?? "Untitled", releaseDate: p.release_date || null }));
+}
+
 // ---------------------------------------------------------------------------
 // Comics: Comic Vine
 // ---------------------------------------------------------------------------
@@ -1323,6 +1522,10 @@ const SEARCH_FNS: Record<string, (query: string) => Promise<MetadataSearchResult
   lastfm: searchArtistsLastfm,
   openlibrary: searchAuthorsOpenlibrary,
   googlebooks: searchAuthorsGoogleBooks,
+  itunes: searchAuthorsItunes,
+  hardcover: searchAuthorsHardcover,
+  goodreads: searchAuthorsGoodreads,
+  audible: searchAuthorsAudible,
   comicvine: searchComicsComicVine,
   rawg: searchRomsRawg,
   igdb: searchRomsIgdb,
@@ -1418,6 +1621,10 @@ export async function fetchCollectionChildrenFor(
 ): Promise<{ provider: string | null; children: MetadataSubItem[] }> {
   if (externalIds.openlibrary) return { provider: "openlibrary", children: await fetchAuthorBooksOpenlibrary(externalIds.openlibrary) };
   if (externalIds.googlebooks) return { provider: "googlebooks", children: await fetchAuthorBooksGoogleBooks(externalIds.googlebooks) };
+  if (externalIds.itunes) return { provider: "itunes", children: await fetchAuthorBooksItunes(externalIds.itunes) };
+  if (externalIds.hardcover) return { provider: "hardcover", children: await fetchAuthorBooksHardcover(externalIds.hardcover) };
+  if (externalIds.goodreads) return { provider: "goodreads", children: await fetchAuthorBooksGoodreads(externalIds.goodreads) };
+  if (externalIds.audible) return { provider: "audible", children: await fetchAuthorBooksAudible(externalIds.audible) };
   if (externalIds.comicvine) return { provider: "comicvine", children: await fetchComicIssuesComicVine(externalIds.comicvine) };
   if (externalIds.mangadex) return { provider: "mangadex", children: await fetchMangaChaptersMangadex(externalIds.mangadex) };
   if (externalIds.youtube) return { provider: "youtube", children: await fetchChannelVideosYoutube(externalIds.youtube) };

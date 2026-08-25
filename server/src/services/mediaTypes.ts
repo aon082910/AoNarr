@@ -95,7 +95,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     childLabel: "Book",
     extensions: BOOK_EXT,
     indexerCategory: "7000",
-    metadataProviders: ["openlibrary", "googlebooks"],
+    metadataProviders: ["openlibrary", "googlebooks", "itunes", "hardcover", "goodreads"],
     defaultProvider: "openlibrary",
   },
   audiobook: {
@@ -105,9 +105,10 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     childLabel: "Book",
     extensions: AUDIOBOOK_EXT,
     indexerCategory: "3030",
-    // No dedicated audiobook metadata API is wired up; reuses the book-metadata providers for
-    // title/author/cover art since a narrated edition still shares the same underlying work.
-    metadataProviders: ["openlibrary", "googlebooks"],
+    // Reuses the book-metadata providers too (a narrated edition still shares the same underlying
+    // work), plus Audible, which is audiobook-specific — the first provider actually built for
+    // this type rather than borrowed from Books.
+    metadataProviders: ["openlibrary", "googlebooks", "audible"],
     defaultProvider: "openlibrary",
     multiFilePerChild: true,
   },

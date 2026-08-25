@@ -3,6 +3,37 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 153 — iTunes, Hardcover, Goodreads, and Audible metadata providers
+- **Four new metadata providers**, sourced from surveying what BookOrbit (a self-hosted book/
+  audiobook/comic manager) wires up: **iTunes** (Books, keyless, Apple's public Search API),
+  **Hardcover** (Books, needs an API token from hardcover.app), **Goodreads** (Books, keyless —
+  see caveat below), and **Audible** (Audiobooks, keyless — see caveat below). All four follow
+  Books/Audiobooks' existing author-centric search shape (search finds an author, picking one
+  fetches their books as children), same as Open Library/Google Books already do.
+- **Audiobooks gets its first dedicated provider.** Every existing audiobook provider was actually
+  a book provider reused (Open Library/Google Books have no audio-edition concept at all) — Audible
+  is audiobook-specific, sourced from the same unofficial `api.audible.com` JSON endpoint several
+  established open-source audiobook tools already rely on (not an official/documented Audible API,
+  but a real JSON endpoint, not scraped HTML).
+- **Goodreads has no public API anymore** (shut down years ago) — this reads its still-public
+  search and author book-list pages instead, the same trade-off BookOrbit and most other "Goodreads
+  metadata" tools make today. Verified against live pages before shipping (not guessed blind), but
+  it's inherently more fragile than every other provider in AoNarr — it can break without notice
+  whenever Goodreads changes their site's markup, unlike an actual API contract.
+- **Amazon and AudNexus were considered and deliberately left out.** Amazon (BookOrbit's other
+  scraped source) sits behind an active Akamai bot-detection challenge — confirmed live: an
+  unauthenticated request gets a bot-verification redirect, not real results, even before touching
+  the "needs your own session cookie" requirement. Building a workaround for that is bypassing
+  bot-detection, not just parsing public HTML, a different and firmer line than the Goodreads
+  scraper above. AudNexus isn't actually a book-search API at all — it's an author-bio enrichment
+  source keyed by an Audible ASIN (BookOrbit uses it as a secondary enrichment call after Audible,
+  not a standalone search provider), so it doesn't fit AoNarr's "search by title" provider model;
+  wiring it in as a fake search provider would just return zero results for every query.
+- Verified live: real search results back from iTunes, Goodreads, and Audible (actual titles/
+  covers/authors, not just "didn't crash"); Hardcover correctly dispatches to its own code path
+  (fails only on "API token not configured", not a generic error); imported a real author via the
+  new Goodreads provider and confirmed all 30 of their books came in as children.
+
 ## Round 152 — ROM indexer breadth, Duplicates layout fix, manual metadata edit + NFO sync, per-item/library Organize & Rename
 - **ROM indexer search broadened again** — `1000,4050` (Console + PC/Games only) was still missing
   PC/Software and anything filed under an indexer's catch-all "Other" category. Now
