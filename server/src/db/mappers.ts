@@ -262,6 +262,19 @@ export function subtitleProviderFromRow(row: any) {
   };
 }
 
+export function aiProviderFromRow(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    baseUrl: row.base_url,
+    apiKey: row.api_key,
+    model: row.model,
+    enabled: row.enabled,
+    isDefault: row.is_default,
+  };
+}
+
 export function savedLibraryViewFromRow(row: any) {
   return {
     id: row.id,

@@ -3,6 +3,31 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 139 — AI provider infrastructure (2nd of the earlier AI-matching request)
+- Added a new AI Providers page (Configuration): manage multiple AI provider instances, each
+  either "local" (an Ollama-style chat API — no key required, though one's accepted for setups
+  that gate on one) or "cloud" (any OpenAI-compatible chat completions endpoint — OpenAI itself or
+  a compatible proxy, same generic-adapter approach the DDL indexer and Custom subtitle provider
+  already use for arbitrary third-party APIs), selectable per instance so both a local and a cloud
+  provider can be configured side by side and one flagged as the default. New `ai_providers` table,
+  `services/aiClient.ts` (`queryAi()`, with an optional base64 image for a vision-capable model),
+  full CRUD + a "Test connection" button (sends a trivial prompt, same pattern indexers already
+  offer) under `/api/ai-providers`.
+- This is infrastructure only this round — nothing in AoNarr calls `queryAi()` yet. It exists so
+  future AI-assisted matching features (the earlier request's own example was a vision-OCR fallback
+  for scanned-image-only book PDFs, which last round's ISBN scan explicitly doesn't attempt) have
+  somewhere to plug in without each needing its own provider-config UI; wiring an actual feature to
+  it is a follow-up once there's a concrete one to build, rather than speculatively bolted onto the
+  ISBN scan feature without a specific use decided.
+- Verified live: added a real provider through the UI (Ollama-style, pointed at a placeholder
+  address) via real clicks, confirmed it round-tripped into the database correctly; clicked "Test
+  connection" and confirmed a genuinely unreachable endpoint fails cleanly ("fetch failed") instead
+  of crashing the page; confirmed the new `ai_providers` table migrates cleanly on both SQLite and
+  a fresh Postgres container (this Postgres check first ran against a stale local `dist/` build
+  from an earlier round's manual `tsc` run and silently found nothing — not a shipped-image issue,
+  since the real Docker build always compiles fresh from source, but a reminder to refresh that
+  local build dir before trusting a dist-based check again).
+
 ## Round 138 — Book ISBN scan-to-match (1st of the earlier AI-matching request)
 - Added "Scan for ISBN" on a book's own page (Books library): scans the downloaded file's first
   and last 15 pages (PDF) or its embedded metadata (EPUB's OPF `dc:identifier`) for an ISBN, then

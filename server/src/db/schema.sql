@@ -154,6 +154,20 @@ CREATE TABLE IF NOT EXISTS subtitle_providers (
   enabled INTEGER NOT NULL DEFAULT 1
 );
 
+-- AI provider instances for AI-assisted matching features (e.g. a scanned-book vision fallback) —
+-- type is unconstrained (not a fixed CHECK list) for the same reason indexers.protocol/
+-- download_clients.type are: the valid set ("local"/"cloud") lives at the application layer.
+CREATE TABLE IF NOT EXISTS ai_providers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL, -- 'local' (e.g. Ollama) or 'cloud' (any OpenAI-compatible chat completions endpoint)
+  base_url TEXT NOT NULL,
+  api_key TEXT, -- required for 'cloud', optional for 'local' (some setups still gate on a key)
+  model TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  is_default INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
