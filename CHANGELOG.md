@@ -3,6 +3,30 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 135 — automatic subtitle sync (6th of the Starr feature-gap list)
+- Added Bazarr-style subtitle timing sync: after a subtitle downloads, AoNarr re-aligns its
+  timestamps against the video's own audio track using `ffsubsync` (voice-activity detection,
+  entirely local — no external API, no network round-trip beyond the initial subtitle download
+  itself). New `services/subtitleSync.ts`; both server Dockerfiles (`server/Dockerfile` and
+  `Dockerfile.combined`) now install `python3-pip` and `pip install ffsubsync`.
+- Skipped for an OpenSubtitles exact moviehash match — that's already the most reliable timing
+  signal available (the file matched byte-for-byte against a known release), so spending the sync
+  pass (30s–2min depending on file length) would cost time for no benefit. Runs for everything
+  else, including "Custom" provider results, which carry no confidence signal to check at all.
+  New `subtitleSyncEnabled` setting (default enabled) in the Subtitle Providers tile to turn it off
+  entirely. Best-effort and non-destructive: on any ffsubsync failure the original subtitle file is
+  left untouched (writes to a temp path first, only replaces the original on success) — a
+  mistimed-but-present subtitle beats none at all.
+- Verified live end-to-end, not just by code review: confirmed `ffsubsync` actually installs and
+  runs inside the built server image; generated a real 5-second test video (ffmpeg) and a
+  deliberately-offset test subtitle inside the container, ran the exact `ffsubsync` invocation
+  `subtitleSync.ts` uses, and confirmed it correctly detected and corrected a real timing offset
+  (produced a `.010s`-shifted, properly realigned output file). Also confirmed the new Settings
+  toggle round-trips through a real UI interaction. The subtitle-download half of the pipeline
+  (OpenSubtitles search/download itself) isn't exercised here for lack of a real API key in this
+  dev environment — same disclosed limitation as prior rounds; the sync step this round actually
+  adds is independently and fully verified regardless.
+
 ## Round 134 — subtitle hearing-impaired/forced preference + smarter pick (5th of the list)
 - Added Bazarr-style subtitle refinements to the existing OpenSubtitles integration: an
   OpenSubtitles provider can now require or exclude hearing-impaired subtitles, and separately

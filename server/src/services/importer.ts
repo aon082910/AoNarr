@@ -17,6 +17,7 @@ import {
   type CustomSubtitleProviderConfig,
 } from "./subtitleClient.js";
 import { unpackDownloadedArchives } from "./archiveExtract.js";
+import { syncSubtitleToVideo } from "./subtitleSync.js";
 import { DEFAULT_SHAPE_TEMPLATES, renderTemplate } from "./naming.js";
 import { getMediaTypeConfig } from "./mediaTypes.js";
 import { getSetting } from "./settingsStore.js";
@@ -60,11 +61,21 @@ async function tryDownloadSubtitle(videoPath: string, mediaItemId: number): Prom
     const srtPath = videoPath.slice(0, -path.extname(videoPath).length) + `.${best.language}.srt`;
     fs.writeFileSync(srtPath, content, "utf-8");
 
+    // An exact moviehash match means OpenSubtitles matched this subtitle to this precise file —
+    // its timing is already trustworthy, so syncing would just spend the ffsubsync pass (30s-2min)
+    // for no benefit. Anything else (a fuzzy title match, or any "custom" provider result, which
+    // carries no confidence signal at all) gets synced, same as Bazarr's own "below-threshold"
+    // default behavior.
+    let synced = false;
+    if (getSetting("subtitleSyncEnabled") !== "0" && !best.movieHashMatch) {
+      synced = await syncSubtitleToVideo(videoPath, srtPath);
+    }
+
     await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'subtitleDownloaded', ?)`).run(
       mediaItemId,
-      JSON.stringify({ srtPath, language: best.language })
+      JSON.stringify({ srtPath, language: best.language, synced })
     );
-    log.info(`[importer] downloaded "${best.language}" subtitle for "${path.basename(videoPath)}"`);
+    log.info(`[importer] downloaded "${best.language}" subtitle for "${path.basename(videoPath)}"${synced ? " (synced)" : ""}`);
   } catch (err) {
     log.warn(`[importer] subtitle download failed for "${videoPath}":`, (err as Error).message);
   }

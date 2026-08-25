@@ -29,9 +29,15 @@ RUN cp src/db/schema.sql dist/db/schema.sql && cp src/db/schema.postgres.sql dis
 FROM node:20-bookworm-slim
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3 make g++ ca-certificates curl ffmpeg nginx gnupg \
+      python3 python3-pip make g++ ca-certificates curl ffmpeg nginx gnupg \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/nginx/sites-enabled/default
+# ffsubsync re-aligns a downloaded subtitle's timing against the video's own audio (voice-activity
+# detection, no external API) — used as a best-effort pass on subtitles the picker didn't already
+# consider a high-confidence match (see subtitleSync.ts). --break-system-packages is required on
+# Debian bookworm's externally-managed system Python; acceptable here since this container has no
+# other Python workload to conflict with.
+RUN pip install --no-cache-dir --break-system-packages ffsubsync
 # postgresql-client from Debian bookworm is v15, which refuses to pg_dump a newer (16/17) server —
 # pulling the latest client from PGDG's own repo instead, since a newer pg_dump can dump any older
 # server but not vice versa.

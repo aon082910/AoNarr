@@ -2093,6 +2093,21 @@ export default function Settings() {
                   sites without a public API (e.g. Subscene/Addic7ed), since that would mean bypassing their
                   terms of service; use Custom instead if your provider has an API of its own.
                 </p>
+                <label>Sync subtitle timing after download</label>
+                <select
+                  key={settings.subtitleSyncEnabled ?? "sub-sync-empty"}
+                  defaultValue={settings.subtitleSyncEnabled ?? "1"}
+                  onChange={(e) => saveSetting("subtitleSyncEnabled", e.target.value)}
+                >
+                  <option value="1">Enabled — re-align timing (ffsubsync) for anything not an exact hash match</option>
+                  <option value="0">Disabled</option>
+                </select>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+                  Uses the video's own audio track to re-align a downloaded subtitle's timestamps —
+                  entirely local, no external API. Skipped for an OpenSubtitles exact moviehash
+                  match (already trustworthy); applies to everything else, including Custom
+                  provider results, which carry no confidence signal to check.
+                </p>
                 <form className="form-panel" onSubmit={addProvider}>
                   <label>Provider type</label>
                   <select value={subType} onChange={(e) => setSubType(e.target.value as "opensubtitles" | "custom")}>
