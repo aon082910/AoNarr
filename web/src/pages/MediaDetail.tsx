@@ -157,6 +157,13 @@ export default function MediaDetail() {
   const [showSearchMatch, setShowSearchMatch] = useState(false);
   const [scanningItem, setScanningItem] = useState(false);
   const [refreshingItem, setRefreshingItem] = useState(false);
+  const [showEditMetadata, setShowEditMetadata] = useState(false);
+  const [editTitle, setEditTitle] = useState("");
+  const [editYear, setEditYear] = useState("");
+  const [editOverview, setEditOverview] = useState("");
+  const [editPosterUrl, setEditPosterUrl] = useState("");
+  const [savingMetadata, setSavingMetadata] = useState(false);
+  const [organizingItem, setOrganizingItem] = useState(false);
 
   function load() {
     api.get<MediaDetailResponse>(`/media/${id}`).then(setItem);
@@ -294,6 +301,65 @@ export default function MediaDetail() {
     if (!item) return;
     const updated = await api.patch<MediaItem>(`/media/${item.id}`, { contentRating: rating });
     setItem({ ...item, contentRating: updated.contentRating });
+  }
+
+  function toggleEditMetadata() {
+    if (!item) return;
+    const next = !showEditMetadata;
+    setShowEditMetadata(next);
+    if (next) {
+      setEditTitle(item.title);
+      setEditYear(item.year ? String(item.year) : "");
+      setEditOverview(item.overview ?? "");
+      setEditPosterUrl(item.posterUrl ?? "");
+    }
+  }
+
+  async function saveMetadata(e: FormEvent) {
+    e.preventDefault();
+    if (!item || !editTitle.trim()) return;
+    setSavingMetadata(true);
+    try {
+      const payload = {
+        title: editTitle.trim(),
+        year: editYear ? Number(editYear) : null,
+        overview: editOverview || null,
+        posterUrl: editPosterUrl || null,
+      };
+      // The server keeps a matching .nfo sidecar in sync with whatever gets saved here (if this
+      // item has a file on disk) — see writeNfoSidecar in routes/media.ts, so a media server
+      // picks up the correction on its next scan instead of only AoNarr knowing about it.
+      const updated = await api.patch<MediaItem>(`/media/${item.id}`, payload);
+      setItem({ ...item, ...updated });
+      setShowEditMetadata(false);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSavingMetadata(false);
+    }
+  }
+
+  async function organizeItem() {
+    if (!item) return;
+    setOrganizingItem(true);
+    try {
+      const result = await api.post<{ renamed: { from: string; to: string }[]; errors: { title: string; error: string }[] }>(
+        `/media/${item.id}/rename-files`,
+        {}
+      );
+      if (result.errors.length > 0) {
+        alert(`Rename failed: ${result.errors.map((e) => e.error).join(", ")}`);
+      } else if (result.renamed.length === 0) {
+        alert("Already organized — nothing needed to move.");
+      } else {
+        alert(`Renamed/organized ${result.renamed.length} file(s) to match the current naming template.`);
+      }
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setOrganizingItem(false);
+    }
   }
 
   async function scanImportItem() {
@@ -943,6 +1009,17 @@ export default function MediaDetail() {
           >
             {refreshingItem ? "Refreshing..." : "Refresh"}
           </button>
+          <button onClick={toggleEditMetadata} className="secondary">
+            {showEditMetadata ? "Cancel edit" : "Edit metadata"}
+          </button>
+          <button
+            className="secondary"
+            onClick={organizeItem}
+            disabled={organizingItem}
+            title="Move/rename this item's own file(s) to match the current naming template, same as System → Rename Files but scoped to just this item"
+          >
+            {organizingItem ? "Organizing..." : "Organize & Rename"}
+          </button>
           {shape === "single" && item.hasFile && (
             <button className="secondary" onClick={checkCorrupt}>
               Check for corruption
@@ -992,6 +1069,26 @@ export default function MediaDetail() {
 
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
       {watchStateError && <p style={{ color: "var(--danger)" }}>{watchStateError}</p>}
+
+      {showEditMetadata && (
+        <form className="form-panel" onSubmit={saveMetadata}>
+          <label>Title</label>
+          <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} required />
+          <label>Year</label>
+          <input value={editYear} onChange={(e) => setEditYear(e.target.value)} type="number" />
+          <label>Overview</label>
+          <textarea value={editOverview} onChange={(e) => setEditOverview(e.target.value)} rows={4} />
+          <label>Poster URL</label>
+          <input value={editPosterUrl} onChange={(e) => setEditPosterUrl(e.target.value)} placeholder="https://..." />
+          <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+            Saving also updates this item's .nfo sidecar on disk, if it has a file, so a media
+            server picks up the correction on its next scan.
+          </p>
+          <button type="submit" disabled={savingMetadata}>
+            {savingMetadata ? "Saving..." : "Save metadata"}
+          </button>
+        </form>
+      )}
 
       {typeInfo && typeInfo.groupLevels.length > 0 && groupBreadcrumb && !showMove && (
         <p style={{ color: "var(--muted)" }}>Location: {groupBreadcrumb}</p>

@@ -143,10 +143,13 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     extensions: ROM_EXT,
     // Torznab's cat= param takes a comma-separated list natively (searchTorznabNewznab passes this
     // straight through, no parsing needed on this end) — 4050 alone (PC/Games) was missing every
-    // console release entirely. 1000 is the Console parent category, which most indexers treat as
-    // covering its own subcategories (1010 NDS, 1020 PSP, 1030 Wii, 1040/1050 Xbox/360, 1060
-    // Wiiware/VC, 1070 Xbox One, 1080 PS3, 1090 Other) without needing every one spelled out.
-    indexerCategory: "1000,4050",
+    // console release entirely, and PC/Software and anything filed under the catch-all "Other"
+    // category were both invisible too. 1000 (Console) and 4000 (PC) are parent categories, which
+    // most indexers treat as covering their own subcategories (1010 NDS, 1020 PSP, 1030 Wii,
+    // 1040/1050 Xbox/360, 1060 Wiiware/VC, 1070 Xbox One, 1080 PS3, 1090 Other under Console;
+    // 4010/4020/4030/4040/4060/4070 plus 4050 itself under PC) without needing every one spelled
+    // out; 8000 (Other) catches anything an indexer couldn't categorize more specifically.
+    indexerCategory: "1000,4000,4050,8000",
     metadataProviders: ["rawg", "igdb", "screenscraper", "thegamesdb"],
     defaultProvider: "rawg",
     groupLevels: ["system", "maker"],

@@ -397,6 +397,7 @@ export function LibraryItemGrid({
   const [importingCsv, setImportingCsv] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [organizing, setOrganizing] = useState(false);
   const csvInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { auth } = useAuth();
@@ -757,6 +758,33 @@ export function LibraryItemGrid({
     }
   }
 
+  /** Sonarr/Radarr-style "Rename Files" — moves/renames every already-imported file in this
+   * library to match the current naming template (Settings → Media Management → Naming), the
+   * same function System → Rename Files calls, just pre-scoped to this one type. Awaited (not
+   * fire-and-forget) since it's a filesystem move per file, not a network call — fast enough not
+   * to risk a gateway timeout the way a metadata-provider-per-item scan/refresh could. */
+  async function organizeLibrary() {
+    if (!confirm(`Move/rename every already-imported ${typeLabel} file to match the current naming template? This only moves files that aren't already where the template says they should be.`)) return;
+    setOrganizing(true);
+    try {
+      const result = await api.post<{ renamed: { from: string; to: string }[]; errors: { title: string; error: string }[] }>(
+        `/media/rename-files?type=${type}`,
+        {}
+      );
+      if (result.errors.length > 0) {
+        alert(`Renamed ${result.renamed.length}, but ${result.errors.length} failed: ${result.errors.map((e) => e.error).join(", ")}`);
+      } else if (result.renamed.length === 0) {
+        alert("Already organized — nothing needed to move.");
+      } else {
+        alert(`Renamed/organized ${result.renamed.length} file(s) to match the current naming template.`);
+      }
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setOrganizing(false);
+    }
+  }
+
   async function quickAdd() {
     const title = prompt(`Title for the new ${typeLabel.replace(/ — Ungrouped$/, "")} item:`);
     if (!title?.trim()) return;
@@ -977,6 +1005,16 @@ export function LibraryItemGrid({
         {auth.isAdmin && (
           <button className="select-like" onClick={refreshLibrary} disabled={refreshing} title="Re-pull overview/poster/year for every item in this library">
             {refreshing ? "Refreshing..." : "Refresh"}
+          </button>
+        )}
+        {auth.isAdmin && (
+          <button
+            className="select-like"
+            onClick={organizeLibrary}
+            disabled={organizing}
+            title="Move/rename every already-imported file in this library to match the current naming template (Settings → Media Management → Naming)"
+          >
+            {organizing ? "Organizing..." : "Organize & Rename"}
           </button>
         )}
         {auth.isAdmin && mediaServerConfigured && (

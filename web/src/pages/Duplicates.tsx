@@ -104,10 +104,14 @@ export default function Duplicates() {
         const key = groupKey(g);
         const typeLabel = mediaTypes.find((t) => t.key === g.type)?.label ?? g.type;
         return (
-          <div key={key} className="form-panel" style={{ marginBottom: 16 }}>
+          <div
+            key={key}
+            style={{ background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 8, padding: 20, marginBottom: 16 }}
+          >
             <h2 style={{ marginTop: 0 }}>
               {g.title} {g.year ? `(${g.year})` : ""} <span style={{ color: "var(--muted)", fontWeight: "normal" }}>— {typeLabel}</span>
             </h2>
+            <div style={{ overflowX: "auto" }}>
             <table>
               <thead>
                 <tr>
@@ -138,7 +142,7 @@ export default function Duplicates() {
                         <img src={item.posterUrl} alt="" style={{ width: 32, height: 48, objectFit: "cover", borderRadius: 3 }} />
                       ) : null}
                     </td>
-                    <td>
+                    <td style={{ maxWidth: 280, overflowWrap: "anywhere" }}>
                       <Link to={`/media/${item.id}`} target="_blank">
                         {item.title} {item.suggestedKeeper && <span className="badge">suggested</span>}
                       </Link>
@@ -166,6 +170,7 @@ export default function Duplicates() {
                 ))}
               </tbody>
             </table>
+            </div>
             <div className="toolbar" style={{ marginTop: 8 }}>
               <button onClick={() => merge(g)} disabled={merging === key}>
                 {merging === key ? "Merging..." : `Merge ${g.items.length - 1} into the kept item`}

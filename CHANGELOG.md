@@ -3,6 +3,38 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 152 — ROM indexer breadth, Duplicates layout fix, manual metadata edit + NFO sync, per-item/library Organize & Rename
+- **ROM indexer search broadened again** — `1000,4050` (Console + PC/Games only) was still missing
+  PC/Software and anything filed under an indexer's catch-all "Other" category. Now
+  `1000,4000,4050,8000` (Console, PC parent, PC/Games explicitly for indexers that don't expand
+  parent categories, and Other).
+- **Fixed the Duplicates page's layout** — its per-group wrapper was reusing the `.form-panel` class
+  (a narrow single-column form style capped at `max-width: 480px`) around a full 9-column table,
+  which forced the whole table into a 480px box and spilled everything past it. Replaced with an
+  unconstrained panel-styled div, wrapped the table in a proper `overflow-x: auto` container
+  (matching the pattern the merge-metadata table already used), and capped/wrapped the title cell
+  so an unusually long title can't force the row wider either.
+- **Manual metadata editing** on every media page (movie/series/ROM/comic/... — the same shared
+  MediaDetail.tsx component every library type's item page already uses) — a new "Edit metadata"
+  button reveals a plain title/year/overview/poster-URL form, no provider fetch required first
+  (unlike the existing merge-table flow). Saving — from this new form, or from the existing merge-
+  apply/rematch flows — now also writes/updates a matching `.nfo` sidecar next to the item's file
+  on disk (Kodi/Jellyfin/Emby convention: same basename as the file, `.nfo` extension) if it has
+  one, so a media server picks up the correction on its next scan instead of only AoNarr knowing
+  about it. Scoped to single-file items (Movies/ROMs/Adult, anything with its own `path`) — an
+  episodic/collection parent (TV shows, Music, Books, ...) has no single file of its own to put a
+  sidecar next to, only its children do.
+- **"Organize & Rename" button** added to both the Library page (scoped to that whole library type)
+  and a single media page (scoped to just that one item) — Sonarr/Radarr's "Rename Files" made
+  reachable without going through System settings first. Both call the same underlying rename
+  logic already shipped; the per-item route/function (`renameOneMediaItem`) is new, extracted from
+  the existing whole-library `renameLibraryFiles` the same way Round 148's per-item scan/refresh
+  were split out of their whole-library versions.
+- Verified live: edited a test movie's overview through the new form and confirmed a `.nfo` file
+  appeared on disk with the edited text; confirmed the per-item Organize & Rename endpoint actually
+  moved a flat-placed test file into its templated `Title (Year)/` subfolder; confirmed the
+  Organize & Rename button renders on a real Library page.
+
 ## Round 151 — ScreenScraper, TheGamesDB, Vimeo providers, and manual lessons for Courses
 - **ScreenScraper and TheGamesDB** added as ROM metadata providers alongside RAWG/IGDB — both are
   retro/emulation-focused (unlike RAWG/IGDB, which skew modern), so they cover older/obscure

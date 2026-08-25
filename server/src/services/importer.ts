@@ -668,87 +668,100 @@ export async function renameLibraryFiles(mediaType?: MediaType): Promise<RenameR
   ) as any[];
 
   for (const mediaRow of itemRows) {
-    const item = mediaItemFromRow(mediaRow);
-    const typeConfig = getMediaTypeConfig(item.type);
-    if (!item.rootFolderId) continue;
-    const folderRow = await db.prepare("SELECT * FROM root_folders WHERE id = ?").get(item.rootFolderId);
-    if (!folderRow) continue;
-    const rootFolder = rootFolderFromRow(folderRow);
-    const namingEnabled = getNamingEnabled(item.type);
-    const template = getNamingTemplate(item.type);
-
-    try {
-      if (typeConfig.shape === "single") {
-        if (!item.hasFile || !item.path) continue;
-        const ext = path.extname(item.path);
-        const segments = renderPathSegments(template, { title: item.title, year: item.year ?? "" });
-        const { destPath } = resolveDest(rootFolder.path, segments, ext, item.path, namingEnabled);
-        if (path.resolve(destPath) === path.resolve(item.path)) continue;
-        const oldDir = path.dirname(item.path);
-        moveFile(item.path, destPath);
-        removeEmptyParents(oldDir, rootFolder.path);
-        await db.prepare("UPDATE media_items SET path = ? WHERE id = ?").run(destPath, item.id);
-        result.renamed.push({ title: item.title, from: item.path, to: destPath });
-      } else if (typeConfig.shape === "episodic") {
-        const episodes = (await db
-          .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND has_file = 1 AND file_path IS NOT NULL")
-          .all(item.id)) as any[];
-        for (const epRow of episodes) {
-          const ext = path.extname(epRow.file_path);
-          const absoluteEpisode = Number(
-            (
-              (await db
-                .prepare(
-                  `SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ? AND season_number > 0
-                 AND (season_number < ? OR (season_number = ? AND episode_number <= ?))`
-                )
-                .get(item.id, epRow.season_number, epRow.season_number, epRow.episode_number)) as { c: number }
-            ).c
-          );
-          const segments = renderPathSegments(template, {
-            parentTitle: item.title,
-            season: epRow.season_number,
-            episode: epRow.episode_number,
-            absoluteEpisode,
-            airDate: epRow.air_date ?? "",
-          });
-          const { destPath } = resolveDest(rootFolder.path, segments, ext, epRow.file_path, namingEnabled);
-          if (path.resolve(destPath) === path.resolve(epRow.file_path)) continue;
-          const oldDir = path.dirname(epRow.file_path);
-          moveFile(epRow.file_path, destPath);
-          removeEmptyParents(oldDir, rootFolder.path);
-          await db.prepare("UPDATE episodes SET file_path = ? WHERE id = ?").run(destPath, epRow.id);
-          result.renamed.push({ title: `${item.title} — ${epRow.season_number}x${epRow.episode_number}`, from: epRow.file_path, to: destPath });
-        }
-      } else if (typeConfig.shape === "collection" && typeConfig.multiFilePerChild) {
-        const count = (await db.prepare("SELECT COUNT(*) AS c FROM sub_items WHERE media_item_id = ? AND has_file = 1").get(item.id)) as {
-          c: number;
-        };
-        result.skippedMusic += count.c;
-      } else if (typeConfig.shape === "collection") {
-        const subItems = (await db
-          .prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND has_file = 1 AND file_path IS NOT NULL")
-          .all(item.id)) as any[];
-        for (const subRow of subItems) {
-          const ext = path.extname(subRow.file_path);
-          const segments = renderPathSegments(template, { parentTitle: item.title, childTitle: subRow.title });
-          const { destPath } = resolveDest(rootFolder.path, segments, ext, subRow.file_path, namingEnabled);
-          if (path.resolve(destPath) === path.resolve(subRow.file_path)) continue;
-          const oldDir = path.dirname(subRow.file_path);
-          moveFile(subRow.file_path, destPath);
-          removeEmptyParents(oldDir, rootFolder.path);
-          await db.prepare("UPDATE sub_items SET file_path = ? WHERE id = ?").run(destPath, subRow.id);
-          result.renamed.push({ title: `${item.title} — ${subRow.title}`, from: subRow.file_path, to: destPath });
-        }
-      }
-    } catch (err) {
-      result.errors.push({ title: item.title, error: (err as Error).message });
-      log.warn(`[importer] rename failed for "${item.title}":`, (err as Error).message);
-    }
+    await renameOneItemRow(mediaRow, result);
   }
 
   if (result.renamed.length > 0) {
     log.info(`[importer] renamed ${result.renamed.length} file(s) to match the current naming template`);
   }
   return result;
+}
+
+/** Per-item version of renameLibraryFiles, for the "Organize & Rename" button on a single media
+ * page — same logic, scoped to just this item's own file(s) instead of a whole library. */
+export async function renameOneMediaItem(mediaItemId: number): Promise<RenameResult> {
+  const result: RenameResult = { renamed: [], errors: [], skippedMusic: 0 };
+  const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId);
+  if (mediaRow) await renameOneItemRow(mediaRow, result);
+  return result;
+}
+
+async function renameOneItemRow(mediaRow: any, result: RenameResult): Promise<void> {
+  const item = mediaItemFromRow(mediaRow);
+  const typeConfig = getMediaTypeConfig(item.type);
+  if (!item.rootFolderId) return;
+  const folderRow = await db.prepare("SELECT * FROM root_folders WHERE id = ?").get(item.rootFolderId);
+  if (!folderRow) return;
+  const rootFolder = rootFolderFromRow(folderRow);
+  const namingEnabled = getNamingEnabled(item.type);
+  const template = getNamingTemplate(item.type);
+
+  try {
+    if (typeConfig.shape === "single") {
+      if (!item.hasFile || !item.path) return;
+      const ext = path.extname(item.path);
+      const segments = renderPathSegments(template, { title: item.title, year: item.year ?? "" });
+      const { destPath } = resolveDest(rootFolder.path, segments, ext, item.path, namingEnabled);
+      if (path.resolve(destPath) === path.resolve(item.path)) return;
+      const oldDir = path.dirname(item.path);
+      moveFile(item.path, destPath);
+      removeEmptyParents(oldDir, rootFolder.path);
+      await db.prepare("UPDATE media_items SET path = ? WHERE id = ?").run(destPath, item.id);
+      result.renamed.push({ title: item.title, from: item.path, to: destPath });
+    } else if (typeConfig.shape === "episodic") {
+      const episodes = (await db
+        .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND has_file = 1 AND file_path IS NOT NULL")
+        .all(item.id)) as any[];
+      for (const epRow of episodes) {
+        const ext = path.extname(epRow.file_path);
+        const absoluteEpisode = Number(
+          (
+            (await db
+              .prepare(
+                `SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ? AND season_number > 0
+               AND (season_number < ? OR (season_number = ? AND episode_number <= ?))`
+              )
+              .get(item.id, epRow.season_number, epRow.season_number, epRow.episode_number)) as { c: number }
+          ).c
+        );
+        const segments = renderPathSegments(template, {
+          parentTitle: item.title,
+          season: epRow.season_number,
+          episode: epRow.episode_number,
+          absoluteEpisode,
+          airDate: epRow.air_date ?? "",
+        });
+        const { destPath } = resolveDest(rootFolder.path, segments, ext, epRow.file_path, namingEnabled);
+        if (path.resolve(destPath) === path.resolve(epRow.file_path)) continue;
+        const oldDir = path.dirname(epRow.file_path);
+        moveFile(epRow.file_path, destPath);
+        removeEmptyParents(oldDir, rootFolder.path);
+        await db.prepare("UPDATE episodes SET file_path = ? WHERE id = ?").run(destPath, epRow.id);
+        result.renamed.push({ title: `${item.title} — ${epRow.season_number}x${epRow.episode_number}`, from: epRow.file_path, to: destPath });
+      }
+    } else if (typeConfig.shape === "collection" && typeConfig.multiFilePerChild) {
+      const count = (await db.prepare("SELECT COUNT(*) AS c FROM sub_items WHERE media_item_id = ? AND has_file = 1").get(item.id)) as {
+        c: number;
+      };
+      result.skippedMusic += count.c;
+    } else if (typeConfig.shape === "collection") {
+      const subItems = (await db
+        .prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND has_file = 1 AND file_path IS NOT NULL")
+        .all(item.id)) as any[];
+      for (const subRow of subItems) {
+        const ext = path.extname(subRow.file_path);
+        const segments = renderPathSegments(template, { parentTitle: item.title, childTitle: subRow.title });
+        const { destPath } = resolveDest(rootFolder.path, segments, ext, subRow.file_path, namingEnabled);
+        if (path.resolve(destPath) === path.resolve(subRow.file_path)) continue;
+        const oldDir = path.dirname(subRow.file_path);
+        moveFile(subRow.file_path, destPath);
+        removeEmptyParents(oldDir, rootFolder.path);
+        await db.prepare("UPDATE sub_items SET file_path = ? WHERE id = ?").run(destPath, subRow.id);
+        result.renamed.push({ title: `${item.title} — ${subRow.title}`, from: subRow.file_path, to: destPath });
+      }
+    }
+  } catch (err) {
+    result.errors.push({ title: item.title, error: (err as Error).message });
+    log.warn(`[importer] rename failed for "${item.title}":`, (err as Error).message);
+  }
 }

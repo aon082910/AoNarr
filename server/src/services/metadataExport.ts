@@ -1,4 +1,7 @@
+import fs from "node:fs";
+import path from "node:path";
 import { getMediaTypeConfig } from "./mediaTypes.js";
+import { log } from "./logger.js";
 
 function escapeXml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -100,6 +103,24 @@ export function buildPlexMatch(item: ExportableItem): string {
 
 export function safeFileName(title: string): string {
   return title.replace(/[/\\:*?"<>|]/g, "").trim().slice(0, 200);
+}
+
+/**
+ * Keeps a Kodi/Jellyfin/Emby-style .nfo sidecar next to a media file in sync with AoNarr's own
+ * record — same basename as the file itself (e.g. "Movie (2020).mkv" -> "Movie (2020).nfo"), the
+ * convention those tools already scan for. Called whenever an item's title/year/overview/poster
+ * is edited (manual edit, merge-apply, rematch — see routes/media.ts) so a media server picks up
+ * the correction on its next scan instead of only AoNarr knowing about it. Silently skipped (never
+ * throws) on any filesystem error — a failed sidecar write is a nice-to-have, not something that
+ * should fail the metadata edit that triggered it.
+ */
+export function writeNfoSidecar(filePath: string, item: ExportableItem): void {
+  try {
+    const nfoPath = path.join(path.dirname(filePath), `${path.basename(filePath, path.extname(filePath))}.nfo`);
+    fs.writeFileSync(nfoPath, buildNfo(item));
+  } catch (err) {
+    log.warn(`[metadataExport] failed to write NFO sidecar for "${item.title}":`, (err as Error).message);
+  }
 }
 
 /**

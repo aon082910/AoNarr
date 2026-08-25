@@ -25,11 +25,20 @@ import {
 } from "../services/libraryScan.js";
 import { notifyGrabbed } from "../services/notifications.js";
 import { recycleFile } from "../services/recycleBin.js";
-import { buildCalibreOpf, buildJson, buildNfo, buildPlexMatch, fetchPosterBuffer, safeFileName, type ExportableItem } from "../services/metadataExport.js";
+import {
+  buildCalibreOpf,
+  buildJson,
+  buildNfo,
+  buildPlexMatch,
+  fetchPosterBuffer,
+  safeFileName,
+  writeNfoSidecar,
+  type ExportableItem,
+} from "../services/metadataExport.js";
 import { probeMediaInfo } from "../services/ffprobe.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { getSetting } from "../services/settingsStore.js";
-import { renameLibraryFiles } from "../services/importer.js";
+import { renameLibraryFiles, renameOneMediaItem } from "../services/importer.js";
 import { extractIsbnFromBookFile, fetchBookByIsbn } from "../services/bookIsbnScan.js";
 import AdmZip from "adm-zip";
 import type { MediaType } from "../types/index.js";
@@ -815,6 +824,19 @@ mediaRouter.post(
   })
 );
 
+/** Per-item version of the bulk rename above, for the "Organize & Rename" button on a single
+ * media page — scoped to just this item's own file(s) instead of a whole library. */
+mediaRouter.post(
+  "/:id/rename-files",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const row = await db.prepare("SELECT id FROM media_items WHERE id = ?").get(req.params.id);
+    if (!row) throw new HttpError(404, "Media item not found");
+    const result = await renameOneMediaItem(Number(req.params.id));
+    res.json(result);
+  })
+);
+
 mediaRouter.patch(
   "/:id",
   requireAdmin,
@@ -859,7 +881,21 @@ mediaRouter.patch(
       await db.prepare(`UPDATE media_items SET ${sets.join(", ")} WHERE id = ?`).run(...values);
     }
 
-    const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id)) as any;
+    // Keeps a synced .nfo sidecar current when the actual metadata (not just monitored/protected/
+    // etc.) changed and this is a single-file item with somewhere to put it — episodic/collection
+    // parents don't have a `path` of their own (only their children do), so there's no single
+    // sidecar location to write for those from here.
+    const metadataFieldsChanged = ["title", "year", "overview", "posterUrl"].some((k) => b[k] !== undefined);
+    if (metadataFieldsChanged && row.path) {
+      let externalIds: Record<string, string> = {};
+      try {
+        externalIds = row.external_ids ? JSON.parse(row.external_ids) : {};
+      } catch {
+        // malformed external_ids on an old row — write the sidecar without unique ids rather than fail the edit
+      }
+      writeNfoSidecar(row.path, { type: row.type, title: row.title, year: row.year, overview: row.overview, posterUrl: row.poster_url, externalIds });
+    }
     res.json(mediaItemFromRow(row));
   })
 );
@@ -899,7 +935,17 @@ mediaRouter.post(
         req.params.id
       );
 
-    const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id)) as any;
+    if (row.path) {
+      writeNfoSidecar(row.path, {
+        type: row.type,
+        title: row.title,
+        year: row.year,
+        overview: row.overview,
+        posterUrl: row.poster_url,
+        externalIds: b.externalIds ?? {},
+      });
+    }
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "media_rematched", `"${(existing as any).title}" → "${b.title}"`);
     res.json(mediaItemFromRow(row));
