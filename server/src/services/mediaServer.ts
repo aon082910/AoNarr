@@ -432,6 +432,40 @@ export async function refreshMediaServerLibrary(filePath: string): Promise<void>
 }
 
 /**
+ * A genuine full-library scan, as opposed to `refreshMediaServerLibrary`'s per-path targeted
+ * refresh (which only rescans the specific folder a just-imported file landed in). For Plex this
+ * means calling each movie/show section's refresh endpoint with no `path` param, which scans the
+ * whole section rather than one folder; Jellyfin/Emby's own `/Library/Refresh` is already a full
+ * scan regardless of path, so it's the same call `refreshMediaServerLibrary` already makes for
+ * those two. Meant for the scheduled "media server library sync" job, not the post-import path.
+ */
+export async function triggerFullMediaServerScan(): Promise<void> {
+  const cfg = getMediaServerConfig();
+  if (!cfg) return;
+
+  try {
+    if (cfg.type === "plex") {
+      const headers = { Accept: "application/json" };
+      const sectionsRes = await fetch(`${cfg.url}/library/sections?X-Plex-Token=${cfg.token}`, { headers });
+      if (!sectionsRes.ok) return;
+      const sectionsBody = (await sectionsRes.json()) as any;
+      const sections: { key: string; type: string }[] = sectionsBody?.MediaContainer?.Directory ?? [];
+      for (const section of sections) {
+        if (section.type !== "movie" && section.type !== "show") continue;
+        await fetch(`${cfg.url}/library/sections/${section.key}/refresh?X-Plex-Token=${cfg.token}`, { method: "PUT", headers }).catch(() => {});
+      }
+      return;
+    }
+
+    const basePath = cfg.type === "jellyfin" ? "" : "/emby";
+    await fetch(`${cfg.url}${basePath}/Library/Refresh`, { method: "POST", headers: { "X-Emby-Token": cfg.token } });
+  } catch {
+    // Best-effort, same as refreshMediaServerLibrary above — a scheduled sync job failing to reach
+    // the media server shouldn't throw and interrupt whatever else the scheduler is doing.
+  }
+}
+
+/**
  * Plex's webhook payload carries no file path at all (its Metadata object is a much lighter
  * subset than the real API's — no Media/Part/file, just RatingKey/Key/GUID/title fields), so a
  * webhook handler needs this follow-up API call to resolve the ratingKey it DOES get into an

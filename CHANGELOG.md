@@ -3,6 +3,34 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 124 — media server sync options decoupled from auto-archival
+- Watch status previously only got refreshed on a schedule as a side effect of the auto-archival
+  job (`archiveEnabled`) — an admin who wanted AoNarr to track what's been watched (e.g. to feed
+  the Dashboard's Recently Watched widget) without wanting files auto-archived had no recurring
+  sync, only the on-demand dashboard fetch or webhook events. Added an independent
+  `watchStatusSyncEnabled` setting + new `watchStatusSync` job (every 30 minutes) that polls the
+  media server and records new watch events on its own schedule, entirely decoupled from archival.
+- Added a second new sync option, `mediaServerScanSyncEnabled` + `mediaServerScanSync` job (every 6
+  hours): a genuine full media-server library scan, distinct from the existing per-import targeted
+  refresh (`refreshMediaServerLibrary`, still fires on every import regardless of this setting) —
+  useful when files land outside AoNarr's own import path and need the media server to notice them.
+- New `triggerFullMediaServerScan()` in `services/mediaServer.ts` (Plex: refresh each movie/show
+  section with no path param — a whole-section scan, not `refreshMediaServerLibrary`'s per-path
+  targeted one; Jellyfin/Emby: the same `/Library/Refresh` call, already a full scan regardless of
+  path). New `syncWatchStatusFromMediaServer()` in `services/mediaServerWebhook.ts` — fetches the
+  three lookup tables (media_items/episodes/sub_items) once and matches every watched file in
+  memory, rather than the existing per-webhook-event `recordWatchEvent`'s fresh 3-table-scan-per-call
+  pattern, which would be wasteful called in a loop over potentially hundreds of watched titles. A
+  new `watchStatusSyncLastRunAt` setting acts as a cursor so already-recorded watches aren't
+  reinserted into `watch_events` every single 30-minute cycle.
+- Settings page: renamed the old "Watch-status Auto-Archival" panel to "Media Server Sync" with the
+  two new toggles up top and auto-archival now clearly presented as one of several independent sync
+  options underneath, not the panel's sole purpose.
+- Verified live against both SQLite and Postgres: confirmed both new jobs appear on the Jobs page,
+  enabled both settings via the API, and confirmed both jobs run cleanly with no error when no
+  media server is actually configured (correctly no-op via `getMediaServerConfig()` returning null)
+  — identical behavior on both dialects.
+
 ## Round 123 — Recommendations view-more, calendar day pages, Duplicates dismiss + richer info
 - Recommendations page: each section (Movies/TV Shows/Music) now shows 12 items initially with a
   "View more" button revealing the rest — the backend already returns up to ~25 per section (5

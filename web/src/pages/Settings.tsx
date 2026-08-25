@@ -1062,14 +1062,50 @@ export default function Settings() {
           );
         })()}
 
-      <h2>Watch-status Auto-Archival</h2>
+      <h2>Media Server Sync</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
-          Connect a media server so AoNarr can free space automatically: once something has been
-          watched and stays untouched past the retention window, its file is moved to an archive
-          folder (reversible) — or, if you explicitly opt in below, deleted outright. Items marked{" "}
-          <code>protected</code> on their detail page are always skipped. Runs every 6 hours; you
-          can also trigger a run from the System page.
+          Connect a media server to enable any of the sync options below — each is independent, so
+          you can use watch-status sync (e.g. to feed the Dashboard's "Recently Watched" widget)
+          without also wanting files auto-archived, or vice versa.
+        </p>
+
+        <label>Watch-status sync</label>
+        <select
+          key={settings.watchStatusSyncEnabled ?? "watch-status-sync-empty"}
+          defaultValue={settings.watchStatusSyncEnabled ?? "0"}
+          onChange={(e) => saveSetting("watchStatusSyncEnabled", e.target.value)}
+        >
+          <option value="0">Disabled</option>
+          <option value="1">Enabled — poll the media server for newly-watched items every 30 minutes</option>
+        </select>
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          Independent of auto-archival below — just keeps AoNarr's own record of what's been
+          watched up to date (webhook events, if configured further down, already do this in
+          real time; this is the periodic fallback/complement for when a webhook isn't set up).
+        </p>
+
+        <label>Library scan sync</label>
+        <select
+          key={settings.mediaServerScanSyncEnabled ?? "media-server-scan-sync-empty"}
+          defaultValue={settings.mediaServerScanSyncEnabled ?? "0"}
+          onChange={(e) => saveSetting("mediaServerScanSyncEnabled", e.target.value)}
+        >
+          <option value="0">Disabled</option>
+          <option value="1">Enabled — trigger a full media server library scan every 6 hours</option>
+        </select>
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          Separate from "Refresh media server library after each import" below, which does a
+          lighter targeted refresh right when a file is imported — this is a periodic full scan on
+          top of that, useful if files sometimes land outside AoNarr's own import path.
+        </p>
+
+        <h3 style={{ marginBottom: 4 }}>Watch-status Auto-Archival</h3>
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          Once something has been watched and stays untouched past the retention window, its file
+          is moved to an archive folder (reversible) — or, if you explicitly opt in below, deleted
+          outright. Items marked <code>protected</code> on their detail page are always skipped.
+          Runs every 6 hours; you can also trigger a run from the System page.
         </p>
         <label>Enable auto-archival</label>
         <select

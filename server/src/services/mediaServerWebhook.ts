@@ -1,6 +1,8 @@
 import { db } from "../db/index.js";
 import { pathTail } from "./archival.js";
-import { resolvePlexFilePath } from "./mediaServer.js";
+import { fetchWatchedFiles, resolvePlexFilePath } from "./mediaServer.js";
+import { getSetting, setSetting } from "./settingsStore.js";
+import { log } from "./logger.js";
 
 export interface WebhookWatchSignal {
   filePath: string;
@@ -72,4 +74,67 @@ export async function recordWatchEvent(
   }
 
   return null;
+}
+
+/**
+ * Scheduled watch-status polling — previously the only way watch status got refreshed on any kind
+ * of recurring schedule was as a side effect of the auto-archival job (`runAutoArchival`, gated by
+ * `archiveEnabled`), so an admin who wanted AoNarr to just *know* what's been watched (for the
+ * dashboard, or any future feature that reads it) without also wanting files auto-deleted/moved had
+ * no way to get periodic updates — only the on-demand dashboard fetch or webhook events. Gated by
+ * its own `watchStatusSyncEnabled` setting, entirely independent of `archiveEnabled`.
+ *
+ * Unlike `recordWatchEvent` (built for one webhook event at a time, so a fresh 3-table fetch per
+ * call is fine), this fetches media_items/episodes/sub_items ONCE and matches every watched file
+ * from the media server against them in memory — a naive per-file `recordWatchEvent` call in a
+ * loop here would mean 3 full table scans per file for a media server with hundreds of watched
+ * titles. A `watchStatusSyncLastRunAt` setting acts as a cursor so already-recorded watches (whose
+ * `lastPlayedAt` predates the last successful sync) aren't reinserted into `watch_events` on every
+ * run — polling would otherwise "rediscover" the same watch every single cycle forever.
+ */
+export async function syncWatchStatusFromMediaServer(): Promise<{ recorded: number }> {
+  const lastSyncRaw = getSetting("watchStatusSyncLastRunAt");
+  const lastSync = lastSyncRaw ? new Date(lastSyncRaw) : new Date(0);
+
+  const watched = await fetchWatchedFiles();
+  const newlyWatched = watched.filter((f) => f.lastPlayedAt > lastSync);
+  if (newlyWatched.length === 0) return { recorded: 0 };
+
+  const [items, episodes, subItems] = await Promise.all([
+    db.prepare("SELECT id, path FROM media_items WHERE path IS NOT NULL").all() as Promise<{ id: number; path: string }[]>,
+    db
+      .prepare("SELECT id, media_item_id, file_path FROM episodes WHERE file_path IS NOT NULL")
+      .all() as Promise<{ id: number; media_item_id: number; file_path: string }[]>,
+    db
+      .prepare("SELECT id, media_item_id, file_path FROM sub_items WHERE file_path IS NOT NULL")
+      .all() as Promise<{ id: number; media_item_id: number; file_path: string }[]>,
+  ]);
+  const itemsByTail = new Map(items.map((r) => [pathTail(r.path), r]));
+  const episodesByTail = new Map(episodes.map((r) => [pathTail(r.file_path), r]));
+  const subItemsByTail = new Map(subItems.map((r) => [pathTail(r.file_path), r]));
+
+  let recorded = 0;
+  let maxSeen = lastSync;
+  for (const file of newlyWatched) {
+    const tail = pathTail(file.path);
+    const item = itemsByTail.get(tail);
+    const episode = !item ? episodesByTail.get(tail) : undefined;
+    const subItem = !item && !episode ? subItemsByTail.get(tail) : undefined;
+
+    if (item) {
+      await db.prepare("INSERT INTO watch_events (media_item_id) VALUES (?)").run(item.id);
+      recorded++;
+    } else if (episode) {
+      await db.prepare("INSERT INTO watch_events (media_item_id, episode_id) VALUES (?, ?)").run(episode.media_item_id, episode.id);
+      recorded++;
+    } else if (subItem) {
+      await db.prepare("INSERT INTO watch_events (media_item_id, sub_item_id) VALUES (?, ?)").run(subItem.media_item_id, subItem.id);
+      recorded++;
+    }
+    if (file.lastPlayedAt > maxSeen) maxSeen = file.lastPlayedAt;
+  }
+
+  setSetting("watchStatusSyncLastRunAt", maxSeen.toISOString());
+  if (recorded > 0) log.info(`[mediaServerWebhook] watch-status sync recorded ${recorded} new watch event(s)`);
+  return { recorded };
 }

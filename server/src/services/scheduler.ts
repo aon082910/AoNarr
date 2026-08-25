@@ -34,6 +34,8 @@ import { findUpgradeCandidates } from "./upgradeCandidates.js";
 import { fetchCollectionChildrenFor } from "./metadata.js";
 import { scanAndImportAllLibraries, refreshAllLibraries } from "./libraryScan.js";
 import { getSetting } from "./settingsStore.js";
+import { getMediaServerConfig, triggerFullMediaServerScan } from "./mediaServer.js";
+import { syncWatchStatusFromMediaServer } from "./mediaServerWebhook.js";
 import { registerJob, startAllJobs } from "./jobRegistry.js";
 import type { DownloadClient, Indexer, MediaItem, QueueItem, SearchResult } from "../types/index.js";
 
@@ -762,6 +764,39 @@ export function startScheduler() {
     scheduleType: "cron",
     defaultSchedule: "0 */6 * * *",
     run: () => runAutoArchival(),
+  });
+
+  // Previously watch status only ever got refreshed on a schedule as a side effect of the archival
+  // job above — an admin who wanted AoNarr to just track what's been watched (for the dashboard,
+  // say) without wanting files auto-archived had no recurring sync at all, only the on-demand
+  // dashboard fetch or webhook events. Independent `watchStatusSyncEnabled` setting; runs more
+  // often than archival since "what's been watched" benefits from staying fresher than "what to
+  // clean up," which doesn't need to react within minutes.
+  registerJob({
+    key: "watchStatusSync",
+    name: "Media Server Watch-status Sync",
+    scheduleType: "cron",
+    defaultSchedule: "*/30 * * * *",
+    run: async () => {
+      if (getSetting("watchStatusSyncEnabled") !== "1" || !getMediaServerConfig()) return;
+      const r = await syncWatchStatusFromMediaServer();
+      if (r.recorded > 0) log.info(`[scheduler] watch-status sync recorded ${r.recorded} new watch event(s)`);
+    },
+  });
+
+  // The other "more sync options" half of the same ask — a periodic full media-server library
+  // scan, independent of (and in addition to) the existing per-import targeted refresh
+  // (refreshMediaServerLibrary, still fired on every import regardless of this setting).
+  registerJob({
+    key: "mediaServerScanSync",
+    name: "Media Server Library Scan",
+    scheduleType: "cron",
+    defaultSchedule: "0 */6 * * *",
+    run: async () => {
+      if (getSetting("mediaServerScanSyncEnabled") !== "1" || !getMediaServerConfig()) return;
+      await triggerFullMediaServerScan();
+      log.info("[scheduler] triggered a full media server library scan");
+    },
   });
 
   registerJob({
