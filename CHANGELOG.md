@@ -3,6 +3,25 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 126 — tile+popup settings pattern (Notifications template)
+- Long settings pages with many similar "provider" integrations (Notifications had 9: Discord,
+  Slack, Generic Webhook, Telegram, Pushover, SMTP, Matrix, Twilio, Custom Script) used to be one
+  unbroken vertical form. Added a reusable `SettingsProviderTiles` component — a tile grid with a
+  "Configured"/"Not configured" badge per provider, click a tile to open a `Modal` with just that
+  provider's own fields, saved through the same `saveSetting` path every other settings field
+  already uses. Applied it to the Notifications page as the first instance of the pattern.
+- This is a template: the other tile-view candidates from the same request (Metadata Providers,
+  Media Management, Indexer Options, Library Sync, Quality, Import & Subtitles, Backups, Remote
+  Library, Friend Libraries, Download Clients, Users) are intentionally not converted yet, pending
+  confirmation that this first page looks/feels right.
+- Verified live in-browser: all 9 tiles render with correct labels/descriptions/configured-state
+  badges; opening a tile's popup, editing a field, and blurring it persists through `PUT
+  /api/settings/:key` exactly as before, and the tile's badge updates to "Configured" once saved.
+  (An earlier round of manual testing looked like a broken save path, but was two compounding test
+  artifacts, not a real bug: a stale browser session token left over from a prior container
+  rebuild was causing background 401s, and a synthetic `blur` event doesn't bubble the way React's
+  delegated `focusout` listener expects — a real click+type+Tab flow saves correctly.)
+
 ## Round 125 — Jackett indexer sync
 - Added a Jackett equivalent of the existing Prowlarr indexer sync — new `services/jackettSync.ts`,
   mirroring `prowlarrSync.ts`'s pattern (pull the configured-indexer list, mirror into AoNarr's

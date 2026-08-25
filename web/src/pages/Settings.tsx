@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, downloadFile, setApiKey } from "../api/client.js";
 import FolderPicker from "../components/FolderPicker.js";
 import NamingSetupModal from "../components/NamingSetupModal.js";
+import SettingsProviderTiles, { type SettingsProviderDef } from "../components/SettingsProviderTiles.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { BlocklistEntry, CustomFormat, ImportExclusion, MediaType, Quality, QualityProfile, RootFolder, Tag } from "../types.js";
 import { formatBytes } from "../utils/format.js";
@@ -17,6 +18,114 @@ interface SubtitleProvider {
   languages: string;
   enabled: 0 | 1;
 }
+
+/** Fired on grab/import/failure events (and Custom Script, run on the same events). Leaving a
+ * provider's fields blank disables it; SMTP/Twilio need every listed field set, not just one. */
+const NOTIFICATION_PROVIDERS: SettingsProviderDef[] = [
+  {
+    key: "discord",
+    label: "Discord",
+    fields: [{ key: "discordWebhookUrl", label: "Webhook URL", placeholder: "https://discord.com/api/webhooks/..." }],
+    isConfigured: (s) => !!s.discordWebhookUrl,
+  },
+  {
+    key: "slack",
+    label: "Slack",
+    fields: [{ key: "slackWebhookUrl", label: "Webhook URL", placeholder: "https://hooks.slack.com/services/..." }],
+    isConfigured: (s) => !!s.slackWebhookUrl,
+  },
+  {
+    key: "generic",
+    label: "Generic Webhook",
+    description: "Receives the raw event payload as JSON — for anything without built-in support.",
+    fields: [{ key: "genericWebhookUrl", label: "Webhook URL", placeholder: "https://example.com/hooks/aonarr" }],
+    isConfigured: (s) => !!s.genericWebhookUrl,
+  },
+  {
+    key: "telegram",
+    label: "Telegram",
+    fields: [
+      { key: "telegramBotToken", label: "Bot token", placeholder: "123456:ABC-DEF..." },
+      { key: "telegramChatId", label: "Chat ID", placeholder: "-100123456789" },
+    ],
+    isConfigured: (s) => !!s.telegramBotToken && !!s.telegramChatId,
+  },
+  {
+    key: "pushover",
+    label: "Pushover",
+    fields: [
+      { key: "pushoverApiToken", label: "API token" },
+      { key: "pushoverUserKey", label: "User key" },
+    ],
+    isConfigured: (s) => !!s.pushoverApiToken && !!s.pushoverUserKey,
+  },
+  {
+    key: "smtp",
+    label: "Email (SMTP)",
+    fields: [
+      { key: "smtpHost", label: "SMTP host", placeholder: "smtp.gmail.com" },
+      { key: "smtpPort", label: "SMTP port", placeholder: "587" },
+      {
+        key: "smtpSecure",
+        label: "Encryption",
+        type: "select",
+        options: [
+          { value: "0", label: "STARTTLS (587/25)" },
+          { value: "1", label: "Implicit TLS (465)" },
+        ],
+      },
+      { key: "smtpUsername", label: "Username" },
+      { key: "smtpPassword", label: "Password", type: "password" },
+      { key: "smtpFrom", label: "Send from", placeholder: "aonarr@yourdomain.com" },
+      { key: "smtpTo", label: "Send to", placeholder: "you@yourdomain.com" },
+    ],
+    isConfigured: (s) => !!s.smtpHost && !!s.smtpFrom && !!s.smtpTo,
+  },
+  {
+    key: "matrix",
+    label: "Matrix",
+    fields: [
+      { key: "matrixHomeserverUrl", label: "Homeserver URL", placeholder: "https://matrix.org" },
+      { key: "matrixAccessToken", label: "Access token" },
+      { key: "matrixRoomId", label: "Room ID", placeholder: "!roomid:matrix.org" },
+    ],
+    isConfigured: (s) => !!s.matrixHomeserverUrl && !!s.matrixAccessToken && !!s.matrixRoomId,
+  },
+  {
+    key: "twilio",
+    label: "SMS (Twilio)",
+    fields: [
+      { key: "twilioAccountSid", label: "Account SID" },
+      { key: "twilioAuthToken", label: "Auth token", type: "password" },
+      { key: "twilioFromNumber", label: "From number", placeholder: "+15551234567" },
+      { key: "twilioToNumber", label: "To number", placeholder: "+15557654321" },
+    ],
+    isConfigured: (s) => !!s.twilioAccountSid && !!s.twilioAuthToken && !!s.twilioFromNumber && !!s.twilioToNumber,
+  },
+  {
+    key: "customScript",
+    label: "Custom Script",
+    description: "Invoked directly (no shell) with event data as AONARR_* environment variables.",
+    fields: [
+      {
+        key: "customScriptEnabled",
+        label: "Enable",
+        type: "select",
+        options: [
+          { value: "0", label: "Disabled" },
+          { value: "1", label: "Enabled" },
+        ],
+      },
+      {
+        key: "customScriptPath",
+        label: "Script path (inside the container; must be executable)",
+        placeholder: "/config/scripts/on-event.sh",
+        helpText: "chmod +x it and mount it into the container (e.g. under /config).",
+      },
+    ],
+    isConfigured: (s) => s.customScriptEnabled === "1" && !!s.customScriptPath,
+  },
+];
 
 export default function Settings() {
   const mediaTypes = useMediaTypes();
@@ -795,181 +904,7 @@ export default function Settings() {
       </div>
       <div style={{ display: tab === "notifications" ? undefined : "none" }}>
       <h2>Notifications</h2>
-      <div className="form-panel">
-        <label>Discord webhook URL</label>
-        <input
-          key={settings.discordWebhookUrl ?? "discord-empty"}
-          defaultValue={settings.discordWebhookUrl ?? ""}
-          placeholder="https://discord.com/api/webhooks/..."
-          onBlur={(e) => saveSetting("discordWebhookUrl", e.target.value)}
-        />
-        <label>Slack webhook URL</label>
-        <input
-          key={settings.slackWebhookUrl ?? "slack-empty"}
-          defaultValue={settings.slackWebhookUrl ?? ""}
-          placeholder="https://hooks.slack.com/services/..."
-          onBlur={(e) => saveSetting("slackWebhookUrl", e.target.value)}
-        />
-        <label>Generic webhook URL (receives raw JSON)</label>
-        <input
-          key={settings.genericWebhookUrl ?? "generic-empty"}
-          defaultValue={settings.genericWebhookUrl ?? ""}
-          placeholder="https://example.com/hooks/aonarr"
-          onBlur={(e) => saveSetting("genericWebhookUrl", e.target.value)}
-        />
-        <label>Telegram bot token</label>
-        <input
-          key={settings.telegramBotToken ?? "tg-token-empty"}
-          defaultValue={settings.telegramBotToken ?? ""}
-          placeholder="123456:ABC-DEF..."
-          onBlur={(e) => saveSetting("telegramBotToken", e.target.value)}
-        />
-        <label>Telegram chat ID</label>
-        <input
-          key={settings.telegramChatId ?? "tg-chat-empty"}
-          defaultValue={settings.telegramChatId ?? ""}
-          placeholder="-100123456789"
-          onBlur={(e) => saveSetting("telegramChatId", e.target.value)}
-        />
-        <label>Pushover API token</label>
-        <input
-          key={settings.pushoverApiToken ?? "po-token-empty"}
-          defaultValue={settings.pushoverApiToken ?? ""}
-          onBlur={(e) => saveSetting("pushoverApiToken", e.target.value)}
-        />
-        <label>Pushover user key</label>
-        <input
-          key={settings.pushoverUserKey ?? "po-user-empty"}
-          defaultValue={settings.pushoverUserKey ?? ""}
-          onBlur={(e) => saveSetting("pushoverUserKey", e.target.value)}
-        />
-        <label>SMTP host</label>
-        <input
-          key={settings.smtpHost ?? "smtp-host-empty"}
-          defaultValue={settings.smtpHost ?? ""}
-          placeholder="smtp.gmail.com"
-          onBlur={(e) => saveSetting("smtpHost", e.target.value)}
-        />
-        <label>SMTP port</label>
-        <input
-          key={settings.smtpPort ?? "smtp-port-empty"}
-          defaultValue={settings.smtpPort ?? "587"}
-          placeholder="587"
-          onBlur={(e) => saveSetting("smtpPort", e.target.value)}
-        />
-        <label>SMTP encryption</label>
-        <select
-          key={settings.smtpSecure ?? "smtp-secure-empty"}
-          defaultValue={settings.smtpSecure ?? "0"}
-          onChange={(e) => saveSetting("smtpSecure", e.target.value)}
-        >
-          <option value="0">STARTTLS (587/25)</option>
-          <option value="1">Implicit TLS (465)</option>
-        </select>
-        <label>SMTP username</label>
-        <input
-          key={settings.smtpUsername ?? "smtp-user-empty"}
-          defaultValue={settings.smtpUsername ?? ""}
-          onBlur={(e) => saveSetting("smtpUsername", e.target.value)}
-        />
-        <label>SMTP password</label>
-        <input
-          type="password"
-          key={settings.smtpPassword ?? "smtp-pass-empty"}
-          defaultValue={settings.smtpPassword ?? ""}
-          onBlur={(e) => saveSetting("smtpPassword", e.target.value)}
-        />
-        <label>Send from</label>
-        <input
-          key={settings.smtpFrom ?? "smtp-from-empty"}
-          defaultValue={settings.smtpFrom ?? ""}
-          placeholder="aonarr@yourdomain.com"
-          onBlur={(e) => saveSetting("smtpFrom", e.target.value)}
-        />
-        <label>Send to</label>
-        <input
-          key={settings.smtpTo ?? "smtp-to-empty"}
-          defaultValue={settings.smtpTo ?? ""}
-          placeholder="you@yourdomain.com"
-          onBlur={(e) => saveSetting("smtpTo", e.target.value)}
-        />
-        <label>Matrix homeserver URL</label>
-        <input
-          key={settings.matrixHomeserverUrl ?? "matrix-hs-empty"}
-          defaultValue={settings.matrixHomeserverUrl ?? ""}
-          placeholder="https://matrix.org"
-          onBlur={(e) => saveSetting("matrixHomeserverUrl", e.target.value)}
-        />
-        <label>Matrix access token</label>
-        <input
-          key={settings.matrixAccessToken ?? "matrix-token-empty"}
-          defaultValue={settings.matrixAccessToken ?? ""}
-          onBlur={(e) => saveSetting("matrixAccessToken", e.target.value)}
-        />
-        <label>Matrix room ID</label>
-        <input
-          key={settings.matrixRoomId ?? "matrix-room-empty"}
-          defaultValue={settings.matrixRoomId ?? ""}
-          placeholder="!roomid:matrix.org"
-          onBlur={(e) => saveSetting("matrixRoomId", e.target.value)}
-        />
-        <label>Twilio Account SID (SMS)</label>
-        <input
-          key={settings.twilioAccountSid ?? "twilio-sid-empty"}
-          defaultValue={settings.twilioAccountSid ?? ""}
-          onBlur={(e) => saveSetting("twilioAccountSid", e.target.value)}
-        />
-        <label>Twilio Auth Token</label>
-        <input
-          type="password"
-          key={settings.twilioAuthToken ?? "twilio-token-empty"}
-          defaultValue={settings.twilioAuthToken ?? ""}
-          onBlur={(e) => saveSetting("twilioAuthToken", e.target.value)}
-        />
-        <label>Twilio from number</label>
-        <input
-          key={settings.twilioFromNumber ?? "twilio-from-empty"}
-          defaultValue={settings.twilioFromNumber ?? ""}
-          placeholder="+15551234567"
-          onBlur={(e) => saveSetting("twilioFromNumber", e.target.value)}
-        />
-        <label>Twilio to number</label>
-        <input
-          key={settings.twilioToNumber ?? "twilio-to-empty"}
-          defaultValue={settings.twilioToNumber ?? ""}
-          placeholder="+15557654321"
-          onBlur={(e) => saveSetting("twilioToNumber", e.target.value)}
-        />
-        <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
-          Fired on grab, import, and failure events. Leave any provider's fields blank to disable it.
-          Email sends only once host, from, and to are all set; SMS needs all four Twilio fields.
-        </p>
-
-        <label>Custom script</label>
-        <select
-          key={settings.customScriptEnabled ?? "custom-script-enabled-empty"}
-          defaultValue={settings.customScriptEnabled ?? "0"}
-          onChange={(e) => saveSetting("customScriptEnabled", e.target.value)}
-        >
-          <option value="0">Disabled</option>
-          <option value="1">Enabled</option>
-        </select>
-        <label>Script path (inside the container; must be executable)</label>
-        <input
-          key={settings.customScriptPath ?? "custom-script-path-empty"}
-          defaultValue={settings.customScriptPath ?? ""}
-          placeholder="/config/scripts/on-event.sh"
-          onBlur={(e) => saveSetting("customScriptPath", e.target.value)}
-        />
-        <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
-          Run on the same grab/import/failure events as the providers above. AoNarr invokes it
-          directly (no shell) with event data as <code>AONARR_*</code> environment variables — e.g.{" "}
-          <code>AONARR_EVENT</code>, <code>AONARR_MEDIA_TITLE</code>, <code>AONARR_RELEASE_TITLE</code>,{" "}
-          <code>AONARR_FILE_NAME</code>, <code>AONARR_REASON</code> (only the ones relevant to that
-          event are set). Mount your script into the container (e.g. under <code>/config</code>) and
-          make sure it's executable (<code>chmod +x</code>).
-        </p>
-      </div>
+      <SettingsProviderTiles providers={NOTIFICATION_PROVIDERS} settings={settings} saveSetting={saveSetting} />
 
       <h2>Notification Message Templates</h2>
       <div className="form-panel">
