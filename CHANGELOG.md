@@ -3,6 +3,33 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 137 — Plex watchlist sync (8th and final Starr feature-gap list item)
+- Added Plex watchlist auto-sync, mirroring the existing Trakt List Sync pattern: adds anything new
+  in the configured Plex account's watchlist as a monitored library item (movies as single items,
+  shows with their full episode list fetched via TMDB) — "auto-add, never remove," same as Trakt
+  sync. Uses the same server token already configured for Media Server Sync in Settings (that
+  token belongs to a specific Plex account, so this is that account's own watchlist — there's no
+  AoNarr concept of linking a household account to its own separate Plex account, which a fuller
+  per-user version would need). New `services/plexWatchlistSync.ts`, a `plexWatchlistSyncEnabled`
+  setting (default off, next to the other Media Server Sync toggles), a scheduled job (every 12
+  hours, same cadence as Trakt sync), and a "Run Plex watchlist sync now" button on System →
+  Maintenance next to the existing Trakt sync one.
+- Plex deprecated the old `metadata.provider.plex.tv` watchlist endpoint — this uses the current
+  `discover.provider.plex.tv/library/sections/watchlist/all` one Plex's own client libraries use
+  now. Reuses `mediaServer.ts`'s existing Plex `Guid`-array external-id parser (exported this round
+  for reuse) rather than duplicating that logic; an item with no TMDB id in its Guid list is
+  skipped rather than guessed at by title.
+- Verified live: confirmed the manual "run now" trigger correctly no-ops with `{added: 0}` while
+  disabled (the default); enabled it with a placeholder token and confirmed the request actually
+  reaches Plex's real `discover.provider.plex.tv` endpoint and a 401 (invalid token) comes back
+  wrapped as a clean `{added: 0, error: ...}` instead of crashing; confirmed the new Settings
+  toggle persists through a real UI interaction. A real populated watchlist sync isn't exercised
+  end-to-end here for lack of a real Plex account token in this dev environment — same disclosed
+  limitation as the other third-party-credential-gated rounds on this list.
+- This closes out the 8-item Starr feature-gap list from the earlier research round: minimum
+  availability, TMDB collections, daily series type, bulk rename files, subtitle HI/forced
+  preference, automatic subtitle sync, the Discover page, and this.
+
 ## Round 136 — Discover page (7th of the Starr feature-gap list)
 - Added a new Discover page (Overseerr/Jellyseerr-style): trending movies and TV this week from
   TMDB, browsable with posters instead of only search-then-request. Each tile is cross-referenced

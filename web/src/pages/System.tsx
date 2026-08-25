@@ -158,6 +158,7 @@ export default function System() {
   const [scanning, setScanning] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [syncingTrakt, setSyncingTrakt] = useState(false);
+  const [syncingPlexWatchlist, setSyncingPlexWatchlist] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameType, setRenameType] = useState("");
   const [renameResult, setRenameResult] = useState<{
@@ -261,6 +262,17 @@ export default function System() {
       else alert(`Trakt sync added ${result.added} new item(s).`);
     } finally {
       setSyncingTrakt(false);
+    }
+  }
+
+  async function runPlexWatchlistSyncNow() {
+    setSyncingPlexWatchlist(true);
+    try {
+      const result = await api.post<{ added: number; error?: string }>("/system/plex-watchlist-sync/run", {});
+      if (result.error) alert(`Plex watchlist sync failed: ${result.error}`);
+      else alert(`Plex watchlist sync added ${result.added} new item(s).`);
+    } finally {
+      setSyncingPlexWatchlist(false);
     }
   }
 
@@ -804,6 +816,9 @@ export default function System() {
           </button>
           <button onClick={runTraktSyncNow} disabled={syncingTrakt} className="secondary">
             {syncingTrakt ? "Syncing..." : "Run Trakt sync now"}
+          </button>
+          <button onClick={runPlexWatchlistSyncNow} disabled={syncingPlexWatchlist} className="secondary">
+            {syncingPlexWatchlist ? "Syncing..." : "Run Plex watchlist sync now"}
           </button>
         </div>
         {orphaned && (

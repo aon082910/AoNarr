@@ -124,7 +124,7 @@ export interface MediaServerLibraryItem {
  * `{id: "tmdb://603"}`-style entries (current "new agents"), or a single legacy `guid` string like
  * "com.plexapp.agents.themoviedb://603?lang=en" (old agents, still seen on long-running servers
  * that haven't re-matched their library). Both are parsed so neither vintage silently loses ids. */
-function parsePlexExternalIds(item: any): Record<string, string> {
+export function parsePlexExternalIds(item: any): Record<string, string> {
   const ids: Record<string, string> = {};
   const PROVIDER_MAP: Record<string, string> = { themoviedb: "tmdb", thetvdb: "tvdb", imdb: "imdb", tmdb: "tmdb", tvdb: "tvdb" };
 

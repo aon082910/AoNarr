@@ -1073,6 +1073,22 @@ export default function Settings() {
                   top of that, useful if files sometimes land outside AoNarr's own import path.
                 </p>
 
+                <label>Plex watchlist sync</label>
+                <select
+                  key={settings.plexWatchlistSyncEnabled ?? "plex-watchlist-sync-empty"}
+                  defaultValue={settings.plexWatchlistSyncEnabled ?? "0"}
+                  onChange={(e) => saveSetting("plexWatchlistSyncEnabled", e.target.value)}
+                >
+                  <option value="0">Disabled</option>
+                  <option value="1">Enabled — add anything new in this account's Plex watchlist every 12 hours</option>
+                </select>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Only available with Plex (uses the same server token above, which belongs to a
+                  specific Plex account) — adds anything new in that account's watchlist as a
+                  monitored library item, the same "auto-add, never remove" pattern as Trakt List
+                  Sync under Library Sync. Can also be triggered on demand from System.
+                </p>
+
                 <h3 style={{ marginBottom: 4 }}>Watch-status Auto-Archival</h3>
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
                   Once something has been watched and stays untouched past the retention window, its file

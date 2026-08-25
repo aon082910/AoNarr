@@ -18,6 +18,7 @@ import { checkIndexerHealth } from "../services/indexerClient.js";
 import { attachIndexerHealth } from "../services/indexerHealth.js";
 import { runAutoArchival } from "../services/archival.js";
 import { runTraktSync } from "../services/traktSync.js";
+import { runPlexWatchlistSync } from "../services/plexWatchlistSync.js";
 import { findRepeatedImports } from "../services/duplicates.js";
 import { findUpgradeCandidates } from "../services/upgradeCandidates.js";
 import { getStorageForecast, recordDiskUsageSamples } from "../services/storageForecast.js";
@@ -309,6 +310,13 @@ systemRouter.post(
   "/trakt-sync/run",
   asyncHandler(async (_req, res) => {
     res.json(await runTraktSync());
+  })
+);
+
+systemRouter.post(
+  "/plex-watchlist-sync/run",
+  asyncHandler(async (_req, res) => {
+    res.json(await runPlexWatchlistSync());
   })
 );
 

@@ -21,6 +21,7 @@ import { notifyQueueChanged } from "./realtime.js";
 import { runAutoArchival } from "./archival.js";
 import { getBlocklistedTitles } from "./blocklist.js";
 import { runTraktSync } from "./traktSync.js";
+import { runPlexWatchlistSync } from "./plexWatchlistSync.js";
 import { runAllImportLists } from "./importLists.js";
 import { recordDiskUsageSamples } from "./storageForecast.js";
 import { runScheduledBackup } from "./scheduledBackup.js";
@@ -840,6 +841,17 @@ export function startScheduler() {
     run: async () => {
       const r = await runTraktSync();
       if (r.added > 0) log.info(`[scheduler] Trakt sync added ${r.added} item(s)`);
+    },
+  });
+
+  registerJob({
+    key: "plexWatchlistSync",
+    name: "Plex Watchlist Sync",
+    scheduleType: "cron",
+    defaultSchedule: "0 */12 * * *",
+    run: async () => {
+      const r = await runPlexWatchlistSync();
+      if (r.added > 0) log.info(`[scheduler] Plex watchlist sync added ${r.added} item(s)`);
     },
   });
 
