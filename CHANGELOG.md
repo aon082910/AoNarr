@@ -3,6 +3,12 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 142 — simplified Naming popup
+- The Naming tile's popup (Settings → Media Management) listed every library type with its current
+  template previewed inline — simplified to just the library name and a "Config" button per type;
+  clicking it still opens the same full naming-setup modal (tokens, current template, live
+  preview, renaming on/off) as before, one level deeper instead of all at once on the first screen.
+
 ## Round 141 — filler clip library for IPTV playlists
 - Replaced the single "Filler URL" text field on an IPTV playlist with a proper reusable filler
   clip library: add any number of clips (name, URL, optional category) once, then attach any

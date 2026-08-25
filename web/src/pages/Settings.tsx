@@ -962,35 +962,19 @@ export default function Settings() {
             render: () => (
               <div>
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
-                  Click "Naming setup..." for a library type to open a picker with the tokens available for
-                  that type, a live preview, and the option to turn renaming off entirely (keep files as
-                  downloaded — the folder structure still applies so things stay organized, only the
-                  filename itself is left alone).
+                  Click "Config" for a library type to open a picker with the tokens available for
+                  that type, its current template, a live preview, and the option to turn renaming
+                  off entirely (keep files as downloaded — the folder structure still applies so
+                  things stay organized, only the filename itself is left alone).
                 </p>
-                {mediaTypes.map((t) => {
-                  const templateKey = `naming${t.key.charAt(0).toUpperCase()}${t.key.slice(1)}Template`;
-                  const enabledKey = `namingEnabled${t.key.charAt(0).toUpperCase()}${t.key.slice(1)}`;
-                  const shapeDefault =
-                    t.shape === "single"
-                      ? "{title} ({year})/{title} ({year})"
-                      : t.shape === "episodic"
-                      ? "{parentTitle}/Season {season:00}/{parentTitle} - S{season:00}E{episode:00}"
-                      : "{parentTitle}/{childTitle}";
-                  const isEnabled = settings[enabledKey] !== "0";
-                  return (
-                    <div key={t.key} className="toolbar" style={{ justifyContent: "space-between", gap: 12 }}>
-                      <div>
-                        <strong>{t.label}</strong>
-                        <div style={{ fontFamily: "monospace", fontSize: "0.8rem", color: "var(--muted)" }}>
-                          {isEnabled ? settings[templateKey] ?? shapeDefault : "renaming disabled"}
-                        </div>
-                      </div>
-                      <button type="button" className="secondary" onClick={() => setNamingModalType(t.key)}>
-                        Naming setup...
-                      </button>
-                    </div>
-                  );
-                })}
+                {mediaTypes.map((t) => (
+                  <div key={t.key} className="toolbar" style={{ justifyContent: "space-between", gap: 12 }}>
+                    <strong>{t.label}</strong>
+                    <button type="button" className="secondary" onClick={() => setNamingModalType(t.key)}>
+                      Config
+                    </button>
+                  </div>
+                ))}
               </div>
             ),
           },
