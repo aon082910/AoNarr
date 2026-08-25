@@ -3,6 +3,25 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 133 — bulk "Rename Files" (4th of the Starr feature-gap list)
+- Added Sonarr/Radarr-style "Rename Files" — a bulk action (System → Maintenance, optionally
+  scoped to one library type) that retroactively re-renames every already-imported file whose
+  current path no longer matches its type's current naming template, for after you've changed a
+  template and want existing files to catch up instead of only new imports picking it up. A file
+  already at the correct computed path is skipped (no move, no DB write); the now-empty old parent
+  folder(s) are cleaned up after a move, same as a fresh import leaves behind. New
+  `renameLibraryFiles()` in `services/importer.ts` and `POST /api/media/rename-files?type=`.
+- Music (the one collection type with multiple files per child) is deliberately skipped — its
+  individual track filenames are always kept as-downloaded rather than templated, so a template
+  change there only affects the album *folder* name, a different and riskier operation than this
+  function's per-file model handles; the skipped count is still reported rather than silently
+  doing nothing.
+- Verified live end-to-end against the real filesystem: seeded a movie with a file at a
+  deliberately "wrong" path, ran the bulk action via a real UI click, confirmed the file actually
+  moved on disk to the naming template's computed path, the old now-empty folder was removed, and
+  the database's stored path updated to match; confirmed re-running immediately after is a clean
+  no-op (nothing left to rename).
+
 ## Round 132 — daily/talk-show series type (3rd of the Starr feature-gap list)
 - Added Sonarr-style "series type" for episodic libraries (TV Shows, Anime): "Standard" (default,
   unchanged behavior) searches and matches releases by season/episode; "Daily" searches and

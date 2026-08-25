@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { api, downloadFile, uploadRaw } from "../api/client.js";
 import FolderPicker from "../components/FolderPicker.js";
 import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
+import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { formatBytes } from "../utils/format.js";
 
 interface DiskSpaceEntry {
@@ -148,6 +149,7 @@ function formatUptime(seconds: number): string {
 
 export default function System() {
   const navigate = useNavigate();
+  const mediaTypes = useMediaTypes();
   const [tab, setTab] = useState("overview");
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [health, setHealth] = useState<HealthReport | null>(null);
@@ -156,6 +158,13 @@ export default function System() {
   const [scanning, setScanning] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [syncingTrakt, setSyncingTrakt] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [renameType, setRenameType] = useState("");
+  const [renameResult, setRenameResult] = useState<{
+    renamed: { title: string; from: string; to: string }[];
+    errors: { title: string; error: string }[];
+    skippedMusic: number;
+  } | null>(null);
   const [backingUp, setBackingUp] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const restoreInputRef = useRef<HTMLInputElement>(null);
@@ -252,6 +261,28 @@ export default function System() {
       else alert(`Trakt sync added ${result.added} new item(s).`);
     } finally {
       setSyncingTrakt(false);
+    }
+  }
+
+  async function runRenameFiles() {
+    if (
+      !confirm(
+        "Rename every already-imported file whose current path no longer matches its naming template? Files are moved on disk, not just relabeled in the database."
+      )
+    )
+      return;
+    setRenaming(true);
+    setRenameResult(null);
+    try {
+      const qs = renameType ? `?type=${renameType}` : "";
+      const result = await api.post<{
+        renamed: { title: string; from: string; to: string }[];
+        errors: { title: string; error: string }[];
+        skippedMusic: number;
+      }>(`/media/rename-files${qs}`, {});
+      setRenameResult(result);
+    } finally {
+      setRenaming(false);
     }
   }
 
@@ -800,6 +831,75 @@ export default function System() {
               </table>
             )}
           </>
+        )}
+      </div>
+
+      <h2>Rename Files</h2>
+      <div className="form-panel">
+        <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
+          Retroactively re-renames every already-imported file whose current path no longer
+          matches its library type's naming template (Settings → Media Management → Naming) — for
+          after you've changed a template and want existing files to catch up, not just new
+          imports. Files with no change needed are skipped; Music is skipped entirely since its
+          track filenames are always kept as-downloaded rather than templated.
+        </p>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <select value={renameType} onChange={(e) => setRenameType(e.target.value)} style={{ maxWidth: 220 }}>
+            <option value="">All library types</option>
+            {mediaTypes.map((t) => (
+              <option key={t.key} value={t.key}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+          <button onClick={runRenameFiles} disabled={renaming} className="secondary">
+            {renaming ? "Renaming..." : "Rename files now"}
+          </button>
+        </div>
+        {renameResult && (
+          <div style={{ marginTop: 12 }}>
+            <p>
+              {renameResult.renamed.length} file(s) renamed
+              {renameResult.skippedMusic > 0 && `, ${renameResult.skippedMusic} Music file(s) skipped`}
+              {renameResult.errors.length > 0 && `, ${renameResult.errors.length} error(s)`}.
+            </p>
+            {renameResult.renamed.length > 0 && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Title</th>
+                    <th>New path</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {renameResult.renamed.map((r, i) => (
+                    <tr key={i}>
+                      <td>{r.title}</td>
+                      <td style={{ fontFamily: "monospace", fontSize: "0.8rem", wordBreak: "break-all" }}>{r.to}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {renameResult.errors.length > 0 && (
+              <table style={{ marginTop: 8 }}>
+                <thead>
+                  <tr>
+                    <th>Title</th>
+                    <th>Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {renameResult.errors.map((e, i) => (
+                    <tr key={i}>
+                      <td>{e.title}</td>
+                      <td style={{ color: "var(--danger)" }}>{e.error}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
         )}
       </div>
 

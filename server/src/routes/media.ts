@@ -23,6 +23,7 @@ import { buildCalibreOpf, buildJson, buildNfo, buildPlexMatch, fetchPosterBuffer
 import { probeMediaInfo } from "../services/ffprobe.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { getSetting } from "../services/settingsStore.js";
+import { renameLibraryFiles } from "../services/importer.js";
 import AdmZip from "adm-zip";
 import type { MediaType } from "../types/index.js";
 
@@ -755,6 +756,22 @@ mediaRouter.post(
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "media_added", `${b.title} (${b.type})`);
     res.status(201).json(mediaItemFromRow(row));
+  })
+);
+
+/**
+ * Bulk "Rename Files" — retroactively re-renames every already-imported file whose naming
+ * template has changed since it was imported, across the whole library or one type at a time.
+ * Optional `?type=` scopes it; omitting it runs across everything.
+ */
+mediaRouter.post(
+  "/rename-files",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const type = typeof req.query.type === "string" ? (req.query.type as MediaType) : undefined;
+    if (type && !isValidMediaType(type)) throw new HttpError(400, `Unknown media type "${type}"`);
+    const result = await renameLibraryFiles(type);
+    res.json(result);
   })
 );
 
