@@ -165,6 +165,17 @@ export interface Tag {
   retentionDays: number | null;
 }
 
+export interface DelayProfile {
+  id: number;
+  tagId: number | null;
+  enableUsenet: boolean;
+  enableTorrent: boolean;
+  usenetDelayMinutes: number;
+  torrentDelayMinutes: number;
+  bypassIfHighestQuality: boolean;
+  orderIndex: number;
+}
+
 export interface SmartFilter {
   type?: string;
   monitored?: 0 | 1;

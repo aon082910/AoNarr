@@ -81,6 +81,68 @@ async function getQualityProfile(id: number | null) {
   return row ? qualityProfileFromRow(row) : null;
 }
 
+interface DelayProfile {
+  enableUsenet: boolean;
+  enableTorrent: boolean;
+  usenetDelayMinutes: number;
+  torrentDelayMinutes: number;
+  bypassIfHighestQuality: boolean;
+}
+
+/** Every configured delay profile, tag-scoped ones first in their saved order, the untagged
+ * default (if any) last — so `pickDelayProfile` can just take the first match. Fetched once per
+ * search cycle rather than per item; the table is tiny and rarely changes mid-cycle. */
+async function loadDelayProfiles(): Promise<{ tagId: number | null; profile: DelayProfile }[]> {
+  const rows = (await db.prepare("SELECT * FROM delay_profiles ORDER BY (tag_id IS NULL), order_index, id").all()) as any[];
+  return rows.map((row) => ({
+    tagId: row.tag_id,
+    profile: {
+      enableUsenet: !!row.enable_usenet,
+      enableTorrent: !!row.enable_torrent,
+      usenetDelayMinutes: row.usenet_delay_minutes,
+      torrentDelayMinutes: row.torrent_delay_minutes,
+      bypassIfHighestQuality: !!row.bypass_if_highest_quality,
+    },
+  }));
+}
+
+/** First tag-matching profile wins; falls back to the untagged default profile, then to no delay
+ * at all (every release eligible immediately) if nothing's configured — same "absent means off"
+ * default every other opt-in gate in this file uses (isReleaseAvailableForSearch, quiet hours, ...). */
+function pickDelayProfile(profiles: { tagId: number | null; profile: DelayProfile }[], itemTagIds: number[]): DelayProfile | null {
+  for (const p of profiles) {
+    if (p.tagId !== null && itemTagIds.includes(p.tagId)) return p.profile;
+  }
+  return profiles.find((p) => p.tagId === null)?.profile ?? null;
+}
+
+async function tagIdsForMediaItem(mediaItemId: number): Promise<number[]> {
+  const rows = (await db.prepare("SELECT tag_id FROM media_item_tags WHERE media_item_id = ?").all(mediaItemId)) as {
+    tag_id: number;
+  }[];
+  return rows.map((r) => r.tag_id);
+}
+
+/** Gates an automatic (never manual — see the search.ts route's own direct grab) candidate on its
+ * configured delay profile: a release younger than its protocol's delay isn't eligible yet, unless
+ * that protocol is disabled outright for the profile (never eligible), or bypassIfHighestQuality
+ * lets an already-cutoff-quality release through immediately. A release with no publishDate (some
+ * indexers omit it) can't have its age judged, so it's let through rather than blocked forever. */
+function isEligibleForDelay(quality: string, cutoff: string, result: SearchResult, profile: DelayProfile | null): boolean {
+  if (!profile) return true;
+  const protocol = result.protocol;
+  if (protocol !== "torrent" && protocol !== "usenet") return true; // http/slskd aren't protocol-gated
+  if (protocol === "torrent" && !profile.enableTorrent) return false;
+  if (protocol === "usenet" && !profile.enableUsenet) return false;
+  const delayMinutes = protocol === "torrent" ? profile.torrentDelayMinutes : profile.usenetDelayMinutes;
+  if (delayMinutes <= 0) return true;
+  if (profile.bypassIfHighestQuality && cutoff && quality === cutoff) return true;
+  if (!result.publishDate) return true;
+  const publishedAt = new Date(result.publishDate).getTime();
+  if (isNaN(publishedAt)) return true;
+  return (Date.now() - publishedAt) / 60_000 >= delayMinutes;
+}
+
 async function isAlreadyQueued(mediaItemId: number, episodeId: number | null, subItemId: number | null): Promise<boolean> {
   if (episodeId) {
     return !!(await db
@@ -118,10 +180,13 @@ async function chooseBestResult(
   minFormatScore: number,
   target: { season: number; episode: number } | { airDate: string } | null,
   blocklisted: Set<string>,
-  mediaType: string
+  mediaType: string,
+  delayProfile: DelayProfile | null = null
 ): Promise<ChosenResult | null> {
   const notBlocklisted = results.filter((r) => !blocklisted.has(r.title));
-  const withParsed = notBlocklisted.map((r) => ({ result: r, parsed: parseReleaseTitle(r.title) }));
+  const withParsed = notBlocklisted
+    .map((r) => ({ result: r, parsed: parseReleaseTitle(r.title) }))
+    .filter(({ result, parsed }) => isEligibleForDelay(parsed.quality, cutoff, result, delayProfile));
 
   const episodeFiltered = !target
     ? withParsed
@@ -286,6 +351,8 @@ async function runAutoSearch(signal?: AbortSignal) {
     return;
   }
 
+  const delayProfiles = await loadDelayProfiles();
+
   const monitoredItems = (
     (await db.prepare("SELECT * FROM media_items WHERE monitored = 1").all()) as any[]
   ).map(mediaItemFromRow) as MediaItem[];
@@ -304,6 +371,7 @@ async function runAutoSearch(signal?: AbortSignal) {
     const allowedQualities = profile?.allowedQualities ?? [];
     const cutoff = profile?.cutoff ?? "";
     const minFormatScore = profile?.minFormatScore ?? 0;
+    const delayProfile = pickDelayProfile(delayProfiles, await tagIdsForMediaItem(item.id));
 
     try {
       const shape = getMediaTypeConfig(item.type).shape;
@@ -325,7 +393,8 @@ async function runAutoSearch(signal?: AbortSignal) {
           minFormatScore,
           null,
           blocklisted,
-          item.type
+          item.type,
+          delayProfile
         );
         if (best) {
           const targetClient = pickClientForProtocol(clients, best.result.protocol);
@@ -353,7 +422,8 @@ async function runAutoSearch(signal?: AbortSignal) {
             minFormatScore,
             isDaily ? { airDate: ep.air_date } : { season: ep.season_number, episode: ep.episode_number },
             blocklisted,
-            item.type
+            item.type,
+            delayProfile
           );
           if (best) {
             const targetClient = pickClientForProtocol(clients, best.result.protocol);
@@ -406,7 +476,8 @@ async function runAutoSearch(signal?: AbortSignal) {
             minFormatScore,
             null,
             blocklisted,
-            item.type
+            item.type,
+            delayProfile
           );
           if (best) {
             const targetClient = pickClientForProtocol(clients, best.result.protocol);
@@ -438,6 +509,7 @@ export interface BulkSearchResult extends BulkSearchTarget {
 export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise<BulkSearchResult[]> {
   const indexers = await rowsToIndexers();
   const clients = await rowsToDownloadClients();
+  const delayProfiles = await loadDelayProfiles();
   const results: BulkSearchResult[] = [];
 
   for (const t of targets) {
@@ -453,6 +525,7 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
       const cutoff = profile?.cutoff ?? "";
       const minFormatScore = profile?.minFormatScore ?? 0;
       const blocklisted = await getBlocklistedTitles(item.id);
+      const delayProfile = pickDelayProfile(delayProfiles, await tagIdsForMediaItem(item.id));
 
       let query: string;
       let episodeTarget: { season: number; episode: number } | null = null;
@@ -484,7 +557,8 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
         minFormatScore,
         episodeTarget,
         blocklisted,
-        item.type
+        item.type,
+        delayProfile
       );
       if (!best) {
         results.push({ ...t, grabbed: false, error: "No matching results" });

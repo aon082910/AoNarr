@@ -252,6 +252,25 @@ CREATE TABLE IF NOT EXISTS media_item_tags (
   PRIMARY KEY (media_item_id, tag_id)
 );
 
+-- Sonarr/Radarr-style delay profiles: withhold an *automatic* grab (scheduler auto-search and bulk
+-- "search selected" — never a manual single-release grab, which is already an explicit choice) for
+-- N minutes per protocol, to give a preferred protocol (e.g. Usenet) a window to show up before
+-- settling for the other one. tag_id NULL is the default profile, applied to any item whose tags
+-- (if any) don't match a more specific profile; profiles are tried in order_index order. Age is
+-- measured from the release's own publish date (when the indexer reports one), not from when
+-- AoNarr first saw it, so no extra "first seen" tracking state is needed — a release simply becomes
+-- eligible once it's aged past the delay, re-checked on the next scheduled search pass.
+CREATE TABLE IF NOT EXISTS delay_profiles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tag_id INTEGER REFERENCES tags(id) ON DELETE CASCADE,
+  enable_usenet INTEGER NOT NULL DEFAULT 1,
+  enable_torrent INTEGER NOT NULL DEFAULT 1,
+  usenet_delay_minutes INTEGER NOT NULL DEFAULT 0,
+  torrent_delay_minutes INTEGER NOT NULL DEFAULT 0,
+  bypass_if_highest_quality INTEGER NOT NULL DEFAULT 0,
+  order_index INTEGER NOT NULL DEFAULT 0
+);
+
 -- User-defined release-title patterns (regex) that score releases up/down during grabbing,
 -- similar to Sonarr/Radarr custom formats (e.g. prefer REMUX, avoid a bad release group).
 CREATE TABLE IF NOT EXISTS custom_formats (

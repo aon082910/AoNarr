@@ -3,6 +3,43 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 157 — Delay Profiles + per-connection notification triggers; three gaps that weren't gaps
+- **Delay Profiles** (Settings → Quality) — Sonarr/Radarr-style: withhold an *automatic* grab
+  (scheduled auto-search and bulk "search selected"/auto-upgrade — never a manual single-release
+  grab, which is already an explicit choice) for a configurable number of minutes per protocol,
+  optionally scoped to a tag, so a preferred protocol (e.g. Usenet) gets a window to show up before
+  settling for the other one. A release's age comes from its own publish date rather than a new
+  "first seen by AoNarr" tracking table — it simply becomes eligible once old enough, re-checked on
+  the next scheduled search pass, so no extra state or background job was needed. "Bypass if
+  highest quality" skips the wait entirely once a release already hits the profile's cutoff.
+- **Per-connection notification event triggers** (Settings → Notifications, each provider's own
+  tile) — every notification provider (Discord, Slack, generic webhook, Telegram, Pushover, SMTP,
+  Matrix, Twilio, Custom Script) can now opt in/out of individual events (Grabbed / Imported /
+  Failed / Duplicates found) instead of firing on all four unconditionally. Unset (the pre-existing
+  behavior) still means every event, so upgrading doesn't silently mute anyone's existing setup.
+- **Three of the five gaps identified while studying awesome-arr's "Beyond *arr" list and the
+  Servarr wiki turned out not to be gaps at all, confirmed by reading the actual code rather than
+  assuming:**
+  - **List Exclusions already exists** — `import_exclusions`/`isExcluded()` is already wired into
+    every import list sync path (Trakt, IMDb, Last.fm) plus Recommendations, with its own Settings
+    UI. Missed on the first pass because the feature uses different naming than Sonarr's
+    ("exclusions", not "list exclusions") — a targeted grep for the wrong string looked like a gap
+    that a broader read of `importLists.ts` immediately disproved.
+  - **Remote Path Mappings don't apply to AoNarr's architecture** — Sonarr/Radarr need them because
+    they trust a download client's own reported absolute file path, which can differ from the *arr
+    app's mount point on a different host/container. AoNarr never does that: every download client
+    just needs to land a completed file somewhere under one shared `downloadsDir` volume, which
+    `findDownloadedFile()` scans and fuzzy-matches directly — there's no download-client-reported
+    path anywhere in the import pipeline to translate. Building the feature would have solved a
+    problem this app's design doesn't have.
+  - **A dedicated "Video Games" library type is redundant** — ROMs already targets PC releases too
+    (indexer category 1000/4000/4050/8000 covers Console *and* PC, not consoles alone), already
+    uses general video-game databases (RAWG, IGDB, ScreenScraper, TheGamesDB) rather than
+    retro-only sources, and its `.zip`/`.7z` extensions already cover how PC game releases are
+    typically distributed on indexers. Questarr's actual differentiator — checking a Steam/GOG/Epic
+    library you already own against — is a different kind of tool (ownership tracking, not
+    acquisition) than anything else in AoNarr, so it was left out rather than force-fit in.
+
 ## Round 156 — OPDS catalog feed + Send to Kindle
 - **OPDS catalog** (`GET /api/opds`, token-gated the same way the `.ics` calendar feed and IPTV
   M3U/stream routes already are — see Settings → General → "OPDS Catalog") — lets any e-reader app

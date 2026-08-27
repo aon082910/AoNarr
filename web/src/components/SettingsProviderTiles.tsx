@@ -21,7 +21,19 @@ export interface SettingsProviderDef {
    * "Configured"/"Not configured" badge. Given the raw settings map so the caller can express
    * whatever "configured" means for that provider (e.g. SMTP needs 3 fields, Discord needs 1). */
   isConfigured: (settings: Record<string, string>) => boolean;
+  /** Settings key storing this provider's enabled-event subset (comma-separated, e.g.
+   * "grabbed,imported") — set only on notification providers, which is what turns on the "Events"
+   * checkbox group in the modal (see services/notifications.ts's isEventEnabledFor). Unset/empty
+   * means every event, matching the server's own default. */
+  eventsKey?: string;
 }
+
+const EVENT_OPTIONS: { key: string; label: string }[] = [
+  { key: "grabbed", label: "Grabbed" },
+  { key: "imported", label: "Imported" },
+  { key: "failed", label: "Failed" },
+  { key: "duplicatesFound", label: "Duplicates found" },
+];
 
 /**
  * Tile-grid + popup-editor pattern for a settings page with many similar "providers"/integrations
@@ -94,6 +106,35 @@ export default function SettingsProviderTiles({
               {f.helpText && <p style={{ color: "var(--muted)", fontSize: "0.78rem", marginTop: 2 }}>{f.helpText}</p>}
             </div>
           ))}
+          {openProvider.eventsKey && (
+            <div>
+              <label>Send on</label>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 4 }}>
+                {EVENT_OPTIONS.map((opt) => {
+                  const raw = settings[openProvider.eventsKey!] ?? "";
+                  const enabledEvents = raw ? raw.split(",").map((s) => s.trim()) : EVENT_OPTIONS.map((o) => o.key);
+                  const checked = enabledEvents.includes(opt.key);
+                  return (
+                    <label key={opt.key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.85rem", margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        style={{ width: "auto" }}
+                        checked={checked}
+                        onChange={() => {
+                          const next = checked ? enabledEvents.filter((e) => e !== opt.key) : [...enabledEvents, opt.key];
+                          saveSetting(openProvider.eventsKey!, EVENT_OPTIONS.every((o) => next.includes(o.key)) ? "" : next.join(","));
+                        }}
+                      />
+                      {opt.label}
+                    </label>
+                  );
+                })}
+              </div>
+              <p style={{ color: "var(--muted)", fontSize: "0.78rem", marginTop: 0 }}>
+                Which events this provider fires on. All are on by default.
+              </p>
+            </div>
+          )}
         </Modal>
       )}
     </>

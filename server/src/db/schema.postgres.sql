@@ -237,6 +237,18 @@ CREATE TABLE IF NOT EXISTS media_item_tags (
   PRIMARY KEY (media_item_id, tag_id)
 );
 
+-- Sonarr/Radarr-style delay profiles — see schema.sql's copy of this comment for the full rationale.
+CREATE TABLE IF NOT EXISTS delay_profiles (
+  id SERIAL PRIMARY KEY,
+  tag_id INTEGER REFERENCES tags(id) ON DELETE CASCADE,
+  enable_usenet INTEGER NOT NULL DEFAULT 1,
+  enable_torrent INTEGER NOT NULL DEFAULT 1,
+  usenet_delay_minutes INTEGER NOT NULL DEFAULT 0,
+  torrent_delay_minutes INTEGER NOT NULL DEFAULT 0,
+  bypass_if_highest_quality INTEGER NOT NULL DEFAULT 0,
+  order_index INTEGER NOT NULL DEFAULT 0
+);
+
 -- User-defined release-title patterns (regex) that score releases up/down during grabbing,
 -- similar to Sonarr/Radarr custom formats (e.g. prefer REMUX, avoid a bad release group).
 CREATE TABLE IF NOT EXISTS custom_formats (

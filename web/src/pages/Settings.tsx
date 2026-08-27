@@ -5,7 +5,7 @@ import NamingSetupModal from "../components/NamingSetupModal.js";
 import SettingsProviderTiles, { type SettingsProviderDef } from "../components/SettingsProviderTiles.js";
 import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
-import type { BlocklistEntry, CustomFormat, ImportExclusion, MediaType, Quality, QualityProfile, RootFolder, Tag } from "../types.js";
+import type { BlocklistEntry, CustomFormat, DelayProfile, ImportExclusion, MediaType, Quality, QualityProfile, RootFolder, Tag } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 
 interface FormatScore extends CustomFormat {
@@ -28,12 +28,14 @@ const NOTIFICATION_PROVIDERS: SettingsProviderDef[] = [
     label: "Discord",
     fields: [{ key: "discordWebhookUrl", label: "Webhook URL", placeholder: "https://discord.com/api/webhooks/..." }],
     isConfigured: (s) => !!s.discordWebhookUrl,
+    eventsKey: "discordEvents",
   },
   {
     key: "slack",
     label: "Slack",
     fields: [{ key: "slackWebhookUrl", label: "Webhook URL", placeholder: "https://hooks.slack.com/services/..." }],
     isConfigured: (s) => !!s.slackWebhookUrl,
+    eventsKey: "slackEvents",
   },
   {
     key: "generic",
@@ -41,6 +43,7 @@ const NOTIFICATION_PROVIDERS: SettingsProviderDef[] = [
     description: "Receives the raw event payload as JSON — for anything without built-in support.",
     fields: [{ key: "genericWebhookUrl", label: "Webhook URL", placeholder: "https://example.com/hooks/aonarr" }],
     isConfigured: (s) => !!s.genericWebhookUrl,
+    eventsKey: "genericEvents",
   },
   {
     key: "telegram",
@@ -50,6 +53,7 @@ const NOTIFICATION_PROVIDERS: SettingsProviderDef[] = [
       { key: "telegramChatId", label: "Chat ID", placeholder: "-100123456789" },
     ],
     isConfigured: (s) => !!s.telegramBotToken && !!s.telegramChatId,
+    eventsKey: "telegramEvents",
   },
   {
     key: "pushover",
@@ -59,6 +63,7 @@ const NOTIFICATION_PROVIDERS: SettingsProviderDef[] = [
       { key: "pushoverUserKey", label: "User key" },
     ],
     isConfigured: (s) => !!s.pushoverApiToken && !!s.pushoverUserKey,
+    eventsKey: "pushoverEvents",
   },
   {
     key: "smtp",
@@ -81,6 +86,7 @@ const NOTIFICATION_PROVIDERS: SettingsProviderDef[] = [
       { key: "smtpTo", label: "Send to", placeholder: "you@yourdomain.com" },
     ],
     isConfigured: (s) => !!s.smtpHost && !!s.smtpFrom && !!s.smtpTo,
+    eventsKey: "smtpEvents",
   },
   {
     key: "matrix",
@@ -91,6 +97,7 @@ const NOTIFICATION_PROVIDERS: SettingsProviderDef[] = [
       { key: "matrixRoomId", label: "Room ID", placeholder: "!roomid:matrix.org" },
     ],
     isConfigured: (s) => !!s.matrixHomeserverUrl && !!s.matrixAccessToken && !!s.matrixRoomId,
+    eventsKey: "matrixEvents",
   },
   {
     key: "twilio",
@@ -102,6 +109,7 @@ const NOTIFICATION_PROVIDERS: SettingsProviderDef[] = [
       { key: "twilioToNumber", label: "To number", placeholder: "+15557654321" },
     ],
     isConfigured: (s) => !!s.twilioAccountSid && !!s.twilioAuthToken && !!s.twilioFromNumber && !!s.twilioToNumber,
+    eventsKey: "twilioEvents",
   },
   {
     key: "customScript",
@@ -125,6 +133,7 @@ const NOTIFICATION_PROVIDERS: SettingsProviderDef[] = [
       },
     ],
     isConfigured: (s) => s.customScriptEnabled === "1" && !!s.customScriptPath,
+    eventsKey: "customScriptEvents",
   },
 ];
 
@@ -317,6 +326,8 @@ export default function Settings() {
   const [trashSyncing, setTrashSyncing] = useState<"radarr" | "sonarr" | null>(null);
   const [scoreProfileId, setScoreProfileId] = useState<number | "">("");
   const [formatScores, setFormatScores] = useState<FormatScore[]>([]);
+  const [delayProfiles, setDelayProfiles] = useState<DelayProfile[]>([]);
+  const [newDelayProfileTagId, setNewDelayProfileTagId] = useState<string>("");
 
   function load() {
     api.get<RootFolder[]>("/root-folders").then(setRootFolders);
@@ -335,8 +346,25 @@ export default function Settings() {
     });
     api.get<Record<string, string>>("/settings").then(setSettings);
     api.get<Record<MediaType, string[]>>("/metadata/providers").then(setMetadataProviders);
+    api.get<DelayProfile[]>("/delay-profiles").then(setDelayProfiles);
   }
   useEffect(load, []);
+
+  async function addDelayProfile() {
+    await api.post("/delay-profiles", { tagId: newDelayProfileTagId === "" ? null : Number(newDelayProfileTagId) });
+    setNewDelayProfileTagId("");
+    load();
+  }
+
+  async function updateDelayProfile(id: number, patch: Partial<DelayProfile>) {
+    await api.patch(`/delay-profiles/${id}`, patch);
+    load();
+  }
+
+  async function removeDelayProfile(id: number) {
+    await api.del(`/delay-profiles/${id}`);
+    load();
+  }
 
   async function renameQuality(id: number, name: string) {
     await api.patch(`/qualities/${id}`, { name });
@@ -1816,6 +1844,86 @@ export default function Settings() {
                 </select>
                 <button type="submit">Add quality profile</button>
               </form>
+            ),
+          },
+          ...delayProfiles.map((d) => ({
+            key: `delayProfile-${d.id}`,
+            label: d.tagId == null ? "Delay Profile: Default" : `Delay Profile: ${tags.find((t) => t.id === d.tagId)?.name ?? "unknown tag"}`,
+            description: `Usenet ${d.usenetDelayMinutes}m / Torrent ${d.torrentDelayMinutes}m`,
+            maxWidth: 480,
+            render: () => (
+              <div className="form-panel">
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Holds back an automatic grab (scheduled auto-search and bulk "search selected" — never
+                  a manual single-release grab) until a release is at least this old, giving a preferred
+                  protocol time to show up before settling for the other one. Age comes from the
+                  release's own publish date; a release with no publish date is never held back.
+                </p>
+                <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    style={{ width: "auto" }}
+                    checked={d.enableUsenet}
+                    onChange={(e) => updateDelayProfile(d.id, { enableUsenet: e.target.checked })}
+                  />
+                  Allow Usenet
+                </label>
+                <label>Usenet delay (minutes)</label>
+                <input
+                  type="number"
+                  defaultValue={d.usenetDelayMinutes}
+                  onBlur={(e) => updateDelayProfile(d.id, { usenetDelayMinutes: Number(e.target.value) || 0 })}
+                />
+                <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    style={{ width: "auto" }}
+                    checked={d.enableTorrent}
+                    onChange={(e) => updateDelayProfile(d.id, { enableTorrent: e.target.checked })}
+                  />
+                  Allow Torrent
+                </label>
+                <label>Torrent delay (minutes)</label>
+                <input
+                  type="number"
+                  defaultValue={d.torrentDelayMinutes}
+                  onBlur={(e) => updateDelayProfile(d.id, { torrentDelayMinutes: Number(e.target.value) || 0 })}
+                />
+                <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    style={{ width: "auto" }}
+                    checked={d.bypassIfHighestQuality}
+                    onChange={(e) => updateDelayProfile(d.id, { bypassIfHighestQuality: e.target.checked })}
+                  />
+                  Bypass delay if release is already the profile's cutoff quality
+                </label>
+                <button className="danger" onClick={() => removeDelayProfile(d.id)}>
+                  Delete delay profile
+                </button>
+              </div>
+            ),
+          })),
+          {
+            key: "addDelayProfile",
+            label: "+ Add Delay Profile",
+            description: "Wait for a preferred protocol before auto-grabbing, per tag (or a default)",
+            maxWidth: 420,
+            render: () => (
+              <div className="form-panel">
+                <label>Applies to</label>
+                <select value={newDelayProfileTagId} onChange={(e) => setNewDelayProfileTagId(e.target.value)}>
+                  <option value="">Default (untagged / no more specific match)</option>
+                  {tags.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+                <button type="button" onClick={addDelayProfile} style={{ marginTop: 8 }}>
+                  Add delay profile
+                </button>
+              </div>
             ),
           },
           ...customFormats.map((f) => ({

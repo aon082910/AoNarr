@@ -177,6 +177,19 @@ export function tagFromRow(row: any) {
   return { id: row.id, name: row.name, retentionDays: row.retention_days };
 }
 
+export function delayProfileFromRow(row: any) {
+  return {
+    id: row.id,
+    tagId: row.tag_id,
+    enableUsenet: !!row.enable_usenet,
+    enableTorrent: !!row.enable_torrent,
+    usenetDelayMinutes: row.usenet_delay_minutes,
+    torrentDelayMinutes: row.torrent_delay_minutes,
+    bypassIfHighestQuality: !!row.bypass_if_highest_quality,
+    orderIndex: row.order_index,
+  };
+}
+
 export function customFormatFromRow(row: any) {
   return {
     id: row.id,

@@ -13,6 +13,7 @@ import { mediaRouter } from "./routes/media.js";
 import { indexersRouter } from "./routes/indexers.js";
 import { downloadClientsRouter } from "./routes/downloadClients.js";
 import { qualityProfilesRouter } from "./routes/qualityProfiles.js";
+import { delayProfilesRouter } from "./routes/delayProfiles.js";
 import { rootFoldersRouter } from "./routes/rootFolders.js";
 import { searchRouter } from "./routes/search.js";
 import { activityRouter } from "./routes/activity.js";
@@ -118,6 +119,7 @@ export async function createApp(): Promise<Express> {
   app.use("/api/indexers", indexersRouter);
   app.use("/api/download-clients", downloadClientsRouter);
   app.use("/api/quality-profiles", qualityProfilesRouter);
+  app.use("/api/delay-profiles", delayProfilesRouter);
   app.use("/api/root-folders", rootFoldersRouter);
   app.use("/api/search", searchRouter);
   app.use("/api/activity", activityRouter);

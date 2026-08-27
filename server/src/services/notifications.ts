@@ -61,7 +61,23 @@ interface NotificationContent {
   payload: Record<string, unknown>; // generic webhook body
 }
 
+/** Sonarr/Radarr-style per-connection event triggers: each provider has an optional
+ * `<providerKey>Events` setting, a comma-separated subset of EVENT_KEYS. Unset means "every event"
+ * — the pre-existing behavior — so upgrading doesn't silently mute anyone's existing setup. */
+export const EVENT_KEYS = ["grabbed", "imported", "failed", "duplicatesFound"] as const;
+export type EventKey = (typeof EVENT_KEYS)[number];
+
+function isEventEnabledFor(providerKey: string, event: string): boolean {
+  const raw = getSetting(`${providerKey}Events`);
+  if (!raw) return true;
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .includes(event);
+}
+
 async function fanOut(content: NotificationContent): Promise<void> {
+  const event = (content.payload as { event: string }).event;
   const discordUrl = getSetting("discordWebhookUrl");
   const slackUrl = getSetting("slackWebhookUrl");
   const genericUrl = getSetting("genericWebhookUrl");
@@ -72,18 +88,18 @@ async function fanOut(content: NotificationContent): Promise<void> {
 
   const jobs: Promise<void>[] = [];
 
-  if (discordUrl) {
+  if (discordUrl && isEventEnabledFor("discord", event)) {
     jobs.push(
       postJson(discordUrl, { embeds: [{ title: content.title, description: content.text, color: content.color }] })
     );
   }
-  if (slackUrl) {
+  if (slackUrl && isEventEnabledFor("slack", event)) {
     jobs.push(postJson(slackUrl, { text: `*${content.title}*\n${content.text}` }));
   }
-  if (genericUrl) {
+  if (genericUrl && isEventEnabledFor("generic", event)) {
     jobs.push(postJson(genericUrl, content.payload));
   }
-  if (telegramBotToken && telegramChatId) {
+  if (telegramBotToken && telegramChatId && isEventEnabledFor("telegram", event)) {
     jobs.push(
       postForm(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
         chat_id: telegramChatId,
@@ -91,7 +107,7 @@ async function fanOut(content: NotificationContent): Promise<void> {
       })
     );
   }
-  if (pushoverApiToken && pushoverUserKey) {
+  if (pushoverApiToken && pushoverUserKey && isEventEnabledFor("pushover", event)) {
     jobs.push(
       postForm("https://api.pushover.net/1/messages.json", {
         token: pushoverApiToken,
@@ -105,7 +121,7 @@ async function fanOut(content: NotificationContent): Promise<void> {
   const matrixHomeserver = getSetting("matrixHomeserverUrl");
   const matrixAccessToken = getSetting("matrixAccessToken");
   const matrixRoomId = getSetting("matrixRoomId");
-  if (matrixHomeserver && matrixAccessToken && matrixRoomId) {
+  if (matrixHomeserver && matrixAccessToken && matrixRoomId && isEventEnabledFor("matrix", event)) {
     const txnId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const url = `${matrixHomeserver.replace(/\/+$/, "")}/_matrix/client/v3/rooms/${encodeURIComponent(
       matrixRoomId
@@ -126,7 +142,7 @@ async function fanOut(content: NotificationContent): Promise<void> {
   const twilioToken = getSetting("twilioAuthToken");
   const twilioFrom = getSetting("twilioFromNumber");
   const twilioTo = getSetting("twilioToNumber");
-  if (twilioSid && twilioToken && twilioFrom && twilioTo) {
+  if (twilioSid && twilioToken && twilioFrom && twilioTo && isEventEnabledFor("twilio", event)) {
     jobs.push(
       (async () => {
         const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`, {
@@ -145,7 +161,7 @@ async function fanOut(content: NotificationContent): Promise<void> {
   const smtpHost = getSetting("smtpHost");
   const smtpTo = getSetting("smtpTo");
   const smtpFrom = getSetting("smtpFrom");
-  if (smtpHost && smtpTo && smtpFrom) {
+  if (smtpHost && smtpTo && smtpFrom && isEventEnabledFor("smtp", event)) {
     jobs.push(
       sendEmail(
         {
@@ -165,10 +181,12 @@ async function fanOut(content: NotificationContent): Promise<void> {
 
   // Web push always fans out too — it has no separate "configured" gate since it's opt-in per
   // browser (no subscriptions means no-op), unlike the webhook/bot providers above.
-  jobs.push(sendPush(content.title, content.text));
+  if (isEventEnabledFor("push", event)) jobs.push(sendPush(content.title, content.text));
 
-  const { event, ...tokens } = content.payload as { event: string } & Record<string, string>;
-  jobs.push(runCustomScript(event, tokens));
+  if (isEventEnabledFor("customScript", event)) {
+    const { event: _event, ...tokens } = content.payload as { event: string } & Record<string, string>;
+    jobs.push(runCustomScript(event, tokens));
+  }
 
   const settled = await Promise.allSettled(jobs);
   for (const s of settled) {
