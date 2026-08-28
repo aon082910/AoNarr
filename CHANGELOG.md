@@ -3,6 +3,26 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 160 — Convert audiobook to chapterized M4B
+- **"Convert to chapterized M4B"** (audiobook sub-item page, once ≥2 tracks are downloaded) —
+  LazyLibrarian's real advantage AoNarr otherwise lacked: merges every downloaded per-chapter
+  file into one M4B with embedded chapter markers, via `ffmpeg` (already shipped in the server
+  image for `ffprobe`'s media-info reads, so no new dependency). Uses ffmpeg's concat *filter*
+  rather than the concat *demuxer* deliberately — the filter decodes each input properly
+  regardless of source codec/container before joining, so it works whether the downloaded tracks
+  are uniform or mixed formats/bitrates, unlike the demuxer which needs format-identical inputs.
+  Chapter start/end times come from each source track's real ffprobe'd duration, titled from the
+  track's own title.
+- On success, the original per-track files and `tracks` rows are replaced with a single row
+  pointing at the merged file — every other feature that walks the `tracks` table for a
+  `multiFilePerChild` sub-item (OPDS, Send to Kindle, the track list UI) already treats "one row
+  per downloadable file" as the invariant, so collapsing N tracks into 1 needed no other code
+  changes anywhere.
+- Verified live: synthesized two short test tracks with `ffmpeg`, ran the real conversion route
+  end-to-end, and confirmed via `ffprobe` on the output that both chapter markers landed at the
+  right boundaries with the right titles, and that the `tracks` table correctly collapsed to one
+  row pointing at the merged file.
+
 ## Round 159 — Audiobook narrator field
 - **Narrator** field on Audiobook sub-items (Books' equivalent — a `sub_items` column, admin-tagged
   like series, since no metadata provider AoNarr uses returns narrator today). Editable from the

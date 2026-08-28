@@ -61,6 +61,7 @@ export default function SubItemDetail() {
   const [loadingTracks, setLoadingTracks] = useState(false);
   const [scanningIsbn, setScanningIsbn] = useState(false);
   const [sendingToKindle, setSendingToKindle] = useState(false);
+  const [convertingM4b, setConvertingM4b] = useState(false);
 
   function load() {
     api.get<SubItemDetailResponse>(`/media/${mediaId}/subitems/${subItemId}`).then(setSubItem);
@@ -178,6 +179,23 @@ export default function SubItemDetail() {
       alert((e as Error).message);
     } finally {
       setSendingToKindle(false);
+    }
+  }
+
+  async function convertToM4b() {
+    if (!subItem) return;
+    if (!confirm("Merge every downloaded track into one chapterized M4B? The original per-track files will be deleted once the merge succeeds. This can take a while for a long book.")) return;
+    setConvertingM4b(true);
+    try {
+      await api.post(`/media/${mediaId}/subitems/${subItemId}/convert-to-m4b`, {});
+      alert("Merged into one M4B.");
+      load();
+      const rows = await api.get<Track[]>(`/media/subitems/${subItemId}/tracks`);
+      setTracks(rows);
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setConvertingM4b(false);
     }
   }
 
@@ -481,6 +499,11 @@ export default function SubItemDetail() {
             )}
           </p>
           <h2>Tracks</h2>
+          {isAdmin && subItem.parent?.type === "audiobook" && trackHave >= 2 && (
+            <button className="secondary" onClick={convertToM4b} disabled={convertingM4b} style={{ marginBottom: 8 }}>
+              {convertingM4b ? "Converting... (this can take a while)" : "Convert to chapterized M4B"}
+            </button>
+          )}
           {loadingTracks && <p className="empty">Loading...</p>}
           {!loadingTracks && (!tracks || tracks.length === 0) && (
             <>

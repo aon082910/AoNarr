@@ -43,6 +43,7 @@ import { getSetting } from "../services/settingsStore.js";
 import { renameLibraryFiles, renameOneMediaItem } from "../services/importer.js";
 import { extractIsbnFromBookFile, fetchBookByIsbn } from "../services/bookIsbnScan.js";
 import { sendEmailWithAttachment } from "../services/smtp.js";
+import { convertSubItemToM4b } from "../services/audiobookConvert.js";
 import { CONTENT_TYPES } from "../services/rangeStream.js";
 import AdmZip from "adm-zip";
 import type { MediaType } from "../types/index.js";
@@ -1173,6 +1174,26 @@ mediaRouter.get(
       series,
       byNarrator,
     });
+  })
+);
+
+/**
+ * Merges every downloaded track of an audiobook sub-item into one chapterized M4B via ffmpeg (see
+ * services/audiobookConvert.ts) — replaces the individual track files/rows with a single merged
+ * file + track row on success.
+ */
+mediaRouter.post(
+  "/:id/subitems/:subItemId/convert-to-m4b",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const sub = (await db.prepare("SELECT * FROM sub_items WHERE id = ? AND media_item_id = ?").get(req.params.subItemId, req.params.id)) as any;
+    if (!sub) throw new HttpError(404, "Sub-item not found");
+    try {
+      const result = await convertSubItemToM4b(Number(req.params.subItemId));
+      res.json({ converted: true, path: result.path });
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
   })
 );
 
