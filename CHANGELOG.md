@@ -3,6 +3,19 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 159 — Audiobook narrator field
+- **Narrator** field on Audiobook sub-items (Books' equivalent — a `sub_items` column, admin-tagged
+  like series, since no metadata provider AoNarr uses returns narrator today). Editable from the
+  book's own page the same way Series is; shows a "Narrated by X" poster strip of every other
+  audiobook tagged with the same narrator, spanning different authors — same pattern as the Series
+  sibling widget from Round 155, one property over. Answers an Audiobookshelf-community ask
+  (narrator-level browsing, distinct from author) that doesn't fit Audiobookshelf's own scope as a
+  playback platform but fits AoNarr's library-organization role directly.
+- Verified live against both SQLite and a real Postgres container (schema migration applies
+  cleanly to both), and end-to-end in the browser: tagged two audiobooks under different parent
+  authors with the same narrator, confirmed each links to the other with the right parent-author
+  label.
+
 ## Round 158 — File Permissions (chmod/chown on import)
 - **File Permissions** (Settings → Media Management → "File Permissions") — Sonarr/Radarr's
   standard "File Management > Permissions" setting, which AoNarr had no equivalent of: every

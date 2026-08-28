@@ -16,6 +16,15 @@ interface SeriesSibling {
   parentTitle: string;
 }
 
+interface NarratorSibling {
+  id: number;
+  mediaItemId: number;
+  title: string;
+  posterUrl: string | null;
+  hasFile: 0 | 1;
+  parentTitle: string;
+}
+
 interface SubItemDetailResponse {
   id: number;
   mediaItemId: number;
@@ -31,8 +40,10 @@ interface SubItemDetailResponse {
   posterUrl: string | null;
   seriesName: string | null;
   seriesPosition: number | null;
+  narrator: string | null;
   parent: { id: number; title: string; type: string } | null;
   series: SeriesSibling[];
+  byNarrator: NarratorSibling[];
 }
 
 export default function SubItemDetail() {
@@ -204,6 +215,18 @@ export default function SubItemDetail() {
     }
   }
 
+  async function editNarrator() {
+    if (!subItem) return;
+    const name = prompt("Narrator (leave blank to clear):", subItem.narrator ?? "");
+    if (name === null) return;
+    try {
+      await api.patch(`/media/${mediaId}/subitems/${subItemId}`, { narrator: name.trim() || null });
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    }
+  }
+
   if (!subItem) return <p className="empty">Loading...</p>;
 
   const isYoutubeVideo = subItem.parent?.type === "video" && subItem.externalProvider === "youtube";
@@ -299,6 +322,18 @@ export default function SubItemDetail() {
               </td>
             </tr>
           )}
+          {subItem.parent?.type === "audiobook" && (subItem.narrator || isAdmin) && (
+            <tr>
+              <th>Narrator</th>
+              <td
+                onClick={() => isAdmin && editNarrator()}
+                title={isAdmin ? "Click to set/change this audiobook's narrator" : undefined}
+                style={{ cursor: isAdmin ? "pointer" : "default" }}
+              >
+                {subItem.narrator ?? (isAdmin ? "Not set — click to add" : "-")}
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
 
@@ -326,6 +361,38 @@ export default function SubItemDetail() {
                     {s.seriesPosition != null ? `#${s.seriesPosition} — ` : ""}
                     {s.title}
                   </div>
+                </Link>
+                <div style={{ fontSize: "0.72rem", color: "var(--muted)" }}>{s.parentTitle}</div>
+                <span className={`badge ${s.hasFile ? "ok" : ""}`} style={{ marginTop: 2, display: "inline-block" }}>
+                  {s.hasFile ? "Downloaded" : "Missing"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {subItem.byNarrator.length > 0 && (
+        <>
+          <h2>Narrated by {subItem.narrator}</h2>
+          <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>Other audiobooks narrated by the same person.</p>
+          <div style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 8, marginBottom: 12 }}>
+            {subItem.byNarrator.map((s) => (
+              <div key={s.id} style={{ flex: "0 0 120px", textAlign: "center" }}>
+                <Link to={`/media/${s.mediaItemId}/item/${s.id}`}>
+                  <div
+                    className="poster"
+                    style={{
+                      width: 120,
+                      height: 180,
+                      ...(s.posterUrl
+                        ? { backgroundImage: `url(${s.posterUrl})`, backgroundSize: "cover", backgroundPosition: "center", backgroundRepeat: "no-repeat" }
+                        : {}),
+                    }}
+                  >
+                    {!s.posterUrl && "No cover"}
+                  </div>
+                  <div style={{ fontSize: "0.8rem", marginTop: 4, color: "var(--text)" }}>{s.title}</div>
                 </Link>
                 <div style={{ fontSize: "0.72rem", color: "var(--muted)" }}>{s.parentTitle}</div>
                 <span className={`badge ${s.hasFile ? "ok" : ""}`} style={{ marginTop: 2, display: "inline-block" }}>

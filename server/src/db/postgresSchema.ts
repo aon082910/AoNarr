@@ -81,6 +81,7 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE library_groups ADD COLUMN IF NOT EXISTS logo_url TEXT`,
   `ALTER TABLE sub_items ADD COLUMN IF NOT EXISTS series_name TEXT`,
   `ALTER TABLE sub_items ADD COLUMN IF NOT EXISTS series_position REAL`,
+  `ALTER TABLE sub_items ADD COLUMN IF NOT EXISTS narrator TEXT`,
 ];
 
 /**

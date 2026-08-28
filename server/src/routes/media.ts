@@ -1147,10 +1147,31 @@ mediaRouter.get(
       }));
     }
 
+    let byNarrator: any[] = [];
+    if (row.narrator) {
+      const narratorRows = (await db
+        .prepare(
+          `SELECT s.id, s.media_item_id, s.title, s.poster_url, s.has_file, m.title AS parent_title
+           FROM sub_items s JOIN media_items m ON m.id = s.media_item_id
+           WHERE LOWER(s.narrator) = LOWER(?) AND s.id != ?
+           ORDER BY s.title ASC`
+        )
+        .all(row.narrator, row.id)) as any[];
+      byNarrator = narratorRows.map((s) => ({
+        id: s.id,
+        mediaItemId: s.media_item_id,
+        title: s.title,
+        posterUrl: s.poster_url,
+        hasFile: s.has_file,
+        parentTitle: s.parent_title,
+      }));
+    }
+
     res.json({
       ...subItemFromRow(row),
       parent: parentRow ? { id: parentRow.id, title: parentRow.title, type: parentRow.type } : null,
       series,
+      byNarrator,
     });
   })
 );
@@ -1272,6 +1293,10 @@ mediaRouter.patch(
     if (b.seriesPosition !== undefined) {
       sets.push("series_position = ?");
       values.push(b.seriesPosition === null || b.seriesPosition === "" ? null : Number(b.seriesPosition));
+    }
+    if (b.narrator !== undefined) {
+      sets.push("narrator = ?");
+      values.push(b.narrator || null);
     }
     if (sets.length > 0) {
       values.push(req.params.subItemId);

@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS sub_items (
   file_path TEXT,
   series_name TEXT, -- admin-tagged (no provider populates this today); links books across the
                      -- same or different parent authors that belong to one series
-  series_position REAL -- non-integer allowed (e.g. 2.5) for a novella/interstitial between two mainline books
+  series_position REAL, -- non-integer allowed (e.g. 2.5) for a novella/interstitial between two mainline books
+  narrator TEXT -- Audiobooks only; who reads this edition, distinct from the author/parent
 );
 
 -- protocol/type are intentionally unconstrained (not a fixed CHECK list) — same reasoning as

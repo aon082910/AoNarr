@@ -70,7 +70,8 @@ CREATE TABLE IF NOT EXISTS sub_items (
   quality TEXT,
   file_path TEXT,
   series_name TEXT,
-  series_position REAL
+  series_position REAL,
+  narrator TEXT
 );
 
 -- protocol/type are intentionally unconstrained (not a fixed CHECK list) — same reasoning as

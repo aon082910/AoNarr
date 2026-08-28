@@ -74,6 +74,7 @@ export function subItemFromRow(row: any) {
     posterUrl: row.poster_url ?? null,
     seriesName: row.series_name ?? null,
     seriesPosition: row.series_position ?? null,
+    narrator: row.narrator ?? null,
   };
 }
 
