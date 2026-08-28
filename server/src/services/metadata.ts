@@ -1,4 +1,5 @@
 import * as cheerio from "cheerio";
+import { parseStringPromise } from "xml2js";
 import { getSetting } from "./settingsStore.js";
 import { MEDIA_TYPES, getMediaTypeConfig } from "./mediaTypes.js";
 import type { MediaType } from "../types/index.js";
@@ -1418,6 +1419,64 @@ async function fetchArtworkVideoVimeo(userId: string): Promise<ArtworkOptions> {
 }
 
 // ---------------------------------------------------------------------------
+// Podcasts: iTunes Search API resolves a show name to its RSS feed URL (free, keyless — same
+// endpoint Books' searchAuthorsItunes uses); episodes then come straight from that feed, the
+// same "channel monitoring" idea Online Videos uses for YouTube (see scheduler.ts's
+// checkPodcastFeeds). No API key needed at all for either step.
+// ---------------------------------------------------------------------------
+
+async function searchPodcastsItunes(query: string): Promise<MetadataSearchResult[]> {
+  const url = new URL("https://itunes.apple.com/search");
+  url.searchParams.set("term", query);
+  url.searchParams.set("media", "podcast");
+  url.searchParams.set("limit", "15");
+
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`iTunes podcast search failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+
+  return (body.results ?? [])
+    .filter((p: any) => p.feedUrl)
+    .map((p: any) => ({
+      title: p.collectionName ?? p.trackName,
+      year: p.releaseDate ? Number(String(p.releaseDate).slice(0, 4)) : null,
+      overview: p.artistName ? `By ${p.artistName}` : null,
+      posterUrl: p.artworkUrl600 ?? p.artworkUrl100 ?? null,
+      // Deliberately not the "itunes" key every other type's iTunes provider uses (a numeric
+      // catalog id) — fetchCollectionChildrenFor dispatches on key presence alone regardless of
+      // media type, so reusing "itunes" here would misroute a podcast into fetchAuthorBooksItunes.
+      externalIds: { podcastFeed: p.feedUrl },
+    }));
+}
+
+/** Parses a podcast's own RSS feed for its episode list — each `<item>`'s `<enclosure url>` is
+ * the direct, already-downloadable audio file URL, so unlike YouTube (an opaque video id that
+ * yt-dlp resolves) this needs no download-client-specific resolution step at all: the http
+ * download client (see downloadClient.ts's HttpDownloadAdapter) can fetch it directly. */
+async function fetchPodcastEpisodesRss(feedUrl: string): Promise<MetadataSubItem[]> {
+  const res = await fetch(feedUrl);
+  if (!res.ok) throw new Error(`Podcast feed fetch failed: HTTP ${res.status}`);
+  const xml = await res.text();
+  const parsed = await parseStringPromise(xml, { explicitArray: true, mergeAttrs: false });
+  const items: any[] = parsed?.rss?.channel?.[0]?.item ?? [];
+
+  const episodes: MetadataSubItem[] = [];
+  for (const item of items.slice(0, 500)) {
+    // safety cap against a feed with unbounded history
+    const enclosureUrl = item.enclosure?.[0]?.$?.url;
+    if (!enclosureUrl) continue;
+    const title = item.title?.[0] ?? "Untitled episode";
+    const pubDate = item.pubDate?.[0] ? new Date(item.pubDate[0]) : null;
+    episodes.push({
+      title,
+      releaseDate: pubDate && !isNaN(pubDate.getTime()) ? pubDate.toISOString().slice(0, 10) : null,
+      externalId: enclosureUrl,
+    });
+  }
+  return episodes;
+}
+
+// ---------------------------------------------------------------------------
 // Adult: ThePornDB (the same metadata source the real self-hosted *Starr fork
 // for this content, Whisparr, uses)
 // ---------------------------------------------------------------------------
@@ -1597,6 +1656,7 @@ const TYPE_SPECIFIC_SEARCH_FNS: Record<string, Record<string, (query: string) =>
   tmdb: { movie: searchMoviesTmdb, series: searchSeriesTmdb, anime: searchSeriesTmdb },
   trakt: { movie: searchMoviesTrakt, series: searchSeriesTrakt },
   anilist: { series: searchSeriesAnilist, anime: searchSeriesAnilist, manga: searchMangaAnilist },
+  itunes: { author: searchAuthorsItunes, podcast: searchPodcastsItunes },
 };
 
 function defaultProviderFor(type: MediaType): string | null {
@@ -1683,6 +1743,7 @@ export async function fetchCollectionChildrenFor(
   if (externalIds.mangadex) return { provider: "mangadex", children: await fetchMangaChaptersMangadex(externalIds.mangadex) };
   if (externalIds.youtube) return { provider: "youtube", children: await fetchChannelVideosYoutube(externalIds.youtube) };
   if (externalIds.vimeo) return { provider: "vimeo", children: await fetchChannelVideosVimeo(externalIds.vimeo) };
+  if (externalIds.podcastFeed) return { provider: "rss", children: await fetchPodcastEpisodesRss(externalIds.podcastFeed) };
   return { provider: null, children: [] };
 }
 

@@ -3,6 +3,23 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 162 — Podcasts library type
+- **Podcasts** — new library type, added to the roster alongside Movies/TV/Books/etc. Unlike
+  every other "collection"-shape type, episodes aren't indexer-searched: they come straight from
+  the show's own RSS feed, the same "channel monitoring" idea Online Videos already uses for
+  YouTube. Add-by-search uses the free, keyless iTunes Search API (`media=podcast`) to resolve a
+  show name to its feed URL; from there, a new `checkPodcastFeeds` scheduled job (every 2 hours)
+  re-polls each monitored show's feed, inserts any `<enclosure>` not already known as an episode,
+  and — with an "http" download client configured — grabs it immediately, since an RSS enclosure
+  is already a direct downloadable file URL (no yt-dlp-style resolution step needed the way
+  YouTube's opaque video ids require). `runAutoSearch` got the same bypass-indexer-search branch
+  Online Videos already has, as a backup grab path for episodes discovered but not yet downloaded.
+  Uses the `xml2js` dependency already shipped for indexer/NFO parsing — no new dependencies.
+- Verified live against real data end-to-end: searched the real iTunes API for "Radiolab",
+  added it, confirmed all 500 real episodes populated from the actual RSS feed with correct
+  titles/dates/enclosure URLs, then grabbed one real episode through an "http" download client
+  and confirmed it downloaded and imported to the right path (`Radiolab/Patient Zero.mp3`).
+
 ## Round 161 — Comic image re-encoding on import
 - **Comic Image Re-encoding** (Settings → Media Management) — a real Kapowarr community request
   (issue #143): re-encodes every page image inside a newly-imported CBZ to WebP or re-compressed

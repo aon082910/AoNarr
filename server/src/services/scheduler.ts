@@ -466,6 +466,32 @@ async function runAutoSearch(signal?: AbortSignal) {
             continue;
           }
 
+          // Podcast episodes aren't indexer-searched either — the RSS enclosure URL stored at
+          // discovery time (checkPodcastFeeds) is already a direct, downloadable file.
+          if (item.type === "podcast" && sub.external_provider === "rss" && sub.external_id) {
+            const httpClient = clients.find((c) => c.type === "http");
+            if (!httpClient) {
+              log.warn(`[scheduler] no "http" download client configured, skipping "${sub.title}"`);
+              continue;
+            }
+            await grab(httpClient, item, null, sub.id, {
+              result: {
+                indexerId: null,
+                indexerName: "rss",
+                title: sub.title,
+                size: 0,
+                seeders: null,
+                leechers: null,
+                publishDate: null,
+                downloadUrl: sub.external_id,
+                protocol: "http",
+                category: null,
+              },
+              quality: "",
+            });
+            continue;
+          }
+
           const query = `${item.title} ${sub.title}`;
           const results = await searchAllIndexers(indexers, query, item.type);
           const best = await chooseBestResult(
@@ -674,6 +700,79 @@ async function checkVideoChannels(): Promise<void> {
     }
   }
   if (newVideos > 0) log.info(`[scheduler] video channel check: found ${newVideos} new video(s)`);
+}
+
+/**
+ * Podcasts' equivalent of checkVideoChannels — a podcast keeps posting indefinitely, so there's
+ * no Sonarr-style "new episode appeared" concept to react to, just "re-check the feed and see
+ * what's new." Every monitored podcast's RSS feed is re-fetched, any `<enclosure>` not already
+ * known as a sub-item is inserted, and — if an "http" download client is configured — grabbed
+ * immediately via that enclosure's URL directly (no yt-dlp-style resolution step needed, since an
+ * RSS enclosure is already a direct file URL). Un-monitoring a podcast opts it out.
+ */
+async function checkPodcastFeeds(): Promise<void> {
+  const podcasts = (await db.prepare("SELECT * FROM media_items WHERE type = 'podcast' AND monitored = 1").all()) as any[];
+  if (podcasts.length === 0) return;
+
+  const httpClientRow = (await db.prepare("SELECT * FROM download_clients WHERE type = 'http' AND enabled = 1 LIMIT 1").get()) as any;
+
+  let newEpisodes = 0;
+  for (const podcast of podcasts) {
+    let externalIds: Record<string, string> = {};
+    try {
+      externalIds = JSON.parse(podcast.external_ids || "{}");
+    } catch {
+      continue;
+    }
+    if (!externalIds.podcastFeed) continue;
+
+    let children;
+    try {
+      children = (await fetchCollectionChildrenFor(externalIds)).children;
+    } catch (err) {
+      log.warn(`[scheduler] podcast feed check failed for "${podcast.title}":`, (err as Error).message);
+      continue;
+    }
+
+    const existingIds = new Set(
+      ((await db.prepare("SELECT external_id FROM sub_items WHERE media_item_id = ?").all(podcast.id)) as { external_id: string | null }[])
+        .map((r) => r.external_id)
+        .filter((id): id is string => !!id)
+    );
+
+    for (const child of children) {
+      if (!child.externalId || existingIds.has(child.externalId)) continue;
+      const insertResult = await db
+        .prepare(
+          `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored)
+           VALUES (?, ?, ?, ?, 'rss', 1)`
+        )
+        .run(podcast.id, child.title, child.releaseDate, child.externalId);
+      newEpisodes++;
+
+      if (httpClientRow) {
+        try {
+          const adapter = getDownloadClientAdapter(httpClientRow.type);
+          const grab = await adapter.addDownload(httpClientRow, child.externalId, httpClientRow.category, child.title);
+          await db
+            .prepare(
+              `INSERT INTO queue (media_item_id, episode_id, sub_item_id, title, indexer_id, download_client_id, download_id, size, quality, status)
+             VALUES (?, NULL, ?, ?, NULL, ?, ?, 0, NULL, 'queued')`
+            )
+            .run(podcast.id, insertResult.lastInsertRowid, child.title, httpClientRow.id, grab.downloadId);
+          await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
+            podcast.id,
+            JSON.stringify({ title: child.title, source: child.externalId })
+          );
+          notifyGrabbed(podcast.title, child.title).catch(() => {});
+          notifyQueueChanged();
+        } catch (err) {
+          log.warn(`[scheduler] failed to auto-download new podcast episode "${child.title}":`, (err as Error).message);
+        }
+      }
+    }
+  }
+  if (newEpisodes > 0) log.info(`[scheduler] podcast feed check: found ${newEpisodes} new episode(s)`);
 }
 
 const MAX_AUTO_RETRIES = 2;
@@ -1023,6 +1122,14 @@ export function startScheduler() {
     scheduleType: "cron",
     defaultSchedule: "0 */4 * * *",
     run: () => checkVideoChannels(),
+  });
+
+  registerJob({
+    key: "podcastFeedCheck",
+    name: "Podcast Feed Check",
+    scheduleType: "cron",
+    defaultSchedule: "0 */2 * * *",
+    run: () => checkPodcastFeeds(),
   });
 
   registerJob({

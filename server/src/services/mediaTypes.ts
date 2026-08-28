@@ -171,6 +171,20 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     defaultProvider: "youtube",
     groupLevels: ["site"],
   },
+  podcast: {
+    key: "podcast",
+    label: "Podcasts",
+    shape: "collection",
+    childLabel: "Episode",
+    extensions: AUDIO_EXT,
+    indexerCategory: "3000",
+    // Not indexer-searched — episodes come straight from the show's own RSS feed (see
+    // scheduler.ts's checkPodcastFeeds), the same "channel monitoring" pattern Online Videos
+    // already uses for YouTube. iTunes' free, keyless podcast search API resolves a show name to
+    // its feed URL at add-time; the feed itself is the only thing actually polled afterward.
+    metadataProviders: ["itunes"],
+    defaultProvider: "itunes",
+  },
   course: {
     key: "course",
     label: "Courses",
