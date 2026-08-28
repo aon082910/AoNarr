@@ -3,6 +3,19 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 161 — Comic image re-encoding on import
+- **Comic Image Re-encoding** (Settings → Media Management) — a real Kapowarr community request
+  (issue #143): re-encodes every page image inside a newly-imported CBZ to WebP or re-compressed
+  JPEG, usually shrinking a comics/manga library substantially. CBZ only — CBR (RAR) is left
+  alone since there's no free/open RAR writer to rewrite one with. Uses `ffmpeg` per page image
+  (already shipped in the server image) plus the existing `adm-zip` dependency to rewrite the
+  archive in place; off by default, and a failed re-encode (a corrupt page image) is logged and
+  skipped rather than failing the whole import.
+- Verified live: built a real CBZ with `adm-zip`, ran the actual conversion function against it
+  inside the running server container for both WebP and JPEG, confirmed via `ffprobe` that the
+  re-encoded page inside the rewritten archive is a valid image at the original resolution, and
+  confirmed the setting round-trips through Settings.
+
 ## Round 160 — Convert audiobook to chapterized M4B
 - **"Convert to chapterized M4B"** (audiobook sub-item page, once ≥2 tracks are downloaded) —
   LazyLibrarian's real advantage AoNarr otherwise lacked: merges every downloaded per-chapter

@@ -1584,6 +1584,50 @@ export default function Settings() {
             ),
           },
           {
+            key: "comicImageConvert",
+            label: "Comic Image Re-encoding",
+            description: "Shrink CBZ page images on import (WebP/JPEG)",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Re-encodes every page image inside a newly-imported CBZ, usually shrinking
+                  library size substantially at little to no visible quality loss. CBZ only — CBR
+                  (RAR) archives are left alone, since RAR has no free/open writer to rewrite one
+                  with. Applies to Comics and Manga; a failed re-encode (a corrupt page image) is
+                  logged and skipped rather than failing the import.
+                </p>
+                <label>Enable</label>
+                <select
+                  key={settings.comicImageConvertEnabled ?? "comic-convert-enabled-empty"}
+                  defaultValue={settings.comicImageConvertEnabled ?? "0"}
+                  onChange={(e) => saveSetting("comicImageConvertEnabled", e.target.value)}
+                >
+                  <option value="0">Disabled</option>
+                  <option value="1">Enabled</option>
+                </select>
+                <label>Format</label>
+                <select
+                  key={settings.comicImageFormat ?? "comic-format-empty"}
+                  defaultValue={settings.comicImageFormat ?? "webp"}
+                  onChange={(e) => saveSetting("comicImageFormat", e.target.value)}
+                >
+                  <option value="webp">WebP (smaller, needs a WebP-aware reader)</option>
+                  <option value="jpeg">JPEG (safer compatibility, less savings)</option>
+                </select>
+                <label>Quality (1-100)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  style={{ maxWidth: 120 }}
+                  key={settings.comicImageQuality ?? "comic-quality-empty"}
+                  defaultValue={settings.comicImageQuality ?? "82"}
+                  onBlur={(e) => saveSetting("comicImageQuality", e.target.value)}
+                />
+              </div>
+            ),
+          },
+          {
             key: "stalledDownloads",
             label: "Stalled Downloads",
             description: "Drop and retry downloads stuck with no progress",

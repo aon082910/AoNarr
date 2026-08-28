@@ -24,6 +24,7 @@ import { getSetting } from "./settingsStore.js";
 import { probeMediaInfo } from "./ffprobe.js";
 import { recordGroupSuccess } from "./releaseGroupStats.js";
 import { detectSeasonEpisode } from "./libraryScan.js";
+import { convertComicImagesBestEffort } from "./comicImageConvert.js";
 import type { MediaType } from "../types/index.js";
 
 // Shared across every "single"/"episodic" video library (Movies, TV Shows, Anime) so a just-moved
@@ -364,6 +365,12 @@ export async function placeFile(params: {
 
   if (VIDEO_EXTENSIONS.has(ext.toLowerCase()) && (typeConfig.shape === "single" || typeConfig.shape === "episodic")) {
     await tryDownloadSubtitle(destPath, item.id);
+  }
+
+  if ((item.type === "comic" || item.type === "manga") && ext.toLowerCase() === ".cbz" && getSetting("comicImageConvertEnabled") === "1") {
+    const format = getSetting("comicImageFormat") === "jpeg" ? "jpeg" : "webp";
+    const quality = Number(getSetting("comicImageQuality") ?? "82") || 82;
+    await convertComicImagesBestEffort(destPath, format, quality);
   }
 
   const mediaInfo = isProbeableFile(destPath) ? await probeMediaInfo(destPath) : null;
