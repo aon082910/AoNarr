@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1111.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "adm-zip": "^0.5.16",
     "better-sqlite3": "^11.3.0",
     "cheerio": "^1.2.0",
@@ -25,7 +26,8 @@
     "socks": "^2.8.3",
     "undici": "^6.19.8",
     "web-push": "^3.6.7",
-    "xml2js": "^0.6.2"
+    "xml2js": "^0.6.2",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.5",

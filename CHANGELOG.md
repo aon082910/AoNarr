@@ -3,6 +3,27 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 163 — MCP server (AI agent control)
+- **MCP server** at `POST /api/mcp` (Settings → General shows the endpoint URL) — lets Claude or
+  any other MCP-speaking agent drive AoNarr directly: search the library, search metadata
+  providers, add/delete media, toggle monitored, search indexers for releases, grab a release,
+  check the queue, check system health, and read/write settings. Chosen scope is "full control"
+  — every tool is a thin proxy onto AoNarr's own REST API (loopback, authenticated with the same
+  instance API key any script already uses), so an MCP client can do anything that key already
+  grants. No separate token or auth path: `/api/mcp` sits behind the same `requireAuth` gate as
+  every other `/api` route.
+- Built on the official `@modelcontextprotocol/sdk` (stateless Streamable HTTP transport — a
+  fresh `McpServer` + transport per request, since every tool is already a stateless REST proxy
+  with nothing to hold open between calls) plus `zod` for input schemas, both new dependencies.
+  14 tools total: `list_media_types`, `search_library`, `list_media`, `get_media`,
+  `search_metadata`, `add_media`, `delete_media`, `set_monitored`, `search_releases`,
+  `grab_release`, `get_queue`, `get_system_health`, `get_setting`, `set_setting`.
+- Verified live against the real running server: performed the actual MCP `initialize` handshake,
+  confirmed `tools/list` returns all 14 tools with correct JSON schemas, called `list_media_types`
+  and confirmed it returns real data, confirmed a request with no API key is correctly rejected
+  with 401 (same gate as every other route), and round-tripped a real setting through
+  `set_setting`/`get_setting` via actual `tools/call` invocations.
+
 ## Round 162 — Podcasts library type
 - **Podcasts** — new library type, added to the roster alongside Movies/TV/Books/etc. Unlike
   every other "collection"-shape type, episodes aren't indexer-searched: they come straight from

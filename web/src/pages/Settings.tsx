@@ -834,6 +834,22 @@ export default function Settings() {
         </button>
       </div>
 
+      <h2>MCP Server</h2>
+      <div className="form-panel">
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          Lets an MCP client (Claude, or any other MCP-speaking agent) search, add, monitor,
+          grab releases for, and manage AoNarr directly through natural language. No separate
+          token — it authenticates with the API key above, the same way any other automation
+          already does, so it can do anything that key can do.
+        </p>
+        <label>Endpoint URL</label>
+        <input value={`${window.location.origin}/api/mcp`} readOnly onFocus={(e) => e.target.select()} />
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+          Connect with an <code>X-Api-Key</code> header set to the API key above (Streamable HTTP
+          transport).
+        </p>
+      </div>
+
       <h2>Two-Factor Authentication</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
