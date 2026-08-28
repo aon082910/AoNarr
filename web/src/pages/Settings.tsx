@@ -1527,6 +1527,63 @@ export default function Settings() {
             ),
           },
           {
+            key: "filePermissions",
+            label: "File Permissions",
+            description: "chmod/chown newly imported files and folders",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Applies to every file/folder AoNarr creates on import or rename — useful when
+                  another app (Plex, Jellyfin, a file browser) reads the library under a different
+                  user/group than AoNarr runs as. Chown only takes effect if the AoNarr container
+                  itself is running as root; a permission-denied chown/chmod is logged and skipped
+                  rather than failing the import.
+                </p>
+                <label>Enable</label>
+                <select
+                  key={settings.setPermissionsEnabled ?? "set-perms-enabled-empty"}
+                  defaultValue={settings.setPermissionsEnabled ?? "0"}
+                  onChange={(e) => saveSetting("setPermissionsEnabled", e.target.value)}
+                >
+                  <option value="0">Disabled</option>
+                  <option value="1">Enabled</option>
+                </select>
+                <label>File chmod (octal, e.g. 644)</label>
+                <input
+                  key={settings.fileChmod ?? "file-chmod-empty"}
+                  defaultValue={settings.fileChmod ?? "644"}
+                  placeholder="644"
+                  style={{ maxWidth: 120 }}
+                  onBlur={(e) => saveSetting("fileChmod", e.target.value.trim())}
+                />
+                <label>Folder chmod (octal, e.g. 755)</label>
+                <input
+                  key={settings.folderChmod ?? "folder-chmod-empty"}
+                  defaultValue={settings.folderChmod ?? "755"}
+                  placeholder="755"
+                  style={{ maxWidth: 120 }}
+                  onBlur={(e) => saveSetting("folderChmod", e.target.value.trim())}
+                />
+                <label>Chown UID (blank = don't chown)</label>
+                <input
+                  key={settings.chownUid ?? "chown-uid-empty"}
+                  defaultValue={settings.chownUid ?? ""}
+                  placeholder="1000"
+                  style={{ maxWidth: 120 }}
+                  onBlur={(e) => saveSetting("chownUid", e.target.value.trim())}
+                />
+                <label>Chown GID (blank = don't chown)</label>
+                <input
+                  key={settings.chownGid ?? "chown-gid-empty"}
+                  defaultValue={settings.chownGid ?? ""}
+                  placeholder="1000"
+                  style={{ maxWidth: 120 }}
+                  onBlur={(e) => saveSetting("chownGid", e.target.value.trim())}
+                />
+              </div>
+            ),
+          },
+          {
             key: "stalledDownloads",
             label: "Stalled Downloads",
             description: "Drop and retry downloads stuck with no progress",

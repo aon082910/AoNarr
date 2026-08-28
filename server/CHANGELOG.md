@@ -3,6 +3,21 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 158 — File Permissions (chmod/chown on import)
+- **File Permissions** (Settings → Media Management → "File Permissions") — Sonarr/Radarr's
+  standard "File Management > Permissions" setting, which AoNarr had no equivalent of: every
+  imported/renamed file previously landed with whatever the container's default umask gave it.
+  Now configurable — chmod (separate octal for files vs folders) applied on every import/rename
+  path, since all of them funnel through the same `moveFile()` helper in `importer.ts`. Chown
+  (numeric UID/GID) applies only when the container is actually running as root, since a
+  non-root process has no permission to change ownership — silently skipped rather than erroring
+  when it isn't. Both are best-effort: a permission op failing (e.g. a filesystem that doesn't
+  support chmod) is logged and skipped rather than failing the import itself. Off by default —
+  existing installs see no behavior change until explicitly enabled.
+- Verified live: set chmod (640 file / 750 folder) and chown (1000:1000) in Settings, confirmed
+  they round-trip correctly through the UI, and confirmed the underlying chmod/chown syscalls
+  succeed as root inside the actual running server container.
+
 ## Round 157 — Delay Profiles + per-connection notification triggers; three gaps that weren't gaps
 - **Delay Profiles** (Settings → Quality) — Sonarr/Radarr-style: withhold an *automatic* grab
   (scheduled auto-search and bulk "search selected"/auto-upgrade — never a manual single-release
