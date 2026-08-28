@@ -33,6 +33,7 @@ import { librarySearchRouter } from "./routes/librarySearch.js";
 import { collectionsRouter } from "./routes/collections.js";
 import { authRouter } from "./routes/authRoutes.js";
 import { usersRouter } from "./routes/users.js";
+import { userInvitesRouter, inviteAcceptRouter } from "./routes/userInvites.js";
 import { requestsRouter } from "./routes/requests.js";
 import { discoverRouter } from "./routes/discover.js";
 import { aiProvidersRouter } from "./routes/aiProviders.js";
@@ -104,6 +105,8 @@ export async function createApp(): Promise<Express> {
 
   app.use("/api/auth", authRouter);
   app.use("/api/users", usersRouter);
+  app.use("/api/users/invites", userInvitesRouter);
+  app.use("/api/invite", inviteAcceptRouter);
   app.use("/api/requests", requestsRouter);
   app.use("/api/discover", discoverRouter);
   app.use("/api/ai-providers", aiProvidersRouter);

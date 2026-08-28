@@ -4,6 +4,7 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import App from "./App.js";
 import ApiKeyGate from "./components/ApiKeyGate.js";
 import SharePage from "./pages/SharePage.js";
+import InviteAcceptPage from "./pages/InviteAcceptPage.js";
 import "./styles.css";
 
 // Fetched and appended at runtime (rather than a static <link> in index.html) so it's guaranteed
@@ -26,6 +27,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <BrowserRouter>
       <Routes>
         <Route path="/share/:token" element={<SharePage />} />
+        <Route path="/invite/:token" element={<InviteAcceptPage />} />
         <Route
           path="/*"
           element={

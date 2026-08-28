@@ -257,6 +257,18 @@ export interface Session {
   userAgent: string | null;
 }
 
+export interface Invite {
+  id: number;
+  token: string;
+  allowedTypes: string[];
+  maxContentRating: string | null;
+  role: string;
+  createdAt: string;
+  expiresAt: string | null;
+  usedAt: string | null;
+  usedByUserId: number | null;
+}
+
 export interface RequestStats {
   userId: number;
   username: string;

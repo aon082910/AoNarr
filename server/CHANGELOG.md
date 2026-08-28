@@ -3,6 +3,27 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 164 — Self-service invite links for household users
+- **Invite Links** (Users page → "Invite Links") — Wizarr's core idea, scoped to AoNarr's own
+  household accounts rather than a cross-server orchestrator. Previously every household user had
+  to be created by an admin typing in their username and password directly; now an admin
+  pre-configures the library access, max content rating, role, and optional expiry, generates a
+  one-time `/invite/:token` link, and shares it — the recipient opens it (no login required) and
+  picks their own username/password. Landing on the link logs them straight in with exactly the
+  access the admin configured.
+- New `user_invites` table; the accept page (`InviteAcceptPage.tsx`) is a fully public top-level
+  route mounted outside the app's login gate (`ApiKeyGate`) in `main.tsx`, mirroring how
+  `SharePage.tsx` already handles public unauthenticated links — same pattern, new use.
+  `/api/invite/:token` (GET preview, POST redeem) is exempted from `requireAuth` the same way
+  OPDS/calendar/share links already are; `/api/users/invites` (admin management: create/list/
+  revoke) stays behind the normal admin gate.
+- Verified live end-to-end against both SQLite and a real Postgres container (schema migration
+  applies cleanly to both): created a real invite via the admin route, redeemed it as a fully
+  unauthenticated request confirming the public preview and account-creation endpoints both work
+  with no credentials, and confirmed in the browser that the resulting session lands the new user
+  in the app with exactly the two libraries granted (Movies, TV Shows) and no admin-only pages
+  visible — the scoping actually took effect, not just the account row.
+
 ## Round 163 — MCP server (AI agent control)
 - **MCP server** at `POST /api/mcp` (Settings → General shows the endpoint URL) — lets Claude or
   any other MCP-speaking agent drive AoNarr directly: search the library, search metadata

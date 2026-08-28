@@ -235,6 +235,20 @@ export function userFromRow(row: any) {
   };
 }
 
+export function inviteFromRow(row: any) {
+  return {
+    id: row.id,
+    token: row.token,
+    allowedTypes: row.allowed_types ? JSON.parse(row.allowed_types) : [],
+    maxContentRating: row.max_content_rating,
+    role: row.role,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    usedAt: row.used_at,
+    usedByUserId: row.used_by_user_id,
+  };
+}
+
 export function requestFromRow(row: any) {
   return {
     id: row.id,

@@ -455,6 +455,23 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at TEXT NOT NULL
 );
 
+-- A one-time, token-gated signup link an admin pre-configures (allowed libraries, content rating,
+-- role) and shares — the recipient picks their own username/password at /invite/:token instead of
+-- the admin typing it in for them (Wizarr's core idea, scoped to AoNarr's own household accounts
+-- rather than a cross-server orchestrator). used_at is set the moment it's redeemed so a token
+-- can't be reused; expires_at is optional (NULL = never expires).
+CREATE TABLE IF NOT EXISTS user_invites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token TEXT NOT NULL UNIQUE,
+  allowed_types TEXT, -- JSON array of media_type keys
+  max_content_rating TEXT,
+  role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT,
+  used_at TEXT,
+  used_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
+);
+
 -- Requests submitted by restricted users; an admin approves (which adds the media item to the
 -- library the normal way) or rejects.
 CREATE TABLE IF NOT EXISTS requests (

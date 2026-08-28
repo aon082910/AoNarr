@@ -433,6 +433,18 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS user_invites (
+  id SERIAL PRIMARY KEY,
+  token TEXT NOT NULL UNIQUE,
+  allowed_types TEXT,
+  max_content_rating TEXT,
+  role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+  created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
+  expires_at TEXT,
+  used_at TEXT,
+  used_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
+);
+
 -- Requests submitted by restricted users; an admin approves (which adds the media item to the
 -- library the normal way) or rejects.
 CREATE TABLE IF NOT EXISTS requests (

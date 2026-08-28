@@ -4,7 +4,7 @@ import Modal from "../components/Modal.js";
 import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useContentRatings } from "../hooks/useContentRatings.js";
-import type { RequestStats, Session, User } from "../types.js";
+import type { Invite, RequestStats, Session, User } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 
 export default function Users() {
@@ -20,13 +20,47 @@ export default function Users() {
   const [maxContentRating, setMaxContentRating] = useState("");
   const [sessions, setSessions] = useState<Session[]>([]);
   const [requestStats, setRequestStats] = useState<RequestStats[]>([]);
+  const [invites, setInvites] = useState<Invite[]>([]);
+  const [showInviteForm, setShowInviteForm] = useState(false);
+  const [inviteAllowedTypes, setInviteAllowedTypes] = useState<string[]>([]);
+  const [inviteMaxContentRating, setInviteMaxContentRating] = useState("");
+  const [inviteRole, setInviteRole] = useState<"user" | "admin">("user");
+  const [inviteExpiresInDays, setInviteExpiresInDays] = useState("");
+  const [newInviteUrl, setNewInviteUrl] = useState<string | null>(null);
 
   function load() {
     api.get<User[]>("/users").then(setUsers);
     api.get<Session[]>("/users/sessions").then(setSessions);
     api.get<RequestStats[]>("/requests/stats").then(setRequestStats);
+    api.get<Invite[]>("/users/invites").then(setInvites);
   }
   useEffect(load, []);
+
+  function toggleInviteType(key: string) {
+    setInviteAllowedTypes((prev) => (prev.includes(key) ? prev.filter((t) => t !== key) : [...prev, key]));
+  }
+
+  async function createInvite(e: FormEvent) {
+    e.preventDefault();
+    const created = await api.post<Invite>("/users/invites", {
+      allowedTypes: inviteAllowedTypes,
+      maxContentRating: inviteMaxContentRating || null,
+      role: inviteRole,
+      expiresInDays: inviteExpiresInDays ? Number(inviteExpiresInDays) : null,
+    });
+    setNewInviteUrl(`${window.location.origin}/invite/${created.token}`);
+    setInviteAllowedTypes([]);
+    setInviteMaxContentRating("");
+    setInviteRole("user");
+    setInviteExpiresInDays("");
+    setShowInviteForm(false);
+    load();
+  }
+
+  async function revokeInvite(id: number) {
+    await api.del(`/users/invites/${id}`);
+    load();
+  }
 
   async function revokeSession(token: string) {
     await api.del(`/users/sessions/${token}`);
@@ -120,6 +154,19 @@ export default function Users() {
       </div>
       {users.length === 0 && <p className="empty">No household accounts yet.</p>}
 
+      {newInviteUrl && (
+        <div className="form-panel" style={{ marginBottom: 16 }}>
+          <label>Invite link — share this with the person you're inviting</label>
+          <input value={newInviteUrl} readOnly onFocus={(e) => e.target.select()} />
+          <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+            One-time use — it stops working the moment they finish creating their account.
+          </p>
+          <button type="button" className="secondary" onClick={() => setNewInviteUrl(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {mode !== null && (mode === "add" || editingUser) && (
         <Modal title={mode === "add" ? "Add User" : `Edit — ${editingUser!.username}`} onClose={() => setMode(null)}>
           <form className="form-panel" onSubmit={submit} style={{ padding: 0 }}>
@@ -170,6 +217,108 @@ export default function Users() {
 
       <SettingsSectionTiles
         sections={[
+          {
+            key: "invites",
+            label: "Invite Links",
+            description: "Self-service signup links instead of typing passwords in for people",
+            badge: `${invites.filter((i) => !i.usedAt).length} pending`,
+            badgeOk: invites.filter((i) => !i.usedAt).length === 0,
+            maxWidth: 780,
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", marginTop: 0 }}>
+                  Pre-configure the library access and content rating a new household member gets, then
+                  share the generated link — they pick their own username/password instead of you typing
+                  it in for them.
+                </p>
+                {!showInviteForm && (
+                  <button type="button" onClick={() => setShowInviteForm(true)}>
+                    Create invite link
+                  </button>
+                )}
+                {showInviteForm && (
+                  <form className="form-panel" onSubmit={createInvite} style={{ marginTop: 8 }}>
+                    <label>Library access</label>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+                      {mediaTypes.map((t) => (
+                        <label key={t.key} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <input type="checkbox" checked={inviteAllowedTypes.includes(t.key)} onChange={() => toggleInviteType(t.key)} />
+                          {t.label}
+                        </label>
+                      ))}
+                    </div>
+                    <label>Max content rating (blank = no restriction)</label>
+                    <select value={inviteMaxContentRating} onChange={(e) => setInviteMaxContentRating(e.target.value)} style={{ maxWidth: 200 }}>
+                      <option value="">No restriction</option>
+                      {contentRatings.map((r) => (
+                        <option key={r} value={r}>
+                          {r}
+                        </option>
+                      ))}
+                    </select>
+                    <label>Role</label>
+                    <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value as "user" | "admin")} style={{ maxWidth: 200 }}>
+                      <option value="user">Household user</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                    <label>Expires after (days, blank = never)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      style={{ maxWidth: 120 }}
+                      value={inviteExpiresInDays}
+                      onChange={(e) => setInviteExpiresInDays(e.target.value)}
+                    />
+                    <div className="toolbar" style={{ marginTop: 8 }}>
+                      <button type="submit">Generate link</button>
+                      <button type="button" className="secondary" onClick={() => setShowInviteForm(false)}>
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                )}
+                {invites.length === 0 && <p className="empty" style={{ marginTop: 12 }}>No invite links yet.</p>}
+                {invites.length > 0 && (
+                  <table style={{ marginTop: 12 }}>
+                    <thead>
+                      <tr>
+                        <th>Access</th>
+                        <th>Role</th>
+                        <th>Created</th>
+                        <th>Status</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {invites.map((i) => (
+                        <tr key={i.id}>
+                          <td>{i.allowedTypes.length === 0 ? "no library access" : `${i.allowedTypes.length} librar${i.allowedTypes.length === 1 ? "y" : "ies"}`}</td>
+                          <td>{i.role}</td>
+                          <td>{new Date(i.createdAt).toLocaleString()}</td>
+                          <td>
+                            {i.usedAt ? (
+                              <span className="badge ok">Used</span>
+                            ) : i.expiresAt && new Date(i.expiresAt).getTime() < Date.now() ? (
+                              <span className="badge">Expired</span>
+                            ) : (
+                              <span className="badge">Pending</span>
+                            )}
+                          </td>
+                          <td>
+                            {!i.usedAt && (
+                              <button className="danger" onClick={() => revokeInvite(i.id)}>
+                                Revoke
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            ),
+          },
           {
             key: "sessions",
             label: "Active Sessions",
