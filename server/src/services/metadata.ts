@@ -80,6 +80,37 @@ async function searchMoviesTmdb(query: string): Promise<MetadataSearchResult[]> 
   }));
 }
 
+/** Direct-by-id lookup, not search — for callers that already have a TMDB id (an Overseerr/
+ * Jellyseerr webhook's approved request, for one) rather than a title to search for. */
+export async function fetchMovieByTmdbId(tmdbId: string): Promise<MetadataSearchResult> {
+  const key = requireSetting("tmdbApiKey", "TMDB API key");
+  const res = await fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${key}`);
+  if (!res.ok) throw new Error(`TMDB movie lookup failed: HTTP ${res.status}`);
+  const r: any = await res.json();
+  return {
+    title: r.title,
+    year: r.release_date ? Number(r.release_date.slice(0, 4)) : null,
+    overview: r.overview || null,
+    posterUrl: r.poster_path ? `${TMDB_IMAGE_BASE}${r.poster_path}` : null,
+    externalIds: { tmdb: String(r.id) },
+    releaseDate: r.release_date || null,
+  };
+}
+
+export async function fetchSeriesByTmdbId(tmdbId: string): Promise<MetadataSearchResult> {
+  const key = requireSetting("tmdbApiKey", "TMDB API key");
+  const res = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${key}`);
+  if (!res.ok) throw new Error(`TMDB series lookup failed: HTTP ${res.status}`);
+  const r: any = await res.json();
+  return {
+    title: r.name,
+    year: r.first_air_date ? Number(r.first_air_date.slice(0, 4)) : null,
+    overview: r.overview || null,
+    posterUrl: r.poster_path ? `${TMDB_IMAGE_BASE}${r.poster_path}` : null,
+    externalIds: { tmdb: String(r.id) },
+  };
+}
+
 async function searchMoviesOmdb(query: string): Promise<MetadataSearchResult[]> {
   const key = requireSetting("omdbApiKey", "OMDb API key");
   const url = new URL("https://www.omdbapi.com/");

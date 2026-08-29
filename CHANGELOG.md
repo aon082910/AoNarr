@@ -3,6 +3,31 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 166 — Overseerr/Jellyseerr webhook integration
+- **Overseerr / Jellyseerr webhook** (Settings → Media Management → "Overseerr / Jellyseerr") —
+  DUMB bundles Seerr (Overseerr/Jellyseerr) as the request-UI layer in front of Sonarr/Radarr;
+  AoNarr already has its own built-in Requests page, but plenty of setups already run Overseerr
+  or Jellyseerr as a nicer-UX family-facing request tool and want it to feed a real backend on
+  approval — same idea as pointing it at Radarr/Sonarr, except AoNarr isn't API-compatible with
+  either, so this is a webhook receiver instead of a Radarr/Sonarr-shaped connection. Point
+  Overseerr/Jellyseerr's own webhook notification setting at the generated, token-gated URL; an
+  approved request (`MEDIA_APPROVED`/`MEDIA_AUTO_APPROVED`) is resolved by TMDB id straight to
+  AoNarr's library (movie or full series with episodes) and picked up by auto-search like anything
+  else. Every other notification type (test, media-available, issue-reported, etc.) is
+  acknowledged and ignored. Mirrors the existing Plex/Jellyfin/Emby webhook's exact pattern: a
+  dedicated `?token=` (can't set custom headers from Overseerr's own config), exempted from
+  `requireAuth`, always responds 200 once the token checks out so an ignored-but-legitimate event
+  doesn't look like a delivery failure and get retried.
+- New `fetchMovieByTmdbId`/`fetchSeriesByTmdbId` direct-lookup-by-id functions in `metadata.ts` —
+  every existing TMDB function was search-by-title; a webhook hands over a TMDB id directly, with
+  nothing to search for.
+- Verified live: generated a real webhook token via the admin route, confirmed the public endpoint
+  rejects a request with no/wrong token (401), confirmed a `TEST_NOTIFICATION` payload (what
+  Overseerr's own "Test" button sends) is correctly ignored, and confirmed a real
+  `MEDIA_APPROVED` payload dispatches all the way through — notification type accepted, media
+  type parsed, tmdbId extracted, dedupe check passed — failing gracefully with a clear, actionable
+  message when TMDB isn't configured (no live TMDB key available in this dev environment).
+
 ## Round 165 — Import strategy (hardlink/symlink) + live CPU/memory metrics
 - **Import Strategy** (Settings → Media Management) — two gaps found studying dumbarr.com (DUMB),
   a Docker stack orchestrator heavily built around debrid workflows (Riven, Zurg, Decypharr).

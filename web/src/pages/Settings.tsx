@@ -317,6 +317,7 @@ export default function Settings() {
   const [blocklist, setBlocklist] = useState<BlocklistEntry[]>([]);
   const [exclusions, setExclusions] = useState<ImportExclusion[]>([]);
   const [webhookUrl, setWebhookUrl] = useState<string | null>(null);
+  const [overseerrWebhookUrl, setOverseerrWebhookUrl] = useState<string | null>(null);
   const [customFormats, setCustomFormats] = useState<CustomFormat[]>([]);
   const [formatName, setFormatName] = useState("");
   const [formatPatterns, setFormatPatterns] = useState("");
@@ -566,6 +567,17 @@ export default function Settings() {
     if (!confirm("Regenerate the webhook URL? Your media server's webhook config will need updating with the new URL.")) return;
     const result = await api.post<{ token: string }>("/settings/media-server-webhook-token/regenerate", {});
     setWebhookUrl(`${window.location.origin}/api/webhooks/media-server?token=${result.token}`);
+  }
+
+  async function showOverseerrWebhookUrl() {
+    const result = await api.get<{ token: string }>("/settings/overseerr-webhook-token");
+    setOverseerrWebhookUrl(`${window.location.origin}/api/webhooks/overseerr?token=${result.token}`);
+  }
+
+  async function regenerateOverseerrWebhookToken() {
+    if (!confirm("Regenerate the Overseerr/Jellyseerr webhook URL? Its webhook config will need updating with the new URL.")) return;
+    const result = await api.post<{ token: string }>("/settings/overseerr-webhook-token/regenerate", {});
+    setOverseerrWebhookUrl(`${window.location.origin}/api/webhooks/overseerr?token=${result.token}`);
   }
 
   async function saveFormatScore(formatId: number, score: number) {
@@ -1305,6 +1317,33 @@ export default function Settings() {
                   <option value="0">No — move to archive folder (recommended)</option>
                   <option value="1">Yes — delete permanently</option>
                 </select>
+              </div>
+            ),
+          },
+          {
+            key: "overseerrWebhook",
+            label: "Overseerr / Jellyseerr",
+            description: "Fulfill requests approved in an external Overseerr/Jellyseerr instance",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  If you run Overseerr or Jellyseerr as your household's request UI instead of
+                  AoNarr's own built-in Requests page, point its webhook notification at this URL
+                  (Settings → Notifications → Webhook in Overseerr/Jellyseerr) — an approved
+                  request is added to AoNarr's library and picked up by auto-search the same as
+                  anything else, without needing to be Radarr/Sonarr-API-compatible.
+                </p>
+                <button type="button" className="secondary" onClick={showOverseerrWebhookUrl}>
+                  Show webhook URL...
+                </button>
+                {overseerrWebhookUrl && (
+                  <>
+                    <input value={overseerrWebhookUrl} readOnly onFocus={(e) => e.target.select()} style={{ marginTop: 8 }} />
+                    <button type="button" className="danger" onClick={regenerateOverseerrWebhookToken} style={{ marginTop: 8 }}>
+                      Regenerate URL
+                    </button>
+                  </>
+                )}
               </div>
             ),
           },

@@ -51,6 +51,7 @@ import { calendarFeedRouter, calendarTokenRouter } from "./routes/calendarFeed.j
 import { dashboardRouter } from "./routes/dashboard.js";
 import { importExclusionsRouter } from "./routes/importExclusions.js";
 import { mediaServerWebhookRouter, mediaServerWebhookTokenRouter } from "./routes/mediaServerWebhook.js";
+import { overseerrWebhookRouter, overseerrWebhookTokenRouter } from "./routes/overseerrWebhook.js";
 import { mediaAnalysisRouter } from "./routes/mediaAnalysis.js";
 import { importReviewRouter } from "./routes/importReview.js";
 import { mediaServerImportRouter } from "./routes/mediaServerImport.js";
@@ -157,6 +158,8 @@ export async function createApp(): Promise<Express> {
   app.use("/api/import-exclusions", importExclusionsRouter);
   app.use("/api/settings/media-server-webhook-token", mediaServerWebhookTokenRouter);
   app.use("/api/webhooks/media-server", mediaServerWebhookRouter);
+  app.use("/api/settings/overseerr-webhook-token", overseerrWebhookTokenRouter);
+  app.use("/api/webhooks/overseerr", overseerrWebhookRouter);
   app.use("/api/content-ratings", contentRatingsRouter);
   app.use("/api/changelog", changelogRouter);
   app.use("/api/people", peopleRouter);
