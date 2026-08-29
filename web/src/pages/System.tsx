@@ -26,6 +26,13 @@ interface SystemStatus {
   diskSpace: DiskSpaceEntry[];
 }
 
+interface SystemResources {
+  cpuCount: number;
+  loadAvg: [number, number, number];
+  memory: { totalBytes: number; freeBytes: number; usedBytes: number; usedPercent: number };
+  process: { rssBytes: number; uptimeSeconds: number };
+}
+
 interface IndexerRecentHealth {
   totalChecks: number;
   successCount: number;
@@ -152,6 +159,7 @@ export default function System() {
   const mediaTypes = useMediaTypes();
   const [tab, setTab] = useState("overview");
   const [status, setStatus] = useState<SystemStatus | null>(null);
+  const [resources, setResources] = useState<SystemResources | null>(null);
   const [health, setHealth] = useState<HealthReport | null>(null);
   const [orphaned, setOrphaned] = useState<OrphanedFile[] | null>(null);
   const [orphanedIncremental, setOrphanedIncremental] = useState(false);
@@ -242,6 +250,15 @@ export default function System() {
     api.get<SystemStatus>("/system/status").then(setStatus);
     loadHealth();
     api.get<Record<string, string>>("/settings").then(setSettings);
+  }, []);
+
+  // Polled separately from /system/status (which also writes disk-usage samples and statfs's
+  // every root folder) so the "live" feel doesn't come at the cost of hammering those on a timer.
+  useEffect(() => {
+    const load = () => api.get<SystemResources>("/system/resources").then(setResources);
+    load();
+    const interval = setInterval(load, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   async function runArchivalNow() {
@@ -420,6 +437,37 @@ export default function System() {
           <tr>
             <th>Uptime</th>
             <td>{formatUptime(status.uptimeSeconds)}</td>
+          </tr>
+          <tr>
+            <th>CPU load (1 / 5 / 15 min)</th>
+            <td>
+              {resources
+                ? resources.loadAvg.every((n) => n === 0)
+                  ? "not available on this platform"
+                  : resources.loadAvg.map((n) => n.toFixed(2)).join(" / ")
+                : "-"}
+            </td>
+          </tr>
+          <tr>
+            <th>Memory</th>
+            <td>
+              {resources ? (
+                <>
+                  {formatBytes(resources.memory.usedBytes)} / {formatBytes(resources.memory.totalBytes)} ({resources.memory.usedPercent}%)
+                  <div style={{ background: "var(--border)", borderRadius: 4, height: 6, marginTop: 4, maxWidth: 240, overflow: "hidden" }}>
+                    <div
+                      style={{
+                        width: `${resources.memory.usedPercent}%`,
+                        height: "100%",
+                        background: resources.memory.usedPercent >= 90 ? "var(--danger)" : "var(--accent)",
+                      }}
+                    />
+                  </div>
+                </>
+              ) : (
+                "-"
+              )}
+            </td>
           </tr>
           <tr>
             <th>Enabled indexers</th>

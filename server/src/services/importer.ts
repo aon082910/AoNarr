@@ -266,10 +266,43 @@ function applyConfiguredPermissions(targetPath: string, isDirectory: boolean): v
   }
 }
 
+/**
+ * Places a downloaded source file at its library destination using the configured import
+ * strategy — "move" (default, unchanged behavior: rename, or copy+delete across filesystems),
+ * "hardlink" (Sonarr/Radarr's real "Use Hard links instead of Copy" option: the library file and
+ * the still-seeding torrent file share the same disk data, no duplicate space, falls back to a
+ * non-deleting copy if src/dest are on different filesystems since a cross-device hardlink is
+ * impossible and deleting a still-seeding source would break seeding), or "symlink" (what makes a
+ * debrid/rclone-mounted setup — Zurg, Decypharr, Riven-style — actually usable: the "download" is
+ * really a remote-mounted virtual file, and the library entry needs to just point at it rather
+ * than physically copy a multi-GB file that was never local to begin with).
+ */
 function moveFile(src: string, dest: string): void {
   const destDir = path.dirname(dest);
   fs.mkdirSync(destDir, { recursive: true });
+  const strategy = getSetting("importStrategy") ?? "move";
+
+  if (strategy === "symlink") {
+    if (fs.existsSync(dest)) fs.unlinkSync(dest);
+    // Symlinks don't get chmod'd/chown'd — that would touch the pointed-to file (usually a
+    // read-only remote mount this container has no business modifying), not the link itself.
+    fs.symlinkSync(path.resolve(src), dest);
+    return;
+  }
+
   applyConfiguredPermissions(destDir, true);
+
+  if (strategy === "hardlink") {
+    try {
+      fs.linkSync(src, dest);
+    } catch (err: any) {
+      if (err.code !== "EXDEV") throw err;
+      fs.copyFileSync(src, dest);
+    }
+    applyConfiguredPermissions(dest, false);
+    return;
+  }
+
   try {
     fs.renameSync(src, dest);
   } catch (err: any) {

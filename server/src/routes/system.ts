@@ -121,6 +121,35 @@ systemRouter.get(
   })
 );
 
+/**
+ * Live CPU/memory snapshot — a DUMB (dumbarr.com)-inspired gap: AoNarr tracked disk usage/forecast
+ * already but nothing for CPU/RAM. Deliberately its own cheap, DB-free endpoint (just `os` calls)
+ * rather than folded into /status, which also runs recordDiskUsageSamples() and root-folder statfs
+ * calls — the web UI polls this one on a short interval for a "live" feel without hammering those
+ * heavier, DB-writing paths every few seconds.
+ */
+systemRouter.get(
+  "/resources",
+  asyncHandler(async (_req, res) => {
+    const totalBytes = os.totalmem();
+    const freeBytes = os.freemem();
+    res.json({
+      cpuCount: os.cpus().length,
+      loadAvg: os.loadavg(), // [1min, 5min, 15min] — always [0,0,0] on Windows, real on Linux/macOS (the only place this actually runs in production)
+      memory: {
+        totalBytes,
+        freeBytes,
+        usedBytes: totalBytes - freeBytes,
+        usedPercent: totalBytes > 0 ? Math.round(((totalBytes - freeBytes) / totalBytes) * 100) : 0,
+      },
+      process: {
+        rssBytes: process.memoryUsage().rss,
+        uptimeSeconds: Math.round(process.uptime()),
+      },
+    });
+  })
+);
+
 systemRouter.get(
   "/logs",
   asyncHandler(async (req, res) => {

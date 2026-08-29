@@ -1543,6 +1543,37 @@ export default function Settings() {
             ),
           },
           {
+            key: "importStrategy",
+            label: "Import Strategy",
+            description: "Move, hardlink, or symlink files into the library",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  <strong>Move</strong> (default) renames the downloaded file into place — the
+                  usual behavior, and the source file is gone from the downloads folder afterward.{" "}
+                  <strong>Hardlink</strong> is Sonarr/Radarr's real "Use Hard links instead of
+                  Copy" option: the library file and the still-seeding torrent file share the same
+                  disk data (no duplicate space), falling back to a copy (source left alone, still
+                  seedable) if they're on different filesystems, since a hardlink can't cross
+                  filesystems. <strong>Symlink</strong> is what makes a debrid/rclone-mounted setup
+                  (Zurg, Decypharr, Riven, etc.) actually usable — the "download" is really a
+                  remote-mounted virtual file, and the library entry just points at it instead of
+                  physically copying a multi-GB file that was never local to begin with.
+                </p>
+                <label>Strategy</label>
+                <select
+                  key={settings.importStrategy ?? "import-strategy-empty"}
+                  defaultValue={settings.importStrategy ?? "move"}
+                  onChange={(e) => saveSetting("importStrategy", e.target.value)}
+                >
+                  <option value="move">Move</option>
+                  <option value="hardlink">Hardlink</option>
+                  <option value="symlink">Symlink</option>
+                </select>
+              </div>
+            ),
+          },
+          {
             key: "filePermissions",
             label: "File Permissions",
             description: "chmod/chown newly imported files and folders",

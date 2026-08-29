@@ -3,6 +3,32 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 165 — Import strategy (hardlink/symlink) + live CPU/memory metrics
+- **Import Strategy** (Settings → Media Management) — two gaps found studying dumbarr.com (DUMB),
+  a Docker stack orchestrator heavily built around debrid workflows (Riven, Zurg, Decypharr).
+  AoNarr's file placement only ever moved or copied a file; now configurable to **Move** (default,
+  unchanged), **Hardlink** (Sonarr/Radarr's real "Use Hard links instead of Copy" — the library
+  file and the still-seeding torrent file share the same disk data, falling back to a
+  non-deleting copy across filesystems since a cross-device hardlink is impossible and deleting a
+  seeding source would break seeding), or **Symlink** (what actually makes a debrid/rclone-mounted
+  setup usable — the "download" is a remote-mounted virtual file, and the library entry just
+  points at it instead of physically copying a multi-GB file that was never local to begin with).
+  Every import/rename path already funneled through one `moveFile()` helper in `importer.ts`
+  (same insertion point Round 158's File Permissions used), so this needed no changes anywhere
+  else. Symlinks are deliberately never chmod'd/chown'd — that would touch the pointed-to file,
+  usually a read-only remote mount this container has no business modifying.
+- **Live CPU/memory metrics** (System → Overview) — DUMB's dashboard surfaces live CPU/RAM/disk
+  usage; AoNarr already tracked disk usage/forecast but had nothing for CPU/RAM. New
+  `GET /api/system/resources` (real `os.loadavg()`/`os.totalmem()`/`os.freemem()`, no DB writes)
+  polled by the web UI every 5s — deliberately a separate, cheap endpoint from the existing
+  `/system/status` (which also writes disk-usage samples and statfs's every root folder), so
+  the "live" feel doesn't come at the cost of hammering those heavier paths on a timer.
+- Verified live: ran the real `placeFile()` import pipeline for all three strategies inside the
+  actual running container and confirmed via `fs.lstatSync` — move deletes the source (nlink 1),
+  hardlink shares the same inode with the source intact (nlink 2), symlink is a real symlink with
+  the source untouched — and confirmed `/api/system/resources` returns real, changing load-average
+  and memory numbers matching the container's actual `/proc` stats.
+
 ## Round 164 — Self-service invite links for household users
 - **Invite Links** (Users page → "Invite Links") — Wizarr's core idea, scoped to AoNarr's own
   household accounts rather than a cross-server orchestrator. Previously every household user had
