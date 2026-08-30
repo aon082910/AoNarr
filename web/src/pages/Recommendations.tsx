@@ -10,6 +10,7 @@ interface Recommendation {
   externalIds: Record<string, string>;
   type: MediaType;
   sourceTitle: string;
+  basis: "added" | "watched";
 }
 
 interface RecommendationsResponse {
@@ -88,7 +89,7 @@ export default function Recommendations() {
               <div className="meta">
                 <div className="title">{r.title}</div>
                 <div className="sub">
-                  {r.year ?? ""} · because you added {r.sourceTitle}
+                  {r.year ?? ""} · because you {r.basis === "watched" ? "watched" : "added"} {r.sourceTitle}
                 </div>
                 <button
                   style={{ marginTop: 8, width: "100%" }}

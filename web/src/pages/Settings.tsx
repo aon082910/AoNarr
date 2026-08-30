@@ -1714,6 +1714,41 @@ export default function Settings() {
             ),
           },
           {
+            key: "autoRequestFromWatchHistory",
+            label: "Auto-Request from Watch History",
+            description: "Automatically add movies/shows similar to what's actually been watched",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  The Recommendations page already suggests titles similar to what's actually been
+                  watched (via your configured media server's watch history, not just what's been
+                  added) — this closes the loop by automatically adding the top few every run,
+                  instead of requiring someone to browse and click "Add" by hand. Deliberately only
+                  acts on the watch-history basis, never "because you added X" — what's in the
+                  library says nothing about whether anyone wanted it.
+                </p>
+                <label>Enable</label>
+                <select
+                  key={settings.autoRequestFromWatchHistoryEnabled ?? "auto-request-enabled-empty"}
+                  defaultValue={settings.autoRequestFromWatchHistoryEnabled ?? "0"}
+                  onChange={(e) => saveSetting("autoRequestFromWatchHistoryEnabled", e.target.value)}
+                >
+                  <option value="0">Disabled</option>
+                  <option value="1">Enabled</option>
+                </select>
+                <label>Max additions per run</label>
+                <input
+                  type="number"
+                  min={1}
+                  style={{ maxWidth: 120 }}
+                  key={settings.autoRequestFromWatchHistoryLimit ?? "auto-request-limit-empty"}
+                  defaultValue={settings.autoRequestFromWatchHistoryLimit ?? "3"}
+                  onBlur={(e) => saveSetting("autoRequestFromWatchHistoryLimit", e.target.value)}
+                />
+              </div>
+            ),
+          },
+          {
             key: "stalledDownloads",
             label: "Stalled Downloads",
             description: "Drop and retry downloads stuck with no progress",

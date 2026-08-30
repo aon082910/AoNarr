@@ -3,6 +3,26 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 169 — Watch-history-based recommendations + auto-request
+- **"Because you watched X"** — the Recommendations page already suggested titles similar to
+  what's already in the library ("because you added X"); it now also suggests based on actual
+  watch history from the configured media server, a real interest signal "was it added" alone
+  doesn't carry. Both bases run side by side and are labeled distinctly on the page.
+- **Auto-Request from Watch History** (Settings → Media Management, opt-in, disabled by default)
+  — SuggestArr's real distinguishing move: close the loop and automatically add the top few
+  watch-history-based suggestions every run (new scheduled job, daily by default) instead of
+  requiring someone to browse and click "Add." Deliberately only ever acts on the watch-history
+  basis, never "because you added X" — what's in the library says nothing about whether anyone
+  wanted it, while what was actually watched does.
+- `recommendations.ts` refactored so `recommendMovies`/`recommendSeries` take their source items
+  as a parameter (recently-added or recently-watched) instead of hardcoding the added-only path —
+  one TMDB-similarity implementation serves both bases, not two.
+- Verified live: confirmed `GET /api/recommendations` still dispatches correctly after the
+  refactor (empty arrays, since this dev instance has no TMDB key or media server configured —
+  the same gates the feature itself relies on), confirmed the new settings round-trip, and ran
+  `runAutoRequestFromWatchHistory()` directly to confirm it no-ops cleanly with zero candidates
+  rather than erroring.
+
 ## Round 168 — "Leaving Soon" archival preview
 - **Leaving Soon** (System → Maintenance) — Maintainerr's headline UX idea: a preview of exactly
   what the next scheduled auto-archival run will sweep up, computed with the same eligibility

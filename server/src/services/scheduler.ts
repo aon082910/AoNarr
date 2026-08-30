@@ -28,6 +28,7 @@ import { runScheduledBackup } from "./scheduledBackup.js";
 import { purgeExpiredRecycleBinEntries } from "./recycleBin.js";
 import { syncFromProwlarr } from "./prowlarrSync.js";
 import { rescanMissingSubtitles } from "./subtitleRescan.js";
+import { runAutoRequestFromWatchHistory } from "./recommendations.js";
 import { syncFromJackett } from "./jackettSync.js";
 import { checkForCorruptMedia } from "./corruptMediaCheck.js";
 import { runScheduledDuplicateCheck } from "./duplicateCheck.js";
@@ -1123,6 +1124,14 @@ export function startScheduler() {
     scheduleType: "cron",
     defaultSchedule: "0 */4 * * *",
     run: () => checkVideoChannels(),
+  });
+
+  registerJob({
+    key: "autoRequestFromWatchHistory",
+    name: "Auto-Request from Watch History",
+    scheduleType: "cron",
+    defaultSchedule: "0 5 * * *",
+    run: () => runAutoRequestFromWatchHistory(),
   });
 
   registerJob({
