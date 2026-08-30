@@ -52,6 +52,7 @@ import { dashboardRouter } from "./routes/dashboard.js";
 import { importExclusionsRouter } from "./routes/importExclusions.js";
 import { mediaServerWebhookRouter, mediaServerWebhookTokenRouter } from "./routes/mediaServerWebhook.js";
 import { overseerrWebhookRouter, overseerrWebhookTokenRouter } from "./routes/overseerrWebhook.js";
+import { discordCommandRouter, discordInteractionsRouter } from "./routes/discordInteractions.js";
 import { mediaAnalysisRouter } from "./routes/mediaAnalysis.js";
 import { importReviewRouter } from "./routes/importReview.js";
 import { mediaServerImportRouter } from "./routes/mediaServerImport.js";
@@ -92,7 +93,17 @@ export async function createApp(): Promise<Express> {
 
   const app = express();
   app.use(cors());
-  app.use(express.json());
+  // `verify` stashes the exact raw request bytes on req.rawBody before JSON-parsing — needed by
+  // the Discord interactions webhook (routes/discordInteractions.ts), which must verify an
+  // Ed25519 signature over the literal bytes Discord sent; re-serializing the parsed JSON
+  // wouldn't byte-for-byte match the original body, so the parsed object alone isn't enough.
+  app.use(
+    express.json({
+      verify: (req: any, _res, buf) => {
+        req.rawBody = buf;
+      },
+    })
+  );
   app.use("/api", asyncHandler(requireAuth));
 
   app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
@@ -160,6 +171,8 @@ export async function createApp(): Promise<Express> {
   app.use("/api/webhooks/media-server", mediaServerWebhookRouter);
   app.use("/api/settings/overseerr-webhook-token", overseerrWebhookTokenRouter);
   app.use("/api/webhooks/overseerr", overseerrWebhookRouter);
+  app.use("/api/settings/discord-command", discordCommandRouter);
+  app.use("/api/discord/interactions", discordInteractionsRouter);
   app.use("/api/content-ratings", contentRatingsRouter);
   app.use("/api/changelog", changelogRouter);
   app.use("/api/people", peopleRouter);

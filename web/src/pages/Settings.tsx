@@ -318,6 +318,7 @@ export default function Settings() {
   const [exclusions, setExclusions] = useState<ImportExclusion[]>([]);
   const [webhookUrl, setWebhookUrl] = useState<string | null>(null);
   const [overseerrWebhookUrl, setOverseerrWebhookUrl] = useState<string | null>(null);
+  const [registeringDiscordCommand, setRegisteringDiscordCommand] = useState(false);
   const [customFormats, setCustomFormats] = useState<CustomFormat[]>([]);
   const [formatName, setFormatName] = useState("");
   const [formatPatterns, setFormatPatterns] = useState("");
@@ -578,6 +579,18 @@ export default function Settings() {
     if (!confirm("Regenerate the Overseerr/Jellyseerr webhook URL? Its webhook config will need updating with the new URL.")) return;
     const result = await api.post<{ token: string }>("/settings/overseerr-webhook-token/regenerate", {});
     setOverseerrWebhookUrl(`${window.location.origin}/api/webhooks/overseerr?token=${result.token}`);
+  }
+
+  async function registerDiscordCommand() {
+    setRegisteringDiscordCommand(true);
+    try {
+      const result = await api.post<{ registered: boolean; scope: "guild" | "global" }>("/settings/discord-command/register", {});
+      alert(`/request registered (${result.scope} scope)${result.scope === "global" ? " — can take up to an hour to show up." : ""}`);
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setRegisteringDiscordCommand(false);
+    }
   }
 
   async function saveFormatScore(formatId: number, score: number) {
@@ -1344,6 +1357,56 @@ export default function Settings() {
                     </button>
                   </>
                 )}
+              </div>
+            ),
+          },
+          {
+            key: "discordRequests",
+            label: "Discord Requests",
+            description: "A /request slash command that adds media straight from Discord",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Lets anyone in your Discord server run <code>/request type:Movie title:...</code>{" "}
+                  to add a movie or TV show, the same idea as Doplarr. Create an application at{" "}
+                  <a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer">
+                    discord.com/developers/applications
+                  </a>
+                  , add a bot to it, and set the interactions endpoint URL below in that
+                  application's "General Information" page. A guild ID scopes the command to one
+                  server (usable within seconds) — leave it blank to register globally (can take
+                  up to an hour to propagate everywhere the bot is added).
+                </p>
+                <label>Interactions Endpoint URL (paste into Discord's application settings)</label>
+                <input value={`${window.location.origin}/api/discord/interactions`} readOnly onFocus={(e) => e.target.select()} />
+                <label>Bot token</label>
+                <input
+                  type="password"
+                  key={settings.discordBotToken ?? "discord-bot-token-empty"}
+                  defaultValue={settings.discordBotToken ?? ""}
+                  onBlur={(e) => saveSetting("discordBotToken", e.target.value)}
+                />
+                <label>Application ID</label>
+                <input
+                  key={settings.discordApplicationId ?? "discord-app-id-empty"}
+                  defaultValue={settings.discordApplicationId ?? ""}
+                  onBlur={(e) => saveSetting("discordApplicationId", e.target.value)}
+                />
+                <label>Public key</label>
+                <input
+                  key={settings.discordPublicKey ?? "discord-public-key-empty"}
+                  defaultValue={settings.discordPublicKey ?? ""}
+                  onBlur={(e) => saveSetting("discordPublicKey", e.target.value)}
+                />
+                <label>Guild ID (optional — blank registers globally)</label>
+                <input
+                  key={settings.discordGuildId ?? "discord-guild-id-empty"}
+                  defaultValue={settings.discordGuildId ?? ""}
+                  onBlur={(e) => saveSetting("discordGuildId", e.target.value)}
+                />
+                <button type="button" onClick={registerDiscordCommand} disabled={registeringDiscordCommand} style={{ marginTop: 8 }}>
+                  {registeringDiscordCommand ? "Registering..." : "Register /request command"}
+                </button>
               </div>
             ),
           },

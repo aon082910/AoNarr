@@ -3,6 +3,33 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 170 — Discord `/request` slash command
+- **Discord Requests** (Settings → General → "Discord Requests") — a `/request` slash command
+  (Doplarr's core idea) letting anyone in a Discord server add a movie or TV show straight from
+  chat: `/request type:Movie title:...` searches metadata, checks for an existing duplicate, and
+  adds it to AoNarr on a match. Built as an HTTP Interactions Endpoint (Discord POSTs the
+  interaction to a URL you register, no persistent Gateway/WebSocket connection or `discord.js`
+  dependency needed) — a much better fit for AoNarr's existing REST-server architecture than a
+  always-connected bot process would be.
+- Signature verification uses Node's *native* Ed25519 support (`crypto.sign`/`crypto.verify`,
+  available since Node 12) — Discord distributes its public key as a raw 32-byte hex string, which
+  just needs the standard fixed 12-byte SPKI DER prefix prepended before `crypto.createPublicKey`
+  will accept it. No new dependency for something every from-scratch (non-`discord.js`)
+  interactions endpoint has to solve. `app.ts`'s global `express.json()` now also stashes the
+  literal raw request bytes on `req.rawBody` (a `verify` callback) — signature verification is
+  over Discord's exact original bytes, which re-serializing the parsed JSON object wouldn't
+  reliably reproduce byte-for-byte.
+- Handles Discord's 3-second interaction timeout with the standard deferred-response pattern:
+  immediately acknowledges (type 5, "thinking..."), then does the actual metadata search/add in
+  the background and edits the response in via Discord's webhook-message-edit endpoint once ready
+  — a search plus (for a series) episode population can easily run past 3 seconds.
+- Verified live against the real running server with a real generated Ed25519 keypair: confirmed
+  a validly-signed PING interaction gets a correct PONG (200), confirmed both an invalid signature
+  and missing signature headers are rejected (401), and confirmed a real `/request` slash-command
+  payload dispatches all the way through — deferred ack, background handler invoked, real metadata
+  search attempted — failing gracefully with a clear message when TMDB isn't configured (no live
+  TMDB key available in this dev environment).
+
 ## Round 169 — Watch-history-based recommendations + auto-request
 - **"Because you watched X"** — the Recommendations page already suggested titles similar to
   what's already in the library ("because you added X"); it now also suggests based on actual

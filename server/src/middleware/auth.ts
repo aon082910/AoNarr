@@ -46,6 +46,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     req.path === "/theme.css" ||
     req.path === "/webhooks/media-server" ||
     req.path === "/webhooks/overseerr" ||
+    req.path === "/discord/interactions" ||
     req.path.startsWith("/share/") ||
     req.path.startsWith("/iptv/m3u/") ||
     req.path.startsWith("/iptv/stream/") ||
