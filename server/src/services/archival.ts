@@ -98,6 +98,96 @@ async function logArchival(mediaItemId: number, title: string, mode: "archived" 
   log.info(`[archival] ${mode} "${title}" (watched + past retention window)`);
 }
 
+export interface ArchivalCandidate {
+  mediaItemId: number;
+  title: string;
+  type: string;
+  filePath: string;
+  scheduledFor: Date; // when its retention window closes (lastPlayedAt + effective retention days)
+}
+
+/**
+ * Read-only pass over the same eligibility logic runAutoArchival uses to actually act — every
+ * watched, unprotected file with a file, its scheduled cutoff date computed the same way, but
+ * nothing touched. Maintainerr's "Leaving Soon" idea: a preview of what the next run will sweep
+ * up, so nothing disappears as a surprise. `scheduledFor` naturally moves later (or the item drops
+ * off this list entirely) the moment someone rewatches something, since lastPlayedAt is re-fetched
+ * live from the media server on every call — no separate "reset the timer" logic needed.
+ */
+export async function getUpcomingArchivals(): Promise<ArchivalCandidate[]> {
+  if (!getMediaServerConfig()) return [];
+  const afterDays = Number(getSetting("archiveAfterDays") ?? "30") || 30;
+
+  let watched: WatchedFile[];
+  try {
+    watched = await fetchWatchedFiles();
+  } catch {
+    return [];
+  }
+  if (watched.length === 0) return [];
+
+  const candidates: ArchivalCandidate[] = [];
+
+  const singleItems = (await db.prepare("SELECT * FROM media_items WHERE has_file = 1 AND protected = 0 AND path IS NOT NULL").all()) as any[];
+  for (const item of singleItems) {
+    const match = findWatchedMatch(item.path, watched);
+    if (!match) continue;
+    const retentionDays = await effectiveRetentionDays(item.id, afterDays);
+    if (retentionDays === null) continue;
+    candidates.push({
+      mediaItemId: item.id,
+      title: item.title,
+      type: item.type,
+      filePath: item.path,
+      scheduledFor: new Date(match.lastPlayedAt.getTime() + retentionDays * 24 * 60 * 60 * 1000),
+    });
+  }
+
+  const episodes = (await db
+    .prepare(
+      `SELECT e.*, m.title AS media_title, m.type AS media_type
+       FROM episodes e JOIN media_items m ON m.id = e.media_item_id
+       WHERE e.has_file = 1 AND m.protected = 0 AND e.file_path IS NOT NULL`
+    )
+    .all()) as any[];
+  for (const ep of episodes) {
+    const match = findWatchedMatch(ep.file_path, watched);
+    if (!match) continue;
+    const retentionDays = await effectiveRetentionDays(ep.media_item_id, afterDays);
+    if (retentionDays === null) continue;
+    candidates.push({
+      mediaItemId: ep.media_item_id,
+      title: `${ep.media_title} S${String(ep.season_number).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}`,
+      type: ep.media_type,
+      filePath: ep.file_path,
+      scheduledFor: new Date(match.lastPlayedAt.getTime() + retentionDays * 24 * 60 * 60 * 1000),
+    });
+  }
+
+  const subItems = (await db
+    .prepare(
+      `SELECT s.*, m.title AS media_title, m.type AS media_type
+       FROM sub_items s JOIN media_items m ON m.id = s.media_item_id
+       WHERE s.has_file = 1 AND m.protected = 0 AND s.file_path IS NOT NULL`
+    )
+    .all()) as any[];
+  for (const sub of subItems) {
+    const match = findWatchedMatch(sub.file_path, watched);
+    if (!match) continue;
+    const retentionDays = await effectiveRetentionDays(sub.media_item_id, afterDays);
+    if (retentionDays === null) continue;
+    candidates.push({
+      mediaItemId: sub.media_item_id,
+      title: `${sub.media_title} - ${sub.title}`,
+      type: sub.media_type,
+      filePath: sub.file_path,
+      scheduledFor: new Date(match.lastPlayedAt.getTime() + retentionDays * 24 * 60 * 60 * 1000),
+    });
+  }
+
+  return candidates.sort((a, b) => a.scheduledFor.getTime() - b.scheduledFor.getTime());
+}
+
 /**
  * Finds watched, aged, unprotected files and archives (default, reversible — moves the file to
  * the configured archive folder) or permanently deletes them (explicit opt-in only).

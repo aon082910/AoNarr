@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 168 — "Leaving Soon" archival preview
+- **Leaving Soon** (System → Maintenance) — Maintainerr's headline UX idea: a preview of exactly
+  what the next scheduled auto-archival run will sweep up, computed with the same eligibility
+  logic `runAutoArchival` already used (watched + past its effective retention window, honoring
+  tag/collection retention overrides) but nothing actually touched. AoNarr's archival already had
+  real substance Maintainerr's simpler competitors lack (per-tag/per-collection retention
+  overrides, a recycle-bin safety net) — the actual gap was visibility: nothing showed what was
+  coming before it happened. The scheduled date recalculates live from the media server's current
+  watch status on every load, so rewatching something pushes it down the list automatically —
+  no separate "reset the timer" logic needed, since there's no separate timer to reset.
+- Refactored the eligibility-finding logic in `archival.ts` into a shared, read-only
+  `getUpcomingArchivals()` used by the new preview endpoint, alongside the existing mutating
+  `runAutoArchival()` — same conditions, no duplicated logic.
+- Verified live: confirmed `GET /api/system/archival/upcoming` returns cleanly (correctly empty,
+  since this dev instance has no media server configured — the same early-exit `runAutoArchival`
+  itself already relies on) and confirmed the Maintenance tab's new "Leaving Soon" section loads
+  and renders the empty state correctly end-to-end through the real UI.
+
 ## Round 167 — Multi-language subtitles + background rescan
 - **Simultaneous multi-language subtitle downloads** — AoNarr's subtitle provider setting already
   accepted a comma-separated language list, but the download logic only ever picked one overall

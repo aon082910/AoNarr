@@ -16,7 +16,7 @@ import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { checkIndexerHealth } from "../services/indexerClient.js";
 import { attachIndexerHealth } from "../services/indexerHealth.js";
-import { runAutoArchival } from "../services/archival.js";
+import { runAutoArchival, getUpcomingArchivals } from "../services/archival.js";
 import { runTraktSync } from "../services/traktSync.js";
 import { runPlexWatchlistSync } from "../services/plexWatchlistSync.js";
 import { findRepeatedImports } from "../services/duplicates.js";
@@ -324,6 +324,15 @@ systemRouter.get(
       diskWarnings,
       diskWarnPercentFree: DISK_WARN_PERCENT_FREE,
     });
+  })
+);
+
+/** Maintainerr's "Leaving Soon" idea — a preview of what the next auto-archival run will sweep
+ * up, computed with the exact same eligibility logic but nothing actually touched. */
+systemRouter.get(
+  "/archival/upcoming",
+  asyncHandler(async (_req, res) => {
+    res.json(await getUpcomingArchivals());
   })
 );
 

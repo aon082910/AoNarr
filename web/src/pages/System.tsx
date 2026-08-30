@@ -26,6 +26,14 @@ interface SystemStatus {
   diskSpace: DiskSpaceEntry[];
 }
 
+interface ArchivalCandidate {
+  mediaItemId: number;
+  title: string;
+  type: string;
+  filePath: string;
+  scheduledFor: string;
+}
+
 interface SystemResources {
   cpuCount: number;
   loadAvg: [number, number, number];
@@ -165,6 +173,8 @@ export default function System() {
   const [orphanedIncremental, setOrphanedIncremental] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  const [upcomingArchivals, setUpcomingArchivals] = useState<ArchivalCandidate[] | null>(null);
+  const [loadingUpcoming, setLoadingUpcoming] = useState(false);
   const [syncingTrakt, setSyncingTrakt] = useState(false);
   const [syncingPlexWatchlist, setSyncingPlexWatchlist] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -261,11 +271,20 @@ export default function System() {
     return () => clearInterval(interval);
   }, []);
 
+  function loadUpcomingArchivals() {
+    setLoadingUpcoming(true);
+    api
+      .get<ArchivalCandidate[]>("/system/archival/upcoming")
+      .then(setUpcomingArchivals)
+      .finally(() => setLoadingUpcoming(false));
+  }
+
   async function runArchivalNow() {
     setArchiving(true);
     try {
       await api.post("/system/archival/run", {});
       alert("Archival run complete — check the media items that had files for changes.");
+      if (upcomingArchivals) loadUpcomingArchivals();
     } finally {
       setArchiving(false);
     }
@@ -869,6 +888,47 @@ export default function System() {
             {syncingPlexWatchlist ? "Syncing..." : "Run Plex watchlist sync now"}
           </button>
         </div>
+
+        <h3 style={{ marginTop: 20, marginBottom: 4 }}>Leaving Soon</h3>
+        <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
+          A preview of what the next auto-archival run will sweep up — nothing here has been
+          touched yet. Rewatching something pushes it back down this list automatically, since the
+          date shown is recalculated live from your media server's watch status every time this
+          loads.
+        </p>
+        {!upcomingArchivals && (
+          <button onClick={loadUpcomingArchivals} disabled={loadingUpcoming} className="secondary">
+            {loadingUpcoming ? "Loading..." : "Show upcoming archivals"}
+          </button>
+        )}
+        {upcomingArchivals && (
+          <>
+            <button onClick={loadUpcomingArchivals} disabled={loadingUpcoming} className="secondary" style={{ marginBottom: 8 }}>
+              {loadingUpcoming ? "Refreshing..." : "Refresh"}
+            </button>
+            {upcomingArchivals.length === 0 && <p className="empty">Nothing scheduled — either archival is off, no media server is configured, or nothing's eligible yet.</p>}
+            {upcomingArchivals.length > 0 && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Title</th>
+                    <th>Type</th>
+                    <th>Scheduled for</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {upcomingArchivals.map((c) => (
+                    <tr key={`${c.mediaItemId}-${c.filePath}`}>
+                      <td>{c.title}</td>
+                      <td>{c.type}</td>
+                      <td>{new Date(c.scheduledFor).toLocaleDateString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </>
+        )}
         {orphaned && (
           <>
             <p style={{ marginTop: 12 }}>
