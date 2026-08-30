@@ -472,6 +472,28 @@ CREATE TABLE IF NOT EXISTS user_invites (
   used_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
 );
 
+-- Autobrr's core idea: an IRC announce channel monitored in real time instead of waiting on
+-- scheduled RSS/Torznab polling — a release can be grabbed within seconds of being posted rather
+-- than up to searchIntervalMinutes later. announce_regex must have named capture groups
+-- `title` and `url` (JS regex named groups, e.g. "New: (?<title>.+) - (?<url>https?://\S+)");
+-- everything else about parsing an announce line is tracker-specific and left to that regex
+-- rather than AoNarr shipping per-tracker definitions the way autobrr does for hundreds of sites.
+CREATE TABLE IF NOT EXISTS irc_feeds (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  host TEXT NOT NULL,
+  port INTEGER NOT NULL DEFAULT 6697,
+  use_ssl INTEGER NOT NULL DEFAULT 1,
+  nickname TEXT NOT NULL,
+  sasl_user TEXT,
+  sasl_pass TEXT,
+  channel TEXT NOT NULL,
+  announce_regex TEXT NOT NULL,
+  protocol TEXT NOT NULL DEFAULT 'torrent' CHECK (protocol IN ('torrent', 'usenet')),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Requests submitted by restricted users; an admin approves (which adds the media item to the
 -- library the normal way) or rejects.
 CREATE TABLE IF NOT EXISTS requests (

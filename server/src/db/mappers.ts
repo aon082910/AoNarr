@@ -249,6 +249,24 @@ export function inviteFromRow(row: any) {
   };
 }
 
+export function ircFeedFromRow(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    host: row.host,
+    port: row.port,
+    useSsl: row.use_ssl,
+    nickname: row.nickname,
+    saslUser: row.sasl_user,
+    saslPass: row.sasl_pass ? "********" : null, // never echo the secret back
+    channel: row.channel,
+    announceRegex: row.announce_regex,
+    protocol: row.protocol,
+    enabled: row.enabled,
+    createdAt: row.created_at,
+  };
+}
+
 export function requestFromRow(row: any) {
   return {
     id: row.id,

@@ -16,6 +16,7 @@ import CalendarDay from "./pages/CalendarDay.js";
 import Missing from "./pages/Missing.js";
 import Indexers from "./pages/Indexers.js";
 import DownloadClients from "./pages/DownloadClients.js";
+import IrcFeeds from "./pages/IrcFeeds.js";
 import Settings from "./pages/Settings.js";
 import Activity from "./pages/Activity.js";
 import System from "./pages/System.js";
@@ -204,6 +205,7 @@ export default function App() {
         { to: "/custom-columns", label: "Custom Columns" },
         { to: "/download-clients", label: "Download Clients" },
         { to: "/indexers", label: "Indexers" },
+        { to: "/irc-feeds", label: "IRC Announce Feeds" },
         { to: "/settings", label: "Settings" },
         { to: "/users", label: "Users" },
       ].sort((a, b) => a.label.localeCompare(b.label)),
@@ -465,6 +467,7 @@ export default function App() {
           {isAdmin && <Route path="/activity" element={<Activity />} />}
           {isAdmin && <Route path="/indexers" element={<Indexers />} />}
           {isAdmin && <Route path="/download-clients" element={<DownloadClients />} />}
+          {isAdmin && <Route path="/irc-feeds" element={<IrcFeeds />} />}
           {isAdmin && <Route path="/users" element={<Users />} />}
           {isAdmin && <Route path="/audit-log" element={<AuditLog />} />}
           {isAdmin && <Route path="/settings" element={<Settings />} />}

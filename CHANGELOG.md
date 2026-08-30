@@ -3,6 +3,36 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 171 — IRC instant-grab announce feeds
+- **IRC Announce Feeds** (new page, Configuration → "IRC Announce Feeds") — Autobrr's core idea:
+  monitor a private tracker's announce channel over IRC in real time so a release can be grabbed
+  within seconds of being posted, instead of waiting up to `searchIntervalMinutes` for the next
+  scheduled poll. Deliberately matched against AoNarr's own monitored-item model rather than
+  autobrr's "blind filter" firehose — an announce only ever results in a grab if it matches
+  something already monitored and missing, using the exact same title/episode matching and
+  quality-profile + custom-format scoring the scheduled search already uses. Nothing is grabbed
+  just because a message matched a regex; the same "does anyone actually want this" gate every
+  other grab path already enforces, just reacting far faster.
+- Implemented as a hand-rolled minimal IRC client directly on Node's `net`/`tls` sockets (same
+  reasoning as the SMTP client elsewhere in this codebase — IRC is a small, well-specified,
+  line-based text protocol, and this only ever needs to sit in one channel and read announces) —
+  registration, optional SASL PLAIN auth, PING/PONG keepalive, and reconnect-with-backoff. No new
+  dependency. `announceRegex` is admin-configured per feed with named capture groups `title`/`url`
+  — parsing an announce line is inherently tracker-specific, so this is left configurable rather
+  than AoNarr shipping per-tracker definitions the way autobrr does for hundreds of sites.
+  Reconnects live (no restart needed) whenever a feed is added/edited/removed/toggled.
+- `grab()`, `isAlreadyQueued()`, and `pickClientForProtocol()` exported from `scheduler.ts` for
+  reuse — an IRC-triggered grab is the exact same operation a scheduled-search grab is, just
+  triggered by a different event; `guessTitleFromText`/`titlesMatch`/`normalizeForMatch` exported
+  from `libraryScan.ts` for the same reason (title-matching an announce against the library is the
+  same fuzzy-match problem the disk-scan importer already solved).
+- Verified live end-to-end against a real IRC connection (a minimal fake IRC daemon written for
+  this test, run as a real TCP server — not mocked in-process): confirmed AoNarr's IRC client
+  actually connects and completes registration, injected a real PRIVMSG announce for a title
+  matching a real monitored-and-missing test movie, and confirmed it was instantly grabbed — the
+  exact magnet URI from the announce landed in a Blackhole download client's watch folder with the
+  correctly-derived filename, and the queue/history rows were created correctly.
+
 ## Round 170 — Discord `/request` slash command
 - **Discord Requests** (Settings → General → "Discord Requests") — a `/request` slash command
   (Doplarr's core idea) letting anyone in a Discord server add a movie or TV show straight from

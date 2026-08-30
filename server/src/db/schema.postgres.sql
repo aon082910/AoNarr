@@ -445,6 +445,22 @@ CREATE TABLE IF NOT EXISTS user_invites (
   used_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS irc_feeds (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  host TEXT NOT NULL,
+  port INTEGER NOT NULL DEFAULT 6697,
+  use_ssl INTEGER NOT NULL DEFAULT 1,
+  nickname TEXT NOT NULL,
+  sasl_user TEXT,
+  sasl_pass TEXT,
+  channel TEXT NOT NULL,
+  announce_regex TEXT NOT NULL,
+  protocol TEXT NOT NULL DEFAULT 'torrent' CHECK (protocol IN ('torrent', 'usenet')),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+);
+
 -- Requests submitted by restricted users; an admin approves (which adds the media item to the
 -- library the normal way) or rejects.
 CREATE TABLE IF NOT EXISTS requests (

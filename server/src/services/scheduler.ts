@@ -145,7 +145,7 @@ function isEligibleForDelay(quality: string, cutoff: string, result: SearchResul
   return (Date.now() - publishedAt) / 60_000 >= delayMinutes;
 }
 
-async function isAlreadyQueued(mediaItemId: number, episodeId: number | null, subItemId: number | null): Promise<boolean> {
+export async function isAlreadyQueued(mediaItemId: number, episodeId: number | null, subItemId: number | null): Promise<boolean> {
   if (episodeId) {
     return !!(await db
       .prepare("SELECT id FROM queue WHERE episode_id = ? AND status NOT IN ('failed')")
@@ -163,7 +163,7 @@ async function isAlreadyQueued(mediaItemId: number, episodeId: number | null, su
     .get(mediaItemId));
 }
 
-interface ChosenResult {
+export interface ChosenResult {
   result: SearchResult;
   quality: string;
 }
@@ -236,7 +236,7 @@ async function chooseBestResult(
   return winner ? { result: winner, quality: best } : null;
 }
 
-async function grab(
+export async function grab(
   client: DownloadClient,
   mediaItem: MediaItem,
   episodeId: number | null,
@@ -279,7 +279,7 @@ async function grab(
 /** A grabbed release only works with a download client that speaks its protocol — picking
  * `clients[0]` blindly (the old behavior) breaks the moment more than one client type is
  * configured, which is now common since http/ytdlp clients coexist with qBittorrent/SABnzbd. */
-function pickClientForProtocol(clients: DownloadClient[], protocol: SearchResult["protocol"]): DownloadClient | null {
+export function pickClientForProtocol(clients: DownloadClient[], protocol: SearchResult["protocol"]): DownloadClient | null {
   const typesForProtocol: Record<string, string[]> = {
     torrent: ["qbittorrent", "realdebrid", "alldebrid", "blackhole"],
     usenet: ["sabnzbd", "blackhole"],

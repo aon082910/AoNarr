@@ -8,14 +8,14 @@ import { probeMediaInfo } from "./ffprobe.js";
 import { searchMetadata, fetchSeriesEpisodesFor, fetchArtistAlbumsFor, fetchCollectionChildrenFor } from "./metadata.js";
 import { log } from "./logger.js";
 
-function normalizeForMatch(s: string): string {
+export function normalizeForMatch(s: string): string {
   return s
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 }
 
-function titlesMatch(a: string, b: string): boolean {
+export function titlesMatch(a: string, b: string): boolean {
   const na = normalizeForMatch(a);
   const nb = normalizeForMatch(b);
   if (!na || !nb) return false;
@@ -50,7 +50,7 @@ async function upsertTrackFromFile(subItemId: number, filePath: string): Promise
 /** Cuts a piece of text off at the first season/year/quality marker to get a plausible title —
  * the same "everything before the release metadata starts" heuristic release names use, just
  * applied to a plain filename (or folder name) instead of a scene-style release string. */
-function guessTitleFromText(text: string): string {
+export function guessTitleFromText(text: string): string {
   const normalized = text.replace(/[._]/g, " ");
   const cutPatterns = [
     /\bS\d{1,2}(E\d{1,3})?\b/i,
