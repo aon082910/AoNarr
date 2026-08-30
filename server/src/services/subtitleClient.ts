@@ -77,6 +77,13 @@ export function pickBestSubtitle(results: SubtitleSearchResult[]): SubtitleSearc
   return [...withFile].sort((a, b) => (b.downloadCount ?? 0) - (a.downloadCount ?? 0))[0];
 }
 
+/** Same ranking as pickBestSubtitle, scoped to one language — a multi-language search (the
+ * common case: a provider configured for "eng,fre,spa") returns every language's results mixed
+ * into one list, so picking a single overall "best" would silently drop every language but one. */
+export function pickBestSubtitleForLanguage(results: SubtitleSearchResult[], language: string): SubtitleSearchResult | undefined {
+  return pickBestSubtitle(results.filter((r) => r.language === language));
+}
+
 /**
  * OpenSubtitles' download endpoint is a two-step handoff: this POST exchanges a file_id (from
  * a search result) for a short-lived signed link, which is then fetched for the actual content.

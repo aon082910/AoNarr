@@ -3,6 +3,27 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 167 — Multi-language subtitles + background rescan
+- **Simultaneous multi-language subtitle downloads** — AoNarr's subtitle provider setting already
+  accepted a comma-separated language list, but the download logic only ever picked one overall
+  "best" result across every language mixed together, silently dropping every language but one.
+  Now downloads one subtitle per configured language, each as its own language-coded sidecar file
+  (`Movie.en.srt`, `Movie.fr.srt`, ...) — matching what the setting already implied it did.
+- **Background subtitle rescan** (new scheduled job, daily by default) — previously a subtitle was
+  only ever fetched once, at import time; a provider added later, a language added to an existing
+  provider config, or a transient search failure meant that file just never got a subtitle, ever.
+  The new job re-checks every downloaded video (movies/ROMs/adult, series/anime episodes — the
+  same scope the at-import fetch already covers) against every configured language and fills in
+  whatever's still missing. Idempotent by design — safe to run against the whole library on a
+  schedule without re-fetching anything already on disk.
+- Both share one new `downloadSubtitleForLanguage()` function in `importer.ts` (exported, reused
+  by the new `subtitleRescan.ts` job) rather than duplicating the search/download/sync logic.
+- Verified live with a mock subtitle provider server: confirmed both English and French subtitles
+  download as distinct sidecar files with correct per-language content, confirmed the rescan job
+  makes zero server requests when a video is already fully covered, and confirmed deleting one
+  language's subtitle and re-running the rescan restores exactly that one language (2 requests)
+  without touching the other, already-present one.
+
 ## Round 166 — Overseerr/Jellyseerr webhook integration
 - **Overseerr / Jellyseerr webhook** (Settings → Media Management → "Overseerr / Jellyseerr") —
   DUMB bundles Seerr (Overseerr/Jellyseerr) as the request-UI layer in front of Sonarr/Radarr;

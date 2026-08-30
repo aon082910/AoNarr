@@ -11,7 +11,7 @@ import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from 
 import {
   downloadSubtitleContent,
   downloadSubtitleFromUrl,
-  pickBestSubtitle,
+  pickBestSubtitleForLanguage,
   searchCustomSubtitles,
   searchSubtitles,
   type CustomSubtitleProviderConfig,
@@ -31,7 +31,60 @@ import type { MediaType } from "../types/index.js";
 // file can be recognized as subtitle-eligible without hardcoding a type list.
 const VIDEO_EXTENSIONS = new Set([".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v"]);
 
-/** Best-effort: finds and saves a subtitle next to a just-imported video file. Never throws. */
+/**
+ * Downloads a subtitle for one specific language next to a video file — the unit both the
+ * at-import path and the background rescan job (services/subtitleRescan.js) operate on.
+ * `skipExisting` short-circuits before ever searching when a sidecar for this language is already
+ * on disk, which is what makes the rescan job idempotent (safe to re-run against the whole
+ * library on a schedule without re-fetching everything every time).
+ */
+export async function downloadSubtitleForLanguage(
+  videoPath: string,
+  mediaItemId: number,
+  language: string,
+  provider: { type: string; api_key: string | null; languages: string; config: string | null },
+  skipExisting: boolean
+): Promise<boolean> {
+  const srtPath = videoPath.slice(0, -path.extname(videoPath).length) + `.${language}.srt`;
+  if (skipExisting && fs.existsSync(srtPath)) return false;
+
+  const isCustom = provider.type === "custom";
+  const parsedConfig = provider.config ? JSON.parse(provider.config) : {};
+  const results = isCustom
+    ? await searchCustomSubtitles(parsedConfig as CustomSubtitleProviderConfig, provider.api_key, path.basename(videoPath), language)
+    : await searchSubtitles(provider.api_key!, path.basename(videoPath), language, {
+        hearingImpaired: parsedConfig.hearingImpaired,
+        foreignPartsOnly: parsedConfig.foreignPartsOnly,
+      });
+  // A custom provider with no languageField configured tags every result "unknown" (see
+  // subtitleClient.ts's searchCustomSubtitles) rather than the language actually requested —
+  // match on that too so such providers still work, just without real per-language distinction.
+  const best = pickBestSubtitleForLanguage(results, language) ?? pickBestSubtitleForLanguage(results, "unknown");
+  if (!best) return false;
+
+  const content = isCustom ? await downloadSubtitleFromUrl(best.downloadUrl) : await downloadSubtitleContent(provider.api_key!, best.fileId!);
+  fs.writeFileSync(srtPath, content, "utf-8");
+
+  // An exact moviehash match means OpenSubtitles matched this subtitle to this precise file —
+  // its timing is already trustworthy, so syncing would just spend the ffsubsync pass (30s-2min)
+  // for no benefit. Anything else (a fuzzy title match, or any "custom" provider result, which
+  // carries no confidence signal at all) gets synced, same as Bazarr's own "below-threshold"
+  // default behavior.
+  let synced = false;
+  if (getSetting("subtitleSyncEnabled") !== "0" && !best.movieHashMatch) {
+    synced = await syncSubtitleToVideo(videoPath, srtPath);
+  }
+
+  await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'subtitleDownloaded', ?)`).run(
+    mediaItemId,
+    JSON.stringify({ srtPath, language, synced })
+  );
+  log.info(`[subtitles] downloaded "${language}" subtitle for "${path.basename(videoPath)}"${synced ? " (synced)" : ""}`);
+  return true;
+}
+
+/** Best-effort: finds and saves a subtitle in every configured language next to a just-imported
+ * video file. Never throws — a subtitle miss shouldn't fail the import itself. */
 async function tryDownloadSubtitle(videoPath: string, mediaItemId: number): Promise<void> {
   const provider = (await db.prepare("SELECT * FROM subtitle_providers WHERE enabled = 1 LIMIT 1").get()) as
     | { type: string; api_key: string | null; languages: string; config: string | null }
@@ -39,46 +92,16 @@ async function tryDownloadSubtitle(videoPath: string, mediaItemId: number): Prom
   if (!provider) return;
   if (provider.type !== "custom" && !provider.api_key) return;
 
-  try {
-    const isCustom = provider.type === "custom";
-    const parsedConfig = provider.config ? JSON.parse(provider.config) : {};
-    const results = isCustom
-      ? await searchCustomSubtitles(
-          parsedConfig as CustomSubtitleProviderConfig,
-          provider.api_key,
-          path.basename(videoPath),
-          provider.languages
-        )
-      : await searchSubtitles(provider.api_key!, path.basename(videoPath), provider.languages, {
-          hearingImpaired: parsedConfig.hearingImpaired,
-          foreignPartsOnly: parsedConfig.foreignPartsOnly,
-        });
-    const best = pickBestSubtitle(results);
-    if (!best) return;
-
-    const content = isCustom
-      ? await downloadSubtitleFromUrl(best.downloadUrl)
-      : await downloadSubtitleContent(provider.api_key!, best.fileId!);
-    const srtPath = videoPath.slice(0, -path.extname(videoPath).length) + `.${best.language}.srt`;
-    fs.writeFileSync(srtPath, content, "utf-8");
-
-    // An exact moviehash match means OpenSubtitles matched this subtitle to this precise file —
-    // its timing is already trustworthy, so syncing would just spend the ffsubsync pass (30s-2min)
-    // for no benefit. Anything else (a fuzzy title match, or any "custom" provider result, which
-    // carries no confidence signal at all) gets synced, same as Bazarr's own "below-threshold"
-    // default behavior.
-    let synced = false;
-    if (getSetting("subtitleSyncEnabled") !== "0" && !best.movieHashMatch) {
-      synced = await syncSubtitleToVideo(videoPath, srtPath);
+  const languages = provider.languages
+    .split(",")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  for (const language of languages) {
+    try {
+      await downloadSubtitleForLanguage(videoPath, mediaItemId, language, provider, false);
+    } catch (err) {
+      log.warn(`[importer] "${language}" subtitle download failed for "${videoPath}":`, (err as Error).message);
     }
-
-    await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'subtitleDownloaded', ?)`).run(
-      mediaItemId,
-      JSON.stringify({ srtPath, language: best.language, synced })
-    );
-    log.info(`[importer] downloaded "${best.language}" subtitle for "${path.basename(videoPath)}"${synced ? " (synced)" : ""}`);
-  } catch (err) {
-    log.warn(`[importer] subtitle download failed for "${videoPath}":`, (err as Error).message);
   }
 }
 

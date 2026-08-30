@@ -27,6 +27,7 @@ import { recordDiskUsageSamples } from "./storageForecast.js";
 import { runScheduledBackup } from "./scheduledBackup.js";
 import { purgeExpiredRecycleBinEntries } from "./recycleBin.js";
 import { syncFromProwlarr } from "./prowlarrSync.js";
+import { rescanMissingSubtitles } from "./subtitleRescan.js";
 import { syncFromJackett } from "./jackettSync.js";
 import { checkForCorruptMedia } from "./corruptMediaCheck.js";
 import { runScheduledDuplicateCheck } from "./duplicateCheck.js";
@@ -1122,6 +1123,14 @@ export function startScheduler() {
     scheduleType: "cron",
     defaultSchedule: "0 */4 * * *",
     run: () => checkVideoChannels(),
+  });
+
+  registerJob({
+    key: "subtitleRescan",
+    name: "Subtitle Rescan",
+    scheduleType: "cron",
+    defaultSchedule: "0 4 * * *",
+    run: () => rescanMissingSubtitles(),
   });
 
   registerJob({
