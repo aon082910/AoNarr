@@ -1004,6 +1004,22 @@ mediaRouter.patch(
   })
 );
 
+/** Shared by the single-item DELETE route below and the root-folder cascade-delete option
+ * (routes/rootFolders.ts) — same "untrack only by default, ?deleteFiles=1 also recycles the
+ * file(s)" behavior either way. */
+export async function deleteMediaItemCascade(row: any, deleteFiles: boolean): Promise<void> {
+  if (deleteFiles) {
+    if (row.path) await recycleFile(row.path, row.type, row.title, row.id);
+    const children = (
+      (await db.prepare("SELECT file_path FROM episodes WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id)) as any[]
+    ).concat(
+      (await db.prepare("SELECT file_path FROM sub_items WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id)) as any[]
+    );
+    for (const child of children) await recycleFile(child.file_path, row.type, row.title, row.id);
+  }
+  await db.prepare("DELETE FROM media_items WHERE id = ?").run(row.id);
+}
+
 mediaRouter.delete(
   "/:id",
   requireAdmin,
@@ -1014,18 +1030,7 @@ mediaRouter.delete(
     // Default behavior stays "untrack only, leave files on disk" — opt in with ?deleteFiles=1 to
     // also recycle the item's file(s) (CASCADE drops episodes/sub_items too, so their
     // file_paths need collecting before the row goes).
-    if (req.query.deleteFiles === "1") {
-      if (row.path) await recycleFile(row.path, row.type, row.title, row.id);
-      const children = (
-        (await db.prepare("SELECT file_path FROM episodes WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id)) as any[]
-      ).concat(
-        (await db.prepare("SELECT file_path FROM sub_items WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id)) as any[]
-      );
-      for (const child of children) await recycleFile(child.file_path, row.type, row.title, row.id);
-    }
-
-    const result = await db.prepare("DELETE FROM media_items WHERE id = ?").run(req.params.id);
-    if (result.changes === 0) throw new HttpError(404, "Media item not found");
+    await deleteMediaItemCascade(row, req.query.deleteFiles === "1");
     const actor = auditActor(req);
     logAuditEvent(
       actor.userId,

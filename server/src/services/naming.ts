@@ -27,3 +27,10 @@ export const DEFAULT_SHAPE_TEMPLATES: Record<MediaShape, string> = {
   episodic: "{parentTitle}/Season {season:00}/{parentTitle} - S{season:00}E{episode:00}",
   collection: "{parentTitle}/{childTitle}",
 };
+
+/** Music's per-track filename template (settings key `namingArtistTrackTemplate`) — a track
+ * whose position within the album is known (matched to a `tracks` row) gets this rendered as its
+ * filename instead of being kept as-downloaded; tokens: {trackNumber}, {trackTitle},
+ * {parentTitle} (artist), {childTitle} (album). Same enable/disable toggle as the album-folder
+ * template (`namingEnabledArtist`) — there's no separate on/off switch for this. */
+export const DEFAULT_TRACK_TEMPLATE = "{trackNumber:00} - {trackTitle}";

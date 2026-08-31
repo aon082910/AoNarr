@@ -54,6 +54,7 @@ import { mediaServerWebhookRouter, mediaServerWebhookTokenRouter } from "./route
 import { overseerrWebhookRouter, overseerrWebhookTokenRouter } from "./routes/overseerrWebhook.js";
 import { discordCommandRouter, discordInteractionsRouter } from "./routes/discordInteractions.js";
 import { ircFeedsRouter } from "./routes/ircFeeds.js";
+import { plexAuthRouter } from "./routes/plexAuth.js";
 import { mediaAnalysisRouter } from "./routes/mediaAnalysis.js";
 import { importReviewRouter } from "./routes/importReview.js";
 import { mediaServerImportRouter } from "./routes/mediaServerImport.js";
@@ -175,6 +176,7 @@ export async function createApp(): Promise<Express> {
   app.use("/api/settings/discord-command", discordCommandRouter);
   app.use("/api/discord/interactions", discordInteractionsRouter);
   app.use("/api/irc-feeds", ircFeedsRouter);
+  app.use("/api/settings/plex-auth", plexAuthRouter);
   app.use("/api/content-ratings", contentRatingsRouter);
   app.use("/api/changelog", changelogRouter);
   app.use("/api/people", peopleRouter);

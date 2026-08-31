@@ -3,6 +3,44 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 173 — #13's remaining items, root folder delete-cascade, root folder move
+- **Per-track music filename templating** (closes the rest of #13) — Music's individual track
+  filenames were always kept exactly as downloaded; only the album folder was templated. New
+  `namingArtistTrackTemplate` setting (Settings → Media Management → Naming), tokens
+  `{trackNumber}`/`{trackTitle}`/`{parentTitle}`/`{childTitle}` — applies once a file is matched
+  to a known track number (an unmatched file keeps its original name, same as naming disabled),
+  respects the same enable/disable toggle Music's album-folder naming already has.
+- **Plex sign-in instead of pasting a token** (closes the rest of #13) — implemented Plex's real
+  PIN-based sign-in flow (`plex.tv/api/v2/pins`) instead of asking an admin to dig a token out of
+  Plex's own XML API responses (which are frequently temporary/session-scoped). "Sign in with
+  Plex..." opens plex.tv in a new tab; once signed in there, a real, durable third-party token is
+  saved automatically — no separate copy/paste step.
+- **Remove media items when their root folder is removed** (opt-in) — deleting a root folder
+  previously always just silently orphaned every media item that was in it (`root_folder_id` set
+  null via the FK, item otherwise untouched and still fully in the library) with no way to
+  actually remove them along with the folder. `DELETE /api/root-folders/:id?deleteMedia=1`
+  (optionally `&deleteFiles=1` to also recycle their files) now offers that as an explicit choice;
+  default behavior is unchanged. Reuses the exact same cascade logic the single-item delete route
+  already had, extracted into a shared `deleteMediaItemCascade()` rather than duplicated.
+- **Move a root folder's files to another root folder** (Sonarr/Radarr-style) — previously the
+  only way to change a media item's root folder was a raw `PATCH` that repointed the DB column
+  without moving anything on disk, silently desyncing `root_folder_id` from where the file
+  actually lives. New "Move all files to another root folder" action (same media type only)
+  physically relocates every item — reuses the existing `renameOneMediaItem()` almost entirely
+  unchanged (it already recomputes an item's destination from its *current* `root_folder_id` and
+  moves the file if that differs from where it is now, so updating `root_folder_id` first and
+  calling it is the entire "move" operation) plus a small added cleanup pass for the old root
+  folder's now-empty leftover directories, which `renameOneMediaItem`'s own cleanup can't reach
+  since it's scoped to the item's new location. Fire-and-forget, like every other whole-library
+  operation here.
+- Verified live end-to-end: ran the real per-track templating against fabricated album files and
+  confirmed both the renamed files and their `tracks.file_path` rows landed correctly; created a
+  real PIN against Plex's actual API and confirmed both the create and poll-status routes work
+  against it; moved a real file between two root folders and confirmed it physically relocated,
+  `path` updated, and the source folder's now-empty subdirectory was cleaned up; confirmed
+  deleting a root folder without `deleteMedia` preserves existing orphan-only behavior, and with
+  it removes the item entirely.
+
 ## Round 172 — GitHub issue fixes: #11, #12, #13, #14, #15, #16
 - **#12 — Root folder never auto-selected on search-based import or request approval**
   (confirmed, root cause already correctly identified by the reporter). `routes/media.ts`'s

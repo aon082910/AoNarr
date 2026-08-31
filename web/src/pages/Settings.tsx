@@ -319,6 +319,9 @@ export default function Settings() {
   const [webhookUrl, setWebhookUrl] = useState<string | null>(null);
   const [overseerrWebhookUrl, setOverseerrWebhookUrl] = useState<string | null>(null);
   const [registeringDiscordCommand, setRegisteringDiscordCommand] = useState(false);
+  const [plexAuthUrl, setPlexAuthUrl] = useState<string | null>(null);
+  const [plexSigningIn, setPlexSigningIn] = useState(false);
+  const [plexSignInStatus, setPlexSignInStatus] = useState<"waiting" | "claimed" | null>(null);
   const [customFormats, setCustomFormats] = useState<CustomFormat[]>([]);
   const [formatName, setFormatName] = useState("");
   const [formatPatterns, setFormatPatterns] = useState("");
@@ -587,6 +590,34 @@ export default function Settings() {
     setOverseerrWebhookUrl(`${window.location.origin}/api/webhooks/overseerr?token=${result.token}`);
   }
 
+  async function startPlexSignIn() {
+    setPlexSigningIn(true);
+    setPlexSignInStatus(null);
+    try {
+      const pin = await api.post<{ pinId: number; code: string; clientId: string; authUrl: string }>("/settings/plex-auth/pin", {});
+      setPlexAuthUrl(pin.authUrl);
+      setPlexSignInStatus("waiting");
+      window.open(pin.authUrl, "_blank", "noopener,noreferrer");
+
+      const poll = async () => {
+        const result = await api.get<{ claimed: boolean }>(`/settings/plex-auth/pin/${pin.pinId}`);
+        if (result.claimed) {
+          setPlexSignInStatus("claimed");
+          const fresh = await api.get<Record<string, string>>("/settings");
+          setSettings(fresh);
+          setPlexAuthUrl(null);
+          return;
+        }
+        setTimeout(poll, 2000);
+      };
+      setTimeout(poll, 2000);
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setPlexSigningIn(false);
+    }
+  }
+
   async function registerDiscordCommand() {
     setRegisteringDiscordCommand(true);
     try {
@@ -722,8 +753,28 @@ export default function Settings() {
   }
 
   async function removeFolder(id: number) {
-    await api.del(`/root-folders/${id}`);
+    if (!confirm("Delete this root folder?")) return;
+    const deleteMedia = confirm(
+      "Also remove every media item that's in this folder from your library? Choose Cancel to just remove the folder itself — those items stay in your library, just no longer tied to any folder."
+    );
+    let deleteFiles = false;
+    if (deleteMedia) {
+      deleteFiles = confirm("Also delete their files from disk (moved to Recycle Bin)? Choose Cancel to remove them from the library but leave the files alone.");
+    }
+    const qs = deleteMedia ? `?deleteMedia=1${deleteFiles ? "&deleteFiles=1" : ""}` : "";
+    await api.del(`/root-folders/${id}${qs}`);
     load();
+  }
+
+  async function moveRootFolder(sourceId: number, destinationId: number) {
+    if (!destinationId) return;
+    if (!confirm("Move every media item in this folder to the destination folder? This physically relocates their files on disk.")) return;
+    const result = await api.post<{ started: boolean; itemCount: number }>(`/root-folders/${sourceId}/move-to/${destinationId}`, {});
+    alert(
+      result.itemCount === 0
+        ? "Nothing to move — this folder has no media items."
+        : `Moving ${result.itemCount} item(s) in the background — check back in a bit, or watch the Audit Log.`
+    );
   }
 
   async function updateFolderQuota(id: number, field: "quotaPercent" | "pauseGrabsAtQuota", value: number | boolean | null) {
@@ -1143,6 +1194,22 @@ export default function Settings() {
                     </button>
                   </div>
                 ))}
+                <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+                  <label>Music track filename (tokens: {"{trackNumber}"}, {"{trackTitle}"}, {"{parentTitle}"}, {"{childTitle}"})</label>
+                  <p style={{ color: "var(--muted)", fontSize: "0.78rem", marginTop: 0 }}>
+                    The Music config above only templates the album folder — individual track files
+                    were always kept exactly as downloaded, with no way to rename them to match a
+                    template the way every other library type's files already are. This fills that
+                    gap: applies to a track only once it's matched to a known track number (an
+                    unmatched file keeps its original name, same as naming disabled) — respects the
+                    same enable/disable toggle as Music's own naming config above.
+                  </p>
+                  <input
+                    key={settings.namingArtistTrackTemplate ?? "naming-artist-track-empty"}
+                    defaultValue={settings.namingArtistTrackTemplate ?? "{trackNumber:00} - {trackTitle}"}
+                    onBlur={(e) => saveSetting("namingArtistTrackTemplate", e.target.value)}
+                  />
+                </div>
               </div>
             ),
           },
@@ -1280,6 +1347,29 @@ export default function Settings() {
                   defaultValue={settings.mediaServerToken ?? ""}
                   onBlur={(e) => saveSetting("mediaServerToken", e.target.value)}
                 />
+                {(settings.mediaServerType ?? "plex") === "plex" && (
+                  <div style={{ marginTop: 4, marginBottom: 8 }}>
+                    {!plexAuthUrl && (
+                      <button type="button" className="secondary" onClick={startPlexSignIn} disabled={plexSigningIn}>
+                        {plexSigningIn ? "Starting..." : "Sign in with Plex..."}
+                      </button>
+                    )}
+                    {plexAuthUrl && (
+                      <p style={{ fontSize: "0.85rem" }}>
+                        <a href={plexAuthUrl} target="_blank" rel="noreferrer">
+                          Click here to sign in on plex.tv
+                        </a>
+                        {plexSignInStatus === "waiting" && " — waiting for you to finish signing in..."}
+                        {plexSignInStatus === "claimed" && " — signed in! Token saved above."}
+                      </p>
+                    )}
+                    <p style={{ color: "var(--muted)", fontSize: "0.78rem", marginTop: 0 }}>
+                      Uses Plex's real sign-in flow instead of digging a token out of Plex's own XML
+                      responses by hand (those are frequently temporary) — opens plex.tv in a new tab;
+                      once you sign in there, a durable token is saved here automatically.
+                    </p>
+                  </div>
+                )}
                 <label>Refresh media server library after each import</label>
                 <select
                   key={settings.mediaServerRefreshOnImport ?? "media-server-refresh-empty"}
@@ -1961,7 +2051,34 @@ export default function Settings() {
                   />
                   Pause grabs at quota
                 </label>
-                <button className="danger" onClick={() => removeFolder(f.id)}>
+                {rootFolders.filter((other) => other.mediaType === f.mediaType && other.id !== f.id).length > 0 && (
+                  <>
+                    <label>Move all files to another root folder</label>
+                    <div className="toolbar" style={{ gap: 8 }}>
+                      <select
+                        defaultValue=""
+                        onChange={(e) => {
+                          const destId = Number(e.target.value);
+                          if (destId) moveRootFolder(f.id, destId);
+                          e.target.value = "";
+                        }}
+                        style={{ flex: 1 }}
+                      >
+                        <option value="" disabled>
+                          Choose destination...
+                        </option>
+                        {rootFolders
+                          .filter((other) => other.mediaType === f.mediaType && other.id !== f.id)
+                          .map((other) => (
+                            <option key={other.id} value={other.id}>
+                              {other.path}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                  </>
+                )}
+                <button className="danger" onClick={() => removeFolder(f.id)} style={{ marginTop: 8 }}>
                   Delete root folder
                 </button>
               </div>

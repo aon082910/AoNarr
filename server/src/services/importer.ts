@@ -18,7 +18,7 @@ import {
 } from "./subtitleClient.js";
 import { unpackDownloadedArchives } from "./archiveExtract.js";
 import { syncSubtitleToVideo } from "./subtitleSync.js";
-import { DEFAULT_SHAPE_TEMPLATES, renderTemplate } from "./naming.js";
+import { DEFAULT_SHAPE_TEMPLATES, DEFAULT_TRACK_TEMPLATE, renderTemplate } from "./naming.js";
 import { getMediaTypeConfig, isProbeableFile } from "./mediaTypes.js";
 import { getSetting } from "./settingsStore.js";
 import { probeMediaInfo } from "./ffprobe.js";
@@ -514,19 +514,33 @@ export async function placeAlbumFiles(params: {
     .map((e) => path.join(sourceDir, e.name));
 
   const tracks = (await db.prepare("SELECT * FROM tracks WHERE sub_item_id = ?").all(subItemId)) as any[];
+  const namingEnabled = getNamingEnabled(item.type);
+  const trackTemplate = getSetting("namingArtistTrackTemplate") || DEFAULT_TRACK_TEMPLATE;
 
   let movedCount = 0;
   for (const src of siblings) {
-    const fileName = sanitizeForPath(path.basename(src));
+    const leadingNumber = path.basename(src).match(/^(\d{1,3})/);
+    const track = leadingNumber && tracks.length > 0 ? tracks.find((t) => t.track_number === Number(leadingNumber[1])) : undefined;
+
+    // A matched track gets its filename templated the same way every other shape's filename
+    // already is; an unmatched file (no leading track number, or no track list fetched yet) has
+    // nothing to template against, so it keeps its original name — same as naming-disabled.
+    const fileName =
+      track && namingEnabled
+        ? sanitizeForPath(
+            renderTemplate(trackTemplate, {
+              trackNumber: track.track_number,
+              trackTitle: track.title,
+              parentTitle: item.title,
+              childTitle: subRow.title,
+            })
+          ) + path.extname(src)
+        : sanitizeForPath(path.basename(src));
     const dest = path.join(destFolder, fileName);
     moveFile(src, dest);
     movedCount++;
 
-    const leadingNumber = path.basename(src).match(/^(\d{1,3})/);
-    if (leadingNumber && tracks.length > 0) {
-      const track = tracks.find((t) => t.track_number === Number(leadingNumber[1]));
-      if (track) await db.prepare("UPDATE tracks SET has_file = 1, file_path = ? WHERE id = ?").run(dest, track.id);
-    }
+    if (track) await db.prepare("UPDATE tracks SET has_file = 1, file_path = ? WHERE id = ?").run(dest, track.id);
   }
 
   const anchorDest = path.join(destFolder, sanitizeForPath(path.basename(anchorFile)));
@@ -724,7 +738,7 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
 
 /** Removes now-empty directories left behind by a rename, walking upward from a file's old folder
  * but never touching the root folder itself or anything above it. */
-function removeEmptyParents(dir: string, rootFolderPath: string): void {
+export function removeEmptyParents(dir: string, rootFolderPath: string): void {
   const resolvedRoot = path.resolve(rootFolderPath);
   let current = path.resolve(dir);
   while (current !== resolvedRoot && current.startsWith(resolvedRoot + path.sep)) {
