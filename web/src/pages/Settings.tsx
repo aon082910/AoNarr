@@ -554,6 +554,12 @@ export default function Settings() {
     load();
   }
 
+  async function clearBlocklist() {
+    if (!confirm("Clear the entire blocklist? This can't be undone.")) return;
+    await api.del("/blocklist");
+    load();
+  }
+
   async function removeExclusion(id: number) {
     await api.del(`/import-exclusions/${id}`);
     load();
@@ -1407,6 +1413,54 @@ export default function Settings() {
                 <button type="button" onClick={registerDiscordCommand} disabled={registeringDiscordCommand} style={{ marginTop: 8 }}>
                   {registeringDiscordCommand ? "Registering..." : "Register /request command"}
                 </button>
+              </div>
+            ),
+          },
+          {
+            key: "blocklist",
+            label: "Blocklist",
+            description: "Releases never auto-grabbed again for their item",
+            badge: `${blocklist.length} entr${blocklist.length === 1 ? "y" : "ies"}`,
+            badgeOk: blocklist.length > 0,
+            maxWidth: 720,
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
+                  Releases blocklisted from a media item's search results — never auto-grabbed or shown as
+                  grabbable again for that item. Add entries from a media item's search results page.
+                </p>
+                {blocklist.length === 0 && <p className="empty">Nothing blocklisted yet.</p>}
+                {blocklist.length > 0 && (
+                  <>
+                    <button type="button" className="danger" onClick={clearBlocklist} style={{ marginBottom: 8 }}>
+                      Clear all
+                    </button>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Media item</th>
+                          <th>Release</th>
+                          <th>Blocklisted</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {blocklist.map((b) => (
+                          <tr key={b.id}>
+                            <td>{b.mediaTitle}</td>
+                            <td>{b.releaseTitle}</td>
+                            <td>{b.createdAt}</td>
+                            <td>
+                              <button className="danger" onClick={() => removeBlocklistEntry(b.id)}>
+                                Remove
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
+                )}
               </div>
             ),
           },
@@ -2411,49 +2465,6 @@ export default function Settings() {
                       </tbody>
                     </table>
                   </>
-                )}
-              </div>
-            ),
-          },
-          {
-            key: "blocklist",
-            label: "Blocklist",
-            description: "Releases never auto-grabbed again for their item",
-            badge: `${blocklist.length} entr${blocklist.length === 1 ? "y" : "ies"}`,
-            badgeOk: blocklist.length > 0,
-            maxWidth: 720,
-            render: () => (
-              <div>
-                <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
-                  Releases blocklisted from a media item's search results — never auto-grabbed or shown as
-                  grabbable again for that item. Add entries from a media item's search results page.
-                </p>
-                {blocklist.length === 0 && <p className="empty">Nothing blocklisted yet.</p>}
-                {blocklist.length > 0 && (
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Media item</th>
-                        <th>Release</th>
-                        <th>Blocklisted</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {blocklist.map((b) => (
-                        <tr key={b.id}>
-                          <td>{b.mediaTitle}</td>
-                          <td>{b.releaseTitle}</td>
-                          <td>{b.createdAt}</td>
-                          <td>
-                            <button className="danger" onClick={() => removeBlocklistEntry(b.id)}>
-                              Remove
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
                 )}
               </div>
             ),

@@ -1086,6 +1086,10 @@ mediaRouter.patch(
       sets.push("file_path = ?");
       values.push(b.filePath);
     }
+    if (b.quality !== undefined) {
+      sets.push("quality = ?");
+      values.push(b.quality);
+    }
     if (sets.length > 0) {
       values.push(req.params.episodeId);
       await db.prepare(`UPDATE episodes SET ${sets.join(", ")} WHERE id = ?`).run(...values);
@@ -1302,6 +1306,10 @@ mediaRouter.patch(
     if (b.filePath !== undefined) {
       sets.push("file_path = ?");
       values.push(b.filePath);
+    }
+    if (b.quality !== undefined) {
+      sets.push("quality = ?");
+      values.push(b.quality);
     }
     if (b.posterUrl !== undefined) {
       sets.push("poster_url = ?");

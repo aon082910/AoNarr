@@ -8,12 +8,14 @@ import { requireAdmin } from "../middleware/auth.js";
 import { isValidMediaType } from "../services/mediaTypes.js";
 import { logAuditEvent } from "../services/audit.js";
 import { sendPush } from "../services/push.js";
+import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 
 export const requestsRouter = Router();
 
 /** Shared by the admin approve endpoint and auto-approval on submit — creates the real library
  * entry from a request row exactly the way adding media manually does. */
-async function approveRequestRow(request: any, rootFolderId: number | null, qualityProfileId: number | null): Promise<number> {
+async function approveRequestRow(request: any, rootFolderIdOverride: number | null, qualityProfileId: number | null): Promise<number> {
+  const rootFolderId = rootFolderIdOverride ?? (await autoSelectRootFolderId(request.type));
   const mediaResult = await db
     .prepare(
       `INSERT INTO media_items

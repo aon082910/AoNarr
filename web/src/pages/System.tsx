@@ -173,6 +173,7 @@ export default function System() {
   const [orphanedIncremental, setOrphanedIncremental] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  const [scanningLibrary, setScanningLibrary] = useState(false);
   const [upcomingArchivals, setUpcomingArchivals] = useState<ArchivalCandidate[] | null>(null);
   const [loadingUpcoming, setLoadingUpcoming] = useState(false);
   const [syncingTrakt, setSyncingTrakt] = useState(false);
@@ -365,6 +366,18 @@ export default function System() {
       setDuplicateFiles(result);
     } finally {
       setCleanupLoading(null);
+    }
+  }
+
+  async function scanLibraryNow() {
+    setScanningLibrary(true);
+    try {
+      await api.post("/jobs/libraryScan/run", {});
+      alert(
+        "Library scan started in the background — check the Jobs page or your library after a minute for anything newly matched/imported."
+      );
+    } finally {
+      setScanningLibrary(false);
     }
   }
 
@@ -874,6 +887,14 @@ export default function System() {
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={runArchivalNow} disabled={archiving} className="secondary">
             {archiving ? "Running..." : "Run archival now"}
+          </button>
+          <button
+            onClick={scanLibraryNow}
+            disabled={scanningLibrary}
+            className="secondary"
+            title="Matches files already sitting in your root folders to library items (adding new ones as needed) — for discovering an existing, already-organized library instead of re-adding everything by hand."
+          >
+            {scanningLibrary ? "Scanning..." : "Scan library for existing files"}
           </button>
           <button onClick={() => scanOrphaned(false)} disabled={scanning} className="secondary">
             {scanning ? "Scanning..." : "Scan for orphaned files"}

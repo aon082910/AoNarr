@@ -144,6 +144,22 @@ searchRouter.get(
       };
     }));
 
+    // Previously returned in whatever order the indexer itself gave back — an indexer's own
+    // relevance ranking has no idea what "matches this specific season/episode" or "meets this
+    // profile" mean, so an unrelated show whose title happens to share a word (or a wrong-season
+    // episode of the right show) could easily outrank the actual target. Sort by the same signals
+    // an automatic grab already weighs — real match first, then profile-allowed, not blocklisted,
+    // format score, then seeders — so the top of the list is what auto-search would actually pick,
+    // not just whatever the indexer happened to return first.
+    annotated.sort(
+      (a, b) =>
+        Number(b.matchesTarget) - Number(a.matchesTarget) ||
+        Number(b.allowedByProfile) - Number(a.allowedByProfile) ||
+        Number(a.blocklisted) - Number(b.blocklisted) ||
+        b.formatScore - a.formatScore ||
+        (b.seeders ?? 0) - (a.seeders ?? 0)
+    );
+
     res.json(annotated);
   })
 );

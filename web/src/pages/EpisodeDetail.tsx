@@ -45,6 +45,22 @@ export default function EpisodeDetail() {
     setEpisode({ ...episode, monitored: updated.monitored });
   }
 
+  async function markAsMissing() {
+    if (!episode) return;
+    if (
+      !confirm(
+        "Mark this episode as missing? Only do this if you already removed the file from disk yourself — this just resets AoNarr's own record so it gets searched for again; it doesn't touch any file."
+      )
+    )
+      return;
+    const updated = await api.patch<EpisodeDetailResponse>(`/media/${mediaId}/episodes/${episodeId}`, {
+      hasFile: 0,
+      filePath: null,
+      quality: null,
+    });
+    setEpisode({ ...episode, hasFile: updated.hasFile, filePath: updated.filePath, quality: updated.quality });
+  }
+
   async function runSearch() {
     setSearching(true);
     setError(null);
@@ -144,6 +160,11 @@ export default function EpisodeDetail() {
           <button onClick={runSearch} disabled={searching}>
             {searching ? "Searching..." : "Search"}
           </button>
+          {!!episode.hasFile && (
+            <button className="danger" onClick={markAsMissing} title="Removed the file yourself? This resets AoNarr's record so it searches for it again.">
+              Mark as missing
+            </button>
+          )}
           <button className="secondary" onClick={() => navigate(-1)}>
             Back to show
           </button>

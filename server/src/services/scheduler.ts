@@ -412,6 +412,11 @@ async function runAutoSearch(signal?: AbortSignal) {
         for (const ep of episodes) {
           if (await isAlreadyQueued(item.id, ep.id, null)) continue;
           if (isDaily && !ep.air_date) continue; // nothing to search by yet (air date not known)
+          // A future-dated episode has no real release to find yet — searching for one anyway
+          // just returns noise (unrelated titles that happen to match the query) and risks a
+          // false-positive grab. Only compare the date portion (not time-of-day) since an air
+          // date is stored as a bare date with no timezone/time — "today" should still search.
+          if (ep.air_date && ep.air_date.slice(0, 10) > new Date().toISOString().slice(0, 10)) continue;
           const query = isDaily
             ? `${item.title} ${ep.air_date}`
             : `${item.title} S${String(ep.season_number).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}`;

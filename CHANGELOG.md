@@ -3,6 +3,70 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 172 — GitHub issue fixes: #11, #12, #13, #14, #15, #16
+- **#12 — Root folder never auto-selected on search-based import or request approval**
+  (confirmed, root cause already correctly identified by the reporter). `routes/media.ts`'s
+  manual `POST /media` already called `autoSelectRootFolderId()`; `routes/metadata.ts`'s
+  `POST /import` (the normal add-from-search flow) and `routes/requests.ts`'s
+  `approveRequestRow` (used by both admin approval and auto-approval) did not, silently leaving
+  `rootFolderId` null with exactly one root folder configured — the case a household request
+  portal user has no way to work around at all, since restricted accounts never see a root
+  folder selector. Both now call the same fallback.
+- **#11 — Blocklist buried under Quality settings, no "clear all"** — moved the Blocklist tile
+  from Settings → Quality into Settings → Media Management, and added a `DELETE /api/blocklist`
+  endpoint + "Clear all" button (confirmation-gated) instead of only one-by-one removal.
+- **#14 — Future-dated episodes searched before they've aired** — the scheduled auto-search's
+  episodic branch only skipped daily-type episodes with an unknown air date; a future-dated
+  *known* air date (the reported case) had no gate at all, so it searched anyway and returned
+  noise — unrelated titles that happen to match the query, sometimes grabbed as false positives.
+  Now skips any episode whose air date is still in the future, regardless of series type.
+- **#15 — Manually removing a file from disk leaves the item stuck "downloaded"** — AoNarr
+  already had the right mechanism for this (the weekly corrupt-media check treats "file missing
+  from disk" as a validation failure and resets state), but nothing let a user trigger that
+  immediately after removing a file themselves rather than waiting up to a week. Added a "Mark
+  as missing" button to the Episode and sub-item (book/comic/audiobook/etc.) detail pages —
+  resets `hasFile`/`filePath`/`quality` in one call, the same state a never-downloaded item is
+  in, so it's picked back up by auto-search right away. Also closed a gap the fix surfaced: the
+  episodes and sub-items `PATCH` routes accepted `hasFile`/`filePath` but not `quality`, so
+  quality was never actually being cleared on a reset.
+- **#16 — Search results shown in whatever raw order the indexer returned, not by relevance**
+  — the manual search view already computed `matchesTarget`/`allowedByProfile`/`formatScore`
+  annotations per result but never used them to *order* the list, so an unrelated release that
+  merely shares a word in its title (the reporter's example: a completely different show
+  outranking the actual target because the indexer's own search returned it first) could sit at
+  the top. Now sorted by the same signals an automatic grab already weighs: real match first,
+  then profile-allowed, not blocklisted, format score, then seeders — the top result is now what
+  auto-search would actually pick, not just whatever the indexer happened to return first.
+- **#13 (partial)** — three of four items:
+  - **Form focus jumping back to the first field on every keystroke** (root cause found): the
+    shared `Modal` component's focus-management `useEffect` depended on `[onClose]`, and callers
+    almost always pass `onClose` as an inline arrow function — a brand-new function identity on
+    every parent re-render, which typing into any controlled field inside the modal triggers.
+    The effect re-ran on every keystroke and explicitly refocused the first field each time.
+    Split into two effects: one-time focus-on-mount (empty deps, runs once) and a separate
+    keydown-listener effect that can safely depend on `onClose` without touching focus. Fixes
+    every form built on `Modal` at once, not just the one form the report happened to name.
+  - **"No way to discover an existing, already-organized library"** — this already existed
+    (`scanAndImportAllLibraries`, the "Library Scan & Import" scheduled job) but had no visible
+    trigger anywhere outside the generic Jobs page, which doesn't read as "scan my library" to
+    someone looking for it. Added a clearly-labeled "Scan library for existing files" button to
+    System → Maintenance, right where "Scan for orphaned files" (a related but different
+    diagnostic-only action) already lives.
+  - Music's incomplete per-file naming scheme (directories templated, individual track filenames
+    always kept as-downloaded) and Plex OAuth login (vs. pasting a token) are real, larger asks
+    left for a dedicated round — the former is a deliberate existing architectural choice noted
+    in `importer.ts`'s own comments (retemplating per-track filenames on rename is a materially
+    riskier operation than per-item file rename), not a quick fix.
+- Verified live end-to-end for every item: confirmed both `POST /metadata/import` and request
+  approval now auto-select the root folder with exactly one configured (root cause scenario from
+  #12, reproduced exactly); confirmed the blocklist clear-all endpoint empties a real 2-entry
+  list in one call and the tile renders under Media Management; confirmed the sort comparator
+  against the reporter's own exact scenario (an unrelated "Bear Grylls" result no longer
+  outranks the real "The Bear" match); confirmed a `PATCH` reset via the real API round-trips
+  `hasFile`/`filePath`/`quality` back to null; and reproduced the focus bug's exact repro steps
+  in a real browser (typed a full IP address into a download client's Host field character by
+  character) — focus stayed on the field the entire time instead of jumping back to Name.
+
 ## Round 171 — IRC instant-grab announce feeds
 - **IRC Announce Feeds** (new page, Configuration → "IRC Announce Feeds") — Autobrr's core idea:
   monitor a private tracker's announce channel over IRC in real time so a release can be grabbed

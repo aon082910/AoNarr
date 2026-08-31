@@ -100,6 +100,22 @@ export default function SubItemDetail() {
     setSubItem({ ...subItem, monitored: updated.monitored });
   }
 
+  async function markAsMissing() {
+    if (!subItem) return;
+    if (
+      !confirm(
+        "Mark as missing? Only do this if you already removed the file from disk yourself — this just resets AoNarr's own record so it gets searched for again; it doesn't touch any file."
+      )
+    )
+      return;
+    const updated = await api.patch<SubItemDetailResponse>(`/media/${mediaId}/subitems/${subItemId}`, {
+      hasFile: 0,
+      filePath: null,
+      quality: null,
+    });
+    setSubItem({ ...subItem, hasFile: updated.hasFile, filePath: updated.filePath, quality: updated.quality });
+  }
+
   async function runSearch() {
     setSearching(true);
     setError(null);
@@ -442,6 +458,11 @@ export default function SubItemDetail() {
           {subItem.hasFile && subItem.parent?.type !== "audiobook" && (
             <button className="secondary" onClick={sendToKindle} disabled={sendingToKindle} title="Emails this file to your Kindle's Send to Kindle address (set in Settings → General)">
               {sendingToKindle ? "Sending..." : "Send to Kindle"}
+            </button>
+          )}
+          {!!subItem.hasFile && (
+            <button className="danger" onClick={markAsMissing} title="Removed the file yourself? This resets AoNarr's record so it searches for it again.">
+              Mark as missing
             </button>
           )}
           <button className="secondary" onClick={() => navigate(-1)}>

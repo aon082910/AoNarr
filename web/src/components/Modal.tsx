@@ -18,6 +18,14 @@ export default function Modal({
   const contentRef = useRef<HTMLDivElement>(null);
   const titleId = useRef(`modal-title-${Math.random().toString(36).slice(2)}`).current;
 
+  // Deliberately separate from the keydown-handling effect below, and deliberately empty deps:
+  // this must run exactly once per modal open, not on every render. Callers almost always pass
+  // onClose as an inline arrow function (`onClose={() => setMode(null)}`), which is a brand-new
+  // function identity on every parent re-render — typing into any controlled field inside the
+  // modal re-renders the parent, so if this effect depended on `onClose` (as it originally did),
+  // it re-ran on every keystroke and yanked focus back to the first field mid-type. The keydown
+  // effect below still depends on onClose (harmless — resubscribing a listener doesn't touch
+  // focus), so Escape/Tab-trap behavior always sees the latest onClose regardless.
   useEffect(() => {
     // Whatever had focus when the modal opened (almost always the button that triggered it) gets
     // it back on close — without this, focus silently drops to <body>, leaving a keyboard user
@@ -35,6 +43,13 @@ export default function Modal({
     );
     firstField?.focus();
 
+    return () => {
+      previouslyFocused?.focus();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") {
         onClose();
@@ -62,10 +77,7 @@ export default function Modal({
       }
     }
     document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      previouslyFocused?.focus();
-    };
+    return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
   return (

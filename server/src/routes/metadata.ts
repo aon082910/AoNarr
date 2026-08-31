@@ -18,6 +18,7 @@ import { isExcluded } from "../services/importExclusions.js";
 import { log } from "../services/logger.js";
 import { logAuditEvent } from "../services/audit.js";
 import { getSetting } from "../services/settingsStore.js";
+import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import type { MediaType } from "../types/index.js";
 
 export const metadataRouter = Router();
@@ -91,6 +92,7 @@ metadataRouter.post(
     }
 
     const externalIds = b.externalIds ?? {};
+    const rootFolderId = b.rootFolderId ?? (await autoSelectRootFolderId(b.type));
 
     const result = await db
       .prepare(
@@ -106,7 +108,7 @@ metadataRouter.post(
         overview: b.overview ?? null,
         posterUrl: b.posterUrl ?? null,
         externalIds: JSON.stringify(externalIds),
-        rootFolderId: b.rootFolderId ?? null,
+        rootFolderId,
         qualityProfileId: b.qualityProfileId ?? null,
         monitored: b.monitored ?? 1,
         status: "unknown",

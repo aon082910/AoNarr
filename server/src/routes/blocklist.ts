@@ -35,6 +35,16 @@ blocklistRouter.post(
   })
 );
 
+/** Wipes the whole blocklist in one call — useful after re-tuning custom formats/indexers,
+ * instead of removing entries one at a time. */
+blocklistRouter.delete(
+  "/",
+  asyncHandler(async (_req, res) => {
+    await db.prepare("DELETE FROM blocklist").run();
+    res.status(204).send();
+  })
+);
+
 blocklistRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
