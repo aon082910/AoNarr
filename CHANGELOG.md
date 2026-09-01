@@ -3,6 +3,15 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 174 — real PUID/PGID support
+- **PUID/PGID now actually do something.** Both the `combined` and `server` images previously
+  shipped a `PUID`/`PGID` env-var pair in `docker-compose.yml` that did nothing — the container
+  always ran as root. The entrypoint now creates a matching user/group on startup, chowns
+  `/config` to it (only when ownership doesn't already match, so restarts are cheap), and runs
+  the node process as that user via `gosu`. nginx (in the `combined` image) keeps running as
+  root since it only serves the built-in web bundle and proxies to node — it never touches
+  user-owned volumes. Defaults are `99`/`100` (Unraid's `nobody`/`users`).
+
 ## Round 173 — #13's remaining items, root folder delete-cascade, root folder move
 - **Per-track music filename templating** (closes the rest of #13) — Music's individual track
   filenames were always kept exactly as downloaded; only the album folder was templated. New

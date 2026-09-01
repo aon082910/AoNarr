@@ -10,7 +10,8 @@ services:
       - AONARR_DOWNLOADS_DIR=/downloads
       - AONARR_SEARCH_INTERVAL_MINUTES=30
       - AONARR_QUEUE_POLL_SECONDS=20
-      # Set these to your host's user/group so files created in bind mounts are owned correctly.
+      # Files/folders under /config are chowned to this user/group on startup (only when they
+      # don't already match, so this is cheap on restarts). Defaults are Unraid's nobody:users.
       - PUID=99
       - PGID=100
     volumes:
