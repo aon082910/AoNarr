@@ -5,7 +5,7 @@ import { getMediaTypeConfig, isProbeableFile, MEDIA_TYPE_KEYS } from "./mediaTyp
 import { rootFolderFromRow } from "../db/mappers.js";
 import { parseReleaseTitle } from "./releaseParser.js";
 import { probeMediaInfo } from "./ffprobe.js";
-import { searchMetadata, fetchSeriesEpisodesFor, fetchArtistAlbumsFor, fetchCollectionChildrenFor } from "./metadata.js";
+import { searchMetadata, fetchSeriesEpisodesFor, fetchSeriesSeasonsFor, fetchArtistAlbumsFor, fetchCollectionChildrenFor } from "./metadata.js";
 import { log } from "./logger.js";
 
 export function normalizeForMatch(s: string): string {
@@ -194,20 +194,25 @@ const scansInProgress = new Set<string>();
  * whose guessed title/parent-folder title doesn't match it is skipped without touching the
  * database (no new item gets created for it), rather than the normal whole-library behavior of
  * importing anything it finds. Used by the per-item "Scan & Import" button on a media page. */
-export async function scanAndImportLibrary(type: string, signal?: AbortSignal, onlyTitle?: string): Promise<ScanImportResult> {
+export async function scanAndImportLibrary(
+  type: string,
+  signal?: AbortSignal,
+  onlyTitle?: string,
+  onlySeasonNumber?: number
+): Promise<ScanImportResult> {
   if (!onlyTitle && scansInProgress.has(type)) {
     log.warn(`[libraryScan] a scan for "${type}" is already running — skipping this overlapping request`);
     return { matched: 0, created: 0, skipped: 0, skippedFiles: [], alreadyRunning: true };
   }
   if (!onlyTitle) scansInProgress.add(type);
   try {
-    return await scanAndImportLibraryInner(type, signal, onlyTitle);
+    return await scanAndImportLibraryInner(type, signal, onlyTitle, onlySeasonNumber);
   } finally {
     if (!onlyTitle) scansInProgress.delete(type);
   }
 }
 
-async function scanAndImportLibraryInner(type: string, signal?: AbortSignal, onlyTitle?: string): Promise<ScanImportResult> {
+async function scanAndImportLibraryInner(type: string, signal?: AbortSignal, onlyTitle?: string, onlySeasonNumber?: number): Promise<ScanImportResult> {
   const typeConfig = getMediaTypeConfig(type);
   const result: ScanImportResult = { matched: 0, created: 0, skipped: 0, skippedFiles: [] };
 
@@ -285,6 +290,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal, onl
           continue;
         }
         if (onlyTitle && !titlesMatch(guessedTitle, onlyTitle)) continue;
+        if (onlySeasonNumber != null && season !== onlySeasonNumber) continue;
         const parsed = parseReleaseTitle(base);
         const quality = parsed.quality === "Unknown" ? null : parsed.quality;
 
@@ -566,7 +572,8 @@ export async function refreshLibraryMetadata(type: string, signal?: AbortSignal)
 async function refreshOneItem(
   item: any,
   type: string,
-  typeConfig: ReturnType<typeof getMediaTypeConfig>
+  typeConfig: ReturnType<typeof getMediaTypeConfig>,
+  onlySeasonNumber?: number
 ): Promise<{ ok: true; childrenAdded: number } | { ok: false }> {
   try {
     const results = await searchMetadata(type as any, item.title);
@@ -574,21 +581,26 @@ async function refreshOneItem(
     if (!best) return { ok: false };
 
     const alreadyMatched = item.external_ids && item.external_ids !== "{}";
-    await db
-      .prepare(
-        `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), year = COALESCE(?, year),
-         release_date = COALESCE(?, release_date)
-         ${alreadyMatched ? "" : ", title = ?, sort_title = ?, external_ids = ?"}
-         WHERE id = ?`
-      )
-      .run(
-        best.overview,
-        best.posterUrl,
-        best.year,
-        best.releaseDate ?? null,
-        ...(alreadyMatched ? [] : [best.title, best.title.toLowerCase(), JSON.stringify(best.externalIds ?? {})]),
-        item.id
-      );
+    // Scoped to one season leaves the show's own overview/poster/year/title untouched — those
+    // aren't season-level data, and re-writing them on a "just refresh this season" click would be
+    // a surprising side effect the button never advertised.
+    if (onlySeasonNumber == null) {
+      await db
+        .prepare(
+          `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), year = COALESCE(?, year),
+           release_date = COALESCE(?, release_date)
+           ${alreadyMatched ? "" : ", title = ?, sort_title = ?, external_ids = ?"}
+           WHERE id = ?`
+        )
+        .run(
+          best.overview,
+          best.posterUrl,
+          best.year,
+          best.releaseDate ?? null,
+          ...(alreadyMatched ? [] : [best.title, best.title.toLowerCase(), JSON.stringify(best.externalIds ?? {})]),
+          item.id
+        );
+    }
 
     // Backfills any episode/child the provider now lists that this item doesn't have yet —
     // e.g. a show Scan & Import or a Starr import only ever created rows for downloaded files
@@ -596,29 +608,50 @@ async function refreshOneItem(
     // same state a normal Add Media gives every episode/child up front. Never touches an
     // existing row's has_file/file_path, so this can't un-download anything.
     const externalIdsForChildren = alreadyMatched ? JSON.parse(item.external_ids) : best.externalIds ?? {};
-    const childrenAdded = await syncMissingChildren(item.id, typeConfig, externalIdsForChildren);
+    const childrenAdded = await syncMissingChildren(item.id, typeConfig, externalIdsForChildren, onlySeasonNumber);
+
+    if (typeConfig.shape === "episodic" && Object.keys(externalIdsForChildren).length > 0) {
+      const seasons = await fetchSeriesSeasonsFor(externalIdsForChildren).catch(() => []);
+      for (const s of seasons) {
+        if (onlySeasonNumber != null && s.seasonNumber !== onlySeasonNumber) continue;
+        if (!s.posterUrl) continue;
+        await db
+          .prepare(
+            `INSERT INTO seasons (media_item_id, season_number, poster_url) VALUES (?, ?, ?)
+             ON CONFLICT (media_item_id, season_number) DO UPDATE SET poster_url = excluded.poster_url`
+          )
+          .run(item.id, s.seasonNumber, s.posterUrl);
+      }
+    }
+
     return { ok: true, childrenAdded };
   } catch {
     return { ok: false };
   }
 }
 
-/** Per-item version of refreshLibraryMetadata, for the "Refresh" button on a single media page. */
-export async function refreshOneMediaItem(mediaItemId: number): Promise<{ ok: boolean; childrenAdded: number }> {
+/** Per-item version of refreshLibraryMetadata, for the "Refresh" button on a single media page —
+ * `onlySeasonNumber`, when given, is the season-scoped "Refresh season" button on the season
+ * toolbar: still re-fetches the whole show's episode/season list from the provider (there's no
+ * cheaper season-only fetch for every provider — see fetchSeriesEpisodesFor), but only writes back
+ * the episodes/season poster belonging to that one season, and skips the show-level
+ * overview/poster/year update entirely. */
+export async function refreshOneMediaItem(mediaItemId: number, onlySeasonNumber?: number): Promise<{ ok: boolean; childrenAdded: number }> {
   const item = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId)) as any;
   if (!item) return { ok: false, childrenAdded: 0 };
   const typeConfig = getMediaTypeConfig(item.type);
-  const result = await refreshOneItem(item, item.type, typeConfig);
+  const result = await refreshOneItem(item, item.type, typeConfig, onlySeasonNumber);
   return result.ok ? { ok: true, childrenAdded: result.childrenAdded } : { ok: false, childrenAdded: 0 };
 }
 
 /** Per-item version of scanAndImportLibrary, for the "Scan & Import" button on a single media
  * page — scopes the whole-library scan to just this item's own title, same reasoning as
- * scanAndImportLibrary's onlyTitle param. */
-export async function scanAndImportOneMediaItem(mediaItemId: number, signal?: AbortSignal): Promise<ScanImportResult> {
+ * scanAndImportLibrary's onlyTitle param. `seasonNumber`, when given, additionally skips any file
+ * that doesn't parse to that season (the season toolbar's "Scan & Import" button). */
+export async function scanAndImportOneMediaItem(mediaItemId: number, signal?: AbortSignal, seasonNumber?: number): Promise<ScanImportResult> {
   const item = (await db.prepare("SELECT type, title FROM media_items WHERE id = ?").get(mediaItemId)) as { type: string; title: string } | undefined;
   if (!item) return { matched: 0, created: 0, skipped: 0, skippedFiles: [] };
-  return scanAndImportLibrary(item.type, signal, item.title);
+  return scanAndImportLibrary(item.type, signal, item.title, seasonNumber);
 }
 
 /** Inserts any episode/child a metadata provider lists that isn't already tracked for this item —
@@ -633,12 +666,14 @@ export async function scanAndImportOneMediaItem(mediaItemId: number, signal?: Ab
 async function syncMissingChildren(
   mediaItemId: number,
   typeConfig: ReturnType<typeof getMediaTypeConfig>,
-  externalIds: Record<string, string>
+  externalIds: Record<string, string>,
+  onlySeasonNumber?: number
 ): Promise<number> {
   if (Object.keys(externalIds).length === 0) return 0;
 
   if (typeConfig.shape === "episodic") {
-    const episodes = await fetchSeriesEpisodesFor(externalIds).catch(() => []);
+    let episodes = await fetchSeriesEpisodesFor(externalIds).catch(() => []);
+    if (onlySeasonNumber != null) episodes = episodes.filter((ep) => ep.seasonNumber === onlySeasonNumber);
     if (episodes.length === 0) return 0;
     const existing = (await db
       .prepare("SELECT id, season_number, episode_number, title, air_date FROM episodes WHERE media_item_id = ?")

@@ -41,6 +41,18 @@ CREATE TABLE IF NOT EXISTS media_items (
 
 CREATE INDEX IF NOT EXISTS idx_media_items_type ON media_items(type);
 
+-- Season-level artwork (TV/anime only) — episodes don't carry a poster of their own, and a show's
+-- own poster_url is the SHOW's poster, not any one season's. Not every provider exposes season
+-- artwork (see fetchSeriesSeasonsFor in metadata.ts), so a season simply has no row here until one
+-- is found — the season tile view falls back to the show's own poster when that happens.
+CREATE TABLE IF NOT EXISTS seasons (
+  id SERIAL PRIMARY KEY,
+  media_item_id INTEGER NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+  season_number INTEGER NOT NULL,
+  poster_url TEXT,
+  UNIQUE(media_item_id, season_number)
+);
+
 -- TV episodes (series only)
 CREATE TABLE IF NOT EXISTS episodes (
   id SERIAL PRIMARY KEY,

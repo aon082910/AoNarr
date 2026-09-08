@@ -5,7 +5,7 @@ import multer from "multer";
 import { log } from "../services/logger.js";
 import { db } from "../db/index.js";
 import { nowExpr } from "../db/asyncDb.js";
-import { episodeFromRow, mediaItemFromRow, queueItemFromRow, subItemFromRow, tagFromRow, trackFromRow } from "../db/mappers.js";
+import { episodeFromRow, mediaItemFromRow, queueItemFromRow, seasonFromRow, subItemFromRow, tagFromRow, trackFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { getMediaTypeConfig, isProbeableFile, isValidMediaType } from "../services/mediaTypes.js";
@@ -460,6 +460,31 @@ mediaRouter.post(
   })
 );
 
+/** Season-scoped versions of Scan & Import/Refresh, for the season toolbar on a show's page —
+ * same underlying functions as the whole-item buttons above, just with a season number threaded
+ * through so only that season's files/episodes are touched. */
+mediaRouter.post(
+  "/:id/season/:seasonNumber/scan-import",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const row = await db.prepare("SELECT id FROM media_items WHERE id = ?").get(req.params.id);
+    if (!row) throw new HttpError(404, "Media item not found");
+    const result = await scanAndImportOneMediaItem(Number(req.params.id), undefined, Number(req.params.seasonNumber));
+    res.json(result);
+  })
+);
+
+mediaRouter.post(
+  "/:id/season/:seasonNumber/refresh",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const row = await db.prepare("SELECT id FROM media_items WHERE id = ?").get(req.params.id);
+    if (!row) throw new HttpError(404, "Media item not found");
+    const result = await refreshOneMediaItem(Number(req.params.id), Number(req.params.seasonNumber));
+    res.json(result);
+  })
+);
+
 /** Bulk metadata export: a .zip of one file per item, scoped by ?type=. Registered before the
  * "/:id" route below so "export-bulk.zip" isn't swallowed as an :id value. */
 mediaRouter.get(
@@ -532,17 +557,19 @@ mediaRouter.get(
     }
     const shape = getMediaTypeConfig(item.type).shape;
     let children: unknown[] = [];
+    let seasons: unknown[] = [];
     if (shape === "episodic") {
       children = ((await db
         .prepare("SELECT * FROM episodes WHERE media_item_id = ? ORDER BY season_number, episode_number")
         .all(item.id)) as any[]).map(episodeFromRow);
+      seasons = ((await db.prepare("SELECT * FROM seasons WHERE media_item_id = ?").all(item.id)) as any[]).map(seasonFromRow);
     } else if (shape === "collection") {
       children = ((await db
         .prepare("SELECT * FROM sub_items WHERE media_item_id = ? ORDER BY release_date")
         .all(item.id)) as any[]).map(subItemFromRow);
     }
 
-    res.json({ ...item, children, tags: await getTagsForMediaItem(item.id) });
+    res.json({ ...item, children, seasons, tags: await getTagsForMediaItem(item.id) });
   })
 );
 
@@ -838,6 +865,18 @@ mediaRouter.post(
     const row = await db.prepare("SELECT id FROM media_items WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Media item not found");
     const result = await renameOneMediaItem(Number(req.params.id));
+    res.json(result);
+  })
+);
+
+/** Season-scoped version, for the season toolbar's "Organize & Rename" button. */
+mediaRouter.post(
+  "/:id/season/:seasonNumber/rename-files",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const row = await db.prepare("SELECT id FROM media_items WHERE id = ?").get(req.params.id);
+    if (!row) throw new HttpError(404, "Media item not found");
+    const result = await renameOneMediaItem(Number(req.params.id), Number(req.params.seasonNumber));
     res.json(result);
   })
 );

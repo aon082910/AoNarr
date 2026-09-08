@@ -799,15 +799,17 @@ export async function renameLibraryFiles(mediaType?: MediaType): Promise<RenameR
 }
 
 /** Per-item version of renameLibraryFiles, for the "Organize & Rename" button on a single media
- * page — same logic, scoped to just this item's own file(s) instead of a whole library. */
-export async function renameOneMediaItem(mediaItemId: number): Promise<RenameResult> {
+ * page — same logic, scoped to just this item's own file(s) instead of a whole library.
+ * `onlySeasonNumber`, when given, is the season toolbar's "Organize & Rename" button — only that
+ * season's episodes are considered (meaningless for non-episodic shapes, so ignored there). */
+export async function renameOneMediaItem(mediaItemId: number, onlySeasonNumber?: number): Promise<RenameResult> {
   const result: RenameResult = { renamed: [], errors: [], skippedMusic: 0 };
   const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId);
-  if (mediaRow) await renameOneItemRow(mediaRow, result);
+  if (mediaRow) await renameOneItemRow(mediaRow, result, onlySeasonNumber);
   return result;
 }
 
-async function renameOneItemRow(mediaRow: any, result: RenameResult): Promise<void> {
+async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonNumber?: number): Promise<void> {
   const item = mediaItemFromRow(mediaRow);
   const typeConfig = getMediaTypeConfig(item.type);
   if (!item.rootFolderId) return;
@@ -830,9 +832,11 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult): Promise<vo
       await db.prepare("UPDATE media_items SET path = ? WHERE id = ?").run(destPath, item.id);
       result.renamed.push({ title: item.title, from: item.path, to: destPath });
     } else if (typeConfig.shape === "episodic") {
-      const episodes = (await db
-        .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND has_file = 1 AND file_path IS NOT NULL")
-        .all(item.id)) as any[];
+      const episodes = (await (onlySeasonNumber != null
+        ? db
+            .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND season_number = ? AND has_file = 1 AND file_path IS NOT NULL")
+            .all(item.id, onlySeasonNumber)
+        : db.prepare("SELECT * FROM episodes WHERE media_item_id = ? AND has_file = 1 AND file_path IS NOT NULL").all(item.id))) as any[];
       for (const epRow of episodes) {
         const ext = path.extname(epRow.file_path);
         const absoluteEpisode = Number(

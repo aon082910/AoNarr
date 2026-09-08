@@ -78,7 +78,14 @@ interface SubItem {
   posterUrl: string | null;
 }
 
-type MediaDetailResponse = MediaItem & { children: Episode[] | SubItem[]; tags: Tag[] };
+interface SeasonInfo {
+  id: number;
+  mediaItemId: number;
+  seasonNumber: number;
+  posterUrl: string | null;
+}
+
+type MediaDetailResponse = MediaItem & { children: Episode[] | SubItem[]; seasons: SeasonInfo[]; tags: Tag[] };
 
 type SearchTarget = { episodeId?: number; subItemId?: number; seasonNumber?: number; label: string } | null;
 
@@ -167,7 +174,10 @@ export default function MediaDetail() {
   const [importChecked, setImportChecked] = useState<Record<string, boolean>>({});
   const [importingBatch, setImportingBatch] = useState(false);
   const [importOnlyEpisodeId, setImportOnlyEpisodeId] = useState<number | null>(null);
+  const [importOnlySeasonNumber, setImportOnlySeasonNumber] = useState<number | null>(null);
   const importPanelRef = useRef<HTMLDivElement>(null);
+  const [seasonActionBusy, setSeasonActionBusy] = useState<{ seasonNumber: number; action: string } | null>(null);
+  const [seasonView, setSeasonView] = useState<"list" | "tile">(() => (localStorage.getItem("aonarr_season_view") as "list" | "tile") || "list");
   const [showSplit, setShowSplit] = useState(false);
   const [splitSelected, setSplitSelected] = useState<Set<number>>(new Set());
   const [splitTitle, setSplitTitle] = useState("");
@@ -178,6 +188,9 @@ export default function MediaDetail() {
   }
 
   useEffect(load, [id]);
+  useEffect(() => {
+    localStorage.setItem("aonarr_season_view", seasonView);
+  }, [seasonView]);
   useEffect(() => {
     api
       .get<{ watched: boolean }>(`/media/${id}/watch-state`)
@@ -458,6 +471,64 @@ export default function MediaDetail() {
     }
   }
 
+  async function scanImportSeason(seasonNumber: number) {
+    if (!item) return;
+    setSeasonActionBusy({ seasonNumber, action: "scan" });
+    try {
+      const result = await api.post<{ matched: number; created: number; skipped: number }>(
+        `/media/${item.id}/season/${seasonNumber}/scan-import`,
+        {}
+      );
+      alert(`Season ${seasonNumber} Scan & Import complete — matched ${result.matched}, created ${result.created}, skipped ${result.skipped}.`);
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSeasonActionBusy(null);
+    }
+  }
+
+  async function organizeSeason(seasonNumber: number) {
+    if (!item) return;
+    setSeasonActionBusy({ seasonNumber, action: "organize" });
+    try {
+      const result = await api.post<{ renamed: { from: string; to: string }[]; errors: { title: string; error: string }[] }>(
+        `/media/${item.id}/season/${seasonNumber}/rename-files`,
+        {}
+      );
+      if (result.errors.length > 0) {
+        alert(`Rename failed: ${result.errors.map((e) => e.error).join(", ")}`);
+      } else if (result.renamed.length === 0) {
+        alert(`Season ${seasonNumber} already organized — nothing needed to move.`);
+      } else {
+        alert(`Renamed/organized ${result.renamed.length} file(s) in Season ${seasonNumber}.`);
+      }
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setSeasonActionBusy(null);
+    }
+  }
+
+  async function refreshSeason(seasonNumber: number) {
+    if (!item) return;
+    setSeasonActionBusy({ seasonNumber, action: "refresh" });
+    try {
+      const result = await api.post<{ ok: boolean; childrenAdded: number }>(`/media/${item.id}/season/${seasonNumber}/refresh`, {});
+      alert(
+        result.ok
+          ? `Refreshed Season ${seasonNumber} — ${result.childrenAdded} episode(s) added.`
+          : "Couldn't find this show on its metadata provider — nothing was refreshed."
+      );
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSeasonActionBusy(null);
+    }
+  }
+
   async function checkCorrupt() {
     if (!item) return;
     const result = await api.post<{ corrupt: boolean; checked: boolean; reason?: string }>(`/media/${item.id}/check-corrupt`, {});
@@ -548,6 +619,16 @@ export default function MediaDetail() {
       if (next.has(seasonNumber)) next.delete(seasonNumber);
       else next.add(seasonNumber);
       return next;
+    });
+  }
+
+  /** Clicking a season tile switches back to the list view with that season expanded and scrolled
+   * into view — tiles are a browsing aid, not a replacement for the list's action toolbar/table. */
+  function selectSeasonTile(seasonNumber: number) {
+    setSeasonView("list");
+    setOpenSeasons((prev) => new Set(prev).add(seasonNumber));
+    requestAnimationFrame(() => {
+      document.querySelector(`[data-season="${seasonNumber}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   }
 
@@ -668,11 +749,14 @@ export default function MediaDetail() {
     return match ? match.id : "";
   }
 
-  /** `overrides` lets a caller that just called setImportOnlyEpisodeId/setImportSubItemId pass the
-   * new value straight through instead of reading it back off state — state updates aren't visible
-   * until the next render, so browse() would otherwise pre-fill targets using the value from
-   * *before* that same click's setState call. */
-  async function browse(nextPath: string, overrides?: { onlyEpisodeId?: number | null; subItemId?: number | "" }) {
+  /** `overrides` lets a caller that just called setImportOnlyEpisodeId/setImportSubItemId/
+   * setImportOnlySeasonNumber pass the new value straight through instead of reading it back off
+   * state — state updates aren't visible until the next render, so browse() would otherwise
+   * pre-fill targets using the value from *before* that same click's setState call. */
+  async function browse(
+    nextPath: string,
+    overrides?: { onlyEpisodeId?: number | null; subItemId?: number | ""; onlySeasonNumber?: number | null }
+  ) {
     const res = await api.get<{ path: string; entries: BrowseEntry[] }>(
       `/import/browse?path=${encodeURIComponent(nextPath)}`
     );
@@ -684,7 +768,9 @@ export default function MediaDetail() {
     // usually needs nothing but reviewing the list and hitting "Import checked files."
     const onlyEpisodeId = overrides && "onlyEpisodeId" in overrides ? overrides.onlyEpisodeId! : importOnlyEpisodeId;
     const subItemDefault = overrides && "subItemId" in overrides ? overrides.subItemId! : importSubItemId;
-    const episodes = shape === "episodic" ? ((item?.children as Episode[] | undefined) ?? []) : [];
+    const onlySeasonNumber = overrides && "onlySeasonNumber" in overrides ? overrides.onlySeasonNumber! : importOnlySeasonNumber;
+    let episodes = shape === "episodic" ? ((item?.children as Episode[] | undefined) ?? []) : [];
+    if (onlySeasonNumber != null) episodes = episodes.filter((ep) => ep.seasonNumber === onlySeasonNumber);
     const nextTargets: Record<string, number | ""> = {};
     const nextChecked: Record<string, boolean> = {};
     for (const e of res.entries) {
@@ -704,17 +790,31 @@ export default function MediaDetail() {
   function openImportForSubItem(subItemId: number) {
     setImportSubItemId(subItemId);
     setImportOnlyEpisodeId(null);
+    setImportOnlySeasonNumber(null);
     setShowImport(true);
-    browse("", { onlyEpisodeId: null, subItemId });
+    browse("", { onlyEpisodeId: null, subItemId, onlySeasonNumber: null });
+    requestAnimationFrame(() => importPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  }
+
+  /** Opens Manual Import with the target dropdown limited to one season's episodes — the season
+   * toolbar's "Manual Import" button. The file browser itself still shows the whole downloads
+   * tree (there's no season concept on disk to restrict it by), but auto-guessed and manually
+   * picked targets can only be episodes of this season. */
+  function openImportForSeason(seasonNumber: number) {
+    setImportOnlySeasonNumber(seasonNumber);
+    setImportOnlyEpisodeId(null);
+    setShowImport(true);
+    browse("", { onlyEpisodeId: null, onlySeasonNumber: seasonNumber });
     requestAnimationFrame(() => importPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
   }
 
   function toggleImport(episodeId?: number) {
     const next = episodeId != null ? true : !showImport;
     setImportOnlyEpisodeId(episodeId ?? null);
+    setImportOnlySeasonNumber(null);
     setShowImport(next);
     if (next) {
-      browse("", { onlyEpisodeId: episodeId ?? null });
+      browse("", { onlyEpisodeId: episodeId ?? null, onlySeasonNumber: null });
       // The panel renders far down the page from a per-episode "Manual Import" button deep in
       // the season table — without this the admin has no idea it opened at all.
       requestAnimationFrame(() => importPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
@@ -1448,7 +1548,10 @@ export default function MediaDetail() {
 
       {showImport && (
         <div ref={importPanelRef}>
-          <h2>Manual Import{importOnlyEpisodeId != null ? " — this episode" : ""}</h2>
+          <h2>
+            Manual Import
+            {importOnlyEpisodeId != null ? " — this episode" : importOnlySeasonNumber != null ? ` — Season ${importOnlySeasonNumber}` : ""}
+          </h2>
           <div className="form-panel">
             {shape === "episodic" && importOnlyEpisodeId == null && (
               <p style={{ color: "var(--muted)", fontSize: "0.82rem", marginTop: 0 }}>
@@ -1531,7 +1634,9 @@ export default function MediaDetail() {
                           onChange={(ev) => setImportTarget(e.path, ev.target.value ? Number(ev.target.value) : "")}
                         >
                           <option value="">Select an episode...</option>
-                          {(item.children as Episode[]).map((ep) => (
+                          {(item.children as Episode[])
+                            .filter((ep) => importOnlySeasonNumber == null || ep.seasonNumber === importOnlySeasonNumber)
+                            .map((ep) => (
                             <option key={ep.id} value={ep.id}>
                               S{String(ep.seasonNumber).padStart(2, "0")}E{String(ep.episodeNumber).padStart(2, "0")}
                               {ep.title ? ` - ${ep.title}` : ""}
@@ -1659,8 +1764,43 @@ export default function MediaDetail() {
               </p>
             );
           })()}
-          <h2>Episodes</h2>
-          {Array.from(new Set((item.children as Episode[]).map((ep) => ep.seasonNumber)))
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h2 style={{ margin: 0 }}>Episodes</h2>
+            <div className="toolbar" style={{ marginBottom: 0 }}>
+              <button className="secondary" onClick={() => setSeasonView("list")} disabled={seasonView === "list"}>
+                List
+              </button>
+              <button className="secondary" onClick={() => setSeasonView("tile")} disabled={seasonView === "tile"}>
+                Tiles
+              </button>
+            </div>
+          </div>
+          {seasonView === "tile" && (
+            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", marginBottom: 16 }}>
+              {Array.from(new Set((item.children as Episode[]).map((ep) => ep.seasonNumber)))
+                .sort((a, b) => a - b)
+                .map((seasonNumber) => {
+                  const seasonEpisodes = (item.children as Episode[]).filter((ep) => ep.seasonNumber === seasonNumber);
+                  const seasonHave = seasonEpisodes.filter((ep) => ep.hasFile).length;
+                  const seasonPoster = item.seasons?.find((s) => s.seasonNumber === seasonNumber)?.posterUrl ?? item.posterUrl;
+                  return (
+                    <div key={seasonNumber} className="card" onClick={() => selectSeasonTile(seasonNumber)}>
+                      <div className="poster" style={seasonPoster ? { backgroundImage: `url(${seasonPoster})` } : undefined}>
+                        {!seasonPoster && "No poster"}
+                      </div>
+                      <div className="meta">
+                        <div className="title">Season {seasonNumber}</div>
+                        <div className="sub">
+                          {seasonHave}/{seasonEpisodes.length} downloaded
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          )}
+          {seasonView === "list" &&
+            Array.from(new Set((item.children as Episode[]).map((ep) => ep.seasonNumber)))
             .sort((a, b) => a - b)
             .map((seasonNumber) => {
               const seasonEpisodes = (item.children as Episode[])
@@ -1669,7 +1809,7 @@ export default function MediaDetail() {
               const seasonHave = seasonEpisodes.filter((ep) => ep.hasFile).length;
               const isOpen = openSeasons.has(seasonNumber);
               return (
-                <div key={seasonNumber} className="form-panel" style={{ marginBottom: 12, padding: 0, maxWidth: "none" }}>
+                <div key={seasonNumber} data-season={seasonNumber} className="form-panel" style={{ marginBottom: 12, padding: 0, maxWidth: "none" }}>
                   <div
                     style={{
                       display: "flex",
@@ -1715,6 +1855,33 @@ export default function MediaDetail() {
                         </button>
                         <button className="secondary" onClick={() => toggleSeasonMonitor(seasonNumber, false)}>
                           Unmonitor
+                        </button>
+                        <button
+                          className="secondary"
+                          disabled={seasonActionBusy?.seasonNumber === seasonNumber && seasonActionBusy.action === "scan"}
+                          onClick={() => scanImportSeason(seasonNumber)}
+                          title="Scan this show's root folder for files matching just this season"
+                        >
+                          {seasonActionBusy?.seasonNumber === seasonNumber && seasonActionBusy.action === "scan" ? "Scanning..." : "Scan & Import"}
+                        </button>
+                        <button className="secondary" onClick={() => openImportForSeason(seasonNumber)}>
+                          Manual Import
+                        </button>
+                        <button
+                          className="secondary"
+                          disabled={seasonActionBusy?.seasonNumber === seasonNumber && seasonActionBusy.action === "organize"}
+                          onClick={() => organizeSeason(seasonNumber)}
+                          title="Move/rename this season's file(s) to match the current naming template"
+                        >
+                          {seasonActionBusy?.seasonNumber === seasonNumber && seasonActionBusy.action === "organize" ? "Organizing..." : "Organize & Rename"}
+                        </button>
+                        <button
+                          className="secondary"
+                          disabled={seasonActionBusy?.seasonNumber === seasonNumber && seasonActionBusy.action === "refresh"}
+                          onClick={() => refreshSeason(seasonNumber)}
+                          title="Re-pull this season's episode titles/air dates/artwork from the metadata provider"
+                        >
+                          {seasonActionBusy?.seasonNumber === seasonNumber && seasonActionBusy.action === "refresh" ? "Refreshing..." : "Refresh"}
                         </button>
                       </div>
                     )}

@@ -58,6 +58,15 @@ export function episodeFromRow(row: any) {
   };
 }
 
+export function seasonFromRow(row: any) {
+  return {
+    id: row.id,
+    mediaItemId: row.media_item_id,
+    seasonNumber: row.season_number,
+    posterUrl: row.poster_url,
+  };
+}
+
 export function subItemFromRow(row: any) {
   return {
     id: row.id,

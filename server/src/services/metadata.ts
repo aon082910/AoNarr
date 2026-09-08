@@ -23,6 +23,11 @@ export interface MetadataEpisode {
   overview: string | null;
 }
 
+export interface MetadataSeason {
+  seasonNumber: number;
+  posterUrl: string | null;
+}
+
 export interface MetadataSubItem {
   title: string;
   releaseDate: string | null;
@@ -252,6 +257,29 @@ async function fetchSeriesEpisodesTmdb(tmdbId: string): Promise<MetadataEpisode[
     }
   }
   return episodes;
+}
+
+/** TMDB's own show-detail response (the same endpoint fetchSeriesEpisodesTmdb already hits) already
+ * carries each season's poster_path in `seasons[]` — this is a second, cheap call to that one
+ * endpoint (not a new API surface) rather than threading season posters through the much larger
+ * per-season episode fetch loop. TVDB/TVMaze have no season-poster field wired up on the endpoints
+ * already used here, so they fall through to fetchSeriesSeasonsFor's [] default below. */
+async function fetchSeriesSeasonsTmdb(tmdbId: string): Promise<MetadataSeason[]> {
+  const key = requireSetting("tmdbApiKey", "TMDB API key");
+  const detailUrl = new URL(`https://api.themoviedb.org/3/tv/${tmdbId}`);
+  detailUrl.searchParams.set("api_key", key);
+  const detailRes = await fetch(detailUrl.toString());
+  if (!detailRes.ok) throw new Error(`TMDB series lookup failed: HTTP ${detailRes.status}`);
+  const detail: any = await detailRes.json();
+  return (detail.seasons ?? [])
+    .filter((s: any) => s.season_number > 0)
+    .map((s: any) => ({ seasonNumber: s.season_number, posterUrl: s.poster_path ? `${TMDB_IMAGE_BASE}${s.poster_path}` : null }));
+}
+
+/** Best-effort — a show not matched to TMDB simply gets no season artwork rather than an error. */
+export async function fetchSeriesSeasonsFor(externalIds: Record<string, string>): Promise<MetadataSeason[]> {
+  if (externalIds.tmdb) return fetchSeriesSeasonsTmdb(externalIds.tmdb).catch(() => []);
+  return [];
 }
 
 let tvdbToken: string | null = null;

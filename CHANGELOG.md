@@ -3,6 +3,22 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 179 — season-scoped actions, season artwork + tile view
+- **Season toolbar now has Scan & Import, Manual Import, Organize & Rename, and Refresh**, next to
+  the existing Search season/Monitor/Unmonitor — each scoped to just that season instead of the
+  whole show. Scan & Import skips any file that doesn't parse to that season; Manual Import opens
+  the file browser with only that season's episodes offered as targets; Organize & Rename only
+  touches that season's already-imported files; Refresh re-syncs that season's episode
+  titles/air dates/artwork without touching the show's own title/overview/poster.
+- **Season artwork.** A new `seasons` table stores a per-season poster URL, populated from TMDB
+  (whose show-detail response already carries each season's poster — no new API surface, just a
+  field that was being read past before). Refresh (whole-show or season-scoped) fetches and stores
+  it.
+- **List/Tiles toggle on the Episodes section** — Tiles shows a poster grid, one tile per season
+  (season artwork with a show-poster fallback, plus a downloaded-count), reusing the same grid/card
+  styling as the Library page's poster view. Clicking a tile switches back to List with that season
+  expanded and scrolled into view.
+
 ## Round 178 — Media Analyzer: clickable stat rows, spoken-language table
 - **Every stat table on Media Analyzer (video codec, HDR format, audio codec, resolution, subtitle
   languages) is now clickable.** Clicking a row (e.g. "h264") filters the files table below down to
