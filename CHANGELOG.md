@@ -3,6 +3,17 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 183 — fix the same event-loop-blocking file copy in the normal import path
+- Round 182 fixed `recycleFile()` blocking the whole server on a large cross-device file copy
+  during a Duplicates merge. The same `fs.copyFileSync` pattern was also in `importer.ts`'s own
+  `moveFile()` — used by every normal download import, season-pack/album import, and Organize &
+  Rename — so a large file landing on a different Docker mount than its destination (e.g.
+  `/downloads` vs `/media`) could freeze the entire server for everyone during a completely
+  ordinary import, not just a merge. Switched to the same `fs.promises`-based async copy; cheap
+  metadata operations (mkdir/rename-within-a-filesystem/chmod/chown/symlink/hardlink) are left as
+  the synchronous calls they already were, since only the actual file-content copy was ever the
+  blocking part.
+
 ## Round 182 — fix Duplicates merge 502 (server hang, not a crash)
 - **Root cause**: merging duplicates with "delete files" recycles the loser's file via
   `recycleFile()`, which — when the recycle bin and the media library live on separate Docker

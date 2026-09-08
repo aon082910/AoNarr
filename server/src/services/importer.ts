@@ -1,5 +1,6 @@
 import { log } from "./logger.js";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { db } from "../db/index.js";
 import { nowExpr } from "../db/asyncDb.js";
@@ -300,7 +301,16 @@ function applyConfiguredPermissions(targetPath: string, isDirectory: boolean): v
  * really a remote-mounted virtual file, and the library entry needs to just point at it rather
  * than physically copy a multi-GB file that was never local to begin with).
  */
-function moveFile(src: string, dest: string): void {
+/** Async (fs.promises-based, libuv thread pool) rather than the fs.*Sync calls this used to make —
+ * a cross-device "move" (EXDEV: src/dest on different Docker mounts, e.g. /downloads vs /media)
+ * falls back to a full copy, and fs.copyFileSync blocks Node's single-threaded event loop for the
+ * *entire* copy. For a multi-GB video file that's many seconds to minutes during which the whole
+ * server stops responding to every request from every user — the same bug already fixed in
+ * recycleBin.ts's recycleFile (see that file's comments), just in the normal import/Organize &
+ * Rename path instead of the recycle-bin one. mkdir/exists/chmod/chown are cheap metadata
+ * operations regardless of file size, so those are left as-is; only the actual file-content copy
+ * needed to move off the sync API. */
+async function moveFile(src: string, dest: string): Promise<void> {
   const destDir = path.dirname(dest);
   fs.mkdirSync(destDir, { recursive: true });
   const strategy = getSetting("importStrategy") ?? "move";
@@ -320,7 +330,7 @@ function moveFile(src: string, dest: string): void {
       fs.linkSync(src, dest);
     } catch (err: any) {
       if (err.code !== "EXDEV") throw err;
-      fs.copyFileSync(src, dest);
+      await fsp.copyFile(src, dest);
     }
     applyConfiguredPermissions(dest, false);
     return;
@@ -330,7 +340,7 @@ function moveFile(src: string, dest: string): void {
     fs.renameSync(src, dest);
   } catch (err: any) {
     if (err.code !== "EXDEV") throw err;
-    fs.copyFileSync(src, dest);
+    await fsp.copyFile(src, dest);
     fs.unlinkSync(src);
   }
   applyConfiguredPermissions(dest, false);
@@ -421,7 +431,7 @@ export async function placeFile(params: {
     );
   }
 
-  moveFile(sourceFile, destPath);
+  await moveFile(sourceFile, destPath);
 
   if (VIDEO_EXTENSIONS.has(ext.toLowerCase()) && (typeConfig.shape === "single" || typeConfig.shape === "episodic")) {
     await tryDownloadSubtitle(destPath, item.id);
@@ -542,7 +552,7 @@ export async function placeAlbumFiles(params: {
           ) + path.extname(src)
         : sanitizeForPath(path.basename(src));
     const dest = path.join(destFolder, fileName);
-    moveFile(src, dest);
+    await moveFile(src, dest);
     movedCount++;
 
     if (track) await db.prepare("UPDATE tracks SET has_file = 1, file_path = ? WHERE id = ?").run(dest, track.id);
@@ -644,7 +654,7 @@ export async function placeSeasonPackFiles(params: {
     const ext = path.extname(src);
     const { destPath: dest } = resolveDest(rootFolder.path, segments, ext, src, getNamingEnabled(item.type));
     destFolder = path.dirname(dest);
-    moveFile(src, dest);
+    await moveFile(src, dest);
 
     if (VIDEO_EXTENSIONS.has(ext.toLowerCase())) await tryDownloadSubtitle(dest, item.id);
     const mediaInfo = await probeMediaInfo(dest);
@@ -827,7 +837,7 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
       const { destPath } = resolveDest(rootFolder.path, segments, ext, item.path, namingEnabled);
       if (path.resolve(destPath) === path.resolve(item.path)) return;
       const oldDir = path.dirname(item.path);
-      moveFile(item.path, destPath);
+      await moveFile(item.path, destPath);
       removeEmptyParents(oldDir, rootFolder.path);
       await db.prepare("UPDATE media_items SET path = ? WHERE id = ?").run(destPath, item.id);
       result.renamed.push({ title: item.title, from: item.path, to: destPath });
@@ -862,7 +872,7 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
         const { destPath } = resolveDest(rootFolder.path, segments, ext, epRow.file_path, namingEnabled);
         if (path.resolve(destPath) === path.resolve(epRow.file_path)) continue;
         const oldDir = path.dirname(epRow.file_path);
-        moveFile(epRow.file_path, destPath);
+        await moveFile(epRow.file_path, destPath);
         removeEmptyParents(oldDir, rootFolder.path);
         await db.prepare("UPDATE episodes SET file_path = ? WHERE id = ?").run(destPath, epRow.id);
         result.renamed.push({ title: `${item.title} — ${epRow.season_number}x${epRow.episode_number}`, from: epRow.file_path, to: destPath });
@@ -882,7 +892,7 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
         const { destPath } = resolveDest(rootFolder.path, segments, ext, subRow.file_path, namingEnabled);
         if (path.resolve(destPath) === path.resolve(subRow.file_path)) continue;
         const oldDir = path.dirname(subRow.file_path);
-        moveFile(subRow.file_path, destPath);
+        await moveFile(subRow.file_path, destPath);
         removeEmptyParents(oldDir, rootFolder.path);
         await db.prepare("UPDATE sub_items SET file_path = ? WHERE id = ?").run(destPath, subRow.id);
         result.renamed.push({ title: `${item.title} — ${subRow.title}`, from: subRow.file_path, to: destPath });
