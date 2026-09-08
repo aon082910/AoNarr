@@ -3,6 +3,29 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 176 — multi-file manual import, library A-Z jump, scroll restore, episode metadata fix
+- **Manual Import now imports several files at once, Sonarr-style.** The Manual Import panel (on a
+  show/collection item, in the season table, and now on the individual episode page too) lists
+  every browsed file with a checkbox and its own target episode/child — episodes are auto-matched
+  from the filename (SxxEyy/1x01) where possible — and one "Import checked files" click sends them
+  all in a single batch (`POST /import/manual-batch`), reporting per-file success/failure instead of
+  requiring one click per file.
+- **Manual Import button added next to Search** on each episode row in the season table and on each
+  sub-item row (Albums/Books/Lessons/etc. — every collection-shaped library type shares that one
+  table, so this covers Music, Books, Audiobooks, Comics, Manga, Online Videos, Podcasts, and
+  Courses too), plus on the standalone episode detail page.
+- **A-Z jump sidebar on every library page**, shown whenever the library is sorted by Title —
+  click a letter to jump straight to it, even across pages.
+- **Library list remembers your scroll position.** Hitting the browser Back button from a show's
+  page used to always land back at the top of the library list; it now restores exactly where you
+  were scrolled to.
+- **Fixed: Scan & Import-created episodes never got their real title/air date.** A newly scanned
+  episode with no matching placeholder row used to get a hardcoded "Episode N" title and a null air
+  date forever — nothing ever revisited it, even after the show was later matched to real metadata.
+  Scan & Import now looks the show up on its metadata provider right away and seeds real episode
+  titles/air dates/overviews from the start, and Refresh now backfills any already-existing
+  placeholder episode's title/air date too instead of only inserting ones that don't exist yet.
+
 ## Round 175 — fix Scan & Import merging unrelated shows, add a Split button
 - **Scan & Import no longer merges two different shows (or movies/albums) into one.** `titlesMatch()`
   used to treat one title as a match for another if either was a substring of the other — so e.g.

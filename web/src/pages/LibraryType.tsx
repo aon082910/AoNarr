@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useNavigationType, useParams, useSearchParams } from "react-router-dom";
 import { api, downloadFile, uploadFormFile } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
@@ -19,6 +19,7 @@ type StatusFilter = "all" | "monitored" | "unmonitored" | "missing" | "downloade
  * rows come down per request, not what's considered a match. */
 const PAGE_SIZE_OPTIONS = [30, 60, 100, 250] as const;
 const DEFAULT_PAGE_SIZE = 60;
+const ALPHABET_LETTERS = ["#", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("")];
 
 interface LibraryStats {
   total: number;
@@ -401,6 +402,11 @@ export function LibraryItemGrid({
   const csvInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { auth } = useAuth();
+  const location = useLocation();
+  const navigationType = useNavigationType();
+  const [letterIndex, setLetterIndex] = useState<{ id: number; letter: string }[]>([]);
+  const restoredScrollRef = useRef(false);
+  const pendingLetterItemIdRef = useRef<number | null>(null);
 
   /** Server-driven filters/sort/pagination shared by load() and loadStats() — status/contentRating/
    * sort/page only affect which rows come back and in what order, not the structural scope
@@ -437,6 +443,84 @@ export function LibraryItemGrid({
 
   useEffect(load, [type, groupId, tagFilter, statusFilter, contentRatingFilter, sortKey, page, pageSize]);
   useEffect(loadStats, [type, groupId, tagFilter]);
+
+  // Remembers where the user was scrolled to on this exact URL (type/group/filters/page all live
+  // in the URL already) so navigating to a show and hitting the browser Back button returns to the
+  // same spot in the list instead of resetting to the top — the effect's cleanup fires the instant
+  // this component unmounts, i.e. exactly when navigating away to a media item's page.
+  useEffect(() => {
+    const key = `aonarr_library_scroll:${location.pathname}${location.search}`;
+    return () => {
+      sessionStorage.setItem(key, String(window.scrollY));
+    };
+  }, [location.pathname, location.search]);
+
+  // Only restores on an actual browser Back/Forward (navigationType === "POP") — a fresh visit or
+  // a filter/sort change should still land at the top like normal. Waits for loading to finish so
+  // the page already has its real height before scrolling, and only fires once per mount.
+  useEffect(() => {
+    if (restoredScrollRef.current || navigationType !== "POP" || loading) return;
+    const saved = sessionStorage.getItem(`aonarr_library_scroll:${location.pathname}${location.search}`);
+    if (saved == null) return;
+    restoredScrollRef.current = true;
+    const y = Number(saved);
+    requestAnimationFrame(() => requestAnimationFrame(() => window.scrollTo(0, y)));
+  }, [loading, navigationType, location.pathname, location.search]);
+
+  // Powers the A-Z jump sidebar below — a flat {id, letter} index across every item matching the
+  // current filters (not just the current page), fetched separately from the paginated `items`
+  // list itself so jumping to a letter whose items live on a different page still works. Only
+  // fetched when sorted by title, since the jump sidebar is meaningless (and hidden) otherwise.
+  useEffect(() => {
+    if (sortKey !== "title") {
+      setLetterIndex([]);
+      return;
+    }
+    let cancelled = false;
+    const params = scopeParams();
+    if (statusFilter !== "all") params.set("status", statusFilter);
+    if (contentRatingFilter !== "all") params.set("contentRating", contentRatingFilter);
+    params.set("sort", "title");
+    params.set("limit", "100000");
+    params.set("offset", "0");
+    api.get<{ items: MediaItem[] }>(`/media?${params.toString()}`).then((data) => {
+      if (cancelled) return;
+      setLetterIndex(
+        data.items.map((it) => {
+          const c = (it.title || "#").trim().charAt(0).toUpperCase();
+          return { id: it.id, letter: /[A-Z]/.test(c) ? c : "#" };
+        })
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [type, groupId, tagFilter, statusFilter, contentRatingFilter, sortKey]);
+
+  // Once a letter jump has moved to a different page, waits for that page's items to actually
+  // arrive before scrolling — the target row doesn't exist in the DOM until then.
+  useEffect(() => {
+    if (pendingLetterItemIdRef.current == null || loading) return;
+    const id = pendingLetterItemIdRef.current;
+    if (!items.some((it) => it.id === id)) return;
+    pendingLetterItemIdRef.current = null;
+    requestAnimationFrame(() => {
+      document.querySelector(`[data-item-id="${id}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }, [items, loading]);
+
+  function jumpToLetter(letter: string) {
+    const idx = letterIndex.findIndex((e) => e.letter === letter);
+    if (idx === -1) return;
+    const targetId = letterIndex[idx].id;
+    const targetPage = Math.floor(idx / pageSize);
+    if (targetPage === page) {
+      document.querySelector(`[data-item-id="${targetId}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    } else {
+      pendingLetterItemIdRef.current = targetId;
+      setPage(targetPage);
+    }
+  }
   // Any filter/sort change re-points the page at a fresh result set — staying on, say, page 5 of a
   // now-much-shorter filtered list would otherwise show a confusing "out of range" empty page.
   // Skipped on the very first render (the `hasMountedRef` guard) — this effect's own dependencies
@@ -1102,7 +1186,7 @@ export function LibraryItemGrid({
       {viewMode === "poster" ? (
         <div className="grid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${POSTER_SIZE_PX[posterSize]}px, 1fr))` }}>
           {items.map((item) => (
-            <div key={item.id} className="card" onClick={() => navigate(`/media/${item.id}`)} style={{ position: "relative" }}>
+            <div key={item.id} data-item-id={item.id} className="card" onClick={() => navigate(`/media/${item.id}`)} style={{ position: "relative" }}>
               {selectMode && (
                 <input
                   type="checkbox"
@@ -1154,7 +1238,7 @@ export function LibraryItemGrid({
           </thead>
           <tbody>
             {items.map((item) => (
-              <tr key={item.id} onClick={() => navigate(`/media/${item.id}`)} style={{ cursor: "pointer" }}>
+              <tr key={item.id} data-item-id={item.id} onClick={() => navigate(`/media/${item.id}`)} style={{ cursor: "pointer" }}>
                 {selectMode && (
                   <td>
                     <input
@@ -1332,6 +1416,52 @@ export function LibraryItemGrid({
             </>
           )}
         </Modal>
+      )}
+
+      {sortKey === "title" && letterIndex.length > 0 && (
+        <div
+          style={{
+            position: "fixed",
+            right: 6,
+            top: "50%",
+            transform: "translateY(-50%)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 1,
+            zIndex: 5,
+            background: "var(--panel, rgba(0,0,0,0.35))",
+            borderRadius: 6,
+            padding: "6px 3px",
+          }}
+        >
+          {ALPHABET_LETTERS.map((letter) => {
+            const has = letterIndex.some((e) => e.letter === letter);
+            return (
+              <button
+                key={letter}
+                type="button"
+                onClick={() => jumpToLetter(letter)}
+                disabled={!has}
+                title={has ? `Jump to ${letter}` : undefined}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  padding: "1px 4px",
+                  margin: 0,
+                  font: "inherit",
+                  fontSize: "0.68rem",
+                  lineHeight: 1.4,
+                  color: has ? "var(--text)" : "var(--muted)",
+                  opacity: has ? 1 : 0.35,
+                  cursor: has ? "pointer" : "default",
+                }}
+              >
+                {letter}
+              </button>
+            );
+          })}
+        </div>
       )}
     </div>
   );

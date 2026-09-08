@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, downloadFile } from "../api/client.js";
 import GroupPicker from "../components/GroupPicker.js";
@@ -129,7 +129,6 @@ export default function MediaDetail() {
   });
   const [applyingMerge, setApplyingMerge] = useState(false);
   const [browseEntries, setBrowseEntries] = useState<BrowseEntry[]>([]);
-  const [importEpisodeId, setImportEpisodeId] = useState<number | "">("");
   const [importSubItemId, setImportSubItemId] = useState<number | "">("");
   const [newChildTitle, setNewChildTitle] = useState("");
   const [addingChild, setAddingChild] = useState(false);
@@ -164,6 +163,11 @@ export default function MediaDetail() {
   const [editPosterUrl, setEditPosterUrl] = useState("");
   const [savingMetadata, setSavingMetadata] = useState(false);
   const [organizingItem, setOrganizingItem] = useState(false);
+  const [importTargets, setImportTargets] = useState<Record<string, number | "">>({});
+  const [importChecked, setImportChecked] = useState<Record<string, boolean>>({});
+  const [importingBatch, setImportingBatch] = useState(false);
+  const [importOnlyEpisodeId, setImportOnlyEpisodeId] = useState<number | null>(null);
+  const importPanelRef = useRef<HTMLDivElement>(null);
   const [showSplit, setShowSplit] = useState(false);
   const [splitSelected, setSplitSelected] = useState<Set<number>>(new Set());
   const [splitTitle, setSplitTitle] = useState("");
@@ -652,18 +656,69 @@ export default function MediaDetail() {
     setShowArtwork(false);
   }
 
-  async function browse(nextPath: string) {
+  /** Best-effort season/episode guess straight from a filename (no folder context, unlike the
+   * server's own detectSeasonEpisode) — just enough to pre-select the right target episode in the
+   * manual import picker below so multi-file imports usually need zero manual selection. */
+  function guessEpisodeIdForFile(name: string, episodes: Episode[]): number | "" {
+    const m = name.match(/S(\d{1,2})E(\d{1,3})/i) ?? name.match(/\b(\d{1,2})x(\d{1,3})\b/i);
+    if (!m) return "";
+    const season = Number(m[1]);
+    const episode = Number(m[2]);
+    const match = episodes.find((ep) => ep.seasonNumber === season && ep.episodeNumber === episode);
+    return match ? match.id : "";
+  }
+
+  /** `overrides` lets a caller that just called setImportOnlyEpisodeId/setImportSubItemId pass the
+   * new value straight through instead of reading it back off state — state updates aren't visible
+   * until the next render, so browse() would otherwise pre-fill targets using the value from
+   * *before* that same click's setState call. */
+  async function browse(nextPath: string, overrides?: { onlyEpisodeId?: number | null; subItemId?: number | "" }) {
     const res = await api.get<{ path: string; entries: BrowseEntry[] }>(
       `/import/browse?path=${encodeURIComponent(nextPath)}`
     );
     setBrowsePath(res.path);
     setBrowseEntries(res.entries);
+
+    // Pre-fills each media file's target (episode auto-guessed from its filename for episodic
+    // shows; the single previously-picked child otherwise) and checks it so a multi-file import
+    // usually needs nothing but reviewing the list and hitting "Import checked files."
+    const onlyEpisodeId = overrides && "onlyEpisodeId" in overrides ? overrides.onlyEpisodeId! : importOnlyEpisodeId;
+    const subItemDefault = overrides && "subItemId" in overrides ? overrides.subItemId! : importSubItemId;
+    const episodes = shape === "episodic" ? ((item?.children as Episode[] | undefined) ?? []) : [];
+    const nextTargets: Record<string, number | ""> = {};
+    const nextChecked: Record<string, boolean> = {};
+    for (const e of res.entries) {
+      if (!e.isMediaFile) continue;
+      const target =
+        onlyEpisodeId != null ? onlyEpisodeId : shape === "episodic" ? guessEpisodeIdForFile(e.name, episodes) : subItemDefault;
+      nextTargets[e.path] = target;
+      nextChecked[e.path] = target !== "";
+    }
+    setImportTargets(nextTargets);
+    setImportChecked(nextChecked);
   }
 
-  function toggleImport() {
-    const next = !showImport;
+  /** Opens Manual Import pre-targeted at one sub-item (Album/Book/Lesson/etc.), same role
+   * toggleImport(episodeId) plays for a single episode — every collection-shaped library type
+   * shares this one row action since they all share the same sub_items table/panel. */
+  function openImportForSubItem(subItemId: number) {
+    setImportSubItemId(subItemId);
+    setImportOnlyEpisodeId(null);
+    setShowImport(true);
+    browse("", { onlyEpisodeId: null, subItemId });
+    requestAnimationFrame(() => importPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  }
+
+  function toggleImport(episodeId?: number) {
+    const next = episodeId != null ? true : !showImport;
+    setImportOnlyEpisodeId(episodeId ?? null);
     setShowImport(next);
-    if (next) browse("");
+    if (next) {
+      browse("", { onlyEpisodeId: episodeId ?? null });
+      // The panel renders far down the page from a per-episode "Manual Import" button deep in
+      // the season table — without this the admin has no idea it opened at all.
+      requestAnimationFrame(() => importPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    }
   }
 
   /** For a collection-shape item with no metadata provider (Courses, or any manually-managed
@@ -687,21 +742,44 @@ export default function MediaDetail() {
     }
   }
 
-  async function manualImport(entry: BrowseEntry) {
+  function setImportTarget(path: string, value: number | "") {
+    setImportTargets((prev) => ({ ...prev, [path]: value }));
+    setImportChecked((prev) => ({ ...prev, [path]: value !== "" }));
+  }
+
+  /** Sonarr-style bulk manual import: every checked file, each with its own target episode/child
+   * (auto-guessed from the filename where possible, overridable per row), is imported in one go —
+   * one bad file doesn't block the rest, and the result is reported per file. */
+  async function manualImportBatch() {
     if (!item) return;
+    const files = browseEntries
+      .filter((e) => e.isMediaFile && importChecked[e.path] && importTargets[e.path] !== "")
+      .map((e) => ({
+        sourcePath: e.path,
+        episodeId: shape === "episodic" ? (importTargets[e.path] as number) : null,
+        subItemId: shape === "collection" ? (importTargets[e.path] as number) : null,
+      }));
+    if (files.length === 0) return;
+    setImportingBatch(true);
     try {
-      const typeInfo = mediaTypes.find((t) => t.key === item.type);
-      await api.post("/import/manual", {
-        mediaItemId: item.id,
-        episodeId: typeInfo?.shape === "episodic" ? importEpisodeId || null : null,
-        subItemId: typeInfo?.shape === "collection" ? importSubItemId || null : null,
-        sourcePath: entry.path,
-      });
-      alert(`Imported ${entry.name}`);
-      setShowImport(false);
+      const { results } = await api.post<{
+        results: { sourcePath: string; ok: boolean; error?: string }[];
+      }>("/import/manual-batch", { mediaItemId: item.id, files });
+      const failed = results.filter((r) => !r.ok);
+      if (failed.length === 0) {
+        alert(`Imported ${results.length} file(s).`);
+        setShowImport(false);
+      } else {
+        alert(
+          `Imported ${results.length - failed.length} of ${results.length} file(s). Failed:\n` +
+            failed.map((f) => `${f.sourcePath}: ${f.error}`).join("\n")
+        );
+      }
       load();
     } catch (e) {
       alert((e as Error).message);
+    } finally {
+      setImportingBatch(false);
     }
   }
 
@@ -1050,7 +1128,7 @@ export default function MediaDetail() {
               {searching && !target ? "Searching..." : "Search now"}
             </button>
           )}
-          <button onClick={toggleImport} className="secondary">
+          <button onClick={() => toggleImport()} className="secondary">
             {showImport ? "Hide manual import" : "Manual Import"}
           </button>
           <button
@@ -1369,25 +1447,15 @@ export default function MediaDetail() {
       )}
 
       {showImport && (
-        <>
-          <h2>Manual Import</h2>
+        <div ref={importPanelRef}>
+          <h2>Manual Import{importOnlyEpisodeId != null ? " — this episode" : ""}</h2>
           <div className="form-panel">
-            {shape === "episodic" && (
-              <>
-                <label>Target episode</label>
-                <select
-                  value={importEpisodeId}
-                  onChange={(e) => setImportEpisodeId(e.target.value ? Number(e.target.value) : "")}
-                >
-                  <option value="">Select an episode...</option>
-                  {(item.children as Episode[]).map((ep) => (
-                    <option key={ep.id} value={ep.id}>
-                      S{String(ep.seasonNumber).padStart(2, "0")}E{String(ep.episodeNumber).padStart(2, "0")}
-                      {ep.title ? ` - ${ep.title}` : ""}
-                    </option>
-                  ))}
-                </select>
-              </>
+            {shape === "episodic" && importOnlyEpisodeId == null && (
+              <p style={{ color: "var(--muted)", fontSize: "0.82rem", marginTop: 0 }}>
+                Each file below is auto-matched to an episode from its filename (SxxEyy/1x01) where
+                possible — check the box and pick the right episode for anything it couldn't guess,
+                then import everything checked in one go.
+              </p>
             )}
             {shape === "collection" && (
               <>
@@ -1405,7 +1473,7 @@ export default function MediaDetail() {
                     {addingChild ? "Adding..." : `+ Add ${childLabel.toLowerCase()}`}
                   </button>
                 </form>
-                <label>Target {childLabel.toLowerCase()}</label>
+                <label>Default target {childLabel.toLowerCase()} (applies to files below with no target picked)</label>
                 <select
                   value={importSubItemId}
                   onChange={(e) => setImportSubItemId(e.target.value ? Number(e.target.value) : "")}
@@ -1435,37 +1503,86 @@ export default function MediaDetail() {
             <table>
               <thead>
                 <tr>
+                  <th></th>
                   <th>Name</th>
                   <th>Size</th>
+                  <th>Target</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
                 {browseEntries.map((e) => (
                   <tr key={e.path}>
+                    <td>
+                      {e.isMediaFile && (
+                        <input
+                          type="checkbox"
+                          checked={!!importChecked[e.path]}
+                          onChange={(ev) => setImportChecked((prev) => ({ ...prev, [e.path]: ev.target.checked }))}
+                        />
+                      )}
+                    </td>
                     <td>{e.isDirectory ? "📁 " : ""}{e.name}</td>
                     <td>{e.size ? `${(e.size / 1e6).toFixed(1)} MB` : "-"}</td>
+                    <td>
+                      {e.isMediaFile && shape === "episodic" && importOnlyEpisodeId == null && (
+                        <select
+                          value={importTargets[e.path] ?? ""}
+                          onChange={(ev) => setImportTarget(e.path, ev.target.value ? Number(ev.target.value) : "")}
+                        >
+                          <option value="">Select an episode...</option>
+                          {(item.children as Episode[]).map((ep) => (
+                            <option key={ep.id} value={ep.id}>
+                              S{String(ep.seasonNumber).padStart(2, "0")}E{String(ep.episodeNumber).padStart(2, "0")}
+                              {ep.title ? ` - ${ep.title}` : ""}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      {e.isMediaFile && shape === "collection" && (
+                        <select
+                          value={importTargets[e.path] ?? ""}
+                          onChange={(ev) => setImportTarget(e.path, ev.target.value ? Number(ev.target.value) : "")}
+                        >
+                          <option value="">Select...</option>
+                          {(item.children as SubItem[]).map((si) => (
+                            <option key={si.id} value={si.id}>
+                              {si.title}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </td>
                     <td>
                       {e.isDirectory && (
                         <button type="button" className="secondary" onClick={() => browse(e.path)}>
                           Open
                         </button>
                       )}
-                      {e.isMediaFile && <button onClick={() => manualImport(e)}>Import</button>}
                     </td>
                   </tr>
                 ))}
                 {browseEntries.length === 0 && (
                   <tr>
-                    <td colSpan={3} className="empty">
+                    <td colSpan={5} className="empty">
                       Empty.
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
+            <button
+              type="button"
+              style={{ marginTop: 8 }}
+              disabled={importingBatch || Object.entries(importChecked).filter(([p, c]) => c && importTargets[p] !== "").length === 0}
+              onClick={manualImportBatch}
+            >
+              {importingBatch
+                ? "Importing..."
+                : `Import ${Object.entries(importChecked).filter(([p, c]) => c && importTargets[p] !== "").length} checked file(s)`}
+            </button>
           </div>
-        </>
+        </div>
       )}
 
       {results && (
@@ -1646,6 +1763,11 @@ export default function MediaDetail() {
                                   Search
                                 </button>
                               )}
+                              {isAdmin && (
+                                <button className="secondary" onClick={() => toggleImport(ep.id)}>
+                                  Manual Import
+                                </button>
+                              )}
                             </td>
                           </tr>
                         ))}
@@ -1735,6 +1857,11 @@ export default function MediaDetail() {
                         onClick={() => runSearch({ subItemId: si.id, label: si.title })}
                       >
                         Search
+                      </button>
+                    )}
+                    {isAdmin && (
+                      <button className="secondary" onClick={() => openImportForSubItem(si.id)}>
+                        Manual Import
                       </button>
                     )}
                   </td>

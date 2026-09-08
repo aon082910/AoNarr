@@ -130,3 +130,48 @@ importRouter.post(
     res.json(result);
   })
 );
+
+/**
+ * POST /api/import/manual-batch — Sonarr-style "import several files at once," each mapped to
+ * its own target episode/sub-item. Body: { mediaItemId, files: [{ sourcePath, episodeId?,
+ * subItemId?, quality? }] }. Each file is placed independently (one bad file — already imported
+ * elsewhere, unreadable, no matching episode — doesn't abort the rest of the batch); the response
+ * reports per-file success/failure so the UI can show exactly which ones landed.
+ */
+importRouter.post(
+  "/manual-batch",
+  asyncHandler(async (req, res) => {
+    const b = req.body ?? {};
+    if (!b.mediaItemId || !Array.isArray(b.files) || b.files.length === 0) {
+      throw new HttpError(400, "mediaItemId and a non-empty files array are required");
+    }
+
+    const results: { sourcePath: string; ok: boolean; destPath?: string; fileLabel?: string; error?: string }[] = [];
+    for (const f of b.files) {
+      const sourcePath = f?.sourcePath;
+      if (!sourcePath) {
+        results.push({ sourcePath: String(sourcePath ?? ""), ok: false, error: "sourcePath is required" });
+        continue;
+      }
+      try {
+        const sourceFile = resolveInDownloads(sourcePath);
+        if (!fs.existsSync(sourceFile) || !fs.statSync(sourceFile).isFile()) {
+          throw new Error("Source file not found");
+        }
+        const quality = f.quality ?? parseReleaseTitle(path.basename(sourceFile)).quality;
+        const result = await placeFile({
+          itemId: b.mediaItemId,
+          episodeId: f.episodeId ?? null,
+          subItemId: f.subItemId ?? null,
+          sourceFile,
+          quality,
+        });
+        results.push({ sourcePath, ok: true, ...result });
+      } catch (err) {
+        results.push({ sourcePath, ok: false, error: (err as Error).message });
+      }
+    }
+
+    res.json({ results });
+  })
+);

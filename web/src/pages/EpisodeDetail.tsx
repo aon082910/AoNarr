@@ -21,6 +21,14 @@ interface EpisodeDetailResponse {
   parent: { id: number; title: string; type: string } | null;
 }
 
+interface BrowseEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  isMediaFile: boolean;
+  size: number | null;
+}
+
 export default function EpisodeDetail() {
   const { mediaId, episodeId } = useParams<{ mediaId: string; episodeId: string }>();
   const navigate = useNavigate();
@@ -31,6 +39,10 @@ export default function EpisodeDetail() {
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showImport, setShowImport] = useState(false);
+  const [browsePath, setBrowsePath] = useState("");
+  const [browseEntries, setBrowseEntries] = useState<BrowseEntry[]>([]);
+  const [importingPath, setImportingPath] = useState<string | null>(null);
 
   function load() {
     api.get<EpisodeDetailResponse>(`/media/${mediaId}/episodes/${episodeId}`).then(setEpisode);
@@ -59,6 +71,32 @@ export default function EpisodeDetail() {
       quality: null,
     });
     setEpisode({ ...episode, hasFile: updated.hasFile, filePath: updated.filePath, quality: updated.quality });
+  }
+
+  async function browse(nextPath: string) {
+    const res = await api.get<{ path: string; entries: BrowseEntry[] }>(`/import/browse?path=${encodeURIComponent(nextPath)}`);
+    setBrowsePath(res.path);
+    setBrowseEntries(res.entries);
+  }
+
+  function toggleImport() {
+    const next = !showImport;
+    setShowImport(next);
+    if (next) browse("");
+  }
+
+  async function manualImport(entry: BrowseEntry) {
+    setImportingPath(entry.path);
+    try {
+      await api.post("/import/manual", { mediaItemId: episode?.mediaItemId, episodeId: Number(episodeId), sourcePath: entry.path });
+      alert(`Imported ${entry.name}`);
+      setShowImport(false);
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setImportingPath(null);
+    }
   }
 
   async function runSearch() {
@@ -160,6 +198,9 @@ export default function EpisodeDetail() {
           <button onClick={runSearch} disabled={searching}>
             {searching ? "Searching..." : "Search"}
           </button>
+          <button className="secondary" onClick={toggleImport}>
+            {showImport ? "Hide manual import" : "Manual Import"}
+          </button>
           {!!episode.hasFile && (
             <button className="danger" onClick={markAsMissing} title="Removed the file yourself? This resets AoNarr's record so it searches for it again.">
               Mark as missing
@@ -172,6 +213,58 @@ export default function EpisodeDetail() {
       )}
 
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
+
+      {showImport && (
+        <>
+          <h2>Manual Import</h2>
+          <div className="form-panel">
+            <p style={{ color: "var(--muted)", fontSize: "0.82rem", marginTop: 0 }}>
+              Browsing downloads: /{browsePath || ""}
+            </p>
+            {browsePath && (
+              <button type="button" className="secondary" onClick={() => browse(browsePath.split("/").slice(0, -1).join("/"))}>
+                Up
+              </button>
+            )}
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Size</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {browseEntries.map((e) => (
+                  <tr key={e.path}>
+                    <td>{e.isDirectory ? "📁 " : ""}{e.name}</td>
+                    <td>{e.size ? `${(e.size / 1e6).toFixed(1)} MB` : "-"}</td>
+                    <td>
+                      {e.isDirectory && (
+                        <button type="button" className="secondary" onClick={() => browse(e.path)}>
+                          Open
+                        </button>
+                      )}
+                      {e.isMediaFile && (
+                        <button onClick={() => manualImport(e)} disabled={importingPath === e.path}>
+                          {importingPath === e.path ? "Importing..." : "Import"}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {browseEntries.length === 0 && (
+                  <tr>
+                    <td colSpan={3} className="empty">
+                      Empty.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
 
       {results && (
         <table style={{ marginTop: 16 }}>

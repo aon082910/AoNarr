@@ -300,8 +300,32 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal, onl
                VALUES (?, ?, ?, ?, ?, 1, 0, 'unknown')`
             )
             .run(type, guessedTitle, guessedTitle.toLowerCase(), folder?.id ?? null, qualityProfileId);
-          seriesMatch = { id: Number(insertResult.lastInsertRowid), title: guessedTitle, has_file: 0 };
+          const newId = Number(insertResult.lastInsertRowid);
+          seriesMatch = { id: newId, title: guessedTitle, has_file: 0 };
           seriesItems.push(seriesMatch);
+
+          // Best-effort: look the guessed title up on a metadata provider right away and seed the
+          // real episode list (title/air date/overview) — without this, every episode this scan
+          // creates for a brand new show gets stuck with a generic "Episode N" title and no air
+          // date forever, since nothing else ever revisits an episode row once it exists. Only
+          // external_ids/overview/poster/year are saved on the show itself, never title/sort_title
+          // — overwriting those here would make this show's own title stop matching the very
+          // filename-guessed title future scans of the same folder guess, breaking re-matching.
+          try {
+            const results = await searchMetadata(type as any, guessedTitle);
+            const best = results[0];
+            if (best) {
+              await db
+                .prepare(
+                  "UPDATE media_items SET overview = ?, poster_url = ?, year = ?, external_ids = ?, release_date = ? WHERE id = ?"
+                )
+                .run(best.overview ?? null, best.posterUrl ?? null, best.year ?? null, JSON.stringify(best.externalIds ?? {}), best.releaseDate ?? null, newId);
+              await syncMissingChildren(newId, typeConfig, best.externalIds ?? {});
+            }
+          } catch {
+            // No network / provider unavailable — falls back to the guessed title and placeholder
+            // episode below, same as before this enrichment existed.
+          }
         }
 
         const mediaInfo = isProbeableFile(filePath) ? await probeMediaInfo(filePath) : null;
@@ -599,7 +623,13 @@ export async function scanAndImportOneMediaItem(mediaItemId: number, signal?: Ab
 
 /** Inserts any episode/child a metadata provider lists that isn't already tracked for this item —
  * shared by refreshLibraryMetadata above (existing items) and the same shape the initial "Add
- * Media" import (routes/metadata.ts) uses for a brand new one. Returns how many were added. */
+ * Media" import (routes/metadata.ts) uses for a brand new one. Returns how many were added.
+ *
+ * Also backfills the episodic case: an existing episode row with a Scan & Import-style placeholder
+ * title ("Episode N" or none) and/or a null air date gets updated with the real title/air date/
+ * overview from the provider list — without this, a placeholder episode, once it exists, was never
+ * revisited by anything and kept its placeholder forever even after a later Refresh matched the
+ * show to real metadata. */
 async function syncMissingChildren(
   mediaItemId: number,
   typeConfig: ReturnType<typeof getMediaTypeConfig>,
@@ -611,19 +641,28 @@ async function syncMissingChildren(
     const episodes = await fetchSeriesEpisodesFor(externalIds).catch(() => []);
     if (episodes.length === 0) return 0;
     const existing = (await db
-      .prepare("SELECT season_number, episode_number FROM episodes WHERE media_item_id = ?")
-      .all(mediaItemId)) as { season_number: number; episode_number: number }[];
-    const known = new Set(existing.map((e) => `${e.season_number}:${e.episode_number}`));
+      .prepare("SELECT id, season_number, episode_number, title, air_date FROM episodes WHERE media_item_id = ?")
+      .all(mediaItemId)) as { id: number; season_number: number; episode_number: number; title: string | null; air_date: string | null }[];
+    const existingByKey = new Map(existing.map((e) => [`${e.season_number}:${e.episode_number}`, e]));
     let added = 0;
     for (const ep of episodes) {
-      if (known.has(`${ep.seasonNumber}:${ep.episodeNumber}`)) continue;
-      await db
-        .prepare(
-          `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-           VALUES (?, ?, ?, ?, ?, ?, 1)`
-        )
-        .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
-      added++;
+      const row = existingByKey.get(`${ep.seasonNumber}:${ep.episodeNumber}`);
+      if (!row) {
+        await db
+          .prepare(
+            `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
+             VALUES (?, ?, ?, ?, ?, ?, 1)`
+          )
+          .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
+        added++;
+        continue;
+      }
+      const isPlaceholderTitle = !row.title || /^Episode \d+$/.test(row.title);
+      if (isPlaceholderTitle || !row.air_date) {
+        await db
+          .prepare("UPDATE episodes SET title = ?, air_date = COALESCE(air_date, ?), overview = COALESCE(overview, ?) WHERE id = ?")
+          .run(isPlaceholderTitle ? ep.title : row.title, ep.airDate, ep.overview, row.id);
+      }
     }
     return added;
   }
