@@ -3,6 +3,19 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 175 — fix Scan & Import merging unrelated shows, add a Split button
+- **Scan & Import no longer merges two different shows (or movies/albums) into one.** `titlesMatch()`
+  used to treat one title as a match for another if either was a substring of the other — so e.g.
+  a show whose guessed title was `"Extraction"` would match one guessed as `"Extraction 2"`, and
+  two shows in two completely separate folders would collapse into a single series with the second
+  folder's episodes just tacked onto the first. Matching is now exact (after the same normalization)
+  only.
+- **Split button on TV show pages.** For shows that already got incorrectly merged by the old
+  matching bug (or any other reason), a new "Split..." button on the show's detail page lets you
+  check which episodes actually belong to a different show — grouped by their on-disk folder as a
+  guide — and move them into a brand new show with its own title. Nothing on disk is touched, only
+  which show each episode's row belongs to.
+
 ## Round 174 — real PUID/PGID support
 - **PUID/PGID now actually do something.** Both the `combined` and `server` images previously
   shipped a `PUID`/`PGID` env-var pair in `docker-compose.yml` that did nothing — the container

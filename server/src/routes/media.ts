@@ -958,6 +958,60 @@ mediaRouter.post(
 );
 
 /**
+ * Splits a set of this series' episodes off into a brand new series — the fix for two different
+ * shows (two different folders on disk) that Scan & Import matched together into one media_items
+ * row (see titlesMatch in services/libraryScan.ts). Only reassigns the chosen episodes'
+ * media_item_id to a freshly-created row; doesn't touch the files on disk at all, since the
+ * episodes already point at their real file_path regardless of which folder they came from.
+ */
+mediaRouter.post(
+  "/:id/split",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const existing = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id)) as any;
+    if (!existing) throw new HttpError(404, "Media item not found");
+    if (getMediaTypeConfig(existing.type).shape !== "episodic") throw new HttpError(400, "Only TV-shaped libraries can be split");
+
+    const b = req.body ?? {};
+    const episodeIds: number[] = Array.isArray(b.episodeIds) ? b.episodeIds.map(Number).filter((n: number) => Number.isFinite(n)) : [];
+    if (episodeIds.length === 0) throw new HttpError(400, "episodeIds is required");
+    const title = typeof b.title === "string" ? b.title.trim() : "";
+    if (!title) throw new HttpError(400, "title is required");
+
+    const placeholders = episodeIds.map(() => "?").join(",");
+    const owned = (await db
+      .prepare(`SELECT id FROM episodes WHERE media_item_id = ? AND id IN (${placeholders})`)
+      .all(existing.id, ...episodeIds)) as { id: number }[];
+    if (owned.length !== episodeIds.length) throw new HttpError(400, "One or more episodes don't belong to this series");
+
+    const insertResult = await db
+      .prepare(
+        `INSERT INTO media_items (type, title, sort_title, root_folder_id, quality_profile_id, monitored, has_file, status)
+         VALUES (?, ?, ?, ?, ?, 1, 0, 'unknown')`
+      )
+      .run(existing.type, title, title.toLowerCase(), existing.root_folder_id, existing.quality_profile_id);
+    const newId = Number(insertResult.lastInsertRowid);
+
+    await db.prepare(`UPDATE episodes SET media_item_id = ? WHERE media_item_id = ? AND id IN (${placeholders})`).run(newId, existing.id, ...episodeIds);
+
+    // Same has_file rollup scanAndImportLibrary does after an episode import — both the donor
+    // series (which may have lost every file it had) and the new one need it recomputed from
+    // their remaining/gained episodes.
+    for (const id of [existing.id, newId]) {
+      const hasAny = (await db.prepare("SELECT 1 FROM episodes WHERE media_item_id = ? AND has_file = 1 LIMIT 1").get(id)) as
+        | unknown
+        | undefined;
+      await db.prepare("UPDATE media_items SET has_file = ? WHERE id = ?").run(hasAny ? 1 : 0, id);
+    }
+
+    const newRow = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(newId)) as any;
+    const actor = auditActor(req);
+    logAuditEvent(actor.userId, actor.username, "media_split", `${episodeIds.length} episode(s) split from "${existing.title}" into "${title}"`);
+    res.status(201).json(mediaItemFromRow(newRow));
+  })
+);
+
+/**
  * Manual "mark watched"/"mark unwatched" — watch state normally only ever flows in from the
  * configured media server (the webhook, or the periodic fetchWatchedFiles poll behind
  * auto-archival); this is the other direction, for setting it from AoNarr itself and having it

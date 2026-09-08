@@ -164,6 +164,10 @@ export default function MediaDetail() {
   const [editPosterUrl, setEditPosterUrl] = useState("");
   const [savingMetadata, setSavingMetadata] = useState(false);
   const [organizingItem, setOrganizingItem] = useState(false);
+  const [showSplit, setShowSplit] = useState(false);
+  const [splitSelected, setSplitSelected] = useState<Set<number>>(new Set());
+  const [splitTitle, setSplitTitle] = useState("");
+  const [splittingItem, setSplittingItem] = useState(false);
 
   function load() {
     api.get<MediaDetailResponse>(`/media/${id}`).then(setItem);
@@ -359,6 +363,62 @@ export default function MediaDetail() {
       alert((e as Error).message);
     } finally {
       setOrganizingItem(false);
+    }
+  }
+
+  /** Best-effort grouping key for the split panel below: an episode's file folder with a trailing
+   * "Season NN"/"SNN" segment stripped off, so episodes from the same show's different seasons
+   * still land in one group while episodes from a genuinely different folder (the other show a
+   * bad Scan & Import match merged in) show up as their own group. */
+  function splitGroupKey(ep: Episode): string {
+    if (!ep.filePath) return "(no file on disk)";
+    const parts = ep.filePath.split(/[\\/]/).filter(Boolean);
+    parts.pop();
+    const last = parts[parts.length - 1] ?? "";
+    if (/^(season\s*0*\d{1,3}|s0*\d{1,3})$/i.test(last)) parts.pop();
+    return parts.join("/") || "(root)";
+  }
+
+  function toggleSplitEpisode(id: number) {
+    setSplitSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSplitGroup(ids: number[], checked: boolean) {
+    setSplitSelected((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (checked) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  }
+
+  async function splitItem() {
+    if (!item || splitSelected.size === 0 || !splitTitle.trim()) return;
+    setSplittingItem(true);
+    try {
+      const created = await api.post<MediaItem>(`/media/${item.id}/split`, {
+        episodeIds: Array.from(splitSelected),
+        title: splitTitle.trim(),
+      });
+      setShowSplit(false);
+      setSplitSelected(new Set());
+      setSplitTitle("");
+      if (confirm(`Created "${created.title}" with ${splitSelected.size} episode(s). Go to the new show now?`)) {
+        navigate(`/media/${created.id}`);
+      } else {
+        load();
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSplittingItem(false);
     }
   }
 
@@ -1052,6 +1112,15 @@ export default function MediaDetail() {
               {showMove ? "Cancel move" : "Move to group..."}
             </button>
           )}
+          {shape === "episodic" && (
+            <button
+              className="secondary"
+              onClick={() => setShowSplit((v) => !v)}
+              title="Move episodes that were incorrectly matched into this show (from a different folder) out into a brand new show"
+            >
+              {showSplit ? "Cancel split" : "Split..."}
+            </button>
+          )}
           {/* Movie/series/artist go through Fanart.tv; rom/manga/comic/video/adult each pull extra
               artwork from their own metadata provider instead (see fetchArtworkFor in metadata.ts).
               Author/audiobook/course have no artwork source at all — Open Library/Google Books/
@@ -1102,6 +1171,60 @@ export default function MediaDetail() {
           </button>
         </div>
       )}
+
+      {showSplit &&
+        item &&
+        (() => {
+          const episodes = (item.children as Episode[] | undefined) ?? [];
+          const groups = new Map<string, Episode[]>();
+          for (const ep of episodes) {
+            const key = splitGroupKey(ep);
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key)!.push(ep);
+          }
+          return (
+            <div className="form-panel">
+              <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
+                Check the episodes that actually belong to a different show (grouped below by their
+                on-disk folder as a guide) and give the new show a title. The checked episodes are
+                moved to a brand new show — nothing on disk is touched.
+              </p>
+              {episodes.length === 0 && <p style={{ color: "var(--muted)" }}>No episodes yet.</p>}
+              {Array.from(groups.entries()).map(([folder, eps]) => {
+                const ids = eps.map((e) => e.id);
+                const allChecked = ids.every((id) => splitSelected.has(id));
+                return (
+                  <div key={folder} style={{ marginBottom: 10 }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600, cursor: "pointer" }}>
+                      <input type="checkbox" checked={allChecked} onChange={(e) => toggleSplitGroup(ids, e.target.checked)} />
+                      {folder} ({eps.length} episode{eps.length === 1 ? "" : "s"})
+                    </label>
+                    <div style={{ marginLeft: 22, display: "flex", flexDirection: "column", gap: 2 }}>
+                      {eps.map((ep) => (
+                        <label key={ep.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.85rem", cursor: "pointer" }}>
+                          <input type="checkbox" checked={splitSelected.has(ep.id)} onChange={() => toggleSplitEpisode(ep.id)} />
+                          S{ep.seasonNumber}E{ep.episodeNumber} — {ep.title ?? "Untitled"}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+              <input
+                type="text"
+                placeholder="Title for the new show"
+                value={splitTitle}
+                onChange={(e) => setSplitTitle(e.target.value)}
+                style={{ marginTop: 4, width: "100%", maxWidth: 320 }}
+              />
+              <div style={{ marginTop: 8 }}>
+                <button type="button" onClick={splitItem} disabled={splitSelected.size === 0 || !splitTitle.trim() || splittingItem}>
+                  {splittingItem ? "Splitting..." : `Split ${splitSelected.size} episode(s) into a new show`}
+                </button>
+              </div>
+            </div>
+          );
+        })()}
 
       {isAdmin && (metadataProviders[item.type]?.length ?? 0) > 0 && (
         <>

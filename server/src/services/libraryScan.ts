@@ -19,7 +19,12 @@ export function titlesMatch(a: string, b: string): boolean {
   const na = normalizeForMatch(a);
   const nb = normalizeForMatch(b);
   if (!na || !nb) return false;
-  return na === nb || na.includes(nb) || nb.includes(na);
+  // Exact normalized equality only. This used to also accept a.includes(b)/b.includes(a),
+  // which merged any two shows/movies/albums whose normalized titles happened to be a
+  // subset of one another (e.g. "Extraction" swallowing "Extraction 2", "The Office"
+  // swallowing "The Office UK") into a single media_items row during Scan & Import —
+  // reported as two different TV shows in two different folders getting collapsed into one.
+  return na === nb;
 }
 
 /** Upserts one `tracks` row for a file inside a multiFilePerChild (Music) album folder — parses a
