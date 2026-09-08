@@ -3,6 +3,15 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 178 — Media Analyzer: clickable stat rows, spoken-language table
+- **Every stat table on Media Analyzer (video codec, HDR format, audio codec, resolution, subtitle
+  languages) is now clickable.** Clicking a row (e.g. "h264") filters the files table below down to
+  just the files with that value — click it again to clear. Composes with the existing
+  caution/incompatible filter, so both can narrow the list at once.
+- **Added a "Spoken languages" table**, same shape and same clickable behavior as the existing
+  "Subtitle languages" table, but for audio track languages — the data (`audioStreams[].language`)
+  was already captured by ffprobe and stored, it just wasn't being aggregated or shown anywhere.
+
 ## Round 177 — more naming tokens: episode title, show year, quality
 - **New naming tokens, Sonarr/Radarr-parity:** `{episodeTitle}` and `{year}` (the show's year) for
   TV Shows/Anime, and `{quality}` for every library type (Movies, TV Shows/Anime, and every

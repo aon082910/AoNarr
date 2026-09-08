@@ -18,6 +18,47 @@ interface AnalysisSummary {
   byAudioCodec: Record<string, number>;
   byResolution: Record<string, number>;
   subtitleLanguages: Record<string, number>;
+  spokenLanguages: Record<string, number>;
+}
+
+type StatCategory = "videoCodec" | "hdrFormat" | "audioCodec" | "resolution" | "subtitleLanguage" | "spokenLanguage";
+
+interface StatFilter {
+  category: StatCategory;
+  value: string;
+}
+
+const STAT_LABELS: Record<StatCategory, string> = {
+  videoCodec: "Video codec",
+  hdrFormat: "HDR format",
+  audioCodec: "Audio codec",
+  resolution: "Resolution",
+  subtitleLanguage: "Subtitle language",
+  spokenLanguage: "Spoken language",
+};
+
+/** Mirrors exactly how the server bumped each stat bucket in mediaAnalysis.ts's getLibraryAnalysis
+ * — a click on a count table row needs to reproduce that same grouping key client-side to find the
+ * matching items, since there's no server round-trip for this (every item is already in `data.items`). */
+function matchesStatFilter(item: AnalysisItem, filter: StatFilter): boolean {
+  switch (filter.category) {
+    case "videoCodec":
+      return (item.mediaInfo.videoCodec ?? "unknown") === filter.value;
+    case "hdrFormat":
+      return (item.mediaInfo.hdrFormat ?? "unknown") === filter.value;
+    case "audioCodec":
+      return (item.mediaInfo.audioStreams ?? []).some((a) => (a.codec ?? "unknown") === filter.value);
+    case "resolution": {
+      const label = item.mediaInfo.width && item.mediaInfo.height ? `${item.mediaInfo.width}x${item.mediaInfo.height}` : "unknown";
+      return label === filter.value;
+    }
+    case "subtitleLanguage":
+      return (item.mediaInfo.subtitleStreams ?? []).some((s) => s.language === filter.value);
+    case "spokenLanguage":
+      return (item.mediaInfo.audioStreams ?? []).some((a) => a.language === filter.value);
+    default:
+      return true;
+  }
 }
 
 interface AnalysisItem {
@@ -47,7 +88,19 @@ const HDR_LABELS: Record<HdrFormat, string> = {
   unknown: "Unknown",
 };
 
-function CountTable({ title, counts }: { title: string; counts: Record<string, number> }) {
+function CountTable({
+  title,
+  counts,
+  category,
+  activeValue,
+  onSelect,
+}: {
+  title: string;
+  counts: Record<string, number>;
+  category: StatCategory;
+  activeValue: string | null;
+  onSelect: (category: StatCategory, value: string) => void;
+}) {
   const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
   if (entries.length === 0) return null;
   return (
@@ -55,12 +108,20 @@ function CountTable({ title, counts }: { title: string; counts: Record<string, n
       <h3 style={{ marginTop: 0 }}>{title}</h3>
       <table style={{ margin: 0 }}>
         <tbody>
-          {entries.map(([key, count]) => (
-            <tr key={key}>
-              <td>{key === "none" ? "SDR" : key}</td>
-              <td style={{ textAlign: "right" }}>{count}</td>
-            </tr>
-          ))}
+          {entries.map(([key, count]) => {
+            const active = activeValue === key;
+            return (
+              <tr
+                key={key}
+                onClick={() => onSelect(category, key)}
+                title={`Show every file with ${title.toLowerCase()} "${key === "none" ? "SDR" : key}"`}
+                style={{ cursor: "pointer", background: active ? "var(--panel-2, rgba(255,255,255,0.08))" : undefined }}
+              >
+                <td>{key === "none" ? "SDR" : key}</td>
+                <td style={{ textAlign: "right" }}>{count}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -74,14 +135,21 @@ export default function MediaAnalyzer() {
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [filterLevel, setFilterLevel] = useState<"all" | "caution" | "incompatible">("all");
+  const [statFilter, setStatFilter] = useState<StatFilter | null>(null);
 
   function load() {
     setLoading(true);
+    setStatFilter(null);
     const qs = type ? `?type=${type}` : "";
     api
       .get<AnalysisResponse>(`/media-analysis${qs}`)
       .then(setData)
       .finally(() => setLoading(false));
+  }
+
+  /** Clicking the same row again clears the filter instead of re-applying it — a quick "toggle off". */
+  function selectStat(category: StatCategory, value: string) {
+    setStatFilter((prev) => (prev && prev.category === category && prev.value === value ? null : { category, value }));
   }
 
   useEffect(load, [type]);
@@ -101,7 +169,12 @@ export default function MediaAnalyzer() {
 
   if (loading && !data) return <p className="empty">Loading...</p>;
 
-  const filteredItems = data?.items.filter((i) => filterLevel === "all" || i.compatibilityNotes.some((n) => n.level === filterLevel)) ?? [];
+  const filteredItems =
+    data?.items.filter((i) => {
+      if (filterLevel !== "all" && !i.compatibilityNotes.some((n) => n.level === filterLevel)) return false;
+      if (statFilter && !matchesStatFilter(i, statFilter)) return false;
+      return true;
+    }) ?? [];
 
   return (
     <div>
@@ -150,12 +223,59 @@ export default function MediaAnalyzer() {
           )}
 
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
-            <CountTable title="Video codec" counts={data.summary.byVideoCodec} />
-            <CountTable title="HDR format" counts={data.summary.byHdrFormat} />
-            <CountTable title="Audio codec" counts={data.summary.byAudioCodec} />
-            <CountTable title="Resolution" counts={data.summary.byResolution} />
-            <CountTable title="Subtitle languages" counts={data.summary.subtitleLanguages} />
+            <CountTable
+              title="Video codec"
+              counts={data.summary.byVideoCodec}
+              category="videoCodec"
+              activeValue={statFilter?.category === "videoCodec" ? statFilter.value : null}
+              onSelect={selectStat}
+            />
+            <CountTable
+              title="HDR format"
+              counts={data.summary.byHdrFormat}
+              category="hdrFormat"
+              activeValue={statFilter?.category === "hdrFormat" ? statFilter.value : null}
+              onSelect={selectStat}
+            />
+            <CountTable
+              title="Audio codec"
+              counts={data.summary.byAudioCodec}
+              category="audioCodec"
+              activeValue={statFilter?.category === "audioCodec" ? statFilter.value : null}
+              onSelect={selectStat}
+            />
+            <CountTable
+              title="Resolution"
+              counts={data.summary.byResolution}
+              category="resolution"
+              activeValue={statFilter?.category === "resolution" ? statFilter.value : null}
+              onSelect={selectStat}
+            />
+            <CountTable
+              title="Subtitle languages"
+              counts={data.summary.subtitleLanguages}
+              category="subtitleLanguage"
+              activeValue={statFilter?.category === "subtitleLanguage" ? statFilter.value : null}
+              onSelect={selectStat}
+            />
+            <CountTable
+              title="Spoken languages"
+              counts={data.summary.spokenLanguages}
+              category="spokenLanguage"
+              activeValue={statFilter?.category === "spokenLanguage" ? statFilter.value : null}
+              onSelect={selectStat}
+            />
           </div>
+
+          {statFilter && (
+            <p style={{ color: "var(--muted)" }}>
+              Filtered to files where {STAT_LABELS[statFilter.category].toLowerCase()} is{" "}
+              <strong>{statFilter.value === "none" ? "SDR" : statFilter.value}</strong> ({filteredItems.length} of {data.items.length}){" "}
+              <button type="button" className="secondary" onClick={() => setStatFilter(null)}>
+                Clear
+              </button>
+            </p>
+          )}
 
           <div className="toolbar" style={{ marginBottom: 10 }}>
             <select value={filterLevel} onChange={(e) => setFilterLevel(e.target.value as typeof filterLevel)} style={{ maxWidth: 220 }}>

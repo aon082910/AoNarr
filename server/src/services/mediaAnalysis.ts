@@ -115,6 +115,7 @@ export interface AnalysisSummary {
   byAudioCodec: Record<string, number>;
   byResolution: Record<string, number>;
   subtitleLanguages: Record<string, number>;
+  spokenLanguages: Record<string, number>;
 }
 
 export interface AnalysisItem {
@@ -216,6 +217,7 @@ export async function getLibraryAnalysis(
     byAudioCodec: {},
     byResolution: {},
     subtitleLanguages: {},
+    spokenLanguages: {},
   };
   const items: AnalysisItem[] = [];
 
@@ -241,7 +243,10 @@ export async function getLibraryAnalysis(
     bump(summary.byVideoCodec, info.videoCodec ?? "unknown");
     bump(summary.byHdrFormat, info.hdrFormat);
     bump(summary.byResolution, resolutionLabel(info));
-    for (const a of info.audioStreams) bump(summary.byAudioCodec, a.codec ?? "unknown");
+    for (const a of info.audioStreams) {
+      bump(summary.byAudioCodec, a.codec ?? "unknown");
+      if (a.language) bump(summary.spokenLanguages, a.language);
+    }
     for (const s of info.subtitleStreams) if (s.language) bump(summary.subtitleLanguages, s.language);
 
     if (items.length < ITEM_CAP) {
