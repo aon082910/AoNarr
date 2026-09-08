@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 182 — fix Duplicates merge 502 (server hang, not a crash)
+- **Root cause**: merging duplicates with "delete files" recycles the loser's file via
+  `recycleFile()`, which — when the recycle bin and the media library live on separate Docker
+  mounts (`/config` vs `/media`, a very common setup) — fell back to `fs.copyFileSync`. That call
+  blocks Node's single-threaded event loop for the *entire* duration of the copy: for a multi-GB
+  file, the whole server (every request, from every user, including nginx's own health check)
+  simply stopped responding until the copy finished. From outside, that looked like a bare 502 with
+  nothing in the logs, since nothing ever actually threw an error. `recycleFile` now uses the same
+  non-blocking `fs.promises`-based move the recycle-bin *restore* path already used (it had this
+  exact fix; the recycle-*to* path just never got it).
+- **Added `uncaughtException`/`unhandledRejection` process handlers** (there were none at all).
+  Without them, any stray error outside Express's own request handling silently kills the whole
+  container (combined/entrypoint.sh restarts it when node dies) — and since the in-app Logs page is
+  just an in-memory buffer, a restart wipes it clean, which is the other reason "nothing showed in
+  the logs." Now logged and the server keeps running instead of disappearing along with the evidence.
+- Bumped nginx's `/api/` proxy timeouts from the 60s default to 300s, so a genuinely slow (but
+  alive) operation surfaces as a real timeout instead of an ambiguous connection drop.
+
 ## Round 181 — fix per-item Scan & Import skipping everything
 - **Root cause**: Round 175 made `titlesMatch()` exact-only to stop Scan & Import merging two
   different shows together (see that round's notes). That was correct for deciding which existing

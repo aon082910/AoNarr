@@ -11,18 +11,6 @@ function recycleBinRoot(): string {
   return getSetting("recycleBinDir") || path.join(config.configDir, "recycle-bin");
 }
 
-/** rename() fails with EXDEV across filesystems (common in Docker — /config and /media are often
- * separate mounts) — fall back to copy+unlink in that case. */
-function moveFile(src: string, dest: string): void {
-  try {
-    fs.renameSync(src, dest);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
-    fs.copyFileSync(src, dest);
-    fs.unlinkSync(src);
-  }
-}
-
 export function isRecycleBinEnabled(): boolean {
   return getSetting("recycleBinEnabled") !== "0"; // on by default
 }
@@ -30,11 +18,19 @@ export function isRecycleBinEnabled(): boolean {
 /** Moves a file into the recycle bin (type-namespaced, original filename kept) instead of
  * deleting it outright, and records enough to restore it later. Falls back to a plain delete if
  * the recycle bin is disabled or the move itself fails (e.g. file already gone) — never throws,
- * since this runs inline with delete flows that shouldn't be blocked by a housekeeping feature. */
+ * since this runs inline with delete/merge flows that shouldn't be blocked by a housekeeping
+ * feature.
+ *
+ * Uses moveFileAsync (below), not a synchronous rename/copy — this used to call fs.copyFileSync
+ * directly, which blocks Node's entire single-threaded event loop for as long as an EXDEV
+ * (cross-filesystem, e.g. /config vs /media in Docker) copy of a multi-GB file takes. During that
+ * window the whole server stops responding to every request from every user, not just the one who
+ * triggered the recycle — reported as a bare 502 (nginx's upstream connection simply going
+ * unresponsive) with nothing in the logs, since nothing ever threw. */
 export async function recycleFile(filePath: string, mediaType: string, title: string, mediaItemId: number | null): Promise<void> {
   if (!isRecycleBinEnabled()) {
     try {
-      fs.unlinkSync(filePath);
+      await fsp.unlink(filePath);
     } catch {
       // already gone — fine
     }
@@ -42,12 +38,12 @@ export async function recycleFile(filePath: string, mediaType: string, title: st
   }
 
   try {
-    const stat = fs.statSync(filePath);
+    const stat = await fsp.stat(filePath);
     const destDir = path.join(recycleBinRoot(), mediaType);
-    fs.mkdirSync(destDir, { recursive: true });
+    await fsp.mkdir(destDir, { recursive: true });
     const stamp = Date.now();
     const dest = path.join(destDir, `${stamp}-${path.basename(filePath)}`);
-    moveFile(filePath, dest);
+    await moveFileAsync(filePath, dest);
     await db
       .prepare(
         `INSERT INTO recycle_bin (media_item_id, media_type, title, original_path, recycle_path, size_bytes)
@@ -57,18 +53,19 @@ export async function recycleFile(filePath: string, mediaType: string, title: st
   } catch (err) {
     log.warn(`[recycleBin] failed to recycle "${filePath}", deleting instead:`, (err as Error).message);
     try {
-      fs.unlinkSync(filePath);
+      await fsp.unlink(filePath);
     } catch {
       // already gone
     }
   }
 }
 
-/** Async counterpart to moveFile — restoring can mean moving a many-GB remux back across a
- * different filesystem (the same EXDEV case moveFile handles), and fs.copyFileSync blocks Node's
- * single event loop for the entire copy. fs.promises' copyFile/rename hand the work to libuv's
- * thread pool instead, so the rest of the app (including the next click on this same page) keeps
- * responding while a big restore is in flight. */
+/** Shared by recycleFile (above) and startRestoreFromRecycleBin (below) — either direction can
+ * mean moving a many-GB remux across a filesystem boundary (rename() fails with EXDEV; common in
+ * Docker, where /config and /media are often separate mounts), and a synchronous copy would block
+ * Node's single event loop for the entire copy. fs.promises' copyFile/rename hand the work to
+ * libuv's thread pool instead, so the rest of the app (every other request, from every user) keeps
+ * responding while a big move is in flight. */
 async function moveFileAsync(src: string, dest: string): Promise<void> {
   try {
     await fsp.rename(src, dest);
