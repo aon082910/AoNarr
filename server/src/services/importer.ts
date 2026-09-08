@@ -374,7 +374,7 @@ export async function placeFile(params: {
   let fileLabel: string;
 
   if (typeConfig.shape === "single") {
-    const segments = renderPathSegments(getNamingTemplate(item.type), { title: item.title, year: item.year ?? "" });
+    const segments = renderPathSegments(getNamingTemplate(item.type), { title: item.title, year: item.year ?? "", quality: quality ?? "" });
     ({ destPath, fileLabel } = resolveDest(rootFolder.path, segments, ext, sourceFile, getNamingEnabled(item.type)));
   } else if (typeConfig.shape === "episodic" && episodeId) {
     const epRow = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(episodeId)) as any;
@@ -401,6 +401,9 @@ export async function placeFile(params: {
       episode: epRow.episode_number,
       absoluteEpisode,
       airDate: epRow.air_date ?? "",
+      episodeTitle: epRow.title ?? "",
+      year: item.year ?? "",
+      quality: quality ?? "",
     });
     ({ destPath, fileLabel } = resolveDest(rootFolder.path, segments, ext, sourceFile, getNamingEnabled(item.type)));
   } else if (typeConfig.shape === "collection" && subItemId && !typeConfig.multiFilePerChild) {
@@ -409,6 +412,7 @@ export async function placeFile(params: {
     const segments = renderPathSegments(getNamingTemplate(item.type), {
       parentTitle: item.title,
       childTitle: subRow.title,
+      quality: quality ?? "",
     });
     ({ destPath, fileLabel } = resolveDest(rootFolder.path, segments, ext, sourceFile, getNamingEnabled(item.type)));
   } else {
@@ -502,6 +506,7 @@ export async function placeAlbumFiles(params: {
   const templatedSegments = renderPathSegments(getNamingTemplate(item.type), {
     parentTitle: item.title,
     childTitle: subRow.title,
+    quality: quality ?? "",
   });
   const parentFolderSegments = templatedSegments.slice(0, -1);
   const albumFolderName = getNamingEnabled(item.type)
@@ -632,6 +637,9 @@ export async function placeSeasonPackFiles(params: {
       season: seasonNumber,
       episode: episodeNumber as number,
       absoluteEpisode,
+      episodeTitle: targetEpisode.title ?? "",
+      year: item.year ?? "",
+      quality: quality ?? "",
     });
     const ext = path.extname(src);
     const { destPath: dest } = resolveDest(rootFolder.path, segments, ext, src, getNamingEnabled(item.type));
@@ -813,7 +821,7 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult): Promise<vo
     if (typeConfig.shape === "single") {
       if (!item.hasFile || !item.path) return;
       const ext = path.extname(item.path);
-      const segments = renderPathSegments(template, { title: item.title, year: item.year ?? "" });
+      const segments = renderPathSegments(template, { title: item.title, year: item.year ?? "", quality: item.quality ?? "" });
       const { destPath } = resolveDest(rootFolder.path, segments, ext, item.path, namingEnabled);
       if (path.resolve(destPath) === path.resolve(item.path)) return;
       const oldDir = path.dirname(item.path);
@@ -843,6 +851,9 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult): Promise<vo
           episode: epRow.episode_number,
           absoluteEpisode,
           airDate: epRow.air_date ?? "",
+          episodeTitle: epRow.title ?? "",
+          year: item.year ?? "",
+          quality: epRow.quality ?? "",
         });
         const { destPath } = resolveDest(rootFolder.path, segments, ext, epRow.file_path, namingEnabled);
         if (path.resolve(destPath) === path.resolve(epRow.file_path)) continue;
@@ -863,7 +874,7 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult): Promise<vo
         .all(item.id)) as any[];
       for (const subRow of subItems) {
         const ext = path.extname(subRow.file_path);
-        const segments = renderPathSegments(template, { parentTitle: item.title, childTitle: subRow.title });
+        const segments = renderPathSegments(template, { parentTitle: item.title, childTitle: subRow.title, quality: subRow.quality ?? "" });
         const { destPath } = resolveDest(rootFolder.path, segments, ext, subRow.file_path, namingEnabled);
         if (path.resolve(destPath) === path.resolve(subRow.file_path)) continue;
         const oldDir = path.dirname(subRow.file_path);

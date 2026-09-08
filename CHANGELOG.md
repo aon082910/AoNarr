@@ -3,6 +3,22 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 177 — more naming tokens: episode title, show year, quality
+- **New naming tokens, Sonarr/Radarr-parity:** `{episodeTitle}` and `{year}` (the show's year) for
+  TV Shows/Anime, and `{quality}` for every library type (Movies, TV Shows/Anime, and every
+  collection type — Music, Books, Audiobooks, Comics, Manga, Online Videos, Podcasts, Courses).
+  All three were already sitting right there in the database at rename time — episode
+  title/air date were fetched but never added to the template's variables, and quality was passed
+  around for other purposes but never threaded into the renderer. Wired into every place a file
+  gets placed or renamed: import, season-pack import, album import, and Organize & Rename/Rename
+  Files (both per-item and library-wide).
+- **Default TV Shows/Anime naming template now includes the episode title** —
+  `{parentTitle} - S{season:00}E{episode:00} - {episodeTitle}`, matching Sonarr's own default.
+  Anyone with a custom template override is unaffected; anyone still on the default picks this up
+  the next time they import or click Organize & Rename.
+- All three new tokens are listed in the naming template picker (Settings → Naming) with live
+  preview support, same as every existing token.
+
 ## Round 176 — multi-file manual import, library A-Z jump, scroll restore, episode metadata fix
 - **Manual Import now imports several files at once, Sonarr-style.** The Manual Import panel (on a
   show/collection item, in the season table, and now on the individual episode page too) lists

@@ -24,7 +24,7 @@ export function renderTemplate(template: string, vars: Record<string, string | n
  */
 export const DEFAULT_SHAPE_TEMPLATES: Record<MediaShape, string> = {
   single: "{title} ({year})/{title} ({year})",
-  episodic: "{parentTitle}/Season {season:00}/{parentTitle} - S{season:00}E{episode:00}",
+  episodic: "{parentTitle}/Season {season:00}/{parentTitle} - S{season:00}E{episode:00} - {episodeTitle}",
   collection: "{parentTitle}/{childTitle}",
 };
 

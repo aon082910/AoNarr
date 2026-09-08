@@ -12,24 +12,38 @@ const TOKENS_BY_SHAPE: Record<MediaShape, TokenOption[]> = {
   single: [
     { token: "{title}", label: "Title" },
     { token: "{year}", label: "Year" },
+    { token: "{quality}", label: "Quality (e.g. WEB-DL 1080p)" },
   ],
   episodic: [
     { token: "{parentTitle}", label: "Show title" },
+    { token: "{year}", label: "Show's year" },
     { token: "{season:00}", label: "Season (zero-padded)" },
     { token: "{episode:00}", label: "Episode (zero-padded)" },
     { token: "{absoluteEpisode:000}", label: "Absolute episode (anime-style)" },
+    { token: "{episodeTitle}", label: "Episode title" },
     { token: "{airDate}", label: "Air date, YYYY-MM-DD (for daily/talk-show series)" },
+    { token: "{quality}", label: "Quality (e.g. WEB-DL 1080p)" },
   ],
   collection: [
     { token: "{parentTitle}", label: "Artist/Author/Creator" },
     { token: "{childTitle}", label: "Album/Book/Issue" },
+    { token: "{quality}", label: "Quality (e.g. FLAC, EPUB)" },
   ],
 };
 
 const PREVIEW_VARS_BY_SHAPE: Record<MediaShape, Record<string, string | number>> = {
-  single: { title: "Example Movie", year: 2020 },
-  episodic: { parentTitle: "Example Show", season: 1, episode: 5, absoluteEpisode: 5, airDate: "2026-08-25" },
-  collection: { parentTitle: "Example Artist", childTitle: "Example Album" },
+  single: { title: "Example Movie", year: 2020, quality: "WEB-DL 1080p" },
+  episodic: {
+    parentTitle: "Example Show",
+    year: 2020,
+    season: 1,
+    episode: 5,
+    absoluteEpisode: 5,
+    episodeTitle: "Example Episode Title",
+    airDate: "2026-08-25",
+    quality: "WEB-DL 1080p",
+  },
+  collection: { parentTitle: "Example Artist", childTitle: "Example Album", quality: "FLAC" },
 };
 
 /** Same rendering rule the server's naming.ts uses — kept in sync deliberately so the live preview
