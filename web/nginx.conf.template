@@ -14,4 +14,24 @@ server {
     location / {
         try_files $uri /index.html;
     }
+
+    # Vite's built JS/CSS filenames are content-hashed (index-<hash>.js) — a new build always gets a
+    # new filename, so these are safe to cache forever. index.html is the opposite: it's the one file
+    # that references those hashed names, so it must never be cached, or the browser can keep serving
+    # a stale index.html pointing at JS that predates whatever update was just deployed — this was
+    # the actual cause of "the UI still looks the same after updating the container."
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+
+    # Browsers already re-check a registered service worker's script at most once every 24h by
+    # spec regardless of headers — this just makes sure that check, whenever it happens, isn't
+    # itself served from a stale HTTP cache.
+    location = /sw.js {
+        add_header Cache-Control "no-cache";
+    }
+
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
 }

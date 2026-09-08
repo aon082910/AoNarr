@@ -1,4 +1,4 @@
-const CACHE_NAME = "aonarr-shell-v1";
+const CACHE_NAME = "aonarr-shell-v2";
 const SHELL_FILES = ["/", "/manifest.json", "/icon.svg"];
 
 self.addEventListener("install", (event) => {

@@ -3,6 +3,25 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 180 — fix the UI appearing not to update after a container update
+- **Root cause found**: nginx sent no `Cache-Control` header at all on `index.html`, so a browser
+  could keep serving its own cached copy of the OLD `index.html` — which references the OLD
+  hashed JS bundle filename — indefinitely after pulling a new image. This is why recent UI
+  changes (manual import, scroll restore, etc.) could look like they never landed even though the
+  container itself was fully up to date. Verified by pulling `allornothing/aonarr:combined` fresh
+  from Docker Hub and confirming the built JS bundle already had the changes — the deploy was
+  correct, the browser just never asked for it again.
+- `index.html` (and `sw.js`) now get `Cache-Control: no-cache` (always revalidated, cheap via a
+  304 when unchanged); the Vite-built, content-hashed files under `/assets/` get
+  `Cache-Control: public, max-age=31536000, immutable` (safe to cache forever — a new build always
+  gets a new filename). Applies to both the combined image's nginx config and the split web
+  image's.
+- Bumped the PWA service worker's cache name so an already-registered service worker picks up a
+  real update instead of being byte-identical to what's already installed.
+- **If you already hit this**: after updating to this round, do one hard refresh (Ctrl+Shift+R, or
+  clear the tab's cached data) once — the header fix prevents *future* staleness, it can't evict
+  what a browser already cached before this fix existed.
+
 ## Round 179 — season-scoped actions, season artwork + tile view
 - **Season toolbar now has Scan & Import, Manual Import, Organize & Rename, and Refresh**, next to
   the existing Search season/Monitor/Unmonitor — each scoped to just that season instead of the
