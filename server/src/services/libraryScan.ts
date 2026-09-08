@@ -27,6 +27,25 @@ export function titlesMatch(a: string, b: string): boolean {
   return na === nb;
 }
 
+/** The old (pre-exact-match) substring-inclusive comparison — deliberately kept around for just
+ * one job: deciding whether a scanned file's filename/folder-guessed title is "close enough" to
+ * be worth considering for a specific, already-known item (the `onlyTitle`-scoped per-item/
+ * per-season Scan & Import button). A real metadata title ("The Office (US)") routinely doesn't
+ * match a filename-guessed title ("The Office") under exact comparison, which — once titlesMatch()
+ * became exact-only — made every single-item Scan & Import silently skip every file (reported as
+ * "matched 0, created 0, skipped N" with no explanation, since a mismatched onlyTitle isn't
+ * itself an error). Safe to keep loose here specifically because a per-item scan already knows
+ * its target by id: this only widens which files get a *chance* to be considered, it doesn't
+ * decide which existing show a file merges into — that still goes through the strict, exact
+ * titlesMatch() below, so this can't reintroduce the cross-show-merge bug that made titlesMatch()
+ * exact-only in the first place. */
+function looseTitlesMatch(a: string, b: string): boolean {
+  const na = normalizeForMatch(a);
+  const nb = normalizeForMatch(b);
+  if (!na || !nb) return false;
+  return na === nb || na.includes(nb) || nb.includes(na);
+}
+
 /** Upserts one `tracks` row for a file inside a multiFilePerChild (Music) album folder — parses a
  * leading "01 - " / "01." style track number out of the filename where present (same convention
  * placeAlbumFiles() in importer.ts assumes for the download-import path), falling back to the next
@@ -289,7 +308,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal, onl
           result.skippedFiles.push({ path: filePath, reason: "couldn't guess a series title from the filename or folder" });
           continue;
         }
-        if (onlyTitle && !titlesMatch(guessedTitle, onlyTitle)) continue;
+        if (onlyTitle && !looseTitlesMatch(guessedTitle, onlyTitle)) continue;
         if (onlySeasonNumber != null && season !== onlySeasonNumber) continue;
         const parsed = parseReleaseTitle(base);
         const quality = parsed.quality === "Unknown" ? null : parsed.quality;
@@ -373,7 +392,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal, onl
           result.skippedFiles.push({ path: filePath, reason: `couldn't guess a title from the parent folder name "${relSegments[0]}"` });
           continue;
         }
-        if (onlyTitle && !titlesMatch(parentTitle, onlyTitle)) continue;
+        if (onlyTitle && !looseTitlesMatch(parentTitle, onlyTitle)) continue;
 
         let parentMatch = collectionParents.find((m) => titlesMatch(m.title, parentTitle));
         if (!parentMatch) {
@@ -459,7 +478,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal, onl
           result.skippedFiles.push({ path: filePath, reason: `couldn't guess a title from the filename "${base}"` });
           continue;
         }
-        if (onlyTitle && !titlesMatch(guessedTitle, onlyTitle)) continue;
+        if (onlyTitle && !looseTitlesMatch(guessedTitle, onlyTitle)) continue;
         const parsed = parseReleaseTitle(base);
         const quality = parsed.quality === "Unknown" ? null : parsed.quality;
 

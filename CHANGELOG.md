@@ -3,6 +3,26 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 181 — fix per-item Scan & Import skipping everything
+- **Root cause**: Round 175 made `titlesMatch()` exact-only to stop Scan & Import merging two
+  different shows together (see that round's notes). That was correct for deciding which existing
+  show a file belongs to — but the per-item/per-season "Scan & Import" buttons also used the same
+  exact match just to decide "is this file even for the show this button is on," comparing the
+  filename/folder-guessed title against the show's real metadata title. Those routinely differ
+  (a folder named "The Office" vs. a matched title of "The Office (US)", missing subtitles,
+  punctuation) — once that comparison became exact-only, a mismatch meant the button silently
+  skipped every single file, reported as "matched 0, created 0, skipped N" with nothing in the
+  container logs explaining why.
+- Restored the old, lenient (substring-inclusive) comparison specifically for that "is this file
+  plausibly for this show" gate — safe to do because the button already knows its target by id;
+  it can't misroute a file to a *different* existing show, since that decision still goes through
+  the strict, exact match. Full-library scans (where the cross-show-merge bug actually happened)
+  are unaffected — they never set this filter at all.
+- The per-item and per-season Scan & Import routes now log their result (matched/created/skipped +
+  per-file skip reasons) to the container logs the same way the whole-library scan already does,
+  and the result popup itself now lists the first few skip reasons directly instead of just bare
+  counts.
+
 ## Round 180 — fix the UI appearing not to update after a container update
 - **Root cause found**: nginx sent no `Cache-Control` header at all on `index.html`, so a browser
   could keep serving its own cached copy of the OLD `index.html` — which references the OLD

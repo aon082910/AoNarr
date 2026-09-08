@@ -442,9 +442,12 @@ mediaRouter.post(
   "/:id/scan-import",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const row = await db.prepare("SELECT id FROM media_items WHERE id = ?").get(req.params.id);
+    const row = (await db.prepare("SELECT id, type FROM media_items WHERE id = ?").get(req.params.id)) as { id: number; type: string } | undefined;
     if (!row) throw new HttpError(404, "Media item not found");
     const result = await scanAndImportOneMediaItem(Number(req.params.id));
+    // Same logging the whole-library scan already gets — without this, a per-item Scan & Import
+    // that skips every file had nothing in the container logs pointing at why.
+    logScanResult(row.type, result);
     res.json(result);
   })
 );
@@ -467,9 +470,10 @@ mediaRouter.post(
   "/:id/season/:seasonNumber/scan-import",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const row = await db.prepare("SELECT id FROM media_items WHERE id = ?").get(req.params.id);
+    const row = (await db.prepare("SELECT id, type FROM media_items WHERE id = ?").get(req.params.id)) as { id: number; type: string } | undefined;
     if (!row) throw new HttpError(404, "Media item not found");
     const result = await scanAndImportOneMediaItem(Number(req.params.id), undefined, Number(req.params.seasonNumber));
+    logScanResult(row.type, result);
     res.json(result);
   })
 );

@@ -87,6 +87,29 @@ interface SeasonInfo {
 
 type MediaDetailResponse = MediaItem & { children: Episode[] | SubItem[]; seasons: SeasonInfo[]; tags: Tag[] };
 
+interface ScanImportResult {
+  matched: number;
+  created: number;
+  skipped: number;
+  skippedFiles?: { path: string; reason: string }[];
+  unsupported?: string;
+}
+
+/** A bare "matched 0, created 0, skipped N" told an admin nothing about WHY — usually a title
+ * guessed from the folder/filename not matching this item closely enough, or an unrecognized
+ * season/episode naming pattern. Surfaces the first few actual reasons right in the result alert
+ * instead of making them go dig through the container logs (which this same scan now also writes
+ * to via logScanResult on the server, for anyone who wants the full list). */
+function scanImportSummary(result: ScanImportResult): string {
+  let msg = `Scan & Import complete — matched ${result.matched}, created ${result.created}, skipped ${result.skipped}.`;
+  if (result.skipped > 0 && result.skippedFiles && result.skippedFiles.length > 0) {
+    const shown = result.skippedFiles.slice(0, 5);
+    msg += `\n\nWhy some files were skipped:\n${shown.map((f) => `- ${f.path.split(/[\\/]/).pop()}: ${f.reason}`).join("\n")}`;
+    if (result.skippedFiles.length > shown.length) msg += `\n...and ${result.skippedFiles.length - shown.length} more (see container logs for the full list).`;
+  }
+  return msg;
+}
+
 type SearchTarget = { episodeId?: number; subItemId?: number; seasonNumber?: number; label: string } | null;
 
 interface BrowseEntry {
@@ -443,8 +466,8 @@ export default function MediaDetail() {
     if (!item) return;
     setScanningItem(true);
     try {
-      const result = await api.post<{ matched: number; created: number; skipped: number }>(`/media/${item.id}/scan-import`, {});
-      alert(`Scan & Import complete — matched ${result.matched}, created ${result.created}, skipped ${result.skipped}.`);
+      const result = await api.post<ScanImportResult>(`/media/${item.id}/scan-import`, {});
+      alert(scanImportSummary(result));
       load();
     } catch (err) {
       setError((err as Error).message);
@@ -475,11 +498,8 @@ export default function MediaDetail() {
     if (!item) return;
     setSeasonActionBusy({ seasonNumber, action: "scan" });
     try {
-      const result = await api.post<{ matched: number; created: number; skipped: number }>(
-        `/media/${item.id}/season/${seasonNumber}/scan-import`,
-        {}
-      );
-      alert(`Season ${seasonNumber} Scan & Import complete — matched ${result.matched}, created ${result.created}, skipped ${result.skipped}.`);
+      const result = await api.post<ScanImportResult>(`/media/${item.id}/season/${seasonNumber}/scan-import`, {});
+      alert(`Season ${seasonNumber} — ${scanImportSummary(result)}`);
       load();
     } catch (err) {
       setError((err as Error).message);
