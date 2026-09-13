@@ -281,7 +281,7 @@ export async function grab(
  * configured, which is now common since http/ytdlp clients coexist with qBittorrent/SABnzbd. */
 export function pickClientForProtocol(clients: DownloadClient[], protocol: SearchResult["protocol"]): DownloadClient | null {
   const typesForProtocol: Record<string, string[]> = {
-    torrent: ["qbittorrent", "realdebrid", "alldebrid", "blackhole"],
+    torrent: ["qbittorrent", "realdebrid", "alldebrid", "torbox", "blackhole"],
     usenet: ["sabnzbd", "blackhole"],
     http: ["http"],
   };

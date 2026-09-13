@@ -119,7 +119,7 @@ export interface IndexerHealth {
 export interface DownloadClient {
   id: number;
   name: string;
-  type: "qbittorrent" | "sabnzbd" | "http" | "ytdlp" | "realdebrid" | "alldebrid" | "blackhole" | "slskd";
+  type: "qbittorrent" | "sabnzbd" | "http" | "ytdlp" | "realdebrid" | "alldebrid" | "torbox" | "blackhole" | "slskd";
   host: string | null;
   port: number | null;
   useSsl: 0 | 1;

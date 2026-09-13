@@ -4,7 +4,7 @@ import Modal from "../components/Modal.js";
 import type { DownloadClient } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 
-type ClientType = "qbittorrent" | "sabnzbd" | "http" | "ytdlp" | "realdebrid" | "alldebrid" | "blackhole" | "slskd";
+type ClientType = "qbittorrent" | "sabnzbd" | "http" | "ytdlp" | "realdebrid" | "alldebrid" | "torbox" | "blackhole" | "slskd";
 
 interface ClientHealthStats {
   uploadedTotalBytes: number;
@@ -22,6 +22,7 @@ const TYPE_LABELS: Record<ClientType, string> = {
   ytdlp: "yt-dlp",
   realdebrid: "Real-Debrid",
   alldebrid: "AllDebrid",
+  torbox: "TorBox",
   blackhole: "Blackhole (watch folder)",
   slskd: "Soulseek (via slskd)",
 };
@@ -161,6 +162,7 @@ export default function DownloadClients() {
               <option value="ytdlp">yt-dlp (for Online Videos)</option>
               <option value="realdebrid">Real-Debrid</option>
               <option value="alldebrid">AllDebrid</option>
+              <option value="torbox">TorBox</option>
               <option value="blackhole">Blackhole (watch folder)</option>
               <option value="slskd">Soulseek (via slskd)</option>
             </select>
@@ -224,6 +226,18 @@ export default function DownloadClients() {
                   From alldebrid.com → Account → API keys. AoNarr sends grabbed magnet/torrent links
                   to AllDebrid, waits for it to cache them, then downloads the unlocked link(s)
                   directly — no host/port needed, it's always their public API.
+                </p>
+              </>
+            )}
+
+            {type === "torbox" && (
+              <>
+                <label>API key</label>
+                <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+                  From torbox.app → Settings → API key. AoNarr sends grabbed magnet/torrent links to
+                  TorBox, waits for it to cache them, then downloads the file(s) directly — no
+                  host/port needed, it's always their public API.
                 </p>
               </>
             )}

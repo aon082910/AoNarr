@@ -3,6 +3,14 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 184 — add TorBox as a download client
+- **TorBox** joins Real-Debrid/AllDebrid as a supported debrid-style download client — grabbed
+  magnet/torrent links are sent to TorBox's API, AoNarr waits for it to cache them, then downloads
+  the resulting file(s) directly into `/downloads` the same way the other two debrid clients do.
+  Just an API key needed (Settings → Download Clients → Add → TorBox), no host/port.
+- Usenet isn't wired up for it yet (only the torrent/magnet side), so it's only offered to
+  torrent-protocol grabs, same as Real-Debrid/AllDebrid.
+
 ## Round 183 — fix the same event-loop-blocking file copy in the normal import path
 - Round 182 fixed `recycleFile()` blocking the whole server on a large cross-device file copy
   during a Duplicates merge. The same `fs.copyFileSync` pattern was also in `importer.ts`'s own

@@ -516,6 +516,126 @@ class RealDebridAdapter implements DownloadClientAdapter {
 }
 
 /**
+ * TorBox — the same "debrid" torrent-caching shape as Real-Debrid/AllDebrid, just a different
+ * provider (and one that also caches Usenet, though only the torrent side is wired up here, same
+ * scope as the RD/AD adapters). client.apiKey holds the TorBox API key (Settings on torbox.app);
+ * no host/port, always their public API. Every response is wrapped as `{ success, detail, data }`;
+ * `success: false` (or a torrent-level error/dead state) is treated as a failure the same way RD's
+ * `status === "error"` is.
+ */
+class TorBoxAdapter implements DownloadClientAdapter {
+  private jobs = new Map<string, InProcessJob>();
+  private readonly base = "https://api.torbox.app/v1/api";
+
+  private headers(client: DownloadClient): Record<string, string> {
+    return { Authorization: `Bearer ${client.apiKey}` };
+  }
+
+  async addDownload(
+    client: DownloadClient,
+    downloadUrl: string,
+    _category: string | null,
+    releaseTitle?: string
+  ): Promise<GrabResult> {
+    const downloadId = crypto.randomUUID();
+    this.jobs.set(downloadId, { progress: 0, status: "downloading" });
+
+    (async () => {
+      try {
+        const torrentId = await this.addToTorBox(client, downloadUrl);
+
+        // Poll TorBox's own caching/download progress until the files are actually present on
+        // their end. `progress` has been observed both as a 0-1 fraction and a 0-100 percentage
+        // depending on state, so it's normalized defensively rather than assumed either way.
+        let files: { id: number; name?: string }[] = [];
+        for (;;) {
+          const res = await fetch(`${this.base}/torrents/mylist?id=${torrentId}&bypass_cache=true`, { headers: this.headers(client) });
+          if (!res.ok) throw new Error(`TorBox status check failed: HTTP ${res.status}`);
+          const body: any = await res.json();
+          if (body.success === false) throw new Error(`TorBox reported: ${body.detail ?? "unknown error"}`);
+          const info: any = Array.isArray(body.data) ? body.data[0] : body.data;
+          if (!info) throw new Error("TorBox reported no torrent info");
+          if (typeof info.download_state === "string" && /error|dead|fail/i.test(info.download_state)) {
+            throw new Error(`TorBox reported "${info.download_state}"`);
+          }
+          if (info.download_finished === true || info.download_present === true) {
+            files = info.files ?? [];
+            break;
+          }
+          const rawProgress = Number(info.progress ?? 0);
+          const progress = rawProgress > 1 ? rawProgress / 100 : rawProgress;
+          this.jobs.set(downloadId, { progress: Math.min(progress, 0.99), status: "downloading" });
+          await new Promise((r) => setTimeout(r, 5000));
+        }
+        if (files.length === 0) throw new Error("TorBox reported no files");
+
+        fs.mkdirSync(config.downloadsDir, { recursive: true });
+        for (const file of files) {
+          const dlRes = await fetch(
+            `${this.base}/torrents/requestdl?token=${encodeURIComponent(client.apiKey ?? "")}&torrent_id=${torrentId}&file_id=${file.id}`
+          );
+          if (!dlRes.ok) throw new Error(`TorBox requestdl failed: HTTP ${dlRes.status}`);
+          const dlBody: any = await dlRes.json();
+          const downloadLink = dlBody.data;
+          if (!downloadLink) throw new Error("TorBox requestdl returned no link");
+
+          const fileRes = await fetch(downloadLink);
+          if (!fileRes.ok || !fileRes.body) throw new Error(`Downloading TorBox link failed: HTTP ${fileRes.status}`);
+          const filename = sanitizeFilename(file.name || releaseTitle || downloadId);
+          const dest = path.join(config.downloadsDir, filename);
+          const fileStream = fs.createWriteStream(dest);
+          for await (const chunk of fileRes.body as any) fileStream.write(chunk);
+          await new Promise<void>((resolve, reject) => fileStream.end((err: any) => (err ? reject(err) : resolve())));
+        }
+
+        this.jobs.set(downloadId, { progress: 1, status: "completed" });
+      } catch (err) {
+        log.warn(`[torbox] failed for "${releaseTitle ?? downloadUrl}":`, (err as Error).message);
+        this.jobs.set(downloadId, { progress: 0, status: "failed" });
+      }
+    })();
+
+    return { downloadId };
+  }
+
+  /** Magnet URIs and raw .torrent bytes both go to createtorrent as multipart form-data (TorBox
+   * has no separate magnet-only endpoint the way Real-Debrid does) — see resolveDownloadSource for
+   * why an indexer's proxy/"get" URL can't just be handed over as-is. */
+  private async addToTorBox(client: DownloadClient, downloadUrl: string): Promise<string> {
+    const source = await resolveDownloadSource(downloadUrl);
+
+    const form = new FormData();
+    if (source.kind === "magnet") {
+      form.append("magnet", source.uri);
+    } else {
+      form.append("file", new Blob([source.bytes]), "upload.torrent");
+    }
+    // "1" = TorBox's own auto seeding preference; allow_zip=false so multi-file torrents come back
+    // as individual files (matching files[]) rather than one zip requestdl would otherwise offer.
+    form.append("seed", "1");
+    form.append("allow_zip", "false");
+
+    const res = await fetch(`${this.base}/torrents/createtorrent`, {
+      method: "POST",
+      headers: this.headers(client),
+      body: form,
+    });
+    if (!res.ok) throw new Error(`TorBox createtorrent failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+    if (body.success === false) throw new Error(`TorBox createtorrent rejected: ${body.detail ?? "unknown error"}`);
+    const torrentId = body.data?.torrent_id ?? body.data?.id;
+    if (!torrentId) throw new Error("TorBox createtorrent returned no torrent id");
+    return String(torrentId);
+  }
+
+  async getStatus(_client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
+    return downloadIds
+      .filter((id) => this.jobs.has(id))
+      .map((id) => ({ downloadId: id, ...this.jobs.get(id)! }));
+  }
+}
+
+/**
  * AllDebrid — the same "debrid" torrent-caching shape as Real-Debrid, just a different provider:
  * hand it a magnet/torrent, wait for AllDebrid's own servers to fetch it, unlock the resulting
  * link(s) into plain HTTPS downloads AoNarr pulls into downloadsDir itself. client.apiKey holds
@@ -785,6 +905,7 @@ const adapters: Record<DownloadClient["type"], DownloadClientAdapter> = {
   ytdlp: new YtdlpAdapter(),
   realdebrid: new RealDebridAdapter(),
   alldebrid: new AllDebridAdapter(),
+  torbox: new TorBoxAdapter(),
   blackhole: new BlackholeAdapter(),
   slskd: new SlskdAdapter(),
 };
