@@ -3,6 +3,20 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 189 — ratings/backdrop/alternate titles for anime, manga, and ROMs
+- Extended last round's backdrop/rating/alternate-titles work beyond movies/series to every other
+  provider that actually exposes the equivalent data (nothing invented/approximated):
+  - **Anime/manga (AniList)**: ★ rating (`averageScore`/10), backdrop (`bannerImage`), and — for
+    anime only — runtime (`duration`, per-episode minutes). Alternate titles now include the
+    native-script title and AniList's `synonyms` list, for both anime and manga.
+  - **ROMs (RAWG/IGDB)**: ★ rating (RAWG's `metacritic` or IGDB's `total_rating`, both normalized
+    to the same 0-10 scale as everywhere else) and a backdrop screenshot distinct from the cover
+    art already used as the poster.
+- Explicitly did NOT add anything for author/artist/comic — audited each provider (Open Library,
+  Google Books, MusicBrainz, Deezer, Discogs, Last.fm, Comic Vine) and none exposes a real 0-10
+  rating or a distinct backdrop image at the search-result level; inventing a normalization from a
+  popularity/fan count wouldn't be a real rating.
+
 ## Round 188 — year-assisted metadata search, IMDb/Rotten Tomatoes/Metacritic ratings
 - Metadata search (Add Media, and the "Search for a different match" modal on the media detail
   page) now takes an optional **Year** field alongside the title query — results aren't filtered

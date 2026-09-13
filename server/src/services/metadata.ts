@@ -468,10 +468,14 @@ async function searchSeriesAnilist(query: string): Promise<MetadataSearchResult[
       Page(perPage: 15) {
         media(search: $search, type: ANIME) {
           id
-          title { romaji english }
+          title { romaji english native }
+          synonyms
           startDate { year }
           description(asHtml: false)
           coverImage { medium }
+          bannerImage
+          averageScore
+          duration
         }
       }
     }
@@ -490,6 +494,9 @@ async function searchSeriesAnilist(query: string): Promise<MetadataSearchResult[
     overview: m.description || null,
     posterUrl: m.coverImage?.medium || null,
     externalIds: { anilist: String(m.id) },
+    backdropUrl: m.bannerImage || null,
+    rating: typeof m.averageScore === "number" && m.averageScore > 0 ? m.averageScore / 10 : null,
+    runtimeMinutes: typeof m.duration === "number" && m.duration > 0 ? m.duration : null,
   }));
 }
 
@@ -1127,6 +1134,12 @@ async function searchRomsRawg(query: string): Promise<MetadataSearchResult[]> {
     overview: null,
     posterUrl: g.background_image || null,
     externalIds: { rawg: String(g.id) },
+    // RAWG's own critic score (0-100, Metacritic-sourced) — normalized to the same 0-10 scale as
+    // every other provider's `rating`. Its plain 0-5 user `rating` field is deliberately not used
+    // here since it'd need a different multiplier and RAWG's docs call `metacritic` the more
+    // reliable of the two.
+    rating: typeof g.metacritic === "number" && g.metacritic > 0 ? g.metacritic / 10 : null,
+    backdropUrl: g.short_screenshots?.[1]?.image || null,
   }));
 }
 
@@ -1156,7 +1169,7 @@ async function searchRomsIgdb(query: string): Promise<MetadataSearchResult[]> {
   const res = await fetch("https://api.igdb.com/v4/games", {
     method: "POST",
     headers: { "Client-ID": clientId, Authorization: `Bearer ${token}`, "Content-Type": "text/plain" },
-    body: `search "${query.replace(/"/g, '\\"')}"; fields name,first_release_date,cover.url; limit 15;`,
+    body: `search "${query.replace(/"/g, '\\"')}"; fields name,first_release_date,cover.url,total_rating,screenshots.url; limit 15;`,
   });
   if (!res.ok) throw new Error(`IGDB search failed: HTTP ${res.status}`);
   const body: any = await res.json();
@@ -1167,6 +1180,10 @@ async function searchRomsIgdb(query: string): Promise<MetadataSearchResult[]> {
     overview: null,
     posterUrl: g.cover?.url ? `https:${String(g.cover.url).replace("t_thumb", "t_cover_big")}` : null,
     externalIds: { igdb: String(g.id) },
+    // IGDB's `total_rating` (0-100, blends critic + user scores) is its own recommended field over
+    // plain `rating` — normalized to the same 0-10 scale used everywhere else.
+    rating: typeof g.total_rating === "number" && g.total_rating > 0 ? g.total_rating / 10 : null,
+    backdropUrl: g.screenshots?.[0]?.url ? `https:${String(g.screenshots[0].url).replace("t_thumb", "t_screenshot_big")}` : null,
   }));
 }
 
@@ -1653,6 +1670,8 @@ async function searchMangaAnilist(query: string): Promise<MetadataSearchResult[]
           startDate { year }
           description(asHtml: false)
           coverImage { medium }
+          bannerImage
+          averageScore
         }
       }
     }
@@ -1671,6 +1690,8 @@ async function searchMangaAnilist(query: string): Promise<MetadataSearchResult[]
     overview: m.description || null,
     posterUrl: m.coverImage?.medium || null,
     externalIds: { anilist: String(m.id) },
+    backdropUrl: m.bannerImage || null,
+    rating: typeof m.averageScore === "number" && m.averageScore > 0 ? m.averageScore / 10 : null,
   }));
 }
 
@@ -2115,6 +2136,23 @@ export async function fetchCastFor(type: MediaType, externalIds: Record<string, 
  * releases, regional retitles), deduped and sorted. Same on-demand pattern as fetchCastFor/
  * fetchTrailerFor rather than something stored on the item, since it's rarely looked at. */
 export async function fetchAlternateTitlesFor(type: MediaType, externalIds: Record<string, string>): Promise<string[]> {
+  if ((type === "anime" || type === "manga") && externalIds.anilist) {
+    const anilistType = type === "anime" ? "ANIME" : "MANGA";
+    const gql = `query ($id: Int) { Media(id: $id, type: ${anilistType}) { title { romaji english native } synonyms } }`;
+    const res = await fetch("https://graphql.anilist.co", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: gql, variables: { id: Number(externalIds.anilist) } }),
+    });
+    if (!res.ok) throw new Error(`AniList alternate titles lookup failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+    const m = body?.data?.Media;
+    if (!m) throw new Error("AniList has no record for this id");
+    const titles = Array.from(new Set([m.title?.romaji, m.title?.english, m.title?.native, ...(m.synonyms ?? [])].filter(Boolean)));
+    titles.sort((a, b) => a.localeCompare(b));
+    return titles;
+  }
+
   if (!externalIds.tmdb) throw new Error("Alternate titles lookup needs a TMDB id — this item doesn't have one");
   const key = requireSetting("tmdbApiKey", "TMDB API key");
   const kind = type === "movie" ? "movie" : type === "series" ? "tv" : null;
