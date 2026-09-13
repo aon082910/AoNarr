@@ -5,7 +5,16 @@ import multer from "multer";
 import { log } from "../services/logger.js";
 import { db } from "../db/index.js";
 import { nowExpr } from "../db/asyncDb.js";
-import { episodeFromRow, mediaItemFromRow, queueItemFromRow, seasonFromRow, subItemFromRow, tagFromRow, trackFromRow } from "../db/mappers.js";
+import {
+  episodeFromRow,
+  historyEventFromRow,
+  mediaItemFromRow,
+  queueItemFromRow,
+  seasonFromRow,
+  subItemFromRow,
+  tagFromRow,
+  trackFromRow,
+} from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { getMediaTypeConfig, isProbeableFile, isValidMediaType } from "../services/mediaTypes.js";
@@ -169,7 +178,7 @@ mediaRouter.get(
       return;
     }
 
-    const { where, params, fromClause } = buildMediaQuery({
+    const { where, params, fromClause } = await buildMediaQuery({
       type,
       tagId,
       groupId,
@@ -219,7 +228,7 @@ mediaRouter.get(
       return;
     }
 
-    const { where, params, fromClause } = buildMediaQuery({
+    const { where, params, fromClause } = await buildMediaQuery({
       type,
       tagId,
       groupId,
@@ -703,6 +712,25 @@ mediaRouter.get(
   })
 );
 
+/** Radarr/Sonarr-style per-item History tab — every grab/import/failure event recorded against
+ * this media item, newest first. Reuses the same `history` table the global Activity feed reads
+ * from (routes/activity.ts's GET /history), just scoped to one item instead of the whole library. */
+mediaRouter.get(
+  "/:id/history",
+  asyncHandler(async (req, res) => {
+    const row = await db.prepare("SELECT type FROM media_items WHERE id = ?").get(req.params.id);
+    if (!row) throw new HttpError(404, "Media item not found");
+    const allowedTypes = allowedTypesFor(req);
+    if (allowedTypes && !allowedTypes.includes((row as { type: string }).type)) {
+      throw new HttpError(403, "You don't have access to this library");
+    }
+    const rows = await db
+      .prepare("SELECT * FROM history WHERE media_item_id = ? ORDER BY created_at DESC LIMIT 200")
+      .all(req.params.id);
+    res.json(rows.map(historyEventFromRow));
+  })
+);
+
 /**
  * Pulls a second (or third...) opinion from another configured metadata provider for this item's
  * type, without touching the item's primary title/overview/poster — stored separately in
@@ -815,8 +843,8 @@ mediaRouter.post(
     const result = await db
       .prepare(
         `INSERT INTO media_items
-         (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability, series_type)
-         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @path, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability, @seriesType)`
+         (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability, series_type, backdrop_url, rating, runtime_minutes)
+         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @path, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability, @seriesType, @backdropUrl, @rating, @runtimeMinutes)`
       )
       .run({
         type: b.type,
@@ -835,6 +863,9 @@ mediaRouter.post(
         releaseDate: b.releaseDate ?? null,
         minimumAvailability: b.minimumAvailability ?? getSetting("defaultMinimumAvailability") ?? "announced",
         seriesType: b.seriesType ?? null,
+        backdropUrl: b.backdropUrl ?? null,
+        rating: b.rating ?? null,
+        runtimeMinutes: b.runtimeMinutes ?? null,
       });
 
     const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(result.lastInsertRowid);
@@ -970,7 +1001,7 @@ mediaRouter.post(
 
     await db
       .prepare(
-        "UPDATE media_items SET title = ?, sort_title = ?, year = ?, overview = ?, poster_url = ?, external_ids = ?, release_date = ? WHERE id = ?"
+        "UPDATE media_items SET title = ?, sort_title = ?, year = ?, overview = ?, poster_url = ?, external_ids = ?, release_date = ?, backdrop_url = ?, rating = ?, runtime_minutes = ? WHERE id = ?"
       )
       .run(
         b.title,
@@ -980,6 +1011,9 @@ mediaRouter.post(
         b.posterUrl ?? null,
         b.externalIds ? JSON.stringify(b.externalIds) : null,
         b.releaseDate ?? null,
+        b.backdropUrl ?? null,
+        b.rating ?? null,
+        b.runtimeMinutes ?? null,
         req.params.id
       );
 

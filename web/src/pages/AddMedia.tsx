@@ -14,6 +14,9 @@ interface MetadataSearchResult {
   externalIds: Record<string, string>;
   excluded?: boolean;
   releaseDate?: string | null;
+  backdropUrl?: string | null;
+  rating?: number | null;
+  runtimeMinutes?: number | null;
 }
 
 /** Hostname → the "Site" group name to file a scraped course under, so the group picker doesn't
@@ -243,6 +246,9 @@ export default function AddMedia() {
             confirmDuplicate,
             groupId,
             releaseDate: selected?.releaseDate ?? null,
+            backdropUrl: selected?.backdropUrl ?? null,
+            rating: selected?.rating ?? null,
+            runtimeMinutes: selected?.runtimeMinutes ?? null,
           };
       const created = await api.post<MediaItem>(manual ? "/media" : "/metadata/import", payload);
       navigate(`/media/${created.id}`);

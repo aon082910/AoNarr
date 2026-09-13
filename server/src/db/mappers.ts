@@ -26,6 +26,9 @@ export function mediaItemFromRow(row: any) {
     releaseDate: row.release_date,
     minimumAvailability: row.minimum_availability,
     seriesType: row.series_type,
+    backdropUrl: row.backdrop_url,
+    rating: row.rating,
+    runtimeMinutes: row.runtime_minutes,
   };
 }
 

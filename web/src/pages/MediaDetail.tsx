@@ -6,7 +6,7 @@ import SearchMatchModal, { type MetadataSearchResult } from "../components/Searc
 import type { LibraryGroup } from "../types.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
-import type { Collection, MediaInfo, MediaItem, QualityProfile, RootFolder, SearchResult, Tag } from "../types.js";
+import type { Collection, HistoryEvent, MediaInfo, MediaItem, QualityProfile, RootFolder, SearchResult, Tag } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
 import { useContentRatings } from "../hooks/useContentRatings.js";
 
@@ -187,6 +187,9 @@ export default function MediaDetail() {
   const [scanningItem, setScanningItem] = useState(false);
   const [refreshingItem, setRefreshingItem] = useState(false);
   const [showEditMetadata, setShowEditMetadata] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [history, setHistory] = useState<HistoryEvent[] | null>(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [editTitle, setEditTitle] = useState("");
   const [editYear, setEditYear] = useState("");
   const [editOverview, setEditOverview] = useState("");
@@ -325,8 +328,21 @@ export default function MediaDetail() {
       posterUrl: result.posterUrl,
       externalIds: result.externalIds,
       releaseDate: result.releaseDate,
+      backdropUrl: result.backdropUrl,
+      rating: result.rating,
+      runtimeMinutes: result.runtimeMinutes,
     });
-    setItem({ ...item, title: updated.title, year: updated.year, overview: updated.overview, posterUrl: updated.posterUrl, externalIds: updated.externalIds });
+    setItem({
+      ...item,
+      title: updated.title,
+      year: updated.year,
+      overview: updated.overview,
+      posterUrl: updated.posterUrl,
+      externalIds: updated.externalIds,
+      backdropUrl: updated.backdropUrl,
+      rating: updated.rating,
+      runtimeMinutes: updated.runtimeMinutes,
+    });
     setShowSearchMatch(false);
   }
 
@@ -345,6 +361,37 @@ export default function MediaDetail() {
     if (!item) return;
     const updated = await api.patch<MediaItem>(`/media/${item.id}`, { contentRating: rating });
     setItem({ ...item, contentRating: updated.contentRating });
+  }
+
+  function toggleHistory() {
+    if (!item) return;
+    const next = !showHistory;
+    setShowHistory(next);
+    if (next && history === null) {
+      setLoadingHistory(true);
+      api
+        .get<HistoryEvent[]>(`/media/${item.id}/history`)
+        .then(setHistory)
+        .catch(() => setHistory([]))
+        .finally(() => setLoadingHistory(false));
+    }
+  }
+
+  function historyEventLabel(event: HistoryEvent): { label: string; detail: string | null } {
+    let parsed: any = null;
+    try {
+      parsed = event.data ? JSON.parse(event.data) : null;
+    } catch {
+      parsed = null;
+    }
+    const detail = parsed?.title ?? parsed?.fileName ?? parsed?.reason ?? null;
+    const labels: Record<string, string> = {
+      grabbed: "Grabbed",
+      imported: "Imported",
+      failed: "Failed",
+      subtitleDownloaded: "Subtitle downloaded",
+    };
+    return { label: labels[event.eventType] ?? event.eventType, detail };
   }
 
   function toggleEditMetadata() {
@@ -920,23 +967,41 @@ export default function MediaDetail() {
 
   return (
     <div>
-      <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
-        {item.posterUrl ? (
-          <img
-            src={item.posterUrl}
-            alt=""
-            style={{ width: 160, borderRadius: 8, flexShrink: 0, aspectRatio: "2 / 3", objectFit: "cover" }}
-          />
-        ) : (
-          <div className="poster" style={{ width: 160, flexShrink: 0, borderRadius: 8 }}>
-            No poster
-          </div>
-        )}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <h1 style={{ margin: "0 0 4px" }}>{item.title}</h1>
-          <p style={{ color: "var(--muted)" }}>
-            {item.year ?? ""} · {item.type} · {item.status}
-            {isAdmin && (
+      <div
+        className="media-backdrop"
+        style={
+          item.backdropUrl
+            ? {
+                backgroundImage: `linear-gradient(to right, var(--bg) 15%, rgba(0,0,0,0.35) 60%, rgba(0,0,0,0.15)), url(${item.backdropUrl})`,
+              }
+            : undefined
+        }
+      >
+        <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
+          {item.posterUrl ? (
+            <img
+              src={item.posterUrl}
+              alt=""
+              style={{ width: 160, borderRadius: 8, flexShrink: 0, aspectRatio: "2 / 3", objectFit: "cover", boxShadow: "0 4px 16px rgba(0,0,0,0.4)" }}
+            />
+          ) : (
+            <div className="poster" style={{ width: 160, flexShrink: 0, borderRadius: 8 }}>
+              No poster
+            </div>
+          )}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <h1 style={{ margin: "0 0 4px" }}>{item.title}</h1>
+            <p style={{ color: "var(--muted)" }}>
+              {item.year ?? ""} · {item.type} · {item.status}
+              {typeof item.rating === "number" && item.rating > 0 && (
+                <span className="badge" style={{ marginLeft: 8 }} title="Provider vote average">
+                  ★ {item.rating.toFixed(1)}
+                </span>
+              )}
+              {typeof item.runtimeMinutes === "number" && item.runtimeMinutes > 0 && (
+                <span style={{ marginLeft: 8 }}>· {item.runtimeMinutes} min</span>
+              )}
+              {isAdmin && (
               <button
                 type="button"
                 className="secondary"
@@ -1068,6 +1133,7 @@ export default function MediaDetail() {
               </tbody>
             </table>
           )}
+        </div>
         </div>
       </div>
 
@@ -1270,6 +1336,9 @@ export default function MediaDetail() {
           <button onClick={toggleEditMetadata} className="secondary">
             {showEditMetadata ? "Cancel edit" : "Edit metadata"}
           </button>
+          <button onClick={toggleHistory} className="secondary">
+            {showHistory ? "Hide history" : "History"}
+          </button>
           <button
             className="secondary"
             onClick={organizeItem}
@@ -1355,6 +1424,38 @@ export default function MediaDetail() {
             {savingMetadata ? "Saving..." : "Save metadata"}
           </button>
         </form>
+      )}
+
+      {showHistory && (
+        <div className="form-panel">
+          {loadingHistory && <p className="empty">Loading...</p>}
+          {!loadingHistory && history && history.length === 0 && <p className="empty">No history yet for this item.</p>}
+          {!loadingHistory && history && history.length > 0 && (
+            <table>
+              <thead>
+                <tr>
+                  <th>Event</th>
+                  <th>Detail</th>
+                  <th>Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((h) => {
+                  const { label, detail } = historyEventLabel(h);
+                  return (
+                    <tr key={h.id}>
+                      <td>
+                        <span className={`badge ${h.eventType === "failed" ? "danger" : h.eventType === "imported" ? "ok" : ""}`}>{label}</span>
+                      </td>
+                      <td>{detail ?? "—"}</td>
+                      <td>{new Date(h.createdAt).toLocaleString()}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
       )}
 
       {typeInfo && typeInfo.groupLevels.length > 0 && groupBreadcrumb && !showMove && (

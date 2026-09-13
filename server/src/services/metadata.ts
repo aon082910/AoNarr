@@ -13,6 +13,14 @@ export interface MetadataSearchResult {
   /** Full YYYY-MM-DD release date, when the provider has one — currently only TMDB movie search
    * populates this (used by the Calendar page, which otherwise has no date to show movies by). */
   releaseDate?: string | null;
+  /** Fanart/background image (TMDB's backdrop_path) — shown full-bleed behind the media detail
+   * header, distinct from posterUrl. Only TMDB populates this today. */
+  backdropUrl?: string | null;
+  /** Provider vote average (TMDB's 0-10 `vote_average`) shown as a ratings badge next to quality/
+   * status. Only TMDB populates this today. */
+  rating?: number | null;
+  /** Only populated by the by-id TMDB detail lookups (search results don't carry it). */
+  runtimeMinutes?: number | null;
 }
 
 export interface MetadataEpisode {
@@ -42,6 +50,7 @@ export interface MetadataTrack {
 }
 
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w342";
+const TMDB_BACKDROP_BASE = "https://image.tmdb.org/t/p/w1280";
 const MUSICBRAINZ_USER_AGENT = "AoNarr/0.1 (self-hosted media manager)";
 const DISCOGS_USER_AGENT = "AoNarr/0.1 (self-hosted media manager)";
 
@@ -82,6 +91,8 @@ async function searchMoviesTmdb(query: string): Promise<MetadataSearchResult[]> 
     posterUrl: r.poster_path ? `${TMDB_IMAGE_BASE}${r.poster_path}` : null,
     externalIds: { tmdb: String(r.id) },
     releaseDate: r.release_date || null,
+    backdropUrl: r.backdrop_path ? `${TMDB_BACKDROP_BASE}${r.backdrop_path}` : null,
+    rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
   }));
 }
 
@@ -99,6 +110,9 @@ export async function fetchMovieByTmdbId(tmdbId: string): Promise<MetadataSearch
     posterUrl: r.poster_path ? `${TMDB_IMAGE_BASE}${r.poster_path}` : null,
     externalIds: { tmdb: String(r.id) },
     releaseDate: r.release_date || null,
+    backdropUrl: r.backdrop_path ? `${TMDB_BACKDROP_BASE}${r.backdrop_path}` : null,
+    rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
+    runtimeMinutes: typeof r.runtime === "number" && r.runtime > 0 ? r.runtime : null,
   };
 }
 
@@ -113,6 +127,9 @@ export async function fetchSeriesByTmdbId(tmdbId: string): Promise<MetadataSearc
     overview: r.overview || null,
     posterUrl: r.poster_path ? `${TMDB_IMAGE_BASE}${r.poster_path}` : null,
     externalIds: { tmdb: String(r.id) },
+    backdropUrl: r.backdrop_path ? `${TMDB_BACKDROP_BASE}${r.backdrop_path}` : null,
+    rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
+    runtimeMinutes: Array.isArray(r.episode_run_time) && r.episode_run_time.length > 0 ? r.episode_run_time[0] : null,
   };
 }
 
@@ -189,6 +206,8 @@ async function searchSeriesTmdb(query: string): Promise<MetadataSearchResult[]> 
     overview: r.overview || null,
     posterUrl: r.poster_path ? `${TMDB_IMAGE_BASE}${r.poster_path}` : null,
     externalIds: { tmdb: String(r.id) },
+    backdropUrl: r.backdrop_path ? `${TMDB_BACKDROP_BASE}${r.backdrop_path}` : null,
+    rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
   }));
 }
 

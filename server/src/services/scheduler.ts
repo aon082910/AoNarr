@@ -801,6 +801,10 @@ async function retryFailedGrab(match: QueueItem, reason: string): Promise<void> 
     match.indexerId,
     reason
   );
+  await db.prepare("INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'failed', ?)").run(
+    match.mediaItemId,
+    JSON.stringify({ title: match.title, reason })
+  );
   await recordGroupFailure(parseReleaseTitle(match.title).releaseGroup);
 
   if (!mediaRow || match.retryCount >= MAX_AUTO_RETRIES) {

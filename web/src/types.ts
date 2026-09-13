@@ -89,6 +89,9 @@ export interface MediaItem {
   releaseDate: string | null;
   minimumAvailability: "announced" | "inCinemas" | "released" | null;
   seriesType: "standard" | "daily" | null;
+  backdropUrl: string | null;
+  rating: number | null;
+  runtimeMinutes: number | null;
 }
 
 export interface Indexer {
@@ -414,6 +417,14 @@ export interface DuplicateGroupItem {
   quality: string | null;
   contentRating: string | null;
   matchedProviders: string[];
+}
+
+export interface HistoryEvent {
+  id: number;
+  mediaItemId: number;
+  eventType: string;
+  data: string | null;
+  createdAt: string;
 }
 
 export interface DuplicateGroup {

@@ -36,7 +36,10 @@ CREATE TABLE IF NOT EXISTS media_items (
   protected INTEGER NOT NULL DEFAULT 0, -- excluded from watch-status auto-archival
   status TEXT NOT NULL DEFAULT 'unknown',
   added_at TEXT NOT NULL DEFAULT (datetime('now')),
-  release_date TEXT -- single/collection-shape items' own release date (movies from TMDB, etc.) — episodes/sub_items already have air_date/release_date of their own; this is what the Calendar shows single-shape items by
+  release_date TEXT, -- single/collection-shape items' own release date (movies from TMDB, etc.) — episodes/sub_items already have air_date/release_date of their own; this is what the Calendar shows single-shape items by
+  backdrop_url TEXT, -- fanart/background image (distinct from poster_url) shown behind the media detail header, Radarr-style
+  rating REAL, -- provider vote average (e.g. TMDB's 0-10 score) shown alongside quality/status badges
+  runtime_minutes INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_media_items_type ON media_items(type);

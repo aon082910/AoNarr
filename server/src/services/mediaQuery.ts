@@ -1,4 +1,6 @@
+import { db } from "../db/index.js";
 import { CONTENT_RATING_ORDER, contentRatingRank } from "./contentRatings.js";
+import { qualityRank } from "./quality.js";
 
 /** Shared WHERE-clause builder for GET /api/media and GET /api/media/stats — both need the exact
  * same row-selection scope (type/tagId/groupId/status/contentRating/household restrictions), just
@@ -22,7 +24,23 @@ export interface MediaQuery {
   fromClause: string;
 }
 
-export function buildMediaQuery(filters: MediaQueryFilters): MediaQuery {
+/** Radarr/Sonarr-style "cutoff unmet" — every downloaded item whose current quality ranks below
+ * its own quality profile's cutoff, i.e. still eligible for an automatic upgrade search. Resolved
+ * as a plain id set (rather than a SQL join + CASE expression) since quality-name-to-rank is
+ * already an in-memory lookup (services/quality.ts) built for exactly this comparison — reusing it
+ * here keeps this in sync with the same ranking every search/grab decision already uses. */
+async function findCutoffUnmetIds(): Promise<number[]> {
+  const rows = (await db
+    .prepare(
+      `SELECT m.id AS id, m.quality AS quality, qp.cutoff AS cutoff
+       FROM media_items m JOIN quality_profiles qp ON qp.id = m.quality_profile_id
+       WHERE m.has_file = 1 AND m.quality IS NOT NULL`
+    )
+    .all()) as { id: number; quality: string | null; cutoff: string }[];
+  return rows.filter((r) => qualityRank(r.quality) < qualityRank(r.cutoff)).map((r) => r.id);
+}
+
+export async function buildMediaQuery(filters: MediaQueryFilters): Promise<MediaQuery> {
   const conditions: string[] = [];
   const params: unknown[] = [];
   let joinTags = false;
@@ -61,6 +79,11 @@ export function buildMediaQuery(filters: MediaQueryFilters): MediaQuery {
   else if (filters.status === "downloaded") conditions.push("m.has_file = 1");
   else if (filters.status === "unmatched") {
     conditions.push("(m.external_ids IS NULL OR m.external_ids = '' OR m.external_ids = '{}')");
+  } else if (filters.status === "cutoffUnmet") {
+    const ids = await findCutoffUnmetIds();
+    if (ids.length === 0) return { where: null, params: [], fromClause: "" };
+    conditions.push(`m.id IN (${ids.map(() => "?").join(",")})`);
+    params.push(...ids);
   }
 
   if (filters.contentRating && filters.contentRating !== "all") {

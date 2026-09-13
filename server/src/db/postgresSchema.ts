@@ -82,6 +82,9 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE sub_items ADD COLUMN IF NOT EXISTS series_name TEXT`,
   `ALTER TABLE sub_items ADD COLUMN IF NOT EXISTS series_position REAL`,
   `ALTER TABLE sub_items ADD COLUMN IF NOT EXISTS narrator TEXT`,
+  `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS backdrop_url TEXT`,
+  `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS rating REAL`,
+  `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS runtime_minutes INTEGER`,
 ];
 
 /**

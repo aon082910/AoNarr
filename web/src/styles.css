@@ -256,6 +256,19 @@ h2 { font-size: 1.2rem; margin: 24px 0 12px; }
 }
 .overview-row .progress-bar { width: 140px; }
 
+/* Radarr-style full-bleed fanart behind the media detail header — the poster + title/metadata
+   column sit directly on top of it, no separate frame. Falls back to plain background (no inline
+   style set) when the item has no backdropUrl. */
+.media-backdrop {
+  margin: -28px -36px 16px;
+  padding: 28px 36px;
+  background-size: cover;
+  background-position: center 20%;
+}
+@media (max-width: 640px) {
+  .media-backdrop { margin: -16px -16px 16px; padding: 16px; }
+}
+
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
 th { color: var(--muted); font-weight: 500; }

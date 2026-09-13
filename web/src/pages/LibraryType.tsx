@@ -11,7 +11,7 @@ import Modal from "../components/Modal.js";
 type SortKey = "title" | "year" | "added" | "status" | "monitored" | "quality" | "contentRating" | "releaseDate" | "path";
 type ViewMode = "poster" | "overview" | "list";
 type PosterSize = "xsmall" | "small" | "medium" | "large" | "xlarge";
-type StatusFilter = "all" | "monitored" | "unmonitored" | "missing" | "downloaded" | "unmatched";
+type StatusFilter = "all" | "monitored" | "unmonitored" | "missing" | "downloaded" | "unmatched" | "cutoffUnmet";
 
 /** Page size options for the server-side-paginated library grid/list, and the default when a type
  * has no saved preference yet — the "unmatched" status filter and every other sort/filter option
@@ -946,6 +946,7 @@ export function LibraryItemGrid({
           <option value="unmonitored">Unmonitored</option>
           <option value="downloaded">Downloaded</option>
           <option value="missing">Missing</option>
+          <option value="cutoffUnmet">Cutoff unmet</option>
           <option value="unmatched">Unmatched (no metadata match)</option>
         </select>
         {tags.length > 0 && (

@@ -79,6 +79,9 @@ ensureColumn("library_groups", "logo_url", "logo_url TEXT");
 ensureColumn("sub_items", "series_name", "series_name TEXT");
 ensureColumn("sub_items", "series_position", "series_position REAL");
 ensureColumn("sub_items", "narrator", "narrator TEXT");
+ensureColumn("media_items", "backdrop_url", "backdrop_url TEXT");
+ensureColumn("media_items", "rating", "rating REAL");
+ensureColumn("media_items", "runtime_minutes", "runtime_minutes INTEGER");
 
 /**
  * indexers.protocol and download_clients.type originally shipped with a rigid `CHECK (... IN (...))`

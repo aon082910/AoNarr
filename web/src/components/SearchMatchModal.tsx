@@ -9,6 +9,9 @@ export interface MetadataSearchResult {
   posterUrl: string | null;
   externalIds: Record<string, string>;
   releaseDate?: string | null;
+  backdropUrl?: string | null;
+  rating?: number | null;
+  runtimeMinutes?: number | null;
 }
 
 /**

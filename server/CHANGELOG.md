@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 186 — Cutoff Unmet filter, media detail backdrop/ratings/history
+- Added **Cutoff unmet** to the library status filter, alongside Missing/Downloaded/etc — flags
+  every downloaded item whose current quality ranks below its own quality profile's cutoff (the
+  same rank comparison search/grab decisions already use), so upgrade candidates are one filter
+  click away instead of needing the System → Upgrade Candidates report.
+- The media detail page now shows a full-bleed backdrop/fanart image behind the poster and title
+  block, Radarr-style, plus a ★ rating badge (TMDB's vote average) and runtime (minutes) next to
+  the year/type/status line — new `backdropUrl`/`rating`/`runtimeMinutes` fields on media items,
+  populated from TMDB on add, rematch, and Refresh (movies and series only for now; other
+  providers/types don't expose this data).
+- Added a **History** tab to the media detail page's action row — every grab/import/failure event
+  recorded against that specific item, newest first (reuses the same `history` table the global
+  Activity page already reads from). Failures are now actually written to history, not just the
+  blocklist, so this tab isn't empty for anything that's ever failed.
+- Scope note: this covers the most visible pieces of Radarr's movie-page layout, not a full port —
+  no Rotten Tomatoes/separate-IMDb scores (only TMDB's own vote average), and ratings/runtime only
+  backfill for movie/series/anime since that's what TMDB search returns.
+
 ## Round 185 — Radarr-style library view: status banner, Overview view, more sort/field options
 - Every poster now carries a Radarr-style colored status strip along its bottom edge — green
   "Downloaded", red "Missing", grey "Unmonitored", or blue "Unreleased" (release date still in the

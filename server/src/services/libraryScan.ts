@@ -607,7 +607,8 @@ async function refreshOneItem(
       await db
         .prepare(
           `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), year = COALESCE(?, year),
-           release_date = COALESCE(?, release_date)
+           release_date = COALESCE(?, release_date), backdrop_url = COALESCE(?, backdrop_url), rating = COALESCE(?, rating),
+           runtime_minutes = COALESCE(?, runtime_minutes)
            ${alreadyMatched ? "" : ", title = ?, sort_title = ?, external_ids = ?"}
            WHERE id = ?`
         )
@@ -616,6 +617,9 @@ async function refreshOneItem(
           best.posterUrl,
           best.year,
           best.releaseDate ?? null,
+          best.backdropUrl ?? null,
+          best.rating ?? null,
+          best.runtimeMinutes ?? null,
           ...(alreadyMatched ? [] : [best.title, best.title.toLowerCase(), JSON.stringify(best.externalIds ?? {})]),
           item.id
         );
