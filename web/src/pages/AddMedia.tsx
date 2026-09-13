@@ -77,6 +77,9 @@ export default function AddMedia() {
   const [providers, setProviders] = useState<Record<MediaType, string[]>>({});
   const [provider, setProvider] = useState("");
   const [query, setQuery] = useState(prefillQuery);
+  /** Narrows/re-ranks search results toward this year (see searchMetadata's year-assisted
+   * matching) — distinct from `year` below, which is the year of the item actually being added. */
+  const [searchYear, setSearchYear] = useState("");
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<MetadataSearchResult[] | null>(null);
   const [selected, setSelected] = useState<MetadataSearchResult | null>(null);
@@ -151,7 +154,9 @@ export default function AddMedia() {
     setSelected(null);
     try {
       const res = await api.get<MetadataSearchResult[]>(
-        `/metadata/search?type=${type}&query=${encodeURIComponent(query.trim())}&provider=${provider}`
+        `/metadata/search?type=${type}&query=${encodeURIComponent(query.trim())}&provider=${provider}${
+          searchYear.trim() ? `&year=${encodeURIComponent(searchYear.trim())}` : ""
+        }`
       );
       setResults(res);
     } catch (e) {
@@ -362,7 +367,17 @@ export default function AddMedia() {
               ))}
             </select>
             <label>Search</label>
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Title..." />
+            <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Title..." style={{ flex: 1 }} />
+              <input
+                value={searchYear}
+                onChange={(e) => setSearchYear(e.target.value)}
+                placeholder="Year"
+                type="number"
+                title="Optional — narrows/re-ranks results toward this year, useful for remakes or generically-titled matches"
+                style={{ width: 90 }}
+              />
+            </div>
             <button type="submit" disabled={searching}>
               {searching ? "Searching..." : "Search"}
             </button>

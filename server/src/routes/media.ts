@@ -25,7 +25,14 @@ import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { CONTENT_RATING_ORDER, isRatingBlocked } from "../services/contentRatings.js";
-import { fetchAlternateTitlesFor, fetchCastFor, fetchTmdbCollectionFor, fetchTrailerFor, searchMetadata } from "../services/metadata.js";
+import {
+  fetchAlternateTitlesFor,
+  fetchCastFor,
+  fetchOmdbRatings,
+  fetchTmdbCollectionFor,
+  fetchTrailerFor,
+  searchMetadata,
+} from "../services/metadata.js";
 import { pushWatchState } from "../services/mediaServer.js";
 import {
   scanAndImportLibrary,
@@ -662,6 +669,33 @@ mediaRouter.get(
     try {
       const titles = await fetchAlternateTitlesFor(item.type, externalIds);
       res.json(titles);
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+  })
+);
+
+/** IMDb/Rotten Tomatoes/Metacritic scores via OMDb (needs an IMDb id and an OMDb API key
+ * configured) — alongside the item's own TMDB vote average, Radarr-style. */
+mediaRouter.get(
+  "/:id/ratings",
+  asyncHandler(async (req, res) => {
+    const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    if (!row) throw new HttpError(404, "Media item not found");
+    const item = mediaItemFromRow(row);
+    const allowedTypes = allowedTypesFor(req);
+    if (allowedTypes && !allowedTypes.includes(item.type)) {
+      throw new HttpError(403, "You don't have access to this library");
+    }
+
+    const externalIds = item.externalIds ? JSON.parse(item.externalIds) : {};
+    if (!externalIds.imdb) {
+      res.json({ imdbRating: null, rottenTomatoesScore: null, metacriticScore: null });
+      return;
+    }
+    try {
+      const ratings = await fetchOmdbRatings(externalIds.imdb);
+      res.json(ratings);
     } catch (err) {
       throw new HttpError(400, (err as Error).message);
     }

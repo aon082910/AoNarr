@@ -3,6 +3,17 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 188 — year-assisted metadata search, IMDb/Rotten Tomatoes/Metacritic ratings
+- Metadata search (Add Media, and the "Search for a different match" modal on the media detail
+  page) now takes an optional **Year** field alongside the title query — results aren't filtered
+  out on a mismatch (a provider's year can legitimately be off by one), but an exact year match is
+  now sorted to the top, which matters most for remakes, long-running franchises, and generically-
+  titled movies/shows ("It", "Dune", "Twins"...) where the title alone is ambiguous. The rematch
+  modal now also pre-fills the year field from the item's own current year.
+- Media detail page now shows **IMDb / Rotten Tomatoes / Metacritic** badges (via OMDb, needs an
+  OMDb API key in Settings and the item to have an IMDb id) alongside the existing TMDB vote-
+  average badge — fetched on demand, same pattern as Cast/Alternate Titles, not stored on the item.
+
 ## Round 187 — Cutoff Unmet page, global History, Blocklist page, file details, alternate titles
 - New **Cutoff Unmet** page (Manage → Cutoff Unmet) — every downloaded item still below its
   quality profile's cutoff, with per-row and bulk "Search" to trigger an upgrade, same layout as

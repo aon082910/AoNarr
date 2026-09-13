@@ -24,6 +24,7 @@ export interface MetadataSearchResult {
 export default function SearchMatchModal({
   type,
   initialQuery,
+  initialYear,
   providers,
   onClose,
   onSelect,
@@ -32,6 +33,7 @@ export default function SearchMatchModal({
 }: {
   type: string;
   initialQuery: string;
+  initialYear?: number | null;
   providers: string[];
   onClose: () => void;
   onSelect: (result: MetadataSearchResult) => void;
@@ -39,6 +41,7 @@ export default function SearchMatchModal({
   description?: string;
 }) {
   const [query, setQuery] = useState(initialQuery);
+  const [searchYear, setSearchYear] = useState(initialYear ? String(initialYear) : "");
   const [provider, setProvider] = useState(providers[0] ?? "");
   const [results, setResults] = useState<MetadataSearchResult[] | null>(null);
   const [searching, setSearching] = useState(false);
@@ -53,7 +56,9 @@ export default function SearchMatchModal({
     setResults(null);
     try {
       const res = await api.get<MetadataSearchResult[]>(
-        `/metadata/search?type=${type}&query=${encodeURIComponent(query.trim())}&provider=${provider}`
+        `/metadata/search?type=${type}&query=${encodeURIComponent(query.trim())}&provider=${provider}${
+          searchYear.trim() ? `&year=${encodeURIComponent(searchYear.trim())}` : ""
+        }`
       );
       setResults(res);
     } catch (e) {
@@ -84,6 +89,14 @@ export default function SearchMatchModal({
           placeholder="Search title..."
           style={{ flex: 1 }}
           autoFocus
+        />
+        <input
+          value={searchYear}
+          onChange={(e) => setSearchYear(e.target.value)}
+          placeholder="Year"
+          type="number"
+          title="Optional — narrows/re-ranks results toward this year"
+          style={{ width: 80 }}
         />
         {providers.length > 1 && (
           <select value={provider} onChange={(e) => setProvider(e.target.value)} style={{ maxWidth: 140 }}>

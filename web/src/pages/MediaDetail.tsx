@@ -289,6 +289,11 @@ export default function MediaDetail() {
 
   const [cast, setCast] = useState<CastMember[] | null>(null);
   const [alternateTitles, setAlternateTitles] = useState<string[] | null>(null);
+  const [externalRatings, setExternalRatings] = useState<{
+    imdbRating: number | null;
+    rottenTomatoesScore: number | null;
+    metacriticScore: number | null;
+  } | null>(null);
   const [tmdbCollection, setTmdbCollection] = useState<TmdbCollection | null>(null);
   const [addingCollectionPart, setAddingCollectionPart] = useState<number | null>(null);
   const [trailerUrl, setTrailerUrl] = useState<string | null>(null);
@@ -348,6 +353,15 @@ export default function MediaDetail() {
       .get<string[]>(`/media/${id}/alternate-titles`)
       .then(setAlternateTitles)
       .catch(() => setAlternateTitles([]));
+  }, [id]);
+  useEffect(() => {
+    setExternalRatings(null);
+    api
+      .get<{ imdbRating: number | null; rottenTomatoesScore: number | null; metacriticScore: number | null }>(
+        `/media/${id}/ratings`
+      )
+      .then(setExternalRatings)
+      .catch(() => setExternalRatings(null));
   }, [id]);
   useEffect(() => {
     setTmdbCollection(null);
@@ -1118,8 +1132,23 @@ export default function MediaDetail() {
             <p style={{ color: "var(--muted)" }}>
               {item.year ?? ""} · {item.type} · {item.status}
               {typeof item.rating === "number" && item.rating > 0 && (
-                <span className="badge" style={{ marginLeft: 8 }} title="Provider vote average">
+                <span className="badge" style={{ marginLeft: 8 }} title="TMDB vote average">
                   ★ {item.rating.toFixed(1)}
+                </span>
+              )}
+              {typeof externalRatings?.imdbRating === "number" && (
+                <span className="badge" style={{ marginLeft: 6 }} title="IMDb rating (via OMDb)">
+                  IMDb {externalRatings.imdbRating.toFixed(1)}
+                </span>
+              )}
+              {typeof externalRatings?.rottenTomatoesScore === "number" && (
+                <span className="badge" style={{ marginLeft: 6 }} title="Rotten Tomatoes (via OMDb)">
+                  🍅 {externalRatings.rottenTomatoesScore}%
+                </span>
+              )}
+              {typeof externalRatings?.metacriticScore === "number" && (
+                <span className="badge" style={{ marginLeft: 6 }} title="Metacritic (via OMDb)">
+                  MC {externalRatings.metacriticScore}
                 </span>
               )}
               {typeof item.runtimeMinutes === "number" && item.runtimeMinutes > 0 && (
@@ -2301,6 +2330,7 @@ export default function MediaDetail() {
         <SearchMatchModal
           type={item.type}
           initialQuery={item.title}
+          initialYear={item.year}
           providers={metadataProviders[item.type] ?? []}
           onClose={() => setShowSearchMatch(false)}
           onSelect={applyRematch}

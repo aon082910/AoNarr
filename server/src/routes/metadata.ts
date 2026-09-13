@@ -37,10 +37,12 @@ metadataRouter.get(
     const type = req.query.type as MediaType | undefined;
     const query = req.query.query as string | undefined;
     const provider = req.query.provider as string | undefined;
+    const yearRaw = req.query.year as string | undefined;
+    const year = yearRaw ? parseInt(yearRaw, 10) : null;
     if (!type || !query) throw new HttpError(400, "type and query are required");
 
     try {
-      const results = await searchMetadata(type, query, provider);
+      const results = await searchMetadata(type, query, provider, Number.isFinite(year) ? year : null);
       const annotated = await Promise.all(
         results.map(async (r: any) => ({
           ...r,

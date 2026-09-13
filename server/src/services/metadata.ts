@@ -154,6 +154,40 @@ async function searchMoviesOmdb(query: string): Promise<MetadataSearchResult[]> 
   }));
 }
 
+export interface ExternalRatings {
+  imdbRating: number | null;
+  rottenTomatoesScore: number | null;
+  metacriticScore: number | null;
+}
+
+/** Radarr-style extra ratings row (IMDb + Rotten Tomatoes + Metacritic) via OMDb's by-id lookup,
+ * which — unlike its search endpoint (searchMoviesOmdb above) — returns a `Ratings[]` array with
+ * each source's own score. On-demand only (not stored on the item), same pattern as
+ * fetchCastFor/fetchAlternateTitlesFor, since OMDb's free tier is rate-limited and these are
+ * rarely-viewed extras rather than something every page load needs. */
+export async function fetchOmdbRatings(imdbId: string): Promise<ExternalRatings> {
+  const key = requireSetting("omdbApiKey", "OMDb API key");
+  const url = new URL("https://www.omdbapi.com/");
+  url.searchParams.set("apikey", key);
+  url.searchParams.set("i", imdbId);
+
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`OMDb lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  if (body.Response === "False") throw new Error(body.Error || "OMDb has no record for this title");
+
+  const ratings: { Source: string; Value: string }[] = body.Ratings ?? [];
+  const rt = ratings.find((r) => r.Source === "Rotten Tomatoes")?.Value;
+  const mc = ratings.find((r) => r.Source === "Metacritic")?.Value;
+  const imdbRating = body.imdbRating && body.imdbRating !== "N/A" ? Number(body.imdbRating) : null;
+
+  return {
+    imdbRating: Number.isFinite(imdbRating) ? imdbRating : null,
+    rottenTomatoesScore: rt ? Number(rt.replace("%", "")) : null,
+    metacriticScore: mc ? Number(mc.split("/")[0]) : null,
+  };
+}
+
 const TRAKT_USER_AGENT = "AoNarr/0.1 (self-hosted media manager)";
 
 function traktHeaders(clientId: string): Record<string, string> {
@@ -1745,7 +1779,8 @@ function defaultProviderFor(type: MediaType): string | null {
 export async function searchMetadata(
   type: MediaType,
   query: string,
-  provider?: string
+  provider?: string,
+  year?: number | null
 ): Promise<MetadataSearchResult[]> {
   const chosen = provider || defaultProviderFor(type);
   if (!chosen) {
@@ -1756,7 +1791,25 @@ export async function searchMetadata(
   }
   const fn = TYPE_SPECIFIC_SEARCH_FNS[chosen]?.[type] ?? SEARCH_FNS[chosen];
   if (!fn) throw new Error(`No search implementation for provider "${chosen}"`);
-  const results = await fn(query);
+  let results = await fn(query);
+
+  // Radarr/Sonarr-style year-assisted matching: a title search alone is ambiguous for remakes,
+  // long-running franchises, and generically-titled shows/movies ("It", "Dune", "Twins"...) —
+  // rather than adding a year param to every individual provider function (each has its own query
+  // string shape), re-rank the same result set so an exact year match sorts first. Never filters
+  // anything out, since a provider's year can legitimately be off by one (festival vs. wide
+  // release, a premiere date recorded differently than expected) — a wrong exact-match bias is
+  // better than hiding the right result entirely.
+  if (year) {
+    results = [...results].sort((a, b) => {
+      const aExact = a.year === year ? 0 : 1;
+      const bExact = b.year === year ? 0 : 1;
+      if (aExact !== bExact) return aExact - bExact;
+      const aDist = a.year != null ? Math.abs(a.year - year) : Infinity;
+      const bDist = b.year != null ? Math.abs(b.year - year) : Infinity;
+      return aDist - bDist;
+    });
+  }
 
   // MusicBrainz — the default artist provider, kept as the default for its authoritative id (every
   // downstream album/track lookup keys off it) — has no artist artwork of its own; its own search
