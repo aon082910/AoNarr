@@ -2058,6 +2058,24 @@ export async function fetchCastFor(type: MediaType, externalIds: Record<string, 
   throw new Error(`Cast lookup isn't available for "${type}"`);
 }
 
+/** Radarr/Sonarr-style "Alternate Titles" — every other title TMDB knows a movie/show by (foreign
+ * releases, regional retitles), deduped and sorted. Same on-demand pattern as fetchCastFor/
+ * fetchTrailerFor rather than something stored on the item, since it's rarely looked at. */
+export async function fetchAlternateTitlesFor(type: MediaType, externalIds: Record<string, string>): Promise<string[]> {
+  if (!externalIds.tmdb) throw new Error("Alternate titles lookup needs a TMDB id — this item doesn't have one");
+  const key = requireSetting("tmdbApiKey", "TMDB API key");
+  const kind = type === "movie" ? "movie" : type === "series" ? "tv" : null;
+  if (!kind) throw new Error(`Alternate titles aren't available for "${type}"`);
+
+  const res = await fetch(`https://api.themoviedb.org/3/${kind}/${externalIds.tmdb}/alternative_titles?api_key=${key}`);
+  if (!res.ok) throw new Error(`TMDB alternative titles lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  const raw: { title: string }[] = kind === "movie" ? (body.titles ?? []) : (body.results ?? []);
+  const titles = Array.from(new Set(raw.map((t) => t.title).filter(Boolean)));
+  titles.sort((a, b) => a.localeCompare(b));
+  return titles;
+}
+
 // ---------------------------------------------------------------------------
 // TMDB collections (movie franchises, e.g. "The Lord of the Rings Collection") — a movie's own
 // /movie/{id} details response carries its collection membership (search results don't), so this

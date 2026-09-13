@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
-import { downloadClientFromRow, historyEventFromRow, mediaItemFromRow, queueItemFromRow } from "../db/mappers.js";
+import { downloadClientFromRow, mediaItemFromRow, queueItemFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { importQueueItem, listDownloadedFileCandidates } from "../services/importer.js";
@@ -140,11 +140,39 @@ activityRouter.post(
   })
 );
 
+/** Radarr/Sonarr-style global History page — every grab/import/failure event across the whole
+ * library, newest first, filterable by event type/media type/date range. Joins media_items for
+ * title/type so the page doesn't need a second round-trip per row; still returns the raw history
+ * columns (mediaItemFromRow-style mapping isn't needed here since only title/type are used). */
 activityRouter.get(
   "/history",
-  asyncHandler(async (_req, res) => {
-    const rows = await db.prepare("SELECT * FROM history ORDER BY created_at DESC LIMIT 200").all();
-    res.json(rows.map(historyEventFromRow));
+  asyncHandler(async (req, res) => {
+    const { eventType, mediaType, since } = req.query as { eventType?: string; mediaType?: string; since?: string };
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (eventType) {
+      conditions.push("h.event_type = ?");
+      params.push(eventType);
+    }
+    if (mediaType) {
+      conditions.push("m.type = ?");
+      params.push(mediaType);
+    }
+    if (since) {
+      conditions.push("h.created_at >= ?");
+      params.push(since);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const rows = (await db
+      .prepare(
+        `SELECT h.id, h.media_item_id AS "mediaItemId", h.event_type AS "eventType", h.data, h.created_at AS "createdAt",
+                m.title AS "mediaTitle", m.type AS "mediaType"
+         FROM history h JOIN media_items m ON m.id = h.media_item_id
+         ${where}
+         ORDER BY h.created_at DESC LIMIT 500`
+      )
+      .all(...params)) as any[];
+    res.json(rows);
   })
 );
 

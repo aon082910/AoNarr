@@ -126,6 +126,116 @@ interface ArtworkOptions {
   logos: string[];
 }
 
+/** Radarr-style "File details" breakdown — container/codec/resolution/HDR plus every audio and
+ * subtitle track, instead of the single formatMediaInfo() summary line. Only rendered for a
+ * single-shape item with a file and probed media info (see mediaAnalysis.ts's probeMediaInfo). */
+function FileDetailsPanel({ mediaInfo, path }: { mediaInfo: MediaInfo; path: string | null }) {
+  return (
+    <div className="form-panel" style={{ marginBottom: 12 }}>
+      <table>
+        <tbody>
+          {path && (
+            <tr>
+              <th>Path</th>
+              <td style={{ wordBreak: "break-all" }}>{path}</td>
+            </tr>
+          )}
+          {(mediaInfo.width || mediaInfo.height) && (
+            <tr>
+              <th>Resolution</th>
+              <td>
+                {mediaInfo.width ?? "?"}x{mediaInfo.height ?? "?"}
+              </td>
+            </tr>
+          )}
+          {mediaInfo.videoCodec && (
+            <tr>
+              <th>Video codec</th>
+              <td>{mediaInfo.videoCodec}</td>
+            </tr>
+          )}
+          {mediaInfo.hdrFormat && mediaInfo.hdrFormat !== "none" && (
+            <tr>
+              <th>HDR</th>
+              <td>{mediaInfo.hdrFormat}</td>
+            </tr>
+          )}
+          {typeof mediaInfo.frameRate === "number" && (
+            <tr>
+              <th>Frame rate</th>
+              <td>{mediaInfo.frameRate.toFixed(2)} fps</td>
+            </tr>
+          )}
+          {typeof mediaInfo.bitrateKbps === "number" && (
+            <tr>
+              <th>Bitrate</th>
+              <td>{Math.round(mediaInfo.bitrateKbps)} kbps</td>
+            </tr>
+          )}
+          {typeof mediaInfo.durationSeconds === "number" && (
+            <tr>
+              <th>Duration</th>
+              <td>{Math.round(mediaInfo.durationSeconds / 60)} min</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+
+      {mediaInfo.audioStreams && mediaInfo.audioStreams.length > 0 && (
+        <>
+          <p style={{ fontWeight: 600, marginBottom: 4 }}>Audio tracks</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Codec</th>
+                <th>Channels</th>
+                <th>Language</th>
+                <th>Default</th>
+              </tr>
+            </thead>
+            <tbody>
+              {mediaInfo.audioStreams.map((a, idx) => (
+                <tr key={idx}>
+                  <td>{a.codec ?? "?"}</td>
+                  <td>{a.channelLayout ?? a.channels ?? "?"}</td>
+                  <td>{a.language ?? "und"}</td>
+                  <td>{a.default ? "✓" : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      {mediaInfo.subtitleStreams && mediaInfo.subtitleStreams.length > 0 && (
+        <>
+          <p style={{ fontWeight: 600, margin: "10px 0 4px" }}>Subtitle tracks</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Codec</th>
+                <th>Language</th>
+                <th>Forced</th>
+                <th>Default</th>
+              </tr>
+            </thead>
+            <tbody>
+              {mediaInfo.subtitleStreams.map((s, idx) => (
+                <tr key={idx}>
+                  <td>{s.codec ?? "?"}</td>
+                  <td>{s.language ?? "und"}</td>
+                  <td>{s.forced ? "✓" : ""}</td>
+                  <td>{s.default ? "✓" : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function MediaDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -178,6 +288,7 @@ export default function MediaDetail() {
   const [collectionToAdd, setCollectionToAdd] = useState<number | "">("");
 
   const [cast, setCast] = useState<CastMember[] | null>(null);
+  const [alternateTitles, setAlternateTitles] = useState<string[] | null>(null);
   const [tmdbCollection, setTmdbCollection] = useState<TmdbCollection | null>(null);
   const [addingCollectionPart, setAddingCollectionPart] = useState<number | null>(null);
   const [trailerUrl, setTrailerUrl] = useState<string | null>(null);
@@ -188,6 +299,7 @@ export default function MediaDetail() {
   const [refreshingItem, setRefreshingItem] = useState(false);
   const [showEditMetadata, setShowEditMetadata] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showFileDetails, setShowFileDetails] = useState(false);
   const [history, setHistory] = useState<HistoryEvent[] | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [editTitle, setEditTitle] = useState("");
@@ -229,6 +341,13 @@ export default function MediaDetail() {
       .get<CastMember[]>(`/media/${id}/cast`)
       .then(setCast)
       .catch(() => setCast([]));
+  }, [id]);
+  useEffect(() => {
+    setAlternateTitles(null);
+    api
+      .get<string[]>(`/media/${id}/alternate-titles`)
+      .then(setAlternateTitles)
+      .catch(() => setAlternateTitles([]));
   }, [id]);
   useEffect(() => {
     setTmdbCollection(null);
@@ -991,6 +1110,11 @@ export default function MediaDetail() {
           )}
           <div style={{ flex: 1, minWidth: 0 }}>
             <h1 style={{ margin: "0 0 4px" }}>{item.title}</h1>
+            {alternateTitles && alternateTitles.length > 0 && (
+              <p style={{ color: "var(--muted)", fontSize: "0.8rem", margin: "0 0 6px" }} title="Alternate titles (from TMDB)">
+                AKA {alternateTitles.join(" · ")}
+              </p>
+            )}
             <p style={{ color: "var(--muted)" }}>
               {item.year ?? ""} · {item.type} · {item.status}
               {typeof item.rating === "number" && item.rating > 0 && (
@@ -1029,6 +1153,19 @@ export default function MediaDetail() {
                 <span style={{ marginLeft: 8, color: "var(--muted)", fontSize: "0.85rem" }}>{formatMediaInfo(item.mediaInfo)}</span>
               )}
             </p>
+          )}
+          {shape === "single" && item.hasFile && item.mediaInfo && (
+            <>
+              <button
+                type="button"
+                className="secondary"
+                style={{ fontSize: "0.8rem", marginBottom: 6 }}
+                onClick={() => setShowFileDetails((v) => !v)}
+              >
+                {showFileDetails ? "Hide file details" : "File details"}
+              </button>
+              {showFileDetails && <FileDetailsPanel mediaInfo={item.mediaInfo} path={item.path} />}
+            </>
           )}
           {item.overview && <p>{item.overview}</p>}
           {trailerUrl && (

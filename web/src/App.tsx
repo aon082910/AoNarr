@@ -14,6 +14,9 @@ import AddMedia from "./pages/AddMedia.js";
 import Calendar from "./pages/Calendar.js";
 import CalendarDay from "./pages/CalendarDay.js";
 import Missing from "./pages/Missing.js";
+import CutoffUnmet from "./pages/CutoffUnmet.js";
+import HistoryPage from "./pages/HistoryPage.js";
+import Blocklist from "./pages/Blocklist.js";
 import Indexers from "./pages/Indexers.js";
 import DownloadClients from "./pages/DownloadClients.js";
 import IrcFeeds from "./pages/IrcFeeds.js";
@@ -192,6 +195,7 @@ export default function App() {
         { to: "/import-lists", label: "Import Lists" },
         { to: "/import-review", label: "Import Review" },
         { to: "/missing", label: "Missing" },
+        { to: "/cutoff-unmet", label: "Cutoff Unmet" },
         { to: "/recommendations", label: "Recommendations" },
         { to: "/requests", label: "Requests" },
         { to: "/watchlist-import", label: "Watchlist Import" },
@@ -216,7 +220,9 @@ export default function App() {
       links: [
         { to: "/api-docs", label: "API Docs" },
         { to: "/audit-log", label: "Audit Log" },
+        { to: "/blocklist", label: "Blocklist" },
         { to: "/duplicates", label: "Duplicates" },
+        { to: "/history", label: "History" },
         { to: "/friend-libraries", label: "Friend Libraries" },
         { to: "/jobs", label: "Jobs" },
         { to: "/media-analyzer", label: "Media Analyzer" },
@@ -464,6 +470,9 @@ export default function App() {
           {isAdmin && <Route path="/calendar" element={<Calendar />} />}
           {isAdmin && <Route path="/calendar/:date" element={<CalendarDay />} />}
           {isAdmin && <Route path="/missing" element={<Missing />} />}
+          {isAdmin && <Route path="/cutoff-unmet" element={<CutoffUnmet />} />}
+          {isAdmin && <Route path="/history" element={<HistoryPage />} />}
+          {isAdmin && <Route path="/blocklist" element={<Blocklist />} />}
           {isAdmin && <Route path="/activity" element={<Activity />} />}
           {isAdmin && <Route path="/indexers" element={<Indexers />} />}
           {isAdmin && <Route path="/download-clients" element={<DownloadClients />} />}

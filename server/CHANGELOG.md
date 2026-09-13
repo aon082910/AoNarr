@@ -3,6 +3,23 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 187 — Cutoff Unmet page, global History, Blocklist page, file details, alternate titles
+- New **Cutoff Unmet** page (Manage → Cutoff Unmet) — every downloaded item still below its
+  quality profile's cutoff, with per-row and bulk "Search" to trigger an upgrade, same layout as
+  the existing Missing page. Backed by a new `GET /api/wanted/cutoff-unmet`, reusing the same
+  `findUpgradeCandidates()` the System health page's count already used internally.
+- New global **History** page (System → History) — every grab/import/failure across the whole
+  library, filterable by event type, library type, and a "since" date, instead of only the
+  per-item History tab added last round or the unfiltered dashboard Timeline widget.
+  `GET /api/activity/history` now accepts `eventType`/`mediaType`/`since` query params.
+- New **Blocklist** page (System → Blocklist) — view, remove, or clear every blocklisted release,
+  which previously had no UI beyond adding new entries from a search result.
+- Media detail page: added a **File details** panel (container path, resolution, video codec, HDR,
+  frame rate, bitrate, duration, and full audio/subtitle track tables) behind a toggle button, and
+  an **Alternate titles** ("AKA ...") line under the title for movies/series with a TMDB id — both
+  new, on-demand, TMDB-only for now (mirrors the existing Cast/Trailer lookup pattern via a new
+  `GET /media/:id/alternate-titles`).
+
 ## Round 186 — Cutoff Unmet filter, media detail backdrop/ratings/history
 - Added **Cutoff unmet** to the library status filter, alongside Missing/Downloaded/etc — flags
   every downloaded item whose current quality ranks below its own quality profile's cutoff (the

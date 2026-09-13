@@ -3,6 +3,7 @@ import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { MEDIA_TYPES } from "../services/mediaTypes.js";
+import { findUpgradeCandidates } from "../services/upgradeCandidates.js";
 
 export const wantedRouter = Router();
 wantedRouter.use(requireAdmin);
@@ -107,5 +108,41 @@ wantedRouter.get(
 
     const combined = [...episodes, ...subItems, ...singleShapeItems, ...customEvents].sort((a: any, b: any) => (a.date > b.date ? 1 : -1));
     res.json(combined);
+  })
+);
+
+/** Radarr/Sonarr-style "Cutoff Unmet" list — everything downloaded whose current quality ranks
+ * below its own quality profile's cutoff, so it's still eligible for an automatic upgrade search.
+ * Same underlying comparison as the Library page's "Cutoff unmet" status filter
+ * (services/mediaQuery.ts), just presented as its own page here with per-row/bulk re-search,
+ * mirroring how /missing is presented for items with no file at all. */
+wantedRouter.get(
+  "/cutoff-unmet",
+  asyncHandler(async (_req, res) => {
+    const candidates = await findUpgradeCandidates();
+    if (candidates.length === 0) {
+      res.json([]);
+      return;
+    }
+    const mediaItemIds = Array.from(new Set(candidates.map((c) => c.mediaItemId)));
+    const placeholders = mediaItemIds.map(() => "?").join(",");
+    const rows = (await db
+      .prepare(`SELECT id, title, type FROM media_items WHERE id IN (${placeholders})`)
+      .all(...mediaItemIds)) as { id: number; title: string; type: string }[];
+    const byId = new Map(rows.map((r) => [r.id, r]));
+
+    res.json(
+      candidates.map((c) => ({
+        mediaItemId: c.mediaItemId,
+        mediaTitle: byId.get(c.mediaItemId)?.title ?? c.target,
+        type: byId.get(c.mediaItemId)?.type ?? null,
+        episodeId: c.episodeId ?? null,
+        subItemId: c.subItemId ?? null,
+        label: c.target,
+        currentQuality: c.currentQuality,
+        cutoff: c.cutoff,
+        profileName: c.profileName,
+      }))
+    );
   })
 );
