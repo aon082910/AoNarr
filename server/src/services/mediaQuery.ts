@@ -92,6 +92,8 @@ export const MEDIA_SORT_COLUMNS: Record<string, string> = {
   quality: "m.quality ASC",
   contentRating: "m.content_rating ASC",
   added: "m.id DESC",
+  releaseDate: "m.release_date DESC",
+  path: "m.path ASC",
 };
 
 export function clampLimit(raw: unknown, fallback = 60, max = 500): number {

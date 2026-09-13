@@ -8,8 +8,8 @@ import { formatBytes } from "../utils/format.js";
 import DropdownMenu from "../components/DropdownMenu.js";
 import Modal from "../components/Modal.js";
 
-type SortKey = "title" | "year" | "added" | "status" | "monitored" | "quality" | "contentRating";
-type ViewMode = "poster" | "list";
+type SortKey = "title" | "year" | "added" | "status" | "monitored" | "quality" | "contentRating" | "releaseDate" | "path";
+type ViewMode = "poster" | "overview" | "list";
 type PosterSize = "xsmall" | "small" | "medium" | "large" | "xlarge";
 type StatusFilter = "all" | "monitored" | "unmonitored" | "missing" | "downloaded" | "unmatched";
 
@@ -45,9 +45,23 @@ const EXTRA_FIELD_LABELS: Record<string, string> = {
   quality: "Quality",
   contentRating: "Content rating",
   added: "Added",
+  releaseDate: "Release date",
+  path: "Path",
 };
 const DEFAULT_LIST_COLUMNS: ExtraField[] = ["year", "status", "monitored"];
 const DEFAULT_POSTER_FIELDS: ExtraField[] = ["year", "status", "monitored"];
+
+/** Radarr-style bottom-of-poster status strip — computed client-side from fields already on the
+ * item (no extra API call), same signal the "Status" field/badge already shows, just presented as
+ * a colored banner instead of text so it reads at a glance across a dense poster grid. */
+function posterBanner(item: MediaItem): { label: string; cls: string } {
+  if (item.hasFile) return { label: "Downloaded", cls: "downloaded" };
+  if (!item.monitored) return { label: "Unmonitored", cls: "unmonitored" };
+  if (item.releaseDate && new Date(item.releaseDate).getTime() > Date.now()) {
+    return { label: "Unreleased", cls: "unreleased" };
+  }
+  return { label: "Missing", cls: "missing" };
+}
 
 function loadFieldSet(key: string, fallback: ExtraField[]): Set<ExtraField> {
   try {
@@ -73,6 +87,8 @@ function fieldValue(item: MediaItem, field: ExtraField, customColumns: CustomCol
   if (field === "quality") return item.quality ?? "";
   if (field === "contentRating") return item.contentRating ?? "";
   if (field === "added") return new Date(item.addedAt).toLocaleDateString();
+  if (field === "releaseDate") return item.releaseDate ? new Date(item.releaseDate).toLocaleDateString() : "";
+  if (field === "path") return item.path ?? "";
   if (field.startsWith("custom:")) {
     const col = customColumns.find((c) => c.id === Number(field.slice(7)));
     if (!col) return "";
@@ -921,6 +937,8 @@ export function LibraryItemGrid({
           <option value="monitored">Sort: Monitored</option>
           <option value="quality">Sort: Quality</option>
           <option value="contentRating">Sort: Content rating</option>
+          <option value="releaseDate">Sort: Release date</option>
+          <option value="path">Sort: Path</option>
         </select>
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as StatusFilter)} style={{ maxWidth: 160 }}>
           <option value="all">All statuses</option>
@@ -992,8 +1010,8 @@ export function LibraryItemGrid({
             Delete view
           </button>
         )}
-        {viewMode === "poster" ? (
-          <DropdownMenu label="Poster info">
+        {viewMode !== "list" ? (
+          <DropdownMenu label={viewMode === "poster" ? "Poster info" : "Overview info"}>
             {allFieldKeys.map((field) => (
               <label
                 key={field}
@@ -1022,12 +1040,17 @@ export function LibraryItemGrid({
       </div>
 
       <div className="toolbar" style={{ marginBottom: 16 }}>
-        <DropdownMenu label={`View: ${viewMode === "poster" ? "Posters" : "List"}`}>
+        <DropdownMenu
+          label={`View: ${viewMode === "poster" ? "Posters" : viewMode === "overview" ? "Overview" : "Table"}`}
+        >
           <button type="button" onClick={() => setViewMode("poster")}>
             {viewMode === "poster" ? "✓ " : ""}Posters
           </button>
+          <button type="button" onClick={() => setViewMode("overview")}>
+            {viewMode === "overview" ? "✓ " : ""}Overview
+          </button>
           <button type="button" onClick={() => setViewMode("list")}>
-            {viewMode === "list" ? "✓ " : ""}List
+            {viewMode === "list" ? "✓ " : ""}Table
           </button>
         </DropdownMenu>
 
@@ -1198,6 +1221,7 @@ export function LibraryItemGrid({
               )}
               <div className="poster" style={item.posterUrl ? { backgroundImage: `url(${item.posterUrl})` } : undefined}>
                 {!item.posterUrl && "No poster"}
+                <div className={`poster-banner ${posterBanner(item).cls}`}>{posterBanner(item).label}</div>
               </div>
               <div className="meta">
                 <div className="title">{item.title}</div>
@@ -1221,6 +1245,50 @@ export function LibraryItemGrid({
               </div>
             </div>
           ))}
+        </div>
+      ) : viewMode === "overview" ? (
+        <div>
+          {items.map((item) => {
+            const banner = posterBanner(item);
+            return (
+              <div key={item.id} data-item-id={item.id} className="overview-row" onClick={() => navigate(`/media/${item.id}`)}>
+                {selectMode && (
+                  <input
+                    type="checkbox"
+                    checked={selected.has(item.id)}
+                    onClick={(e) => toggleSelect(item.id, e)}
+                    onChange={() => {}}
+                  />
+                )}
+                <div className="poster-thumb" style={item.posterUrl ? { backgroundImage: `url(${item.posterUrl})` } : undefined} />
+                <div className="overview-main">
+                  <div className="overview-title">{item.title}</div>
+                  <div className="overview-fields">
+                    <span className={`badge ${banner.cls === "downloaded" ? "ok" : banner.cls === "missing" ? "danger" : ""}`}>
+                      {banner.label}
+                    </span>
+                    {allFieldKeys
+                      .filter((f) => posterFields.has(f))
+                      .map((f) => (f === "monitored" && item.monitored ? "" : fieldValue(item, f, customColumnsForType)))
+                      .filter(Boolean)
+                      .map((v, i) => (
+                        <span key={i}>{v}</span>
+                      ))}
+                  </div>
+                </div>
+                {typeof item.childCount === "number" && item.childCount > 0 && (
+                  <div title={`${item.childHaveCount ?? 0}/${item.childCount} ${childLabelPlural} downloaded`}>
+                    <div className="progress-bar">
+                      <div style={{ width: `${Math.round(((item.childHaveCount ?? 0) / item.childCount) * 100)}%` }} />
+                    </div>
+                    <div className="sub">
+                      {item.childHaveCount ?? 0}/{item.childCount}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       ) : (
         <table>

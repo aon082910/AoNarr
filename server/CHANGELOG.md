@@ -3,6 +3,18 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 185 — Radarr-style library view: status banner, Overview view, more sort/field options
+- Every poster now carries a Radarr-style colored status strip along its bottom edge — green
+  "Downloaded", red "Missing", grey "Unmonitored", or blue "Unreleased" (release date still in the
+  future) — so a poster grid reads at a glance without hunting through the info line underneath.
+- Added a third view mode, **Overview**, between Posters and Table: a compact row per item with a
+  small poster thumbnail, title, status badge, and the same toggleable info fields as the poster
+  view — mirrors Radarr's own "Overview" library view. The old "List" view is now labeled "Table"
+  to match Radarr's naming for the same thing.
+- Added **Release date** and **Path** to both the sort dropdown and the poster/overview info-field
+  and table-column pickers, alongside the existing Year/Status/Monitored/Quality/Content
+  rating/Added.
+
 ## Round 184 — add TorBox as a download client
 - **TorBox** joins Real-Debrid/AllDebrid as a supported debrid-style download client — grabbed
   magnet/torrent links are sent to TorBox's API, AoNarr waits for it to cache them, then downloads
