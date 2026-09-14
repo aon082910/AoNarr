@@ -1957,6 +1957,38 @@ export default function Settings() {
             ),
           },
           {
+            key: "seedGoalCleanup",
+            label: "Seed Goal Cleanup",
+            description: "Remove a torrent from the client once it's met a seed ratio/time goal",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Runs hourly against every qBittorrent client (the only backend this applies to).
+                  Only removes the torrent from the client's own queue — never touches the file
+                  AoNarr already imported into the library. Leave either field blank to not gate
+                  on it; leave both blank to disable this entirely (the default).
+                </p>
+                <label>Seed ratio goal</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  key={settings.torrentSeedRatioGoal ?? "seed-ratio-empty"}
+                  defaultValue={settings.torrentSeedRatioGoal ?? ""}
+                  placeholder="e.g. 1.0"
+                  onBlur={(e) => saveSetting("torrentSeedRatioGoal", e.target.value)}
+                />
+                <label>Seed time goal (hours)</label>
+                <input
+                  type="number"
+                  key={settings.torrentSeedTimeGoalHours ?? "seed-time-empty"}
+                  defaultValue={settings.torrentSeedTimeGoalHours ?? ""}
+                  placeholder="e.g. 72"
+                  onBlur={(e) => saveSetting("torrentSeedTimeGoalHours", e.target.value)}
+                />
+              </div>
+            ),
+          },
+          {
             key: "writeAudioTagsOnImport",
             label: "Write Audio Tags on Import",
             description: "Lidarr-style retagging — writes ID3 tags into imported MP3 files",

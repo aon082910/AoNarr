@@ -48,8 +48,8 @@ indexersRouter.post(
 
     const result = await db
       .prepare(
-        `INSERT INTO indexers (name, protocol, url, api_key, categories, media_types, enabled, priority, config, use_flaresolverr)
-         VALUES (@name, @protocol, @url, @apiKey, @categories, @mediaTypes, @enabled, @priority, @config, @useFlareSolverr)`
+        `INSERT INTO indexers (name, protocol, url, api_key, categories, media_types, enabled, priority, config, use_flaresolverr, query_limit_per_hour)
+         VALUES (@name, @protocol, @url, @apiKey, @categories, @mediaTypes, @enabled, @priority, @config, @useFlareSolverr, @queryLimitPerHour)`
       )
       .run({
         name: b.name,
@@ -62,6 +62,7 @@ indexersRouter.post(
         priority: b.priority ?? 25,
         config: b.config ? JSON.stringify(b.config) : null,
         useFlareSolverr: b.useFlareSolverr ? 1 : 0,
+        queryLimitPerHour: b.queryLimitPerHour ?? null,
       });
 
     const row = await db.prepare("SELECT * FROM indexers WHERE id = ?").get(result.lastInsertRowid);
@@ -85,6 +86,7 @@ indexersRouter.patch(
       enabled: "enabled",
       priority: "priority",
       useFlareSolverr: "use_flaresolverr",
+      queryLimitPerHour: "query_limit_per_hour",
     };
     const booleanKeys = new Set(["enabled", "useFlareSolverr"]);
     const sets: string[] = [];

@@ -20,6 +20,30 @@ import { notifyFailed, notifyGrabbed, notifyHealthIssue } from "./notifications.
 import { checkIndexerHealth } from "./indexerClient.js";
 import { syncAllSceneNumbering } from "./sceneNumbering.js";
 import { checkForDeletedFiles } from "./deletedFileCheck.js";
+
+/** Radarr/Sonarr-style seed-goal cleanup — removes a torrent from every enabled download client
+ * that supports it (qBittorrent) once it's met a configured ratio and/or seed-time goal. Both
+ * settings default unset (feature off); a goal of "0" is treated as unset too, since a ratio/time
+ * goal of literally zero would remove a torrent the instant it finished, which nobody wants. */
+async function runSeedGoalCleanup(): Promise<void> {
+  const ratioGoal = parseFloat(getSetting("torrentSeedRatioGoal") ?? "") || null;
+  const seedTimeGoalHours = parseFloat(getSetting("torrentSeedTimeGoalHours") ?? "") || null;
+  if (ratioGoal === null && seedTimeGoalHours === null) return;
+
+  const clients = await rowsToDownloadClients();
+  let totalRemoved = 0;
+  for (const client of clients) {
+    const adapter = getDownloadClientAdapter(client.type);
+    if (!adapter.removeSeededTorrents) continue;
+    try {
+      const removed = await adapter.removeSeededTorrents(client, ratioGoal, seedTimeGoalHours !== null ? seedTimeGoalHours * 60 : null);
+      totalRemoved += removed;
+    } catch (err) {
+      log.warn(`[scheduler] seed-goal cleanup failed for client "${client.name}":`, (err as Error).message);
+    }
+  }
+  if (totalRemoved > 0) log.info(`[scheduler] seed-goal cleanup: removed ${totalRemoved} torrent(s) that met their seed goal`);
+}
 import { setSetting } from "./settingsStore.js";
 import { notifyQueueChanged } from "./realtime.js";
 import { runAutoArchival } from "./archival.js";
@@ -184,7 +208,10 @@ async function chooseBestResult(
   cutoff: string,
   qualityProfileId: number | null,
   minFormatScore: number,
-  target: { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null } | { airDate: string } | null,
+  target:
+    | { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null; absoluteEpisode?: number | null }
+    | { airDate: string }
+    | null,
   blocklisted: Set<string>,
   mediaType: string,
   delayProfile: DelayProfile | null = null
@@ -199,7 +226,7 @@ async function chooseBestResult(
     : "airDate" in target
     ? withParsed.filter(({ parsed }) => releaseMatchesAirDate(parsed, target.airDate))
     : withParsed.filter(({ parsed }) =>
-        releaseMatchesEpisode(parsed, target.season, target.episode, target.sceneSeason, target.sceneEpisode)
+        releaseMatchesEpisode(parsed, target.season, target.episode, target.sceneSeason, target.sceneEpisode, target.absoluteEpisode)
       );
 
   // Drop releases whose size doesn't fit their claimed quality's configured size range — usually
@@ -441,7 +468,13 @@ async function runAutoSearch(signal?: AbortSignal) {
             minFormatScore,
             isDaily
               ? { airDate: ep.air_date }
-              : { season: ep.season_number, episode: ep.episode_number, sceneSeason: ep.scene_season_number, sceneEpisode: ep.scene_episode_number },
+              : {
+                  season: ep.season_number,
+                  episode: ep.episode_number,
+                  sceneSeason: ep.scene_season_number,
+                  sceneEpisode: ep.scene_episode_number,
+                  absoluteEpisode: item.type === "anime" ? ep.absolute_episode_number : null,
+                },
             blocklisted,
             item.type,
             delayProfile
@@ -575,14 +608,22 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
       const delayProfile = pickDelayProfile(delayProfiles, await tagIdsForMediaItem(item.id));
 
       let query: string;
-      let episodeTarget: { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null } | null = null;
+      let episodeTarget:
+        | { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null; absoluteEpisode?: number | null }
+        | null = null;
       if (t.episodeId) {
         const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(t.episodeId)) as any;
         if (!ep) {
           results.push({ ...t, grabbed: false, error: "Episode not found" });
           continue;
         }
-        episodeTarget = { season: ep.season_number, episode: ep.episode_number, sceneSeason: ep.scene_season_number, sceneEpisode: ep.scene_episode_number };
+        episodeTarget = {
+          season: ep.season_number,
+          episode: ep.episode_number,
+          sceneSeason: ep.scene_season_number,
+          sceneEpisode: ep.scene_episode_number,
+          absoluteEpisode: item.type === "anime" ? ep.absolute_episode_number : null,
+        };
         const searchSeason = ep.scene_season_number ?? ep.season_number;
         const searchEpisode = ep.scene_episode_number ?? ep.episode_number;
         query = `${item.title} S${String(searchSeason).padStart(2, "0")}E${String(searchEpisode).padStart(2, "0")}`;
@@ -843,12 +884,20 @@ async function retryFailedGrab(match: QueueItem, reason: string): Promise<void> 
     const profile = await getQualityProfile(item.qualityProfileId);
     const blocklisted = await getBlocklistedTitles(item.id);
 
-    let episodeTarget: { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null } | null = null;
+    let episodeTarget:
+      | { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null; absoluteEpisode?: number | null }
+      | null = null;
     let query: string;
     if (match.episodeId) {
       const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(match.episodeId)) as any;
       if (!ep) throw new Error("episode no longer exists");
-      episodeTarget = { season: ep.season_number, episode: ep.episode_number, sceneSeason: ep.scene_season_number, sceneEpisode: ep.scene_episode_number };
+      episodeTarget = {
+        season: ep.season_number,
+        episode: ep.episode_number,
+        sceneSeason: ep.scene_season_number,
+        sceneEpisode: ep.scene_episode_number,
+        absoluteEpisode: item.type === "anime" ? ep.absolute_episode_number : null,
+      };
       const searchSeason = ep.scene_season_number ?? ep.season_number;
       const searchEpisode = ep.scene_episode_number ?? ep.episode_number;
       query = `${item.title} S${String(searchSeason).padStart(2, "0")}E${String(searchEpisode).padStart(2, "0")}`;
@@ -1252,6 +1301,14 @@ export function startScheduler() {
     scheduleType: "cron",
     defaultSchedule: "0 6 * * 0",
     run: (signal) => refreshAllLibraries(signal),
+  });
+
+  registerJob({
+    key: "seedGoalCleanup",
+    name: "Seed Goal Cleanup",
+    scheduleType: "cron",
+    defaultSchedule: "0 * * * *",
+    run: () => runSeedGoalCleanup(),
   });
 
   registerJob({

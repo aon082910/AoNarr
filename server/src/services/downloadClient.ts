@@ -37,6 +37,12 @@ export interface DownloadClientAdapter {
    * meaningful for backends that actually seed (qBittorrent) — usenet clients have no equivalent
    * concept, so this is optional and callers check for its presence. */
   getHealthStats?(client: DownloadClient): Promise<ClientHealthStats>;
+  /** Radarr/Sonarr-style seed-goal cleanup: removes a torrent *from the client* (never the
+   * already-imported library file — AoNarr moved/hardlinked/copied it out before this ever runs)
+   * once it's met a configured ratio and/or seed-time goal, freeing the client's slot instead of
+   * seeding forever unless the client's own ratio-limit settings happen to be configured
+   * separately. Only meaningful for backends that actually seed. */
+  removeSeededTorrents?(client: DownloadClient, ratioGoal: number | null, seedTimeGoalMinutes: number | null): Promise<number>;
 }
 
 export interface ClientHealthStats {
@@ -273,6 +279,34 @@ class QBittorrentAdapter implements DownloadClientAdapter {
       ratioLimit,
       torrentsOverRatioLimit,
     };
+  }
+
+  async removeSeededTorrents(client: DownloadClient, ratioGoal: number | null, seedTimeGoalMinutes: number | null): Promise<number> {
+    if (ratioGoal === null && seedTimeGoalMinutes === null) return 0;
+    const cookie = await this.login(client);
+    const res = await fetch(`${baseUrl(client)}/api/v2/torrents/info`, { headers: { Cookie: cookie } });
+    if (!res.ok) throw new Error(`qBittorrent torrents/info failed: HTTP ${res.status}`);
+    const torrents = (await res.json()) as any[];
+
+    // Only a torrent that's actually finished downloading and seeding (never one still fetching,
+    // "uploading"/"stalledUP"/"queuedUP"/"pausedUP" states) is eligible — same reasoning as
+    // qBittorrent's own state machine, so this can't accidentally remove an in-progress download.
+    const seedingStates = new Set(["uploading", "stalledUP", "queuedUP", "pausedUP", "forcedUP"]);
+    const eligible = torrents.filter((t) => {
+      if (!seedingStates.has(t.state)) return false;
+      const ratioMet = ratioGoal !== null && (t.ratio ?? 0) >= ratioGoal;
+      const timeMet = seedTimeGoalMinutes !== null && (t.seeding_time ?? 0) / 60 >= seedTimeGoalMinutes;
+      return ratioMet || timeMet;
+    });
+    if (eligible.length === 0) return 0;
+
+    const removeRes = await fetch(`${baseUrl(client)}/api/v2/torrents/delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
+      body: new URLSearchParams({ hashes: eligible.map((t) => t.hash).join("|"), deleteFiles: "false" }),
+    });
+    if (!removeRes.ok) throw new Error(`qBittorrent torrents/delete failed: HTTP ${removeRes.status}`);
+    return eligible.length;
   }
 }
 

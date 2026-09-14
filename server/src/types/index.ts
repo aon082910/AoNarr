@@ -85,6 +85,7 @@ export interface Indexer {
   priority: number;
   config: string | null; // JSON, protocol-specific (currently only "ddl" uses this)
   useFlareSolverr: MonitorStatus;
+  queryLimitPerHour: number | null; // proactive rate cap — see indexerClient.ts's isOverQueryLimit
 }
 
 /** Same reasoning as IndexerProtocol — validated at the application layer. */

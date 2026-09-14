@@ -242,6 +242,31 @@ async function searchDdl(indexer: Indexer, query: string): Promise<SearchResult[
 const BACKOFF_MS = 15 * 60 * 1000;
 const backoffUntil = new Map<number, number>();
 
+/**
+ * Proactive per-indexer "Query Limit" (requests/hour) — distinct from the reactive 429 backoff
+ * above, which only kicks in *after* an indexer has already rejected a request. This stops AoNarr
+ * from ever sending the request that would trigger a 429 (or a ban) in the first place, for an
+ * indexer whose admin sets a cap. A rolling one-hour window of request timestamps per indexer,
+ * in-memory only — resets on restart, which is fine for a soft self-imposed courtesy limit.
+ */
+const ONE_HOUR_MS = 60 * 60 * 1000;
+const requestTimestamps = new Map<number, number[]>();
+
+function isOverQueryLimit(indexer: Indexer): boolean {
+  const limit = indexer.queryLimitPerHour;
+  if (!limit || limit <= 0) return false;
+  const now = Date.now();
+  const timestamps = (requestTimestamps.get(indexer.id) ?? []).filter((t) => now - t < ONE_HOUR_MS);
+  requestTimestamps.set(indexer.id, timestamps);
+  return timestamps.length >= limit;
+}
+
+function recordQueryLimitRequest(indexerId: number): void {
+  const timestamps = requestTimestamps.get(indexerId) ?? [];
+  timestamps.push(Date.now());
+  requestTimestamps.set(indexerId, timestamps);
+}
+
 export function isIndexerBackedOff(indexerId: number): boolean {
   const until = backoffUntil.get(indexerId);
   return !!until && until > Date.now();
@@ -262,6 +287,10 @@ export async function searchIndexer(
   if (isIndexerBackedOff(indexer.id)) {
     throw new Error(`Indexer "${indexer.name}" is backed off after a recent 429 — skipping`);
   }
+  if (isOverQueryLimit(indexer)) {
+    throw new Error(`Indexer "${indexer.name}" has hit its configured query limit for this hour — skipping`);
+  }
+  recordQueryLimitRequest(indexer.id);
   const startedAt = Date.now();
   try {
     let results: SearchResult[];

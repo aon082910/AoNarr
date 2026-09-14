@@ -69,6 +69,7 @@ searchRouter.get(
     let targetEpisode: number | null = null;
     let targetSceneSeason: number | null = null;
     let targetSceneEpisode: number | null = null;
+    let targetAbsoluteEpisode: number | null = null;
 
     const episodeId = req.query.episodeId as string | undefined;
     const subItemId = req.query.subItemId as string | undefined;
@@ -81,6 +82,7 @@ searchRouter.get(
       targetEpisode = ep.episode_number;
       targetSceneSeason = ep.scene_season_number;
       targetSceneEpisode = ep.scene_episode_number;
+      targetAbsoluteEpisode = item.type === "anime" ? ep.absolute_episode_number : null;
       // Scene-numbered (TheXEM) query when known — see scheduler.ts's own runAutoSearch for why.
       const seasonStr = String(targetSceneSeason ?? targetSeason).padStart(2, "0");
       const episodeStr = String(targetSceneEpisode ?? targetEpisode).padStart(2, "0");
@@ -134,7 +136,7 @@ searchRouter.get(
       const parsed = parseReleaseTitle(r.title);
       const matchesTarget =
         targetSeason !== null && targetEpisode !== null
-          ? releaseMatchesEpisode(parsed, targetSeason, targetEpisode, targetSceneSeason, targetSceneEpisode)
+          ? releaseMatchesEpisode(parsed, targetSeason, targetEpisode, targetSceneSeason, targetSceneEpisode, targetAbsoluteEpisode)
           : targetSeason !== null
             ? parsed.seasonNumber === targetSeason
             : true;

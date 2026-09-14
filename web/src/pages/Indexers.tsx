@@ -67,6 +67,13 @@ export default function Indexers() {
     load();
   }
 
+  async function updateQueryLimit(indexer: Indexer, value: string) {
+    const parsed = value.trim() === "" ? null : Number(value);
+    if (parsed === indexer.queryLimitPerHour) return;
+    await api.patch(`/indexers/${indexer.id}`, { queryLimitPerHour: parsed });
+    load();
+  }
+
   async function syncProwlarr() {
     setSyncingProwlarr(true);
     try {
@@ -208,6 +215,7 @@ export default function Indexers() {
             <th>URL</th>
             <th>Enabled</th>
             <th>FlareSolverr</th>
+            <th title="Proactive requests/hour cap — leave blank for no limit">Query Limit</th>
             <th>Health</th>
             <th></th>
           </tr>
@@ -237,6 +245,16 @@ export default function Indexers() {
                     {i.useFlareSolverr ? "On" : "Off"}
                   </span>
                 )}
+              </td>
+              <td>
+                <input
+                  type="number"
+                  min={0}
+                  defaultValue={i.queryLimitPerHour ?? ""}
+                  placeholder="unlimited"
+                  style={{ width: 90 }}
+                  onBlur={(e) => updateQueryLimit(i, e.target.value)}
+                />
               </td>
               <td title={i.health?.lastError ?? undefined}>
                 <span className={`badge ${health.className}`}>{health.text}</span>

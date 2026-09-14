@@ -91,6 +91,8 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS studio TEXT`,
   `ALTER TABLE episodes ADD COLUMN IF NOT EXISTS scene_season_number INTEGER`,
   `ALTER TABLE episodes ADD COLUMN IF NOT EXISTS scene_episode_number INTEGER`,
+  `ALTER TABLE indexers ADD COLUMN IF NOT EXISTS query_limit_per_hour INTEGER`,
+  `ALTER TABLE episodes ADD COLUMN IF NOT EXISTS absolute_episode_number INTEGER`,
 ];
 
 /**

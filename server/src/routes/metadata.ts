@@ -226,14 +226,32 @@ metadataRouter.post(
 
       if (typeConfig.shape === "episodic") {
         const episodes = await fetchSeriesEpisodesFor(externalIds);
+        // Running count across every season > 0 (specials excluded), sorted first — same absolute-
+        // numbering convention importer.ts already computes for path templating, now also stored
+        // per-episode so it can be used as a release-matching signal (anime fansub releases are
+        // very often numbered "Show - 145" with no season/episode designator at all).
+        const absoluteOrder = [...episodes]
+          .filter((e) => e.seasonNumber > 0)
+          .sort((a, b) => a.seasonNumber - b.seasonNumber || a.episodeNumber - b.episodeNumber);
+        const absoluteByKey = new Map<string, number>();
+        absoluteOrder.forEach((e, idx) => absoluteByKey.set(`${e.seasonNumber}:${e.episodeNumber}`, idx + 1));
+
         await db.transaction(async () => {
           for (const ep of episodes) {
             await db
               .prepare(
-                `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-                 VALUES (?, ?, ?, ?, ?, ?, 1)`
+                `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored, absolute_episode_number)
+                 VALUES (?, ?, ?, ?, ?, ?, 1, ?)`
               )
-              .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
+              .run(
+                mediaItemId,
+                ep.seasonNumber,
+                ep.episodeNumber,
+                ep.title,
+                ep.airDate,
+                ep.overview,
+                absoluteByKey.get(`${ep.seasonNumber}:${ep.episodeNumber}`) ?? null
+              );
           }
         });
         childCount = episodes.length;

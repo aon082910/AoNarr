@@ -108,6 +108,7 @@ export interface Indexer {
   priority: number;
   config: string | null;
   useFlareSolverr: 0 | 1;
+  queryLimitPerHour: number | null;
   health?: IndexerHealth;
 }
 

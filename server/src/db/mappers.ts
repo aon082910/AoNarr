@@ -63,6 +63,7 @@ export function episodeFromRow(row: any) {
     sizeBytes: row.size_bytes,
     sceneSeasonNumber: row.scene_season_number,
     sceneEpisodeNumber: row.scene_episode_number,
+    absoluteEpisodeNumber: row.absolute_episode_number,
   };
 }
 
@@ -109,6 +110,7 @@ export function indexerFromRow(row: any) {
     priority: row.priority,
     config: row.config,
     useFlareSolverr: row.use_flaresolverr,
+    queryLimitPerHour: row.query_limit_per_hour,
   };
 }
 

@@ -17,6 +17,11 @@ export interface ParsedRelease {
    * date instead of season/episode, e.g. "Show.Name.2024.08.25.1080p...") — null otherwise. Only
    * consulted for "daily"-type series; harmless to detect unconditionally on everything else. */
   airDate: string | null;
+  /** A bare "Show Title - 145" style number, the common anime-fansub convention for long-running
+   * shows with no season/episode designator at all. Only attempted when no SxxExx/full-season
+   * pattern matched (so it never overrides a real season/episode detection) — see
+   * releaseMatchesEpisode's `absoluteEpisodeNumber` param for how this gets used. */
+  absoluteEpisode: number | null;
 }
 
 // Group 3 (hyphenated range end, e.g. "S01E01-E03"/"S01E01-03") and group 4 (a chain of bare
@@ -34,6 +39,11 @@ const YEAR = /\b(19|20)\d{2}\b/;
 // actually use; month/day are sanity-range-checked below since this alone can't tell a real date
 // apart from three coincidentally date-shaped numbers.
 const AIR_DATE = /\b((?:19|20)\d{2})[.\-\s](\d{1,2})[.\-\s](\d{1,2})\b/;
+// Anime fansub convention: "[Group] Show Title - 145 [1080p]" — a bare number after " - " with
+// no SxxExx designator anywhere in the title. Deliberately narrow (requires the space-hyphen-space
+// separator) to avoid catching an arbitrary number elsewhere in the title.
+const ABSOLUTE_EPISODE = /\s-\s0*(\d{1,4})(?=\s|\[|\(|$)/;
+const COMMON_RESOLUTIONS = new Set([480, 576, 720, 1080, 2160]);
 
 const RESOLUTION_2160 = /\b(2160p|4k|uhd)\b/i;
 const RESOLUTION_1080 = /\b1080p\b/i;
@@ -187,6 +197,15 @@ export function parseReleaseTitle(title: string): ParsedRelease {
     }
   }
 
+  let absoluteEpisode: number | null = null;
+  if (seasonNumber === null && episodeNumbers === null && !isFullSeason) {
+    const absMatch = title.match(ABSOLUTE_EPISODE);
+    if (absMatch) {
+      const n = Number(absMatch[1]);
+      if (!COMMON_RESOLUTIONS.has(n)) absoluteEpisode = n;
+    }
+  }
+
   return {
     seasonNumber,
     episodeNumbers,
@@ -199,6 +218,7 @@ export function parseReleaseTitle(title: string): ParsedRelease {
     languages: detectLanguages(title),
     releaseGroup: detectReleaseGroup(title),
     airDate,
+    absoluteEpisode,
   };
 }
 
@@ -221,12 +241,16 @@ export function releaseMatchesEpisode(
   seasonNumber: number,
   episodeNumber: number,
   sceneSeasonNumber?: number | null,
-  sceneEpisodeNumber?: number | null
+  sceneEpisodeNumber?: number | null,
+  absoluteEpisodeNumber?: number | null
 ): boolean {
   if (matchesSeasonEpisode(parsed, seasonNumber, episodeNumber)) return true;
   if (sceneSeasonNumber != null && sceneEpisodeNumber != null) {
-    return matchesSeasonEpisode(parsed, sceneSeasonNumber, sceneEpisodeNumber);
+    if (matchesSeasonEpisode(parsed, sceneSeasonNumber, sceneEpisodeNumber)) return true;
   }
+  // Only ever consulted as a last resort — a release that already parsed a real SxxExx (even a
+  // wrong one) never falls through to this, since a bare-number match is far weaker evidence.
+  if (absoluteEpisodeNumber != null && parsed.absoluteEpisode === absoluteEpisodeNumber) return true;
   return false;
 }
 

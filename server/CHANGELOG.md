@@ -3,6 +3,22 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 197 — seed-goal cleanup, proactive indexer rate limiting, absolute-number matching
+- **Seed goal cleanup**: new opt-in "Seed Goal Cleanup" settings (ratio and/or seed-time goal,
+  both blank = disabled) run hourly against every qBittorrent client, removing a torrent from the
+  client once it's met its goal — never touches the file AoNarr already imported into the library,
+  only frees the client's own queue slot. New `removeSeededTorrents()` on the qBittorrent adapter.
+- **Proactive per-indexer rate limiting**: indexers gained a "Query Limit" (requests/hour) field,
+  enforced with an in-memory rolling one-hour window before a request is even sent — distinct from
+  the existing reactive 429 backoff, which only reacts after an indexer has already rejected one.
+  Blank/zero means unlimited (no behavior change for existing indexers).
+- **Absolute-episode-number matching for anime**: episodes now store an `absolute_episode_number`
+  (running count across real seasons, same convention already used for path naming) and
+  `parseReleaseTitle()` detects a bare "Show Title - 145" style number when no SxxExx pattern
+  matched. `releaseMatchesEpisode()` accepts it as a last-resort match — anime type only, and only
+  ever consulted when a real season/episode pattern didn't already match — so a long-running show
+  whose fansub releases carry no season/episode designator at all can still be found and matched.
+
 ## Round 196 — Lidarr/Readarr/Youtarr/Whisparr gaps: album types, tag writing, playlists, archive
 - **Music album type filtering** (Lidarr): a new `musicAlbumTypes` setting (comma-separated
   album/ep/single/broadcast/other, default `album` — previous hardcoded behavior) controls which
