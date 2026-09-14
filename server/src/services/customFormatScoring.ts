@@ -1,8 +1,10 @@
 import { db } from "../db/index.js";
 import { parseReleaseTitle, type ReleaseFlag } from "./releaseParser.js";
 
+export type IndexerFlag = "freeleech" | "halfleech";
+
 export interface ConditionGroup {
-  type?: "title" | "size" | "language" | "releaseGroup" | "source" | "resolution" | "year" | "releaseFlags"; // defaults to "title" for backward compatibility
+  type?: "title" | "size" | "language" | "releaseGroup" | "source" | "resolution" | "year" | "releaseFlags" | "indexerFlag"; // defaults to "title" for backward compatibility
   patterns?: string[]; // title/releaseGroup conditions: OR'd together
   minMb?: number | null; // size conditions: inclusive lower bound
   maxMb?: number | null; // size conditions: inclusive upper bound
@@ -12,6 +14,7 @@ export interface ConditionGroup {
   minYear?: number | null; // year conditions: inclusive lower bound
   maxYear?: number | null; // year conditions: inclusive upper bound
   flags?: ReleaseFlag[]; // releaseFlags conditions: any of proper/repack/extended/unrated/directorscut/imax
+  indexerFlags?: IndexerFlag[]; // indexerFlag conditions: any of freeleech/halfleech (from Torznab's downloadvolumefactor)
   negate: boolean; // if true, the group passes when it would otherwise NOT
 }
 
@@ -53,7 +56,17 @@ function testPattern(pattern: string, text: string): boolean {
  *   detected in the title.
  * Every type inverts under `negate` (e.g. "must not contain x265", "must not be French").
  */
-function groupPasses(group: ConditionGroup, title: string, sizeBytes: number | null): boolean {
+function groupPasses(group: ConditionGroup, title: string, sizeBytes: number | null, downloadVolumeFactor: number | null): boolean {
+  if (group.type === "indexerFlag") {
+    // Unknown status (indexer didn't report downloadvolumefactor at all) never matches — a "must
+    // be freeleech" condition should exclude a release whose freeleech status is simply unknown,
+    // not treat "unknown" as satisfying it.
+    if (downloadVolumeFactor == null) return group.negate ? true : false;
+    const detected: IndexerFlag | null = downloadVolumeFactor === 0 ? "freeleech" : downloadVolumeFactor === 0.5 ? "halfleech" : null;
+    const anyMatch = detected != null && (group.indexerFlags ?? []).includes(detected);
+    return group.negate ? !anyMatch : anyMatch;
+  }
+
   if (group.type === "size") {
     if (sizeBytes == null) return false;
     const sizeMb = sizeBytes / 1_000_000;
@@ -106,9 +119,14 @@ function groupPasses(group: ConditionGroup, title: string, sizeBytes: number | n
 }
 
 /** A format matches only if every one of its condition groups passes (AND across groups). */
-export function formatMatches(groups: ConditionGroup[], title: string, sizeBytes: number | null = null): boolean {
+export function formatMatches(
+  groups: ConditionGroup[],
+  title: string,
+  sizeBytes: number | null = null,
+  downloadVolumeFactor: number | null = null
+): boolean {
   if (groups.length === 0) return false;
-  return groups.every((g) => groupPasses(g, title, sizeBytes));
+  return groups.every((g) => groupPasses(g, title, sizeBytes, downloadVolumeFactor));
 }
 
 /**
@@ -195,7 +213,8 @@ export async function scoreRelease(
   releaseTitle: string,
   releaseSizeBytes: number | null,
   qualityProfileId: number | null,
-  mediaType: string | null = null
+  mediaType: string | null = null,
+  downloadVolumeFactor: number | null = null
 ): Promise<ReleaseScore> {
   const formats = (await db.prepare("SELECT * FROM custom_formats").all()) as {
     id: number;
@@ -222,7 +241,7 @@ export async function scoreRelease(
     } catch {
       continue;
     }
-    if (!formatMatches(groups, releaseTitle, releaseSizeBytes)) continue;
+    if (!formatMatches(groups, releaseTitle, releaseSizeBytes, downloadVolumeFactor)) continue;
 
     let score = 0;
     if (qualityProfileId) {

@@ -93,6 +93,7 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE episodes ADD COLUMN IF NOT EXISTS scene_episode_number INTEGER`,
   `ALTER TABLE indexers ADD COLUMN IF NOT EXISTS query_limit_per_hour INTEGER`,
   `ALTER TABLE episodes ADD COLUMN IF NOT EXISTS absolute_episode_number INTEGER`,
+  `ALTER TABLE root_folders ADD COLUMN IF NOT EXISTS min_free_space_gb INTEGER`,
 ];
 
 /**

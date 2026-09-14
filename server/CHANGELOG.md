@@ -3,6 +3,27 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 198 — freeleech scoring, manual-interaction/update notifications, next-run, min free space
+- **Freeleech/halfleech custom-format condition**: the indexer client now captures Torznab's
+  `downloadvolumefactor` attribute, and Custom Formats gained a new "indexerFlag" condition type
+  (`INDEXERFLAG: freeleech, halfleech` in the text DSL) to score on it — unknown status (an indexer
+  that doesn't report it) never matches, so a "must be freeleech" condition correctly excludes it
+  rather than treating unknown as satisfying. Manual search results also show a freeleech/halfleech
+  badge next to matching releases.
+- **"On Manual Interaction Required" notification**: fires when an automatic import gets skipped
+  because it couldn't confidently place a file (e.g. an unmatched file in a season pack) — the
+  download itself succeeded, it just needs a person to use "Manual import..." on the Activity page,
+  distinct from an actual "Failed" event. Previously this was logged only, with no notification.
+  Also added "On Update Available", pushed by a new daily job (deduped by round number) instead of
+  only ever being visible by loading the System page.
+- **Jobs page "Next run"**: computed from each job's cron expression (new `cron-parser` dependency)
+  or, for interval-based jobs, estimated from the last run plus the interval — alongside the
+  existing "Last run" column.
+- **Per-root-folder minimum free space (GB)**: a new setting on each root folder, independent of
+  the existing quota-percent warning — a huge drive at 8% free might have hundreds of GB left
+  (not urgent), while a small drive at 15% free might have almost none (is). Feeds into both the
+  System/Dashboard health check and the scheduled health-issue notification.
+
 ## Round 197 — seed-goal cleanup, proactive indexer rate limiting, absolute-number matching
 - **Seed goal cleanup**: new opt-in "Seed Goal Cleanup" settings (ratio and/or seed-time goal,
   both blank = disabled) run hourly against every qBittorrent client, removing a torrent from the

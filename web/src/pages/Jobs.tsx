@@ -67,6 +67,7 @@ export default function Jobs() {
             <th>Schedule</th>
             <th>Status</th>
             <th>Last run</th>
+            <th>Next run</th>
             <th>Last result</th>
             <th></th>
           </tr>
@@ -92,6 +93,7 @@ export default function Jobs() {
                 <span className={`badge ${j.running ? "ok" : ""}`}>{j.running ? "Running" : "Idle"}</span>
               </td>
               <td>{j.lastRunAt ? new Date(j.lastRunAt).toLocaleString() : "Never"}</td>
+              <td>{j.nextRunAt ? new Date(j.nextRunAt).toLocaleString() : "-"}</td>
               <td>
                 {j.lastStatus && (
                   <span className={`badge ${j.lastStatus === "success" ? "ok" : j.lastStatus === "error" ? "danger" : ""}`}>

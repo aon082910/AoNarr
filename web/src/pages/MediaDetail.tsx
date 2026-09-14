@@ -2065,6 +2065,16 @@ export default function MediaDetail() {
                           rejected
                         </span>
                       )}
+                      {r.downloadVolumeFactor === 0 && (
+                        <span className="badge ok" style={{ marginLeft: 6 }}>
+                          freeleech
+                        </span>
+                      )}
+                      {r.downloadVolumeFactor === 0.5 && (
+                        <span className="badge ok" style={{ marginLeft: 6 }}>
+                          halfleech
+                        </span>
+                      )}
                     </td>
                     <td>
                       <span className={`badge ${r.allowedByProfile ? "ok" : "danger"}`}>{r.parsedQuality}</span>

@@ -455,6 +455,7 @@ export default function Settings() {
    *   SIZE: min-max        release size in MB (either bound optional, e.g. "SIZE: 2000-")
    *   LANG: french, multi  any of these detected language tags
    *   GROUP: RARBG, EVO    regex against the parsed release-group tag
+   *   INDEXERFLAG: freeleech, halfleech   Torznab's freeleech/halfleech status
    * Anything else is a title regex condition. All lines/groups are AND'd together. E.g.:
    *   REMUX, BluRay
    *   NOT x265
@@ -515,6 +516,12 @@ export default function Settings() {
           return { type: "releaseFlags" as const, flags, negate };
         }
 
+        const indexerFlagMatch = rest.match(/^INDEXERFLAG:\s*(.+)$/i);
+        if (indexerFlagMatch) {
+          const indexerFlags = indexerFlagMatch[1].split(",").map((f) => f.trim().toLowerCase()).filter(Boolean);
+          return { type: "indexerFlag" as const, indexerFlags, negate };
+        }
+
         const patterns = rest
           .split(",")
           .map((p) => p.trim())
@@ -528,6 +535,7 @@ export default function Settings() {
         if (g.type === "source") return g.sources.length > 0;
         if (g.type === "resolution") return g.resolutions.length > 0;
         if (g.type === "releaseFlags") return g.flags.length > 0;
+        if (g.type === "indexerFlag") return g.indexerFlags.length > 0;
         return g.patterns.length > 0;
       });
   }
@@ -842,7 +850,7 @@ export default function Settings() {
     );
   }
 
-  async function updateFolderQuota(id: number, field: "quotaPercent" | "pauseGrabsAtQuota", value: number | boolean | null) {
+  async function updateFolderQuota(id: number, field: "quotaPercent" | "pauseGrabsAtQuota" | "minFreeSpaceGb", value: number | boolean | null) {
     await api.patch(`/root-folders/${id}`, { [field]: value });
     load();
   }
@@ -2402,6 +2410,13 @@ export default function Settings() {
                   placeholder="off"
                   onBlur={(e) => updateFolderQuota(f.id, "quotaPercent", e.target.value === "" ? null : Number(e.target.value))}
                 />
+                <label>Minimum free space (GB) — health warning below this, independent of quota %</label>
+                <input
+                  type="number"
+                  defaultValue={f.minFreeSpaceGb ?? ""}
+                  placeholder="off"
+                  onBlur={(e) => updateFolderQuota(f.id, "minFreeSpaceGb", e.target.value === "" ? null : Number(e.target.value))}
+                />
                 <label className="toolbar" style={{ gap: 8 }}>
                   <input
                     type="checkbox"
@@ -2850,6 +2865,8 @@ export default function Settings() {
                           ? `YEAR ${g.minYear ?? ""}-${g.maxYear ?? ""}`
                           : g.type === "releaseFlags"
                           ? `FLAGS (${(g.flags ?? []).join(" OR ")})`
+                          : g.type === "indexerFlag"
+                          ? `INDEXERFLAG (${(g.indexerFlags ?? []).join(" OR ")})`
                           : `(${(g.patterns ?? []).join(" OR ")})`;
                       return `${g.negate ? "NOT " : ""}${body}`;
                     })

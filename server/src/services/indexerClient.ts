@@ -114,6 +114,7 @@ async function searchTorznabNewznab(indexer: Indexer, query: string, mediaType: 
     let seeders: number | null = null;
     let peers: number | null = null;
     let leechers: number | null = null;
+    let downloadVolumeFactor: number | null = null;
     const torznabAttrs: any[] = item["torznab:attr"] ?? item.attr ?? [];
     for (const attr of torznabAttrs) {
       const a = attr?.$;
@@ -121,6 +122,12 @@ async function searchTorznabNewznab(indexer: Indexer, query: string, mediaType: 
       if (a.name === "seeders") seeders = Number(a.value);
       if (a.name === "peers") peers = Number(a.value);
       if (a.name === "leechers") leechers = Number(a.value);
+      // Radarr/Sonarr's "freeleech"/"halfleech" custom-format specification reads the exact same
+      // attribute — 0 means the download doesn't count against ratio at all (freeleech), 0.5 means
+      // it counts at half (halfleech). Not every indexer emits this; absent means "unknown", not
+      // "normal" — customFormatScoring.ts's indexerFlag condition treats those the same way (never
+      // matches, so a "must be freeleech" condition group correctly excludes unknown-status results).
+      if (a.name === "downloadvolumefactor") downloadVolumeFactor = Number(a.value);
     }
     // Torznab's "peers" attr is the TOTAL peer count (seeders + leechers), not the leecher count
     // on its own — most indexers only emit seeders/peers, not a separate leechers attr, so derive
@@ -138,6 +145,7 @@ async function searchTorznabNewznab(indexer: Indexer, query: string, mediaType: 
       downloadUrl,
       protocol: indexer.protocol === "torznab" ? "torrent" : "usenet",
       category: cats,
+      downloadVolumeFactor,
     });
   }
 

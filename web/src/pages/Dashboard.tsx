@@ -43,7 +43,7 @@ interface HealthSummary {
   configWarnings: { key: string; message: string }[];
   indexers: { id: number; name: string; ok: boolean; error?: string }[];
   downloadClients: { id: number; name: string; ok: boolean; error?: string }[];
-  diskWarnings: { rootFolderId: number; path: string; percentFree: number }[];
+  diskWarnings: { rootFolderId: number; path: string; percentFree: number; freeGb?: number; minFreeSpaceGb?: number | null }[];
 }
 
 function todayIso(): string {
@@ -106,7 +106,11 @@ export default function Dashboard() {
         ...health.configWarnings.map((w) => w.message),
         ...health.indexers.filter((i) => !i.ok).map((i) => `Indexer "${i.name}" is unreachable`),
         ...health.downloadClients.filter((c) => !c.ok).map((c) => `Download client "${c.name}" is unreachable`),
-        ...health.diskWarnings.map((d) => `"${d.path}" is low on disk space (${d.percentFree}% free)`),
+        ...health.diskWarnings.map((d) =>
+          d.minFreeSpaceGb != null && d.freeGb != null && d.freeGb < d.minFreeSpaceGb
+            ? `"${d.path}" is below its configured minimum free space (${d.freeGb}GB free, minimum ${d.minFreeSpaceGb}GB)`
+            : `"${d.path}" is low on disk space (${d.percentFree}% free)`
+        ),
       ]
     : [];
 

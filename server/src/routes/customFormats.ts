@@ -27,6 +27,7 @@ const VALID_PATTERN_LANGUAGES = new Set([
 const VALID_SOURCES = new Set(["remux", "bluray", "webdl", "webrip", "hdtv", "dvd"]);
 const VALID_RESOLUTIONS = new Set(["2160p", "1080p", "720p"]);
 const VALID_FLAGS = new Set(["proper", "repack", "extended", "unrated", "directorscut", "imax"]);
+const VALID_INDEXER_FLAGS = new Set(["freeleech", "halfleech"]);
 
 /**
  * A custom format is a list of condition groups: title (patterns OR'd against the full title),
@@ -79,6 +80,13 @@ function validateAndNormalizeGroups(groups: any[]): any[] {
       for (const f of group.flags) {
         if (!VALID_FLAGS.has(String(f).toLowerCase())) throw new HttpError(400, `"${f}" is not a recognized release flag`);
       }
+    } else if (group.type === "indexerFlag") {
+      if (!Array.isArray(group.indexerFlags) || group.indexerFlags.length === 0) {
+        throw new HttpError(400, "an indexerFlag condition needs a non-empty indexerFlags array");
+      }
+      for (const f of group.indexerFlags) {
+        if (!VALID_INDEXER_FLAGS.has(String(f).toLowerCase())) throw new HttpError(400, `"${f}" is not a recognized indexer flag`);
+      }
     } else {
       // "title" and "releaseGroup" both validate as a non-empty regex-pattern array
       if (!Array.isArray(group.patterns) || group.patterns.length === 0) {
@@ -102,6 +110,7 @@ function validateAndNormalizeGroups(groups: any[]): any[] {
     if (g.type === "source") return { type: "source", sources: g.sources, negate: !!g.negate };
     if (g.type === "resolution") return { type: "resolution", resolutions: g.resolutions.map((r: string) => r.toLowerCase()), negate: !!g.negate };
     if (g.type === "releaseFlags") return { type: "releaseFlags", flags: g.flags.map((f: string) => f.toLowerCase()), negate: !!g.negate };
+    if (g.type === "indexerFlag") return { type: "indexerFlag", indexerFlags: g.indexerFlags.map((f: string) => f.toLowerCase()), negate: !!g.negate };
     return { type: "title", patterns: g.patterns, negate: !!g.negate };
   });
 }

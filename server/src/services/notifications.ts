@@ -64,7 +64,16 @@ interface NotificationContent {
 /** Sonarr/Radarr-style per-connection event triggers: each provider has an optional
  * `<providerKey>Events` setting, a comma-separated subset of EVENT_KEYS. Unset means "every event"
  * — the pre-existing behavior — so upgrading doesn't silently mute anyone's existing setup. */
-export const EVENT_KEYS = ["grabbed", "imported", "upgraded", "failed", "duplicatesFound", "healthIssue"] as const;
+export const EVENT_KEYS = [
+  "grabbed",
+  "imported",
+  "upgraded",
+  "failed",
+  "duplicatesFound",
+  "healthIssue",
+  "manualInteractionRequired",
+  "updateAvailable",
+] as const;
 export type EventKey = (typeof EVENT_KEYS)[number];
 
 function isEventEnabledFor(providerKey: string, event: string): boolean {
@@ -201,6 +210,8 @@ const DEFAULT_TEMPLATES = {
   failed: "{mediaTitle}: {reason}",
   duplicatesFound: "{count} new duplicate group(s) found: {titles}",
   healthIssue: "{summary}",
+  manualInteractionRequired: "{mediaTitle}: {reason}",
+  updateAvailable: "{title}",
 };
 
 /** Renders a {token}-based template from Settings, falling back to the built-in default when
@@ -254,6 +265,31 @@ export async function notifyUpgraded(mediaTitle: string, fileName: string, fileP
   if (filePath && getSetting("mediaServerRefreshOnImport") === "1") {
     refreshMediaServerLibrary(filePath).catch((err) => log.warn("[notifications] media server refresh failed:", err.message));
   }
+}
+
+/** Radarr/Sonarr v4+'s "On Manual Interaction Required" — a download finished but couldn't be
+ * auto-imported unambiguously (e.g. a season pack whose files couldn't be matched to known
+ * episodes), distinct from "Failed" — the download itself succeeded, it just needs a person to
+ * pick via the Activity page's "Manual import..." rather than being retried automatically the way
+ * an actually-failed grab is. */
+export async function notifyManualInteractionRequired(mediaTitle: string, reason: string): Promise<void> {
+  await fanOut({
+    title: "Manual interaction required",
+    text: renderTemplate("notifyTemplateManualInteractionRequired", DEFAULT_TEMPLATES.manualInteractionRequired, { mediaTitle, reason }),
+    color: 0xe0a95c,
+    payload: { event: "manualInteractionRequired", mediaTitle, reason },
+  });
+}
+
+/** Fired by the scheduler's own daily update-check job (see scheduler.ts's checkAndNotifyUpdate),
+ * not the on-demand System page fetch — same "push, not just pull" reasoning as On Health Issue. */
+export async function notifyUpdateAvailable(title: string): Promise<void> {
+  await fanOut({
+    title: "Update available",
+    text: renderTemplate("notifyTemplateUpdateAvailable", DEFAULT_TEMPLATES.updateAvailable, { title }),
+    color: 0x4fbf6a,
+    payload: { event: "updateAvailable", title },
+  });
 }
 
 export async function notifyFailed(mediaTitle: string, reason: string): Promise<void> {

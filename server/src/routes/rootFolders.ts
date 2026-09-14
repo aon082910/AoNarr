@@ -61,6 +61,10 @@ rootFoldersRouter.patch(
       sets.push("pause_grabs_at_quota = ?");
       values.push(b.pauseGrabsAtQuota ? 1 : 0);
     }
+    if (b.minFreeSpaceGb !== undefined) {
+      sets.push("min_free_space_gb = ?");
+      values.push(b.minFreeSpaceGb === null ? null : Number(b.minFreeSpaceGb));
+    }
     if (sets.length > 0) {
       values.push(req.params.id);
       await db.prepare(`UPDATE root_folders SET ${sets.join(", ")} WHERE id = ?`).run(...values);

@@ -16,7 +16,8 @@ import {
   queueItemFromRow,
 } from "../db/mappers.js";
 import { importQueueItem, ImportSkippedError } from "./importer.js";
-import { notifyFailed, notifyGrabbed, notifyHealthIssue } from "./notifications.js";
+import { notifyFailed, notifyGrabbed, notifyHealthIssue, notifyManualInteractionRequired, notifyUpdateAvailable } from "./notifications.js";
+import { checkForUpdate } from "./updateCheck.js";
 import { checkIndexerHealth } from "./indexerClient.js";
 import { syncAllSceneNumbering } from "./sceneNumbering.js";
 import { checkForDeletedFiles } from "./deletedFileCheck.js";
@@ -244,7 +245,10 @@ async function chooseBestResult(
     await Promise.all(
       relevant
         .filter(({ parsed }) => parsed.quality === best)
-        .map(async ({ result }) => ({ result, ...(await scoreRelease(result.title, result.size ?? null, qualityProfileId, mediaType)) }))
+        .map(async ({ result }) => ({
+          result,
+          ...(await scoreRelease(result.title, result.size ?? null, qualityProfileId, mediaType, result.downloadVolumeFactor ?? null)),
+        }))
     )
   ).filter((c) => c.totalScore >= minFormatScore && !c.rejected);
   if (candidates.length === 0) return null;
@@ -985,6 +989,12 @@ async function pollQueue() {
           } catch (err) {
             if (err instanceof ImportSkippedError) {
               log.info(`[scheduler] import skipped for "${match.title}": ${err.message}`);
+              const mediaRow = (await db.prepare("SELECT title FROM media_items WHERE id = ?").get(match.mediaItemId)) as
+                | { title: string }
+                | undefined;
+              notifyManualInteractionRequired(mediaRow?.title ?? match.title, err.message).catch((e) =>
+                log.warn("[scheduler] notification failed:", e.message)
+              );
             } else {
               log.warn(`[scheduler] import failed for "${match.title}":`, (err as Error).message);
               await db.prepare(`UPDATE queue SET status = 'failed', updated_at = ${nowExpr(db)} WHERE id = ?`).run(
@@ -1063,15 +1073,22 @@ async function checkHealthAndNotify(): Promise<void> {
   }
 
   const DISK_WARN_PERCENT_FREE = 10;
-  const rootFolders = (await db.prepare("SELECT id, path FROM root_folders").all()) as { id: number; path: string }[];
+  const rootFolders = (await db.prepare("SELECT id, path, min_free_space_gb FROM root_folders").all()) as {
+    id: number;
+    path: string;
+    min_free_space_gb: number | null;
+  }[];
   for (const folder of rootFolders) {
     const latest = (await db
       .prepare("SELECT free_bytes, total_bytes FROM disk_usage_samples WHERE root_folder_id = ? ORDER BY sampled_at DESC LIMIT 1")
       .get(folder.id)) as { free_bytes: number; total_bytes: number } | undefined;
     if (!latest || !Number(latest.total_bytes)) continue;
     const percentFree = (Number(latest.free_bytes) / Number(latest.total_bytes)) * 100;
+    const freeGb = Number(latest.free_bytes) / 1e9;
     if (percentFree < DISK_WARN_PERCENT_FREE) {
       issues.push(`"${folder.path}" is low on disk space (${Math.round(percentFree)}% free)`);
+    } else if (folder.min_free_space_gb != null && freeGb < folder.min_free_space_gb) {
+      issues.push(`"${folder.path}" is below its configured minimum free space (${Math.round(freeGb)}GB free, minimum ${folder.min_free_space_gb}GB)`);
     }
   }
 
@@ -1080,6 +1097,26 @@ async function checkHealthAndNotify(): Promise<void> {
   if (summary === lastSummary) return; // nothing changed since the last notification
   setSetting("lastHealthIssueSummary", summary);
   if (summary) await notifyHealthIssue(summary);
+}
+
+/** Pushes an "Update Available" notification once per newly-seen round, instead of the System
+ * page's existing on-demand check — deduped against `lastNotifiedUpdateRound` (a setting) so an
+ * admin who's simply behind for a while doesn't get renotified every single day. */
+async function checkAndNotifyUpdate(): Promise<void> {
+  let result;
+  try {
+    result = await checkForUpdate();
+  } catch (err) {
+    log.warn("[scheduler] update check failed:", (err as Error).message);
+    return;
+  }
+  if (!result.updateAvailable || result.latestRound == null) return;
+
+  const lastNotified = parseInt(getSetting("lastNotifiedUpdateRound") ?? "", 10);
+  if (lastNotified === result.latestRound) return;
+
+  setSetting("lastNotifiedUpdateRound", String(result.latestRound));
+  await notifyUpdateAvailable(`Round ${result.latestRound} — ${result.latestTitle ?? "see CHANGELOG.md"}`);
 }
 
 let started = false;
@@ -1301,6 +1338,14 @@ export function startScheduler() {
     scheduleType: "cron",
     defaultSchedule: "0 6 * * 0",
     run: (signal) => refreshAllLibraries(signal),
+  });
+
+  registerJob({
+    key: "updateCheckNotify",
+    name: "Update Check Notify",
+    scheduleType: "cron",
+    defaultSchedule: "0 8 * * *",
+    run: () => checkAndNotifyUpdate(),
   });
 
   registerJob({

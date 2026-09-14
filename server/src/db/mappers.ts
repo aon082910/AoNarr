@@ -149,6 +149,7 @@ export function rootFolderFromRow(row: any) {
     lastScannedAt: row.last_scanned_at,
     quotaPercent: row.quota_percent,
     pauseGrabsAtQuota: row.pause_grabs_at_quota,
+    minFreeSpaceGb: row.min_free_space_gb,
   };
 }
 

@@ -159,4 +159,7 @@ export interface SearchResult {
   downloadUrl: string;
   protocol: "torrent" | "usenet" | "http" | "slskd";
   category: string | null;
+  /** Torznab's downloadvolumefactor attribute — 0 = freeleech, 0.5 = halfleech, 1 = normal, null =
+   * not reported by this indexer. See customFormatScoring.ts's "indexerFlag" condition type. */
+  downloadVolumeFactor?: number | null;
 }

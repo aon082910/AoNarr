@@ -140,7 +140,13 @@ searchRouter.get(
           : targetSeason !== null
             ? parsed.seasonNumber === targetSeason
             : true;
-      const { totalScore, matches, rejected, rejectReason } = await scoreRelease(r.title, r.size ?? null, item.qualityProfileId, item.type);
+      const { totalScore, matches, rejected, rejectReason } = await scoreRelease(
+        r.title,
+        r.size ?? null,
+        item.qualityProfileId,
+        item.type,
+        r.downloadVolumeFactor ?? null
+      );
       return {
         ...r,
         parsedQuality: parsed.quality,

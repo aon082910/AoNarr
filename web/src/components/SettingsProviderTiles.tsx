@@ -35,6 +35,8 @@ const EVENT_OPTIONS: { key: string; label: string }[] = [
   { key: "failed", label: "Failed" },
   { key: "duplicatesFound", label: "Duplicates found" },
   { key: "healthIssue", label: "Health issue" },
+  { key: "manualInteractionRequired", label: "Manual interaction required" },
+  { key: "updateAvailable", label: "Update available" },
 ];
 
 /**

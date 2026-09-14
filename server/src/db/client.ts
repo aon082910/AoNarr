@@ -90,6 +90,7 @@ ensureColumn("episodes", "scene_season_number", "scene_season_number INTEGER");
 ensureColumn("episodes", "scene_episode_number", "scene_episode_number INTEGER");
 ensureColumn("indexers", "query_limit_per_hour", "query_limit_per_hour INTEGER");
 ensureColumn("episodes", "absolute_episode_number", "absolute_episode_number INTEGER");
+ensureColumn("root_folders", "min_free_space_gb", "min_free_space_gb INTEGER");
 
 /**
  * indexers.protocol and download_clients.type originally shipped with a rigid `CHECK (... IN (...))`

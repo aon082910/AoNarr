@@ -308,7 +308,11 @@ systemRouter.get(
     );
 
     const DISK_WARN_PERCENT_FREE = 10;
-    const rootFolders = (await db.prepare("SELECT id, path FROM root_folders").all()) as { id: number; path: string }[];
+    const rootFolders = (await db.prepare("SELECT id, path, min_free_space_gb FROM root_folders").all()) as {
+      id: number;
+      path: string;
+      min_free_space_gb: number | null;
+    }[];
     const diskWarnings = (
       await Promise.all(
         rootFolders.map(async (folder) => {
@@ -317,8 +321,19 @@ systemRouter.get(
             .get(folder.id)) as { free_bytes: number; total_bytes: number } | undefined;
           if (!latest || !Number(latest.total_bytes)) return null;
           const percentFree = (Number(latest.free_bytes) / Number(latest.total_bytes)) * 100;
-          if (percentFree >= DISK_WARN_PERCENT_FREE) return null;
-          return { rootFolderId: folder.id, path: folder.path, percentFree: Math.round(percentFree * 10) / 10 };
+          // Radarr-style per-folder minimum free space (GB) — independent of the global percent
+          // threshold above, since a huge drive at 8% free might still have hundreds of GB left
+          // (not actually urgent), while a small drive at 15% free might have almost none (is).
+          const freeGb = Number(latest.free_bytes) / 1e9;
+          const belowMinFreeSpace = folder.min_free_space_gb != null && freeGb < folder.min_free_space_gb;
+          if (percentFree >= DISK_WARN_PERCENT_FREE && !belowMinFreeSpace) return null;
+          return {
+            rootFolderId: folder.id,
+            path: folder.path,
+            percentFree: Math.round(percentFree * 10) / 10,
+            freeGb: Math.round(freeGb * 10) / 10,
+            minFreeSpaceGb: folder.min_free_space_gb,
+          };
         })
       )
     ).filter((w): w is NonNullable<typeof w> => w !== null);

@@ -1,4 +1,5 @@
 import cron from "node-cron";
+import { CronExpressionParser } from "cron-parser";
 import { log } from "./logger.js";
 import { getSetting, setSetting } from "./settingsStore.js";
 
@@ -155,6 +156,26 @@ export interface JobStatus {
   lastStatus: "success" | "error" | "cancelled" | null;
   lastError: string | null;
   lastDurationMs: number | null;
+  nextRunAt: string | null;
+}
+
+/** Computed on demand rather than cached — a cron job's "next run" only ever depends on its
+ * expression and the current time, so there's nothing to invalidate by recomputing fresh on every
+ * listJobs() call. An interval job's next run is only ever an estimate (interval jobs aren't
+ * anchored to a fixed clock time the way cron ones are), based on its last run plus the interval;
+ * a job that hasn't run yet since startup has no anchor to estimate from, so this returns null
+ * rather than guess. */
+function computeNextRunAt(def: JobDef, s: JobState): string | null {
+  try {
+    if (def.scheduleType === "cron") {
+      return CronExpressionParser.parse(s.schedule).next().toDate().toISOString();
+    }
+    const seconds = Math.max(5, parseInt(s.schedule, 10) || parseInt(def.defaultSchedule, 10));
+    if (!s.lastRunAt) return null;
+    return new Date(new Date(s.lastRunAt).getTime() + seconds * 1000).toISOString();
+  } catch {
+    return null;
+  }
 }
 
 export function listJobs(): JobStatus[] {
@@ -171,6 +192,7 @@ export function listJobs(): JobStatus[] {
       lastStatus: s.lastStatus,
       lastError: s.lastError,
       lastDurationMs: s.lastDurationMs,
+      nextRunAt: computeNextRunAt(def, s),
     };
   });
 }

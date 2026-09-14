@@ -154,6 +154,7 @@ export interface RootFolder {
   percentUsed?: number | null;
   quotaPercent?: number | null;
   pauseGrabsAtQuota?: 0 | 1;
+  minFreeSpaceGb?: number | null;
 }
 
 export interface Quality {
@@ -210,7 +211,7 @@ export interface Track {
 }
 
 export interface ConditionGroup {
-  type?: "title" | "size" | "language" | "releaseGroup" | "source" | "resolution" | "year" | "releaseFlags";
+  type?: "title" | "size" | "language" | "releaseGroup" | "source" | "resolution" | "year" | "releaseFlags" | "indexerFlag";
   patterns?: string[];
   minMb?: number | null;
   maxMb?: number | null;
@@ -220,6 +221,7 @@ export interface ConditionGroup {
   minYear?: number | null;
   maxYear?: number | null;
   flags?: string[];
+  indexerFlags?: string[];
   negate: boolean;
 }
 
@@ -336,6 +338,7 @@ export interface SearchResult {
   blocklisted: boolean;
   rejected: boolean;
   rejectReason?: string;
+  downloadVolumeFactor?: number | null;
 }
 
 export interface BlocklistEntry {
@@ -369,6 +372,7 @@ export interface JobStatus {
   lastStatus: "success" | "error" | "cancelled" | null;
   lastError: string | null;
   lastDurationMs: number | null;
+  nextRunAt: string | null;
 }
 
 export interface RecycleBinEntry {
