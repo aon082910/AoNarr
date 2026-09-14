@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 202 — encrypted credentials survive backup/restore
+- **Backup bundles now include the encryption key**: Round 201 added encryption-at-rest for
+  settings credentials (API keys, download-client/SMTP passwords, webhook URLs), with the key
+  stored in a file separate from the database by design. That meant the existing backup/restore
+  feature — which only ever snapshotted the database — silently left every credential permanently
+  undecryptable after a restore onto a different config volume (a real scenario: a fresh Docker
+  volume, a rebuilt host, migrating to a new machine). Backups (manual download, and the scheduled
+  local/S3 job) are now a small bundle containing the DB snapshot plus `encryption.key` when one
+  exists; restore writes the key back into place before/alongside the DB swap, on both SQLite
+  (file write before the process restart) and Postgres (write + in-process key-cache reload, since
+  that path keeps running against the restored DB immediately). Old single-file `.db`/`.dump`
+  backups from before this change still restore correctly for backward compatibility — they just
+  won't carry forward a key, same failure mode as before for credentials saved after that backup
+  was made. Verified the zip round-trip (write, magic-byte detection, entry extraction) against a
+  real `adm-zip` instance before shipping. Also fixed a latent bug found while touching this code:
+  S3 remote-backup rotation only ever matched `.db`-suffixed keys, so Postgres's `.dump` backups
+  were uploaded but never rotated out — now matches any backup this instance has produced.
+
 ## Round 201 — test coverage, security hardening, observability
 - **Unit tests for core business logic**: `releaseParser.ts`, `naming.ts`, `quality.ts`, and
   `customFormatScoring.ts` (including the new indexerFlag condition and release-profile

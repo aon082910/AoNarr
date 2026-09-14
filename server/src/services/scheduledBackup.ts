@@ -1,7 +1,9 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import AdmZip from "adm-zip";
 import { log } from "./logger.js";
 import { db } from "../db/index.js";
 // SQLite-only snapshot path (Database.backup()) — no Postgres equivalent, see backupPostgres()
@@ -11,15 +13,61 @@ import { db as sqliteDb } from "../db/client.js";
 import { config } from "../config.js";
 import { getSetting, setSetting } from "./settingsStore.js";
 import { uploadBackupToRemote } from "./remoteBackup.js";
+import { ENCRYPTION_KEY_PATH } from "./encryption.js";
 
 const execFileAsync = promisify(execFile);
 
-/** File extension a backup for the active dialect is stored/recognized under — lets rotation and
- * the manual restore upload tell a SQLite snapshot and a Postgres dump apart, and means switching
- * `AONARR_DATABASE_DRIVER` mid-deployment doesn't accidentally rotate out or misidentify the other
- * dialect's old backups. */
+/** File extension a raw DB snapshot for the active dialect is stored under inside a backup
+ * bundle (see DB_ENTRY_NAME) — lets restore tell a SQLite snapshot and a Postgres dump apart, and
+ * means switching `AONARR_DATABASE_DRIVER` mid-deployment doesn't misidentify an old bundle made
+ * under the other dialect. */
 export function backupFileExtension(): "db" | "dump" {
   return db.dialect === "postgres" ? "dump" : "db";
+}
+
+/** Bundles (as a zip) ship as `.aonarrbackup` — deliberately not `.zip`, so it doesn't invite
+ * being opened/extracted by hand and having just the db file re-uploaded on restore (which would
+ * silently skip the encryption key). Older single-file `.db`/`.dump` backups made before this
+ * bundling existed are still accepted on restore for backward compatibility — see routes/system.ts. */
+export const BACKUP_BUNDLE_EXTENSION = "aonarrbackup";
+const DB_ENTRY_NAME = "db";
+const KEY_ENTRY_NAME = "encryption.key";
+
+/** Builds a backup bundle at `destPath`: the live DB snapshot plus `encryption.key` (when one
+ * exists) zipped together, so a restore onto a different config volume can still decrypt every
+ * settings credential the DB references — see encryption.ts's module doc for why the key is a
+ * separate file in the first place, and why that meant it was silently left out of backups until
+ * now. */
+export async function writeBackupBundle(destPath: string): Promise<void> {
+  const ext = backupFileExtension();
+  const tmpDbPath = path.join(os.tmpdir(), `aonarr-backup-src-${Date.now()}.${ext}`);
+  try {
+    await writeBackup(tmpDbPath);
+    const zip = new AdmZip();
+    zip.addLocalFile(tmpDbPath, "", `${DB_ENTRY_NAME}.${ext}`);
+    if (fs.existsSync(ENCRYPTION_KEY_PATH)) {
+      zip.addLocalFile(ENCRYPTION_KEY_PATH, "", KEY_ENTRY_NAME);
+    }
+    zip.writeZip(destPath);
+  } finally {
+    fs.unlink(tmpDbPath, () => {});
+  }
+}
+
+/** Reads a backup bundle produced by writeBackupBundle: the raw DB snapshot bytes plus, when
+ * present, the encryption key that was bundled alongside it. */
+export function readBackupBundle(zipBuffer: Buffer): { dbBuffer: Buffer; keyBuffer: Buffer | null } {
+  const zip = new AdmZip(zipBuffer);
+  const dbEntry = zip.getEntries().find((e) => e.entryName.startsWith(`${DB_ENTRY_NAME}.`));
+  if (!dbEntry) throw new Error("Backup bundle has no database entry");
+  const keyEntry = zip.getEntry(KEY_ENTRY_NAME);
+  return { dbBuffer: dbEntry.getData(), keyBuffer: keyEntry ? keyEntry.getData() : null };
+}
+
+/** True when `buffer` looks like a zip (backup bundle) rather than a legacy raw `.db`/`.dump`
+ * file — the local zip magic number, `PK\x03\x04`. */
+export function looksLikeBackupBundle(buffer: Buffer): boolean {
+  return buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b && buffer[2] === 0x03 && buffer[3] === 0x04;
 }
 
 /** SQLite: better-sqlite3's own online backup API (safe mid-write, no need to pause the app). */
@@ -72,10 +120,10 @@ export async function restorePostgres(srcPath: string): Promise<void> {
 
 /** Called hourly; only actually backs up once `backupIntervalHours` have elapsed since the last
  * one, so the interval is reconfigurable without needing to restart a cron job. Writes a
- * timestamped DB snapshot (SQLite: a `.db` file via better-sqlite3's backup API; Postgres: a
- * `.dump` file via `pg_dump`) into the configured backup directory and deletes the oldest ones
- * beyond the configured keep-count. No-ops (quietly) when scheduled backups aren't enabled or
- * no directory is configured — this runs unattended on a cron, so it must never throw. */
+ * timestamped backup bundle (the DB snapshot plus `encryption.key`, see writeBackupBundle) into
+ * the configured backup directory and deletes the oldest ones beyond the configured keep-count.
+ * No-ops (quietly) when scheduled backups aren't enabled or no directory is configured — this runs
+ * unattended on a cron, so it must never throw. */
 export async function runScheduledBackup(): Promise<void> {
   if (getSetting("backupEnabled") !== "1") return;
 
@@ -93,14 +141,13 @@ export async function runScheduledBackup(): Promise<void> {
   }
 
   const keepCount = Math.max(1, parseInt(getSetting("backupKeepCount") ?? "7", 10) || 7);
-  const ext = backupFileExtension();
 
   try {
     fs.mkdirSync(dir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const fileName = `aonarr-backup-${stamp}.${ext}`;
+    const fileName = `aonarr-backup-${stamp}.${BACKUP_BUNDLE_EXTENSION}`;
     const destPath = path.join(dir, fileName);
-    await writeBackup(destPath);
+    await writeBackupBundle(destPath);
     setSetting("lastScheduledBackupAt", new Date().toISOString());
     log.info(`[backup] wrote scheduled backup to ${destPath}`);
 
@@ -108,7 +155,7 @@ export async function runScheduledBackup(): Promise<void> {
 
     const existing = fs
       .readdirSync(dir)
-      .filter((f) => f.startsWith("aonarr-backup-") && f.endsWith(`.${ext}`))
+      .filter((f) => f.startsWith("aonarr-backup-") && (f.endsWith(`.${BACKUP_BUNDLE_EXTENSION}`) || f.endsWith(".db") || f.endsWith(".dump")))
       .sort();
     const toDelete = existing.slice(0, Math.max(0, existing.length - keepCount));
     for (const file of toDelete) {

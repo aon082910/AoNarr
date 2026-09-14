@@ -46,8 +46,11 @@ export async function uploadBackupToRemote(localPath: string, fileName: string, 
     const listed = await client.send(
       new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix ? `${prefix}/` : undefined })
     );
+    // Matches any backup this instance has ever produced under this prefix — bundles (current),
+    // and legacy single-file .db/.dump backups from before bundling existed — not just the
+    // extension of the file just uploaded, so rotation still counts and trims all of them together.
     const objects = (listed.Contents ?? [])
-      .filter((o) => o.Key?.endsWith(".db"))
+      .filter((o) => o.Key && /\.(aonarrbackup|db|dump)$/.test(o.Key))
       .sort((a, b) => (a.Key! < b.Key! ? -1 : 1));
     const toDelete = objects.slice(0, Math.max(0, objects.length - keepCount));
     for (const obj of toDelete) {

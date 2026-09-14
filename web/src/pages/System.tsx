@@ -432,7 +432,7 @@ export default function System() {
   async function downloadBackup() {
     setBackingUp(true);
     try {
-      await downloadFile("/system/backup", "aonarr-backup.db");
+      await downloadFile("/system/backup", "aonarr-backup.aonarrbackup");
     } finally {
       setBackingUp(false);
     }
@@ -793,9 +793,14 @@ export default function System() {
               <div>
                 <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
                   The backup is a full snapshot of the database — library, settings, indexers, quality
-                  profiles, users, everything except files on disk. Restoring replaces the running
-                  database and restarts the app; the database in place just before a restore is always
-                  kept as a <code>.pre-restore</code> copy.
+                  profiles, users, everything except files on disk — bundled with the encryption key
+                  used to protect stored credentials (API keys, download-client and SMTP passwords,
+                  webhook URLs), so a restore onto a different install can still read them. Restoring
+                  replaces the running database and restarts the app; the database in place just before
+                  a restore is always kept as a <code>.pre-restore</code> copy. Older single-file{" "}
+                  <code>.db</code>/<code>.dump</code> backups from before bundling still restore fine —
+                  they just won't carry a key, so credentials saved after that backup was made would
+                  need re-entering.
                 </p>
                 <div style={{ display: "flex", gap: 8 }}>
                   <button onClick={downloadBackup} disabled={backingUp} className="secondary">
@@ -811,7 +816,7 @@ export default function System() {
                   <input
                     ref={restoreInputRef}
                     type="file"
-                    accept=".db"
+                    accept=".aonarrbackup,.db,.dump"
                     style={{ display: "none" }}
                     onChange={(e) => e.target.files?.[0] && restoreBackup(e.target.files[0])}
                   />

@@ -9,7 +9,14 @@ import { nowOffsetHoursExpr } from "../db/asyncDb.js";
 // — replacing a live SQLite file only works from outside the async wrapper. Everything else in
 // this file, including backups on both dialects, uses the async `db`/services/scheduledBackup.ts.
 import { db as sqliteDb } from "../db/client.js";
-import { backupFileExtension, writeBackup, restorePostgres } from "../services/scheduledBackup.js";
+import {
+  BACKUP_BUNDLE_EXTENSION,
+  writeBackupBundle,
+  readBackupBundle,
+  looksLikeBackupBundle,
+  restorePostgres,
+} from "../services/scheduledBackup.js";
+import { ENCRYPTION_KEY_PATH, reloadEncryptionKey } from "../services/encryption.js";
 import { config } from "../config.js";
 import { downloadClientFromRow, indexerFromRow, rootFolderFromRow } from "../db/mappers.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
@@ -538,20 +545,20 @@ systemRouter.get(
 const SQLITE_MAGIC = "SQLite format 3\0";
 const PG_DUMP_MAGIC = "PGDMP";
 
-/** Streams a consistent snapshot of the live DB — SQLite via better-sqlite3's own online backup
- * API (safe mid-write, no need to pause anything), Postgres via `pg_dump` in custom format (see
- * services/scheduledBackup.ts, shared with the scheduled-backup job so both paths produce
- * identically-restorable files). */
+/** Streams a consistent snapshot of the live DB bundled with `encryption.key` (see
+ * services/scheduledBackup.ts's writeBackupBundle) — SQLite via better-sqlite3's own online backup
+ * API (safe mid-write, no need to pause anything), Postgres via `pg_dump` in custom format, shared
+ * with the scheduled-backup job so both paths produce identically-restorable files. Bundling the
+ * key means a restore onto a different config volume can still decrypt every stored credential. */
 systemRouter.get(
   "/backup",
   asyncHandler(async (req, res) => {
-    const ext = backupFileExtension();
-    const tmpFile = path.join(os.tmpdir(), `aonarr-backup-${Date.now()}.${ext}`);
-    await writeBackup(tmpFile);
+    const tmpFile = path.join(os.tmpdir(), `aonarr-backup-${Date.now()}.${BACKUP_BUNDLE_EXTENSION}`);
+    await writeBackupBundle(tmpFile);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "backup_downloaded");
-    res.download(tmpFile, `aonarr-backup-${stamp}.${ext}`, (err) => {
+    res.download(tmpFile, `aonarr-backup-${stamp}.${BACKUP_BUNDLE_EXTENSION}`, (err) => {
       fs.unlink(tmpFile, () => {});
       if (err && !res.headersSent) throw err;
     });
@@ -567,23 +574,47 @@ systemRouter.get(
  * live connection over the network (see restorePostgres()), so the app never needs to stop
  * touching the database or exit — its connection pool just sees the schema replaced underneath it
  * inside one transaction.
+ *
+ * Accepts both a current bundle (zip: db snapshot + encryption.key, see writeBackupBundle) and a
+ * legacy single-file `.db`/`.dump` upload from before bundling existed, for backward compatibility
+ * with old downloads sitting on someone's disk. A bundle's key, when present, is written to
+ * `encryption.key` BEFORE the DB swap — on the Postgres path this instance keeps running against
+ * the restored DB immediately after, so the key must already be in place and its cache dropped
+ * (reloadEncryptionKey) for the very first post-restore decrypt to succeed; on the SQLite path the
+ * process exits and restarts anyway, so a plain file write is enough.
  */
 systemRouter.post(
   "/backup/restore",
   express.raw({ type: "*/*", limit: "1gb" }),
   asyncHandler(async (req, res) => {
-    const body = req.body as Buffer;
+    const uploaded = req.body as Buffer;
+    if (!Buffer.isBuffer(uploaded) || uploaded.length === 0) {
+      throw new HttpError(400, "Uploaded file is empty");
+    }
+
+    let dbBuffer: Buffer = uploaded;
+    let keyBuffer: Buffer | null = null;
+    if (looksLikeBackupBundle(uploaded)) {
+      const bundle = readBackupBundle(uploaded);
+      dbBuffer = bundle.dbBuffer;
+      keyBuffer = bundle.keyBuffer;
+    }
 
     if (db.dialect === "postgres") {
-      if (!Buffer.isBuffer(body) || body.length < PG_DUMP_MAGIC.length || body.toString("utf-8", 0, PG_DUMP_MAGIC.length) !== PG_DUMP_MAGIC) {
+      if (dbBuffer.length < PG_DUMP_MAGIC.length || dbBuffer.toString("utf-8", 0, PG_DUMP_MAGIC.length) !== PG_DUMP_MAGIC) {
         throw new HttpError(400, "Uploaded file is not a valid pg_dump custom-format backup");
       }
       const tmpFile = path.join(os.tmpdir(), `aonarr-restore-${Date.now()}.dump`);
-      fs.writeFileSync(tmpFile, body);
+      fs.writeFileSync(tmpFile, dbBuffer);
       const actor = auditActor(req);
       log.warn(`[system] database restore initiated by ${actor.username} (postgres)`);
       res.json({ restored: true, message: "Restoring — this may take a moment, the app keeps running." });
       try {
+        if (keyBuffer) {
+          fs.mkdirSync(path.dirname(ENCRYPTION_KEY_PATH), { recursive: true });
+          fs.writeFileSync(ENCRYPTION_KEY_PATH, keyBuffer, { mode: 0o600 });
+          reloadEncryptionKey();
+        }
         await restorePostgres(tmpFile);
         log.info("[system] postgres restore completed");
       } catch (err) {
@@ -594,11 +625,8 @@ systemRouter.post(
       return;
     }
 
-    if (!Buffer.isBuffer(body) || body.length < SQLITE_MAGIC.length) {
-      throw new HttpError(400, "Uploaded file is empty or not a valid SQLite database");
-    }
-    if (body.toString("utf-8", 0, SQLITE_MAGIC.length) !== SQLITE_MAGIC) {
-      throw new HttpError(400, "Uploaded file is not a valid SQLite database");
+    if (dbBuffer.length < SQLITE_MAGIC.length || dbBuffer.toString("utf-8", 0, SQLITE_MAGIC.length) !== SQLITE_MAGIC) {
+      throw new HttpError(400, "Uploaded file is not a valid SQLite database (or backup bundle)");
     }
 
     const preRestorePath = `${config.dbPath}.pre-restore`;
@@ -613,8 +641,12 @@ systemRouter.post(
     res.json({ restored: true, message: "Restoring — the app will restart momentarily." });
 
     setTimeout(() => {
+      if (keyBuffer) {
+        fs.mkdirSync(path.dirname(ENCRYPTION_KEY_PATH), { recursive: true });
+        fs.writeFileSync(ENCRYPTION_KEY_PATH, keyBuffer, { mode: 0o600 });
+      }
       sqliteDb.close();
-      fs.writeFileSync(config.dbPath, body);
+      fs.writeFileSync(config.dbPath, dbBuffer);
       for (const suffix of ["-wal", "-shm"]) {
         try {
           fs.unlinkSync(config.dbPath + suffix);

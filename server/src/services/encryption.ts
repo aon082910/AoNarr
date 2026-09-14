@@ -18,9 +18,20 @@ import { config } from "../config.js";
  * credentials against a real service.
  */
 const KEY_PATH = path.join(config.configDir, "encryption.key");
+/** Backup/restore (see services/scheduledBackup.ts) needs to know exactly where this lives so it
+ * can bundle it alongside the database — without it, restoring onto a different config volume
+ * permanently loses every encrypted credential (see decryptValue's doc comment below). */
+export const ENCRYPTION_KEY_PATH = KEY_PATH;
 const PREFIX = "enc1:";
 
 let cachedKey: Buffer | null = null;
+
+/** Drops the in-memory key cache so the next encrypt/decrypt re-reads `encryption.key` from disk —
+ * needed after a Postgres restore writes a (possibly different) key file into the same running
+ * process, since unlike the SQLite restore path this one doesn't exit and restart. */
+export function reloadEncryptionKey(): void {
+  cachedKey = null;
+}
 
 function loadOrCreateKey(): Buffer {
   if (cachedKey) return cachedKey;
