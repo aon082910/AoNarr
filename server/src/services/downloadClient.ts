@@ -89,6 +89,88 @@ function baseUrl(client: DownloadClient): string {
   return `${scheme}://${client.host}:${client.port}`;
 }
 
+/**
+ * Radarr-style "Test" on the Download Client edit form — validates connectivity/credentials
+ * against the already-saved row (same pattern as indexers' own POST /:id/test) without needing to
+ * grab anything. Deliberately its own lightweight per-type check rather than reusing each
+ * adapter's addDownload/getStatus, since those assume a real in-flight download and some (the
+ * in-process http/ytdlp/blackhole "clients") have no remote service to reach at all.
+ */
+export async function testDownloadClientConnection(client: DownloadClient): Promise<void> {
+  switch (client.type) {
+    case "qbittorrent": {
+      const res = await fetch(`${baseUrl(client)}/api/v2/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ username: client.username ?? "", password: client.password ?? "" }),
+      });
+      const text = await res.text();
+      if (!res.ok || text.trim() === "Fails.") throw new Error("Login rejected — check host/port/username/password.");
+      return;
+    }
+    case "sabnzbd": {
+      const url = new URL(`${baseUrl(client)}/api`);
+      url.searchParams.set("mode", "version");
+      url.searchParams.set("apikey", client.apiKey ?? "");
+      url.searchParams.set("output", "json");
+      const res = await fetch(url.toString());
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body: any = await res.json();
+      if (body?.error) throw new Error(body.error);
+      if (!body?.version) throw new Error("Unexpected response — check host/port/API key.");
+      return;
+    }
+    case "realdebrid": {
+      const res = await fetch("https://api.real-debrid.com/rest/1.0/user", {
+        headers: { Authorization: `Bearer ${client.apiKey}` },
+      });
+      if (!res.ok) throw new Error(res.status === 401 ? "API token rejected." : `HTTP ${res.status}`);
+      return;
+    }
+    case "alldebrid": {
+      const url = new URL("https://api.alldebrid.com/v4/user");
+      url.searchParams.set("agent", "aonarr");
+      url.searchParams.set("apikey", client.apiKey ?? "");
+      const res = await fetch(url.toString());
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body: any = await res.json();
+      if (body.status === "error") throw new Error(body.error?.message ?? "API key rejected.");
+      return;
+    }
+    case "torbox": {
+      const res = await fetch("https://api.torbox.app/v1/api/user/me", {
+        headers: { Authorization: `Bearer ${client.apiKey}` },
+      });
+      if (!res.ok) throw new Error(res.status === 401 ? "API key rejected." : `HTTP ${res.status}`);
+      const body: any = await res.json();
+      if (body.success === false) throw new Error(body.detail ?? "API key rejected.");
+      return;
+    }
+    case "slskd": {
+      const res = await fetch(`${baseUrl(client)}/api/v0/transfers/downloads`, {
+        headers: client.apiKey ? { "X-API-Key": client.apiKey } : {},
+      });
+      if (!res.ok) throw new Error(res.status === 401 ? "API key rejected." : `HTTP ${res.status}`);
+      return;
+    }
+    case "blackhole": {
+      if (!client.host) throw new Error("No watch folder path configured.");
+      try {
+        fs.accessSync(client.host, fs.constants.W_OK);
+      } catch {
+        throw new Error(`"${client.host}" doesn't exist or isn't writable from inside the container.`);
+      }
+      return;
+    }
+    case "http":
+    case "ytdlp":
+      // No external service to reach — these download straight into downloadsDir themselves.
+      return;
+    default:
+      throw new Error(`No connection test implemented for client type "${client.type}"`);
+  }
+}
+
 /** qBittorrent Web API (v4.1+) adapter. */
 class QBittorrentAdapter implements DownloadClientAdapter {
   private cookieCache = new Map<number, string>();

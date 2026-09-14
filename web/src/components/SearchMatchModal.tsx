@@ -48,6 +48,8 @@ export default function SearchMatchModal({
   const [searching, setSearching] = useState(false);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [searchMode, setSearchMode] = useState<"title" | "id">("title");
+  const [idInput, setIdInput] = useState("");
 
   async function runSearch(e?: FormEvent) {
     e?.preventDefault();
@@ -60,6 +62,24 @@ export default function SearchMatchModal({
         `/metadata/search?type=${type}&query=${encodeURIComponent(query.trim())}&provider=${provider}${
           searchYear.trim() ? `&year=${encodeURIComponent(searchYear.trim())}` : ""
         }`
+      );
+      setResults(res);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function runIdMatch(e?: FormEvent) {
+    e?.preventDefault();
+    if (!idInput.trim()) return;
+    setSearching(true);
+    setError(null);
+    setResults(null);
+    try {
+      const res = await api.get<MetadataSearchResult[]>(
+        `/metadata/match?type=${type}&input=${encodeURIComponent(idInput.trim())}&provider=${provider}`
       );
       setResults(res);
     } catch (e) {
@@ -83,22 +103,14 @@ export default function SearchMatchModal({
   return (
     <Modal title={title} onClose={onClose} maxWidth={640}>
       <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>{description}</p>
-      <form onSubmit={runSearch} className="toolbar" style={{ marginBottom: 12 }}>
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search title..."
-          style={{ flex: 1 }}
-          autoFocus
-        />
-        <input
-          value={searchYear}
-          onChange={(e) => setSearchYear(e.target.value)}
-          placeholder="Year"
-          type="number"
-          title="Optional — narrows/re-ranks results toward this year"
-          style={{ width: 80 }}
-        />
+
+      <div className="toolbar" style={{ marginBottom: 8 }}>
+        <button type="button" className={searchMode === "title" ? "" : "secondary"} onClick={() => setSearchMode("title")}>
+          By title
+        </button>
+        <button type="button" className={searchMode === "id" ? "" : "secondary"} onClick={() => setSearchMode("id")}>
+          By ID / URL
+        </button>
         {providers.length > 1 && (
           <select value={provider} onChange={(e) => setProvider(e.target.value)} style={{ maxWidth: 140 }}>
             {providers.map((p) => (
@@ -108,10 +120,43 @@ export default function SearchMatchModal({
             ))}
           </select>
         )}
-        <button type="submit" disabled={searching || applying}>
-          {searching ? "Searching..." : "Search"}
-        </button>
-      </form>
+      </div>
+
+      {searchMode === "title" ? (
+        <form onSubmit={runSearch} className="toolbar" style={{ marginBottom: 12 }}>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search title..."
+            style={{ flex: 1 }}
+            autoFocus
+          />
+          <input
+            value={searchYear}
+            onChange={(e) => setSearchYear(e.target.value)}
+            placeholder="Year"
+            type="number"
+            title="Optional — narrows/re-ranks results toward this year"
+            style={{ width: 80 }}
+          />
+          <button type="submit" disabled={searching || applying}>
+            {searching ? "Searching..." : "Search"}
+          </button>
+        </form>
+      ) : (
+        <form onSubmit={runIdMatch} className="toolbar" style={{ marginBottom: 12 }}>
+          <input
+            value={idInput}
+            onChange={(e) => setIdInput(e.target.value)}
+            placeholder='ID (e.g. "tt1234567") or a provider URL'
+            style={{ flex: 1 }}
+            autoFocus
+          />
+          <button type="submit" disabled={searching || applying}>
+            {searching ? "Matching..." : "Match"}
+          </button>
+        </form>
+      )}
 
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
 

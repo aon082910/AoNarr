@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api, downloadFile } from "../api/client.js";
 import GroupPicker from "../components/GroupPicker.js";
 import SearchMatchModal, { type MetadataSearchResult } from "../components/SearchMatchModal.js";
+import RenamePreviewModal from "../components/RenamePreviewModal.js";
 import type { LibraryGroup } from "../types.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
@@ -311,8 +312,9 @@ export default function MediaDetail() {
   const [editYear, setEditYear] = useState("");
   const [editOverview, setEditOverview] = useState("");
   const [editPosterUrl, setEditPosterUrl] = useState("");
+  const [editBackdropUrl, setEditBackdropUrl] = useState("");
   const [savingMetadata, setSavingMetadata] = useState(false);
-  const [organizingItem, setOrganizingItem] = useState(false);
+  const [showRenamePreview, setShowRenamePreview] = useState(false);
   const [importTargets, setImportTargets] = useState<Record<string, number | "">>({});
   const [importChecked, setImportChecked] = useState<Record<string, boolean>>({});
   const [importingBatch, setImportingBatch] = useState(false);
@@ -538,6 +540,7 @@ export default function MediaDetail() {
       setEditYear(item.year ? String(item.year) : "");
       setEditOverview(item.overview ?? "");
       setEditPosterUrl(item.posterUrl ?? "");
+      setEditBackdropUrl(item.backdropUrl ?? "");
     }
   }
 
@@ -551,6 +554,7 @@ export default function MediaDetail() {
         year: editYear ? Number(editYear) : null,
         overview: editOverview || null,
         posterUrl: editPosterUrl || null,
+        backdropUrl: editBackdropUrl || null,
       };
       // The server keeps a matching .nfo sidecar in sync with whatever gets saved here (if this
       // item has a file on disk) — see writeNfoSidecar in routes/media.ts, so a media server
@@ -565,27 +569,18 @@ export default function MediaDetail() {
     }
   }
 
-  async function organizeItem() {
-    if (!item) return;
-    setOrganizingItem(true);
-    try {
-      const result = await api.post<{ renamed: { from: string; to: string }[]; errors: { title: string; error: string }[] }>(
-        `/media/${item.id}/rename-files`,
-        {}
-      );
-      if (result.errors.length > 0) {
-        alert(`Rename failed: ${result.errors.map((e) => e.error).join(", ")}`);
-      } else if (result.renamed.length === 0) {
-        alert("Already organized — nothing needed to move.");
-      } else {
-        alert(`Renamed/organized ${result.renamed.length} file(s) to match the current naming template.`);
-      }
-      load();
-    } catch (e) {
-      alert((e as Error).message);
-    } finally {
-      setOrganizingItem(false);
+  function organizeItem() {
+    setShowRenamePreview(true);
+  }
+
+  function onRenameDone(result: { renamed: { title: string; from: string; to: string }[]; errors: { title: string; error: string }[] }) {
+    setShowRenamePreview(false);
+    if (result.errors.length > 0) {
+      alert(`Rename failed: ${result.errors.map((e) => e.error).join(", ")}`);
+    } else {
+      alert(`Renamed/organized ${result.renamed.length} file(s) to match the current naming template.`);
     }
+    load();
   }
 
   /** Best-effort grouping key for the split panel below: an episode's file folder with a trailing
@@ -932,10 +927,13 @@ export default function MediaDetail() {
     }
   }
 
-  async function selectArtwork(posterUrl: string) {
+  async function selectArtwork(url: string, as: "poster" | "backdrop" = "poster") {
     if (!item) return;
-    const updated = await api.post<MediaItem>(`/media/${item.id}/artwork/select`, { posterUrl });
-    setItem({ ...item, posterUrl: updated.posterUrl });
+    const updated = await api.post<MediaItem>(
+      `/media/${item.id}/artwork/select`,
+      as === "poster" ? { posterUrl: url } : { backdropUrl: url }
+    );
+    setItem({ ...item, posterUrl: updated.posterUrl, backdropUrl: updated.backdropUrl });
     setShowArtwork(false);
   }
 
@@ -1516,10 +1514,9 @@ export default function MediaDetail() {
           <button
             className="secondary"
             onClick={organizeItem}
-            disabled={organizingItem}
             title="Move/rename this item's own file(s) to match the current naming template, same as System → Rename Files but scoped to just this item"
           >
-            {organizingItem ? "Organizing..." : "Organize & Rename"}
+            Organize & Rename
           </button>
           {shape === "single" && item.hasFile && (
             <button className="secondary" onClick={checkCorrupt}>
@@ -1589,10 +1586,24 @@ export default function MediaDetail() {
           <label>Overview</label>
           <textarea value={editOverview} onChange={(e) => setEditOverview(e.target.value)} rows={4} />
           <label>Poster URL</label>
-          <input value={editPosterUrl} onChange={(e) => setEditPosterUrl(e.target.value)} placeholder="https://..." />
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+            <input value={editPosterUrl} onChange={(e) => setEditPosterUrl(e.target.value)} placeholder="https://..." style={{ flex: 1 }} />
+            {editPosterUrl && (
+              <img src={editPosterUrl} alt="" style={{ width: 46, aspectRatio: "2 / 3", objectFit: "cover", borderRadius: 4, flexShrink: 0 }} />
+            )}
+          </div>
+          <label>Backdrop URL</label>
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+            <input value={editBackdropUrl} onChange={(e) => setEditBackdropUrl(e.target.value)} placeholder="https://..." style={{ flex: 1 }} />
+            {editBackdropUrl && (
+              <img src={editBackdropUrl} alt="" style={{ width: 80, aspectRatio: "16 / 9", objectFit: "cover", borderRadius: 4, flexShrink: 0 }} />
+            )}
+          </div>
           <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
-            Saving also updates this item's .nfo sidecar on disk, if it has a file, so a media
-            server picks up the correction on its next scan.
+            Any direct image URL works for either field — paste one from a search result, Fanart.tv
+            (via the Artwork picker below), or anywhere else. Saving also updates this item's .nfo
+            sidecar on disk, if it has a file, so a media server picks up the poster correction on
+            its next scan.
           </p>
           <button type="submit" disabled={savingMetadata}>
             {savingMetadata ? "Saving..." : "Save metadata"}
@@ -1825,12 +1836,21 @@ export default function MediaDetail() {
               {artworkOptions.backgrounds.length > 0 && (
                 <>
                   <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginBottom: 8 }}>
-                    Backgrounds/banners — click to use as this item's poster too.
+                    Backgrounds/banners — set one as this item's backdrop (shown behind the header)
+                    or, less commonly, as its poster.
                   </p>
                   <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
                     {artworkOptions.backgrounds.map((url, idx) => (
-                      <div key={idx} className="card" onClick={() => selectArtwork(url)} style={{ padding: 0 }}>
-                        <div style={{ aspectRatio: "16/9", backgroundImage: `url(${url})`, backgroundSize: "cover", backgroundPosition: "center", borderRadius: 6 }} />
+                      <div key={idx} className="card" style={{ padding: 0, cursor: "default" }}>
+                        <div style={{ aspectRatio: "16/9", backgroundImage: `url(${url})`, backgroundSize: "cover", backgroundPosition: "center", borderRadius: "6px 6px 0 0" }} />
+                        <div style={{ display: "flex", gap: 4, padding: 6 }}>
+                          <button type="button" className="secondary" style={{ flex: 1, fontSize: "0.75rem" }} onClick={() => selectArtwork(url, "backdrop")}>
+                            Set as backdrop
+                          </button>
+                          <button type="button" className="secondary" style={{ flex: 1, fontSize: "0.75rem" }} onClick={() => selectArtwork(url, "poster")}>
+                            Set as poster
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -2332,6 +2352,15 @@ export default function MediaDetail() {
             </tbody>
           </table>
         </>
+      )}
+
+      {showRenamePreview && (
+        <RenamePreviewModal
+          endpoint={`/media/${item.id}/rename-files`}
+          itemLabel={item.title}
+          onClose={() => setShowRenamePreview(false)}
+          onDone={onRenameDone}
+        />
       )}
 
       {showSearchMatch && (

@@ -1860,6 +1860,182 @@ export async function searchMetadata(
   return results;
 }
 
+/**
+ * Radarr/Sonarr-style "match by ID" — resolves a single, unambiguous result directly from a
+ * provider's own id, instead of a fuzzy title search that can return the wrong remake/franchise
+ * entry or miss a generically-titled release entirely. Complements searchMetadata() (title search)
+ * rather than replacing it; the "provider" values line up with the same keys used in
+ * externalIds/METADATA_PROVIDERS throughout this file. Every branch is a direct key-value lookup
+ * (no fuzzy matching), so a hit here is exactly as trustworthy as a search result the user already
+ * clicked.
+ */
+export async function fetchByExternalId(type: MediaType, provider: string, id: string): Promise<MetadataSearchResult> {
+  switch (provider) {
+    case "tmdb": {
+      if (type === "movie") return fetchMovieByTmdbId(id);
+      if (type === "series" || type === "anime") return fetchSeriesByTmdbId(id);
+      throw new Error(`TMDB id lookup isn't available for "${type}"`);
+    }
+
+    case "imdb": {
+      // TMDB's "find by external id" endpoint covers both movies and TV under one imdb id, so this
+      // works regardless of which of the two the id turns out to be.
+      const key = requireSetting("tmdbApiKey", "TMDB API key");
+      const res = await fetch(`https://api.themoviedb.org/3/find/${encodeURIComponent(id)}?api_key=${key}&external_source=imdb_id`);
+      if (!res.ok) throw new Error(`TMDB find-by-IMDb-id failed: HTTP ${res.status}`);
+      const body: any = await res.json();
+      const movie = body.movie_results?.[0];
+      const tv = body.tv_results?.[0];
+      if (movie) return fetchMovieByTmdbId(String(movie.id));
+      if (tv) return fetchSeriesByTmdbId(String(tv.id));
+      throw new Error(`No TMDB match found for IMDb id "${id}"`);
+    }
+
+    case "tvdb": {
+      const body = await tvdbFetch(`/v4/series/${encodeURIComponent(id)}/extended`);
+      const s = body?.data;
+      if (!s) throw new Error(`No TVDB series found for id "${id}"`);
+      return {
+        title: s.name,
+        year: s.year ? Number(s.year) : null,
+        overview: s.overview || null,
+        posterUrl: s.image || null,
+        externalIds: { tvdb: String(s.id) },
+      };
+    }
+
+    case "anilist": {
+      const anilistType = type === "manga" ? "MANGA" : "ANIME";
+      const gql = `
+        query ($id: Int) {
+          Media(id: $id, type: ${anilistType}) {
+            id
+            title { romaji english }
+            startDate { year }
+            description(asHtml: false)
+            coverImage { medium }
+            bannerImage
+            averageScore
+            duration
+          }
+        }
+      `;
+      const res = await fetch("https://graphql.anilist.co", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: gql, variables: { id: Number(id) } }),
+      });
+      if (!res.ok) throw new Error(`AniList lookup failed: HTTP ${res.status}`);
+      const body: any = await res.json();
+      const m = body?.data?.Media;
+      if (!m) throw new Error(`No AniList entry found for id "${id}"`);
+      return {
+        title: m.title.english || m.title.romaji,
+        year: m.startDate?.year ?? null,
+        overview: m.description || null,
+        posterUrl: m.coverImage?.medium || null,
+        externalIds: { anilist: String(m.id) },
+        backdropUrl: m.bannerImage || null,
+        rating: typeof m.averageScore === "number" && m.averageScore > 0 ? m.averageScore / 10 : null,
+        runtimeMinutes: type === "anime" && typeof m.duration === "number" && m.duration > 0 ? m.duration : null,
+      };
+    }
+
+    case "igdb": {
+      const clientId = requireSetting("igdbClientId", "IGDB Client ID");
+      const token = await getIgdbToken();
+      const res = await fetch("https://api.igdb.com/v4/games", {
+        method: "POST",
+        headers: { "Client-ID": clientId, Authorization: `Bearer ${token}`, "Content-Type": "text/plain" },
+        body: `fields name,first_release_date,cover.url,total_rating,screenshots.url; where id = ${Number(id)};`,
+      });
+      if (!res.ok) throw new Error(`IGDB lookup failed: HTTP ${res.status}`);
+      const body: any = await res.json();
+      const g = body?.[0];
+      if (!g) throw new Error(`No IGDB game found for id "${id}"`);
+      return {
+        title: g.name,
+        year: g.first_release_date ? new Date(g.first_release_date * 1000).getUTCFullYear() : null,
+        overview: null,
+        posterUrl: g.cover?.url ? `https:${String(g.cover.url).replace("t_thumb", "t_cover_big")}` : null,
+        externalIds: { igdb: String(g.id) },
+        rating: typeof g.total_rating === "number" && g.total_rating > 0 ? g.total_rating / 10 : null,
+        backdropUrl: g.screenshots?.[0]?.url ? `https:${String(g.screenshots[0].url).replace("t_thumb", "t_screenshot_big")}` : null,
+      };
+    }
+
+    case "rawg": {
+      const key = requireSetting("rawgApiKey", "RAWG API key");
+      const res = await fetch(`https://api.rawg.io/api/games/${encodeURIComponent(id)}?key=${key}`);
+      if (!res.ok) throw new Error(res.status === 404 ? `No RAWG game found for id "${id}"` : `RAWG lookup failed: HTTP ${res.status}`);
+      const g: any = await res.json();
+      return {
+        title: g.name,
+        year: g.released ? Number(String(g.released).slice(0, 4)) : null,
+        overview: g.description_raw || null,
+        posterUrl: g.background_image || null,
+        externalIds: { rawg: String(g.id) },
+        rating: typeof g.metacritic === "number" && g.metacritic > 0 ? g.metacritic / 10 : null,
+        backdropUrl: g.short_screenshots?.[1]?.image || null,
+      };
+    }
+
+    // ISBN doesn't identify an author (AoNarr's top-level "author" media type) — it identifies one
+    // specific book. Best-effort: resolve to that book's listed author, since "I have this book,
+    // who's the author" is the realistic reason to search by ISBN here; falls back to the book's
+    // own title if Open Library's record has no author listed, clearly labeled as such in overview
+    // so the mismatch isn't silently invisible.
+    case "isbn": {
+      const digits = id.replace(/[\s-]/g, "");
+      const res = await fetch(`https://openlibrary.org/api/books?bibkeys=ISBN:${digits}&format=json&jscmd=data`);
+      if (!res.ok) throw new Error(`Open Library ISBN lookup failed: HTTP ${res.status}`);
+      const body: any = await res.json();
+      const entry = body?.[`ISBN:${digits}`];
+      if (!entry) throw new Error(`No Open Library record found for ISBN "${digits}"`);
+      const authorName = entry.authors?.[0]?.name;
+      return {
+        title: authorName ?? entry.title,
+        year: entry.publish_date ? Number(String(entry.publish_date).slice(-4)) || null : null,
+        overview: authorName ? `Matched via ISBN ${digits}: "${entry.title}"` : `No author listed for ISBN ${digits} — showing the book itself.`,
+        posterUrl: entry.cover?.medium ?? entry.cover?.large ?? null,
+        externalIds: {},
+      };
+    }
+
+    default:
+      throw new Error(`ID lookup isn't supported for provider "${provider}"`);
+  }
+}
+
+/** Recognized provider detail-page URL shapes → {provider, id}, for pasting a link instead of
+ * typing a bare id. Only covers providers whose URLs actually embed a stable numeric/string id
+ * (IGDB and RAWG use slugs in their URLs, not the ids their own APIs need, so those aren't
+ * resolvable from a URL alone — id-only entry still works for them). */
+export function parseProviderUrl(url: string): { provider: string; id: string } | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url.trim());
+  } catch {
+    return null;
+  }
+  const host = parsed.hostname.replace(/^www\./, "");
+  const path = parsed.pathname;
+
+  let m: RegExpMatchArray | null;
+  if (host === "themoviedb.org" && (m = path.match(/\/(?:movie|tv)\/(\d+)/))) return { provider: "tmdb", id: m[1] };
+  if (host === "imdb.com" && (m = path.match(/\/title\/(tt\d+)/))) return { provider: "imdb", id: m[1] };
+  if (host === "thetvdb.com") {
+    if ((m = path.match(/\/series\/[\w-]+\/?$/))) return null; // slug, not resolvable without a search
+    const idParam = parsed.searchParams.get("id");
+    if (idParam) return { provider: "tvdb", id: idParam };
+  }
+  if (host === "anilist.co" && (m = path.match(/\/(?:anime|manga)\/(\d+)/))) return { provider: "anilist", id: m[1] };
+  if ((host === "isbnsearch.org" || host === "openlibrary.org") && (m = url.match(/(\d{9}[\dXx]|\d{13})/))) {
+    return { provider: "isbn", id: m[1] };
+  }
+  return null;
+}
+
 /** Dispatches to the right episode-fetch implementation based on which provider's id is present. */
 export async function fetchSeriesEpisodesFor(externalIds: Record<string, string>): Promise<MetadataEpisode[]> {
   if (externalIds.tmdb) return fetchSeriesEpisodesTmdb(externalIds.tmdb);

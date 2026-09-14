@@ -5,10 +5,12 @@ import { mediaItemFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import {
   fetchArtistAlbumsFor,
+  fetchByExternalId,
   fetchCollectionChildrenFor,
   fetchRomDetailsFor,
   fetchSeriesEpisodesFor,
   METADATA_PROVIDERS,
+  parseProviderUrl,
   searchMetadata,
 } from "../services/metadata.js";
 import { insertTracksForAlbum } from "../services/importLists.js";
@@ -50,6 +52,47 @@ metadataRouter.get(
         }))
       );
       res.json(annotated);
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+  })
+);
+
+/**
+ * Radarr/Sonarr-style "match by ID or URL" — an alternative to title search on Add Media and the
+ * "search for a different match" rematch modal. `input` is either a bare provider id (ISBN,
+ * "tt1234567", a numeric TMDB/TVDB/AniList/IGDB/RAWG id) or a full URL copy-pasted from one of
+ * those providers' own sites; a recognized URL shape wins over the `provider` query param (the id
+ * embedded in the URL is unambiguous about which provider it belongs to). Returns a single result
+ * in the same array shape /search returns, so the frontend can reuse its existing results list.
+ */
+metadataRouter.get(
+  "/match",
+  asyncHandler(async (req, res) => {
+    const type = req.query.type as MediaType | undefined;
+    const input = (req.query.input as string | undefined)?.trim();
+    let provider = req.query.provider as string | undefined;
+    if (!type || !input) throw new HttpError(400, "type and input are required");
+
+    const fromUrl = parseProviderUrl(input);
+    const id = fromUrl ? fromUrl.id : input;
+    // The provider dropdown reused from title search only ever lists that type's own title-search
+    // providers (tmdb/omdb for movies, openlibrary/googlebooks for authors, ...) — none of which
+    // are "imdb"/"isbn", so a bare id in one of those two unambiguous shapes is auto-detected
+    // regardless of whatever the dropdown happens to be set to. Numeric ids stay genuinely
+    // ambiguous across tmdb/tvdb/anilist/igdb/rawg and still need the dropdown's own selection.
+    if (fromUrl) {
+      provider = fromUrl.provider;
+    } else if (/^tt\d+$/i.test(id)) {
+      provider = "imdb";
+    } else if (type === "author" && /^[\dXx][\dXx\- ]{8,16}[\dXx]$/.test(id)) {
+      provider = "isbn";
+    }
+    if (!provider) throw new HttpError(400, "provider is required when input isn't a recognized provider URL");
+
+    try {
+      const result = await fetchByExternalId(type, provider, id);
+      res.json([{ ...result, excluded: await isExcluded(type, result.title, result.year ?? null) }]);
     } catch (err) {
       throw new HttpError(400, (err as Error).message);
     }

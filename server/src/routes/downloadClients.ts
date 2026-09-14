@@ -3,7 +3,7 @@ import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { downloadClientFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { getDownloadClientAdapter } from "../services/downloadClient.js";
+import { getDownloadClientAdapter, testDownloadClientConnection } from "../services/downloadClient.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 
 export const downloadClientsRouter = Router();
@@ -104,6 +104,23 @@ downloadClientsRouter.get(
     }
     const stats = await adapter.getHealthStats(client);
     res.json(stats);
+  })
+);
+
+/** Radarr-style "Test" — validates connectivity/credentials for the already-saved client, same
+ * pattern as GET /indexers/:id/test. */
+downloadClientsRouter.post(
+  "/:id/test",
+  asyncHandler(async (req, res) => {
+    const row = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(req.params.id);
+    if (!row) throw new HttpError(404, "Download client not found");
+    const client = downloadClientFromRow(row) as any;
+    try {
+      await testDownloadClientConnection(client);
+      res.json({ ok: true });
+    } catch (err) {
+      res.json({ ok: false, error: (err as Error).message });
+    }
   })
 );
 

@@ -31,6 +31,8 @@ export default function DownloadClients() {
   const [clients, setClients] = useState<DownloadClient[]>([]);
   const [mode, setMode] = useState<"add" | number | null>(null);
   const [health, setHealth] = useState<Record<number, ClientHealthStats | "error">>({});
+  const [testing, setTesting] = useState<number | null>(null);
+  const [testResult, setTestResult] = useState<{ ok: boolean; error?: string } | null>(null);
   const [name, setName] = useState("");
   const [type, setType] = useState<ClientType>("qbittorrent");
   const [host, setHost] = useState("");
@@ -63,6 +65,7 @@ export default function DownloadClients() {
 
   function openAdd() {
     resetForm();
+    setTestResult(null);
     setMode("add");
   }
 
@@ -76,6 +79,7 @@ export default function DownloadClients() {
     setApiKey(c.apiKey ?? "");
     setCategory(c.category ?? "aonarr");
     setAudioOnly(!!c.audioOnly);
+    setTestResult(null);
     setMode(c.id);
   }
 
@@ -115,6 +119,19 @@ export default function DownloadClients() {
       setHealth((prev) => ({ ...prev, [id]: stats }));
     } catch {
       setHealth((prev) => ({ ...prev, [id]: "error" }));
+    }
+  }
+
+  async function testConnection(id: number) {
+    setTesting(id);
+    setTestResult(null);
+    try {
+      const result = await api.post<{ ok: boolean; error?: string }>(`/download-clients/${id}/test`);
+      setTestResult(result);
+    } catch (e) {
+      setTestResult({ ok: false, error: (e as Error).message });
+    } finally {
+      setTesting(null);
     }
   }
 
@@ -269,11 +286,21 @@ export default function DownloadClients() {
               </>
             )}
 
-            {mode !== "add" && type === "qbittorrent" && (
+            {mode !== "add" && (
               <div className="toolbar" style={{ justifyContent: "space-between" }}>
-                <button type="button" className="secondary" onClick={() => loadHealth(mode as number)}>
-                  Check health
+                <button type="button" className="secondary" onClick={() => testConnection(mode as number)} disabled={testing === mode}>
+                  {testing === mode ? "Testing..." : "Test connection"}
                 </button>
+                {type === "qbittorrent" && (
+                  <button type="button" className="secondary" onClick={() => loadHealth(mode as number)}>
+                    Check health
+                  </button>
+                )}
+                {testResult && (
+                  <span className={testResult.ok ? "badge ok" : "badge danger"}>
+                    {testResult.ok ? "Connection OK" : testResult.error ?? "Test failed"}
+                  </span>
+                )}
                 {health[mode as number] === "error" && <span style={{ color: "var(--danger)" }}>Could not fetch health stats.</span>}
               </div>
             )}

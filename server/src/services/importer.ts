@@ -798,7 +798,7 @@ export interface RenameResult {
  * to verify against) than this function's per-file model handles; the count is still reported so
  * a caller isn't left thinking Music was silently included.
  */
-export async function renameLibraryFiles(mediaType?: MediaType): Promise<RenameResult> {
+export async function renameLibraryFiles(mediaType?: MediaType, dryRun = false): Promise<RenameResult> {
   const result: RenameResult = { renamed: [], errors: [], skippedMusic: 0 };
 
   const itemRows = (
@@ -808,10 +808,10 @@ export async function renameLibraryFiles(mediaType?: MediaType): Promise<RenameR
   ) as any[];
 
   for (const mediaRow of itemRows) {
-    await renameOneItemRow(mediaRow, result);
+    await renameOneItemRow(mediaRow, result, undefined, dryRun);
   }
 
-  if (result.renamed.length > 0) {
+  if (result.renamed.length > 0 && !dryRun) {
     log.info(`[importer] renamed ${result.renamed.length} file(s) to match the current naming template`);
   }
   return result;
@@ -821,14 +821,17 @@ export async function renameLibraryFiles(mediaType?: MediaType): Promise<RenameR
  * page — same logic, scoped to just this item's own file(s) instead of a whole library.
  * `onlySeasonNumber`, when given, is the season toolbar's "Organize & Rename" button — only that
  * season's episodes are considered (meaningless for non-episodic shapes, so ignored there). */
-export async function renameOneMediaItem(mediaItemId: number, onlySeasonNumber?: number): Promise<RenameResult> {
+export async function renameOneMediaItem(mediaItemId: number, onlySeasonNumber?: number, dryRun = false): Promise<RenameResult> {
   const result: RenameResult = { renamed: [], errors: [], skippedMusic: 0 };
   const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId);
-  if (mediaRow) await renameOneItemRow(mediaRow, result, onlySeasonNumber);
+  if (mediaRow) await renameOneItemRow(mediaRow, result, onlySeasonNumber, dryRun);
   return result;
 }
 
-async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonNumber?: number): Promise<void> {
+/** `dryRun` computes and reports the same from/to paths a real rename would, without touching the
+ * filesystem or the database — Radarr-style rename preview, so an admin can see what a bulk
+ * "Organize & Rename" would actually do before committing to it. */
+async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonNumber?: number, dryRun = false): Promise<void> {
   const item = mediaItemFromRow(mediaRow);
   const typeConfig = getMediaTypeConfig(item.type);
   if (!item.rootFolderId) return;
@@ -845,10 +848,12 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
       const segments = renderPathSegments(template, { title: item.title, year: item.year ?? "", quality: item.quality ?? "" });
       const { destPath } = resolveDest(rootFolder.path, segments, ext, item.path, namingEnabled);
       if (path.resolve(destPath) === path.resolve(item.path)) return;
-      const oldDir = path.dirname(item.path);
-      await moveFile(item.path, destPath);
-      removeEmptyParents(oldDir, rootFolder.path);
-      await db.prepare("UPDATE media_items SET path = ? WHERE id = ?").run(destPath, item.id);
+      if (!dryRun) {
+        const oldDir = path.dirname(item.path);
+        await moveFile(item.path, destPath);
+        removeEmptyParents(oldDir, rootFolder.path);
+        await db.prepare("UPDATE media_items SET path = ? WHERE id = ?").run(destPath, item.id);
+      }
       result.renamed.push({ title: item.title, from: item.path, to: destPath });
     } else if (typeConfig.shape === "episodic") {
       const episodes = (await (onlySeasonNumber != null
@@ -880,10 +885,12 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
         });
         const { destPath } = resolveDest(rootFolder.path, segments, ext, epRow.file_path, namingEnabled);
         if (path.resolve(destPath) === path.resolve(epRow.file_path)) continue;
-        const oldDir = path.dirname(epRow.file_path);
-        await moveFile(epRow.file_path, destPath);
-        removeEmptyParents(oldDir, rootFolder.path);
-        await db.prepare("UPDATE episodes SET file_path = ? WHERE id = ?").run(destPath, epRow.id);
+        if (!dryRun) {
+          const oldDir = path.dirname(epRow.file_path);
+          await moveFile(epRow.file_path, destPath);
+          removeEmptyParents(oldDir, rootFolder.path);
+          await db.prepare("UPDATE episodes SET file_path = ? WHERE id = ?").run(destPath, epRow.id);
+        }
         result.renamed.push({ title: `${item.title} — ${epRow.season_number}x${epRow.episode_number}`, from: epRow.file_path, to: destPath });
       }
     } else if (typeConfig.shape === "collection" && typeConfig.multiFilePerChild) {
@@ -900,10 +907,12 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
         const segments = renderPathSegments(template, { parentTitle: item.title, childTitle: subRow.title, quality: subRow.quality ?? "" });
         const { destPath } = resolveDest(rootFolder.path, segments, ext, subRow.file_path, namingEnabled);
         if (path.resolve(destPath) === path.resolve(subRow.file_path)) continue;
-        const oldDir = path.dirname(subRow.file_path);
-        await moveFile(subRow.file_path, destPath);
-        removeEmptyParents(oldDir, rootFolder.path);
-        await db.prepare("UPDATE sub_items SET file_path = ? WHERE id = ?").run(destPath, subRow.id);
+        if (!dryRun) {
+          const oldDir = path.dirname(subRow.file_path);
+          await moveFile(subRow.file_path, destPath);
+          removeEmptyParents(oldDir, rootFolder.path);
+          await db.prepare("UPDATE sub_items SET file_path = ? WHERE id = ?").run(destPath, subRow.id);
+        }
         result.renamed.push({ title: `${item.title} — ${subRow.title}`, from: subRow.file_path, to: destPath });
       }
     }

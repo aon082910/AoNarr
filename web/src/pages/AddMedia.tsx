@@ -81,6 +81,8 @@ export default function AddMedia() {
   /** Narrows/re-ranks search results toward this year (see searchMetadata's year-assisted
    * matching) — distinct from `year` below, which is the year of the item actually being added. */
   const [searchYear, setSearchYear] = useState("");
+  const [searchMode, setSearchMode] = useState<"title" | "id">("title");
+  const [idInput, setIdInput] = useState("");
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<MetadataSearchResult[] | null>(null);
   const [selected, setSelected] = useState<MetadataSearchResult | null>(null);
@@ -158,6 +160,25 @@ export default function AddMedia() {
         `/metadata/search?type=${type}&query=${encodeURIComponent(query.trim())}&provider=${provider}${
           searchYear.trim() ? `&year=${encodeURIComponent(searchYear.trim())}` : ""
         }`
+      );
+      setResults(res);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function runIdMatch(e: FormEvent) {
+    e.preventDefault();
+    if (!idInput.trim()) return;
+    setSearching(true);
+    setError(null);
+    setResults(null);
+    setSelected(null);
+    try {
+      const res = await api.get<MetadataSearchResult[]>(
+        `/metadata/match?type=${type}&input=${encodeURIComponent(idInput.trim())}&provider=${provider}`
       );
       setResults(res);
     } catch (e) {
@@ -359,7 +380,7 @@ export default function AddMedia() {
         </select>
 
         {!manual && (
-          <form onSubmit={runSearch}>
+          <>
             <label>Metadata provider</label>
             <select value={provider} onChange={(e) => setProvider(e.target.value)} style={{ marginBottom: 10 }}>
               {(providers[type] ?? []).map((p) => (
@@ -368,22 +389,53 @@ export default function AddMedia() {
                 </option>
               ))}
             </select>
-            <label>Search</label>
-            <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Title..." style={{ flex: 1 }} />
-              <input
-                value={searchYear}
-                onChange={(e) => setSearchYear(e.target.value)}
-                placeholder="Year"
-                type="number"
-                title="Optional — narrows/re-ranks results toward this year, useful for remakes or generically-titled matches"
-                style={{ width: 90 }}
-              />
+
+            <div className="toolbar" style={{ marginBottom: 6 }}>
+              <button type="button" className={searchMode === "title" ? "" : "secondary"} onClick={() => setSearchMode("title")}>
+                Search by title
+              </button>
+              <button type="button" className={searchMode === "id" ? "" : "secondary"} onClick={() => setSearchMode("id")}>
+                Match by ID / URL
+              </button>
             </div>
-            <button type="submit" disabled={searching}>
-              {searching ? "Searching..." : "Search"}
-            </button>
-          </form>
+
+            {searchMode === "title" ? (
+              <form onSubmit={runSearch}>
+                <label>Search</label>
+                <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                  <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Title..." style={{ flex: 1 }} />
+                  <input
+                    value={searchYear}
+                    onChange={(e) => setSearchYear(e.target.value)}
+                    placeholder="Year"
+                    type="number"
+                    title="Optional — narrows/re-ranks results toward this year, useful for remakes or generically-titled matches"
+                    style={{ width: 90 }}
+                  />
+                </div>
+                <button type="submit" disabled={searching}>
+                  {searching ? "Searching..." : "Search"}
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={runIdMatch}>
+                <label>ID or URL</label>
+                <input
+                  value={idInput}
+                  onChange={(e) => setIdInput(e.target.value)}
+                  placeholder='e.g. "tt1234567", "603", an ISBN, or a full themoviedb.org/imdb.com/anilist.co/... link'
+                />
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 4 }}>
+                  A pasted URL is matched by whichever provider it's from automatically. A bare ID
+                  is matched against the provider selected above. Supports TMDB, IMDb, TVDB,
+                  AniList, IGDB, RAWG, and ISBN (matched to the book's listed author).
+                </p>
+                <button type="submit" disabled={searching}>
+                  {searching ? "Matching..." : "Match"}
+                </button>
+              </form>
+            )}
+          </>
         )}
 
         {activeTypeInfo?.hasMetadataSearch ? (

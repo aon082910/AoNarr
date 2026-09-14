@@ -943,20 +943,22 @@ mediaRouter.post(
   asyncHandler(async (req, res) => {
     const type = typeof req.query.type === "string" ? (req.query.type as MediaType) : undefined;
     if (type && !isValidMediaType(type)) throw new HttpError(400, `Unknown media type "${type}"`);
-    const result = await renameLibraryFiles(type);
+    const result = await renameLibraryFiles(type, req.query.preview === "1");
     res.json(result);
   })
 );
 
 /** Per-item version of the bulk rename above, for the "Organize & Rename" button on a single
- * media page — scoped to just this item's own file(s) instead of a whole library. */
+ * media page — scoped to just this item's own file(s) instead of a whole library. `?preview=1`
+ * computes and returns the same from/to paths without touching the filesystem/database, for the
+ * Radarr-style rename-preview confirmation dialog. */
 mediaRouter.post(
   "/:id/rename-files",
   requireAdmin,
   asyncHandler(async (req, res) => {
     const row = await db.prepare("SELECT id FROM media_items WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Media item not found");
-    const result = await renameOneMediaItem(Number(req.params.id));
+    const result = await renameOneMediaItem(Number(req.params.id), undefined, req.query.preview === "1");
     res.json(result);
   })
 );
@@ -968,7 +970,7 @@ mediaRouter.post(
   asyncHandler(async (req, res) => {
     const row = await db.prepare("SELECT id FROM media_items WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Media item not found");
-    const result = await renameOneMediaItem(Number(req.params.id), Number(req.params.seasonNumber));
+    const result = await renameOneMediaItem(Number(req.params.id), Number(req.params.seasonNumber), req.query.preview === "1");
     res.json(result);
   })
 );
@@ -989,6 +991,7 @@ mediaRouter.patch(
       year: b.year,
       overview: b.overview,
       poster_url: b.posterUrl,
+      backdrop_url: b.backdropUrl,
       monitored: b.monitored,
       protected: b.protected,
       quality_profile_id: b.qualityProfileId,

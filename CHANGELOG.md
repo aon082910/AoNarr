@@ -3,6 +3,30 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 192 — download client test, rename preview, match by ID/URL, custom posters/backdrops
+- **Download Clients**: added a "Test connection" button on the edit form (all types), validating
+  credentials/reachability before you rely on it — previously only qBittorrent's post-save "Check
+  health" existed, so a wrong host/port/API key on any other client type silently saved with no
+  feedback. New `POST /api/download-clients/:id/test`, with a lightweight per-type check (login
+  for qBittorrent, version/API-key check for SABnzbd/Real-Debrid/AllDebrid/TorBox/slskd, folder
+  existence+writability for Blackhole; http/ytdlp have no external client to test).
+- **Rename preview**: "Organize & Rename" (media detail page, Library page, and the per-season
+  toolbar) now shows the exact from→to path list in a modal before committing, instead of a blind
+  confirm()-then-execute. Backed by a new `?preview=1` dry-run mode on the existing rename routes
+  that computes destinations without touching the filesystem or database.
+- **Match by ID or URL**: Add Media and the "search for a different match" rematch modal now have
+  a "Match by ID / URL" mode alongside title search — paste a TMDB/IMDb/TVDB/AniList/IGDB/RAWG id
+  or a straight link from any of those sites' own pages (auto-detected and parsed), or an ISBN for
+  the Authors library (best-effort matched to the book's listed author, since ISBN identifies a
+  book, not an author). New `GET /api/metadata/match` + `fetchByExternalId()`/`parseProviderUrl()`
+  in metadata.ts. Unlike title search, this is a direct id lookup — no fuzzy matching, so it's
+  exactly as trustworthy as picking a search result by hand.
+- **Custom posters and backdrops**: the Edit Metadata form on the media detail page now has a
+  Backdrop URL field (previews inline) alongside the existing Poster URL field — both are plain
+  direct-image-URL overrides, saved straight to the item. The Artwork picker's background/banner
+  images can now be set as either the backdrop or the poster (previously only "set as poster" was
+  offered, even for a wide background image that never fit a poster's aspect ratio well).
+
 ## Round 191 — Custom Format tester; Remote Path Mappings deliberately skipped
 - Settings → Quality → **Test Custom Formats**: paste a sample release title (+ optional size and
   quality profile) and see which custom formats match and what they'd score — reuses the exact

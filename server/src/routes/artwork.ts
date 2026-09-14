@@ -28,10 +28,14 @@ artworkRouter.get(
 artworkRouter.post(
   "/:id/artwork/select",
   asyncHandler(async (req, res) => {
-    const posterUrl = req.body?.posterUrl;
-    if (!posterUrl) throw new HttpError(400, "posterUrl is required");
+    const { posterUrl, backdropUrl } = req.body ?? {};
+    if (!posterUrl && !backdropUrl) throw new HttpError(400, "posterUrl or backdropUrl is required");
 
-    const result = await db.prepare("UPDATE media_items SET poster_url = ? WHERE id = ?").run(posterUrl, req.params.id);
+    const result = await db
+      .prepare(
+        `UPDATE media_items SET poster_url = COALESCE(?, poster_url), backdrop_url = COALESCE(?, backdrop_url) WHERE id = ?`
+      )
+      .run(posterUrl ?? null, backdropUrl ?? null, req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Media item not found");
 
     const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);

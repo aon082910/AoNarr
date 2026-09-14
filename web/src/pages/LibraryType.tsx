@@ -7,6 +7,7 @@ import type { CustomColumn, LibraryGroup, MediaItem, RootFolder, SavedLibraryVie
 import { formatBytes } from "../utils/format.js";
 import DropdownMenu from "../components/DropdownMenu.js";
 import Modal from "../components/Modal.js";
+import RenamePreviewModal from "../components/RenamePreviewModal.js";
 
 type SortKey = "title" | "year" | "added" | "status" | "monitored" | "quality" | "contentRating" | "releaseDate" | "path" | "sizeOnDisk";
 type ViewMode = "poster" | "overview" | "list";
@@ -418,7 +419,7 @@ export function LibraryItemGrid({
   const [importingCsv, setImportingCsv] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [organizing, setOrganizing] = useState(false);
+  const [showRenamePreview, setShowRenamePreview] = useState(false);
   const csvInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { auth } = useAuth();
@@ -864,28 +865,19 @@ export function LibraryItemGrid({
 
   /** Sonarr/Radarr-style "Rename Files" — moves/renames every already-imported file in this
    * library to match the current naming template (Settings → Media Management → Naming), the
-   * same function System → Rename Files calls, just pre-scoped to this one type. Awaited (not
-   * fire-and-forget) since it's a filesystem move per file, not a network call — fast enough not
-   * to risk a gateway timeout the way a metadata-provider-per-item scan/refresh could. */
-  async function organizeLibrary() {
-    if (!confirm(`Move/rename every already-imported ${typeLabel} file to match the current naming template? This only moves files that aren't already where the template says they should be.`)) return;
-    setOrganizing(true);
-    try {
-      const result = await api.post<{ renamed: { from: string; to: string }[]; errors: { title: string; error: string }[] }>(
-        `/media/rename-files?type=${type}`,
-        {}
-      );
-      if (result.errors.length > 0) {
-        alert(`Renamed ${result.renamed.length}, but ${result.errors.length} failed: ${result.errors.map((e) => e.error).join(", ")}`);
-      } else if (result.renamed.length === 0) {
-        alert("Already organized — nothing needed to move.");
-      } else {
-        alert(`Renamed/organized ${result.renamed.length} file(s) to match the current naming template.`);
-      }
-    } catch (e) {
-      alert((e as Error).message);
-    } finally {
-      setOrganizing(false);
+   * same function System → Rename Files calls, just pre-scoped to this one type. Shows a preview
+   * (RenamePreviewModal) of the exact from/to paths before committing, instead of a blind
+   * confirm()/execute/after-the-fact-alert. */
+  function organizeLibrary() {
+    setShowRenamePreview(true);
+  }
+
+  function onRenameDone(result: { renamed: { title: string; from: string; to: string }[]; errors: { title: string; error: string }[] }) {
+    setShowRenamePreview(false);
+    if (result.errors.length > 0) {
+      alert(`Renamed ${result.renamed.length}, but ${result.errors.length} failed: ${result.errors.map((e) => e.error).join(", ")}`);
+    } else {
+      alert(`Renamed/organized ${result.renamed.length} file(s) to match the current naming template.`);
     }
   }
 
@@ -1124,10 +1116,9 @@ export function LibraryItemGrid({
           <button
             className="select-like"
             onClick={organizeLibrary}
-            disabled={organizing}
             title="Move/rename every already-imported file in this library to match the current naming template (Settings → Media Management → Naming)"
           >
-            {organizing ? "Organizing..." : "Organize & Rename"}
+            Organize & Rename
           </button>
         )}
         {auth.isAdmin && mediaServerConfigured && (
@@ -1392,6 +1383,15 @@ export function LibraryItemGrid({
             ))}
           </select>
         </div>
+      )}
+
+      {showRenamePreview && (
+        <RenamePreviewModal
+          endpoint={`/media/rename-files?type=${type}`}
+          itemLabel={typeLabel}
+          onClose={() => setShowRenamePreview(false)}
+          onDone={onRenameDone}
+        />
       )}
 
       {showMediaServerImport && (
