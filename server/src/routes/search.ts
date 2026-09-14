@@ -67,6 +67,8 @@ searchRouter.get(
     let query = item.year ? `${item.title} ${item.year}` : item.title;
     let targetSeason: number | null = null;
     let targetEpisode: number | null = null;
+    let targetSceneSeason: number | null = null;
+    let targetSceneEpisode: number | null = null;
 
     const episodeId = req.query.episodeId as string | undefined;
     const subItemId = req.query.subItemId as string | undefined;
@@ -77,8 +79,11 @@ searchRouter.get(
       if (!ep) throw new HttpError(404, "Episode not found");
       targetSeason = ep.season_number;
       targetEpisode = ep.episode_number;
-      const seasonStr = String(targetSeason).padStart(2, "0");
-      const episodeStr = String(targetEpisode).padStart(2, "0");
+      targetSceneSeason = ep.scene_season_number;
+      targetSceneEpisode = ep.scene_episode_number;
+      // Scene-numbered (TheXEM) query when known — see scheduler.ts's own runAutoSearch for why.
+      const seasonStr = String(targetSceneSeason ?? targetSeason).padStart(2, "0");
+      const episodeStr = String(targetSceneEpisode ?? targetEpisode).padStart(2, "0");
       query = `${item.title} S${seasonStr}E${episodeStr}`;
     } else if (seasonNumberParam) {
       // Season-only (no specific episode) — surfaces full-season pack releases, which a
@@ -129,7 +134,7 @@ searchRouter.get(
       const parsed = parseReleaseTitle(r.title);
       const matchesTarget =
         targetSeason !== null && targetEpisode !== null
-          ? releaseMatchesEpisode(parsed, targetSeason, targetEpisode)
+          ? releaseMatchesEpisode(parsed, targetSeason, targetEpisode, targetSceneSeason, targetSceneEpisode)
           : targetSeason !== null
             ? parsed.seasonNumber === targetSeason
             : true;

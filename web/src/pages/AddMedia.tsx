@@ -6,6 +6,20 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { LibraryGroup, MediaItem, MediaType, QualityProfile, RootFolder } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 
+type MonitorStrategy = "all" | "future" | "missing" | "existing" | "recent" | "firstSeason" | "latestSeason" | "pilot" | "none";
+
+const MONITOR_STRATEGY_LABELS: Record<MonitorStrategy, string> = {
+  all: "All Episodes",
+  future: "Future Episodes",
+  missing: "Missing Episodes",
+  existing: "Existing Episodes",
+  recent: "Recent Episodes (last season)",
+  firstSeason: "First Season",
+  latestSeason: "Latest Season",
+  pilot: "Pilot Episode Only",
+  none: "None",
+};
+
 interface MetadataSearchResult {
   title: string;
   year: number | null;
@@ -105,6 +119,7 @@ export default function AddMedia() {
   const [courseLoading, setCourseLoading] = useState(false);
   const [courseSiteGroupId, setCourseSiteGroupId] = useState<number | null>(null);
   const [groupId, setGroupId] = useState<number | null>(null);
+  const [monitorStrategy, setMonitorStrategy] = useState<MonitorStrategy>("all");
   const [romGroupChain, setRomGroupChain] = useState<(number | null)[] | null>(null);
   const [romDetailsLoading, setRomDetailsLoading] = useState(false);
 
@@ -259,6 +274,7 @@ export default function AddMedia() {
             monitored: 1,
             confirmDuplicate,
             groupId,
+            monitorStrategy: activeTypeInfo?.shape === "episodic" ? monitorStrategy : undefined,
           }
         : {
             type,
@@ -277,6 +293,7 @@ export default function AddMedia() {
             rating: selected?.rating ?? null,
             runtimeMinutes: selected?.runtimeMinutes ?? null,
             studio: selected?.studio ?? null,
+            monitorStrategy: activeTypeInfo?.shape === "episodic" ? monitorStrategy : undefined,
           };
       const created = await api.post<MediaItem>(manual ? "/media" : "/metadata/import", payload);
       navigate(`/media/${created.id}`);
@@ -565,6 +582,19 @@ export default function AddMedia() {
               </option>
             ))}
           </select>
+
+          {activeTypeInfo?.shape === "episodic" && (
+            <>
+              <label>Monitor</label>
+              <select value={monitorStrategy} onChange={(e) => setMonitorStrategy(e.target.value as MonitorStrategy)}>
+                {Object.entries(MONITOR_STRATEGY_LABELS).map(([key, label]) => (
+                  <option key={key} value={key}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
 
           <button type="submit" disabled={submitting}>
             {submitting ? "Adding..." : "Add to library"}

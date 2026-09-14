@@ -21,8 +21,47 @@ import { log } from "../services/logger.js";
 import { logAuditEvent } from "../services/audit.js";
 import { getSetting } from "../services/settingsStore.js";
 import { createLibraryFolderSkeleton } from "../services/importer.js";
+import { syncSceneNumbering } from "../services/sceneNumbering.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import type { MediaType } from "../types/index.js";
+
+/**
+ * Sonarr's "Monitor" dropdown when adding a series — decides which of the freshly-fetched
+ * episodes stay monitored (auto-searched) versus not, beyond the previous all-or-nothing. Since
+ * this only ever runs against a *brand new* add (nothing downloaded yet), "Existing Episodes"
+ * correctly comes out to "monitor nothing" here — there's nothing existing yet to monitor.
+ */
+function episodesToMonitor(
+  episodes: { seasonNumber: number; episodeNumber: number; airDate: string | null }[],
+  strategy: string
+): Set<string> {
+  const key = (s: number, e: number) => `${s}:${e}`;
+  const realSeasons = episodes.map((e) => e.seasonNumber).filter((s) => s > 0);
+  const minSeason = realSeasons.length > 0 ? Math.min(...realSeasons) : 0;
+  const maxSeason = realSeasons.length > 0 ? Math.max(...realSeasons) : 0;
+  const today = new Date().toISOString().slice(0, 10);
+
+  switch (strategy) {
+    case "none":
+    case "existing":
+      return new Set();
+    case "future":
+      return new Set(
+        episodes.filter((e) => !e.airDate || e.airDate.slice(0, 10) >= today).map((e) => key(e.seasonNumber, e.episodeNumber))
+      );
+    case "recent":
+    case "latestSeason":
+      return new Set(episodes.filter((e) => e.seasonNumber === maxSeason).map((e) => key(e.seasonNumber, e.episodeNumber)));
+    case "firstSeason":
+      return new Set(episodes.filter((e) => e.seasonNumber === minSeason).map((e) => key(e.seasonNumber, e.episodeNumber)));
+    case "pilot":
+      return new Set([key(minSeason, 1)]);
+    case "missing":
+    case "all":
+    default:
+      return new Set(episodes.map((e) => key(e.seasonNumber, e.episodeNumber)));
+  }
+}
 
 export const metadataRouter = Router();
 metadataRouter.use(requireAdmin);
@@ -194,6 +233,24 @@ metadataRouter.post(
           }
         });
         childCount = episodes.length;
+
+        if (b.monitorStrategy && b.monitorStrategy !== "all") {
+          const keep = episodesToMonitor(episodes, b.monitorStrategy);
+          const toUnmonitor = episodes.filter((e) => !keep.has(`${e.seasonNumber}:${e.episodeNumber}`));
+          if (toUnmonitor.length > 0) {
+            await db.transaction(async () => {
+              for (const e of toUnmonitor) {
+                await db
+                  .prepare("UPDATE episodes SET monitored = 0 WHERE media_item_id = ? AND season_number = ? AND episode_number = ?")
+                  .run(mediaItemId, e.seasonNumber, e.episodeNumber);
+              }
+            });
+          }
+        }
+
+        // Best-effort, fire-and-forget — a slow/unreachable thexem.info shouldn't hold up adding
+        // the series itself, same reasoning as every other post-add enrichment call in this file.
+        syncSceneNumbering(Number(mediaItemId)).catch((err) => log.warn(`[metadata] scene numbering sync failed for ${b.title}:`, (err as Error).message));
       } else if (typeConfig.shape === "collection" && typeConfig.multiFilePerChild) {
         const result = await fetchArtistAlbumsFor(externalIds);
         if (result) {

@@ -3,6 +3,38 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 195 — Sonarr-parity gaps: scene numbering, Monitor options, bulk editor, series stats
+- **Scene numbering (TheXEM)**: new `services/sceneNumbering.ts` — for any series/anime with a
+  TVDB id, pulls thexem.info's scene-numbering map and stores `scene_season_number`/
+  `scene_episode_number` per episode. Search queries now prefer scene numbering when known (what a
+  scene-mapped show's releases actually use), and `releaseMatchesEpisode()` accepts either
+  numbering as a match (OR, not a replacement — some groups number correctly anyway). Synced
+  automatically when a series is added, on a weekly scheduled job, and on demand via a "Sync scene
+  numbering" button on the series page. Only covers TVDB-indexed shows — AniList-only anime has no
+  TVDB id for thexem to key off, so it has nothing to map (a real, disclosed limitation, not a bug).
+- **Monitor options at add time**: Add Media's series/anime flow gained Sonarr's Monitor dropdown
+  (All/Future/Missing/Existing/Recent/First Season/Latest Season/Pilot/None) instead of a flat
+  monitored on/off — applied server-side right after the fetched episode list is inserted.
+- **Add List Exclusions on delete**: deleting a library item (single or bulk) now offers to also
+  add it to Import Exclusions, so an active import list doesn't just re-add it on its next sync.
+- **Configurable failed-download handling**: Settings gained "Blocklist and search again" (default,
+  the existing auto-retry behavior) vs. "Blocklist only" (no automatic retry), plus a configurable
+  max-retries count — previously hardcoded at 2 with no toggle.
+- **Release-parsing test tool**: the existing "test a release title" box (Custom Formats section)
+  now also shows the full parsed breakdown (quality/season/episode/year/group/languages/flags/air
+  date) from `parseReleaseTitle()` alongside the custom-format score — the exact same parser every
+  real search/match call uses, folded into the existing tool rather than a separate page.
+- **Series-level stats**: the episodes summary line on a series/anime page now also shows percent
+  complete and total size on disk, not just have/missing/total counts.
+- **Unmonitor Deleted Files**: a new nightly check (`services/deletedFileCheck.ts`) now actually
+  notices when a file AoNarr had on record is gone from disk — previously nothing did, the DB would
+  just keep claiming a deleted file still existed forever. Correcting `has_file` back to 0 always
+  happens; a new setting controls whether the item is also unmonitored (off by default).
+- **Bulk quality-profile / root-folder editor**: the Library page's multi-select toolbar gained an
+  "Apply" action to bulk-change quality profile and/or root folder across a selection — previously
+  only possible one at a time, or via the CSV round-trip for quality profile alone (never root
+  folder).
+
 ## Round 194 — NFO-on-import, log verbosity, certificate validation, media management polish
 - **Write NFO on Import** (opt-in, off by default like Radarr's own Kodi/Emby metadata consumer):
   importing a file now optionally writes a same-named Kodi/Jellyfin/Emby `.nfo` sidecar — reuses

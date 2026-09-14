@@ -8,7 +8,7 @@ import type { LibraryGroup } from "../types.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { Collection, HistoryEvent, MediaInfo, MediaItem, QualityProfile, RootFolder, SearchResult, Tag } from "../types.js";
-import { formatMediaInfo } from "../utils/format.js";
+import { formatBytes, formatMediaInfo } from "../utils/format.js";
 import { useContentRatings } from "../hooks/useContentRatings.js";
 
 /** Maps a recognized external-id provider key to a link builder — unrecognized providers still
@@ -64,6 +64,9 @@ export interface Episode {
   quality: string | null;
   filePath: string | null;
   mediaInfo: MediaInfo | null;
+  sizeBytes: number | null;
+  sceneSeasonNumber: number | null;
+  sceneEpisodeNumber: number | null;
 }
 
 interface SubItem {
@@ -254,6 +257,7 @@ export default function MediaDetail() {
   const [browsePath, setBrowsePath] = useState("");
   const [showMove, setShowMove] = useState(false);
   const [openSeasons, setOpenSeasons] = useState<Set<number>>(new Set());
+  const [syncingSceneNumbering, setSyncingSceneNumbering] = useState(false);
   const [seededSeasons, setSeededSeasons] = useState(false);
   const [groupBreadcrumb, setGroupBreadcrumb] = useState<string | null>(null);
   const [pendingGroupId, setPendingGroupId] = useState<number | null>(null);
@@ -745,7 +749,11 @@ export default function MediaDetail() {
       `Remove "${item.title}" from AoNarr AND move its file(s) to the Recycle Bin?\n\nCancel, then OK on the next prompt, to untrack only and leave files on disk.`
     );
     if (!deleteFiles && !confirm(`Remove "${item.title}" from AoNarr? This leaves files on disk untouched.`)) return;
-    await api.del(`/media/${item.id}${deleteFiles ? "?deleteFiles=1" : ""}`);
+    const addExclusion = confirm(
+      `Also add "${item.title}" to Import Exclusions?\n\nPrevents an active import list from just re-adding it on its next sync. Cancel to skip this.`
+    );
+    const params = [deleteFiles && "deleteFiles=1", addExclusion && "addExclusion=1"].filter(Boolean).join("&");
+    await api.del(`/media/${item.id}${params ? `?${params}` : ""}`);
     navigate("/");
   }
 
@@ -839,6 +847,20 @@ export default function MediaDetail() {
         return replacement ?? ep;
       }),
     });
+  }
+
+  async function syncSceneNumbering() {
+    if (!item) return;
+    setSyncingSceneNumbering(true);
+    try {
+      const result = await api.post<{ updated: number }>(`/media/${item.id}/sync-scene-numbering`, {});
+      alert(result.updated > 0 ? `Mapped scene numbering for ${result.updated} episode(s).` : "No scene-numbering mapping found for this series on TheXEM.");
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setSyncingSceneNumbering(false);
+    }
   }
 
   async function runSearch(t: SearchTarget) {
@@ -2076,17 +2098,31 @@ export default function MediaDetail() {
             const episodes = item.children as Episode[];
             const have = episodes.filter((ep) => ep.hasFile).length;
             const missing = episodes.length - have;
+            const sizeOnDisk = episodes.reduce((sum, ep) => sum + (ep.sizeBytes ?? 0), 0);
+            const percentComplete = episodes.length > 0 ? Math.round((have / episodes.length) * 100) : 0;
             return (
               <p style={{ color: "var(--muted)" }}>
                 <span className="badge ok">{have} have</span>{" "}
                 <span className={`badge ${missing > 0 ? "danger" : ""}`}>{missing} missing</span>{" "}
-                <span className="badge">{episodes.length} total</span>
+                <span className="badge">{episodes.length} total</span>{" "}
+                <span className="badge">{percentComplete}% complete</span>{" "}
+                {sizeOnDisk > 0 && <span className="badge">{formatBytes(sizeOnDisk)} on disk</span>}
               </p>
             );
           })()}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <h2 style={{ margin: 0 }}>Episodes</h2>
             <div className="toolbar" style={{ marginBottom: 0 }}>
+              {isAdmin && (
+                <button
+                  className="secondary"
+                  disabled={syncingSceneNumbering}
+                  onClick={syncSceneNumbering}
+                  title="Re-fetch TheXEM scene-numbering mapping for this series"
+                >
+                  {syncingSceneNumbering ? "Syncing..." : "Sync scene numbering"}
+                </button>
+              )}
               <button className="secondary" onClick={() => setSeasonView("list")} disabled={seasonView === "list"}>
                 List
               </button>

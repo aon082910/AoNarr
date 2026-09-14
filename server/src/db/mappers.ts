@@ -61,6 +61,8 @@ export function episodeFromRow(row: any) {
     filePath: row.file_path,
     mediaInfo: row.media_info ? JSON.parse(row.media_info) : null,
     sizeBytes: row.size_bytes,
+    sceneSeasonNumber: row.scene_season_number,
+    sceneEpisodeNumber: row.scene_episode_number,
   };
 }
 

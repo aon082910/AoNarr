@@ -18,6 +18,8 @@ import {
 import { importQueueItem, ImportSkippedError } from "./importer.js";
 import { notifyFailed, notifyGrabbed, notifyHealthIssue } from "./notifications.js";
 import { checkIndexerHealth } from "./indexerClient.js";
+import { syncAllSceneNumbering } from "./sceneNumbering.js";
+import { checkForDeletedFiles } from "./deletedFileCheck.js";
 import { setSetting } from "./settingsStore.js";
 import { notifyQueueChanged } from "./realtime.js";
 import { runAutoArchival } from "./archival.js";
@@ -182,7 +184,7 @@ async function chooseBestResult(
   cutoff: string,
   qualityProfileId: number | null,
   minFormatScore: number,
-  target: { season: number; episode: number } | { airDate: string } | null,
+  target: { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null } | { airDate: string } | null,
   blocklisted: Set<string>,
   mediaType: string,
   delayProfile: DelayProfile | null = null
@@ -196,7 +198,9 @@ async function chooseBestResult(
     ? withParsed
     : "airDate" in target
     ? withParsed.filter(({ parsed }) => releaseMatchesAirDate(parsed, target.airDate))
-    : withParsed.filter(({ parsed }) => releaseMatchesEpisode(parsed, target.season, target.episode));
+    : withParsed.filter(({ parsed }) =>
+        releaseMatchesEpisode(parsed, target.season, target.episode, target.sceneSeason, target.sceneEpisode)
+      );
 
   // Drop releases whose size doesn't fit their claimed quality's configured size range — usually
   // a mislabeled or fake release (e.g. a 200MB file claiming to be 1080p).
@@ -419,9 +423,15 @@ async function runAutoSearch(signal?: AbortSignal) {
           // false-positive grab. Only compare the date portion (not time-of-day) since an air
           // date is stored as a bare date with no timezone/time — "today" should still search.
           if (ep.air_date && ep.air_date.slice(0, 10) > new Date().toISOString().slice(0, 10)) continue;
+          // Scene-numbered (TheXEM) season/episode wins the search QUERY when known — that's the
+          // numbering a scene-mapped show's releases actually use — while matching still accepts
+          // either numbering (see releaseMatchesEpisode's OR), since not every release for such a
+          // show necessarily follows the scene convention.
+          const searchSeason = ep.scene_season_number ?? ep.season_number;
+          const searchEpisode = ep.scene_episode_number ?? ep.episode_number;
           const query = isDaily
             ? `${item.title} ${ep.air_date}`
-            : `${item.title} S${String(ep.season_number).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}`;
+            : `${item.title} S${String(searchSeason).padStart(2, "0")}E${String(searchEpisode).padStart(2, "0")}`;
           const results = await searchAllIndexers(indexers, query, item.type);
           const best = await chooseBestResult(
             results,
@@ -429,7 +439,9 @@ async function runAutoSearch(signal?: AbortSignal) {
             cutoff,
             item.qualityProfileId,
             minFormatScore,
-            isDaily ? { airDate: ep.air_date } : { season: ep.season_number, episode: ep.episode_number },
+            isDaily
+              ? { airDate: ep.air_date }
+              : { season: ep.season_number, episode: ep.episode_number, sceneSeason: ep.scene_season_number, sceneEpisode: ep.scene_episode_number },
             blocklisted,
             item.type,
             delayProfile
@@ -563,15 +575,17 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
       const delayProfile = pickDelayProfile(delayProfiles, await tagIdsForMediaItem(item.id));
 
       let query: string;
-      let episodeTarget: { season: number; episode: number } | null = null;
+      let episodeTarget: { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null } | null = null;
       if (t.episodeId) {
         const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(t.episodeId)) as any;
         if (!ep) {
           results.push({ ...t, grabbed: false, error: "Episode not found" });
           continue;
         }
-        episodeTarget = { season: ep.season_number, episode: ep.episode_number };
-        query = `${item.title} S${String(ep.season_number).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}`;
+        episodeTarget = { season: ep.season_number, episode: ep.episode_number, sceneSeason: ep.scene_season_number, sceneEpisode: ep.scene_episode_number };
+        const searchSeason = ep.scene_season_number ?? ep.season_number;
+        const searchEpisode = ep.scene_episode_number ?? ep.episode_number;
+        query = `${item.title} S${String(searchSeason).padStart(2, "0")}E${String(searchEpisode).padStart(2, "0")}`;
       } else if (t.subItemId) {
         const sub = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(t.subItemId)) as any;
         if (!sub) {
@@ -784,14 +798,24 @@ async function checkPodcastFeeds(): Promise<void> {
   if (newEpisodes > 0) log.info(`[scheduler] podcast feed check: found ${newEpisodes} new episode(s)`);
 }
 
-const MAX_AUTO_RETRIES = 2;
+const DEFAULT_MAX_AUTO_RETRIES = 2;
+
+/** Radarr/Sonarr's "Redownload failed" setting — "blocklistAndSearch" (default) tries the
+ * next-best release automatically, up to a configurable retry cap; "blocklistOnly" just
+ * blocklists and notifies, leaving the re-search to a person or the next scheduled auto-search
+ * pass instead of the immediate automatic retry. */
+function maxAutoRetries(): number {
+  const configured = parseInt(getSetting("maxAutoRetries") ?? "", 10);
+  return Number.isFinite(configured) && configured >= 0 ? configured : DEFAULT_MAX_AUTO_RETRIES;
+}
 
 /**
  * A failed grab (either the download client reported failure, or the file couldn't be imported
- * afterward) blocklists the release that failed and tries the next-best result for the same
- * target, up to MAX_AUTO_RETRIES times, before giving up and notifying like before. This mirrors
- * what an admin would do by hand — a single bad release (fake, corrupt, wrong language) shouldn't
- * need a person to notice and manually re-search.
+ * afterward) blocklists the release that failed and, unless "Redownload failed" is set to
+ * blocklist-only, tries the next-best result for the same target — up to a configurable retry cap
+ * — before giving up and notifying like before. This mirrors what an admin would do by hand — a
+ * single bad release (fake, corrupt, wrong language) shouldn't need a person to notice and
+ * manually re-search.
  */
 async function retryFailedGrab(match: QueueItem, reason: string): Promise<void> {
   const mediaRow = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(match.mediaItemId)) as any;
@@ -809,7 +833,7 @@ async function retryFailedGrab(match: QueueItem, reason: string): Promise<void> 
   );
   await recordGroupFailure(parseReleaseTitle(match.title).releaseGroup);
 
-  if (!mediaRow || match.retryCount >= MAX_AUTO_RETRIES) {
+  if (!mediaRow || getSetting("failedDownloadBehavior") === "blocklistOnly" || match.retryCount >= maxAutoRetries()) {
     await notifyFailed(mediaTitle, reason);
     return;
   }
@@ -819,13 +843,15 @@ async function retryFailedGrab(match: QueueItem, reason: string): Promise<void> 
     const profile = await getQualityProfile(item.qualityProfileId);
     const blocklisted = await getBlocklistedTitles(item.id);
 
-    let episodeTarget: { season: number; episode: number } | null = null;
+    let episodeTarget: { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null } | null = null;
     let query: string;
     if (match.episodeId) {
       const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(match.episodeId)) as any;
       if (!ep) throw new Error("episode no longer exists");
-      episodeTarget = { season: ep.season_number, episode: ep.episode_number };
-      query = `${item.title} S${String(ep.season_number).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}`;
+      episodeTarget = { season: ep.season_number, episode: ep.episode_number, sceneSeason: ep.scene_season_number, sceneEpisode: ep.scene_episode_number };
+      const searchSeason = ep.scene_season_number ?? ep.season_number;
+      const searchEpisode = ep.scene_episode_number ?? ep.episode_number;
+      query = `${item.title} S${String(searchSeason).padStart(2, "0")}E${String(searchEpisode).padStart(2, "0")}`;
     } else if (match.subItemId) {
       const sub = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(match.subItemId)) as any;
       if (!sub) throw new Error("sub-item no longer exists");
@@ -1226,6 +1252,24 @@ export function startScheduler() {
     scheduleType: "cron",
     defaultSchedule: "0 6 * * 0",
     run: (signal) => refreshAllLibraries(signal),
+  });
+
+  registerJob({
+    key: "deletedFileCheck",
+    name: "Deleted File Check",
+    scheduleType: "cron",
+    defaultSchedule: "0 3 * * *",
+    run: async () => {
+      await checkForDeletedFiles();
+    },
+  });
+
+  registerJob({
+    key: "sceneNumberingSync",
+    name: "Scene Numbering Sync (TheXEM)",
+    scheduleType: "cron",
+    defaultSchedule: "0 2 * * 0",
+    run: () => syncAllSceneNumbering(),
   });
 
   registerJob({

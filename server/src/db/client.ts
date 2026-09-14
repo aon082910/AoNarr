@@ -86,6 +86,8 @@ ensureColumn("media_items", "size_bytes", "size_bytes INTEGER");
 ensureColumn("episodes", "size_bytes", "size_bytes INTEGER");
 ensureColumn("sub_items", "size_bytes", "size_bytes INTEGER");
 ensureColumn("media_items", "studio", "studio TEXT");
+ensureColumn("episodes", "scene_season_number", "scene_season_number INTEGER");
+ensureColumn("episodes", "scene_episode_number", "scene_episode_number INTEGER");
 
 /**
  * indexers.protocol and download_clients.type originally shipped with a rigid `CHECK (... IN (...))`

@@ -333,7 +333,25 @@ export default function Settings() {
   const [testReleaseSizeMb, setTestReleaseSizeMb] = useState("");
   const [testQualityProfileId, setTestQualityProfileId] = useState("");
   const [testingFormat, setTestingFormat] = useState(false);
-  const [testResult, setTestResult] = useState<{ totalScore: number; matches: { id: number; name: string; score: number }[] } | null>(
+  const [testResult, setTestResult] = useState<{
+    totalScore: number;
+    matches: { id: number; name: string; score: number }[];
+    rejected?: boolean;
+    rejectReason?: string;
+    parsed?: {
+      seasonNumber: number | null;
+      episodeNumbers: number[] | null;
+      isFullSeason: boolean;
+      year: number | null;
+      quality: string;
+      source: string | null;
+      resolution: string | null;
+      flags: string[];
+      languages: string[];
+      releaseGroup: string | null;
+      airDate: string | null;
+    };
+  } | null>(
     null
   );
   const [scoreProfileId, setScoreProfileId] = useState<number | "">("");
@@ -1875,6 +1893,39 @@ export default function Settings() {
             ),
           },
           {
+            key: "failedDownloadHandling",
+            label: "Failed Download Handling",
+            description: "What happens after a grab fails or can't be imported",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  <strong>Blocklist and search again</strong> (default) automatically tries the
+                  next-best release, up to the retry limit below, before giving up and notifying.{" "}
+                  <strong>Blocklist only</strong> just blocklists the failed release and notifies —
+                  no automatic retry, the next scheduled auto-search (or a manual search) picks it
+                  up instead.
+                </p>
+                <label>Behavior</label>
+                <select
+                  key={settings.failedDownloadBehavior ?? "failed-behavior-empty"}
+                  defaultValue={settings.failedDownloadBehavior ?? "blocklistAndSearch"}
+                  onChange={(e) => saveSetting("failedDownloadBehavior", e.target.value)}
+                >
+                  <option value="blocklistAndSearch">Blocklist and search again (default)</option>
+                  <option value="blocklistOnly">Blocklist only</option>
+                </select>
+                <label>Max automatic retries</label>
+                <input
+                  type="number"
+                  min={0}
+                  key={settings.maxAutoRetries ?? "max-retries-empty"}
+                  defaultValue={settings.maxAutoRetries ?? "2"}
+                  onBlur={(e) => saveSetting("maxAutoRetries", e.target.value)}
+                />
+              </div>
+            ),
+          },
+          {
             key: "importStrategy",
             label: "Import Strategy",
             description: "Move, hardlink, or symlink files into the library",
@@ -1975,6 +2026,31 @@ export default function Settings() {
                 >
                   <option value="0">Disabled</option>
                   <option value="1">Enabled</option>
+                </select>
+              </div>
+            ),
+          },
+          {
+            key: "unmonitorDeletedFiles",
+            label: "Unmonitor Deleted Files",
+            description: "Whether a file that vanished from disk also gets unmonitored",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  A nightly check now notices when a file AoNarr had on record has disappeared
+                  from disk (deleted outside AoNarr, a bad mount, etc.) and corrects its "has file"
+                  status either way. This setting only controls whether it's also unmonitored (off
+                  by default — left monitored, so it gets auto-re-searched and redownloaded like
+                  any other missing item) versus left monitored so AoNarr tries to get it back.
+                </p>
+                <label>Unmonitor on delete</label>
+                <select
+                  key={settings.unmonitorDeletedFiles ?? "unmonitor-deleted-empty"}
+                  defaultValue={settings.unmonitorDeletedFiles ?? "0"}
+                  onChange={(e) => saveSetting("unmonitorDeletedFiles", e.target.value)}
+                >
+                  <option value="0">Stay monitored (default)</option>
+                  <option value="1">Unmonitor</option>
                 </select>
               </div>
             ),
@@ -2806,6 +2882,25 @@ export default function Settings() {
                 </button>
                 {testResult && (
                   <div style={{ marginTop: 10 }}>
+                    {testResult.parsed && (
+                      <div style={{ marginBottom: 10 }}>
+                        <strong>Parsed fields</strong>
+                        <p style={{ color: "var(--muted)", fontSize: "0.82rem", margin: "4px 0" }}>
+                          Quality: <code>{testResult.parsed.quality}</code>
+                          {testResult.parsed.source ? ` (${testResult.parsed.source})` : ""} · Season:{" "}
+                          <code>{testResult.parsed.seasonNumber ?? "-"}</code> · Episode(s):{" "}
+                          <code>{testResult.parsed.episodeNumbers?.join(", ") ?? (testResult.parsed.isFullSeason ? "full season" : "-")}</code>{" "}
+                          · Year: <code>{testResult.parsed.year ?? "-"}</code> · Group:{" "}
+                          <code>{testResult.parsed.releaseGroup ?? "-"}</code>
+                          {testResult.parsed.languages.length > 0 && <> · Languages: <code>{testResult.parsed.languages.join(", ")}</code></>}
+                          {testResult.parsed.flags.length > 0 && <> · Flags: <code>{testResult.parsed.flags.join(", ")}</code></>}
+                          {testResult.parsed.airDate && <> · Air date: <code>{testResult.parsed.airDate}</code></>}
+                        </p>
+                      </div>
+                    )}
+                    {testResult.rejected && (
+                      <p style={{ color: "var(--danger)" }}>Rejected by a Release Profile: {testResult.rejectReason}</p>
+                    )}
                     <p>
                       <strong>Total score: {testResult.totalScore}</strong>
                     </p>

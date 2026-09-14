@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate, useNavigationType, useParams, useSearch
 import { api, downloadFile, uploadFormFile } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
-import type { CustomColumn, LibraryGroup, MediaItem, RootFolder, SavedLibraryView, Tag } from "../types.js";
+import type { CustomColumn, LibraryGroup, MediaItem, QualityProfile, RootFolder, SavedLibraryView, Tag } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 import DropdownMenu from "../components/DropdownMenu.js";
 import Modal from "../components/Modal.js";
@@ -779,6 +779,28 @@ export function LibraryItemGrid({
     load();
   }
 
+  const [bulkEditProfiles, setBulkEditProfiles] = useState<QualityProfile[]>([]);
+  const [bulkEditFolders, setBulkEditFolders] = useState<RootFolder[]>([]);
+  const [bulkEditQualityProfileId, setBulkEditQualityProfileId] = useState<number | "">("");
+  const [bulkEditRootFolderId, setBulkEditRootFolderId] = useState<number | "">("");
+  useEffect(() => {
+    if (!auth.isAdmin) return;
+    api.get<QualityProfile[]>("/quality-profiles").then(setBulkEditProfiles);
+    api.get<RootFolder[]>("/root-folders").then((folders) => setBulkEditFolders(folders.filter((f) => f.mediaType === type)));
+  }, [auth.isAdmin, type]);
+
+  async function bulkEdit() {
+    if (!bulkEditQualityProfileId && !bulkEditRootFolderId) return;
+    const body: Record<string, unknown> = { mediaItemIds: Array.from(selected) };
+    if (bulkEditQualityProfileId) body.qualityProfileId = bulkEditQualityProfileId;
+    if (bulkEditRootFolderId) body.rootFolderId = bulkEditRootFolderId;
+    await api.post("/media/bulk/edit", body);
+    setBulkEditQualityProfileId("");
+    setBulkEditRootFolderId("");
+    load();
+    alert(`Updated ${selected.size} item(s).`);
+  }
+
   async function bulkTag() {
     if (!tagToApply) return;
     await api.post("/media/bulk/tag", { mediaItemIds: Array.from(selected), tagId: tagToApply });
@@ -791,9 +813,13 @@ export function LibraryItemGrid({
     const deleteFiles = confirm(
       `Also delete their files? (moved to the Recycle Bin, not permanently gone)\n\nOK = delete files too\nCancel = just untrack, leave files on disk`
     );
+    const addExclusion = confirm(
+      `Also add these to Import Exclusions?\n\nPrevents an active import list from just re-adding them on its next sync. Cancel to skip this.`
+    );
     const result = await api.post<{ deleted: number; skipped: number }>("/media/bulk/delete", {
       mediaItemIds: Array.from(selected),
       deleteFiles,
+      addExclusion,
     });
     setSelected(new Set());
     alert(`Removed ${result.deleted} item(s)${result.skipped > 0 ? `, ${result.skipped} already gone` : ""}.`);
@@ -1176,6 +1202,28 @@ export function LibraryItemGrid({
           </button>
           <button className="danger" onClick={bulkDelete}>
             Remove
+          </button>
+          <select
+            value={bulkEditQualityProfileId}
+            onChange={(e) => setBulkEditQualityProfileId(e.target.value ? Number(e.target.value) : "")}
+          >
+            <option value="">Quality profile...</option>
+            {bulkEditProfiles.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <select value={bulkEditRootFolderId} onChange={(e) => setBulkEditRootFolderId(e.target.value ? Number(e.target.value) : "")}>
+            <option value="">Root folder...</option>
+            {bulkEditFolders.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.path}
+              </option>
+            ))}
+          </select>
+          <button className="secondary" onClick={bulkEdit} disabled={!bulkEditQualityProfileId && !bulkEditRootFolderId}>
+            Apply
           </button>
           {tags.length > 0 && (
             <>

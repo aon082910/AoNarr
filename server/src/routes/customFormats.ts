@@ -7,6 +7,7 @@ import { translateTrashFormat, type TrashCustomFormat } from "../services/trashF
 import { syncTrashFormats } from "../services/trashSync.js";
 import { log } from "../services/logger.js";
 import { scoreRelease } from "../services/customFormatScoring.js";
+import { parseReleaseTitle } from "../services/releaseParser.js";
 
 export const customFormatsRouter = Router();
 customFormatsRouter.use(requireAdmin);
@@ -228,7 +229,10 @@ customFormatsRouter.post(
     if (!b.releaseTitle || typeof b.releaseTitle !== "string") throw new HttpError(400, "releaseTitle is required");
     const sizeBytes = b.sizeMb ? Number(b.sizeMb) * 1_000_000 : null;
     const result = await scoreRelease(b.releaseTitle, sizeBytes, b.qualityProfileId ?? null, b.mediaType ?? null);
-    res.json(result);
+    // Radarr/Sonarr's "test parsing" debug tool, folded into the same test box rather than a
+    // separate page — what AoNarr's own release parser actually extracted from the title, same
+    // parseReleaseTitle() every real search/grab/match call uses, so this can't drift from reality.
+    res.json({ ...result, parsed: parseReleaseTitle(b.releaseTitle) });
   })
 );
 

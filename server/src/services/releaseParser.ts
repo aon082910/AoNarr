@@ -203,14 +203,30 @@ export function parseReleaseTitle(title: string): ParsedRelease {
 }
 
 /** True if a parsed release plausibly satisfies a specific wanted episode. */
-export function releaseMatchesEpisode(
-  parsed: ParsedRelease,
-  seasonNumber: number,
-  episodeNumber: number
-): boolean {
+function matchesSeasonEpisode(parsed: ParsedRelease, seasonNumber: number, episodeNumber: number): boolean {
   if (parsed.seasonNumber !== null && parsed.seasonNumber !== seasonNumber) return false;
   if (parsed.episodeNumbers) return parsed.episodeNumbers.includes(episodeNumber);
   if (parsed.isFullSeason) return parsed.seasonNumber === seasonNumber;
+  return false;
+}
+
+/**
+ * `sceneSeasonNumber`/`sceneEpisodeNumber` (from TheXEM, see services/sceneNumbering.ts) are an
+ * OR alternative, not a replacement — a release matches if it fits either the metadata provider's
+ * own numbering or the scene group's numbering, since not every release for a scene-mapped show
+ * necessarily uses the scene numbering (some groups number correctly anyway).
+ */
+export function releaseMatchesEpisode(
+  parsed: ParsedRelease,
+  seasonNumber: number,
+  episodeNumber: number,
+  sceneSeasonNumber?: number | null,
+  sceneEpisodeNumber?: number | null
+): boolean {
+  if (matchesSeasonEpisode(parsed, seasonNumber, episodeNumber)) return true;
+  if (sceneSeasonNumber != null && sceneEpisodeNumber != null) {
+    return matchesSeasonEpisode(parsed, sceneSeasonNumber, sceneEpisodeNumber);
+  }
   return false;
 }
 

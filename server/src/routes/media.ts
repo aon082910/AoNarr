@@ -21,6 +21,7 @@ import { getMediaTypeConfig, isProbeableFile, isValidMediaType } from "../servic
 import { attachChildCounts } from "../services/childCounts.js";
 import { notifyQueueChanged } from "../services/realtime.js";
 import { buildMediaQuery, clampLimit, clampOffset, MEDIA_SORT_COLUMNS } from "../services/mediaQuery.js";
+import { syncSceneNumbering } from "../services/sceneNumbering.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
@@ -101,6 +102,38 @@ mediaRouter.post(
   })
 );
 
+/** Radarr/Sonarr's "Edit" bulk action — change quality profile and/or root folder across a
+ * multi-select, in one call. Either field can be omitted to leave it untouched (so a caller that
+ * only wants to change one doesn't have to know/resend the other). */
+mediaRouter.post(
+  "/bulk/edit",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const { mediaItemIds, qualityProfileId, rootFolderId } = req.body ?? {};
+    if (!Array.isArray(mediaItemIds) || mediaItemIds.length === 0) {
+      throw new HttpError(400, "mediaItemIds is required");
+    }
+    if (qualityProfileId === undefined && rootFolderId === undefined) {
+      throw new HttpError(400, "qualityProfileId and/or rootFolderId is required");
+    }
+    const sets: string[] = [];
+    const values: any[] = [];
+    if (qualityProfileId !== undefined) {
+      sets.push("quality_profile_id = ?");
+      values.push(qualityProfileId);
+    }
+    if (rootFolderId !== undefined) {
+      sets.push("root_folder_id = ?");
+      values.push(rootFolderId);
+    }
+    await db.transaction(async () => {
+      const update = db.prepare(`UPDATE media_items SET ${sets.join(", ")} WHERE id = ?`);
+      for (const id of mediaItemIds) await update.run(...values, id);
+    });
+    res.json({ updated: mediaItemIds.length });
+  })
+);
+
 mediaRouter.post(
   "/bulk/tag",
   requireAdmin,
@@ -130,7 +163,7 @@ mediaRouter.post(
   "/bulk/delete",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const { mediaItemIds, deleteFiles } = req.body ?? {};
+    const { mediaItemIds, deleteFiles, addExclusion } = req.body ?? {};
     if (!Array.isArray(mediaItemIds) || mediaItemIds.length === 0) {
       throw new HttpError(400, "mediaItemIds is required");
     }
@@ -140,6 +173,7 @@ mediaRouter.post(
       const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(id)) as any;
       if (!row) continue;
 
+      if (addExclusion) await addImportExclusion(row);
       if (deleteFiles) {
         if (row.path) await recycleFile(row.path, row.type, row.title, row.id);
         const children = (
@@ -1196,10 +1230,34 @@ mediaRouter.patch(
   })
 );
 
+/** Radarr/Sonarr-style "Add List Exclusion" on delete — without this, an active Import List that
+ * still has the title on its source list just re-adds it on the next sync, undoing the delete. */
+async function addImportExclusion(row: any): Promise<void> {
+  let externalId: string | null = null;
+  let externalProvider: string | null = null;
+  try {
+    const ids = row.external_ids ? JSON.parse(row.external_ids) : {};
+    const [provider, id] = Object.entries(ids)[0] ?? [];
+    if (provider && id) {
+      externalProvider = provider as string;
+      externalId = id as string;
+    }
+  } catch {
+    // malformed external_ids on this row — exclude by title/year alone rather than skip it
+  }
+  await db
+    .prepare(
+      `INSERT INTO import_exclusions (type, title, year, external_id, external_provider, reason)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run(row.type, row.title, row.year ?? null, externalId, externalProvider, "Excluded on delete");
+}
+
 /** Shared by the single-item DELETE route below and the root-folder cascade-delete option
  * (routes/rootFolders.ts) — same "untrack only by default, ?deleteFiles=1 also recycles the
  * file(s)" behavior either way. */
-export async function deleteMediaItemCascade(row: any, deleteFiles: boolean): Promise<void> {
+export async function deleteMediaItemCascade(row: any, deleteFiles: boolean, addExclusion = false): Promise<void> {
+  if (addExclusion) await addImportExclusion(row);
   if (deleteFiles) {
     if (row.path) await recycleFile(row.path, row.type, row.title, row.id);
     const children = (
@@ -1221,8 +1279,9 @@ mediaRouter.delete(
 
     // Default behavior stays "untrack only, leave files on disk" — opt in with ?deleteFiles=1 to
     // also recycle the item's file(s) (CASCADE drops episodes/sub_items too, so their
-    // file_paths need collecting before the row goes).
-    await deleteMediaItemCascade(row, req.query.deleteFiles === "1");
+    // file_paths need collecting before the row goes). ?addExclusion=1 also adds it to the Import
+    // Exclusions list so an active import list doesn't just re-add it on its next sync.
+    await deleteMediaItemCascade(row, req.query.deleteFiles === "1", req.query.addExclusion === "1");
     const actor = auditActor(req);
     logAuditEvent(
       actor.userId,
@@ -1311,6 +1370,19 @@ mediaRouter.patch(
       .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND season_number = ? ORDER BY episode_number")
       .all(req.params.id, req.params.seasonNumber);
     res.json(rows.map(episodeFromRow));
+  })
+);
+
+/** Manual re-sync of TheXEM scene-numbering mapping for one series — same call the scheduler's
+ * own weekly job and the add-time enrichment make, exposed here for "I just know thexem updated
+ * this show's mapping, don't want to wait for the weekly job." */
+mediaRouter.post(
+  "/:id/sync-scene-numbering",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const result = await syncSceneNumbering(Number(req.params.id));
+    if ("error" in result) throw new HttpError(400, result.error);
+    res.json(result);
   })
 );
 
