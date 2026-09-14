@@ -3,6 +3,21 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 191 — Custom Format tester; Remote Path Mappings deliberately skipped
+- Settings → Quality → **Test Custom Formats**: paste a sample release title (+ optional size and
+  quality profile) and see which custom formats match and what they'd score — reuses the exact
+  `scoreRelease()` function the real search/grab pipeline calls, so results are guaranteed
+  accurate rather than a separate reimplementation that could drift. Radarr-parity feature.
+- **Did NOT build** Radarr-style Remote Path Mappings, after checking whether it actually applies:
+  Radarr needs it because it trusts the file path its download client's API reports and has to
+  translate that into its own filesystem view. AoNarr's importer never does that — it always
+  scans its own mounted `downloadsDir` directly and matches files by name/title (see
+  `importer.ts`'s `findDownloadedFile`/`listDownloadedFileCandidates`), so there's no client-
+  reported path to translate in the first place. Building a Remote Path Mappings settings page
+  would be a UI with nothing behind it. The actual fix for a split-container setup is making sure
+  the download client's completed-download folder and AoNarr's `downloadsDir` are the same mounted
+  path — already covered in the Download Clients page's own guidance text.
+
 ## Round 190 — closes out the AoNarr-vs-Radarr gap list: updates, size on disk, log files, studio
 - **System → Overview** now has an **Updates** check. AoNarr has no numbered releases (rolling
   `main` branch, no git tags/GitHub Releases), so instead of a semver check this compares the

@@ -329,6 +329,13 @@ export default function Settings() {
   const [trashJson, setTrashJson] = useState("");
   const [trashError, setTrashError] = useState<string | null>(null);
   const [trashSyncing, setTrashSyncing] = useState<"radarr" | "sonarr" | null>(null);
+  const [testReleaseTitle, setTestReleaseTitle] = useState("");
+  const [testReleaseSizeMb, setTestReleaseSizeMb] = useState("");
+  const [testQualityProfileId, setTestQualityProfileId] = useState("");
+  const [testingFormat, setTestingFormat] = useState(false);
+  const [testResult, setTestResult] = useState<{ totalScore: number; matches: { id: number; name: string; score: number }[] } | null>(
+    null
+  );
   const [scoreProfileId, setScoreProfileId] = useState<number | "">("");
   const [formatScores, setFormatScores] = useState<FormatScore[]>([]);
   const [delayProfiles, setDelayProfiles] = useState<DelayProfile[]>([]);
@@ -549,6 +556,26 @@ export default function Settings() {
       alert((e as Error).message);
     } finally {
       setTrashSyncing(null);
+    }
+  }
+
+  async function runCustomFormatTest() {
+    if (!testReleaseTitle.trim()) return;
+    setTestingFormat(true);
+    try {
+      const result = await api.post<{ totalScore: number; matches: { id: number; name: string; score: number }[] }>(
+        "/custom-formats/test",
+        {
+          releaseTitle: testReleaseTitle.trim(),
+          sizeMb: testReleaseSizeMb ? Number(testReleaseSizeMb) : null,
+          qualityProfileId: testQualityProfileId ? Number(testQualityProfileId) : null,
+        }
+      );
+      setTestResult(result);
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setTestingFormat(false);
     }
   }
 
@@ -2531,6 +2558,68 @@ export default function Settings() {
                     Import
                   </button>
                 </div>
+              </div>
+            ),
+          },
+          {
+            key: "testCustomFormats",
+            label: "Test Custom Formats",
+            description: "Check which formats a sample release title would match",
+            maxWidth: 620,
+            render: () => (
+              <div className="form-panel">
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Paste a release title (real or hypothetical) to see which custom formats match it and what
+                  score each contributes for a given quality profile — the same scoring the search/grab
+                  pipeline uses, without needing a real search result.
+                </p>
+                <label>Release title</label>
+                <input
+                  value={testReleaseTitle}
+                  onChange={(e) => setTestReleaseTitle(e.target.value)}
+                  placeholder="Movie.Name.2024.2160p.UHD.BluRay.REMUX.HDR.DTS-HD.MA.5.1-GROUP"
+                />
+                <label>Size (MB, optional — needed for size-based conditions)</label>
+                <input value={testReleaseSizeMb} onChange={(e) => setTestReleaseSizeMb(e.target.value)} type="number" style={{ maxWidth: 160 }} />
+                <label>Quality profile (optional — scores are per-profile)</label>
+                <select value={testQualityProfileId} onChange={(e) => setTestQualityProfileId(e.target.value)}>
+                  <option value="">No profile (show matches only, no scores)</option>
+                  {profiles.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+                <button type="button" onClick={runCustomFormatTest} disabled={!testReleaseTitle.trim() || testingFormat} style={{ marginTop: 8 }}>
+                  {testingFormat ? "Testing..." : "Test"}
+                </button>
+                {testResult && (
+                  <div style={{ marginTop: 10 }}>
+                    <p>
+                      <strong>Total score: {testResult.totalScore}</strong>
+                    </p>
+                    {testResult.matches.length === 0 ? (
+                      <p className="empty">No custom formats matched.</p>
+                    ) : (
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Format</th>
+                            <th>Score</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {testResult.matches.map((m) => (
+                            <tr key={m.id}>
+                              <td>{m.name}</td>
+                              <td>{m.score}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                )}
               </div>
             ),
           },

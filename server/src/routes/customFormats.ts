@@ -6,6 +6,7 @@ import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { translateTrashFormat, type TrashCustomFormat } from "../services/trashFormats.js";
 import { syncTrashFormats } from "../services/trashSync.js";
 import { log } from "../services/logger.js";
+import { scoreRelease } from "../services/customFormatScoring.js";
 
 export const customFormatsRouter = Router();
 customFormatsRouter.use(requireAdmin);
@@ -210,6 +211,24 @@ customFormatsRouter.delete(
     const result = await db.prepare("DELETE FROM custom_formats WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Custom format not found");
     res.status(204).send();
+  })
+);
+
+/**
+ * Radarr-style Custom Format "Test" box — scores a hypothetical release title (with optional size/
+ * media type/quality profile) against every saved custom format, without needing a real search
+ * result or grab to see which formats would match and what they'd score. Reuses the exact same
+ * scoreRelease() the search/grab pipeline calls, so the result here is guaranteed to match what a
+ * real release with this title would actually score.
+ */
+customFormatsRouter.post(
+  "/test",
+  asyncHandler(async (req, res) => {
+    const b = req.body ?? {};
+    if (!b.releaseTitle || typeof b.releaseTitle !== "string") throw new HttpError(400, "releaseTitle is required");
+    const sizeBytes = b.sizeMb ? Number(b.sizeMb) * 1_000_000 : null;
+    const result = await scoreRelease(b.releaseTitle, sizeBytes, b.qualityProfileId ?? null, b.mediaType ?? null);
+    res.json(result);
   })
 );
 
