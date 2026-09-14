@@ -339,6 +339,7 @@ export interface SearchResult {
   rejected: boolean;
   rejectReason?: string;
   downloadVolumeFactor?: number | null;
+  alsoOnIndexers?: string[];
 }
 
 export interface BlocklistEntry {

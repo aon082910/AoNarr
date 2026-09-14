@@ -2080,7 +2080,14 @@ export default function MediaDetail() {
                       <span className={`badge ${r.allowedByProfile ? "ok" : "danger"}`}>{r.parsedQuality}</span>
                     </td>
                     <td title={r.formatMatches.join(", ")}>{r.formatScore}</td>
-                    <td>{r.indexerName}</td>
+                    <td>
+                      {r.indexerName}
+                      {r.alsoOnIndexers && r.alsoOnIndexers.length > 0 && (
+                        <span className="badge" style={{ marginLeft: 6 }} title={`Also found on: ${r.alsoOnIndexers.join(", ")}`}>
+                          +{r.alsoOnIndexers.length}
+                        </span>
+                      )}
+                    </td>
                     <td>
                       {(r.size / 1e9).toFixed(2)} GB
                       {!r.sizeAllowed && (

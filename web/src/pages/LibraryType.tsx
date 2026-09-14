@@ -373,6 +373,14 @@ export function LibraryItemGrid({
   const [listColumns, setListColumns] = useState<Set<ExtraField>>(() => loadFieldSet("aonarr_library_columns", DEFAULT_LIST_COLUMNS));
   const [posterFields, setPosterFields] = useState<Set<ExtraField>>(() => loadFieldSet("aonarr_library_poster_fields", DEFAULT_POSTER_FIELDS));
   const [contentRatingFilter, setContentRatingFilter] = useState<string | "all">("all");
+  const [searchInput, setSearchInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  // Debounced — fires the actual (server-side, SQL-level) search 350ms after typing stops, not on
+  // every keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setSearchQuery(searchInput.trim()), 350);
+    return () => clearTimeout(t);
+  }, [searchInput]);
   // Bug fix: page used to be plain useState, invisible to the URL — navigating to a media item and
   // back (a real route change/remount, unlike switching library type) reset it to page 1 every
   // time, no matter which page the user had actually scrolled to. Stored in the URL instead, so
@@ -445,6 +453,7 @@ export function LibraryItemGrid({
     const params = scopeParams();
     if (statusFilter !== "all") params.set("status", statusFilter);
     if (contentRatingFilter !== "all") params.set("contentRating", contentRatingFilter);
+    if (searchQuery) params.set("q", searchQuery);
     params.set("sort", sortKey);
     params.set("limit", String(pageSize));
     params.set("offset", String(page * pageSize));
@@ -462,7 +471,18 @@ export function LibraryItemGrid({
     api.get<LibraryStats>(`/media/stats?${scopeParams().toString()}`).then(setStats);
   }
 
-  useEffect(load, [type, groupId, tagFilter, statusFilter, contentRatingFilter, sortKey, page, pageSize]);
+  useEffect(load, [type, groupId, tagFilter, statusFilter, contentRatingFilter, searchQuery, sortKey, page, pageSize]);
+  // A new search narrows/changes the result set entirely — staying on page 5 of the old,
+  // unfiltered results would just show an empty page. Skips the very first render (searchQuery
+  // starts at "") so mounting the page doesn't force an unnecessary page reset.
+  const isFirstSearchRender = useRef(true);
+  useEffect(() => {
+    if (isFirstSearchRender.current) {
+      isFirstSearchRender.current = false;
+      return;
+    }
+    setPage(0);
+  }, [searchQuery]);
   useEffect(loadStats, [type, groupId, tagFilter]);
 
   // Remembers where the user was scrolled to on this exact URL (type/group/filters/page all live
@@ -951,6 +971,13 @@ export function LibraryItemGrid({
         </p>
       )}
       <div className="toolbar" style={{ marginBottom: 10 }}>
+        <input
+          type="search"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          placeholder={`Search ${typeLabel.toLowerCase()}...`}
+          style={{ maxWidth: 220 }}
+        />
         <select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)} style={{ maxWidth: 210 }}>
           <option value="added">Sort: Recently added</option>
           <option value="title">Sort: Title</option>

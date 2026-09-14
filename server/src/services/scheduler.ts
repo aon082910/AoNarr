@@ -72,6 +72,19 @@ import { syncWatchStatusFromMediaServer } from "./mediaServerWebhook.js";
 import { registerJob, startAllJobs } from "./jobRegistry.js";
 import type { DownloadClient, Indexer, MediaItem, QueueItem, SearchResult } from "../types/index.js";
 
+/** Runs `fn` over `items` with at most `concurrency` in flight at once — plain `Promise.all` would
+ * fire every item simultaneously (for a show with dozens of missing episodes, that's dozens of
+ * simultaneous full-indexer-fanout searches at once, working against the per-indexer query-limit
+ * throttle and backoff this app already has); a strict sequential loop (the previous behavior)
+ * is correct but slow for a show with many missing episodes. A small fixed batch size is a
+ * reasonable middle ground — real speedup without bursting past what a configured query limit
+ * expects "one show's worth of search activity" to look like. */
+async function mapWithConcurrency<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>): Promise<void> {
+  for (let i = 0; i < items.length; i += concurrency) {
+    await Promise.all(items.slice(i, i + concurrency).map(fn));
+  }
+}
+
 async function rowsToIndexers(): Promise<Indexer[]> {
   return ((await db.prepare("SELECT * FROM indexers").all()) as any[]).map(indexerFromRow);
 }
@@ -446,14 +459,14 @@ async function runAutoSearch(signal?: AbortSignal) {
           .all(item.id)) as any[];
 
         const isDaily = item.seriesType === "daily";
-        for (const ep of episodes) {
-          if (await isAlreadyQueued(item.id, ep.id, null)) continue;
-          if (isDaily && !ep.air_date) continue; // nothing to search by yet (air date not known)
+        await mapWithConcurrency(episodes, 3, async (ep) => {
+          if (await isAlreadyQueued(item.id, ep.id, null)) return;
+          if (isDaily && !ep.air_date) return; // nothing to search by yet (air date not known)
           // A future-dated episode has no real release to find yet — searching for one anyway
           // just returns noise (unrelated titles that happen to match the query) and risks a
           // false-positive grab. Only compare the date portion (not time-of-day) since an air
           // date is stored as a bare date with no timezone/time — "today" should still search.
-          if (ep.air_date && ep.air_date.slice(0, 10) > new Date().toISOString().slice(0, 10)) continue;
+          if (ep.air_date && ep.air_date.slice(0, 10) > new Date().toISOString().slice(0, 10)) return;
           // Scene-numbered (TheXEM) season/episode wins the search QUERY when known — that's the
           // numbering a scene-mapped show's releases actually use — while matching still accepts
           // either numbering (see releaseMatchesEpisode's OR), since not every release for such a
@@ -488,7 +501,7 @@ async function runAutoSearch(signal?: AbortSignal) {
             if (targetClient) await grab(targetClient, item, ep.id, null, best);
             else log.warn(`[scheduler] no "${best.result.protocol}" download client configured, skipping "${best.result.title}"`);
           }
-        }
+        });
       } else {
         // collection shape: albums / books / comic issues / videos / lessons
         const subItems = (await db

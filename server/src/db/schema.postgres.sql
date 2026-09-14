@@ -45,6 +45,11 @@ CREATE TABLE IF NOT EXISTS media_items (
 );
 
 CREATE INDEX IF NOT EXISTS idx_media_items_type ON media_items(type);
+CREATE INDEX IF NOT EXISTS idx_media_items_status ON media_items(status);
+CREATE INDEX IF NOT EXISTS idx_media_items_monitored ON media_items(monitored);
+CREATE INDEX IF NOT EXISTS idx_media_items_has_file ON media_items(has_file);
+CREATE INDEX IF NOT EXISTS idx_media_items_root_folder_id ON media_items(root_folder_id);
+CREATE INDEX IF NOT EXISTS idx_media_items_sort_title ON media_items(sort_title);
 
 -- Season-level artwork (TV/anime only) — episodes don't carry a poster of their own, and a show's
 -- own poster_url is the SHOW's poster, not any one season's. Not every provider exposes season
@@ -73,6 +78,7 @@ CREATE TABLE IF NOT EXISTS episodes (
   file_path TEXT,
   UNIQUE(media_item_id, season_number, episode_number)
 );
+CREATE INDEX IF NOT EXISTS idx_episodes_media_item_has_file ON episodes(media_item_id, has_file);
 
 -- Albums (artist) / Books (author) - generic sub-item table
 CREATE TABLE IF NOT EXISTS sub_items (
@@ -90,6 +96,7 @@ CREATE TABLE IF NOT EXISTS sub_items (
   series_position REAL,
   narrator TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_sub_items_media_item_has_file ON sub_items(media_item_id, has_file);
 
 -- protocol/type are intentionally unconstrained (not a fixed CHECK list) — same reasoning as
 -- media_items.type: the valid set lives in services/indexerClient.ts and services/downloadClient.ts
@@ -156,6 +163,8 @@ CREATE TABLE IF NOT EXISTS queue (
   updated_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
   last_progress_at TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_queue_media_item_id ON queue(media_item_id);
+CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
 
 CREATE TABLE IF NOT EXISTS history (
   id SERIAL PRIMARY KEY,
@@ -164,6 +173,8 @@ CREATE TABLE IF NOT EXISTS history (
   data TEXT,
   created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
 );
+CREATE INDEX IF NOT EXISTS idx_history_media_item_id ON history(media_item_id);
+CREATE INDEX IF NOT EXISTS idx_history_created_at ON history(created_at);
 
 CREATE TABLE IF NOT EXISTS subtitle_providers (
   id SERIAL PRIMARY KEY,
@@ -517,6 +528,7 @@ CREATE TABLE IF NOT EXISTS blocklist (
   reason TEXT,
   created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
 );
+CREATE INDEX IF NOT EXISTS idx_blocklist_media_item_id ON blocklist(media_item_id);
 
 -- Instant "this was just watched" signal from a Plex/Jellyfin/Emby webhook, distinct from the
 -- polling-based fetchWatchedFiles() used by auto-archival — lets the dashboard's Recently

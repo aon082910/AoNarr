@@ -94,10 +94,9 @@ mediaRouter.post(
     if (!Array.isArray(mediaItemIds) || mediaItemIds.length === 0) {
       throw new HttpError(400, "mediaItemIds is required");
     }
-    await db.transaction(async () => {
-      const update = db.prepare("UPDATE media_items SET monitored = ? WHERE id = ?");
-      for (const id of mediaItemIds) await update.run(monitored ? 1 : 0, id);
-    });
+    await db
+      .prepare(`UPDATE media_items SET monitored = ? WHERE id IN (${mediaItemIds.map(() => "?").join(",")})`)
+      .run(monitored ? 1 : 0, ...mediaItemIds);
     res.json({ updated: mediaItemIds.length });
   })
 );
@@ -126,10 +125,9 @@ mediaRouter.post(
       sets.push("root_folder_id = ?");
       values.push(rootFolderId);
     }
-    await db.transaction(async () => {
-      const update = db.prepare(`UPDATE media_items SET ${sets.join(", ")} WHERE id = ?`);
-      for (const id of mediaItemIds) await update.run(...values, id);
-    });
+    await db
+      .prepare(`UPDATE media_items SET ${sets.join(", ")} WHERE id IN (${mediaItemIds.map(() => "?").join(",")})`)
+      .run(...values, ...mediaItemIds);
     res.json({ updated: mediaItemIds.length });
   })
 );
@@ -142,14 +140,12 @@ mediaRouter.post(
     if (!Array.isArray(mediaItemIds) || mediaItemIds.length === 0 || !tagId) {
       throw new HttpError(400, "mediaItemIds and tagId are required");
     }
+    const valuesSql = mediaItemIds.map(() => "(?, ?)").join(",");
     const insertSql =
       db.dialect === "postgres"
-        ? "INSERT INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING"
-        : "INSERT OR IGNORE INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?)";
-    await db.transaction(async () => {
-      const insert = db.prepare(insertSql);
-      for (const id of mediaItemIds) await insert.run(id, tagId);
-    });
+        ? `INSERT INTO media_item_tags (media_item_id, tag_id) VALUES ${valuesSql} ON CONFLICT DO NOTHING`
+        : `INSERT OR IGNORE INTO media_item_tags (media_item_id, tag_id) VALUES ${valuesSql}`;
+    await db.prepare(insertSql).run(...mediaItemIds.flatMap((id: number) => [id, tagId]));
     res.json({ tagged: mediaItemIds.length });
   })
 );
@@ -205,13 +201,14 @@ mediaRouter.post(
 mediaRouter.get(
   "/",
   asyncHandler(async (req, res) => {
-    const { type, tagId, groupId, sort, status, contentRating } = req.query as {
+    const { type, tagId, groupId, sort, status, contentRating, q } = req.query as {
       type?: MediaType;
       tagId?: string;
       groupId?: string;
       sort?: string;
       status?: string;
       contentRating?: string;
+      q?: string;
     };
     const allowedTypes = allowedTypesFor(req);
     if (allowedTypes && type && !allowedTypes.includes(type)) {
@@ -227,6 +224,7 @@ mediaRouter.get(
       contentRating,
       allowedTypes,
       maxContentRating: req.auth?.user?.maxContentRating,
+      q,
     });
     if (where === null) {
       res.json({ items: [], total: 0 });

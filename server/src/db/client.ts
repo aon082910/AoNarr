@@ -389,3 +389,24 @@ if (!existingApiKey) {
     console.log("=".repeat(60));
   }
 }
+
+// One-time backfill for library_search_fts (see schema.sql) — the triggers there only fire on
+// rows changed after the virtual table exists, so an install upgrading from before this table
+// existed needs its already-present media_items/episodes/sub_items rows indexed by hand, once.
+// Guarded on the fts table being empty (not a version flag) so it's naturally a no-op on a fresh
+// install (nothing to backfill yet) and idempotent on every subsequent boot.
+{
+  const ftsCount = (db.prepare("SELECT COUNT(*) AS c FROM library_search_fts").get() as { c: number }).c;
+  const mediaItemCount = (db.prepare("SELECT COUNT(*) AS c FROM media_items").get() as { c: number }).c;
+  if (ftsCount === 0 && mediaItemCount > 0) {
+    db.exec(`
+      INSERT INTO library_search_fts (media_item_id, match_type, source_id, match_detail, title)
+      SELECT id, 'title', id, NULL, title FROM media_items;
+      INSERT INTO library_search_fts (media_item_id, match_type, source_id, match_detail, title)
+      SELECT media_item_id, 'episode', id, title, title FROM episodes;
+      INSERT INTO library_search_fts (media_item_id, match_type, source_id, match_detail, title)
+      SELECT media_item_id, 'child', id, title, title FROM sub_items;
+    `);
+    console.log("[startup] backfilled library_search_fts for existing library rows");
+  }
+}

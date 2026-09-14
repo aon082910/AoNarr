@@ -49,6 +49,38 @@ export interface AnnotatedSearchResult extends SearchResult {
   blocklisted: boolean;
   rejected: boolean;
   rejectReason?: string;
+  /** Other indexers that also carry what looks like this exact same release (same normalized
+   * title + exact size) — collapsed into the best-ranked copy instead of showing N separate rows
+   * for what's really one release someone happened to post to multiple trackers. */
+  alsoOnIndexers?: string[];
+}
+
+/** Same normalization releaseParser.ts-adjacent code doesn't already do: lowercase, collapse all
+ * whitespace/punctuation runs to a single space, trim. Deliberately coarse (not the same as
+ * releaseGroup/quality parsing) — this only needs to tell "basically the same release" apart from
+ * "a different release", not extract structured fields from it. */
+function normalizeForDedup(title: string): string {
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/** Collapses near-identical releases (same normalized title, same exact size) posted to more than
+ * one indexer into a single row — keeps whichever copy sorted first (the caller's own ranking
+ * already puts the best copy first), and records the rest as `alsoOnIndexers`. Size must match
+ * exactly (not fuzzy) — two different releases can coincidentally share a title. */
+function dedupeResults(results: AnnotatedSearchResult[]): AnnotatedSearchResult[] {
+  const byKey = new Map<string, AnnotatedSearchResult>();
+  const order: string[] = [];
+  for (const r of results) {
+    const key = `${normalizeForDedup(r.title)}::${r.size}`;
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, r);
+      order.push(key);
+    } else if (r.indexerName && r.indexerName !== existing.indexerName) {
+      (existing.alsoOnIndexers ??= []).push(r.indexerName);
+    }
+  }
+  return order.map((key) => byKey.get(key)!);
 }
 
 /**
@@ -178,7 +210,7 @@ searchRouter.get(
         (b.seeders ?? 0) - (a.seeders ?? 0)
     );
 
-    res.json(annotated);
+    res.json(dedupeResults(annotated));
   })
 );
 

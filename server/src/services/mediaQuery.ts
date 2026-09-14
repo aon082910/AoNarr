@@ -14,6 +14,11 @@ export interface MediaQueryFilters {
   contentRating?: string;
   allowedTypes: string[] | null;
   maxContentRating?: string | null;
+  /** Free-text title search, scoped to whatever other filters already narrowed this query to. On
+   * SQLite this also matches episode/child (album/book/...) titles via the library_search_fts
+   * index (see schema.sql); Postgres has no FTS5, so it falls back to a plain `title ILIKE`
+   * against the item's own title only. */
+  q?: string;
 }
 
 export interface MediaQuery {
@@ -22,6 +27,20 @@ export interface MediaQuery {
   where: string | null;
   params: unknown[];
   fromClause: string;
+}
+
+/** Turns free-typed user input into an FTS5 query string: each whitespace-separated token is
+ * phrase-quoted (escaping any literal `"` by doubling it, FTS5's own escape convention) so
+ * special MATCH-syntax characters in the input (`-`, `*`, `AND`/`OR`/`NOT` as bare words, etc.)
+ * are never interpreted as query syntax, then suffixed with `*` for prefix matching — searching
+ * "aveng" finds "Avengers". Multiple tokens are implicitly AND'd (FTS5's default), same as typing
+ * more words into a search box should narrow results, not broaden them. */
+export function toFts5Query(q: string): string {
+  return q
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((token) => `"${token.replace(/"/g, '""')}"*`)
+    .join(" ");
 }
 
 /** Radarr/Sonarr-style "cutoff unmet" — every downloaded item whose current quality ranks below
@@ -97,6 +116,19 @@ export async function buildMediaQuery(filters: MediaQueryFilters): Promise<Media
     if (blocked.length > 0) {
       conditions.push(`(m.content_rating IS NULL OR m.content_rating NOT IN (${blocked.map(() => "?").join(",")}))`);
       params.push(...blocked);
+    }
+  }
+
+  if (filters.q?.trim()) {
+    if (db.dialect === "postgres") {
+      conditions.push("m.title ILIKE ?");
+      params.push(`%${filters.q.trim()}%`);
+    } else {
+      const ftsQuery = toFts5Query(filters.q);
+      if (ftsQuery) {
+        conditions.push("m.id IN (SELECT media_item_id FROM library_search_fts WHERE library_search_fts MATCH ?)");
+        params.push(ftsQuery);
+      }
     }
   }
 

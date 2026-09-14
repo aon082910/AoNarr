@@ -3,6 +3,7 @@ import { log } from "./logger.js";
 import { getMediaTypeConfig, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
 import { recycleFile } from "./recycleBin.js";
 import { notifyDuplicatesFound } from "./notifications.js";
+import { attachChildCounts } from "./childCounts.js";
 
 function normalizeTitle(title: string): string {
   return title
@@ -101,6 +102,10 @@ export async function findDuplicateGroups(type?: string): Promise<DuplicateGroup
   for (const t of types) {
     const shape = getMediaTypeConfig(t).shape;
     const rows = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(t)) as any[];
+    // One batched grouped query for every row of this type up front, instead of a per-row
+    // COUNT(*) issued only for the (hopefully rare) rows that turn out to be duplicates — same
+    // pattern as the Library page's own child-count attachment.
+    if (shape === "episodic" || shape === "collection") await attachChildCounts(rows);
 
     const byKey = new Map<string, any[]>();
     for (const row of rows) {
@@ -117,12 +122,7 @@ export async function findDuplicateGroups(type?: string): Promise<DuplicateGroup
 
       const items: DuplicateGroupItem[] = [];
       for (const row of rowsInGroup) {
-        const childCount =
-          shape === "episodic"
-            ? Number(((await db.prepare("SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ?").get(row.id)) as { c: number }).c)
-            : shape === "collection"
-              ? Number(((await db.prepare("SELECT COUNT(*) AS c FROM sub_items WHERE media_item_id = ?").get(row.id)) as { c: number }).c)
-              : 0;
+        const childCount = row.childCount ?? 0;
         let matchedProviders: string[] = [];
         try {
           matchedProviders = row.external_ids ? Object.keys(JSON.parse(row.external_ids)) : [];

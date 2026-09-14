@@ -3,6 +3,35 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 200 — performance: indexes, FTS5 search, batched bulk edits, bounded search concurrency
+- **Database indexes**: the entire schema had exactly two `CREATE INDEX` statements total before
+  this round. Added indexes on `media_items(status/monitored/has_file/root_folder_id/sort_title)`,
+  `episodes(media_item_id, has_file)`, `sub_items(media_item_id, has_file)`,
+  `queue(media_item_id/status)`, `history(media_item_id/created_at)`, and
+  `blocklist(media_item_id)` — every one of these backed a routine, frequent lookup (the Library
+  page's own filters/sort, the scheduler's monitored-items scan, per-item queue/history/blocklist
+  lookups) that was previously a full table scan on any library of meaningful size.
+- **FTS5-accelerated library search**: SQLite installs now index every title in the library
+  (items, episodes, albums/books/issues/...) in a `library_search_fts` virtual table, kept in sync
+  automatically by triggers — no application code needs to know it exists. The existing global
+  search endpoint and a brand new **Library page search box** (debounced, SQL-level — searches
+  alongside existing sort/filter/pagination, not a separate client-side pass) both use it. A
+  leading-wildcard `LIKE '%x%'` scan across three unindexed tables becomes a single indexed MATCH.
+  Postgres has no FTS5, so it keeps the original ILIKE query there — existing installs get a
+  one-time backfill of the FTS index on first boot after upgrading.
+- **Batched bulk-edit queries**: the Library page's bulk monitor/edit/tag actions now issue one
+  `UPDATE ... WHERE id IN (...)` (or one multi-row `INSERT`) instead of one query per selected row.
+- **Batched duplicate-check counts**: the scheduled duplicate-check job now computes every
+  duplicate group's episode/album counts with one grouped query up front (reusing the same
+  batching helper the Library page's own child-count column already used), instead of one COUNT
+  query per item inside each duplicate group.
+- **Bounded-concurrency auto-search**: a show's missing episodes are now searched 3 at a time
+  instead of strictly one at a time — real speedup for a show with many missing episodes, while
+  staying modest enough not to blow through a configured per-indexer query limit in one burst.
+- **De-duplicated search results**: the manual search results table now collapses the same
+  release posted to multiple indexers into one row (exact same normalized title + size) instead of
+  showing it as several separate results, with a badge listing the other indexers it's also on.
+
 ## Round 199 — test notifications, manual-import quality override, import-list review mode
 - **"Send test notification" button**: every notification provider tile now has a "Send test
   notification" action, ignoring that provider's own event filter (a test should always go through

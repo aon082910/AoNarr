@@ -45,6 +45,15 @@ CREATE TABLE IF NOT EXISTS media_items (
 );
 
 CREATE INDEX IF NOT EXISTS idx_media_items_type ON media_items(type);
+-- Every one of these backs a routine, frequent lookup that previously ran as a full table scan:
+-- status/monitored/has_file/root_folder_id are all WHERE-clause targets in buildMediaQuery.ts and
+-- the scheduler's own monitored-items scan (runAutoSearch); sort_title is the Library page's
+-- default sort column.
+CREATE INDEX IF NOT EXISTS idx_media_items_status ON media_items(status);
+CREATE INDEX IF NOT EXISTS idx_media_items_monitored ON media_items(monitored);
+CREATE INDEX IF NOT EXISTS idx_media_items_has_file ON media_items(has_file);
+CREATE INDEX IF NOT EXISTS idx_media_items_root_folder_id ON media_items(root_folder_id);
+CREATE INDEX IF NOT EXISTS idx_media_items_sort_title ON media_items(sort_title);
 
 -- Season-level artwork (TV/anime only) — episodes don't carry a poster of their own, and a show's
 -- own poster_url is the SHOW's poster, not any one season's. Not every provider exposes season
@@ -73,6 +82,11 @@ CREATE TABLE IF NOT EXISTS episodes (
   file_path TEXT,
   UNIQUE(media_item_id, season_number, episode_number)
 );
+-- The UNIQUE constraint above already gives media_item_id its own usable index (leftmost column
+-- of a composite index/constraint), but the scheduler's hot "what's still missing for this show"
+-- query filters on has_file too — a dedicated composite index serves that WHERE clause directly
+-- instead of falling back to a per-row filter after the media_item_id lookup.
+CREATE INDEX IF NOT EXISTS idx_episodes_media_item_has_file ON episodes(media_item_id, has_file);
 
 -- Albums (artist) / Books (author) - generic sub-item table
 CREATE TABLE IF NOT EXISTS sub_items (
@@ -91,6 +105,10 @@ CREATE TABLE IF NOT EXISTS sub_items (
   series_position REAL, -- non-integer allowed (e.g. 2.5) for a novella/interstitial between two mainline books
   narrator TEXT -- Audiobooks only; who reads this edition, distinct from the author/parent
 );
+-- Unlike episodes, sub_items has no UNIQUE constraint touching media_item_id at all — every
+-- "this artist/author's albums/books" or "what's still missing" lookup was a bare, unindexed FK
+-- scan before this.
+CREATE INDEX IF NOT EXISTS idx_sub_items_media_item_has_file ON sub_items(media_item_id, has_file);
 
 -- protocol/type are intentionally unconstrained (not a fixed CHECK list) — same reasoning as
 -- media_items.type: the valid set lives in services/indexerClient.ts and services/downloadClient.ts
@@ -157,6 +175,8 @@ CREATE TABLE IF NOT EXISTS queue (
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_progress_at TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_queue_media_item_id ON queue(media_item_id);
+CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
 
 CREATE TABLE IF NOT EXISTS history (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -165,6 +185,8 @@ CREATE TABLE IF NOT EXISTS history (
   data TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_history_media_item_id ON history(media_item_id);
+CREATE INDEX IF NOT EXISTS idx_history_created_at ON history(created_at);
 
 CREATE TABLE IF NOT EXISTS subtitle_providers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -556,6 +578,7 @@ CREATE TABLE IF NOT EXISTS blocklist (
   reason TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_blocklist_media_item_id ON blocklist(media_item_id);
 
 -- Instant "this was just watched" signal from a Plex/Jellyfin/Emby webhook, distinct from the
 -- polling-based fetchWatchedFiles() used by auto-archival — lets the dashboard's Recently
@@ -666,3 +689,54 @@ CREATE TABLE IF NOT EXISTS saved_library_views (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(media_type, name)
 );
+
+-- Global-search acceleration (SQLite only — Postgres has no FTS5; routes/librarySearch.ts falls
+-- back to its original LIKE/ILIKE UNION ALL query there instead). One row per searchable title
+-- anywhere in the library: the item's own title ('title' rows), plus every episode ('episode')
+-- and sub_item ('child') title, so a leading-wildcard `LIKE '%x%'` full scan of three tables
+-- becomes a single indexed MATCH. Kept in sync entirely by the triggers below — nothing in the
+-- application layer needs to know this index exists or update it directly. `source_id` is the
+-- originating row's own primary key (media_items.id / episodes.id / sub_items.id), used together
+-- with match_type to address one specific row for UPDATE/DELETE (match_type alone isn't unique —
+-- a show has many episode rows). Existing installs get a one-time backfill in db/client.ts, since
+-- triggers only ever fire on rows changed *after* this table exists.
+CREATE VIRTUAL TABLE IF NOT EXISTS library_search_fts USING fts5(
+  media_item_id UNINDEXED,
+  match_type UNINDEXED,
+  source_id UNINDEXED,
+  match_detail UNINDEXED,
+  title
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_fts_media_items_ai AFTER INSERT ON media_items BEGIN
+  INSERT INTO library_search_fts(media_item_id, match_type, source_id, match_detail, title)
+  VALUES (new.id, 'title', new.id, NULL, new.title);
+END;
+CREATE TRIGGER IF NOT EXISTS trg_fts_media_items_au AFTER UPDATE OF title ON media_items BEGIN
+  UPDATE library_search_fts SET title = new.title WHERE match_type = 'title' AND source_id = new.id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_fts_media_items_ad AFTER DELETE ON media_items BEGIN
+  DELETE FROM library_search_fts WHERE match_type = 'title' AND source_id = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_fts_episodes_ai AFTER INSERT ON episodes BEGIN
+  INSERT INTO library_search_fts(media_item_id, match_type, source_id, match_detail, title)
+  VALUES (new.media_item_id, 'episode', new.id, new.title, new.title);
+END;
+CREATE TRIGGER IF NOT EXISTS trg_fts_episodes_au AFTER UPDATE OF title ON episodes BEGIN
+  UPDATE library_search_fts SET title = new.title, match_detail = new.title WHERE match_type = 'episode' AND source_id = old.id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_fts_episodes_ad AFTER DELETE ON episodes BEGIN
+  DELETE FROM library_search_fts WHERE match_type = 'episode' AND source_id = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_fts_sub_items_ai AFTER INSERT ON sub_items BEGIN
+  INSERT INTO library_search_fts(media_item_id, match_type, source_id, match_detail, title)
+  VALUES (new.media_item_id, 'child', new.id, new.title, new.title);
+END;
+CREATE TRIGGER IF NOT EXISTS trg_fts_sub_items_au AFTER UPDATE OF title ON sub_items BEGIN
+  UPDATE library_search_fts SET title = new.title, match_detail = new.title WHERE match_type = 'child' AND source_id = old.id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_fts_sub_items_ad AFTER DELETE ON sub_items BEGIN
+  DELETE FROM library_search_fts WHERE match_type = 'child' AND source_id = old.id;
+END;
