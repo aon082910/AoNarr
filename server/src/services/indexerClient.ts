@@ -37,6 +37,38 @@ function cacheKey(indexerId: number, query: string, mediaType: MediaType): strin
 }
 
 /**
+ * True for a transient, connection-level failure (the request never got a response at all) —
+ * our own timeout firing, a reset/refused connection, DNS not resolving — never for a real HTTP
+ * response the indexer sent back. `fetchIndexerText` itself never throws on a non-2xx response
+ * (it returns `{ok: false, status}` and lets its callers decide what that means, including the
+ * 429 backoff in recordIfRateLimited), so this can retry every exception it might see without
+ * ever retrying a 429/403/500 the indexer legitimately returned.
+ */
+function isTransientNetworkError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === "AbortError" || err.name === "TimeoutError") return true;
+  const code = (err as NodeJS.ErrnoException).cause
+    ? ((err as unknown as { cause?: NodeJS.ErrnoException }).cause?.code)
+    : (err as NodeJS.ErrnoException).code;
+  if (code && ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN"].includes(code)) return true;
+  return /fetch failed/i.test(err.message);
+}
+
+/** One retry after a short delay for a transient network failure — a single dropped connection
+ * or DNS blip shouldn't fail an entire search cycle for an indexer that's otherwise healthy, but
+ * this stays a single retry (not a loop) so a genuinely unreachable indexer still fails promptly
+ * instead of doubling every search's worst-case latency. */
+async function withNetworkRetry<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (!isTransientNetworkError(err)) throw err;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    return fn();
+  }
+}
+
+/**
  * Fetches a URL through a configured FlareSolverr instance instead of directly, for indexers
  * behind Cloudflare/bot-detection that would otherwise return a challenge page instead of real
  * results. FlareSolverr runs a real headless browser and returns the resolved page body — see
@@ -46,23 +78,27 @@ function cacheKey(indexerId: number, query: string, mediaType: MediaType): strin
 async function fetchIndexerText(url: string, indexer: Indexer, timeoutMs: number): Promise<{ ok: boolean; status: number; text: string }> {
   const flaresolverrUrl = indexer.useFlareSolverr ? getSetting("flaresolverrUrl") : null;
   if (!flaresolverrUrl) {
-    const res = await fetch(url, {
-      headers: { Accept: "application/rss+xml, application/xml, text/xml" },
-      signal: AbortSignal.timeout(timeoutMs),
+    return withNetworkRetry(async () => {
+      const res = await fetch(url, {
+        headers: { Accept: "application/rss+xml, application/xml, text/xml" },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      return { ok: res.ok, status: res.status, text: await res.text() };
     });
-    return { ok: res.ok, status: res.status, text: await res.text() };
   }
 
-  const res = await fetch(flaresolverrUrl.replace(/\/+$/, "") + "/v1", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ cmd: "request.get", url, maxTimeout: timeoutMs }),
-    signal: AbortSignal.timeout(timeoutMs + 5_000),
+  return withNetworkRetry(async () => {
+    const res = await fetch(flaresolverrUrl.replace(/\/+$/, "") + "/v1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: "request.get", url, maxTimeout: timeoutMs }),
+      signal: AbortSignal.timeout(timeoutMs + 5_000),
+    });
+    if (!res.ok) throw new Error(`FlareSolverr request failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+    if (body.status !== "ok") throw new Error(`FlareSolverr could not resolve "${url}": ${body.message ?? "unknown error"}`);
+    return { ok: (body.solution?.status ?? 200) < 400, status: body.solution?.status ?? 200, text: body.solution?.response ?? "" };
   });
-  if (!res.ok) throw new Error(`FlareSolverr request failed: HTTP ${res.status}`);
-  const body: any = await res.json();
-  if (body.status !== "ok") throw new Error(`FlareSolverr could not resolve "${url}": ${body.message ?? "unknown error"}`);
-  return { ok: (body.solution?.status ?? 200) < 400, status: body.solution?.status ?? 200, text: body.solution?.response ?? "" };
 }
 
 /** Lightweight reachability check. Torznab/Newznab hit their capabilities endpoint; rss/ddl just

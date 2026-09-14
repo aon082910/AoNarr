@@ -3,6 +3,29 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 203 — indexer network resilience, a real Content-Security-Policy
+- **Retry transient indexer network failures**: a single dropped connection, DNS blip, or timeout
+  talking to an indexer previously failed that entire search attempt outright. `fetchIndexerText`
+  (the shared HTTP call behind torznab/newznab/RSS search and the FlareSolverr proxy path) now
+  retries once, after a short delay, but only for connection-level failures (timeout, ECONNRESET,
+  ECONNREFUSED, DNS failure) — never for a real HTTP response an indexer sent back (a 429/403/500
+  still fails immediately and feeds the existing backoff logic, unchanged).
+- **A Content-Security-Policy that actually does something**: Round 201 added `helmet` with
+  `contentSecurityPolicy: false` on the API server — investigating further this round found that
+  was close to a no-op for browser security regardless, since the API server never serves the HTML
+  page at all; nginx does (see web/nginx.conf.template, combined/nginx.conf), and a CSP header has
+  to be on the document response to protect it. Added a real CSP there instead: strict `script-src
+  'self'` (no `unsafe-inline`/`eval`), which meant pulling the one inline `<script>` in index.html
+  out into a real file (`theme-init.js`) since CSP can't otherwise tell a legitimate inline script
+  from an injected one. `style-src` keeps `unsafe-inline` (React's `style={{...}}` renders as
+  inline style attributes everywhere in this app — removing that is a much bigger refactor than
+  this change), `img-src` stays wide open to any origin (posters/backdrops/artwork can come from
+  wherever an admin points a metadata provider or media server), and `frame-ancestors` is
+  deliberately left unset so embedding in dashboard tools (Organizr, Homarr, Heimdall) keeps
+  working exactly as before. Verified against a built production bundle served with the real
+  header — no CSP violations in the console, Swagger UI's dynamically-loaded same-origin bundle
+  still works.
+
 ## Round 202 — encrypted credentials survive backup/restore
 - **Backup bundles now include the encryption key**: Round 201 added encryption-at-rest for
   settings credentials (API keys, download-client/SMTP passwords, webhook URLs), with the key

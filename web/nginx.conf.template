@@ -4,6 +4,18 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    # script-src is strict (no unsafe-inline/eval) since the app is plain React with no inline
+    # scripts (theme-init.js is a real file, see index.html) and no known dangerouslySetInnerHTML
+    # use. style-src needs unsafe-inline because React's `style={{...}}` renders as inline style
+    # attributes throughout the app — removing that would mean rewriting every styled component to
+    # CSS classes, well beyond what this header is trying to fix. img-src stays wide open (any
+    # https/http origin, data:, blob:) since posters/backdrops/media-server artwork can come from
+    # any URL an admin configures — same reasoning as crossOriginResourcePolicy:false on the API
+    # server (see server/src/app.ts). frame-ancestors is deliberately NOT restricted: this app is
+    # commonly embedded in dashboard tools (Organizr, Homarr, Heimdall) and had no framing
+    # restriction before this header existed either.
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'" always;
+
     location /api/ {
         proxy_pass http://${AONARR_SERVER_HOST}:${AONARR_SERVER_PORT}/api/;
         proxy_set_header Host $host;
