@@ -8,6 +8,7 @@ import { config } from "../config.js";
 import { mediaItemFromRow, queueItemFromRow, rootFolderFromRow } from "../db/mappers.js";
 import { notifyImported, notifyUpgraded } from "./notifications.js";
 import { writeNfoSidecar } from "./metadataExport.js";
+import { writeAudioTags } from "./audioTagWriter.js";
 import { notifyQueueChanged } from "./realtime.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import {
@@ -637,6 +638,16 @@ export async function placeAlbumFiles(params: {
     totalMovedBytes += await fsp.stat(dest).then((s) => s.size).catch(() => 0);
 
     if (track) await db.prepare("UPDATE tracks SET has_file = 1, file_path = ? WHERE id = ?").run(dest, track.id);
+
+    if (track && getSetting("writeAudioTagsOnImport") === "1") {
+      await writeAudioTags(dest, {
+        title: track.title,
+        artist: item.title,
+        album: subRow.title,
+        trackNumber: track.track_number,
+        year: subRow.release_date ? String(subRow.release_date).slice(0, 4) : null,
+      });
+    }
   }
 
   const anchorDest = path.join(destFolder, sanitizeForPath(path.basename(anchorFile)));

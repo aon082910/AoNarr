@@ -673,7 +673,7 @@ async function checkVideoChannels(): Promise<void> {
     } catch {
       continue;
     }
-    if (!externalIds.youtube) continue;
+    if (!externalIds.youtube && !externalIds.youtubePlaylist) continue;
 
     let children;
     try {

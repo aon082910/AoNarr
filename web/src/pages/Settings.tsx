@@ -1957,6 +1957,98 @@ export default function Settings() {
             ),
           },
           {
+            key: "writeAudioTagsOnImport",
+            label: "Write Audio Tags on Import",
+            description: "Lidarr-style retagging — writes ID3 tags into imported MP3 files",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Off by default. When on, importing a track writes artist/album/title/track
+                  number/year directly into the file's ID3v2 tags, so the file carries correct
+                  metadata even opened outside AoNarr. MP3 only — FLAC/OGG/M4A files are left
+                  untouched (each needs its own tag format, not implemented here).
+                </p>
+                <label>Write audio tags on import</label>
+                <select
+                  key={settings.writeAudioTagsOnImport ?? "write-audio-tags-empty"}
+                  defaultValue={settings.writeAudioTagsOnImport ?? "0"}
+                  onChange={(e) => saveSetting("writeAudioTagsOnImport", e.target.value)}
+                >
+                  <option value="0">Disabled</option>
+                  <option value="1">Enabled</option>
+                </select>
+              </div>
+            ),
+          },
+          {
+            key: "musicAlbumTypes",
+            label: "Music Album Types",
+            description: "Which MusicBrainz release-group types to fetch for an artist",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Comma-separated: <code>album</code>, <code>ep</code>, <code>single</code>,{" "}
+                  <code>broadcast</code>, <code>other</code>. Defaults to <code>album</code> only
+                  (AoNarr's previous, hardcoded behavior) — add more to also pull an artist's
+                  EPs/singles/live broadcasts. Applies the next time an artist's albums are fetched
+                  (add, or a re-fetch), not retroactively to already-added artists.
+                </p>
+                <label>Album types</label>
+                <input
+                  key={settings.musicAlbumTypes ?? "album-types-empty"}
+                  defaultValue={settings.musicAlbumTypes ?? "album"}
+                  placeholder="album"
+                  onBlur={(e) => saveSetting("musicAlbumTypes", e.target.value)}
+                />
+              </div>
+            ),
+          },
+          {
+            key: "ytdlpExtras",
+            label: "YouTube Downloads (yt-dlp)",
+            description: "Download archive, SponsorBlock, and subtitle options for yt-dlp clients",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Applies to every yt-dlp download client configured under Download Clients.
+                </p>
+                <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    style={{ width: "auto" }}
+                    checked={settings.ytdlpDownloadArchiveEnabled === "1"}
+                    onChange={(e) => saveSetting("ytdlpDownloadArchiveEnabled", e.target.checked ? "1" : "0")}
+                  />
+                  Use a download archive (never re-download a video already grabbed once, even
+                  across restarts)
+                </label>
+                <label>SponsorBlock categories to remove (comma-separated; blank = disabled)</label>
+                <input
+                  key={settings.ytdlpSponsorBlockCategories ?? "sponsorblock-empty"}
+                  defaultValue={settings.ytdlpSponsorBlockCategories ?? ""}
+                  placeholder="sponsor,selfpromo,interaction"
+                  onBlur={(e) => saveSetting("ytdlpSponsorBlockCategories", e.target.value)}
+                />
+                <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    style={{ width: "auto" }}
+                    checked={settings.ytdlpEmbedSubtitles === "1"}
+                    onChange={(e) => saveSetting("ytdlpEmbedSubtitles", e.target.checked ? "1" : "0")}
+                  />
+                  Fetch and embed subtitles (including auto-generated) via yt-dlp itself
+                </label>
+                <label>Subtitle languages</label>
+                <input
+                  key={settings.ytdlpSubtitleLangs ?? "sub-langs-empty"}
+                  defaultValue={settings.ytdlpSubtitleLangs ?? "en"}
+                  placeholder="en"
+                  onBlur={(e) => saveSetting("ytdlpSubtitleLangs", e.target.value)}
+                />
+              </div>
+            ),
+          },
+          {
             key: "writeNfoOnImport",
             label: "Write NFO on Import",
             description: "Kodi/Jellyfin/Emby-readable .nfo sidecar next to every imported file",

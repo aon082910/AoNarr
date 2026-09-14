@@ -32,6 +32,7 @@ interface MetadataSearchResult {
   rating?: number | null;
   runtimeMinutes?: number | null;
   studio?: string | null;
+  performers?: string[];
 }
 
 /** Hostname → the "Site" group name to file a scraped course under, so the group picker doesn't
@@ -293,6 +294,7 @@ export default function AddMedia() {
             rating: selected?.rating ?? null,
             runtimeMinutes: selected?.runtimeMinutes ?? null,
             studio: selected?.studio ?? null,
+            performers: selected?.performers ?? undefined,
             monitorStrategy: activeTypeInfo?.shape === "episodic" ? monitorStrategy : undefined,
           };
       const created = await api.post<MediaItem>(manual ? "/media" : "/metadata/import", payload);

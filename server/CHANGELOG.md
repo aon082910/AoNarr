@@ -3,6 +3,35 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 196 — Lidarr/Readarr/Youtarr/Whisparr gaps: album types, tag writing, playlists, archive
+- **Music album type filtering** (Lidarr): a new `musicAlbumTypes` setting (comma-separated
+  album/ep/single/broadcast/other, default `album` — previous hardcoded behavior) controls which
+  MusicBrainz release-group types get fetched for an artist, instead of always Album-only.
+- **MusicBrainz release selection** (Lidarr): when an album has multiple releases (different
+  countries/remasters), track-listing lookup now picks the best one automatically — prefers
+  "Official" status, then a broad/major-market release, then the earliest date — instead of
+  whatever MusicBrainz's API happened to return first. Automatic, not a manual per-album picker.
+- **Audio tag writing / retagging** (Lidarr): new opt-in "Write Audio Tags on Import" setting
+  writes artist/album/title/track/year straight into an imported track's ID3v2 tags via the new
+  `node-id3` dependency (pure JS, no native bindings). MP3/ID3 only — FLAC/OGG/M4A need their own
+  tag formats, not implemented here, and are left untouched.
+- **Incomplete series flag** (Readarr): a book's series strip now flags a numbering gap (e.g. have
+  #1, #2, #4 — missing #3) with a badge, so a hole in a series is obvious without cross-checking by
+  hand. Purely informational; non-integer positions (interstitials/novellas) are excluded from the
+  gap check rather than treated as missing slots.
+- **YouTube playlist import** (Youtarr): a pasted `youtube.com/...?list=...` URL now works through
+  the existing "Match by ID/URL" flow, tracked and re-checked for new videos the same way a whole
+  channel already was — `externalIds.youtubePlaylist` alongside the existing `externalIds.youtube`.
+- **yt-dlp download archive, SponsorBlock, subtitles** (Youtarr): three new opt-in settings for
+  yt-dlp download clients — a persistent `--download-archive` file (never re-download a video
+  already grabbed once, even across restarts), `--sponsorblock-remove` categories, and
+  `--write-subs --embed-subs` for fetching/burning in captions directly via yt-dlp.
+- **Performer/studio tracking** (Whisparr): ThePornDB scene search now also pulls the site name
+  (into the existing `studio` field) and a performers list, shown on the media detail page. Stored
+  in the item's existing `extra_metadata` scratch field rather than a dedicated performer-entity
+  system — no per-performer pages or cross-title filtering, just visible per-title data that wasn't
+  captured at all before.
+
 ## Round 195 — Sonarr-parity gaps: scene numbering, Monitor options, bulk editor, series stats
 - **Scene numbering (TheXEM)**: new `services/sceneNumbering.ts` — for any series/anime with a
   TVDB id, pulls thexem.info's scene-numbering map and stores `scene_season_number`/

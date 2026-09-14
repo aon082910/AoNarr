@@ -1246,6 +1246,12 @@ export default function MediaDetail() {
                     <td>{item.studio}</td>
                   </tr>
                 )}
+                {Array.isArray((item.extraMetadata as any)?.performers) && (item.extraMetadata as any).performers.length > 0 && (
+                  <tr>
+                    <th>Performers</th>
+                    <td>{(item.extraMetadata as any).performers.join(", ")}</td>
+                  </tr>
+                )}
                 {shape === "single" && (
                   <tr>
                     <th>Minimum availability</th>

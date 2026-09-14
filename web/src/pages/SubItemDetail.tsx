@@ -373,6 +373,28 @@ export default function SubItemDetail() {
 
       {subItem.series.length > 0 && (
         <>
+          {(() => {
+            // Readarr-style "incomplete series" flag — an integer position with a gap between the
+            // lowest and highest known position (e.g. have #1, #2, #4 — missing #3) most often
+            // means a book hasn't been added/matched yet, not that #3 never existed. Purely
+            // informational (positions can legitimately be non-integer for interstitials/novellas,
+            // which are excluded from the gap check rather than treated as real "missing" slots).
+            const positions = [...subItem.series.map((s) => s.seriesPosition), subItem.seriesPosition].filter(
+              (p): p is number => p != null && Number.isInteger(p)
+            );
+            if (positions.length < 2) return null;
+            const min = Math.min(...positions);
+            const max = Math.max(...positions);
+            const have = new Set(positions);
+            const missing: number[] = [];
+            for (let i = min; i <= max; i++) if (!have.has(i)) missing.push(i);
+            if (missing.length === 0) return null;
+            return (
+              <span className="badge danger" title={`Positions present in this series: ${min}-${max}`}>
+                Incomplete series — missing #{missing.join(", #")}
+              </span>
+            );
+          })()}
           <h2>{subItem.seriesName}</h2>
           <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>Other books in this series.</p>
           <div style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 8, marginBottom: 12 }}>

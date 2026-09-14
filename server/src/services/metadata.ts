@@ -22,8 +22,12 @@ export interface MetadataSearchResult {
   /** Only populated by the by-id TMDB detail lookups (search results don't carry it). */
   runtimeMinutes?: number | null;
   /** Movies only, and only from the by-id TMDB detail lookup (production_companies isn't in TMDB's
-   * search results) — the first listed production company, Radarr's "Studio" field/column. */
+   * search results) — the first listed production company, Radarr's "Studio" field/column. Also
+   * populated by ThePornDB's site name for the "adult" type (Whisparr's "Studio"). */
   studio?: string | null;
+  /** Whisparr-style performer tracking — ThePornDB scene search only; stored as-is in the item's
+   * extra_metadata (see routes/metadata.ts's /import), not a dedicated performer-entity system. */
+  performers?: string[];
 }
 
 export interface MetadataEpisode {
@@ -553,12 +557,23 @@ async function searchArtistsMusicbrainz(query: string): Promise<MetadataSearchRe
   }));
 }
 
+/** Lidarr-style album-type filtering — MusicBrainz's release-group "type" covers Album/EP/Single/
+ * Broadcast/Other; without this AoNarr always hardcoded "album" only, silently never offering an
+ * artist's EPs/singles/live broadcasts at all. `musicAlbumTypes` is a global comma-separated
+ * setting (not per-artist — AoNarr has no per-artist profile concept to hang it off yet) defaulting
+ * to "album" alone so existing libraries see no behavior change until an admin opts into more. */
+function configuredAlbumTypes(): string[] {
+  const raw = getSetting("musicAlbumTypes");
+  const types = (raw ? raw.split(",") : ["album"]).map((t) => t.trim().toLowerCase()).filter(Boolean);
+  return types.length > 0 ? types : ["album"];
+}
+
 async function fetchArtistAlbumsMusicbrainz(mbid: string): Promise<MetadataSubItem[]> {
   const url = new URL("https://musicbrainz.org/ws/2/release-group");
   url.searchParams.set("artist", mbid);
-  url.searchParams.set("type", "album");
   url.searchParams.set("fmt", "json");
   url.searchParams.set("limit", "100");
+  for (const t of configuredAlbumTypes()) url.searchParams.append("type", t);
 
   const res = await fetch(url.toString(), { headers: { "User-Agent": MUSICBRAINZ_USER_AGENT } });
   if (!res.ok) throw new Error(`MusicBrainz album lookup failed: HTTP ${res.status}`);
@@ -571,6 +586,29 @@ async function fetchArtistAlbumsMusicbrainz(mbid: string): Promise<MetadataSubIt
   }));
 }
 
+/** Prefers an "Official" release (as opposed to a Bootleg/Promotion/Pseudo-Release), then one
+ * tagged for a broad/worldwide or major English-speaking market (an original mainstream pressing
+ * over a regional reissue), then the earliest date — a reasonable default "pick the release most
+ * people mean by this album" heuristic in place of MusicBrainz's own arbitrary API ordering.
+ * Not a manual picker (Lidarr lets an admin choose a specific release by hand); scoped here to an
+ * automatic best-guess, since a full release-picker UI is a much bigger feature for a rarely-hit
+ * edge case (most release-groups only have one release anyway). */
+function pickBestRelease(releases: any[]): any | undefined {
+  if (releases.length === 0) return undefined;
+  const preferredCountries = new Set(["XW", "US", "GB"]);
+  return [...releases].sort((a, b) => {
+    const officialA = a.status === "Official" ? 1 : 0;
+    const officialB = b.status === "Official" ? 1 : 0;
+    if (officialA !== officialB) return officialB - officialA;
+    const countryA = preferredCountries.has(a.country) ? 1 : 0;
+    const countryB = preferredCountries.has(b.country) ? 1 : 0;
+    if (countryA !== countryB) return countryB - countryA;
+    const dateA = a.date ?? "9999";
+    const dateB = b.date ?? "9999";
+    return dateA.localeCompare(dateB);
+  })[0];
+}
+
 async function fetchAlbumTracksMusicbrainz(releaseGroupMbid: string): Promise<MetadataTrack[]> {
   const rgUrl = new URL(`https://musicbrainz.org/ws/2/release-group/${releaseGroupMbid}`);
   rgUrl.searchParams.set("inc", "releases");
@@ -579,7 +617,7 @@ async function fetchAlbumTracksMusicbrainz(releaseGroupMbid: string): Promise<Me
   if (!rgRes.ok) throw new Error(`MusicBrainz release-group lookup failed: HTTP ${rgRes.status}`);
   const rgBody: any = await rgRes.json();
 
-  const releaseId = rgBody.releases?.[0]?.id;
+  const releaseId = pickBestRelease(rgBody.releases ?? [])?.id;
   if (!releaseId) return [];
 
   const relUrl = new URL(`https://musicbrainz.org/ws/2/release/${releaseId}`);
@@ -1450,25 +1488,16 @@ async function searchVideosYoutube(query: string): Promise<MetadataSearchResult[
   }));
 }
 
-async function fetchChannelVideosYoutube(channelId: string): Promise<MetadataSubItem[]> {
-  const key = requireSetting("youtubeApiKey", "YouTube Data API key");
-
-  const channelUrl = new URL("https://www.googleapis.com/youtube/v3/channels");
-  channelUrl.searchParams.set("part", "contentDetails");
-  channelUrl.searchParams.set("id", channelId);
-  channelUrl.searchParams.set("key", key);
-  const channelRes = await fetch(channelUrl.toString());
-  if (!channelRes.ok) throw new Error(`YouTube channel lookup failed: HTTP ${channelRes.status}`);
-  const channelBody: any = await channelRes.json();
-  const uploadsPlaylistId = channelBody.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
-  if (!uploadsPlaylistId) return [];
-
+/** Paginates youtube/v3/playlistItems for any playlist id — a channel's own uploads playlist
+ * (fetchChannelVideosYoutube) or an arbitrary playlist someone pasted a link to
+ * (fetchPlaylistVideosYoutube), same underlying shape either way. */
+async function fetchYoutubePlaylistItems(playlistId: string, key: string): Promise<MetadataSubItem[]> {
   const videos: MetadataSubItem[] = [];
   let pageToken: string | undefined;
   do {
     const plUrl = new URL("https://www.googleapis.com/youtube/v3/playlistItems");
     plUrl.searchParams.set("part", "snippet");
-    plUrl.searchParams.set("playlistId", uploadsPlaylistId);
+    plUrl.searchParams.set("playlistId", playlistId);
     plUrl.searchParams.set("maxResults", "50");
     plUrl.searchParams.set("key", key);
     if (pageToken) plUrl.searchParams.set("pageToken", pageToken);
@@ -1485,9 +1514,53 @@ async function fetchChannelVideosYoutube(channelId: string): Promise<MetadataSub
       });
     }
     pageToken = plBody.nextPageToken;
-  } while (pageToken && videos.length < 500); // safety cap against runaway channels
+  } while (pageToken && videos.length < 500); // safety cap against runaway playlists
 
   return videos;
+}
+
+async function fetchChannelVideosYoutube(channelId: string): Promise<MetadataSubItem[]> {
+  const key = requireSetting("youtubeApiKey", "YouTube Data API key");
+
+  const channelUrl = new URL("https://www.googleapis.com/youtube/v3/channels");
+  channelUrl.searchParams.set("part", "contentDetails");
+  channelUrl.searchParams.set("id", channelId);
+  channelUrl.searchParams.set("key", key);
+  const channelRes = await fetch(channelUrl.toString());
+  if (!channelRes.ok) throw new Error(`YouTube channel lookup failed: HTTP ${channelRes.status}`);
+  const channelBody: any = await channelRes.json();
+  const uploadsPlaylistId = channelBody.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+  if (!uploadsPlaylistId) return [];
+
+  return fetchYoutubePlaylistItems(uploadsPlaylistId, key);
+}
+
+/** Youtarr-style playlist import — an arbitrary YouTube playlist (not necessarily a whole channel
+ * of uploads) tracked and re-checked for new videos the same way a channel is, keyed by
+ * `externalIds.youtubePlaylist` instead of `externalIds.youtube`. */
+async function fetchPlaylistVideosYoutube(playlistId: string): Promise<MetadataSubItem[]> {
+  const key = requireSetting("youtubeApiKey", "YouTube Data API key");
+  return fetchYoutubePlaylistItems(playlistId, key);
+}
+
+async function fetchPlaylistByIdYoutube(playlistId: string): Promise<MetadataSearchResult> {
+  const key = requireSetting("youtubeApiKey", "YouTube Data API key");
+  const url = new URL("https://www.googleapis.com/youtube/v3/playlists");
+  url.searchParams.set("part", "snippet");
+  url.searchParams.set("id", playlistId);
+  url.searchParams.set("key", key);
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`YouTube playlist lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  const p = body.items?.[0];
+  if (!p) throw new Error(`No YouTube playlist found for id "${playlistId}"`);
+  return {
+    title: p.snippet.title,
+    year: p.snippet.publishedAt ? Number(String(p.snippet.publishedAt).slice(0, 4)) : null,
+    overview: p.snippet.description || null,
+    posterUrl: p.snippet.thumbnails?.medium?.url || null,
+    externalIds: { youtubePlaylist: playlistId },
+  };
 }
 
 const VIMEO_ACCEPT = "application/vnd.vimeo.*+json;version=3.4";
@@ -1630,6 +1703,10 @@ async function searchAdultThePornDb(query: string): Promise<MetadataSearchResult
     overview: s.description || null,
     posterUrl: s.image || s.posters?.[0]?.url || null,
     externalIds: { theporndb: String(s.id) },
+    studio: s.site?.name ?? null,
+    performers: Array.isArray(s.performers)
+      ? s.performers.map((p: any) => p.name ?? p.parent?.name).filter((name: unknown): name is string => !!name)
+      : undefined,
   }));
 }
 
@@ -2002,6 +2079,9 @@ export async function fetchByExternalId(type: MediaType, provider: string, id: s
       };
     }
 
+    case "youtubePlaylist":
+      return fetchPlaylistByIdYoutube(id);
+
     default:
       throw new Error(`ID lookup isn't supported for provider "${provider}"`);
   }
@@ -2024,6 +2104,9 @@ export function parseProviderUrl(url: string): { provider: string; id: string } 
   let m: RegExpMatchArray | null;
   if (host === "themoviedb.org" && (m = path.match(/\/(?:movie|tv)\/(\d+)/))) return { provider: "tmdb", id: m[1] };
   if (host === "imdb.com" && (m = path.match(/\/title\/(tt\d+)/))) return { provider: "imdb", id: m[1] };
+  if ((host === "youtube.com" || host === "m.youtube.com") && parsed.searchParams.get("list")) {
+    return { provider: "youtubePlaylist", id: parsed.searchParams.get("list")! };
+  }
   if (host === "thetvdb.com") {
     if ((m = path.match(/\/series\/[\w-]+\/?$/))) return null; // slug, not resolvable without a search
     const idParam = parsed.searchParams.get("id");
@@ -2074,6 +2157,8 @@ export async function fetchCollectionChildrenFor(
   if (externalIds.comicvine) return { provider: "comicvine", children: await fetchComicIssuesComicVine(externalIds.comicvine) };
   if (externalIds.mangadex) return { provider: "mangadex", children: await fetchMangaChaptersMangadex(externalIds.mangadex) };
   if (externalIds.youtube) return { provider: "youtube", children: await fetchChannelVideosYoutube(externalIds.youtube) };
+  if (externalIds.youtubePlaylist)
+    return { provider: "youtube", children: await fetchPlaylistVideosYoutube(externalIds.youtubePlaylist) };
   if (externalIds.vimeo) return { provider: "vimeo", children: await fetchChannelVideosVimeo(externalIds.vimeo) };
   if (externalIds.podcastFeed) return { provider: "rss", children: await fetchPodcastEpisodesRss(externalIds.podcastFeed) };
   return { provider: null, children: [] };

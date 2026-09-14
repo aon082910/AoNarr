@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { config } from "../config.js";
 import type { DownloadClient } from "../types/index.js";
 import { decodeSlskdDownloadUrl } from "./soulseek.js";
+import { getSetting } from "./settingsStore.js";
 
 export interface GrabResult {
   downloadId: string;
@@ -449,6 +450,25 @@ class YtdlpAdapter implements DownloadClientAdapter {
     const args = client.audioOnly
       ? ["-x", "--audio-format", "mp3", "-o", outputTemplate, "--newline", downloadUrl]
       : ["-o", outputTemplate, "--newline", downloadUrl];
+
+    // Youtarr-style extras, all opt-in via Settings so existing setups don't change behavior:
+    // a persistent --download-archive means a video already grabbed once (by id) is never
+    // re-downloaded even after this specific queue entry is long gone, surviving container
+    // restarts (unlike AoNarr's own queue/sub_item bookkeeping, which yt-dlp knows nothing about);
+    // SponsorBlock removes/marks sponsor segments; the subtitle flags ask yt-dlp itself to fetch
+    // and burn in captions, independent of AoNarr's own subtitle-provider pipeline (which only
+    // targets already-imported video files, not what yt-dlp fetches directly from YouTube).
+    if (getSetting("ytdlpDownloadArchiveEnabled") === "1") {
+      args.push("--download-archive", path.join(config.configDir, "ytdlp-archive.txt"));
+    }
+    const sponsorBlockCategories = getSetting("ytdlpSponsorBlockCategories");
+    if (sponsorBlockCategories) {
+      args.push("--sponsorblock-remove", sponsorBlockCategories);
+    }
+    if (getSetting("ytdlpEmbedSubtitles") === "1") {
+      args.push("--write-subs", "--write-auto-subs", "--sub-langs", getSetting("ytdlpSubtitleLangs") || "en", "--embed-subs");
+    }
+
     const proc = spawn("yt-dlp", args);
 
     let stderrTail = "";
