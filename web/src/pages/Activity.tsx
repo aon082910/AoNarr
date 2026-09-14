@@ -67,8 +67,8 @@ export default function Activity() {
     };
   }, []);
 
-  async function remove(id: number) {
-    await api.del(`/activity/queue/${id}`);
+  async function remove(id: number, blocklist = false) {
+    await api.del(`/activity/queue/${id}${blocklist ? "?blocklist=1" : ""}`);
     load();
   }
 
@@ -188,6 +188,9 @@ export default function Activity() {
                   )}
                   <button className="danger" onClick={() => remove(q.id)}>
                     Remove
+                  </button>
+                  <button className="danger" onClick={() => remove(q.id, true)}>
+                    Remove &amp; Blocklist
                   </button>
                 </td>
               </tr>

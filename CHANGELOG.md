@@ -3,6 +3,44 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 193 — Release Profiles, health notifications, queue blocklist, auth toggle, TMDB lists
+- **Release Profiles**: new Radarr/Sonarr-style Settings → Quality section, distinct from Custom
+  Formats — plain-text (non-regex) term matching against a release's raw title instead of regex
+  condition groups. Must Not Contain rejects a release outright if any term appears; Must Contain
+  requires at least one of its terms (empty = no requirement); Preferred terms each add their own
+  score (negative downranks) when present. Profiles are AND'd together and can be scoped to
+  specific library types the same way Custom Formats are. New `release_profiles` table,
+  `services/customFormatScoring.ts`'s `evaluateReleaseProfiles()` folded straight into the existing
+  `scoreRelease()` — so every call site (manual search, auto-search, bulk search, retry-after-
+  failure) picks it up for free, with `ReleaseScore` gaining `rejected`/`rejectReason` fields that
+  now also filter/annotate results everywhere `scoreRelease` is used, including the media detail
+  page's manual search results table.
+- **Health issue notifications**: Radarr's "On Health Issue" event, fired by a new scheduled job
+  (`checkHealthAndNotify`, every 30 minutes) rather than only ever being computed on demand by the
+  System page — checks indexer/download-client reachability and low disk space, and notifies once
+  per *change* in what's wrong (deduped against the last-notified summary) rather than spamming
+  every run. Also added a matching "On Upgrade" event (`notifyUpgraded`), fired instead of the
+  existing "On Import" event when an import replaces a file the item already had.
+- **Dashboard health banner**: the same checks the System page's health tab computes are now also
+  fetched on the Dashboard and shown as a banner at the top when something's wrong — previously an
+  admin who wasn't specifically looking at the System page had no ongoing signal at all.
+- **Queue "Remove and Blocklist"**: the Activity page's queue now has a combined action instead of
+  removing and blocklisting separately across two pages — `DELETE /api/activity/queue/:id?blocklist=1`
+  adds a blocklist entry using the queue item's own title/indexer before removing it.
+- **Authentication toggle**: Settings → Security gained an "Authentication" setting (Enabled/
+  Disabled), Radarr's "Authentication Required" — when disabled every request is treated as an
+  authenticated admin, for a trusted private network only.
+- **TMDB import lists**: Import Lists gained a "TMDB" type alongside Trakt/IMDb/Last.fm — paste a
+  `themoviedb.org/list/<id>` URL or bare numeric list id (needs a TMDB API key set under Settings →
+  Metadata). A TMDB list can mix movies and TV shows; each entry's own `media_type` routes it to
+  the right library.
+- **Checked and did NOT build**: per-indexer tags and a configurable RSS-sync-interval field.
+  AoNarr's indexers are queried ad hoc on every search (manual, scheduled auto-search, bulk) — there
+  is no RSS-feed-polling pipeline for a "sync interval" to actually control, so a settings field for
+  one would be cosmetic. Indexer tags have no consumer either (delay profiles scope by *media item*
+  tags, not indexer tags) — adding an unused tag picker would be UI with nothing behind it, the same
+  reasoning Round 191 used to skip Remote Path Mappings.
+
 ## Round 192 — download client test, rename preview, match by ID/URL, custom posters/backdrops
 - **Download Clients**: added a "Test connection" button on the edit form (all types), validating
   credentials/reachability before you rely on it — previously only qBittorrent's post-save "Check

@@ -229,6 +229,16 @@ export interface CustomFormat {
   mediaTypes: MediaType[]; // empty = applies to every library type
 }
 
+export interface ReleaseProfile {
+  id: number;
+  name: string;
+  enabled: boolean;
+  mustContain: string[];
+  mustNotContain: string[];
+  preferred: { term: string; score: number }[];
+  mediaTypes: MediaType[]; // empty = applies to every library type
+}
+
 export interface QueueItem {
   id: number;
   mediaItemId: number;
@@ -323,6 +333,8 @@ export interface SearchResult {
   formatScore: number;
   formatMatches: string[];
   blocklisted: boolean;
+  rejected: boolean;
+  rejectReason?: string;
 }
 
 export interface BlocklistEntry {

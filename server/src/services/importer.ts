@@ -6,7 +6,7 @@ import { db } from "../db/index.js";
 import { nowExpr } from "../db/asyncDb.js";
 import { config } from "../config.js";
 import { mediaItemFromRow, queueItemFromRow, rootFolderFromRow } from "../db/mappers.js";
-import { notifyImported } from "./notifications.js";
+import { notifyImported, notifyUpgraded } from "./notifications.js";
 import { notifyQueueChanged } from "./realtime.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import {
@@ -382,6 +382,9 @@ export async function placeFile(params: {
   const ext = path.extname(sourceFile);
   let destPath: string;
   let fileLabel: string;
+  // Distinguishes a first-time import from a replace of a file the item already had, so the
+  // right notification event fires (notifyImported vs. Radarr/Sonarr's "On Upgrade").
+  let hadFileBefore = typeConfig.shape === "single" && !!item.hasFile;
 
   if (typeConfig.shape === "single") {
     const segments = renderPathSegments(getNamingTemplate(item.type), { title: item.title, year: item.year ?? "", quality: quality ?? "" });
@@ -389,6 +392,7 @@ export async function placeFile(params: {
   } else if (typeConfig.shape === "episodic" && episodeId) {
     const epRow = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(episodeId)) as any;
     if (!epRow) throw new Error(`Episode ${episodeId} not found`);
+    hadFileBefore = !!epRow.has_file;
     // Running count across every season up to and including this episode — what anime naming
     // conventions call "absolute" numbering (e.g. episode 26 instead of S02E01), as an
     // alternative to {season}/{episode} in a custom naming template.
@@ -419,6 +423,7 @@ export async function placeFile(params: {
   } else if (typeConfig.shape === "collection" && subItemId && !typeConfig.multiFilePerChild) {
     const subRow = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId)) as any;
     if (!subRow) throw new Error(`Sub-item ${subItemId} not found`);
+    hadFileBefore = !!subRow.has_file;
     const segments = renderPathSegments(getNamingTemplate(item.type), {
       parentTitle: item.title,
       childTitle: subRow.title,
@@ -478,7 +483,8 @@ export async function placeFile(params: {
     JSON.stringify({ fileLabel, destPath })
   );
 
-  await notifyImported(item.title, fileLabel, destPath);
+  if (hadFileBefore) await notifyUpgraded(item.title, fileLabel, destPath);
+  else await notifyImported(item.title, fileLabel, destPath);
   log.info(`[importer] imported "${fileLabel}" for "${item.title}"`);
   return { destPath, fileLabel };
 }

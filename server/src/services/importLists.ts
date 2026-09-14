@@ -10,7 +10,7 @@ import { queueForReview } from "./importReview.js";
 export interface ImportListRow {
   id: number;
   name: string;
-  type: "trakt" | "imdb" | "lastfm";
+  type: "trakt" | "imdb" | "lastfm" | "tmdb";
   url: string;
   enabled: number;
   quality_profile_id: number | null;
@@ -307,6 +307,82 @@ async function syncLastfmList(list: ImportListRow, qualityProfileId: number | nu
   return added;
 }
 
+/** Accepts a full themoviedb.org list URL or a bare numeric TMDB list id. */
+function parseTmdbListId(url: string): string | null {
+  const m = url.match(/themoviedb\.org\/list\/(\d+)/);
+  if (m) return m[1];
+  const trimmed = url.trim();
+  return /^\d+$/.test(trimmed) ? trimmed : null;
+}
+
+/**
+ * TMDB's own public/private list feature (themoviedb.org/list/<id>) — distinct from a Trakt list,
+ * which most admins already use, but a real gap for anyone who curates lists on TMDB itself and
+ * doesn't want a second service just to auto-add from them. A TMDB list can mix movies and TV
+ * shows; each entry's own `media_type` field says which, and both branches skip entries already in
+ * the library the same way syncTraktList does (by TMDB id, not title, to avoid false-duplicate
+ * misses).
+ */
+async function syncTmdbList(list: ImportListRow, qualityProfileId: number | null): Promise<number> {
+  const apiKey = getSetting("tmdbApiKey");
+  if (!apiKey) throw new Error("Set a TMDB API key in Settings before using a TMDB import list");
+  const listId = parseTmdbListId(list.url);
+  if (!listId) throw new Error("URL is not a recognized TMDB list URL (expected themoviedb.org/list/<id> or a bare numeric id)");
+
+  const res = await fetch(`https://api.themoviedb.org/3/list/${listId}?api_key=${apiKey}`);
+  if (!res.ok) throw new Error(`TMDB list request failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  const items: any[] = Array.isArray(body?.items) ? body.items : [];
+
+  const existingMovies = await existingTmdbIds("movie");
+  const existingSeries = await existingTmdbIds("series");
+  let added = 0;
+
+  for (const entry of items) {
+    try {
+      const isTv = entry.media_type === "tv" || (!entry.media_type && entry.first_air_date);
+      const tmdbId = entry.id;
+      if (!tmdbId) continue;
+
+      if (isTv) {
+        if (existingSeries.has(String(tmdbId))) continue;
+        const title = entry.name ?? entry.title;
+        const year = entry.first_air_date ? Number(String(entry.first_air_date).slice(0, 4)) : null;
+        if (!title) continue;
+        if (await isExcluded("series", title, year, String(tmdbId), "tmdb")) continue;
+        const externalIds = { tmdb: String(tmdbId) };
+        const result = await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, year, external_ids, quality_profile_id, monitored, status)
+             VALUES ('series', ?, ?, ?, ?, ?, 1, 'missing')`
+          )
+          .run(title, title.toLowerCase(), year, JSON.stringify(externalIds), qualityProfileId);
+        await insertSeriesEpisodes(result.lastInsertRowid, externalIds);
+        existingSeries.add(String(tmdbId));
+        added++;
+      } else {
+        if (existingMovies.has(String(tmdbId))) continue;
+        const title = entry.title ?? entry.name;
+        const year = entry.release_date ? Number(String(entry.release_date).slice(0, 4)) : null;
+        if (!title) continue;
+        if (await isExcluded("movie", title, year, String(tmdbId), "tmdb")) continue;
+        await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, year, external_ids, quality_profile_id, monitored, status)
+             VALUES ('movie', ?, ?, ?, ?, ?, 1, 'missing')`
+          )
+          .run(title, title.toLowerCase(), year, JSON.stringify({ tmdb: String(tmdbId) }), qualityProfileId);
+        existingMovies.add(String(tmdbId));
+        added++;
+      }
+    } catch (err) {
+      log.warn(`[importLists] TMDB list "${list.name}" failed to add an item:`, (err as Error).message);
+    }
+  }
+
+  return added;
+}
+
 export async function syncImportList(list: ImportListRow): Promise<{ added: number; error?: string }> {
   const qualityProfileId =
     list.quality_profile_id ??
@@ -319,7 +395,9 @@ export async function syncImportList(list: ImportListRow): Promise<{ added: numb
         ? await syncTraktList(list, qualityProfileId)
         : list.type === "lastfm"
           ? await syncLastfmList(list, qualityProfileId)
-          : await syncImdbList(list, qualityProfileId);
+          : list.type === "tmdb"
+            ? await syncTmdbList(list, qualityProfileId)
+            : await syncImdbList(list, qualityProfileId);
     await db
       .prepare(`UPDATE import_lists SET last_synced_at = ${nowExpr(db)}, last_added_count = ?, last_error = NULL WHERE id = ?`)
       .run(added, list.id);

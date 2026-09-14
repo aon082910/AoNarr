@@ -64,7 +64,7 @@ interface NotificationContent {
 /** Sonarr/Radarr-style per-connection event triggers: each provider has an optional
  * `<providerKey>Events` setting, a comma-separated subset of EVENT_KEYS. Unset means "every event"
  * — the pre-existing behavior — so upgrading doesn't silently mute anyone's existing setup. */
-export const EVENT_KEYS = ["grabbed", "imported", "failed", "duplicatesFound"] as const;
+export const EVENT_KEYS = ["grabbed", "imported", "upgraded", "failed", "duplicatesFound", "healthIssue"] as const;
 export type EventKey = (typeof EVENT_KEYS)[number];
 
 function isEventEnabledFor(providerKey: string, event: string): boolean {
@@ -197,8 +197,10 @@ async function fanOut(content: NotificationContent): Promise<void> {
 const DEFAULT_TEMPLATES = {
   grabbed: "{mediaTitle}\n{releaseTitle}",
   imported: "{mediaTitle}\n{fileName}",
+  upgraded: "{mediaTitle}\n{fileName}",
   failed: "{mediaTitle}: {reason}",
   duplicatesFound: "{count} new duplicate group(s) found: {titles}",
+  healthIssue: "{summary}",
 };
 
 /** Renders a {token}-based template from Settings, falling back to the built-in default when
@@ -238,6 +240,22 @@ export async function notifyImported(mediaTitle: string, fileName: string, fileP
   }
 }
 
+/** Fired instead of notifyImported when the import replaces a file the item already had — Radarr/
+ * Sonarr's "On Upgrade" event, distinct from a first-time import so a notification provider can be
+ * configured to care about one but not the other. */
+export async function notifyUpgraded(mediaTitle: string, fileName: string, filePath?: string): Promise<void> {
+  await fanOut({
+    title: "Upgraded",
+    text: renderTemplate("notifyTemplateUpgraded", DEFAULT_TEMPLATES.upgraded, { mediaTitle, fileName }),
+    color: 0x8f6fff,
+    payload: { event: "upgraded", mediaTitle, fileName },
+  });
+
+  if (filePath && getSetting("mediaServerRefreshOnImport") === "1") {
+    refreshMediaServerLibrary(filePath).catch((err) => log.warn("[notifications] media server refresh failed:", err.message));
+  }
+}
+
 export async function notifyFailed(mediaTitle: string, reason: string): Promise<void> {
   await fanOut({
     title: "Failed",
@@ -257,5 +275,20 @@ export async function notifyDuplicatesFound(count: number, sampleTitles: string[
     text: renderTemplate("notifyTemplateDuplicatesFound", DEFAULT_TEMPLATES.duplicatesFound, { count: String(count), titles }),
     color: 0xe0a95c,
     payload: { event: "duplicatesFound", count, titles: sampleTitles },
+  });
+}
+
+/** Radarr/Sonarr-style "On Health Issue" — fired by the scheduler's own periodic health check
+ * (see scheduler.ts's checkHealthAndNotify), not from the on-demand System page GET, so an admin
+ * who isn't actively looking at the System page still finds out. `summary` is a short, human
+ * combined description of everything currently wrong, not a single-issue message — kept as one
+ * notification per check rather than one per problem, so a bad indexer + low disk space doesn't
+ * spam every configured provider twice in the same minute. */
+export async function notifyHealthIssue(summary: string): Promise<void> {
+  await fanOut({
+    title: "Health issue",
+    text: renderTemplate("notifyTemplateHealthIssue", DEFAULT_TEMPLATES.healthIssue, { summary }),
+    color: 0xe05c5c,
+    payload: { event: "healthIssue", summary },
   });
 }

@@ -50,11 +50,24 @@ activityRouter.get("/stream", (req, res) => {
   });
 });
 
+/**
+ * Radarr/Sonarr-style "Remove and Blocklist" — pass `?blocklist=1` to add the release to this
+ * media item's blocklist (see routes/blocklist.ts) in the same call, instead of removing from the
+ * queue and blocklisting separately by hand across two pages.
+ */
 activityRouter.delete(
   "/queue/:id",
   asyncHandler(async (req, res) => {
-    const result = await db.prepare("DELETE FROM queue WHERE id = ?").run(req.params.id);
-    if (result.changes === 0) throw new HttpError(404, "Queue item not found");
+    const queueRow = (await db.prepare("SELECT * FROM queue WHERE id = ?").get(req.params.id)) as any;
+    if (!queueRow) throw new HttpError(404, "Queue item not found");
+
+    if (req.query.blocklist === "1") {
+      await db
+        .prepare("INSERT INTO blocklist (media_item_id, release_title, indexer_id, reason) VALUES (?, ?, ?, ?)")
+        .run(queueRow.media_item_id, queueRow.title, queueRow.indexer_id, "Removed from queue by admin");
+    }
+
+    await db.prepare("DELETE FROM queue WHERE id = ?").run(req.params.id);
     notifyQueueChanged();
     res.status(204).send();
   })

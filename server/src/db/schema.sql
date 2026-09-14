@@ -307,6 +307,23 @@ CREATE TABLE IF NOT EXISTS quality_profile_format_scores (
   PRIMARY KEY (quality_profile_id, custom_format_id)
 );
 
+-- Radarr/Sonarr-style Release Profiles: plain-text (non-regex) term lists checked against a
+-- release's raw title, simpler and less precise than Custom Formats' condition groups — must-not-
+-- contain rejects a release outright, must-contain requires at least one term to appear (skipped
+-- entirely when empty, i.e. no requirement), and preferred terms each add their own score when
+-- present (negative scores work as "downrank", same as Radarr's). Scoped by media_types the same
+-- way custom_formats are; NULL/empty applies to every library type. See
+-- services/customFormatScoring.ts's evaluateReleaseProfiles for how these combine with formats.
+CREATE TABLE IF NOT EXISTS release_profiles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  must_contain TEXT NOT NULL DEFAULT '[]', -- JSON array of terms, OR'd (at least one must appear; empty = no requirement)
+  must_not_contain TEXT NOT NULL DEFAULT '[]', -- JSON array of terms; any match rejects the release
+  preferred TEXT NOT NULL DEFAULT '[]', -- JSON array of {term, score}
+  media_types TEXT -- JSON array of media_type keys; NULL/empty = every type
+);
+
 -- Individual tracks within an album (sub_items row for an artist). Fetched lazily from
 -- MusicBrainz on demand rather than eagerly for every album (would blow through their rate limit).
 CREATE TABLE IF NOT EXISTS tracks (

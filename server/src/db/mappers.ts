@@ -217,6 +217,18 @@ export function customFormatFromRow(row: any) {
   };
 }
 
+export function releaseProfileFromRow(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    enabled: !!row.enabled,
+    mustContain: JSON.parse(row.must_contain ?? "[]"),
+    mustNotContain: JSON.parse(row.must_not_contain ?? "[]"),
+    preferred: JSON.parse(row.preferred ?? "[]"),
+    mediaTypes: row.media_types ? JSON.parse(row.media_types) : [],
+  };
+}
+
 export function trackFromRow(row: any) {
   return {
     id: row.id,

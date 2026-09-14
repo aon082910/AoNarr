@@ -57,6 +57,14 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     return;
   }
 
+  // Radarr-style "Authentication Required: Disabled" — opt-in, for a trusted private network
+  // only. Every request is treated as admin; the API key/session checks below never even run.
+  if (getSetting("authRequired") === "0") {
+    req.auth = { isAdmin: true };
+    next();
+    return;
+  }
+
   const rateLimitKey = `authkey:${req.ip}`;
   const rateLimit = checkRateLimit(rateLimitKey);
   if (!rateLimit.allowed) {

@@ -24,6 +24,8 @@ export interface CustomFormatMatch {
 export interface ReleaseScore {
   totalScore: number;
   matches: CustomFormatMatch[];
+  rejected: boolean;
+  rejectReason?: string;
 }
 
 function testPattern(pattern: string, text: string): boolean {
@@ -110,6 +112,77 @@ export function formatMatches(groups: ConditionGroup[], title: string, sizeBytes
 }
 
 /**
+ * Radarr/Sonarr-style Release Profiles: plain-text (non-regex) must-contain/must-not-contain/
+ * preferred term lists, evaluated independently of (and in addition to) Custom Formats. Profiles
+ * are AND'd together — a release failing any single enabled profile's must-not-contain or
+ * must-contain gate is rejected overall, regardless of what other profiles say; preferred-term
+ * hits across every profile simply add to the score.
+ */
+async function evaluateReleaseProfiles(
+  title: string,
+  mediaType: string | null
+): Promise<{ scoreBonus: number; rejected: boolean; rejectReason?: string }> {
+  const profiles = (await db.prepare("SELECT * FROM release_profiles WHERE enabled = 1").all()) as {
+    id: number;
+    name: string;
+    must_contain: string;
+    must_not_contain: string;
+    preferred: string;
+    media_types: string | null;
+  }[];
+  const lower = title.toLowerCase();
+  let scoreBonus = 0;
+
+  for (const p of profiles) {
+    if (mediaType && p.media_types) {
+      let restrictedTo: string[];
+      try {
+        restrictedTo = JSON.parse(p.media_types);
+      } catch {
+        restrictedTo = [];
+      }
+      if (restrictedTo.length > 0 && !restrictedTo.includes(mediaType)) continue;
+    }
+
+    let mustContain: string[] = [];
+    let mustNotContain: string[] = [];
+    let preferred: { term: string; score: number }[] = [];
+    try {
+      mustContain = JSON.parse(p.must_contain);
+    } catch {
+      // malformed row — treat as no requirement rather than crash scoring
+    }
+    try {
+      mustNotContain = JSON.parse(p.must_not_contain);
+    } catch {
+      // ditto
+    }
+    try {
+      preferred = JSON.parse(p.preferred);
+    } catch {
+      // ditto
+    }
+
+    const forbiddenHit = mustNotContain.find((t) => t && lower.includes(t.toLowerCase()));
+    if (forbiddenHit) {
+      return { scoreBonus: 0, rejected: true, rejectReason: `Release profile "${p.name}": contains "${forbiddenHit}"` };
+    }
+    if (mustContain.length > 0 && !mustContain.some((t) => t && lower.includes(t.toLowerCase()))) {
+      return {
+        scoreBonus: 0,
+        rejected: true,
+        rejectReason: `Release profile "${p.name}": missing a required term (${mustContain.join(", ")})`,
+      };
+    }
+    for (const pref of preferred) {
+      if (pref.term && lower.includes(pref.term.toLowerCase())) scoreBonus += Number(pref.score) || 0;
+    }
+  }
+
+  return { scoreBonus, rejected: false };
+}
+
+/**
  * Scores a release against every defined custom format that applies to the given media type
  * (Sonarr/Radarr-style): each format is a list of condition groups — title-regex, size-range,
  * language, release-group, source, resolution, year, or release-flags, OR'd within a group, AND'd
@@ -164,5 +237,7 @@ export async function scoreRelease(
     matches.push({ id: format.id, name: format.name, score });
   }
 
-  return { totalScore: matches.reduce((sum, m) => sum + m.score, 0), matches };
+  const profileResult = await evaluateReleaseProfiles(releaseTitle, mediaType);
+  const totalScore = matches.reduce((sum, m) => sum + m.score, 0) + profileResult.scoreBonus;
+  return { totalScore, matches, rejected: profileResult.rejected, rejectReason: profileResult.rejectReason };
 }

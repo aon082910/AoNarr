@@ -31,8 +31,10 @@ export interface SettingsProviderDef {
 const EVENT_OPTIONS: { key: string; label: string }[] = [
   { key: "grabbed", label: "Grabbed" },
   { key: "imported", label: "Imported" },
+  { key: "upgraded", label: "Upgraded" },
   { key: "failed", label: "Failed" },
   { key: "duplicatesFound", label: "Duplicates found" },
+  { key: "healthIssue", label: "Health issue" },
 ];
 
 /**

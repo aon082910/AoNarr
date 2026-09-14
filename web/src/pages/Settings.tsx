@@ -5,7 +5,7 @@ import NamingSetupModal from "../components/NamingSetupModal.js";
 import SettingsProviderTiles, { type SettingsProviderDef } from "../components/SettingsProviderTiles.js";
 import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
-import type { BlocklistEntry, CustomFormat, DelayProfile, ImportExclusion, MediaType, Quality, QualityProfile, RootFolder, Tag } from "../types.js";
+import type { BlocklistEntry, CustomFormat, DelayProfile, ImportExclusion, MediaType, Quality, QualityProfile, ReleaseProfile, RootFolder, Tag } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 
 interface FormatScore extends CustomFormat {
@@ -340,6 +340,8 @@ export default function Settings() {
   const [formatScores, setFormatScores] = useState<FormatScore[]>([]);
   const [delayProfiles, setDelayProfiles] = useState<DelayProfile[]>([]);
   const [newDelayProfileTagId, setNewDelayProfileTagId] = useState<string>("");
+  const [releaseProfiles, setReleaseProfiles] = useState<ReleaseProfile[]>([]);
+  const [newReleaseProfileName, setNewReleaseProfileName] = useState("");
 
   function load() {
     api.get<RootFolder[]>("/root-folders").then(setRootFolders);
@@ -359,6 +361,7 @@ export default function Settings() {
     api.get<Record<string, string>>("/settings").then(setSettings);
     api.get<Record<MediaType, string[]>>("/metadata/providers").then(setMetadataProviders);
     api.get<DelayProfile[]>("/delay-profiles").then(setDelayProfiles);
+    api.get<ReleaseProfile[]>("/release-profiles").then(setReleaseProfiles);
   }
   useEffect(load, []);
 
@@ -375,6 +378,23 @@ export default function Settings() {
 
   async function removeDelayProfile(id: number) {
     await api.del(`/delay-profiles/${id}`);
+    load();
+  }
+
+  async function addReleaseProfile() {
+    if (!newReleaseProfileName.trim()) return;
+    await api.post("/release-profiles", { name: newReleaseProfileName.trim() });
+    setNewReleaseProfileName("");
+    load();
+  }
+
+  async function updateReleaseProfile(id: number, patch: Partial<ReleaseProfile>) {
+    await api.patch(`/release-profiles/${id}`, patch);
+    load();
+  }
+
+  async function removeReleaseProfile(id: number) {
+    await api.del(`/release-profiles/${id}`);
     load();
   }
 
@@ -941,6 +961,20 @@ export default function Settings() {
         <button type="button" className="danger" onClick={regenerateApiKey}>
           Regenerate
         </button>
+
+        <label>Authentication</label>
+        <select
+          value={settings.authRequired === "0" ? "0" : "1"}
+          onChange={(e) => saveSetting("authRequired", e.target.value)}
+        >
+          <option value="1">Enabled (default)</option>
+          <option value="0">Disabled — trusted network only</option>
+        </select>
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+          When disabled, every request is treated as an authenticated admin — no API key, session
+          login, or 2FA required. Only turn this off if AoNarr sits on a network you fully trust
+          (e.g. behind your own VPN) and is never exposed directly to the internet.
+        </p>
       </div>
 
       <h2>MCP Server</h2>
@@ -2405,6 +2439,84 @@ export default function Settings() {
                 </select>
                 <button type="button" onClick={addDelayProfile} style={{ marginTop: 8 }}>
                   Add delay profile
+                </button>
+              </div>
+            ),
+          },
+          ...releaseProfiles.map((rp) => ({
+            key: `releaseProfile-${rp.id}`,
+            label: rp.name,
+            description: rp.enabled ? "Enabled" : "Disabled",
+            maxWidth: 480,
+            render: () => (
+              <div className="form-panel">
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Plain-text term matching against a release's raw title (no regex, unlike Custom
+                  Formats). Must Not Contain rejects the release outright if any term appears. Must
+                  Contain requires at least one term to appear (leave empty for no requirement).
+                  Preferred terms each add their own score (negative to downrank) when present.
+                </p>
+                <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    style={{ width: "auto" }}
+                    checked={rp.enabled}
+                    onChange={(e) => updateReleaseProfile(rp.id, { enabled: e.target.checked })}
+                  />
+                  Enabled
+                </label>
+                <label>Name</label>
+                <input defaultValue={rp.name} onBlur={(e) => e.target.value !== rp.name && updateReleaseProfile(rp.id, { name: e.target.value })} />
+                <label>Must Contain (comma-separated)</label>
+                <input
+                  defaultValue={rp.mustContain.join(", ")}
+                  onBlur={(e) =>
+                    updateReleaseProfile(rp.id, {
+                      mustContain: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
+                    })
+                  }
+                />
+                <label>Must Not Contain (comma-separated)</label>
+                <input
+                  defaultValue={rp.mustNotContain.join(", ")}
+                  onBlur={(e) =>
+                    updateReleaseProfile(rp.id, {
+                      mustNotContain: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
+                    })
+                  }
+                />
+                <label>Preferred (one "term: score" per line)</label>
+                <textarea
+                  rows={4}
+                  defaultValue={rp.preferred.map((p) => `${p.term}: ${p.score}`).join("\n")}
+                  onBlur={(e) => {
+                    const preferred = e.target.value
+                      .split("\n")
+                      .map((line) => {
+                        const [term, score] = line.split(":");
+                        return { term: (term ?? "").trim(), score: Number((score ?? "").trim()) || 0 };
+                      })
+                      .filter((p) => p.term.length > 0);
+                    updateReleaseProfile(rp.id, { preferred });
+                  }}
+                />
+                <button className="danger" onClick={() => removeReleaseProfile(rp.id)}>
+                  Delete release profile
+                </button>
+              </div>
+            ),
+          })),
+          {
+            key: "addReleaseProfile",
+            label: "+ Add Release Profile",
+            description: "Must contain / must not contain / preferred-term scoring",
+            maxWidth: 420,
+            render: () => (
+              <div className="form-panel">
+                <label>Name</label>
+                <input value={newReleaseProfileName} onChange={(e) => setNewReleaseProfileName(e.target.value)} placeholder="e.g. Prefer HDR" />
+                <button type="button" onClick={addReleaseProfile} style={{ marginTop: 8 }}>
+                  Add release profile
                 </button>
               </div>
             ),

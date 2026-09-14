@@ -16,7 +16,9 @@ import {
   queueItemFromRow,
 } from "../db/mappers.js";
 import { importQueueItem, ImportSkippedError } from "./importer.js";
-import { notifyFailed, notifyGrabbed } from "./notifications.js";
+import { notifyFailed, notifyGrabbed, notifyHealthIssue } from "./notifications.js";
+import { checkIndexerHealth } from "./indexerClient.js";
+import { setSetting } from "./settingsStore.js";
 import { notifyQueueChanged } from "./realtime.js";
 import { runAutoArchival } from "./archival.js";
 import { getBlocklistedTitles } from "./blocklist.js";
@@ -213,7 +215,7 @@ async function chooseBestResult(
         .filter(({ parsed }) => parsed.quality === best)
         .map(async ({ result }) => ({ result, ...(await scoreRelease(result.title, result.size ?? null, qualityProfileId, mediaType)) }))
     )
-  ).filter((c) => c.totalScore >= minFormatScore);
+  ).filter((c) => c.totalScore >= minFormatScore && !c.rejected);
   if (candidates.length === 0) return null;
 
   // getGroupReputation is now async (DB-backed) — a .sort() comparator can't await, so reputation
@@ -954,6 +956,57 @@ async function cleanupStalledDownloads(): Promise<void> {
   }
 }
 
+/**
+ * Radarr/Sonarr-style "On Health Issue" notification — the System page's health check
+ * (routes/system.ts) is only ever computed on demand when someone loads it, so an admin who isn't
+ * looking never finds out an indexer died or a root folder is nearly full. This runs the same
+ * kind of checks (indexer reachability, download client reachability, low disk space) on a
+ * schedule and fires one combined notification, deduped against the last-notified summary (stored
+ * in the `lastHealthIssueSummary` setting) so a still-broken indexer doesn't re-notify every run —
+ * only a *change* in what's wrong (new issue, resolved issue, or recovery) fires again.
+ */
+async function checkHealthAndNotify(): Promise<void> {
+  const issues: string[] = [];
+
+  const indexers = ((await db.prepare("SELECT * FROM indexers WHERE enabled = 1").all()) as any[]).map(indexerFromRow);
+  for (const idx of indexers as any[]) {
+    try {
+      const result = await checkIndexerHealth(idx);
+      if (!result.ok) issues.push(`Indexer "${idx.name}" is unreachable`);
+    } catch {
+      issues.push(`Indexer "${idx.name}" is unreachable`);
+    }
+  }
+
+  const clients = await rowsToDownloadClients();
+  for (const client of clients) {
+    try {
+      await getDownloadClientAdapter(client.type).getStatus(client, []);
+    } catch {
+      issues.push(`Download client "${client.name}" is unreachable`);
+    }
+  }
+
+  const DISK_WARN_PERCENT_FREE = 10;
+  const rootFolders = (await db.prepare("SELECT id, path FROM root_folders").all()) as { id: number; path: string }[];
+  for (const folder of rootFolders) {
+    const latest = (await db
+      .prepare("SELECT free_bytes, total_bytes FROM disk_usage_samples WHERE root_folder_id = ? ORDER BY sampled_at DESC LIMIT 1")
+      .get(folder.id)) as { free_bytes: number; total_bytes: number } | undefined;
+    if (!latest || !Number(latest.total_bytes)) continue;
+    const percentFree = (Number(latest.free_bytes) / Number(latest.total_bytes)) * 100;
+    if (percentFree < DISK_WARN_PERCENT_FREE) {
+      issues.push(`"${folder.path}" is low on disk space (${Math.round(percentFree)}% free)`);
+    }
+  }
+
+  const summary = issues.join("; ");
+  const lastSummary = getSetting("lastHealthIssueSummary") ?? "";
+  if (summary === lastSummary) return; // nothing changed since the last notification
+  setSetting("lastHealthIssueSummary", summary);
+  if (summary) await notifyHealthIssue(summary);
+}
+
 let started = false;
 
 export function startScheduler() {
@@ -1173,6 +1226,14 @@ export function startScheduler() {
     scheduleType: "cron",
     defaultSchedule: "0 6 * * 0",
     run: (signal) => refreshAllLibraries(signal),
+  });
+
+  registerJob({
+    key: "healthCheckNotify",
+    name: "Health Check Notify",
+    scheduleType: "cron",
+    defaultSchedule: "*/30 * * * *",
+    run: () => checkHealthAndNotify(),
   });
 
   registerJob({

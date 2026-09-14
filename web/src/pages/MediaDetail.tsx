@@ -2024,12 +2024,17 @@ export default function MediaDetail() {
               </thead>
               <tbody>
                 {results.map((r, idx) => (
-                  <tr key={idx} style={{ opacity: r.matchesTarget && !r.blocklisted ? 1 : 0.55 }}>
+                  <tr key={idx} style={{ opacity: r.matchesTarget && !r.blocklisted && !r.rejected ? 1 : 0.55 }}>
                     <td>
                       {r.title}
                       {r.blocklisted && (
                         <span className="badge danger" style={{ marginLeft: 6 }}>
                           blocklisted
+                        </span>
+                      )}
+                      {r.rejected && (
+                        <span className="badge danger" style={{ marginLeft: 6 }} title={r.rejectReason}>
+                          rejected
                         </span>
                       )}
                     </td>

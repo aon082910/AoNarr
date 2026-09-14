@@ -285,6 +285,17 @@ CREATE TABLE IF NOT EXISTS quality_profile_format_scores (
   PRIMARY KEY (quality_profile_id, custom_format_id)
 );
 
+-- Radarr/Sonarr-style Release Profiles — see schema.sql's copy of this table for the full note.
+CREATE TABLE IF NOT EXISTS release_profiles (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  must_contain TEXT NOT NULL DEFAULT '[]',
+  must_not_contain TEXT NOT NULL DEFAULT '[]',
+  preferred TEXT NOT NULL DEFAULT '[]',
+  media_types TEXT
+);
+
 -- Individual tracks within an album (sub_items row for an artist). Fetched lazily from
 -- MusicBrainz on demand rather than eagerly for every album (would blow through their rate limit).
 CREATE TABLE IF NOT EXISTS tracks (

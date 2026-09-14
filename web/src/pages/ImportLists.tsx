@@ -6,7 +6,7 @@ import type { QualityProfile } from "../types.js";
 interface ImportList {
   id: number;
   name: string;
-  type: "trakt" | "imdb" | "lastfm";
+  type: "trakt" | "imdb" | "lastfm" | "tmdb";
   url: string;
   enabled: 0 | 1;
   quality_profile_id: number | null;
@@ -15,11 +15,12 @@ interface ImportList {
   last_error: string | null;
 }
 
-const TYPE_LABELS: Record<ImportList["type"], string> = { trakt: "Trakt", imdb: "IMDb", lastfm: "Last.fm" };
+const TYPE_LABELS: Record<ImportList["type"], string> = { trakt: "Trakt", imdb: "IMDb", lastfm: "Last.fm", tmdb: "TMDB" };
 const URL_PLACEHOLDERS: Record<ImportList["type"], string> = {
   trakt: "https://trakt.tv/users/you/lists/to-watch (or .../watchlist)",
   imdb: "https://www.imdb.com/list/ls123456789/",
   lastfm: "https://www.last.fm/user/yourname (or just a username)",
+  tmdb: "https://www.themoviedb.org/list/8290123 (or just the numeric list id)",
 };
 
 export default function ImportLists() {
@@ -85,10 +86,10 @@ export default function ImportLists() {
       <h1>Import Lists</h1>
       <p style={{ color: "var(--muted)" }}>
         Recurring "auto-add anything new here" sources — re-checked on the same schedule as
-        auto-search, so anything new on the list gets added to your library automatically. Trakt
-        and IMDb lists add movies/shows; a Last.fm profile adds its all-time top artists to Music
-        (Last.fm has no user-playlist concept of its own, so top artists is the closest
-        equivalent).
+        auto-search, so anything new on the list gets added to your library automatically. Trakt,
+        IMDb, and TMDB lists add movies/shows (TMDB needs an API key set under Settings →
+        Metadata); a Last.fm profile adds its all-time top artists to Music (Last.fm has no
+        user-playlist concept of its own, so top artists is the closest equivalent).
       </p>
 
       <form className="form-panel" onSubmit={addList}>
@@ -99,6 +100,7 @@ export default function ImportLists() {
           <option value="trakt">Trakt</option>
           <option value="imdb">IMDb</option>
           <option value="lastfm">Last.fm</option>
+          <option value="tmdb">TMDB</option>
         </select>
         <label>URL</label>
         <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder={URL_PLACEHOLDERS[type]} required />

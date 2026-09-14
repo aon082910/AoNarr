@@ -47,6 +47,8 @@ export interface AnnotatedSearchResult extends SearchResult {
   formatScore: number;
   formatMatches: string[];
   blocklisted: boolean;
+  rejected: boolean;
+  rejectReason?: string;
 }
 
 /**
@@ -131,7 +133,7 @@ searchRouter.get(
           : targetSeason !== null
             ? parsed.seasonNumber === targetSeason
             : true;
-      const { totalScore, matches } = await scoreRelease(r.title, r.size ?? null, item.qualityProfileId, item.type);
+      const { totalScore, matches, rejected, rejectReason } = await scoreRelease(r.title, r.size ?? null, item.qualityProfileId, item.type);
       return {
         ...r,
         parsedQuality: parsed.quality,
@@ -141,6 +143,8 @@ searchRouter.get(
         formatScore: totalScore,
         formatMatches: matches.map((m) => m.name),
         blocklisted: blocklisted.has(r.title),
+        rejected,
+        rejectReason,
       };
     }));
 
@@ -155,6 +159,7 @@ searchRouter.get(
       (a, b) =>
         Number(b.matchesTarget) - Number(a.matchesTarget) ||
         Number(b.allowedByProfile) - Number(a.allowedByProfile) ||
+        Number(a.rejected) - Number(b.rejected) ||
         Number(a.blocklisted) - Number(b.blocklisted) ||
         b.formatScore - a.formatScore ||
         (b.seeders ?? 0) - (a.seeders ?? 0)

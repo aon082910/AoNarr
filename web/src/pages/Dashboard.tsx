@@ -39,6 +39,13 @@ interface UpcomingEntry {
   hasFile: 0 | 1;
 }
 
+interface HealthSummary {
+  configWarnings: { key: string; message: string }[];
+  indexers: { id: number; name: string; ok: boolean; error?: string }[];
+  downloadClients: { id: number; name: string; ok: boolean; error?: string }[];
+  diskWarnings: { rootFolderId: number; path: string; percentFree: number }[];
+}
+
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -62,6 +69,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [librarySizes, setLibrarySizes] = useState<Record<string, number>>({});
   const [libraryCounts, setLibraryCounts] = useState<Record<string, number>>({});
+  const [health, setHealth] = useState<HealthSummary | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -84,7 +92,23 @@ export default function Dashboard() {
         setLibraryCounts(counts);
       })
       .finally(() => setLoading(false));
+
+    // Surfaces the same checks the System page computes on demand, right where an admin will
+    // actually see them without having to think to go look — Radarr shows health warnings as a
+    // banner near the top of its own dashboard for the same reason.
+    if (auth.isAdmin) {
+      api.get<HealthSummary>("/system/health").then(setHealth).catch(() => setHealth(null));
+    }
   }, [auth.isAdmin]);
+
+  const healthMessages: string[] = health
+    ? [
+        ...health.configWarnings.map((w) => w.message),
+        ...health.indexers.filter((i) => !i.ok).map((i) => `Indexer "${i.name}" is unreachable`),
+        ...health.downloadClients.filter((c) => !c.ok).map((c) => `Download client "${c.name}" is unreachable`),
+        ...health.diskWarnings.map((d) => `"${d.path}" is low on disk space (${d.percentFree}% free)`),
+      ]
+    : [];
 
   const totalSize = Object.values(librarySizes).reduce((sum, n) => sum + n, 0);
   const totalCount = Object.values(libraryCounts).reduce((sum, n) => sum + n, 0);
@@ -314,6 +338,22 @@ export default function Dashboard() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {healthMessages.length > 0 && (
+        <div className="form-panel" style={{ borderColor: "var(--danger)", marginBottom: 16 }}>
+          <strong style={{ color: "var(--danger)" }}>Health issues</strong>
+          <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+            {healthMessages.map((m, idx) => (
+              <li key={idx} style={{ fontSize: "0.85rem" }}>
+                {m}
+              </li>
+            ))}
+          </ul>
+          <button type="button" className="secondary" style={{ marginTop: 8 }} onClick={() => navigate("/system")}>
+            View System
+          </button>
         </div>
       )}
 
