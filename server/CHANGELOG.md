@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 204 — graceful shutdown
+- **`docker stop` no longer just kills the process mid-work**: there was no SIGTERM/SIGINT handler
+  at all — Node's default disposition for those signals is immediate termination, whatever a
+  scheduled job (an import, a library scan) happened to be doing at that instant. On shutdown, the
+  server now stops scheduling new job runs, cooperatively cancels whatever's already mid-run via
+  the existing per-job `AbortSignal` (jobRegistry.ts already had this wired for cancel-from-UI; it
+  just wasn't invoked on shutdown), stops accepting new HTTP connections, and closes the database
+  cleanly — bounded to a 5s grace period rather than waiting indefinitely, since a long-lived
+  connection (the Activity page's log-tail EventSource) would otherwise be able to block
+  `server.close()`'s callback from ever firing. The combined image's entrypoint already forwarded
+  SIGTERM to the node process correctly (`trap ... TERM INT`) — this was purely a gap in what node
+  itself did upon receiving it.
+- **Investigated, already fine**: log rotation/retention was already in place (daily log files,
+  7-day retention, pruned on day rollover) — no change needed. A broader structured
+  request-validation layer (e.g. zod across all routes) was also considered but deferred: with
+  ~50 route files each hand-checking their own inputs today, that's a large, risky rewrite better
+  done deliberately as its own effort than folded into this round.
+
 ## Round 203 — indexer network resilience, a real Content-Security-Policy
 - **Retry transient indexer network failures**: a single dropped connection, DNS blip, or timeout
   talking to an indexer previously failed that entire search attempt outright. `fetchIndexerText`

@@ -113,6 +113,12 @@ export function startAllJobs(): void {
   for (const key of defs.keys()) startTask(key);
 }
 
+/** Stops every job's cron/interval timer so nothing new fires — used on shutdown, alongside
+ * cancelJob for whatever's already mid-run, so a SIGTERM doesn't race a job that just started. */
+export function stopAllJobs(): void {
+  for (const key of defs.keys()) stopTask(key);
+}
+
 export function runJobNow(key: string): boolean {
   if (!defs.has(key)) return false;
   execute(key).catch(() => {});

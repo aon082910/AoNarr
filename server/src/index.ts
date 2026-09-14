@@ -1,8 +1,10 @@
 import { log } from "./services/logger.js";
 import { config } from "./config.js";
 import { startScheduler } from "./services/scheduler.js";
+import { stopAllJobs, cancelJob, listJobs } from "./services/jobRegistry.js";
 import { restartIrcFeeds } from "./services/ircFeedManager.js";
 import { createApp } from "./app.js";
+import { db } from "./db/index.js";
 
 // Without these, an unhandled rejection or a synchronous throw outside Express's own request
 // cycle (a background job, a stray unawaited promise, an event-emitter callback) crashes the
@@ -24,8 +26,46 @@ process.on("unhandledRejection", (reason) => {
 
 const app = await createApp();
 
-app.listen(config.port, () => {
+const server = app.listen(config.port, () => {
   log.info(`AoNarr server listening on port ${config.port}`);
   startScheduler();
   restartIrcFeeds().catch((err) => log.warn("[irc] failed to start feeds:", err.message));
 });
+
+/**
+ * Without this, `docker stop` (SIGTERM) hits Node's default disposition for that signal — the
+ * process just terminates, whatever it was doing (a half-copied import, an in-flight scheduled
+ * job) included. This stops new scheduled runs, cooperatively cancels whatever job is already
+ * mid-run (see jobRegistry.ts's AbortSignal-based cancellation — best-effort, since a job with a
+ * handful of monolithic awaits can't abort mid-await), stops accepting new HTTP connections, and
+ * closes the DB cleanly. Bounded by SHUTDOWN_GRACE_MS rather than waiting indefinitely: an open
+ * EventSource stream (Activity page's live log tail) is a long-lived connection that
+ * `server.close()`'s own callback won't fire until it ends, and a stuck one shouldn't be able to
+ * block the container from ever stopping.
+ */
+const SHUTDOWN_GRACE_MS = 5_000;
+let shuttingDown = false;
+
+function shutdown(signal: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log.warn(`[shutdown] ${signal} received — stopping scheduled jobs and draining connections`);
+
+  stopAllJobs();
+  for (const job of listJobs()) {
+    if (job.running) cancelJob(job.key);
+  }
+  server.close();
+
+  setTimeout(() => {
+    db.close()
+      .catch((err) => log.error("[shutdown] error closing database:", err))
+      .finally(() => {
+        log.info("[shutdown] exiting");
+        process.exit(0);
+      });
+  }, SHUTDOWN_GRACE_MS);
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
