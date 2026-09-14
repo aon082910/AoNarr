@@ -12,6 +12,7 @@ export interface MetadataSearchResult {
   backdropUrl?: string | null;
   rating?: number | null;
   runtimeMinutes?: number | null;
+  studio?: string | null;
 }
 
 /**

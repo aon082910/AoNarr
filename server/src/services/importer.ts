@@ -445,26 +445,30 @@ export async function placeFile(params: {
 
   const mediaInfo = isProbeableFile(destPath) ? await probeMediaInfo(destPath) : null;
   const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
+  const sizeBytes = await fsp.stat(destPath).then((s) => s.size).catch(() => null);
 
   if (typeConfig.shape === "single") {
-    await db.prepare("UPDATE media_items SET has_file = 1, path = ?, quality = ?, media_info = ? WHERE id = ?").run(
+    await db.prepare("UPDATE media_items SET has_file = 1, path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?").run(
       destPath,
       quality,
       mediaInfoJson,
+      sizeBytes,
       item.id
     );
   } else if (episodeId) {
-    await db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?").run(
+    await db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?").run(
       destPath,
       quality,
       mediaInfoJson,
+      sizeBytes,
       episodeId
     );
   } else if (subItemId) {
-    await db.prepare("UPDATE sub_items SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?").run(
+    await db.prepare("UPDATE sub_items SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?").run(
       destPath,
       quality,
       mediaInfoJson,
+      sizeBytes,
       subItemId
     );
   }
@@ -533,6 +537,7 @@ export async function placeAlbumFiles(params: {
   const trackTemplate = getSetting("namingArtistTrackTemplate") || DEFAULT_TRACK_TEMPLATE;
 
   let movedCount = 0;
+  let totalMovedBytes = 0;
   for (const src of siblings) {
     const leadingNumber = path.basename(src).match(/^(\d{1,3})/);
     const track = leadingNumber && tracks.length > 0 ? tracks.find((t) => t.track_number === Number(leadingNumber[1])) : undefined;
@@ -554,6 +559,7 @@ export async function placeAlbumFiles(params: {
     const dest = path.join(destFolder, fileName);
     await moveFile(src, dest);
     movedCount++;
+    totalMovedBytes += await fsp.stat(dest).then((s) => s.size).catch(() => 0);
 
     if (track) await db.prepare("UPDATE tracks SET has_file = 1, file_path = ? WHERE id = ?").run(dest, track.id);
   }
@@ -561,11 +567,12 @@ export async function placeAlbumFiles(params: {
   const anchorDest = path.join(destFolder, sanitizeForPath(path.basename(anchorFile)));
   const mediaInfo = movedCount > 0 && isProbeableFile(anchorDest) ? await probeMediaInfo(anchorDest) : null;
 
-  await db.prepare("UPDATE sub_items SET has_file = ?, file_path = ?, quality = ?, media_info = ? WHERE id = ?").run(
+  await db.prepare("UPDATE sub_items SET has_file = ?, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?").run(
     movedCount > 0 ? 1 : 0,
     destFolder,
     quality,
     mediaInfo ? JSON.stringify(mediaInfo) : null,
+    movedCount > 0 ? totalMovedBytes : null,
     subItemId
   );
   await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
@@ -658,10 +665,12 @@ export async function placeSeasonPackFiles(params: {
 
     if (VIDEO_EXTENSIONS.has(ext.toLowerCase())) await tryDownloadSubtitle(dest, item.id);
     const mediaInfo = await probeMediaInfo(dest);
-    await db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?").run(
+    const sizeBytes = await fsp.stat(dest).then((s) => s.size).catch(() => null);
+    await db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?").run(
       dest,
       quality,
       mediaInfo ? JSON.stringify(mediaInfo) : null,
+      sizeBytes,
       targetEpisode.id
     );
     importedCount++;

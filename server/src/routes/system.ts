@@ -23,7 +23,8 @@ import { findRepeatedImports } from "../services/duplicates.js";
 import { findUpgradeCandidates } from "../services/upgradeCandidates.js";
 import { getStorageForecast, recordDiskUsageSamples } from "../services/storageForecast.js";
 import { getMediaTypeConfig } from "../services/mediaTypes.js";
-import { getRecentLogs, log } from "../services/logger.js";
+import { getRecentLogs, listLogFiles, log, resolveLogFilePath } from "../services/logger.js";
+import { checkForUpdate } from "../services/updateCheck.js";
 import { findDuplicateFiles, findUnmonitoredNoFile } from "../services/cleanupSuggestions.js";
 import { listReleaseGroupStats } from "../services/releaseGroupStats.js";
 import { findLibraryMismatches } from "../services/libraryValidation.js";
@@ -157,6 +158,37 @@ systemRouter.get(
     const search = req.query.search as string | undefined;
     const since = req.query.since as string | undefined;
     res.json(getRecentLogs({ level, search, since }));
+  })
+);
+
+/** Radarr-style System → Log Files — persistent daily log files on disk (see logger.ts), distinct
+ * from the in-memory "recent logs" above which resets on every restart. */
+systemRouter.get(
+  "/log-files",
+  asyncHandler(async (_req, res) => {
+    res.json(listLogFiles());
+  })
+);
+
+systemRouter.get(
+  "/log-files/:name",
+  asyncHandler(async (req, res) => {
+    const filePath = resolveLogFilePath(req.params.name);
+    if (!filePath || !fs.existsSync(filePath)) throw new HttpError(404, "Log file not found");
+    res.download(filePath, req.params.name);
+  })
+);
+
+/** Radarr-style System → Updates, adapted for a project with no git-tag releases — see
+ * updateCheck.ts for why this compares CHANGELOG.md round numbers instead of semver/release tags. */
+systemRouter.get(
+  "/update-check",
+  asyncHandler(async (_req, res) => {
+    try {
+      res.json(await checkForUpdate());
+    } catch (err) {
+      throw new HttpError(502, (err as Error).message);
+    }
   })
 );
 

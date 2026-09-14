@@ -82,6 +82,10 @@ ensureColumn("sub_items", "narrator", "narrator TEXT");
 ensureColumn("media_items", "backdrop_url", "backdrop_url TEXT");
 ensureColumn("media_items", "rating", "rating REAL");
 ensureColumn("media_items", "runtime_minutes", "runtime_minutes INTEGER");
+ensureColumn("media_items", "size_bytes", "size_bytes INTEGER");
+ensureColumn("episodes", "size_bytes", "size_bytes INTEGER");
+ensureColumn("sub_items", "size_bytes", "size_bytes INTEGER");
+ensureColumn("media_items", "studio", "studio TEXT");
 
 /**
  * indexers.protocol and download_clients.type originally shipped with a rigid `CHECK (... IN (...))`

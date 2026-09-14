@@ -21,6 +21,9 @@ export interface MetadataSearchResult {
   rating?: number | null;
   /** Only populated by the by-id TMDB detail lookups (search results don't carry it). */
   runtimeMinutes?: number | null;
+  /** Movies only, and only from the by-id TMDB detail lookup (production_companies isn't in TMDB's
+   * search results) — the first listed production company, Radarr's "Studio" field/column. */
+  studio?: string | null;
 }
 
 export interface MetadataEpisode {
@@ -113,6 +116,7 @@ export async function fetchMovieByTmdbId(tmdbId: string): Promise<MetadataSearch
     backdropUrl: r.backdrop_path ? `${TMDB_BACKDROP_BASE}${r.backdrop_path}` : null,
     rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
     runtimeMinutes: typeof r.runtime === "number" && r.runtime > 0 ? r.runtime : null,
+    studio: r.production_companies?.[0]?.name ?? null,
   };
 }
 

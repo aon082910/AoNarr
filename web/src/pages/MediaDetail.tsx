@@ -464,6 +464,7 @@ export default function MediaDetail() {
       backdropUrl: result.backdropUrl,
       rating: result.rating,
       runtimeMinutes: result.runtimeMinutes,
+      studio: result.studio,
     });
     setItem({
       ...item,
@@ -475,6 +476,7 @@ export default function MediaDetail() {
       backdropUrl: updated.backdropUrl,
       rating: updated.rating,
       runtimeMinutes: updated.runtimeMinutes,
+      studio: updated.studio,
     });
     setShowSearchMatch(false);
   }
@@ -1216,6 +1218,12 @@ export default function MediaDetail() {
                   <tr>
                     <th>Quality profile</th>
                     <td>{qualityProfile.name}</td>
+                  </tr>
+                )}
+                {item.studio && (
+                  <tr>
+                    <th>Studio</th>
+                    <td>{item.studio}</td>
                   </tr>
                 )}
                 {shape === "single" && (

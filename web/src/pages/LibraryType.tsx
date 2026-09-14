@@ -8,7 +8,7 @@ import { formatBytes } from "../utils/format.js";
 import DropdownMenu from "../components/DropdownMenu.js";
 import Modal from "../components/Modal.js";
 
-type SortKey = "title" | "year" | "added" | "status" | "monitored" | "quality" | "contentRating" | "releaseDate" | "path";
+type SortKey = "title" | "year" | "added" | "status" | "monitored" | "quality" | "contentRating" | "releaseDate" | "path" | "sizeOnDisk";
 type ViewMode = "poster" | "overview" | "list";
 type PosterSize = "xsmall" | "small" | "medium" | "large" | "xlarge";
 type StatusFilter = "all" | "monitored" | "unmonitored" | "missing" | "downloaded" | "unmatched" | "cutoffUnmet";
@@ -47,6 +47,8 @@ const EXTRA_FIELD_LABELS: Record<string, string> = {
   added: "Added",
   releaseDate: "Release date",
   path: "Path",
+  sizeOnDisk: "Size on disk",
+  studio: "Studio",
 };
 const DEFAULT_LIST_COLUMNS: ExtraField[] = ["year", "status", "monitored"];
 const DEFAULT_POSTER_FIELDS: ExtraField[] = ["year", "status", "monitored"];
@@ -89,6 +91,8 @@ function fieldValue(item: MediaItem, field: ExtraField, customColumns: CustomCol
   if (field === "added") return new Date(item.addedAt).toLocaleDateString();
   if (field === "releaseDate") return item.releaseDate ? new Date(item.releaseDate).toLocaleDateString() : "";
   if (field === "path") return item.path ?? "";
+  if (field === "sizeOnDisk") return typeof item.sizeBytes === "number" ? formatBytes(item.sizeBytes) : "";
+  if (field === "studio") return item.studio ?? "";
   if (field.startsWith("custom:")) {
     const col = customColumns.find((c) => c.id === Number(field.slice(7)));
     if (!col) return "";
@@ -939,6 +943,7 @@ export function LibraryItemGrid({
           <option value="contentRating">Sort: Content rating</option>
           <option value="releaseDate">Sort: Release date</option>
           <option value="path">Sort: Path</option>
+          <option value="sizeOnDisk">Sort: Size on disk</option>
         </select>
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as StatusFilter)} style={{ maxWidth: 160 }}>
           <option value="all">All statuses</option>

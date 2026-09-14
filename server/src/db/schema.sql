@@ -39,7 +39,9 @@ CREATE TABLE IF NOT EXISTS media_items (
   release_date TEXT, -- single/collection-shape items' own release date (movies from TMDB, etc.) — episodes/sub_items already have air_date/release_date of their own; this is what the Calendar shows single-shape items by
   backdrop_url TEXT, -- fanart/background image (distinct from poster_url) shown behind the media detail header, Radarr-style
   rating REAL, -- provider vote average (e.g. TMDB's 0-10 score) shown alongside quality/status badges
-  runtime_minutes INTEGER
+  runtime_minutes INTEGER,
+  size_bytes INTEGER, -- imported file size, for the Library page's "Size on disk" column/sort (single-shape items only — episodic/collection parents don't roll this up from their children)
+  studio TEXT -- movies only; TMDB's first-listed production company, Radarr's "Studio" field
 );
 
 CREATE INDEX IF NOT EXISTS idx_media_items_type ON media_items(type);

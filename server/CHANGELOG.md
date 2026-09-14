@@ -3,6 +3,30 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 190 — closes out the AoNarr-vs-Radarr gap list: updates, size on disk, log files, studio
+- **System → Overview** now has an **Updates** check. AoNarr has no numbered releases (rolling
+  `main` branch, no git tags/GitHub Releases), so instead of a semver check this compares the
+  CHANGELOG "Round N" your build was bundled with against the latest one on GitHub's main branch
+  — an honest adaptation of Radarr's Updates page rather than a fake version number.
+- **System → Logs** now has a **Log Files** section — persistent daily log files on disk under
+  `<config>/logs`, retained 7 days, downloadable individually. The existing "Logs" view is still
+  the fast in-memory last-2000-lines view, but it resets on restart; these survive it.
+- **Library page**: added a **Size on disk** sort option and column/poster-field, backed by a new
+  `size_bytes` column populated at import time (both the single-file and season-pack/album-folder
+  import paths). Episodes and sub-items also now record their own `size_bytes` for future use,
+  though only the top-level item's size is surfaced in the UI for now.
+- **Movies**: added a **Studio** field (TMDB's first-listed production company) — shown on the
+  media detail page and available as a Library column/poster-field. Backfilled best-effort during
+  Refresh (needs a second by-id TMDB lookup beyond the title-search Refresh already does, since
+  TMDB's search results don't include studio).
+- **History page** filters (event type / library type / since date) are now remembered across
+  visits via localStorage, closing the "no persisted filters outside the Library page" gap —
+  Missing/Cutoff Unmet have no filter controls to persist (fixed grouped sections only).
+- This closes every gap identified in the last full audit. Two items were explicitly NOT built
+  because they'd need to be dishonest to build: a real "install update" button (there's nothing to
+  install against — see the Updates note above) and a Radarr-style git-tag version number (AoNarr
+  doesn't have one).
+
 ## Round 189 — ratings/backdrop/alternate titles for anime, manga, and ROMs
 - Extended last round's backdrop/rating/alternate-titles work beyond movies/series to every other
   provider that actually exposes the equivalent data (nothing invented/approximated):

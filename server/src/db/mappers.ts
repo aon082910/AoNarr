@@ -29,6 +29,8 @@ export function mediaItemFromRow(row: any) {
     backdropUrl: row.backdrop_url,
     rating: row.rating,
     runtimeMinutes: row.runtime_minutes,
+    sizeBytes: row.size_bytes,
+    studio: row.studio,
   };
 }
 
@@ -58,6 +60,7 @@ export function episodeFromRow(row: any) {
     quality: row.quality,
     filePath: row.file_path,
     mediaInfo: row.media_info ? JSON.parse(row.media_info) : null,
+    sizeBytes: row.size_bytes,
   };
 }
 
@@ -87,6 +90,7 @@ export function subItemFromRow(row: any) {
     seriesName: row.series_name ?? null,
     seriesPosition: row.series_position ?? null,
     narrator: row.narrator ?? null,
+    sizeBytes: row.size_bytes,
   };
 }
 

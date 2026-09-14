@@ -26,6 +26,20 @@ interface SystemStatus {
   diskSpace: DiskSpaceEntry[];
 }
 
+interface LogFile {
+  name: string;
+  sizeBytes: number;
+  modifiedAt: string;
+}
+
+interface UpdateCheckResult {
+  currentRound: number | null;
+  currentTitle: string | null;
+  latestRound: number | null;
+  latestTitle: string | null;
+  updateAvailable: boolean;
+}
+
 interface ArchivalCandidate {
   mediaItemId: number;
   title: string;
@@ -192,6 +206,10 @@ export default function System() {
   const [logsLoading, setLogsLoading] = useState(false);
   const [logLevelFilter, setLogLevelFilter] = useState("");
   const [logSearch, setLogSearch] = useState("");
+  const [logFiles, setLogFiles] = useState<LogFile[] | null>(null);
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheckResult | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateCheckError, setUpdateCheckError] = useState<string | null>(null);
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [showBackupDirPicker, setShowBackupDirPicker] = useState(false);
   const [unmonitoredNoFile, setUnmonitoredNoFile] = useState<UnmonitoredNoFileItem[] | null>(null);
@@ -257,9 +275,26 @@ export default function System() {
     URL.revokeObjectURL(url);
   }
 
+  function loadLogFiles() {
+    api.get<LogFile[]>("/system/log-files").then(setLogFiles);
+  }
+
+  async function runUpdateCheck() {
+    setCheckingUpdate(true);
+    setUpdateCheckError(null);
+    try {
+      setUpdateCheck(await api.get<UpdateCheckResult>("/system/update-check"));
+    } catch (e) {
+      setUpdateCheckError((e as Error).message);
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }
+
   useEffect(() => {
     api.get<SystemStatus>("/system/status").then(setStatus);
     loadHealth();
+    loadLogFiles();
     api.get<Record<string, string>>("/settings").then(setSettings);
   }, []);
 
@@ -515,6 +550,39 @@ export default function System() {
           </tr>
         </tbody>
       </table>
+
+      <h2>Updates</h2>
+      <div className="form-panel">
+        <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
+          AoNarr ships as a rolling build (no numbered releases), so this compares the changelog
+          round this container was built from against the latest one on GitHub's main branch —
+          not a semver check. A newer round means new code to pull (rebuild/pull a fresh image),
+          not something this button can install for you.
+        </p>
+        <button className="secondary" onClick={runUpdateCheck} disabled={checkingUpdate}>
+          {checkingUpdate ? "Checking..." : "Check for updates"}
+        </button>
+        {updateCheckError && <p style={{ color: "var(--danger)" }}>{updateCheckError}</p>}
+        {updateCheck && (
+          <p style={{ marginTop: 10 }}>
+            Running: Round {updateCheck.currentRound ?? "?"}
+            {updateCheck.currentTitle ? ` — ${updateCheck.currentTitle}` : ""}
+            <br />
+            Latest on GitHub: Round {updateCheck.latestRound ?? "?"}
+            {updateCheck.latestTitle ? ` — ${updateCheck.latestTitle}` : ""}
+            <br />
+            {updateCheck.updateAvailable ? (
+              <span className="badge danger" style={{ marginTop: 4, display: "inline-block" }}>
+                Update available — see What's New for details
+              </span>
+            ) : (
+              <span className="badge ok" style={{ marginTop: 4, display: "inline-block" }}>
+                Up to date
+              </span>
+            )}
+          </p>
+        )}
+      </div>
 
       <h2>Library</h2>
       <table>
@@ -1317,6 +1385,44 @@ export default function System() {
               </div>
             ))}
           </div>
+        )}
+      </div>
+
+      <h2>Log Files</h2>
+      <div className="form-panel">
+        <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
+          Persistent daily log files on disk, kept for 7 days — unlike the in-memory view above,
+          these survive a container restart.
+        </p>
+        <button className="secondary" onClick={loadLogFiles}>
+          Refresh
+        </button>
+        {logFiles && logFiles.length === 0 && <p className="empty">No log files yet.</p>}
+        {logFiles && logFiles.length > 0 && (
+          <table style={{ marginTop: 8 }}>
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>Size</th>
+                <th>Last written</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {logFiles.map((f) => (
+                <tr key={f.name}>
+                  <td>{f.name}</td>
+                  <td>{formatBytes(f.sizeBytes)}</td>
+                  <td>{new Date(f.modifiedAt).toLocaleString()}</td>
+                  <td>
+                    <button className="secondary" onClick={() => downloadFile(`/system/log-files/${f.name}`, f.name)}>
+                      Download
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
       </div>

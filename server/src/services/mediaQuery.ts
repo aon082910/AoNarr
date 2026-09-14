@@ -117,6 +117,7 @@ export const MEDIA_SORT_COLUMNS: Record<string, string> = {
   added: "m.id DESC",
   releaseDate: "m.release_date DESC",
   path: "m.path ASC",
+  sizeOnDisk: "m.size_bytes DESC",
 };
 
 export function clampLimit(raw: unknown, fallback = 60, max = 500): number {

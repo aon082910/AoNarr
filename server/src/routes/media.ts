@@ -899,8 +899,8 @@ mediaRouter.post(
     const result = await db
       .prepare(
         `INSERT INTO media_items
-         (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability, series_type, backdrop_url, rating, runtime_minutes)
-         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @path, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability, @seriesType, @backdropUrl, @rating, @runtimeMinutes)`
+         (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability, series_type, backdrop_url, rating, runtime_minutes, studio)
+         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @path, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability, @seriesType, @backdropUrl, @rating, @runtimeMinutes, @studio)`
       )
       .run({
         type: b.type,
@@ -922,6 +922,7 @@ mediaRouter.post(
         backdropUrl: b.backdropUrl ?? null,
         rating: b.rating ?? null,
         runtimeMinutes: b.runtimeMinutes ?? null,
+        studio: b.studio ?? null,
       });
 
     const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(result.lastInsertRowid);
@@ -1057,7 +1058,7 @@ mediaRouter.post(
 
     await db
       .prepare(
-        "UPDATE media_items SET title = ?, sort_title = ?, year = ?, overview = ?, poster_url = ?, external_ids = ?, release_date = ?, backdrop_url = ?, rating = ?, runtime_minutes = ? WHERE id = ?"
+        "UPDATE media_items SET title = ?, sort_title = ?, year = ?, overview = ?, poster_url = ?, external_ids = ?, release_date = ?, backdrop_url = ?, rating = ?, runtime_minutes = ?, studio = ? WHERE id = ?"
       )
       .run(
         b.title,
@@ -1070,6 +1071,7 @@ mediaRouter.post(
         b.backdropUrl ?? null,
         b.rating ?? null,
         b.runtimeMinutes ?? null,
+        b.studio ?? null,
         req.params.id
       );
 

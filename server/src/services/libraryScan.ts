@@ -5,7 +5,14 @@ import { getMediaTypeConfig, isProbeableFile, MEDIA_TYPE_KEYS } from "./mediaTyp
 import { rootFolderFromRow } from "../db/mappers.js";
 import { parseReleaseTitle } from "./releaseParser.js";
 import { probeMediaInfo } from "./ffprobe.js";
-import { searchMetadata, fetchSeriesEpisodesFor, fetchSeriesSeasonsFor, fetchArtistAlbumsFor, fetchCollectionChildrenFor } from "./metadata.js";
+import {
+  searchMetadata,
+  fetchSeriesEpisodesFor,
+  fetchSeriesSeasonsFor,
+  fetchArtistAlbumsFor,
+  fetchCollectionChildrenFor,
+  fetchMovieByTmdbId,
+} from "./metadata.js";
 import { log } from "./logger.js";
 
 export function normalizeForMatch(s: string): string {
@@ -623,6 +630,24 @@ async function refreshOneItem(
           ...(alreadyMatched ? [] : [best.title, best.title.toLowerCase(), JSON.stringify(best.externalIds ?? {})]),
           item.id
         );
+
+      // TMDB's title-search endpoint (what searchMetadata used above just called) doesn't include
+      // production_companies — only the by-id detail endpoint does — so Studio needs its own
+      // extra lookup. Best-effort: a movie with no TMDB id yet, or a hiccup on this one extra
+      // call, just leaves studio unset rather than failing the whole refresh.
+      if (type === "movie") {
+        try {
+          const tmdbId = (alreadyMatched ? JSON.parse(item.external_ids) : best.externalIds ?? {}).tmdb;
+          if (tmdbId) {
+            const detail = await fetchMovieByTmdbId(String(tmdbId));
+            if (detail.studio) {
+              await db.prepare("UPDATE media_items SET studio = ? WHERE id = ?").run(detail.studio, item.id);
+            }
+          }
+        } catch {
+          // best-effort only, see comment above
+        }
+      }
     }
 
     // Backfills any episode/child the provider now lists that this item doesn't have yet —

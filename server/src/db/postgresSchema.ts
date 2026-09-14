@@ -85,6 +85,10 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS backdrop_url TEXT`,
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS rating REAL`,
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS runtime_minutes INTEGER`,
+  `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS size_bytes BIGINT`,
+  `ALTER TABLE episodes ADD COLUMN IF NOT EXISTS size_bytes BIGINT`,
+  `ALTER TABLE sub_items ADD COLUMN IF NOT EXISTS size_bytes BIGINT`,
+  `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS studio TEXT`,
 ];
 
 /**

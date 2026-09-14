@@ -35,9 +35,12 @@ function eventDetail(row: HistoryRow): string {
 export default function HistoryPage() {
   const mediaTypes = useMediaTypes();
   const [rows, setRows] = useState<HistoryRow[] | null>(null);
-  const [eventType, setEventType] = useState("all");
-  const [mediaType, setMediaType] = useState("all");
-  const [since, setSince] = useState("");
+  // Remembered across visits (Radarr keeps its own list filters sticky per-page too) — otherwise
+  // every trip back to History resets to "All events/All libraries" even right after narrowing
+  // down to track one specific failure.
+  const [eventType, setEventType] = useState(() => localStorage.getItem("aonarr_history_eventType") ?? "all");
+  const [mediaType, setMediaType] = useState(() => localStorage.getItem("aonarr_history_mediaType") ?? "all");
+  const [since, setSince] = useState(() => localStorage.getItem("aonarr_history_since") ?? "");
 
   function load() {
     const params = new URLSearchParams();
@@ -48,6 +51,9 @@ export default function HistoryPage() {
   }
 
   useEffect(load, [eventType, mediaType, since]);
+  useEffect(() => localStorage.setItem("aonarr_history_eventType", eventType), [eventType]);
+  useEffect(() => localStorage.setItem("aonarr_history_mediaType", mediaType), [mediaType]);
+  useEffect(() => localStorage.setItem("aonarr_history_since", since), [since]);
 
   return (
     <div>

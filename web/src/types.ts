@@ -92,6 +92,8 @@ export interface MediaItem {
   backdropUrl: string | null;
   rating: number | null;
   runtimeMinutes: number | null;
+  sizeBytes: number | null;
+  studio: string | null;
 }
 
 export interface Indexer {
