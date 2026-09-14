@@ -32,6 +32,8 @@ export default function DownloadClients() {
   const [mode, setMode] = useState<"add" | number | null>(null);
   const [health, setHealth] = useState<Record<number, ClientHealthStats | "error">>({});
   const [testing, setTesting] = useState<number | null>(null);
+  const [testingAll, setTestingAll] = useState(false);
+  const [testResultsAll, setTestResultsAll] = useState<Record<number, { ok: boolean; error?: string }>>({});
   const [testResult, setTestResult] = useState<{ ok: boolean; error?: string } | null>(null);
   const [name, setName] = useState("");
   const [type, setType] = useState<ClientType>("qbittorrent");
@@ -135,6 +137,19 @@ export default function DownloadClients() {
     }
   }
 
+  async function testAll() {
+    setTestingAll(true);
+    for (const c of clients) {
+      try {
+        const result = await api.post<{ ok: boolean; error?: string }>(`/download-clients/${c.id}/test`);
+        setTestResultsAll((prev) => ({ ...prev, [c.id]: result }));
+      } catch (e) {
+        setTestResultsAll((prev) => ({ ...prev, [c.id]: { ok: false, error: (e as Error).message } }));
+      }
+    }
+    setTestingAll(false);
+  }
+
   const editingClient = typeof mode === "number" ? clients.find((c) => c.id === mode) ?? null : null;
 
   return (
@@ -145,6 +160,12 @@ export default function DownloadClients() {
         and "yt-dlp" need no external client at all — AoNarr downloads the file itself, so add one
         of each you need without a host/port. Click a tile to edit it.
       </p>
+
+      {clients.length > 0 && (
+        <button type="button" className="secondary" onClick={testAll} disabled={testingAll} style={{ marginBottom: 12 }}>
+          {testingAll ? "Testing..." : "Test all"}
+        </button>
+      )}
 
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", marginBottom: 16 }}>
         <div className="card" onClick={openAdd} style={{ padding: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -157,9 +178,14 @@ export default function DownloadClients() {
               {TYPE_LABELS[c.type as ClientType] ?? c.type}
               {c.host ? ` · ${c.host}:${c.port}` : ""}
             </div>
-            <span className={`badge ${c.enabled ? "ok" : ""}`} style={{ marginTop: 8, display: "inline-block" }}>
+            <span className={`badge ${c.enabled ? "ok" : ""}`} style={{ marginTop: 8, display: "inline-block", marginRight: 6 }}>
               {c.enabled ? "Enabled" : "Disabled"}
             </span>
+            {testResultsAll[c.id] && (
+              <span className={`badge ${testResultsAll[c.id].ok ? "ok" : "danger"}`} title={testResultsAll[c.id].error} style={{ marginTop: 8, display: "inline-block" }}>
+                {testResultsAll[c.id].ok ? "Test OK" : "Test failed"}
+              </span>
+            )}
           </div>
         ))}
       </div>

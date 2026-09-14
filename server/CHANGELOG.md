@@ -3,6 +3,27 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 199 — test notifications, manual-import quality override, import-list review mode
+- **"Send test notification" button**: every notification provider tile now has a "Send test
+  notification" action, ignoring that provider's own event filter (a test should always go through
+  regardless of which events it's configured to care about) — new `sendTestNotification()` and
+  `POST /api/settings/notifications/:provider/test`, instead of only finding out a webhook/URL is
+  wrong when a real grab/import/failure happens to fire.
+- **Manual import quality override**: the Activity page's "Manual import..." picker gained a
+  Quality dropdown — Radarr/Sonarr's Interactive Import lets you correct a wrong auto-detected
+  quality before confirming; previously AoNarr always trusted whatever `parseReleaseTitle` guessed
+  from the release title at grab time, with no way to fix a bad guess.
+- **Import List "require review" mode**: a per-list toggle that routes a matched item into the
+  existing Import Review queue (previously only used for titles a list couldn't confidently match
+  at all) instead of adding it to the library automatically — approve or dismiss each one by hand
+  on the Import Review page, reusing its existing two-step "add the normal way, then resolve" flow.
+- **Fixed a real bug found along the way**: `POST /api/import-lists` rejected `type: "tmdb"` with a
+  400 (an enum check that predated Round 195's TMDB list support and was never updated) — TMDB
+  import lists could only ever have been created by hand-editing the database. Now fixed.
+- **Bulk "Test all"**: both the Indexers and Download Clients pages gained a "Test all" button
+  (sequential, not parallel, so it doesn't blow through a rate-limited indexer's query budget in one
+  burst) instead of needing to click each row's test individually.
+
 ## Round 198 — freeleech scoring, manual-interaction/update notifications, next-run, min free space
 - **Freeleech/halfleech custom-format condition**: the indexer client now captures Torznab's
   `downloadvolumefactor` attribute, and Custom Formats gained a new "indexerFlag" condition type

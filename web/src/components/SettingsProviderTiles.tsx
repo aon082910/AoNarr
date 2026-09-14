@@ -1,5 +1,6 @@
 import { useState } from "react";
 import Modal from "./Modal.js";
+import { api } from "../api/client.js";
 
 export interface SettingsProviderField {
   /** Settings store key this field reads/writes (passed straight to saveSetting). */
@@ -58,6 +59,22 @@ export default function SettingsProviderTiles({
 }) {
   const [openKey, setOpenKey] = useState<string | null>(null);
   const openProvider = providers.find((p) => p.key === openKey) ?? null;
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; error?: string } | null>(null);
+
+  async function sendTest(eventsKey: string) {
+    const providerKey = eventsKey.replace(/Events$/, "");
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await api.post<{ ok: boolean; error?: string }>(`/settings/notifications/${providerKey}/test`, {});
+      setTestResult(result);
+    } catch (e) {
+      setTestResult({ ok: false, error: (e as Error).message });
+    } finally {
+      setTesting(false);
+    }
+  }
 
   return (
     <>
@@ -65,7 +82,15 @@ export default function SettingsProviderTiles({
         {providers.map((p) => {
           const configured = p.isConfigured(settings);
           return (
-            <div key={p.key} className="card" onClick={() => setOpenKey(p.key)} style={{ padding: 16 }}>
+            <div
+              key={p.key}
+              className="card"
+              onClick={() => {
+                setOpenKey(p.key);
+                setTestResult(null);
+              }}
+              style={{ padding: 16 }}
+            >
               <div style={{ fontWeight: 600 }}>{p.label}</div>
               {p.description && (
                 <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: 4 }}>{p.description}</div>
@@ -137,6 +162,14 @@ export default function SettingsProviderTiles({
               <p style={{ color: "var(--muted)", fontSize: "0.78rem", marginTop: 0 }}>
                 Which events this provider fires on. All are on by default.
               </p>
+              <button type="button" className="secondary" disabled={testing} onClick={() => sendTest(openProvider.eventsKey!)}>
+                {testing ? "Sending..." : "Send test notification"}
+              </button>
+              {testResult && (
+                <p style={{ color: testResult.ok ? "var(--ok)" : "var(--danger)", fontSize: "0.85rem" }}>
+                  {testResult.ok ? "Sent — check that connection for the test message." : testResult.error}
+                </p>
+              )}
             </div>
           )}
         </Modal>

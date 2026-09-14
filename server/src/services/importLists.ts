@@ -10,6 +10,7 @@ import { queueForReview } from "./importReview.js";
 export interface ImportListRow {
   id: number;
   name: string;
+  require_review: number;
   type: "trakt" | "imdb" | "lastfm" | "tmdb";
   url: string;
   enabled: number;
@@ -136,6 +137,10 @@ async function syncTraktList(list: ImportListRow, qualityProfileId: number | nul
         const tmdbId = m.ids?.tmdb;
         if (!tmdbId || existingMovies.has(String(tmdbId))) continue;
         if (await isExcluded("movie", m.title, m.year ?? null, String(tmdbId), "tmdb")) continue;
+        if (list.require_review) {
+          await queueForReview({ source: list.name, importListId: list.id, type: "movie", title: m.title, year: m.year ?? null });
+          continue;
+        }
         await db
           .prepare(
             `INSERT INTO media_items (type, title, sort_title, year, external_ids, quality_profile_id, monitored, status)
@@ -155,6 +160,10 @@ async function syncTraktList(list: ImportListRow, qualityProfileId: number | nul
         const tmdbId = s.ids?.tmdb;
         if (!tmdbId || existingSeries.has(String(tmdbId))) continue;
         if (await isExcluded("series", s.title, s.year ?? null, String(tmdbId), "tmdb")) continue;
+        if (list.require_review) {
+          await queueForReview({ source: list.name, importListId: list.id, type: "series", title: s.title, year: s.year ?? null });
+          continue;
+        }
         const externalIds = { tmdb: String(tmdbId), trakt: String(s.ids?.trakt ?? "") };
         const result = await db
           .prepare(
@@ -223,6 +232,10 @@ async function syncImdbList(list: ImportListRow, qualityProfileId: number | null
         await queueForReview({ source: list.name, importListId: list.id, type, title, year });
         continue;
       }
+      if (list.require_review) {
+        await queueForReview({ source: list.name, importListId: list.id, type, title: best.title, year: best.year });
+        continue;
+      }
 
       const insertResult = await db
         .prepare(
@@ -289,6 +302,10 @@ async function syncLastfmList(list: ImportListRow, qualityProfileId: number | nu
     try {
       if ((await findPossibleDuplicates("artist" as any, title, null)).length > 0) continue;
       if (await isExcluded("artist", title, null, a.mbid ?? "", "lastfm")) continue;
+      if (list.require_review) {
+        await queueForReview({ source: list.name, importListId: list.id, type: "artist", title, year: null });
+        continue;
+      }
 
       const externalIds = { lastfm: a.mbid || title };
       const insertResult = await db
@@ -350,6 +367,10 @@ async function syncTmdbList(list: ImportListRow, qualityProfileId: number | null
         const year = entry.first_air_date ? Number(String(entry.first_air_date).slice(0, 4)) : null;
         if (!title) continue;
         if (await isExcluded("series", title, year, String(tmdbId), "tmdb")) continue;
+        if (list.require_review) {
+          await queueForReview({ source: list.name, importListId: list.id, type: "series", title, year });
+          continue;
+        }
         const externalIds = { tmdb: String(tmdbId) };
         const result = await db
           .prepare(
@@ -366,6 +387,10 @@ async function syncTmdbList(list: ImportListRow, qualityProfileId: number | null
         const year = entry.release_date ? Number(String(entry.release_date).slice(0, 4)) : null;
         if (!title) continue;
         if (await isExcluded("movie", title, year, String(tmdbId), "tmdb")) continue;
+        if (list.require_review) {
+          await queueForReview({ source: list.name, importListId: list.id, type: "movie", title, year });
+          continue;
+        }
         await db
           .prepare(
             `INSERT INTO media_items (type, title, sort_title, year, external_ids, quality_profile_id, monitored, status)

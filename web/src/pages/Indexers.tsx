@@ -15,6 +15,7 @@ export default function Indexers() {
   const [url, setUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [testResults, setTestResults] = useState<Record<number, string>>({});
+  const [testingAll, setTestingAll] = useState(false);
 
   const [resultsPath, setResultsPath] = useState("");
   const [titleField, setTitleField] = useState("title");
@@ -109,6 +110,14 @@ export default function Indexers() {
     load(); // the test itself just recorded a new health entry — refresh to show it
   }
 
+  async function testAll() {
+    setTestingAll(true);
+    // Sequential, not parallel — an indexer with a configured query limit shouldn't have its whole
+    // hourly budget spent testing every other indexer at the exact same moment.
+    for (const i of indexers) await test(i.id);
+    setTestingAll(false);
+  }
+
   function healthLabel(i: Indexer): { text: string; className: string } {
     const h = i.health;
     if (!h || h.totalChecks === 0) return { text: "No checks yet", className: "" };
@@ -138,6 +147,9 @@ export default function Indexers() {
         </button>
         <button type="button" className="secondary" onClick={syncJackett} disabled={syncingJackett}>
           {syncingJackett ? "Syncing..." : "Sync from Jackett"}
+        </button>
+        <button type="button" className="secondary" onClick={testAll} disabled={testingAll || indexers.length === 0}>
+          {testingAll ? "Testing..." : "Test all"}
         </button>
       </div>
 

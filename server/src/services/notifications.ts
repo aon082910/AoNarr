@@ -320,6 +320,118 @@ export async function notifyDuplicatesFound(count: number, sampleTitles: string[
  * combined description of everything currently wrong, not a single-issue message — kept as one
  * notification per check rather than one per problem, so a bad indexer + low disk space doesn't
  * spam every configured provider twice in the same minute. */
+/**
+ * Radarr/Sonarr's "Test" button per notification connection — sends a fixed message to exactly
+ * one provider, ignoring its event-filter setting entirely (a test should always go through
+ * regardless of which events that provider is configured to care about) so an admin can verify
+ * credentials/URL are right without waiting for (or faking) a real grab/import/failure. Throws a
+ * descriptive error when the provider isn't configured, rather than silently no-op'ing.
+ */
+export async function sendTestNotification(providerKey: string): Promise<void> {
+  const title = "AoNarr test notification";
+  const text = "If you're seeing this, this connection is configured correctly.";
+  const payload = { event: "test", title, text };
+
+  switch (providerKey) {
+    case "discord": {
+      const url = getSetting("discordWebhookUrl");
+      if (!url) throw new Error("Discord webhook URL isn't set");
+      await postJson(url, { embeds: [{ title, description: text, color: 0x4f8cff }] });
+      return;
+    }
+    case "slack": {
+      const url = getSetting("slackWebhookUrl");
+      if (!url) throw new Error("Slack webhook URL isn't set");
+      await postJson(url, { text: `*${title}*\n${text}` });
+      return;
+    }
+    case "generic": {
+      const url = getSetting("genericWebhookUrl");
+      if (!url) throw new Error("Generic webhook URL isn't set");
+      await postJson(url, payload);
+      return;
+    }
+    case "telegram": {
+      const botToken = getSetting("telegramBotToken");
+      const chatId = getSetting("telegramChatId");
+      if (!botToken || !chatId) throw new Error("Telegram bot token and chat ID must both be set");
+      await postForm(`https://api.telegram.org/bot${botToken}/sendMessage`, { chat_id: chatId, text: `${title}\n${text}` });
+      return;
+    }
+    case "pushover": {
+      const apiToken = getSetting("pushoverApiToken");
+      const userKey = getSetting("pushoverUserKey");
+      if (!apiToken || !userKey) throw new Error("Pushover API token and user key must both be set");
+      await postForm("https://api.pushover.net/1/messages.json", { token: apiToken, user: userKey, title, message: text });
+      return;
+    }
+    case "matrix": {
+      const homeserver = getSetting("matrixHomeserverUrl");
+      const accessToken = getSetting("matrixAccessToken");
+      const roomId = getSetting("matrixRoomId");
+      if (!homeserver || !accessToken || !roomId) throw new Error("Matrix homeserver URL, access token, and room ID must all be set");
+      const txnId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const url = `${homeserver.replace(/\/+$/, "")}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${txnId}?access_token=${encodeURIComponent(accessToken)}`;
+      const res = await fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ msgtype: "m.text", body: `${title}\n${text}` }),
+      });
+      if (!res.ok) throw new Error(`Matrix send failed: HTTP ${res.status}`);
+      return;
+    }
+    case "twilio": {
+      const sid = getSetting("twilioAccountSid");
+      const token = getSetting("twilioAuthToken");
+      const from = getSetting("twilioFromNumber");
+      const to = getSetting("twilioToNumber");
+      if (!sid || !token || !from || !to) throw new Error("Twilio account SID, auth token, from number, and to number must all be set");
+      const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ From: from, To: to, Body: `${title}: ${text}` }),
+      });
+      if (!res.ok) throw new Error(`SMS (Twilio) send failed: HTTP ${res.status}`);
+      return;
+    }
+    case "smtp": {
+      const host = getSetting("smtpHost");
+      const to = getSetting("smtpTo");
+      const from = getSetting("smtpFrom");
+      if (!host || !to || !from) throw new Error("SMTP host, from, and to must all be set");
+      await sendEmail(
+        {
+          host,
+          port: Number(getSetting("smtpPort") || 587),
+          secure: getSetting("smtpSecure") === "1",
+          username: getSetting("smtpUsername") || undefined,
+          password: getSetting("smtpPassword") || undefined,
+          from,
+          to,
+        },
+        `AoNarr: ${title}`,
+        text
+      );
+      return;
+    }
+    case "push":
+      await sendPush(title, text);
+      return;
+    case "customScript": {
+      if (getSetting("customScriptEnabled") !== "1" || !getSetting("customScriptPath")) {
+        throw new Error("Custom script isn't enabled or has no path set");
+      }
+      await runCustomScript("test", { title, text });
+      return;
+    }
+    default:
+      throw new Error(`Unknown notification provider "${providerKey}"`);
+  }
+}
+
 export async function notifyHealthIssue(summary: string): Promise<void> {
   await fanOut({
     title: "Health issue",

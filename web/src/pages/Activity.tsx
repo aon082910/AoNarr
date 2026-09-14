@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, getApiKey, getSessionToken } from "../api/client.js";
 import Modal from "../components/Modal.js";
-import type { QueueItem } from "../types.js";
+import type { QueueItem, Quality } from "../types.js";
 
 interface ImportCandidate {
   path: string;
@@ -33,6 +33,8 @@ export default function Activity() {
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [retrying, setRetrying] = useState<number | null>(null);
   const [manualImportFor, setManualImportFor] = useState<QueueItem | null>(null);
+  const [qualities, setQualities] = useState<Quality[]>([]);
+  const [overrideQuality, setOverrideQuality] = useState("");
   const [candidates, setCandidates] = useState<ImportCandidate[] | null>(null);
   const [candidatesError, setCandidatesError] = useState<string | null>(null);
   const [importing, setImporting] = useState<string | null>(null);
@@ -97,6 +99,8 @@ export default function Activity() {
     setManualImportFor(item);
     setCandidates(null);
     setCandidatesError(null);
+    setOverrideQuality("");
+    if (qualities.length === 0) api.get<Quality[]>("/qualities").then(setQualities);
     api
       .get<ImportCandidate[]>(`/activity/queue/${item.id}/import-candidates`)
       .then(setCandidates)
@@ -107,7 +111,7 @@ export default function Activity() {
     if (!manualImportFor) return;
     setImporting(sourceFile);
     try {
-      await api.post(`/activity/queue/${manualImportFor.id}/manual-import`, { sourceFile });
+      await api.post(`/activity/queue/${manualImportFor.id}/manual-import`, { sourceFile, quality: overrideQuality || undefined });
       setManualImportFor(null);
       load();
     } catch (e) {
@@ -247,6 +251,15 @@ export default function Activity() {
             first. Pick the one that's actually this download if AoNarr couldn't find or match it
             automatically.
           </p>
+          <label>Quality</label>
+          <select value={overrideQuality} onChange={(e) => setOverrideQuality(e.target.value)} style={{ marginBottom: 10 }}>
+            <option value="">Auto-detected — {manualImportFor.quality ?? "unknown"}</option>
+            {qualities.map((q) => (
+              <option key={q.id} value={q.name}>
+                {q.name}
+              </option>
+            ))}
+          </select>
           {candidatesError && <p style={{ color: "var(--danger)" }}>{candidatesError}</p>}
           {candidates === null && !candidatesError && <p className="empty">Loading...</p>}
           {candidates !== null && candidates.length === 0 && (

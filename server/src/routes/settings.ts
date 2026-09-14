@@ -7,6 +7,7 @@ import { invalidateQualityRankCache } from "../services/quality.js";
 import { buildOtpauthUrl, generateBase32Secret, verifyTotp } from "../services/totp.js";
 import { getSetting, setSetting, deleteSetting, getAllSettings } from "../services/settingsStore.js";
 import { applySocksProxySetting } from "../services/socksProxy.js";
+import { sendTestNotification } from "../services/notifications.js";
 import { checkRateLimit, recordFailure, recordSuccess } from "../services/rateLimiter.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 
@@ -27,6 +28,18 @@ settingsRouter.put(
     setSetting(req.params.key, value);
     if (req.params.key === "socks5ProxyUrl" || req.params.key === "tlsRejectUnauthorized") applySocksProxySetting();
     res.json({ key: req.params.key, value });
+  })
+);
+
+settingsRouter.post(
+  "/notifications/:provider/test",
+  asyncHandler(async (req, res) => {
+    try {
+      await sendTestNotification(req.params.provider);
+      res.json({ ok: true });
+    } catch (err) {
+      res.json({ ok: false, error: (err as Error).message });
+    }
   })
 );
 

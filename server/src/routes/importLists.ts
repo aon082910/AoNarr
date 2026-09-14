@@ -17,13 +17,15 @@ importListsRouter.get(
 importListsRouter.post(
   "/",
   asyncHandler(async (req, res) => {
-    const { name, type, url, qualityProfileId, enabled } = req.body ?? {};
+    const { name, type, url, qualityProfileId, enabled, requireReview } = req.body ?? {};
     if (!name || !url) throw new HttpError(400, "name and url are required");
-    if (type !== "trakt" && type !== "imdb" && type !== "lastfm") throw new HttpError(400, "type must be 'trakt', 'imdb' or 'lastfm'");
+    if (!["trakt", "imdb", "lastfm", "tmdb"].includes(type)) {
+      throw new HttpError(400, "type must be 'trakt', 'imdb', 'lastfm' or 'tmdb'");
+    }
 
     const result = await db
-      .prepare("INSERT INTO import_lists (name, type, url, enabled, quality_profile_id) VALUES (?, ?, ?, ?, ?)")
-      .run(name, type, url, enabled === false ? 0 : 1, qualityProfileId ?? null);
+      .prepare("INSERT INTO import_lists (name, type, url, enabled, quality_profile_id, require_review) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(name, type, url, enabled === false ? 0 : 1, qualityProfileId ?? null, requireReview ? 1 : 0);
     const row = await db.prepare("SELECT * FROM import_lists WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(row);
   })
@@ -42,10 +44,18 @@ importListsRouter.patch(
          name = COALESCE(?, name),
          url = COALESCE(?, url),
          enabled = COALESCE(?, enabled),
-         quality_profile_id = COALESCE(?, quality_profile_id)
+         quality_profile_id = COALESCE(?, quality_profile_id),
+         require_review = COALESCE(?, require_review)
        WHERE id = ?`
       )
-      .run(b.name ?? null, b.url ?? null, b.enabled === undefined ? null : b.enabled ? 1 : 0, b.qualityProfileId ?? null, req.params.id);
+      .run(
+        b.name ?? null,
+        b.url ?? null,
+        b.enabled === undefined ? null : b.enabled ? 1 : 0,
+        b.qualityProfileId ?? null,
+        b.requireReview === undefined ? null : b.requireReview ? 1 : 0,
+        req.params.id
+      );
 
     res.json(await db.prepare("SELECT * FROM import_lists WHERE id = ?").get(req.params.id));
   })

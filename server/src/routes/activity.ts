@@ -142,10 +142,11 @@ activityRouter.post(
   asyncHandler(async (req, res) => {
     const sourceFile = req.body?.sourceFile;
     if (!sourceFile || typeof sourceFile !== "string") throw new HttpError(400, "sourceFile is required");
+    const overrideQuality = typeof req.body?.quality === "string" && req.body.quality ? req.body.quality : undefined;
     const queueRow = await db.prepare("SELECT * FROM queue WHERE id = ?").get(req.params.id);
     if (!queueRow) throw new HttpError(404, "Queue item not found");
     try {
-      await importQueueItem(Number(req.params.id), sourceFile);
+      await importQueueItem(Number(req.params.id), sourceFile, overrideQuality);
       res.json({ ok: true });
     } catch (err) {
       throw new HttpError(422, (err as Error).message);

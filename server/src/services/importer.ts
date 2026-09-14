@@ -782,7 +782,7 @@ export async function placeSeasonPackFiles(params: {
  * matcher couldn't find or picked wrong; it's the admin's own explicit choice at that point, so no
  * confidence threshold applies the way it does for the automatic match.
  */
-export async function importQueueItem(queueItemId: number, manualSourceFile?: string): Promise<void> {
+export async function importQueueItem(queueItemId: number, manualSourceFile?: string, overrideQuality?: string): Promise<void> {
   const queueRow = await db.prepare("SELECT * FROM queue WHERE id = ?").get(queueItemId);
   if (!queueRow) throw new Error(`Queue item ${queueItemId} not found`);
   const queueItem = queueItemFromRow(queueRow);
@@ -820,19 +820,25 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
     throw new Error(`No matching file found in downloads directory for "${queueItem.title}"`);
   }
 
+  // Interactive-Import-style override: the admin's own explicit choice on the Activity page's
+  // "Manual import..." picker, for when the automatic quality detection (parsed from the release
+  // title at grab time) guessed wrong — only ever applies to a manual import, an automatic one
+  // always uses the parsed value as before.
+  const quality = overrideQuality ?? queueItem.quality;
+
   if (typeConfig.shape === "collection" && typeConfig.multiFilePerChild && queueItem.subItemId) {
     await placeAlbumFiles({
       itemId: item.id,
       subItemId: queueItem.subItemId,
       anchorFile: sourceFile,
-      quality: queueItem.quality,
+      quality,
     });
   } else if (typeConfig.shape === "episodic" && !queueItem.episodeId && queueItem.seasonNumber) {
     await placeSeasonPackFiles({
       itemId: item.id,
       seasonNumber: queueItem.seasonNumber,
       anchorFile: sourceFile,
-      quality: queueItem.quality,
+      quality,
     });
   } else {
     await placeFile({
@@ -840,7 +846,7 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
       episodeId: queueItem.episodeId,
       subItemId: queueItem.subItemId,
       sourceFile,
-      quality: queueItem.quality,
+      quality,
     });
   }
 

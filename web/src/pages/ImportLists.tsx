@@ -10,6 +10,7 @@ interface ImportList {
   url: string;
   enabled: 0 | 1;
   quality_profile_id: number | null;
+  require_review: 0 | 1;
   last_synced_at: string | null;
   last_added_count: number | null;
   last_error: string | null;
@@ -30,6 +31,7 @@ export default function ImportLists() {
   const [type, setType] = useState<ImportList["type"]>("trakt");
   const [url, setUrl] = useState("");
   const [qualityProfileId, setQualityProfileId] = useState<number | "">("");
+  const [requireReview, setRequireReview] = useState(false);
   const [syncingId, setSyncingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reviewCounts, setReviewCounts] = useState<Record<number, number>>({});
@@ -51,7 +53,7 @@ export default function ImportLists() {
   async function addList(e: FormEvent) {
     e.preventDefault();
     if (!name || !url) return;
-    await api.post("/import-lists", { name, type, url, qualityProfileId: qualityProfileId || null });
+    await api.post("/import-lists", { name, type, url, qualityProfileId: qualityProfileId || null, requireReview });
     setName("");
     setUrl("");
     load();
@@ -59,6 +61,11 @@ export default function ImportLists() {
 
   async function toggleEnabled(list: ImportList) {
     await api.patch(`/import-lists/${list.id}`, { enabled: !list.enabled });
+    load();
+  }
+
+  async function toggleRequireReview(list: ImportList) {
+    await api.patch(`/import-lists/${list.id}`, { requireReview: !list.require_review });
     load();
   }
 
@@ -116,6 +123,14 @@ export default function ImportLists() {
             </select>
           </>
         )}
+        <label className="toolbar" style={{ gap: 8 }}>
+          <input type="checkbox" checked={requireReview} onChange={(e) => setRequireReview(e.target.checked)} style={{ width: "auto" }} />
+          Require review before adding
+        </label>
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          When on, a match found on this list is queued on the Import Review page instead of being
+          added to your library automatically — approve or dismiss each one by hand.
+        </p>
         <button type="submit">Add import list</button>
       </form>
 
@@ -129,6 +144,7 @@ export default function ImportLists() {
               <th>Name</th>
               <th>Type</th>
               <th>Enabled</th>
+              <th>Review before add</th>
               <th>Last synced</th>
               <th>Last result</th>
               <th></th>
@@ -141,6 +157,9 @@ export default function ImportLists() {
                 <td>{TYPE_LABELS[l.type]}</td>
                 <td>
                   <input type="checkbox" checked={!!l.enabled} onChange={() => toggleEnabled(l)} />
+                </td>
+                <td>
+                  <input type="checkbox" checked={!!l.require_review} onChange={() => toggleRequireReview(l)} />
                 </td>
                 <td>{l.last_synced_at ?? "Never"}</td>
                 <td>
