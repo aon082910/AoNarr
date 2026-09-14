@@ -1,12 +1,20 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { setupTestDb } from "./helpers/testDb.js";
 
+// One setupTestDb() call for the whole file, shared by both describe blocks below — calling it
+// more than once per file isn't safe for the Postgres CI job (the second call's schema
+// drop+recreate races against the already-cached db/app modules from the first call within the
+// same process, which don't re-run schema setup a second time).
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
+let qualityProfileId: number;
+
+beforeAll(async () => {
+  ({ db } = await setupTestDb());
+  const profile = (await db.prepare("SELECT id FROM quality_profiles LIMIT 1").get()) as { id: number };
+  qualityProfileId = profile.id;
+});
 
 describe("formatMatches (pure condition-group evaluation)", () => {
-  beforeAll(async () => {
-    ({ db } = await setupTestDb());
-  });
 
   it("matches a single title condition group (OR within patterns)", async () => {
     const { formatMatches } = await import("../src/services/customFormatScoring.js");
@@ -109,14 +117,6 @@ describe("formatMatches (pure condition-group evaluation)", () => {
 });
 
 describe("scoreRelease (DB-backed custom formats + release profiles)", () => {
-  let qualityProfileId: number;
-
-  beforeAll(async () => {
-    ({ db } = await setupTestDb());
-    const profile = (await db.prepare("SELECT id FROM quality_profiles LIMIT 1").get()) as { id: number };
-    qualityProfileId = profile.id;
-  });
-
   it("sums scores of every matching custom format for the given quality profile", async () => {
     const { scoreRelease } = await import("../src/services/customFormatScoring.js");
 
