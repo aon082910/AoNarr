@@ -1001,6 +1001,21 @@ export default function Settings() {
           login, or 2FA required. Only turn this off if AoNarr sits on a network you fully trust
           (e.g. behind your own VPN) and is never exposed directly to the internet.
         </p>
+
+        <label>Allowed CORS origins</label>
+        <input
+          key={settings.corsAllowedOrigins ?? "cors-empty"}
+          defaultValue={settings.corsAllowedOrigins ?? ""}
+          placeholder="unset — allows any origin (default)"
+          onBlur={(e) => saveSetting("corsAllowedOrigins", e.target.value)}
+        />
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+          Comma-separated origins (e.g. <code>https://aonarr.example.com</code>) allowed to call
+          this API from a browser. Leave blank to allow any origin (the default, safe here since
+          every request still needs a valid API key/session token — a cross-origin page can't
+          attach one). Only worth restricting if you run the web UI and server as separate
+          containers on different origins and want to lock the API to just your own web UI.
+        </p>
       </div>
 
       <h2>MCP Server</h2>

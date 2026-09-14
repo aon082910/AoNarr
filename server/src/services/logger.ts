@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
 import { getSetting } from "./settingsStore.js";
+import { currentRequestId } from "./requestContext.js";
 
 export type LogLevel = "info" | "warn" | "error";
 
@@ -123,6 +124,15 @@ function push(level: LogLevel, args: unknown[]): void {
   }
 }
 
+/** Prepends `[reqId]` to a log call's args when made while handling a request (see
+ * requestContext.ts) — so every log line touched by one HTTP request, no matter how deep the
+ * call chain into services, can be grepped out of a busy log file by that one tag. Background
+ * jobs and startup logging have no request context, so they're unaffected (no tag added). */
+function withReqTag(args: unknown[]): unknown[] {
+  const reqId = currentRequestId();
+  return reqId ? [`[${reqId}]`, ...args] : args;
+}
+
 /** Thin wrapper around console.* that also keeps an in-memory ring buffer of the last 500 lines,
  * surfaced via GET /api/system/logs — so "what's been happening" is visible from the web UI
  * without needing `docker compose logs`. Still logs to stdout/stderr as before for anyone who
@@ -130,16 +140,19 @@ function push(level: LogLevel, args: unknown[]): void {
  * (see listLogFiles/resolveLogFilePath) so history survives a restart. */
 export const log = {
   info(...args: unknown[]): void {
-    console.log(...args);
-    push("info", args);
+    const tagged = withReqTag(args);
+    console.log(...tagged);
+    push("info", tagged);
   },
   warn(...args: unknown[]): void {
-    console.warn(...args);
-    push("warn", args);
+    const tagged = withReqTag(args);
+    console.warn(...tagged);
+    push("warn", tagged);
   },
   error(...args: unknown[]): void {
-    console.error(...args);
-    push("error", args);
+    const tagged = withReqTag(args);
+    console.error(...tagged);
+    push("error", tagged);
   },
 };
 

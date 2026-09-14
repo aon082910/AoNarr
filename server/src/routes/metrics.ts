@@ -4,6 +4,7 @@ import { asyncHandler } from "../middleware/errorHandler.js";
 import { findRepeatedImports } from "../services/duplicates.js";
 import { findUpgradeCandidates } from "../services/upgradeCandidates.js";
 import { rootFolderFromRow } from "../db/mappers.js";
+import { getHttpMetricsSamples } from "../services/httpMetrics.js";
 import fs from "node:fs";
 
 export const metricsRouter = Router();
@@ -61,7 +62,27 @@ metricsRouter.get(
       }
     }
 
+    const httpSamples = getHttpMetricsSamples();
+
     const output = [
+      metricLine(
+        "aonarr_http_requests_total",
+        "Total HTTP requests handled, by method and route",
+        "counter",
+        httpSamples.map((s) => ({ labels: { method: s.method, route: s.route }, value: s.count }))
+      ),
+      metricLine(
+        "aonarr_http_request_errors_total",
+        "HTTP requests that resulted in a 5xx response, by method and route",
+        "counter",
+        httpSamples.map((s) => ({ labels: { method: s.method, route: s.route }, value: s.errorCount }))
+      ),
+      metricLine(
+        "aonarr_http_request_duration_ms_avg",
+        "Average request duration in milliseconds, by method and route (since process start)",
+        "gauge",
+        httpSamples.map((s) => ({ labels: { method: s.method, route: s.route }, value: s.avgDurationMs }))
+      ),
       metricLine(
         "aonarr_media_items_total",
         "Media items in the library by type",

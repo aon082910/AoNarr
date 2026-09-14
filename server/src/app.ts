@@ -1,13 +1,16 @@
 import express, { type Express } from "express";
 import cors from "cors";
+import helmet from "helmet";
 import { initDb } from "./db/index.js";
-import { loadSettingsCache } from "./services/settingsStore.js";
+import { loadSettingsCache, getSetting } from "./services/settingsStore.js";
 import { loadQualityCaches } from "./services/quality.js";
 import { backfillEpisodicAndCollectionHasFile, backfillMissingAlbumTracks } from "./services/libraryScan.js";
 import { errorHandler, asyncHandler } from "./middleware/errorHandler.js";
 import { requireAuth } from "./middleware/auth.js";
 import { bootstrapAdminFromEnv } from "./services/bootstrapAdmin.js";
 import { applySocksProxySetting } from "./services/socksProxy.js";
+import { generateRequestId, runWithRequestId } from "./services/requestContext.js";
+import { recordHttpRequest } from "./services/httpMetrics.js";
 
 import { mediaRouter } from "./routes/media.js";
 import { indexersRouter } from "./routes/indexers.js";
@@ -95,7 +98,45 @@ export async function createApp(): Promise<Express> {
   await backfillMissingAlbumTracks();
 
   const app = express();
-  app.use(cors());
+  // CSP and Cross-Origin-Resource-Policy are left off: this is an SPA that pulls poster/backdrop
+  // images from arbitrary metadata-provider and indexer URLs, and getting a CSP right for that
+  // without live-testing every provider risks silently breaking images/embeds rather than
+  // improving security meaningfully for a single-admin self-hosted app. Every other helmet
+  // default (nosniff, frame-options, referrer-policy, etc.) is safe to enable unconditionally.
+  app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: false }));
+  // Wide open (reflects whatever Origin the browser sends) by default, same as before this
+  // setting existed — this API is header-based (X-Api-Key/X-Session-Token), not cookie-based, so
+  // a cross-origin page can't attach real credentials to a request even with open CORS; the main
+  // reason to restrict it is a split (web container + server container on different origins)
+  // self-hosted deployment where the admin wants to lock the API down to just their own web UI's
+  // origin. `corsAllowedOrigins` (comma-separated) opts into that; unset keeps current behavior.
+  app.use(
+    cors({
+      // Reads the setting fresh on every request (not once at startup) so a change on the
+      // Settings page takes effect immediately, same as every other setting in this app.
+      origin: (origin, callback) => {
+        const corsOrigins = getSetting("corsAllowedOrigins");
+        if (!corsOrigins) return callback(null, true); // unset = allow any origin (default)
+        const allowed = corsOrigins.split(",").map((o) => o.trim());
+        callback(null, !origin || allowed.includes(origin));
+      },
+    })
+  );
+  // Correlation id + HTTP metrics — tags every log line made while handling this request (see
+  // logger.ts's withReqTag) with a short id also echoed back as X-Request-Id, and records
+  // method/route/status/duration into httpMetrics.ts once the response actually finishes (so a
+  // slow/hung request doesn't get counted before it's done). Registered before every other
+  // middleware/router so it wraps the *entire* request, not just the routers mounted after it.
+  app.use((req, res, next) => {
+    const reqId = generateRequestId();
+    res.setHeader("X-Request-Id", reqId);
+    const startedAt = Date.now();
+    res.on("finish", () => {
+      const route = req.route?.path ? `${req.baseUrl}${req.route.path}` : req.path;
+      recordHttpRequest(req.method, route, res.statusCode, Date.now() - startedAt);
+    });
+    runWithRequestId(reqId, next);
+  });
   // `verify` stashes the exact raw request bytes on req.rawBody before JSON-parsing — needed by
   // the Discord interactions webhook (routes/discordInteractions.ts), which must verify an
   // Ed25519 signature over the literal bytes Discord sent; re-serializing the parsed JSON
