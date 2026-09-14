@@ -25,7 +25,7 @@ settingsRouter.put(
   asyncHandler(async (req, res) => {
     const value = String((req.body ?? {}).value ?? "");
     setSetting(req.params.key, value);
-    if (req.params.key === "socks5ProxyUrl") applySocksProxySetting();
+    if (req.params.key === "socks5ProxyUrl" || req.params.key === "tlsRejectUnauthorized") applySocksProxySetting();
     res.json({ key: req.params.key, value });
   })
 );

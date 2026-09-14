@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
+import { getSetting } from "./settingsStore.js";
 
 export type LogLevel = "info" | "warn" | "error";
 
@@ -84,7 +85,30 @@ export function resolveLogFilePath(name: string): string | null {
   return path.join(LOG_DIR, name);
 }
 
+const LEVEL_RANK: Record<LogLevel, number> = { info: 0, warn: 1, error: 2 };
+
+/** Radarr-style configurable log verbosity — AoNarr's own levels are info/warn/error (no separate
+ * Trace/Debug level anywhere in the codebase to gate), so this controls how much of that gets
+ * *persisted* (in-memory ring buffer + daily log file, both surfaced via the System → Logs pages):
+ * "warn" drops routine info-level noise, "error" keeps only failures. Still always goes to
+ * stdout/stderr regardless of this setting — `docker compose logs` isn't affected, only what's
+ * kept for the web UI's own log views. Defaults to "info" (current behavior) when unset. */
+function isPersisted(level: LogLevel): boolean {
+  // getSetting() throws if called before loadSettingsCache() finishes at startup — very early
+  // boot logging (before the DB/settings cache is even up) must never be lost over that, so it
+  // defaults to "log everything" rather than let the throw escape from inside log.info/warn/error.
+  let configured: LogLevel | null = null;
+  try {
+    configured = getSetting("logLevel") as LogLevel | null;
+  } catch {
+    return true;
+  }
+  const threshold = LEVEL_RANK[configured ?? "info"] ?? 0;
+  return LEVEL_RANK[level] >= threshold;
+}
+
 function push(level: LogLevel, args: unknown[]): void {
+  if (!isPersisted(level)) return;
   const message = args
     .map((a) => (a instanceof Error ? a.stack ?? a.message : typeof a === "string" ? a : JSON.stringify(a)))
     .join(" ");

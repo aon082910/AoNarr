@@ -3,6 +3,43 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 194 — NFO-on-import, log verbosity, certificate validation, media management polish
+- **Write NFO on Import** (opt-in, off by default like Radarr's own Kodi/Emby metadata consumer):
+  importing a file now optionally writes a same-named Kodi/Jellyfin/Emby `.nfo` sidecar — reuses
+  the exact `writeNfoSidecar()` that already runs on manual metadata edits (see Round 192's
+  metadataExport.ts), just now also on import for Movies/ROMs/Adult and single-file collection
+  types (Books, Comics, Manga, Online Videos, Courses). Series episodes and Music tracks aren't
+  covered — per-episode/per-track metadata isn't available at this call site.
+- **Colon handling in file names**: `sanitizeForPath()` now turns "Title: Subtitle" into
+  "Title - Subtitle" instead of just dropping the colon ("TitleSubtitle") — matches Radarr's own
+  default colon-replacement behavior.
+- **Skip Free Space Check**: an import is now refused (file stays queued) if it would leave the
+  destination filesystem with less free space than the file being placed — a real check before an
+  import can run, with a setting to skip it, not a check that already didn't exist.
+- **Create Empty Folders** (opt-in): adding a new monitored item can now create its top-level
+  library folder immediately via a new `createLibraryFolderSkeleton()`, instead of the folder only
+  appearing on first import.
+- **Log verbosity control**: Settings/System → Logs gained a "Log verbosity" setting
+  (Info/Warn/Error) that controls what's persisted to the in-memory log view and daily log files —
+  always still goes to the container's own stdout/stderr regardless. Note: this is coarser than
+  Radarr's Trace/Debug granularity, since AoNarr's own logging only ever had info/warn/error levels
+  to begin with; this controls how much of *that* gets kept, not a new logging tier.
+- **Certificate Validation toggle**: Settings → General gained a Certificate Validation
+  Enabled/Disabled setting (default enabled) for an indexer or other configured service running a
+  self-signed cert — applies globally to outbound HTTPS requests via the same undici global-
+  dispatcher mechanism the SOCKS5 proxy setting already used. Documented limitation: has no effect
+  while a SOCKS5 proxy is also configured (the proxy's own connect path doesn't go through this).
+- **Corrected a miss from the last gap check**: "Custom Filters" (save/apply/delete a named
+  filter+sort+column preset) turns out to already exist — Library pages' "Saved Views"
+  (`SavedLibraryView`, `/api/library-views`) is exactly this feature under a different name; the
+  prior gap report only checked localStorage persistence and missed the server-side saved-views
+  system already wired into the UI.
+- **Checked and did NOT build**: UI display preferences (first day of week, date format,
+  relative-vs-absolute dates, info/metadata language, color-impaired mode) and a per-multi-episode
+  file naming style — real Radarr settings, but cosmetic/low-value for a self-hosted single-user
+  instance relative to the effort of adding a whole preferences layer; and a plain HTTP/HTTPS proxy
+  option alongside the existing SOCKS5 one — same idea, lower priority than the items above.
+
 ## Round 193 — Release Profiles, health notifications, queue blocklist, auth toggle, TMDB lists
 - **Release Profiles**: new Radarr/Sonarr-style Settings → Quality section, distinct from Custom
   Formats — plain-text (non-regex) term matching against a release's raw title instead of regex

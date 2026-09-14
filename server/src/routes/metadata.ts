@@ -20,6 +20,7 @@ import { isExcluded } from "../services/importExclusions.js";
 import { log } from "../services/logger.js";
 import { logAuditEvent } from "../services/audit.js";
 import { getSetting } from "../services/settingsStore.js";
+import { createLibraryFolderSkeleton } from "../services/importer.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import type { MediaType } from "../types/index.js";
 
@@ -169,6 +170,13 @@ metadataRouter.post(
 
     const mediaItemId = result.lastInsertRowid;
     let childCount = 0;
+
+    if (getSetting("createEmptyFoldersOnAdd") === "1" && rootFolderId) {
+      const rootFolderRow = (await db.prepare("SELECT path FROM root_folders WHERE id = ?").get(rootFolderId)) as
+        | { path: string }
+        | undefined;
+      if (rootFolderRow) createLibraryFolderSkeleton({ type: b.type, title: b.title, year: b.year ?? null }, rootFolderRow.path);
+    }
 
     try {
       const typeConfig = getMediaTypeConfig(b.type);

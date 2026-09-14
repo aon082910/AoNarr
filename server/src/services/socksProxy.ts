@@ -4,23 +4,36 @@ import { getSetting } from "./settingsStore.js";
 import { log } from "./logger.js";
 
 const defaultDispatcher = getGlobalDispatcher();
-let appliedUrl: string | null = null;
+let appliedSignature: string | null = null;
 
 /**
  * Routes every outbound fetch() (indexers, metadata providers, download-client APIs, webhooks —
- * anything using Node's global fetch, which is undici under the hood) through a SOCKS5 proxy.
- * Node's fetch has no native SOCKS support, so this builds a custom undici Agent whose `connect`
- * performs the SOCKS5 handshake via the `socks` package, then installs it as the global
- * dispatcher — the officially documented way to customize connection behavior for every fetch()
- * call app-wide without threading a dispatcher through every call site individually.
+ * anything using Node's global fetch, which is undici under the hood) through a SOCKS5 proxy, and/
+ * or disables TLS certificate validation for them (Radarr's "Certificate Validation" setting — for
+ * an indexer running a self-signed cert). Node's fetch has no native SOCKS support, so this builds
+ * a custom undici Agent whose `connect` performs the SOCKS5 handshake via the `socks` package, then
+ * installs it as the global dispatcher — the officially documented way to customize connection
+ * behavior for every fetch() call app-wide without threading a dispatcher through every call site
+ * individually. The two settings only combine when no SOCKS proxy is configured — disabling cert
+ * validation *while proxying through SOCKS5* would need TLS handled inside the custom `connect`
+ * function above, which the existing SOCKS agent doesn't do (it hands back a raw un-upgraded
+ * socket); that combination is rare enough it's not worth the added complexity, so it's a documented
+ * limitation rather than something silently half-applied.
  */
 export function applySocksProxySetting(): void {
   const url = getSetting("socks5ProxyUrl");
-  if (url === appliedUrl) return;
-  appliedUrl = url;
+  const rejectUnauthorized = getSetting("tlsRejectUnauthorized") !== "0";
+  const signature = `${url ?? ""}|${rejectUnauthorized}`;
+  if (signature === appliedSignature) return;
+  appliedSignature = signature;
 
   if (!url) {
-    setGlobalDispatcher(defaultDispatcher);
+    if (rejectUnauthorized) {
+      setGlobalDispatcher(defaultDispatcher);
+    } else {
+      setGlobalDispatcher(new Agent({ connect: { rejectUnauthorized: false } }));
+      log.warn("[network] TLS certificate validation is DISABLED for all outbound requests");
+    }
     return;
   }
 

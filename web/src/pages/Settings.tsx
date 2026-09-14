@@ -1750,6 +1750,31 @@ export default function Settings() {
             ),
           },
           {
+            key: "certificateValidation",
+            label: "Certificate Validation",
+            description: "Whether outbound HTTPS requests verify the server's TLS certificate",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Enabled by default (the safe setting). Disable only if an indexer or other
+                  service you've configured uses a self-signed certificate — this applies to
+                  every outbound request AoNarr makes, not just that one service, so leave it
+                  enabled unless you actually need it. Has no effect while a SOCKS5 proxy above is
+                  configured (the proxy connection doesn't go through this same TLS path).
+                </p>
+                <label>Certificate validation</label>
+                <select
+                  key={settings.tlsRejectUnauthorized ?? "tls-reject-empty"}
+                  defaultValue={settings.tlsRejectUnauthorized ?? "1"}
+                  onChange={(e) => saveSetting("tlsRejectUnauthorized", e.target.value)}
+                >
+                  <option value="1">Enabled (default)</option>
+                  <option value="0">Disabled</option>
+                </select>
+              </div>
+            ),
+          },
+          {
             key: "quietHours",
             label: "Quiet Hours",
             description: "Pause the auto-search cycle during a daily window",
@@ -1876,6 +1901,80 @@ export default function Settings() {
                   <option value="move">Move</option>
                   <option value="hardlink">Hardlink</option>
                   <option value="symlink">Symlink</option>
+                </select>
+              </div>
+            ),
+          },
+          {
+            key: "writeNfoOnImport",
+            label: "Write NFO on Import",
+            description: "Kodi/Jellyfin/Emby-readable .nfo sidecar next to every imported file",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Off by default (same as Radarr/Sonarr's own "Kodi (XBMC)/Emby" metadata
+                  consumer). When on, importing a file also writes a same-named .nfo sidecar with
+                  title/year/overview/poster/unique-ids — the same sidecar AoNarr already writes
+                  whenever you edit an item's metadata by hand, just now on import too. Movies/
+                  ROMs/Adult and single-file collection types (Books, Comics, Manga, Online
+                  Videos, Courses) only; series episodes and Music tracks aren't covered.
+                </p>
+                <label>Write NFO on import</label>
+                <select
+                  key={settings.writeNfoOnImport ?? "write-nfo-empty"}
+                  defaultValue={settings.writeNfoOnImport ?? "0"}
+                  onChange={(e) => saveSetting("writeNfoOnImport", e.target.value)}
+                >
+                  <option value="0">Disabled</option>
+                  <option value="1">Enabled</option>
+                </select>
+              </div>
+            ),
+          },
+          {
+            key: "skipFreeSpaceCheck",
+            label: "Skip Free Space Check",
+            description: "Whether an import is allowed to fill the destination drive to zero",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  On by default, the check runs: an import that would leave the destination
+                  filesystem with less free space than the file being placed is refused (the file
+                  stays queued instead). Turn this off only if the check is giving false positives
+                  for your setup (e.g. a filesystem that misreports free space).
+                </p>
+                <label>Free space check</label>
+                <select
+                  key={settings.skipFreeSpaceCheck ?? "skip-free-space-empty"}
+                  defaultValue={settings.skipFreeSpaceCheck ?? "0"}
+                  onChange={(e) => saveSetting("skipFreeSpaceCheck", e.target.value)}
+                >
+                  <option value="0">Run the check (default)</option>
+                  <option value="1">Skip the check</option>
+                </select>
+              </div>
+            ),
+          },
+          {
+            key: "createEmptyFoldersOnAdd",
+            label: "Create Empty Folders",
+            description: "Create a library folder as soon as an item is added, not on first import",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Off by default. When on, adding a new monitored item creates its top-level
+                  library folder immediately — useful if you (or another tool) want to see/drop
+                  into the folder before anything's actually been downloaded yet. Only the item's
+                  own top-level folder is created, not season/episode subfolders.
+                </p>
+                <label>Create empty folders</label>
+                <select
+                  key={settings.createEmptyFoldersOnAdd ?? "create-empty-folders-empty"}
+                  defaultValue={settings.createEmptyFoldersOnAdd ?? "0"}
+                  onChange={(e) => saveSetting("createEmptyFoldersOnAdd", e.target.value)}
+                >
+                  <option value="0">Disabled</option>
+                  <option value="1">Enabled</option>
                 </select>
               </div>
             ),

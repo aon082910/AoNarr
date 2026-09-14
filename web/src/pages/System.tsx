@@ -1334,6 +1334,21 @@ export default function System() {
           The last 2000 log lines, newest first — the same output as{" "}
           <code>docker compose logs aonarr-server</code> without needing shell access.
         </p>
+        <label>Log verbosity</label>
+        <select
+          key={settings.logLevel ?? "log-level-empty"}
+          defaultValue={settings.logLevel ?? "info"}
+          onChange={(e) => saveSetting("logLevel", e.target.value)}
+          style={{ width: "auto", marginBottom: 10 }}
+        >
+          <option value="info">Info (default) — everything</option>
+          <option value="warn">Warn — only warnings and errors</option>
+          <option value="error">Error — only errors</option>
+        </select>
+        <p style={{ color: "var(--muted)", fontSize: "0.78rem", marginTop: -6 }}>
+          Controls what's kept in this log view and the daily log files — always still goes to the
+          container's own stdout/stderr regardless of this setting.
+        </p>
         <div className="toolbar">
           <select value={logLevelFilter} onChange={(e) => setLogLevelFilter(e.target.value)} style={{ width: "auto" }}>
             <option value="">All levels</option>

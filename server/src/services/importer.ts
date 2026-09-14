@@ -7,6 +7,7 @@ import { nowExpr } from "../db/asyncDb.js";
 import { config } from "../config.js";
 import { mediaItemFromRow, queueItemFromRow, rootFolderFromRow } from "../db/mappers.js";
 import { notifyImported, notifyUpgraded } from "./notifications.js";
+import { writeNfoSidecar } from "./metadataExport.js";
 import { notifyQueueChanged } from "./realtime.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import {
@@ -106,8 +107,15 @@ async function tryDownloadSubtitle(videoPath: string, mediaItemId: number): Prom
   }
 }
 
+/** Radarr-style colon handling: "Title: Subtitle" becomes "Title - Subtitle" instead of just
+ * dropping the colon outright ("TitleSubtitle"), which reads badly and is the #1 complaint about
+ * naive illegal-character stripping. Every other Windows/most-filesystems-illegal character is
+ * still stripped outright — none of them have as good a plain-text substitute. */
 function sanitizeForPath(name: string): string {
-  return name.replace(/[/\\:*?"<>|]/g, "").trim();
+  return name
+    .replace(/:\s*/g, " - ")
+    .replace(/[/\\*?"<>|]/g, "")
+    .trim();
 }
 
 /** Renders a naming template and splits it into sanitized path segments (template controls folder nesting via "/"). */
@@ -348,6 +356,27 @@ async function moveFile(src: string, dest: string): Promise<void> {
 
 export class ImportSkippedError extends Error {}
 
+/** Radarr's "Create empty series folders" — opt-in, creates just the item's own top-level library
+ * folder (not any season/episode subfolders, which only make sense once real files start arriving)
+ * as soon as it's added, instead of the folder only coming into existence on first import. Never
+ * throws — a failed mkdir here (permissions, a stale mount) shouldn't fail adding the item itself,
+ * the same "best effort, log and move on" contract every other filesystem side-effect in this file
+ * follows. */
+export function createLibraryFolderSkeleton(item: { type: MediaType; title: string; year: number | null }, rootFolderPath: string): void {
+  try {
+    const segments = renderPathSegments(getNamingTemplate(item.type), {
+      title: item.title,
+      parentTitle: item.title,
+      year: item.year ?? "",
+      quality: "",
+    });
+    if (segments.length === 0) return;
+    fs.mkdirSync(path.join(rootFolderPath, segments[0]), { recursive: true });
+  } catch (err) {
+    log.warn(`[importer] failed to create a library folder for "${item.title}":`, (err as Error).message);
+  }
+}
+
 type EpisodeTarget = { season: number; episode: number } | { airDate: string };
 
 /**
@@ -436,6 +465,29 @@ export async function placeFile(params: {
     );
   }
 
+  // Radarr's "Skip Free Space Check" — on by default (i.e. the check runs), refuses an import that
+  // would leave the destination filesystem with less free space than the file being placed, rather
+  // than silently filling a small library drive to zero. `move` frees the source file's own space
+  // back as part of the same operation on same-filesystem moves, but that can't be assumed here
+  // (cross-filesystem move falls back to copy+delete, and hardlink/symlink never free anything) so
+  // this stays conservative and checks against the file's full size either way.
+  if (getSetting("skipFreeSpaceCheck") !== "1") {
+    try {
+      const sourceSize = fs.statSync(sourceFile).size;
+      const stat = fs.statfsSync(rootFolder.path);
+      const freeBytes = stat.bfree * stat.bsize;
+      if (freeBytes < sourceSize) {
+        throw new ImportSkippedError(
+          `Not enough free space at "${rootFolder.path}" (${Math.round(freeBytes / 1e9)}GB free, file is ${Math.round(sourceSize / 1e9)}GB) — leaving it queued`
+        );
+      }
+    } catch (err) {
+      if (err instanceof ImportSkippedError) throw err;
+      // Can't stat the source/destination filesystem — don't block the import over that; the
+      // move itself will surface a clearer filesystem error if something's actually wrong.
+    }
+  }
+
   await moveFile(sourceFile, destPath);
 
   if (VIDEO_EXTENSIONS.has(ext.toLowerCase()) && (typeConfig.shape === "single" || typeConfig.shape === "episodic")) {
@@ -482,6 +534,23 @@ export async function placeFile(params: {
     item.id,
     JSON.stringify({ fileLabel, destPath })
   );
+
+  // Radarr's "Kodi (XBMC)/Emby" metadata consumer, off by default there too — an admin who wants
+  // AoNarr to keep a Kodi/Jellyfin/Emby-readable .nfo sidecar next to every imported file opts in
+  // explicitly. Only for "single" (Movies/ROMs/Adult) and single-file "collection" (Books/Comics/
+  // Manga/Online Videos/Courses) shapes, which map onto one media-item-worth of metadata per file;
+  // episodic and multi-file-per-child (Music) shapes need per-episode/per-track metadata this
+  // function doesn't have on hand, so they're left to the existing on-edit sidecar write in
+  // routes/media.ts instead of guessing at incomplete per-file metadata here.
+  if (getSetting("writeNfoOnImport") === "1" && (typeConfig.shape === "single" || typeConfig.shape === "collection")) {
+    let externalIds: Record<string, string> = {};
+    try {
+      externalIds = item.externalIds ? JSON.parse(item.externalIds) : {};
+    } catch {
+      // malformed external_ids on an old row — write the sidecar without unique ids rather than skip it
+    }
+    writeNfoSidecar(destPath, { type: item.type, title: item.title, year: item.year, overview: item.overview, posterUrl: item.posterUrl, externalIds });
+  }
 
   if (hadFileBefore) await notifyUpgraded(item.title, fileLabel, destPath);
   else await notifyImported(item.title, fileLabel, destPath);
