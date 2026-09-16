@@ -194,11 +194,15 @@ export default function System() {
     "item"
   );
   const [orphaned, setOrphaned] = useState<OrphanedFile[] | null>(null);
+  const { sortRows: sortOrphaned, sortableHeader: orphanedHeader } = useSortableTable<OrphanedFile, "path" | "size">("path");
   const [orphanedIncremental, setOrphanedIncremental] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [scanningLibrary, setScanningLibrary] = useState(false);
   const [upcomingArchivals, setUpcomingArchivals] = useState<ArchivalCandidate[] | null>(null);
+  const { sortRows: sortArchivals, sortableHeader: archivalsHeader } = useSortableTable<ArchivalCandidate, "title" | "type" | "scheduled">(
+    "scheduled"
+  );
   const [loadingUpcoming, setLoadingUpcoming] = useState(false);
   const [syncingTrakt, setSyncingTrakt] = useState(false);
   const [syncingPlexWatchlist, setSyncingPlexWatchlist] = useState(false);
@@ -209,6 +213,12 @@ export default function System() {
     errors: { title: string; error: string }[];
     skippedMusic: number;
   } | null>(null);
+  const { sortRows: sortRenamed, sortableHeader: renamedHeader } = useSortableTable<{ title: string; from: string; to: string }, "title" | "to">(
+    "title"
+  );
+  const { sortRows: sortRenameErrors, sortableHeader: renameErrorsHeader } = useSortableTable<{ title: string; error: string }, "title" | "error">(
+    "title"
+  );
   const [backingUp, setBackingUp] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const restoreInputRef = useRef<HTMLInputElement>(null);
@@ -224,6 +234,13 @@ export default function System() {
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [showBackupDirPicker, setShowBackupDirPicker] = useState(false);
   const [unmonitoredNoFile, setUnmonitoredNoFile] = useState<UnmonitoredNoFileItem[] | null>(null);
+  const { sortRows: sortUnmonitoredNoFile, sortableHeader: unmonitoredNoFileHeader } = useSortableTable<
+    UnmonitoredNoFileItem,
+    "title" | "type" | "added"
+  >("title");
+  const { sortRows: sortDiskSpace, sortableHeader: diskSpaceHeader } = useSortableTable<DiskSpaceEntry, "path" | "type" | "free" | "total" | "days">(
+    "path"
+  );
   const [duplicateFiles, setDuplicateFiles] = useState<DuplicateFileGroup[] | null>(null);
   const [cleanupLoading, setCleanupLoading] = useState<"unmonitored" | "duplicates" | null>(null);
   const [groupStats, setGroupStats] = useState<ReleaseGroupStatsRow[] | null>(null);
@@ -233,6 +250,7 @@ export default function System() {
   >("rate", "desc");
   const [groupStatsLoading, setGroupStatsLoading] = useState(false);
   const [libraryMismatches, setLibraryMismatches] = useState<LibraryMismatch[] | null>(null);
+  const { sortRows: sortMismatches, sortableHeader: mismatchesHeader } = useSortableTable<LibraryMismatch, "item" | "path">("item");
   const [libraryValidationLoading, setLibraryValidationLoading] = useState(false);
   const [libraryValidationError, setLibraryValidationError] = useState<string | null>(null);
 
@@ -1038,13 +1056,17 @@ export default function System() {
               <table>
                 <thead>
                   <tr>
-                    <th>Title</th>
-                    <th>Type</th>
-                    <th>Scheduled for</th>
+                    {archivalsHeader("title", "Title")}
+                    {archivalsHeader("type", "Type")}
+                    {archivalsHeader("scheduled", "Scheduled for")}
                   </tr>
                 </thead>
                 <tbody>
-                  {upcomingArchivals.map((c) => (
+                  {sortArchivals(upcomingArchivals, (a, b, key) => {
+                    if (key === "title") return a.title.localeCompare(b.title);
+                    if (key === "type") return a.type.localeCompare(b.type);
+                    return a.scheduledFor.localeCompare(b.scheduledFor);
+                  }).map((c) => (
                     <tr key={`${c.mediaItemId}-${c.filePath}`}>
                       <td>{c.title}</td>
                       <td>{c.type}</td>
@@ -1066,12 +1088,12 @@ export default function System() {
               <table>
                 <thead>
                   <tr>
-                    <th>Path</th>
-                    <th>Size</th>
+                    {orphanedHeader("path", "Path")}
+                    {orphanedHeader("size", "Size")}
                   </tr>
                 </thead>
                 <tbody>
-                  {orphaned.map((o) => (
+                  {sortOrphaned(orphaned, (a, b, key) => (key === "path" ? a.path.localeCompare(b.path) : a.sizeBytes - b.sizeBytes)).map((o) => (
                     <tr key={o.path}>
                       <td>{o.path}</td>
                       <td>{formatBytes(o.sizeBytes)}</td>
@@ -1117,12 +1139,14 @@ export default function System() {
               <table>
                 <thead>
                   <tr>
-                    <th>Title</th>
-                    <th>New path</th>
+                    {renamedHeader("title", "Title")}
+                    {renamedHeader("to", "New path")}
                   </tr>
                 </thead>
                 <tbody>
-                  {renameResult.renamed.map((r, i) => (
+                  {sortRenamed(renameResult.renamed, (a, b, key) =>
+                    key === "title" ? a.title.localeCompare(b.title) : a.to.localeCompare(b.to)
+                  ).map((r, i) => (
                     <tr key={i}>
                       <td>{r.title}</td>
                       <td style={{ fontFamily: "monospace", fontSize: "0.8rem", wordBreak: "break-all" }}>{r.to}</td>
@@ -1135,12 +1159,14 @@ export default function System() {
               <table style={{ marginTop: 8 }}>
                 <thead>
                   <tr>
-                    <th>Title</th>
-                    <th>Error</th>
+                    {renameErrorsHeader("title", "Title")}
+                    {renameErrorsHeader("error", "Error")}
                   </tr>
                 </thead>
                 <tbody>
-                  {renameResult.errors.map((e, i) => (
+                  {sortRenameErrors(renameResult.errors, (a, b, key) =>
+                    key === "title" ? a.title.localeCompare(b.title) : a.error.localeCompare(b.error)
+                  ).map((e, i) => (
                     <tr key={i}>
                       <td>{e.title}</td>
                       <td style={{ color: "var(--danger)" }}>{e.error}</td>
@@ -1182,14 +1208,18 @@ export default function System() {
                 <table>
                   <thead>
                     <tr>
-                      <th>Title</th>
-                      <th>Type</th>
-                      <th>Added</th>
+                      {unmonitoredNoFileHeader("title", "Title")}
+                      {unmonitoredNoFileHeader("type", "Type")}
+                      {unmonitoredNoFileHeader("added", "Added")}
                       <th></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {unmonitoredNoFile.map((i) => (
+                    {sortUnmonitoredNoFile(unmonitoredNoFile, (a, b, key) => {
+                      if (key === "title") return a.title.localeCompare(b.title);
+                      if (key === "type") return a.type.localeCompare(b.type);
+                      return a.addedAt.localeCompare(b.addedAt);
+                    }).map((i) => (
                       <tr key={i.id}>
                         <td>
                           {i.title}
@@ -1309,13 +1339,15 @@ export default function System() {
             <table>
               <thead>
                 <tr>
-                  <th>Item</th>
-                  <th>Path</th>
+                  {mismatchesHeader("item", "Item")}
+                  {mismatchesHeader("path", "Path")}
                   <th></th>
                 </tr>
               </thead>
               <tbody>
-                {libraryMismatches.map((m, idx) => (
+                {sortMismatches(libraryMismatches, (a, b, key) =>
+                  key === "item" ? a.label.localeCompare(b.label) : a.path.localeCompare(b.path)
+                ).map((m, idx) => (
                   <tr key={idx}>
                     <td>{m.label}</td>
                     <td>{m.path}</td>
@@ -1342,15 +1374,21 @@ export default function System() {
         <table>
           <thead>
             <tr>
-              <th>Root folder</th>
-              <th>Type</th>
-              <th>Free</th>
-              <th>Total</th>
-              <th>Est. days until full</th>
+              {diskSpaceHeader("path", "Root folder")}
+              {diskSpaceHeader("type", "Type")}
+              {diskSpaceHeader("free", "Free")}
+              {diskSpaceHeader("total", "Total")}
+              {diskSpaceHeader("days", "Est. days until full")}
             </tr>
           </thead>
           <tbody>
-            {status.diskSpace.map((d, idx) => (
+            {sortDiskSpace(status.diskSpace, (a, b, key) => {
+              if (key === "path") return a.path.localeCompare(b.path);
+              if (key === "type") return a.mediaType.localeCompare(b.mediaType);
+              if (key === "free") return (a.freeBytes ?? 0) - (b.freeBytes ?? 0);
+              if (key === "total") return (a.totalBytes ?? 0) - (b.totalBytes ?? 0);
+              return (a.daysUntilFull ?? Infinity) - (b.daysUntilFull ?? Infinity);
+            }).map((d, idx) => (
               <tr key={idx}>
                 <td>{d.path}</td>
                 <td>{d.mediaType}</td>

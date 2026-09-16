@@ -3,6 +3,20 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 217 — sortable tables on the rest of System's tabs
+- Finished the sweep started last round: Maintenance (upcoming archivals, orphaned files, renamed
+  files, rename errors, unmonitored-with-no-file cleanup candidates) and Insights (disk space,
+  media-server library-validation mismatches) tabs now use the same `useSortableTable` pattern as
+  everywhere else. That's every genuinely list-shaped table on the System page now sorted —
+  14 in total across this round and the last. Left alone, deliberately: system info and library
+  counts (both single-row key/value displays) and the per-duplicate-group file-compare table
+  (2-3 rows, same reasoning as Duplicates.tsx's own compare table — nothing to usefully sort).
+- Live-verified in a fresh Docker test instance: clicked through Maintenance and Insights, and
+  exercised "Load reputation stats"/"Run validation" directly (found a stale 500 in the browser
+  tab's console-message buffer while checking for regressions — traced it to leftover history from
+  much earlier in this same long-lived test session, not a real error; confirmed by re-triggering
+  both actions fresh and getting clean 200s with correct empty-state messages).
+
 ## Round 216 — sortable tables on System's Health tab
 - Closed out the gap flagged at the end of Round 215: System.tsx has ~15 tables and only 2
   (release-group reputation, log files) got the `useSortableTable` treatment before. Added it to
