@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import { useAuth } from "../context/AuthContext.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { MediaInfo, SearchResult } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
 
@@ -46,6 +47,10 @@ export default function EpisodeDetail() {
   const [episode, setEpisode] = useState<EpisodeDetailResponse | null>(null);
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<SearchResult[] | null>(null);
+  const { sortRows: sortSearchResults, sortableHeader: searchResultHeader } = useSortableTable<SearchResult, "title" | "size" | "seeders" | "quality">(
+    "seeders",
+    "desc"
+  );
   const [error, setError] = useState<string | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [browsePath, setBrowsePath] = useState("");
@@ -354,10 +359,10 @@ export default function EpisodeDetail() {
           <table>
             <thead>
               <tr>
-                <th>Title</th>
-                <th>Size</th>
-                <th>Seeders</th>
-                <th>Quality</th>
+                {searchResultHeader("title", "Title")}
+                {searchResultHeader("size", "Size")}
+                {searchResultHeader("seeders", "Seeders")}
+                {searchResultHeader("quality", "Quality")}
                 <th></th>
               </tr>
             </thead>
@@ -369,7 +374,12 @@ export default function EpisodeDetail() {
                   </td>
                 </tr>
               )}
-              {results.map((r, i) => (
+              {sortSearchResults(results, (a, b, key) => {
+                if (key === "title") return a.title.localeCompare(b.title);
+                if (key === "size") return a.size - b.size;
+                if (key === "seeders") return (a.seeders ?? -1) - (b.seeders ?? -1);
+                return (a.parsedQuality ?? "").localeCompare(b.parsedQuality ?? "");
+              }).map((r, i) => (
                 <tr key={i}>
                   <td>{r.title}</td>
                   <td>{(r.size / 1e9).toFixed(2)} GB</td>

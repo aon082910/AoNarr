@@ -198,6 +198,7 @@ export interface Collection {
   name: string;
   description: string | null;
   itemCount?: number;
+  posterUrls?: string[];
   retentionDays: number | null;
   smartFilter: SmartFilter | null;
 }

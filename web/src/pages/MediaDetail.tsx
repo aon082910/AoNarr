@@ -8,6 +8,7 @@ import RenamePreviewModal from "../components/RenamePreviewModal.js";
 import type { LibraryGroup } from "../types.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { Collection, HistoryEvent, MediaInfo, MediaItem, QualityProfile, RootFolder, SearchResult, Tag } from "../types.js";
 import { formatBytes, formatMediaInfo } from "../utils/format.js";
 import { useContentRatings } from "../hooks/useContentRatings.js";
@@ -258,6 +259,11 @@ export default function MediaDetail() {
   const [item, setItem] = useState<MediaDetailResponse | null>(null);
   const [target, setTarget] = useState<SearchTarget>(null);
   const [results, setResults] = useState<SearchResult[] | null>(null);
+  const { sortRows: sortSearchResults, sortableHeader: searchResultHeader } = useSortableTable<
+    SearchResult,
+    "title" | "quality" | "formatScore" | "indexer" | "size" | "seeders"
+  >("seeders", "desc");
+  const { sortRows: sortChildren, sortableHeader: childHeader } = useSortableTable<SubItem, "title" | "releaseDate">("title");
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -2121,17 +2127,24 @@ export default function MediaDetail() {
             <table>
               <thead>
                 <tr>
-                  <th>Title</th>
-                  <th>Quality</th>
-                  <th>Format score</th>
-                  <th>Indexer</th>
-                  <th>Size</th>
-                  <th>Seeders</th>
+                  {searchResultHeader("title", "Title")}
+                  {searchResultHeader("quality", "Quality")}
+                  {searchResultHeader("formatScore", "Format score")}
+                  {searchResultHeader("indexer", "Indexer")}
+                  {searchResultHeader("size", "Size")}
+                  {searchResultHeader("seeders", "Seeders")}
                   <th></th>
                 </tr>
               </thead>
               <tbody>
-                {results.map((r, idx) => (
+                {sortSearchResults(results, (a, b, key) => {
+                  if (key === "title") return a.title.localeCompare(b.title);
+                  if (key === "quality") return a.parsedQuality.localeCompare(b.parsedQuality);
+                  if (key === "formatScore") return a.formatScore - b.formatScore;
+                  if (key === "indexer") return a.indexerName.localeCompare(b.indexerName);
+                  if (key === "size") return a.size - b.size;
+                  return (a.seeders ?? -1) - (b.seeders ?? -1);
+                }).map((r, idx) => (
                   <tr key={idx} style={{ opacity: r.matchesTarget && !r.blocklisted && !r.rejected ? 1 : 0.55 }}>
                     <td>
                       {r.title}
@@ -2425,15 +2438,17 @@ export default function MediaDetail() {
             <thead>
               <tr>
                 <th></th>
-                <th>Title</th>
-                <th>Release date</th>
+                {childHeader("title", "Title")}
+                {childHeader("releaseDate", "Release date")}
                 <th>File</th>
                 <th>Quality</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {(item.children as SubItem[]).map((si) => (
+              {sortChildren(item.children as SubItem[], (a, b, key) =>
+                key === "title" ? a.title.localeCompare(b.title) : (a.releaseDate ?? "").localeCompare(b.releaseDate ?? "")
+              ).map((si) => (
                 <tr key={si.id} onClick={() => navigate(`/media/${item.id}/item/${si.id}`)} style={{ cursor: "pointer" }}>
                   <td onClick={(e) => e.stopPropagation()}>
                     <div

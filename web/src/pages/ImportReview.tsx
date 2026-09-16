@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
 import SearchMatchModal, { type MetadataSearchResult } from "../components/SearchMatchModal.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 
 interface ReviewItem {
   id: number;
@@ -52,6 +53,17 @@ export default function ImportReview() {
     load();
   }
 
+  const { sortRows, sortableHeader } = useSortableTable<ReviewItem, "title" | "year" | "type" | "source" | "queued">("queued", "desc");
+  const sorted = items
+    ? sortRows(items, (a, b, key) => {
+        if (key === "title") return a.title.localeCompare(b.title);
+        if (key === "year") return (a.year ?? 0) - (b.year ?? 0);
+        if (key === "type") return a.type.localeCompare(b.type);
+        if (key === "source") return a.source.localeCompare(b.source);
+        return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+      })
+    : [];
+
   if (!items) return <p className="empty">Loading...</p>;
 
   return (
@@ -68,16 +80,16 @@ export default function ImportReview() {
         <table>
           <thead>
             <tr>
-              <th>Title</th>
-              <th>Year</th>
-              <th>Type</th>
-              <th>Source</th>
-              <th>Queued</th>
+              {sortableHeader("title", "Title")}
+              {sortableHeader("year", "Year")}
+              {sortableHeader("type", "Type")}
+              {sortableHeader("source", "Source")}
+              {sortableHeader("queued", "Queued")}
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {items.map((item) => (
+            {sorted.map((item) => (
               <tr key={item.id}>
                 <td>{item.title}</td>
                 <td>{item.year ?? "-"}</td>

@@ -3,6 +3,46 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 215 — Servarr-style navigation icons, sortable tables, and a poster-grid Collections page
+- **Icon-led navigation, matching Sonarr/Radarr/Lidarr's chrome.** Every sidebar/topbar nav link
+  (including each per-media-type Library entry and every admin group) now shows a small inline SVG
+  icon next to its label (`components/NavIcons.tsx`, ~30 stroke icons, no new dependency). The
+  collapsed sidebar state changed from "hidden behind a hamburger" to a proper Sonarr-style
+  icon-only rail (`.sidebar--collapsed` in styles.css) — its own ☰ toggle expands it back, and the
+  floating hamburger button is now mobile-only, where a full overlay sidebar is still the right
+  affordance. AoNarr's own color palette, and the existing sidebar/topbar + centered/full-width
+  layout toggles, are all untouched — this is chrome, not a rebuild.
+- **Sortable columns on every plain-list table that was missing them.** Only Activity.tsx's queue
+  table had click-header-to-sort before this round; extracted its exact shape into a shared
+  `useSortableTable` hook (`web/src/hooks/useSortableTable.tsx`) and applied it across ~20 pages —
+  Missing, Cutoff Unmet, History, Blocklist, Import Review, Recycle Bin, Requests, Watchlist
+  Import, Jobs, Audit Log, Media Analyzer, Indexers, Friend Libraries, Import Lists, three tables
+  on Users (Invite Links/Active Sessions/Request Stats), two on System (release-group reputation,
+  log files), and the manual-search-results tables on Media/Episode/SubItem Detail. Deliberately
+  left unsorted where order is inherently meaningful (an IPTV playlist's rotation position, an
+  episode list's episode order, a duplicate-group's 2-3-item compare table) or the table is a
+  small, mostly-static status summary (Network Stats, most of System's own diagnostics) —
+  matching real Sonarr/Radarr behavior, which doesn't make those sortable either.
+- **Collections is now a poster grid**, not a table — matching every other "browse a set of
+  titles" page (Library, Person, Dashboard's Recently Added). Added a small backend addition to
+  support it: `GET /collections` now returns each collection's first 4 member poster URLs
+  (`server/src/routes/collections.ts`), rendered as a 2×2 mosaic per card, falling back to a
+  plain icon tile for an empty collection.
+- **Caught and fixed a real hooks bug while building this**: three of the new sortable tables
+  (Users' Invite Links/Sessions/Request Stats) originally lived inside `SettingsSectionTiles`'
+  config-array `render: () => (...)` callbacks, which are invoked as plain function calls inside
+  JSX rather than mounted as their own components — calling a hook in there would have attributed
+  it to the wrong component and run it conditionally, violating React's rules of hooks. Fixed by
+  extracting each into its own proper component (`InvitesTable`, `SessionsTable`,
+  `RequestStatsTable`) before adding the hook, and audited every other page for the same pattern
+  before shipping (`grep -n "render: () =>"` across every touched file) — none of the others use
+  it, confirmed live afterward (no "rendered more hooks than during the previous render" warnings,
+  and Users' three tables all sort correctly independent of which one is open).
+- Live-verified navigation icons and the icon-only collapsed rail (both sidebar and topbar mode),
+  clicked through several converted tables to confirm columns actually reorder rows on click, and
+  reran the full server test suite (91 tests, via the disposable-container workaround for this
+  machine's broken Windows `better-sqlite3` binary) after the collections.ts change.
+
 ## Round 214 — remote path mappings for download clients
 - **New: Radarr/Sonarr-style remote path mappings.** Investigated a handful of Radarr/Sonarr
   features AoNarr didn't have yet (FlareSolverr, seed-ratio cleanup, tags, queue priority, backup/

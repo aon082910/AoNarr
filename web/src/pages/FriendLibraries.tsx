@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 
 interface FriendLibrary {
   id: number;
@@ -168,36 +169,46 @@ export default function FriendLibraries() {
         <>
           <h2>Missing from your library</h2>
           {missing.length === 0 && <p className="empty">Nothing missing — your library already covers everything they have.</p>}
-          {missing.length > 0 && (
-            <table>
-              <thead>
-                <tr>
-                  <th>Title</th>
-                  <th>Year</th>
-                  <th>Type</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {missing.map((item, i) => (
-                  <tr key={i}>
-                    <td>{item.title}</td>
-                    <td>{item.year ?? ""}</td>
-                    <td>{item.type === "movie" ? "Movie" : "Series"}</td>
-                    <td>
-                      <Link to={`/add?q=${encodeURIComponent(item.title)}&type=${item.type}`}>
-                        <button type="button" className="secondary">
-                          Add
-                        </button>
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+          {missing.length > 0 && <MissingTable missing={missing} />}
         </>
       )}
     </div>
+  );
+}
+
+function MissingTable({ missing }: { missing: FriendLibraryItem[] }) {
+  const { sortRows, sortableHeader } = useSortableTable<FriendLibraryItem, "title" | "year" | "type">("title");
+  const sorted = sortRows(missing, (a, b, key) => {
+    if (key === "title") return a.title.localeCompare(b.title);
+    if (key === "year") return (a.year ?? 0) - (b.year ?? 0);
+    return a.type.localeCompare(b.type);
+  });
+  return (
+    <table>
+      <thead>
+        <tr>
+          {sortableHeader("title", "Title")}
+          {sortableHeader("year", "Year")}
+          {sortableHeader("type", "Type")}
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((item, i) => (
+          <tr key={i}>
+            <td>{item.title}</td>
+            <td>{item.year ?? ""}</td>
+            <td>{item.type === "movie" ? "Movie" : "Series"}</td>
+            <td>
+              <Link to={`/add?q=${encodeURIComponent(item.title)}&type=${item.type}`}>
+                <button type="button" className="secondary">
+                  Add
+                </button>
+              </Link>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

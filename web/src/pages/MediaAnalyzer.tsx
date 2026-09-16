@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { HdrFormat, MediaInfo } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
 
@@ -136,6 +137,7 @@ export default function MediaAnalyzer() {
   const [running, setRunning] = useState(false);
   const [filterLevel, setFilterLevel] = useState<"all" | "caution" | "incompatible">("all");
   const [statFilter, setStatFilter] = useState<StatFilter | null>(null);
+  const { sortRows, sortableHeader } = useSortableTable<AnalysisItem, "title">("title");
 
   function load() {
     setLoading(true);
@@ -169,12 +171,14 @@ export default function MediaAnalyzer() {
 
   if (loading && !data) return <p className="empty">Loading...</p>;
 
-  const filteredItems =
+  const filteredItems = sortRows(
     data?.items.filter((i) => {
       if (filterLevel !== "all" && !i.compatibilityNotes.some((n) => n.level === filterLevel)) return false;
       if (statFilter && !matchesStatFilter(i, statFilter)) return false;
       return true;
-    }) ?? [];
+    }) ?? [],
+    (a, b) => a.title.localeCompare(b.title)
+  );
 
   return (
     <div>
@@ -290,7 +294,7 @@ export default function MediaAnalyzer() {
           <table>
             <thead>
               <tr>
-                <th>Title</th>
+                {sortableHeader("title", "Title")}
                 <th>File info</th>
                 <th>HDR</th>
                 <th>Audio</th>

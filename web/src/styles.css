@@ -90,6 +90,23 @@ body {
 .sidebar a:hover { color: var(--text); background: rgba(255,255,255,0.03); }
 .sidebar a.active { color: var(--text); background: var(--accent-dim); border-right: 3px solid var(--accent); }
 
+/* Collapsed sidebar = a Sonarr/Radarr-style icon-only rail, not a hidden nav — the ☰ toggle in
+   .brand still expands it back to full width. .nav-label (every link's text, at any accordion
+   nesting depth) and a handful of text-only sections that have no icon to fall back to are hidden
+   outright rather than trying to fit them into 64px. */
+.sidebar--collapsed { width: 64px; }
+.sidebar--collapsed .brand { padding: 0 0 16px; justify-content: center; }
+.sidebar--collapsed .brand > span:first-child { gap: 0; }
+.sidebar--collapsed a { padding: 10px 0; text-align: center; }
+.sidebar--collapsed a.active { border-right: none; }
+.sidebar--collapsed a > span { justify-content: center; width: 100%; }
+.sidebar--collapsed .nav-label,
+.sidebar--collapsed .sidebar-hint,
+.sidebar--collapsed .sidebar-footer,
+.sidebar--collapsed .sidebar-customize {
+  display: none;
+}
+
 .content {
   flex: 1;
   /* A flex item defaults to min-width: auto, which means it won't shrink below its own content's

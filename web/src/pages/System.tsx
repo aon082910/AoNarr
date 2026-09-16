@@ -4,6 +4,7 @@ import { api, downloadFile, uploadRaw } from "../api/client.js";
 import FolderPicker from "../components/FolderPicker.js";
 import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 import { formatBytes } from "../utils/format.js";
 
 interface DiskSpaceEntry {
@@ -207,6 +208,7 @@ export default function System() {
   const [logLevelFilter, setLogLevelFilter] = useState("");
   const [logSearch, setLogSearch] = useState("");
   const [logFiles, setLogFiles] = useState<LogFile[] | null>(null);
+  const { sortRows: sortLogFiles, sortableHeader: logFilesHeader } = useSortableTable<LogFile, "file" | "size" | "modified">("modified", "desc");
   const [updateCheck, setUpdateCheck] = useState<UpdateCheckResult | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateCheckError, setUpdateCheckError] = useState<string | null>(null);
@@ -216,6 +218,10 @@ export default function System() {
   const [duplicateFiles, setDuplicateFiles] = useState<DuplicateFileGroup[] | null>(null);
   const [cleanupLoading, setCleanupLoading] = useState<"unmonitored" | "duplicates" | null>(null);
   const [groupStats, setGroupStats] = useState<ReleaseGroupStatsRow[] | null>(null);
+  const { sortRows: sortGroupStats, sortableHeader: groupStatsHeader } = useSortableTable<
+    ReleaseGroupStatsRow,
+    "group" | "successes" | "failures" | "rate"
+  >("rate", "desc");
   const [groupStatsLoading, setGroupStatsLoading] = useState(false);
   const [libraryMismatches, setLibraryMismatches] = useState<LibraryMismatch[] | null>(null);
   const [libraryValidationLoading, setLibraryValidationLoading] = useState(false);
@@ -1231,14 +1237,19 @@ export default function System() {
           <table style={{ marginTop: 12 }}>
             <thead>
               <tr>
-                <th>Release group</th>
-                <th>Successes</th>
-                <th>Failures</th>
-                <th>Success rate</th>
+                {groupStatsHeader("group", "Release group")}
+                {groupStatsHeader("successes", "Successes")}
+                {groupStatsHeader("failures", "Failures")}
+                {groupStatsHeader("rate", "Success rate")}
               </tr>
             </thead>
             <tbody>
-              {groupStats.map((g) => (
+              {sortGroupStats(groupStats, (a, b, key) => {
+                if (key === "group") return a.releaseGroup.localeCompare(b.releaseGroup);
+                if (key === "successes") return a.successes - b.successes;
+                if (key === "failures") return a.failures - b.failures;
+                return a.successRate - b.successRate;
+              }).map((g) => (
                 <tr key={g.releaseGroup}>
                   <td>{g.releaseGroup}</td>
                   <td>{g.successes}</td>
@@ -1423,14 +1434,18 @@ export default function System() {
           <table style={{ marginTop: 8 }}>
             <thead>
               <tr>
-                <th>File</th>
-                <th>Size</th>
-                <th>Last written</th>
+                {logFilesHeader("file", "File")}
+                {logFilesHeader("size", "Size")}
+                {logFilesHeader("modified", "Last written")}
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {logFiles.map((f) => (
+              {sortLogFiles(logFiles, (a, b, key) => {
+                if (key === "file") return a.name.localeCompare(b.name);
+                if (key === "size") return a.sizeBytes - b.sizeBytes;
+                return a.modifiedAt.localeCompare(b.modifiedAt);
+              }).map((f) => (
                 <tr key={f.name}>
                   <td>{f.name}</td>
                   <td>{formatBytes(f.sizeBytes)}</td>

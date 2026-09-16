@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 
 interface HistoryRow {
   id: number;
@@ -94,18 +95,33 @@ export default function HistoryPage() {
 
       {!rows && <p className="empty">Loading...</p>}
       {rows && rows.length === 0 && <p className="empty">Nothing here yet.</p>}
-      {rows && rows.length > 0 && (
-        <table>
-          <thead>
-            <tr>
-              <th>Event</th>
-              <th>Media</th>
-              <th>Detail</th>
-              <th>Date</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
+      {rows && rows.length > 0 && <HistoryTable rows={rows} />}
+      {rows && rows.length === 500 && (
+        <p className="empty">Showing the 500 most recent matching events — narrow the filters above to see further back.</p>
+      )}
+    </div>
+  );
+}
+
+function HistoryTable({ rows }: { rows: HistoryRow[] }) {
+  const { sortRows, sortableHeader } = useSortableTable<HistoryRow, "event" | "media" | "date">("date", "desc");
+  const sorted = sortRows(rows, (a, b, key) => {
+    if (key === "event") return (EVENT_TYPE_LABELS[a.eventType] ?? a.eventType).localeCompare(EVENT_TYPE_LABELS[b.eventType] ?? b.eventType);
+    if (key === "media") return a.mediaTitle.localeCompare(b.mediaTitle);
+    return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+  });
+  return (
+    <table>
+      <thead>
+        <tr>
+          {sortableHeader("event", "Event")}
+          {sortableHeader("media", "Media")}
+          <th>Detail</th>
+          {sortableHeader("date", "Date")}
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((r) => (
               <tr key={r.id}>
                 <td>
                   <span className={`badge ${r.eventType === "failed" ? "danger" : r.eventType === "imported" ? "ok" : ""}`}>
@@ -118,13 +134,8 @@ export default function HistoryPage() {
                 <td>{eventDetail(r)}</td>
                 <td>{new Date(r.createdAt).toLocaleString()}</td>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      {rows && rows.length === 500 && (
-        <p className="empty">Showing the 500 most recent matching events — narrow the filters above to see further back.</p>
-      )}
-    </div>
+        ))}
+      </tbody>
+    </table>
   );
 }

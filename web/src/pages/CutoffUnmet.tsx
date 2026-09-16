@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 
 interface CutoffUnmetRow {
   mediaItemId: number;
@@ -69,6 +70,17 @@ export default function CutoffUnmet() {
     await searchRows(targets);
   }
 
+  const { sortRows, sortableHeader } = useSortableTable<CutoffUnmetRow, "media" | "item" | "current" | "cutoff" | "profile">("media");
+  const sorted = rows
+    ? sortRows(rows, (a, b, key) => {
+        if (key === "media") return a.mediaTitle.localeCompare(b.mediaTitle);
+        if (key === "item") return a.label.localeCompare(b.label);
+        if (key === "current") return a.currentQuality.localeCompare(b.currentQuality);
+        if (key === "cutoff") return a.cutoff.localeCompare(b.cutoff);
+        return a.profileName.localeCompare(b.profileName);
+      })
+    : [];
+
   if (!rows) return <p className="empty">Loading...</p>;
 
   return (
@@ -105,16 +117,16 @@ export default function CutoffUnmet() {
             <thead>
               <tr>
                 <th></th>
-                <th>Media</th>
-                <th>Item</th>
-                <th>Current</th>
-                <th>Cutoff</th>
-                <th>Profile</th>
+                {sortableHeader("media", "Media")}
+                {sortableHeader("item", "Item")}
+                {sortableHeader("current", "Current")}
+                {sortableHeader("cutoff", "Cutoff")}
+                {sortableHeader("profile", "Profile")}
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r, idx) => (
+              {sorted.map((r, idx) => (
                 <tr key={idx}>
                   <td>
                     <input type="checkbox" checked={selected.has(rowKey(r))} onChange={() => toggle(r)} />

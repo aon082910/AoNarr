@@ -64,8 +64,29 @@ collectionsRouter.get(
       await Promise.all(
         rows.map(async (r) => {
           const collection = collectionFromRow(r);
-          const itemCount = collection.smartFilter ? (await queryMediaItemsForFilter(collection.smartFilter)).length : Number(r.itemCount);
-          return { ...collection, itemCount };
+          // Up to 4 member posters for the poster-grid card on the Collections page — a fixed
+          // collection's own ordering (collection_items.position), a smart one's live filter
+          // results (already sorted by title). Small N+1 here is fine: this only runs for the
+          // admin-facing collections list, never per-page-load at library scale.
+          let itemCount: number;
+          let posterUrls: string[];
+          if (collection.smartFilter) {
+            const matches = await queryMediaItemsForFilter(collection.smartFilter);
+            itemCount = matches.length;
+            posterUrls = matches.slice(0, 4).map((m: any) => m.poster_url).filter(Boolean);
+          } else {
+            itemCount = Number(r.itemCount);
+            const posterRows = (await db
+              .prepare(
+                `SELECT m.poster_url FROM collection_items ci
+                 JOIN media_items m ON m.id = ci.media_item_id
+                 WHERE ci.collection_id = ? AND m.poster_url IS NOT NULL
+                 ORDER BY ci.position LIMIT 4`
+              )
+              .all(collection.id)) as { poster_url: string }[];
+            posterUrls = posterRows.map((p) => p.poster_url);
+          }
+          return { ...collection, itemCount, posterUrls };
         })
       )
     );

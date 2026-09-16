@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { JobStatus } from "../types.js";
 
 function formatDuration(ms: number | null): string {
@@ -60,20 +61,49 @@ export default function Jobs() {
         jobs that are a handful of network calls may still finish the call already in flight.
       </p>
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
-      <table>
-        <thead>
-          <tr>
-            <th>Job</th>
-            <th>Schedule</th>
-            <th>Status</th>
-            <th>Last run</th>
-            <th>Next run</th>
-            <th>Last result</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {jobs.map((j) => (
+      <JobsTable jobs={jobs} editing={editing} setEditing={setEditing} onSave={saveSchedule} onRunNow={runNow} onCancel={cancel} />
+    </div>
+  );
+}
+
+function JobsTable({
+  jobs,
+  editing,
+  setEditing,
+  onSave,
+  onRunNow,
+  onCancel,
+}: {
+  jobs: JobStatus[];
+  editing: Record<string, string>;
+  setEditing: (fn: (prev: Record<string, string>) => Record<string, string>) => void;
+  onSave: (key: string) => void;
+  onRunNow: (key: string) => void;
+  onCancel: (key: string) => void;
+}) {
+  const { sortRows, sortableHeader } = useSortableTable<JobStatus, "name" | "schedule" | "status" | "lastRun" | "nextRun">("name");
+  const sorted = sortRows(jobs, (a, b, key) => {
+    if (key === "name") return a.name.localeCompare(b.name);
+    if (key === "schedule") return a.schedule.localeCompare(b.schedule);
+    if (key === "status") return Number(a.running) - Number(b.running);
+    if (key === "lastRun") return (a.lastRunAt ?? "").localeCompare(b.lastRunAt ?? "");
+    return (a.nextRunAt ?? "").localeCompare(b.nextRunAt ?? "");
+  });
+  return (
+    <table>
+      <thead>
+        <tr>
+          {sortableHeader("name", "Job")}
+          {sortableHeader("schedule", "Schedule")}
+          {sortableHeader("status", "Status")}
+          {sortableHeader("lastRun", "Last run")}
+          {sortableHeader("nextRun", "Next run")}
+          <th>Last result</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((j) => (
             <tr key={j.key}>
               <td>{j.name}</td>
               <td>
@@ -84,7 +114,7 @@ export default function Jobs() {
                   placeholder={j.scheduleType === "interval" ? "seconds" : "cron expression"}
                 />
                 {editing[j.key] !== undefined && editing[j.key] !== j.schedule && (
-                  <button type="button" className="secondary" style={{ marginLeft: 4 }} onClick={() => saveSchedule(j.key)}>
+                  <button type="button" className="secondary" style={{ marginLeft: 4 }} onClick={() => onSave(j.key)}>
                     Save
                   </button>
                 )}
@@ -106,17 +136,16 @@ export default function Jobs() {
                 )}
               </td>
               <td style={{ display: "flex", gap: 6 }}>
-                <button className="secondary" onClick={() => runNow(j.key)} disabled={j.running}>
+                <button className="secondary" onClick={() => onRunNow(j.key)} disabled={j.running}>
                   Run now
                 </button>
-                <button className="danger" onClick={() => cancel(j.key)} disabled={!j.running}>
+                <button className="danger" onClick={() => onCancel(j.key)} disabled={!j.running}>
                   Cancel
                 </button>
               </td>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+        ))}
+      </tbody>
+    </table>
   );
 }

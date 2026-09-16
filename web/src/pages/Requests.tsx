@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { api, ApiError } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { MediaRequest } from "../types.js";
 
 export default function Requests() {
@@ -105,18 +106,46 @@ export default function Requests() {
       )}
 
       {requests.length === 0 && <p className="empty">No requests yet.</p>}
-      <table>
-        <thead>
-          <tr>
-            <th>Title</th>
-            <th>Library</th>
-            <th>Status</th>
-            <th>Note</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {requests.map((r) => (
+      <RequestsTable requests={requests} labelFor={labelFor} isAdmin={auth.isAdmin} onApprove={approve} onReject={reject} onCancel={cancel} />
+    </div>
+  );
+}
+
+function RequestsTable({
+  requests,
+  labelFor,
+  isAdmin,
+  onApprove,
+  onReject,
+  onCancel,
+}: {
+  requests: MediaRequest[];
+  labelFor: (key: string) => string;
+  isAdmin: boolean;
+  onApprove: (id: number) => void;
+  onReject: (id: number) => void;
+  onCancel: (id: number) => void;
+}) {
+  const { sortRows, sortableHeader } = useSortableTable<MediaRequest, "title" | "library" | "status" | "note">("title");
+  const sorted = sortRows(requests, (a, b, key) => {
+    if (key === "title") return a.title.localeCompare(b.title);
+    if (key === "library") return labelFor(a.type).localeCompare(labelFor(b.type));
+    if (key === "status") return a.status.localeCompare(b.status);
+    return (a.note ?? "").localeCompare(b.note ?? "");
+  });
+  return (
+    <table>
+      <thead>
+        <tr>
+          {sortableHeader("title", "Title")}
+          {sortableHeader("library", "Library")}
+          {sortableHeader("status", "Status")}
+          {sortableHeader("note", "Note")}
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((r) => (
             <tr key={r.id}>
               <td>
                 {r.title} {r.year ? `(${r.year})` : ""}
@@ -125,26 +154,25 @@ export default function Requests() {
               <td>{r.status}</td>
               <td>{r.note ?? "-"}</td>
               <td>
-                {auth.isAdmin && r.status === "pending" && (
+                {isAdmin && r.status === "pending" && (
                   <>
-                    <button onClick={() => approve(r.id)} style={{ marginRight: 6 }}>
+                    <button onClick={() => onApprove(r.id)} style={{ marginRight: 6 }}>
                       Approve
                     </button>
-                    <button className="danger" onClick={() => reject(r.id)}>
+                    <button className="danger" onClick={() => onReject(r.id)}>
                       Reject
                     </button>
                   </>
                 )}
-                {!auth.isAdmin && r.status === "pending" && (
-                  <button className="danger" onClick={() => cancel(r.id)}>
+                {!isAdmin && r.status === "pending" && (
+                  <button className="danger" onClick={() => onCancel(r.id)}>
                     Cancel
                   </button>
                 )}
               </td>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+        ))}
+      </tbody>
+    </table>
   );
 }

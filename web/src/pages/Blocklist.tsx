@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { BlocklistEntry } from "../types.js";
 
 /** Radarr/Sonarr-style Blocklist page — every release AoNarr has been told never to grab again
@@ -27,6 +28,16 @@ export default function Blocklist() {
     setEntries([]);
   }
 
+  const { sortRows, sortableHeader } = useSortableTable<BlocklistEntry, "media" | "release" | "reason" | "date">("date", "desc");
+  const sorted = entries
+    ? sortRows(entries, (a, b, key) => {
+        if (key === "media") return a.mediaTitle.localeCompare(b.mediaTitle);
+        if (key === "release") return a.releaseTitle.localeCompare(b.releaseTitle);
+        if (key === "reason") return (a.reason ?? "").localeCompare(b.reason ?? "");
+        return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+      })
+    : [];
+
   if (!entries) return <p className="empty">Loading...</p>;
 
   return (
@@ -48,15 +59,15 @@ export default function Blocklist() {
         <table>
           <thead>
             <tr>
-              <th>Media</th>
-              <th>Release</th>
-              <th>Reason</th>
-              <th>Date</th>
+              {sortableHeader("media", "Media")}
+              {sortableHeader("release", "Release")}
+              {sortableHeader("reason", "Reason")}
+              {sortableHeader("date", "Date")}
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {entries.map((e) => (
+            {sorted.map((e) => (
               <tr key={e.id}>
                 <td>
                   <Link to={`/media/${e.mediaItemId}`}>{e.mediaTitle}</Link>

@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { Indexer } from "../types.js";
 
 type Protocol = "torznab" | "newznab" | "rss" | "ddl";
@@ -219,29 +220,71 @@ export default function Indexers() {
         </Modal>
       )}
 
-      <table>
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Protocol</th>
-            <th>URL</th>
-            <th>Enabled</th>
-            <th>FlareSolverr</th>
-            <th title="Proactive requests/hour cap — leave blank for no limit">Query Limit</th>
-            <th>Health</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {indexers.map((i) => {
-            const health = healthLabel(i);
-            return (
+      <IndexersTable
+        indexers={indexers}
+        testResults={testResults}
+        healthLabel={healthLabel}
+        onToggle={toggle}
+        onToggleFlareSolverr={toggleFlareSolverr}
+        onUpdateQueryLimit={updateQueryLimit}
+        onTest={test}
+        onRemove={remove}
+      />
+      {indexers.length === 0 && <p className="empty">No indexers configured yet.</p>}
+    </div>
+  );
+}
+
+function IndexersTable({
+  indexers,
+  testResults,
+  healthLabel,
+  onToggle,
+  onToggleFlareSolverr,
+  onUpdateQueryLimit,
+  onTest,
+  onRemove,
+}: {
+  indexers: Indexer[];
+  testResults: Record<number, string>;
+  healthLabel: (i: Indexer) => { text: string; className: string };
+  onToggle: (i: Indexer) => void;
+  onToggleFlareSolverr: (i: Indexer) => void;
+  onUpdateQueryLimit: (i: Indexer, value: string) => void;
+  onTest: (id: number) => void;
+  onRemove: (id: number) => void;
+}) {
+  const { sortRows, sortableHeader } = useSortableTable<Indexer, "name" | "protocol" | "url" | "enabled">("name");
+  const sorted = sortRows(indexers, (a, b, key) => {
+    if (key === "name") return a.name.localeCompare(b.name);
+    if (key === "protocol") return a.protocol.localeCompare(b.protocol);
+    if (key === "url") return a.url.localeCompare(b.url);
+    return Number(b.enabled) - Number(a.enabled);
+  });
+  return (
+    <table>
+      <thead>
+        <tr>
+          {sortableHeader("name", "Name")}
+          {sortableHeader("protocol", "Protocol")}
+          {sortableHeader("url", "URL")}
+          {sortableHeader("enabled", "Enabled")}
+          <th>FlareSolverr</th>
+          <th title="Proactive requests/hour cap — leave blank for no limit">Query Limit</th>
+          <th>Health</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((i) => {
+          const health = healthLabel(i);
+          return (
             <tr key={i.id}>
               <td>{i.name}</td>
               <td>{i.protocol}</td>
               <td>{i.url}</td>
               <td>
-                <span className={`badge ${i.enabled ? "ok" : "danger"}`} onClick={() => toggle(i)} style={{ cursor: "pointer" }}>
+                <span className={`badge ${i.enabled ? "ok" : "danger"}`} onClick={() => onToggle(i)} style={{ cursor: "pointer" }}>
                   {i.enabled ? "Enabled" : "Disabled"}
                 </span>
               </td>
@@ -251,7 +294,7 @@ export default function Indexers() {
                 ) : (
                   <span
                     className={`badge ${i.useFlareSolverr ? "ok" : ""}`}
-                    onClick={() => toggleFlareSolverr(i)}
+                    onClick={() => onToggleFlareSolverr(i)}
                     style={{ cursor: "pointer" }}
                   >
                     {i.useFlareSolverr ? "On" : "Off"}
@@ -265,27 +308,25 @@ export default function Indexers() {
                   defaultValue={i.queryLimitPerHour ?? ""}
                   placeholder="unlimited"
                   style={{ width: 90 }}
-                  onBlur={(e) => updateQueryLimit(i, e.target.value)}
+                  onBlur={(e) => onUpdateQueryLimit(i, e.target.value)}
                 />
               </td>
               <td title={i.health?.lastError ?? undefined}>
                 <span className={`badge ${health.className}`}>{health.text}</span>
               </td>
               <td style={{ display: "flex", gap: 8 }}>
-                <button className="secondary" onClick={() => test(i.id)}>
+                <button className="secondary" onClick={() => onTest(i.id)}>
                   Test
                 </button>
-                <button className="danger" onClick={() => remove(i.id)}>
+                <button className="danger" onClick={() => onRemove(i.id)}>
                   Delete
                 </button>
                 {testResults[i.id] && <span style={{ alignSelf: "center", fontSize: "0.8rem" }}>{testResults[i.id]}</span>}
               </td>
             </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      {indexers.length === 0 && <p className="empty">No indexers configured yet.</p>}
-    </div>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }

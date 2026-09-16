@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { CorruptMediaReviewEntry, RecycleBinEntry } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 
@@ -60,6 +61,17 @@ export default function RecycleBin() {
     return acc;
   }, {});
 
+  const { sortRows: sortReviewRows, sortableHeader: reviewHeader } = useSortableTable<
+    CorruptMediaReviewEntry,
+    "title" | "reason" | "path" | "detected"
+  >("detected", "desc");
+  const sortedReviewItems = sortReviewRows(reviewItems, (a, b, key) => {
+    if (key === "title") return a.title.localeCompare(b.title);
+    if (key === "reason") return a.reason.localeCompare(b.reason);
+    if (key === "path") return a.filePath.localeCompare(b.filePath);
+    return a.detectedAt < b.detectedAt ? -1 : a.detectedAt > b.detectedAt ? 1 : 0;
+  });
+
   return (
     <div>
       <h1>Recycle Bin</h1>
@@ -81,15 +93,15 @@ export default function RecycleBin() {
           <table>
             <thead>
               <tr>
-                <th>Title</th>
-                <th>Reason</th>
-                <th>File path</th>
-                <th>Detected</th>
+                {reviewHeader("title", "Title")}
+                {reviewHeader("reason", "Reason")}
+                {reviewHeader("path", "File path")}
+                {reviewHeader("detected", "Detected")}
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {reviewItems.map((r) => (
+              {sortedReviewItems.map((r) => (
                 <tr key={r.id}>
                   <td>{r.title}</td>
                   <td>{r.reason}</td>
@@ -127,47 +139,62 @@ export default function RecycleBin() {
                 {isOpen ? "▾" : "▸"} {label} ({items.length})
               </button>
             </h2>
-            {isOpen && (
-              <table>
-                <thead>
-                  <tr>
-                    <th>Title</th>
-                    <th>Original path</th>
-                    <th>Size</th>
-                    <th>Deleted</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map((e) => (
-                    <tr key={e.id}>
-                      <td>
-                        {e.title}
-                        {e.restoreError && (
-                          <div style={{ color: "var(--danger)", fontSize: "0.8rem" }}>Restore failed: {e.restoreError}</div>
-                        )}
-                      </td>
-                      <td style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {e.originalPath}
-                      </td>
-                      <td>{formatBytes(e.sizeBytes)}</td>
-                      <td>{new Date(e.deletedAt).toLocaleString()}</td>
-                      <td style={{ display: "flex", gap: 6 }}>
-                        <button className="secondary" onClick={() => restore(e.id)} disabled={e.restoring}>
-                          {e.restoring ? "Restoring..." : e.restoreError ? "Retry restore" : "Restore"}
-                        </button>
-                        <button className="danger" onClick={() => purge(e.id, e.title)} disabled={e.restoring}>
-                          Delete forever
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+            {isOpen && <RecycledFilesTable items={items} onRestore={restore} onPurge={purge} />}
           </div>
         );
       })}
     </div>
+  );
+}
+
+function RecycledFilesTable({
+  items,
+  onRestore,
+  onPurge,
+}: {
+  items: RecycleBinEntry[];
+  onRestore: (id: number) => void;
+  onPurge: (id: number, title: string) => void;
+}) {
+  const { sortRows, sortableHeader } = useSortableTable<RecycleBinEntry, "title" | "path" | "size" | "deleted">("deleted", "desc");
+  const sorted = sortRows(items, (a, b, key) => {
+    if (key === "title") return a.title.localeCompare(b.title);
+    if (key === "path") return a.originalPath.localeCompare(b.originalPath);
+    if (key === "size") return (a.sizeBytes ?? 0) - (b.sizeBytes ?? 0);
+    return a.deletedAt < b.deletedAt ? -1 : a.deletedAt > b.deletedAt ? 1 : 0;
+  });
+  return (
+    <table>
+      <thead>
+        <tr>
+          {sortableHeader("title", "Title")}
+          {sortableHeader("path", "Original path")}
+          {sortableHeader("size", "Size")}
+          {sortableHeader("deleted", "Deleted")}
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((e) => (
+          <tr key={e.id}>
+            <td>
+              {e.title}
+              {e.restoreError && <div style={{ color: "var(--danger)", fontSize: "0.8rem" }}>Restore failed: {e.restoreError}</div>}
+            </td>
+            <td style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.originalPath}</td>
+            <td>{formatBytes(e.sizeBytes)}</td>
+            <td>{new Date(e.deletedAt).toLocaleString()}</td>
+            <td style={{ display: "flex", gap: 6 }}>
+              <button className="secondary" onClick={() => onRestore(e.id)} disabled={e.restoring}>
+                {e.restoring ? "Restoring..." : e.restoreError ? "Retry restore" : "Restore"}
+              </button>
+              <button className="danger" onClick={() => onPurge(e.id, e.title)} disabled={e.restoring}>
+                Delete forever
+              </button>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

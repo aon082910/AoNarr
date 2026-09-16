@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { MediaType } from "../types.js";
 
 interface ParsedRow {
@@ -232,32 +233,36 @@ export default function WatchlistImport() {
               </>
             )}
           </p>
-          <table>
-            <thead>
-              <tr>
-                <th>Title</th>
-                <th>Result</th>
-              </tr>
-            </thead>
-            <tbody>
-              {results.map((r, idx) => (
-                <tr key={idx}>
-                  <td>{r.title}</td>
-                  <td>
-                    <span
-                      className={`badge ${
-                        r.status === "added" ? "ok" : r.status === "error" ? "danger" : ""
-                      }`}
-                    >
-                      {STATUS_LABELS[r.status]}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <ResultsTable results={results} />
         </>
       )}
     </div>
+  );
+}
+
+function ResultsTable({ results }: { results: RowResult[] }) {
+  const { sortRows, sortableHeader } = useSortableTable<RowResult, "title" | "result">("title");
+  const sorted = sortRows(results, (a, b, key) =>
+    key === "title" ? a.title.localeCompare(b.title) : STATUS_LABELS[a.status].localeCompare(STATUS_LABELS[b.status])
+  );
+  return (
+    <table>
+      <thead>
+        <tr>
+          {sortableHeader("title", "Title")}
+          {sortableHeader("result", "Result")}
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((r, idx) => (
+          <tr key={idx}>
+            <td>{r.title}</td>
+            <td>
+              <span className={`badge ${r.status === "added" ? "ok" : r.status === "error" ? "danger" : ""}`}>{STATUS_LABELS[r.status]}</span>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

@@ -10,7 +10,7 @@ export default function DropdownMenu({
   children,
   buttonClassName = "select-like",
 }: {
-  label: string;
+  label: ReactNode;
   children: ReactNode;
   buttonClassName?: string;
 }) {

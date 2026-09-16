@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 
 interface MissingRow {
   mediaItemId: number;
@@ -41,6 +42,10 @@ function Section({
   onSearchOne: (r: MissingRow) => void;
   onSearchMany: (rows: MissingRow[]) => void;
 }) {
+  const { sortRows, sortableHeader } = useSortableTable<MissingRow, "media" | "item">("media");
+  const sorted = sortRows(rows, (a, b, key) =>
+    key === "media" ? a.mediaTitle.localeCompare(b.mediaTitle) : a.label.localeCompare(b.label)
+  );
   return (
     <>
       <h2>
@@ -57,13 +62,13 @@ function Section({
           <thead>
             <tr>
               <th></th>
-              <th>Media</th>
-              <th>Item</th>
+              {sortableHeader("media", "Media")}
+              {sortableHeader("item", "Item")}
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((r, idx) => (
+            {sorted.map((r, idx) => (
               <tr key={idx}>
                 <td>
                   <input type="checkbox" checked={selected.has(rowKey(r))} onChange={() => onToggle(r)} />
@@ -156,39 +161,55 @@ function EpisodesBySeries({
                 Search all missing in this series
               </button>
             </div>
-            {isOpen && (
-              <table style={{ marginTop: 4 }}>
-                <thead>
-                  <tr>
-                    <th></th>
-                    <th>Episode</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {group.rows.map((r, idx) => (
-                    <tr key={idx}>
-                      <td>
-                        <input type="checkbox" checked={selected.has(rowKey(r))} onChange={() => onToggle(r)} />
-                      </td>
-                      <td>{r.label}</td>
-                      <td style={{ display: "flex", gap: 6 }}>
-                        <button className="secondary" onClick={() => onSearchOne(r)}>
-                          Search
-                        </button>
-                        <Link to={`/media/${r.mediaItemId}`}>
-                          <button className="secondary">Open</button>
-                        </Link>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+            {isOpen && <SeriesEpisodeTable rows={group.rows} selected={selected} onToggle={onToggle} onSearchOne={onSearchOne} />}
           </div>
         );
       })}
     </>
+  );
+}
+
+function SeriesEpisodeTable({
+  rows,
+  selected,
+  onToggle,
+  onSearchOne,
+}: {
+  rows: MissingRow[];
+  selected: Set<string>;
+  onToggle: (r: MissingRow) => void;
+  onSearchOne: (r: MissingRow) => void;
+}) {
+  const { sortRows, sortableHeader } = useSortableTable<MissingRow, "episode">("episode");
+  const sorted = sortRows(rows, (a, b) => a.label.localeCompare(b.label));
+  return (
+    <table style={{ marginTop: 4 }}>
+      <thead>
+        <tr>
+          <th></th>
+          {sortableHeader("episode", "Episode")}
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((r, idx) => (
+          <tr key={idx}>
+            <td>
+              <input type="checkbox" checked={selected.has(rowKey(r))} onChange={() => onToggle(r)} />
+            </td>
+            <td>{r.label}</td>
+            <td style={{ display: "flex", gap: 6 }}>
+              <button className="secondary" onClick={() => onSearchOne(r)}>
+                Search
+              </button>
+              <Link to={`/media/${r.mediaItemId}`}>
+                <button className="secondary">Open</button>
+              </Link>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

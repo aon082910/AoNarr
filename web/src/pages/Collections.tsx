@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
+import { LayersIcon } from "../components/NavIcons.js";
 import type { Collection } from "../types.js";
 
 export default function Collections() {
@@ -111,39 +112,55 @@ export default function Collections() {
       </form>
 
       {collections.length === 0 && <p className="empty">No collections yet.</p>}
-      <table>
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Description</th>
-            <th>Items</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {collections.map((c) => (
-            <tr key={c.id}>
-              <td>
-                <a onClick={() => navigate(`/collections/${c.id}`)} style={{ cursor: "pointer", color: "var(--accent)" }}>
-                  {c.name}
-                </a>
+      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))" }}>
+        {collections.map((c) => (
+          <div key={c.id} className="card" onClick={() => navigate(`/collections/${c.id}`)} style={{ cursor: "pointer" }}>
+            {c.posterUrls && c.posterUrls.length > 0 ? (
+              <div
+                className="poster"
+                style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1, background: "var(--border)" }}
+              >
+                {Array.from({ length: 4 }).map((_, i) =>
+                  c.posterUrls![i] ? (
+                    <div key={i} style={{ backgroundImage: `url(${c.posterUrls![i]})`, backgroundSize: "cover", backgroundPosition: "center" }} />
+                  ) : (
+                    <div key={i} style={{ background: "var(--panel)" }} />
+                  )
+                )}
+              </div>
+            ) : (
+              <div className="poster" style={{ display: "flex", alignItems: "center", justifyContent: "center", color: "var(--muted)" }}>
+                <LayersIcon />
+              </div>
+            )}
+            <div className="meta">
+              <div className="title">
+                {c.name}
                 {c.smartFilter && (
                   <span className="badge" style={{ marginLeft: 6 }}>
                     Smart
                   </span>
                 )}
-              </td>
-              <td>{c.description ?? "-"}</td>
-              <td>{c.itemCount ?? 0}</td>
-              <td>
-                <button className="danger" onClick={() => removeCollection(c.id)}>
-                  Delete
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+              </div>
+              <div className="sub">
+                {c.itemCount ?? 0} item{c.itemCount === 1 ? "" : "s"}
+                {c.description ? ` · ${c.description}` : ""}
+              </div>
+            </div>
+            <button
+              type="button"
+              className="danger"
+              onClick={(e) => {
+                e.stopPropagation();
+                removeCollection(c.id);
+              }}
+              style={{ margin: "0 12px 12px" }}
+            >
+              Delete
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

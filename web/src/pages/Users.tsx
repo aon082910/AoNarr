@@ -4,6 +4,7 @@ import Modal from "../components/Modal.js";
 import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useContentRatings } from "../hooks/useContentRatings.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { Invite, RequestStats, Session, User } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 
@@ -278,44 +279,7 @@ export default function Users() {
                   </form>
                 )}
                 {invites.length === 0 && <p className="empty" style={{ marginTop: 12 }}>No invite links yet.</p>}
-                {invites.length > 0 && (
-                  <table style={{ marginTop: 12 }}>
-                    <thead>
-                      <tr>
-                        <th>Access</th>
-                        <th>Role</th>
-                        <th>Created</th>
-                        <th>Status</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {invites.map((i) => (
-                        <tr key={i.id}>
-                          <td>{i.allowedTypes.length === 0 ? "no library access" : `${i.allowedTypes.length} librar${i.allowedTypes.length === 1 ? "y" : "ies"}`}</td>
-                          <td>{i.role}</td>
-                          <td>{new Date(i.createdAt).toLocaleString()}</td>
-                          <td>
-                            {i.usedAt ? (
-                              <span className="badge ok">Used</span>
-                            ) : i.expiresAt && new Date(i.expiresAt).getTime() < Date.now() ? (
-                              <span className="badge">Expired</span>
-                            ) : (
-                              <span className="badge">Pending</span>
-                            )}
-                          </td>
-                          <td>
-                            {!i.usedAt && (
-                              <button className="danger" onClick={() => revokeInvite(i.id)}>
-                                Revoke
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
+                {invites.length > 0 && <InvitesTable invites={invites} onRevoke={revokeInvite} />}
               </div>
             ),
           },
@@ -333,36 +297,7 @@ export default function Users() {
                   device out immediately.
                 </p>
                 {sessions.length === 0 && <p className="empty">No active sessions.</p>}
-                {sessions.length > 0 && (
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>User</th>
-                        <th>Last active</th>
-                        <th>Signed in</th>
-                        <th>Device</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sessions.map((s) => (
-                        <tr key={s.token}>
-                          <td>{s.username}</td>
-                          <td>{s.lastUsedAt ? new Date(s.lastUsedAt).toLocaleString() : "-"}</td>
-                          <td>{new Date(s.createdAt).toLocaleString()}</td>
-                          <td style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {s.userAgent ?? "unknown"}
-                          </td>
-                          <td>
-                            <button className="danger" onClick={() => revokeSession(s.token)}>
-                              Revoke
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
+                {sessions.length > 0 && <SessionsTable sessions={sessions} onRevoke={revokeSession} />}
               </div>
             ),
           },
@@ -378,39 +313,143 @@ export default function Users() {
                   — storage is computed from the actual files on disk for their approved requests.
                 </p>
                 {requestStats.length === 0 && <p className="empty">No request activity yet.</p>}
-                {requestStats.length > 0 && (
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>User</th>
-                        <th>Total</th>
-                        <th>Pending</th>
-                        <th>Approved</th>
-                        <th>Rejected</th>
-                        <th>Approval rate</th>
-                        <th>Storage</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {requestStats.map((s) => (
-                        <tr key={s.userId}>
-                          <td>{s.username}</td>
-                          <td>{s.totalRequests}</td>
-                          <td>{s.pending}</td>
-                          <td>{s.approved}</td>
-                          <td>{s.rejected}</td>
-                          <td>{s.approvalRatePercent === null ? "-" : `${s.approvalRatePercent}%`}</td>
-                          <td>{formatBytes(s.storageBytes)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
+                {requestStats.length > 0 && <RequestStatsTable stats={requestStats} />}
               </div>
             ),
           },
         ]}
       />
     </div>
+  );
+}
+
+function InvitesTable({ invites, onRevoke }: { invites: Invite[]; onRevoke: (id: number) => void }) {
+  const { sortRows, sortableHeader } = useSortableTable<Invite, "access" | "role" | "created" | "status">("created", "desc");
+  const sorted = sortRows(invites, (a, b, key) => {
+    if (key === "access") return a.allowedTypes.length - b.allowedTypes.length;
+    if (key === "role") return a.role.localeCompare(b.role);
+    if (key === "created") return a.createdAt.localeCompare(b.createdAt);
+    const statusOf = (i: Invite) => (i.usedAt ? "used" : i.expiresAt && new Date(i.expiresAt).getTime() < Date.now() ? "expired" : "pending");
+    return statusOf(a).localeCompare(statusOf(b));
+  });
+  return (
+    <table style={{ marginTop: 12 }}>
+      <thead>
+        <tr>
+          {sortableHeader("access", "Access")}
+          {sortableHeader("role", "Role")}
+          {sortableHeader("created", "Created")}
+          {sortableHeader("status", "Status")}
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((i) => (
+          <tr key={i.id}>
+            <td>{i.allowedTypes.length === 0 ? "no library access" : `${i.allowedTypes.length} librar${i.allowedTypes.length === 1 ? "y" : "ies"}`}</td>
+            <td>{i.role}</td>
+            <td>{new Date(i.createdAt).toLocaleString()}</td>
+            <td>
+              {i.usedAt ? (
+                <span className="badge ok">Used</span>
+              ) : i.expiresAt && new Date(i.expiresAt).getTime() < Date.now() ? (
+                <span className="badge">Expired</span>
+              ) : (
+                <span className="badge">Pending</span>
+              )}
+            </td>
+            <td>
+              {!i.usedAt && (
+                <button className="danger" onClick={() => onRevoke(i.id)}>
+                  Revoke
+                </button>
+              )}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function SessionsTable({ sessions, onRevoke }: { sessions: Session[]; onRevoke: (token: string) => void }) {
+  const { sortRows, sortableHeader } = useSortableTable<Session, "user" | "lastActive" | "signedIn" | "device">("lastActive", "desc");
+  const sorted = sortRows(sessions, (a, b, key) => {
+    if (key === "user") return a.username.localeCompare(b.username);
+    if (key === "lastActive") return (a.lastUsedAt ?? "").localeCompare(b.lastUsedAt ?? "");
+    if (key === "signedIn") return a.createdAt.localeCompare(b.createdAt);
+    return (a.userAgent ?? "").localeCompare(b.userAgent ?? "");
+  });
+  return (
+    <table>
+      <thead>
+        <tr>
+          {sortableHeader("user", "User")}
+          {sortableHeader("lastActive", "Last active")}
+          {sortableHeader("signedIn", "Signed in")}
+          {sortableHeader("device", "Device")}
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((s) => (
+          <tr key={s.token}>
+            <td>{s.username}</td>
+            <td>{s.lastUsedAt ? new Date(s.lastUsedAt).toLocaleString() : "-"}</td>
+            <td>{new Date(s.createdAt).toLocaleString()}</td>
+            <td style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.userAgent ?? "unknown"}</td>
+            <td>
+              <button className="danger" onClick={() => onRevoke(s.token)}>
+                Revoke
+              </button>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function RequestStatsTable({ stats }: { stats: RequestStats[] }) {
+  const { sortRows, sortableHeader } = useSortableTable<
+    RequestStats,
+    "user" | "total" | "pending" | "approved" | "rejected" | "rate" | "storage"
+  >("total", "desc");
+  const sorted = sortRows(stats, (a, b, key) => {
+    if (key === "user") return a.username.localeCompare(b.username);
+    if (key === "total") return a.totalRequests - b.totalRequests;
+    if (key === "pending") return a.pending - b.pending;
+    if (key === "approved") return a.approved - b.approved;
+    if (key === "rejected") return a.rejected - b.rejected;
+    if (key === "rate") return (a.approvalRatePercent ?? -1) - (b.approvalRatePercent ?? -1);
+    return a.storageBytes - b.storageBytes;
+  });
+  return (
+    <table>
+      <thead>
+        <tr>
+          {sortableHeader("user", "User")}
+          {sortableHeader("total", "Total")}
+          {sortableHeader("pending", "Pending")}
+          {sortableHeader("approved", "Approved")}
+          {sortableHeader("rejected", "Rejected")}
+          {sortableHeader("rate", "Approval rate")}
+          {sortableHeader("storage", "Storage")}
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((s) => (
+          <tr key={s.userId}>
+            <td>{s.username}</td>
+            <td>{s.totalRequests}</td>
+            <td>{s.pending}</td>
+            <td>{s.approved}</td>
+            <td>{s.rejected}</td>
+            <td>{s.approvalRatePercent === null ? "-" : `${s.approvalRatePercent}%`}</td>
+            <td>{formatBytes(s.storageBytes)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

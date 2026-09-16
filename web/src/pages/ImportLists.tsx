@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { QualityProfile } from "../types.js";
 
 interface ImportList {
@@ -46,6 +47,7 @@ const URL_PLACEHOLDERS: Record<ImportList["type"], string> = {
 
 export default function ImportLists() {
   const [lists, setLists] = useState<ImportList[]>([]);
+  const { sortRows: sortLists, sortableHeader: listHeader } = useSortableTable<ImportList, "name" | "type" | "enabled" | "lastSynced">("name");
   const [profiles, setProfiles] = useState<QualityProfile[]>([]);
   const [name, setName] = useState("");
   const [type, setType] = useState<ImportList["type"]>("trakt");
@@ -204,18 +206,23 @@ export default function ImportLists() {
         <table>
           <thead>
             <tr>
-              <th>Name</th>
-              <th>Type</th>
-              <th>Enabled</th>
+              {listHeader("name", "Name")}
+              {listHeader("type", "Type")}
+              {listHeader("enabled", "Enabled")}
               <th>Review before add</th>
               <th>Filters</th>
-              <th>Last synced</th>
+              {listHeader("lastSynced", "Last synced")}
               <th>Last result</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {lists.map((l) => (
+            {sortLists(lists, (a, b, key) => {
+              if (key === "name") return a.name.localeCompare(b.name);
+              if (key === "type") return a.type.localeCompare(b.type);
+              if (key === "enabled") return a.enabled - b.enabled;
+              return (a.last_synced_at ?? "").localeCompare(b.last_synced_at ?? "");
+            }).map((l) => (
               <tr key={l.id}>
                 <td>{l.name}</td>
                 <td>{TYPE_LABELS[l.type]}</td>

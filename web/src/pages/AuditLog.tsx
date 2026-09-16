@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 
 interface AuditEntry {
   id: number;
@@ -60,6 +61,16 @@ export default function AuditLog() {
       .finally(() => setLoading(false));
   }, [page]);
 
+  const { sortRows, sortableHeader } = useSortableTable<AuditEntry, "when" | "user" | "event" | "detail">("when", "desc");
+  const sorted = data
+    ? sortRows(data.rows, (a, b, key) => {
+        if (key === "when") return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+        if (key === "user") return a.username.localeCompare(b.username);
+        if (key === "event") return (EVENT_LABELS[a.eventType] ?? a.eventType).localeCompare(EVENT_LABELS[b.eventType] ?? b.eventType);
+        return (a.detail ?? "").localeCompare(b.detail ?? "");
+      })
+    : [];
+
   if (loading && !data) return <p className="empty">Loading...</p>;
   if (!data) return null;
 
@@ -78,14 +89,14 @@ export default function AuditLog() {
           <table>
             <thead>
               <tr>
-                <th>When</th>
-                <th>User</th>
-                <th>Event</th>
-                <th>Detail</th>
+                {sortableHeader("when", "When")}
+                {sortableHeader("user", "User")}
+                {sortableHeader("event", "Event")}
+                {sortableHeader("detail", "Detail")}
               </tr>
             </thead>
             <tbody>
-              {data.rows.map((e) => (
+              {sorted.map((e) => (
                 <tr key={e.id}>
                   <td>{e.createdAt}</td>
                   <td>{e.username}</td>
