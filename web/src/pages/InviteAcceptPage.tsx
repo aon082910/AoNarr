@@ -69,12 +69,12 @@ export default function InviteAcceptPage() {
       {preview && !done && (
         <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <p>You've been invited to join this AoNarr instance. Choose a username and password to finish setting up your account.</p>
-          <label>Username</label>
-          <input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus required />
-          <label>Password</label>
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} />
-          <label>Confirm password</label>
-          <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required minLength={8} />
+          <label htmlFor="inviteacceptpage-username-1">Username</label>
+          <input id="inviteacceptpage-username-1" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus required />
+          <label htmlFor="inviteacceptpage-password-2">Password</label>
+          <input id="inviteacceptpage-password-2" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} />
+          <label htmlFor="inviteacceptpage-confirm-password-3">Confirm password</label>
+          <input id="inviteacceptpage-confirm-password-3" type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required minLength={8} />
           <button type="submit" disabled={submitting} style={{ marginTop: 8 }}>
             {submitting ? "Creating account..." : "Create account"}
           </button>

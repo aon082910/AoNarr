@@ -264,8 +264,8 @@ export default function LibraryType() {
               style={{ width: "100%", maxWidth: 480 }}
               placeholder={`What is "${groupDetail.group.name}"?`}
             />
-            <label>Logo URL (shown on this group's tile — auto-fetched when available, override here)</label>
-            <input
+            <label htmlFor="librarytype-logo-url-shown-on-this-group-s-tile-auto-1">Logo URL (shown on this group's tile — auto-fetched when available, override here)</label>
+            <input id="librarytype-logo-url-shown-on-this-group-s-tile-auto-1"
               value={logoUrlDraft}
               onChange={(e) => setLogoUrlDraft(e.target.value)}
               style={{ width: "100%", maxWidth: 480 }}
@@ -1487,8 +1487,8 @@ export function LibraryItemGrid({
             <p className="empty">No root folder configured for this library yet — add one in Settings first.</p>
           ) : (
             <>
-              <label>Root folder for newly-created items</label>
-              <select
+              <label htmlFor="librarytype-root-folder-for-newly-created-items-2">Root folder for newly-created items</label>
+              <select id="librarytype-root-folder-for-newly-created-items-2"
                 value={mediaServerImportFolderId}
                 onChange={(e) => setMediaServerImportFolderId(e.target.value ? Number(e.target.value) : "")}
               >
@@ -1547,8 +1547,8 @@ export function LibraryItemGrid({
               />
               <label>{starrAppName} API key</label>
               <input type="text" value={starrApiKey} onChange={(e) => setStarrApiKey(e.target.value)} placeholder="Settings → General → Security" />
-              <label>Root folder for newly-created items</label>
-              <select value={starrImportFolderId} onChange={(e) => setStarrImportFolderId(e.target.value ? Number(e.target.value) : "")}>
+              <label htmlFor="librarytype-root-folder-for-newly-created-items-3">Root folder for newly-created items</label>
+              <select id="librarytype-root-folder-for-newly-created-items-3" value={starrImportFolderId} onChange={(e) => setStarrImportFolderId(e.target.value ? Number(e.target.value) : "")}>
                 {starrImportFolders.map((f) => (
                   <option key={f.id} value={f.id}>
                     {f.path}

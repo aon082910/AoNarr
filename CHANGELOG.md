@@ -3,6 +3,31 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 213 — route-based code splitting, and the label/input accessibility pass
+- **Frontend bundle split by route**: every page except Dashboard/Onboarding is now `React.lazy`-
+  loaded behind a `<Suspense>` boundary instead of sitting in one eager bundle — cuts the main JS
+  chunk downloaded before a user clicks anything from 641KB to 212KB (gzip: 174KB → 67KB), with the
+  rest (Settings, API Docs, every library/media page, etc.) fetched only when actually navigated to.
+  Live-tested via the Docker test-container workflow: logged in, navigated through Settings,
+  Calendar, and API Docs via normal in-app links, confirmed each lazy chunk loads cleanly with no
+  console errors. (A hard full-page reload of `/api-docs` specifically hits a pre-existing Vite
+  dev-proxy quirk — its `/api` proxy prefix string-matches `/api-docs` too — but that's dev-only;
+  production is served by nginx with exact routing, and in-app navigation is unaffected either way.)
+- **Wired up the label/input accessibility gap flagged last round**: a spot-check then found 0 of
+  27 form labels on the Settings page properly associated with their input via `htmlFor`/`id` —
+  clicking a label did nothing, and screen readers couldn't announce which control a label
+  described. Fixed across every page with the pattern (Settings, Users, Download Clients,
+  Indexers, IRC Feeds, IPTV Playlists, System, Add Media, Media Detail, and a dozen more — ~270
+  `<label>`/`<input>` pairs in total). Checkbox-group headings (e.g. "Library access", "Allowed
+  qualities") that don't map to one single control instead got `role="group"` +
+  `aria-labelledby`, the correct pattern for a group of already-self-labeled checkboxes.
+  Live-verified in the browser rather than trusting the mechanical pass blind: opened the Add User
+  modal and confirmed clicking the "Password" label actually moves focus into the password field,
+  and swept every rendered page for duplicate `id`s — caught and fixed two real ones this pass
+  introduced (Settings' per-media-type default-provider `<select>` and GroupPicker's per-level
+  dropdown both render inside a loop, so their label/input ids needed to be keyed per item instead
+  of a single static string, or every iteration after the first would collide).
+
 ## Round 212 — a movie-shaped Sports PPV library
 - **New library type: Sports PPV**, sitting alongside last round's Sports type rather than folded
   into it — a weekly broadcast (Raw, a league's regular season) is naturally episodic and fits

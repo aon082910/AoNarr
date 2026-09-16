@@ -131,12 +131,12 @@ export default function RemoteLibrary() {
       {mode !== null && (mode === "add" || editingInstance) && (
         <Modal title={mode === "add" ? "Add Remote Instance" : `Edit — ${editingInstance!.name}`} onClose={() => setMode(null)}>
           <form className="form-panel" onSubmit={submit} style={{ padding: 0 }}>
-            <label>Name</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Cabin AoNarr" required />
-            <label>URL (base, e.g. http://192.168.1.50:9876)</label>
-            <input value={url} onChange={(e) => setUrl(e.target.value)} required />
-            <label>API key{mode !== "add" && " (leave blank to keep current)"}</label>
-            <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} required={mode === "add"} />
+            <label htmlFor="remotelibrary-name-1">Name</label>
+            <input id="remotelibrary-name-1" value={name} onChange={(e) => setName(e.target.value)} placeholder="Cabin AoNarr" required />
+            <label htmlFor="remotelibrary-url-base-e-g-http-192-168-1-50-9876-2">URL (base, e.g. http://192.168.1.50:9876)</label>
+            <input id="remotelibrary-url-base-e-g-http-192-168-1-50-9876-2" value={url} onChange={(e) => setUrl(e.target.value)} required />
+            <label htmlFor="remotelibrary-api-key-mode-add-leave-blank-to-keep-cur-3">API key{mode !== "add" && " (leave blank to keep current)"}</label>
+            <input id="remotelibrary-api-key-mode-add-leave-blank-to-keep-cur-3" value={apiKey} onChange={(e) => setApiKey(e.target.value)} required={mode === "add"} />
             <div className="toolbar" style={{ justifyContent: "space-between", marginTop: 8 }}>
               <button type="submit">{mode === "add" ? "Add remote instance" : "Save"}</button>
               {mode !== "add" && (

@@ -1,61 +1,66 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { api } from "./api/client.js";
 import Dashboard from "./pages/Dashboard.js";
 import Onboarding, { shouldShowOnboarding } from "./pages/Onboarding.js";
-import LibraryHome from "./pages/LibraryHome.js";
-import LibraryType from "./pages/LibraryType.js";
-import LibraryUngrouped from "./pages/LibraryUngrouped.js";
-import MediaDetail from "./pages/MediaDetail.js";
-import EpisodeDetail from "./pages/EpisodeDetail.js";
-import SubItemDetail from "./pages/SubItemDetail.js";
-import TrackDetail from "./pages/TrackDetail.js";
-import AddMedia from "./pages/AddMedia.js";
-import Calendar from "./pages/Calendar.js";
-import CalendarDay from "./pages/CalendarDay.js";
-import Missing from "./pages/Missing.js";
-import CutoffUnmet from "./pages/CutoffUnmet.js";
-import HistoryPage from "./pages/HistoryPage.js";
-import Blocklist from "./pages/Blocklist.js";
-import Indexers from "./pages/Indexers.js";
-import DownloadClients from "./pages/DownloadClients.js";
-import IrcFeeds from "./pages/IrcFeeds.js";
-import Settings from "./pages/Settings.js";
-import Activity from "./pages/Activity.js";
-import System from "./pages/System.js";
-import GlobalSearch from "./pages/GlobalSearch.js";
-import Collections from "./pages/Collections.js";
-import CollectionDetail from "./pages/CollectionDetail.js";
-import Requests from "./pages/Requests.js";
-import Discover from "./pages/Discover.js";
-import AiProviders from "./pages/AiProviders.js";
-import CustomColumns from "./pages/CustomColumns.js";
-import IptvPlaylists from "./pages/IptvPlaylists.js";
-import Users from "./pages/Users.js";
-import Recommendations from "./pages/Recommendations.js";
-import AuditLog from "./pages/AuditLog.js";
-import WatchlistImport from "./pages/WatchlistImport.js";
-import ImportReview from "./pages/ImportReview.js";
 import { useAuth } from "./context/AuthContext.js";
 import NotificationsToggle from "./components/NotificationsToggle.js";
 import ThemeToggle from "./components/ThemeToggle.js";
 import LayoutWidthToggle from "./components/LayoutWidthToggle.js";
 import CommandPalette from "./components/CommandPalette.js";
 import DropdownMenu from "./components/DropdownMenu.js";
-import ApiDocs from "./pages/ApiDocs.js";
-import Changelog from "./pages/Changelog.js";
-import Person from "./pages/Person.js";
-import RemoteLibrary from "./pages/RemoteLibrary.js";
-import FriendLibraries from "./pages/FriendLibraries.js";
-import ImportLists from "./pages/ImportLists.js";
-import Account from "./pages/Account.js";
-import Jobs from "./pages/Jobs.js";
-import RecycleBin from "./pages/RecycleBin.js";
-import Duplicates from "./pages/Duplicates.js";
-import NetworkStats from "./pages/NetworkStats.js";
-import MediaAnalyzer from "./pages/MediaAnalyzer.js";
 import { useMediaTypes } from "./hooks/useMediaTypes.js";
 import { useCustomizableLayout } from "./hooks/useCustomizableLayout.js";
+
+// Every other page is lazy-loaded (route-based code splitting): Dashboard/Onboarding stay eager
+// since one of them always renders on first paint, but everything reachable only by navigating
+// (Settings, the Swagger-powered API Docs page, etc.) has no reason to sit in the initial bundle
+// every visitor downloads before they've clicked anything.
+const LibraryHome = lazy(() => import("./pages/LibraryHome.js"));
+const LibraryType = lazy(() => import("./pages/LibraryType.js"));
+const LibraryUngrouped = lazy(() => import("./pages/LibraryUngrouped.js"));
+const MediaDetail = lazy(() => import("./pages/MediaDetail.js"));
+const EpisodeDetail = lazy(() => import("./pages/EpisodeDetail.js"));
+const SubItemDetail = lazy(() => import("./pages/SubItemDetail.js"));
+const TrackDetail = lazy(() => import("./pages/TrackDetail.js"));
+const AddMedia = lazy(() => import("./pages/AddMedia.js"));
+const Calendar = lazy(() => import("./pages/Calendar.js"));
+const CalendarDay = lazy(() => import("./pages/CalendarDay.js"));
+const Missing = lazy(() => import("./pages/Missing.js"));
+const CutoffUnmet = lazy(() => import("./pages/CutoffUnmet.js"));
+const HistoryPage = lazy(() => import("./pages/HistoryPage.js"));
+const Blocklist = lazy(() => import("./pages/Blocklist.js"));
+const Indexers = lazy(() => import("./pages/Indexers.js"));
+const DownloadClients = lazy(() => import("./pages/DownloadClients.js"));
+const IrcFeeds = lazy(() => import("./pages/IrcFeeds.js"));
+const Settings = lazy(() => import("./pages/Settings.js"));
+const Activity = lazy(() => import("./pages/Activity.js"));
+const System = lazy(() => import("./pages/System.js"));
+const GlobalSearch = lazy(() => import("./pages/GlobalSearch.js"));
+const Collections = lazy(() => import("./pages/Collections.js"));
+const CollectionDetail = lazy(() => import("./pages/CollectionDetail.js"));
+const Requests = lazy(() => import("./pages/Requests.js"));
+const Discover = lazy(() => import("./pages/Discover.js"));
+const AiProviders = lazy(() => import("./pages/AiProviders.js"));
+const CustomColumns = lazy(() => import("./pages/CustomColumns.js"));
+const IptvPlaylists = lazy(() => import("./pages/IptvPlaylists.js"));
+const Users = lazy(() => import("./pages/Users.js"));
+const Recommendations = lazy(() => import("./pages/Recommendations.js"));
+const AuditLog = lazy(() => import("./pages/AuditLog.js"));
+const WatchlistImport = lazy(() => import("./pages/WatchlistImport.js"));
+const ImportReview = lazy(() => import("./pages/ImportReview.js"));
+const ApiDocs = lazy(() => import("./pages/ApiDocs.js"));
+const Changelog = lazy(() => import("./pages/Changelog.js"));
+const Person = lazy(() => import("./pages/Person.js"));
+const RemoteLibrary = lazy(() => import("./pages/RemoteLibrary.js"));
+const FriendLibraries = lazy(() => import("./pages/FriendLibraries.js"));
+const ImportLists = lazy(() => import("./pages/ImportLists.js"));
+const Account = lazy(() => import("./pages/Account.js"));
+const Jobs = lazy(() => import("./pages/Jobs.js"));
+const RecycleBin = lazy(() => import("./pages/RecycleBin.js"));
+const Duplicates = lazy(() => import("./pages/Duplicates.js"));
+const NetworkStats = lazy(() => import("./pages/NetworkStats.js"));
+const MediaAnalyzer = lazy(() => import("./pages/MediaAnalyzer.js"));
 
 /** Plain <BrowserRouter>/<Routes> (not the data-router API) never touches scroll position on
  * navigation on its own — this is what actually resets it back to the top of the new page. */
@@ -436,6 +441,7 @@ export default function App() {
       )}
 
       <main className="content" id="main-content" tabIndex={-1}>
+        <Suspense fallback={<div className="muted">Loading…</div>}>
         <Routes>
           <Route
             path="/"
@@ -490,6 +496,7 @@ export default function App() {
           {isAdmin && <Route path="/remote-library" element={<RemoteLibrary />} />}
           {isAdmin && <Route path="/friend-libraries" element={<FriendLibraries />} />}
         </Routes>
+        </Suspense>
       </main>
     </div>
   );

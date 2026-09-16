@@ -160,8 +160,8 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
           <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
             Enter the 6-digit code from your authenticator app.
           </p>
-          <label>Code</label>
-          <input value={sessionTotpCode} onChange={(e) => setSessionTotpCode(e.target.value)} maxLength={6} autoFocus />
+          <label htmlFor="apikeygate-code-1">Code</label>
+          <input id="apikeygate-code-1" value={sessionTotpCode} onChange={(e) => setSessionTotpCode(e.target.value)} maxLength={6} autoFocus />
           {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
           <div style={{ display: "flex", gap: 8 }}>
             <button type="submit" disabled={checking}>
@@ -188,12 +188,12 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
           <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
             Create your admin account to finish setting up this instance.
           </p>
-          <label>Username</label>
-          <input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
-          <label>Password</label>
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-          <label>Confirm password</label>
-          <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
+          <label htmlFor="apikeygate-username-2">Username</label>
+          <input id="apikeygate-username-2" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
+          <label htmlFor="apikeygate-password-3">Password</label>
+          <input id="apikeygate-password-3" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <label htmlFor="apikeygate-confirm-password-4">Confirm password</label>
+          <input id="apikeygate-confirm-password-4" type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
           {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
           <button type="submit" disabled={checking}>
             {checking ? "Creating..." : "Create admin account"}
@@ -211,8 +211,8 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
           <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
             Enter the 6-digit code from your authenticator app.
           </p>
-          <label>Code</label>
-          <input value={totpCode} onChange={(e) => setTotpCode(e.target.value)} maxLength={6} autoFocus />
+          <label htmlFor="apikeygate-code-5">Code</label>
+          <input id="apikeygate-code-5" value={totpCode} onChange={(e) => setTotpCode(e.target.value)} maxLength={6} autoFocus />
           {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
           <div style={{ display: "flex", gap: 8 }}>
             <button type="submit" disabled={checking}>
@@ -251,10 +251,10 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
         {mode === "admin" && (
           <>
             <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>Sign in with your admin account.</p>
-            <label>Username</label>
-            <input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
-            <label>Password</label>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+            <label htmlFor="apikeygate-username-6">Username</label>
+            <input id="apikeygate-username-6" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
+            <label htmlFor="apikeygate-password-7">Password</label>
+            <input id="apikeygate-password-7" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
           </>
         )}
 
@@ -263,10 +263,10 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
             <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
               Sign in with the household account an admin created for you in Settings → Users.
             </p>
-            <label>Username</label>
-            <input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
-            <label>Password</label>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+            <label htmlFor="apikeygate-username-8">Username</label>
+            <input id="apikeygate-username-8" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
+            <label htmlFor="apikeygate-password-9">Password</label>
+            <input id="apikeygate-password-9" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
           </>
         )}
 
@@ -276,8 +276,8 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
               Legacy sign-in using the instance API key (Settings → General), for scripts/automation
               or accounts created before admin login existed.
             </p>
-            <label>API key</label>
-            <input value={apiKeyInput} onChange={(e) => setApiKeyInput(e.target.value)} autoFocus />
+            <label htmlFor="apikeygate-api-key-10">API key</label>
+            <input id="apikeygate-api-key-10" value={apiKeyInput} onChange={(e) => setApiKeyInput(e.target.value)} autoFocus />
           </>
         )}
 

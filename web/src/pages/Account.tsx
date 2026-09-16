@@ -67,8 +67,8 @@ export default function Account() {
         {enabled ? (
           <>
             <p>Two-factor authentication is enabled on this account.</p>
-            <label>Enter a code to disable it</label>
-            <input value={disableCode} onChange={(e) => setDisableCode(e.target.value)} maxLength={6} />
+            <label htmlFor="account-enter-a-code-to-disable-it-1">Enter a code to disable it</label>
+            <input id="account-enter-a-code-to-disable-it-1" value={disableCode} onChange={(e) => setDisableCode(e.target.value)} maxLength={6} />
             <button type="button" className="danger" onClick={disable}>
               Disable 2FA
             </button>
@@ -76,12 +76,12 @@ export default function Account() {
         ) : totpSetup ? (
           <>
             <p>Scan this into your authenticator app, or enter the secret manually.</p>
-            <label>Secret</label>
-            <input value={totpSetup.secret} readOnly />
-            <label>otpauth URL</label>
-            <input value={totpSetup.otpauthUrl} readOnly />
-            <label>Enter the 6-digit code to confirm</label>
-            <input value={code} onChange={(e) => setCode(e.target.value)} maxLength={6} autoFocus />
+            <label htmlFor="account-secret-2">Secret</label>
+            <input id="account-secret-2" value={totpSetup.secret} readOnly />
+            <label htmlFor="account-otpauth-url-3">otpauth URL</label>
+            <input id="account-otpauth-url-3" value={totpSetup.otpauthUrl} readOnly />
+            <label htmlFor="account-enter-the-6-digit-code-to-confirm-4">Enter the 6-digit code to confirm</label>
+            <input id="account-enter-the-6-digit-code-to-confirm-4" value={code} onChange={(e) => setCode(e.target.value)} maxLength={6} autoFocus />
             <div style={{ display: "flex", gap: 8 }}>
               <button type="button" onClick={confirmSetup}>
                 Confirm and enable

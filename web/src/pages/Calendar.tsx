@@ -165,12 +165,12 @@ export default function Calendar() {
 
       {showAddEvent && (
         <form className="form-panel" onSubmit={addCustomEvent} style={{ marginBottom: 16 }}>
-          <label>Title</label>
-          <input value={newEventTitle} onChange={(e) => setNewEventTitle(e.target.value)} required placeholder="Release-day watch party" />
-          <label>Date</label>
-          <input type="date" value={newEventDate} onChange={(e) => setNewEventDate(e.target.value)} required />
-          <label>Note (optional)</label>
-          <input value={newEventNote} onChange={(e) => setNewEventNote(e.target.value)} />
+          <label htmlFor="calendar-title-1">Title</label>
+          <input id="calendar-title-1" value={newEventTitle} onChange={(e) => setNewEventTitle(e.target.value)} required placeholder="Release-day watch party" />
+          <label htmlFor="calendar-date-2">Date</label>
+          <input id="calendar-date-2" type="date" value={newEventDate} onChange={(e) => setNewEventDate(e.target.value)} required />
+          <label htmlFor="calendar-note-optional-3">Note (optional)</label>
+          <input id="calendar-note-optional-3" value={newEventNote} onChange={(e) => setNewEventNote(e.target.value)} />
           <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
             <button type="submit">Add</button>
             <button type="button" className="secondary" onClick={() => setShowAddEvent(false)}>
@@ -182,8 +182,8 @@ export default function Calendar() {
 
       {icsUrl && (
         <div className="form-panel" style={{ marginBottom: 16 }}>
-          <label>Feed URL (paste into Google/Apple/Outlook Calendar's "subscribe by URL")</label>
-          <input value={icsUrl} readOnly onFocus={(e) => e.target.select()} />
+          <label htmlFor="calendar-feed-url-paste-into-google-apple-outlook-4">Feed URL (paste into Google/Apple/Outlook Calendar's "subscribe by URL")</label>
+          <input id="calendar-feed-url-paste-into-google-apple-outlook-4" value={icsUrl} readOnly onFocus={(e) => e.target.select()} />
           <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
             Includes a dedicated token, not your API key — anyone with this URL can see release
             dates and titles, nothing more.

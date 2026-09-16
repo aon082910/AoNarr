@@ -63,10 +63,10 @@ export default function Collections() {
       </p>
 
       <form className="form-panel" onSubmit={addCollection}>
-        <label>Name</label>
-        <input value={name} onChange={(e) => setName(e.target.value)} required />
-        <label>Description</label>
-        <input value={description} onChange={(e) => setDescription(e.target.value)} />
+        <label htmlFor="collections-name-1">Name</label>
+        <input id="collections-name-1" value={name} onChange={(e) => setName(e.target.value)} required />
+        <label htmlFor="collections-description-2">Description</label>
+        <input id="collections-description-2" value={description} onChange={(e) => setDescription(e.target.value)} />
         <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <input type="checkbox" checked={isSmart} onChange={(e) => setIsSmart(e.target.checked)} />
           Smart collection (live filter, not a fixed list)
@@ -77,8 +77,8 @@ export default function Collections() {
               Membership is re-computed every time the collection is viewed — items aren't added or
               removed manually.
             </p>
-            <label>Library type</label>
-            <select value={filterType} onChange={(e) => setFilterType(e.target.value)}>
+            <label htmlFor="collections-library-type-3">Library type</label>
+            <select id="collections-library-type-3" value={filterType} onChange={(e) => setFilterType(e.target.value)}>
               <option value="">Any</option>
               {mediaTypes.map((t) => (
                 <option key={t.key} value={t.key}>
@@ -86,20 +86,20 @@ export default function Collections() {
                 </option>
               ))}
             </select>
-            <label>Monitored</label>
-            <select value={filterMonitored} onChange={(e) => setFilterMonitored(e.target.value)}>
+            <label htmlFor="collections-monitored-4">Monitored</label>
+            <select id="collections-monitored-4" value={filterMonitored} onChange={(e) => setFilterMonitored(e.target.value)}>
               <option value="">Any</option>
               <option value="1">Monitored</option>
               <option value="0">Unmonitored</option>
             </select>
-            <label>File status</label>
-            <select value={filterHasFile} onChange={(e) => setFilterHasFile(e.target.value)}>
+            <label htmlFor="collections-file-status-5">File status</label>
+            <select id="collections-file-status-5" value={filterHasFile} onChange={(e) => setFilterHasFile(e.target.value)}>
               <option value="">Any</option>
               <option value="1">Downloaded</option>
               <option value="0">Missing</option>
             </select>
-            <label>Added within last N days (blank = any time)</label>
-            <input
+            <label htmlFor="collections-added-within-last-n-days-blank-any-time-6">Added within last N days (blank = any time)</label>
+            <input id="collections-added-within-last-n-days-blank-any-time-6"
               type="number"
               style={{ maxWidth: 120 }}
               value={filterAddedAfterDays}

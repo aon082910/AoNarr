@@ -110,9 +110,10 @@ export default function SettingsProviderTiles({
           )}
           {openProvider.fields.map((f) => (
             <div key={f.key}>
-              <label>{f.label}</label>
+              <label htmlFor={`provider-field-${f.key}`}>{f.label}</label>
               {f.type === "select" ? (
                 <select
+                  id={`provider-field-${f.key}`}
                   key={settings[f.key] ?? `${f.key}-empty`}
                   defaultValue={settings[f.key] ?? f.options?.[0]?.value ?? ""}
                   onChange={(e) => saveSetting(f.key, e.target.value)}
@@ -125,6 +126,7 @@ export default function SettingsProviderTiles({
                 </select>
               ) : (
                 <input
+                  id={`provider-field-${f.key}`}
                   type={f.type === "password" ? "password" : "text"}
                   key={settings[f.key] ?? `${f.key}-empty`}
                   defaultValue={settings[f.key] ?? ""}

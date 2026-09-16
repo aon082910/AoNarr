@@ -140,21 +140,21 @@ export default function ImportLists() {
       </p>
 
       <form className="form-panel" onSubmit={addList}>
-        <label>Name</label>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="My watchlist" required />
-        <label>Type</label>
-        <select value={type} onChange={(e) => setType(e.target.value as ImportList["type"])}>
+        <label htmlFor="importlists-name-1">Name</label>
+        <input id="importlists-name-1" value={name} onChange={(e) => setName(e.target.value)} placeholder="My watchlist" required />
+        <label htmlFor="importlists-type-2">Type</label>
+        <select id="importlists-type-2" value={type} onChange={(e) => setType(e.target.value as ImportList["type"])}>
           <option value="trakt">Trakt</option>
           <option value="imdb">IMDb</option>
           <option value="lastfm">Last.fm</option>
           <option value="tmdb">TMDB</option>
         </select>
-        <label>URL</label>
-        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder={URL_PLACEHOLDERS[type]} required />
+        <label htmlFor="importlists-url-3">URL</label>
+        <input id="importlists-url-3" value={url} onChange={(e) => setUrl(e.target.value)} placeholder={URL_PLACEHOLDERS[type]} required />
         {profiles.length > 0 && (
           <>
-            <label>Quality profile</label>
-            <select value={qualityProfileId} onChange={(e) => setQualityProfileId(e.target.value ? Number(e.target.value) : "")}>
+            <label htmlFor="importlists-quality-profile-4">Quality profile</label>
+            <select id="importlists-quality-profile-4" value={qualityProfileId} onChange={(e) => setQualityProfileId(e.target.value ? Number(e.target.value) : "")}>
               {profiles.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
@@ -165,8 +165,8 @@ export default function ImportLists() {
         )}
         {listSupportsFilters(type) && (
           <>
-            <label>Minimum rating (0-10, optional)</label>
-            <input
+            <label htmlFor="importlists-minimum-rating-0-10-optional-5">Minimum rating (0-10, optional)</label>
+            <input id="importlists-minimum-rating-0-10-optional-5"
               type="number"
               min="0"
               max="10"
@@ -175,10 +175,10 @@ export default function ImportLists() {
               onChange={(e) => setMinRating(e.target.value)}
               placeholder="No minimum"
             />
-            <label>Minimum vote count (optional)</label>
-            <input type="number" min="0" value={minVotes} onChange={(e) => setMinVotes(e.target.value)} placeholder="No minimum" />
-            <label>Exclude genres (comma-separated, optional)</label>
-            <input value={excludeGenres} onChange={(e) => setExcludeGenres(e.target.value)} placeholder="e.g. Horror, Documentary" />
+            <label htmlFor="importlists-minimum-vote-count-optional-6">Minimum vote count (optional)</label>
+            <input id="importlists-minimum-vote-count-optional-6" type="number" min="0" value={minVotes} onChange={(e) => setMinVotes(e.target.value)} placeholder="No minimum" />
+            <label htmlFor="importlists-exclude-genres-comma-separated-optional-7">Exclude genres (comma-separated, optional)</label>
+            <input id="importlists-exclude-genres-comma-separated-optional-7" value={excludeGenres} onChange={(e) => setExcludeGenres(e.target.value)} placeholder="e.g. Horror, Documentary" />
             <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
               A list still adds everything it has by default — these narrow it down. Skipped for an
               item whose rating/votes/genres aren't known, rather than excluding it over missing

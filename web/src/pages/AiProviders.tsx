@@ -128,28 +128,28 @@ export default function AiProviders() {
       {mode !== null && (mode === "add" || editingProvider) && (
         <Modal title={mode === "add" ? "Add AI Provider" : `Edit — ${editingProvider!.name}`} onClose={() => setMode(null)}>
           <form className="form-panel" onSubmit={submit} style={{ padding: 0 }}>
-            <label>Name</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} required />
+            <label htmlFor="aiproviders-name-1">Name</label>
+            <input id="aiproviders-name-1" value={name} onChange={(e) => setName(e.target.value)} required />
 
-            <label>Type</label>
-            <select value={type} onChange={(e) => setType(e.target.value as "local" | "cloud")}>
+            <label htmlFor="aiproviders-type-2">Type</label>
+            <select id="aiproviders-type-2" value={type} onChange={(e) => setType(e.target.value as "local" | "cloud")}>
               <option value="local">Local (Ollama-style chat API)</option>
               <option value="cloud">Cloud (OpenAI-compatible chat completions API)</option>
             </select>
 
-            <label>Base URL</label>
-            <input
+            <label htmlFor="aiproviders-base-url-3">Base URL</label>
+            <input id="aiproviders-base-url-3"
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
               placeholder={type === "local" ? "http://ollama:11434" : "https://api.openai.com/v1"}
               required
             />
 
-            <label>API key{type === "local" ? " (optional)" : mode !== "add" ? " (leave blank to keep current)" : ""}</label>
-            <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} type="password" required={type === "cloud" && mode === "add"} />
+            <label htmlFor="aiproviders-api-key-type-local-optional-mode-add-lea-4">API key{type === "local" ? " (optional)" : mode !== "add" ? " (leave blank to keep current)" : ""}</label>
+            <input id="aiproviders-api-key-type-local-optional-mode-add-lea-4" value={apiKey} onChange={(e) => setApiKey(e.target.value)} type="password" required={type === "cloud" && mode === "add"} />
 
-            <label>Model</label>
-            <input value={model} onChange={(e) => setModel(e.target.value)} placeholder={type === "local" ? "llava" : "gpt-4o-mini"} required />
+            <label htmlFor="aiproviders-model-5">Model</label>
+            <input id="aiproviders-model-5" value={model} onChange={(e) => setModel(e.target.value)} placeholder={type === "local" ? "llava" : "gpt-4o-mini"} required />
 
             <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <input type="checkbox" checked={isDefault} onChange={(e) => setIsDefault(e.target.checked)} />

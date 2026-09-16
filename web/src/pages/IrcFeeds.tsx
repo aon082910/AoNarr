@@ -144,28 +144,28 @@ export default function IrcFeeds() {
       {mode !== null && (mode === "add" || editingFeed) && (
         <Modal title={mode === "add" ? "Add IRC Feed" : `Edit — ${editingFeed!.name}`} onClose={() => setMode(null)}>
           <form className="form-panel" onSubmit={submit} style={{ padding: 0 }}>
-            <label>Name</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} required />
-            <label>Host</label>
-            <input value={host} onChange={(e) => setHost(e.target.value)} placeholder="irc.example.net" required />
-            <label>Port</label>
-            <input type="number" style={{ maxWidth: 120 }} value={port} onChange={(e) => setPort(e.target.value)} />
+            <label htmlFor="ircfeeds-name-1">Name</label>
+            <input id="ircfeeds-name-1" value={name} onChange={(e) => setName(e.target.value)} required />
+            <label htmlFor="ircfeeds-host-2">Host</label>
+            <input id="ircfeeds-host-2" value={host} onChange={(e) => setHost(e.target.value)} placeholder="irc.example.net" required />
+            <label htmlFor="ircfeeds-port-3">Port</label>
+            <input id="ircfeeds-port-3" type="number" style={{ maxWidth: 120 }} value={port} onChange={(e) => setPort(e.target.value)} />
             <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <input type="checkbox" checked={useSsl} onChange={(e) => setUseSsl(e.target.checked)} />
               Use TLS
             </label>
-            <label>Nickname</label>
-            <input value={nickname} onChange={(e) => setNickname(e.target.value)} required />
-            <label>SASL username (optional)</label>
-            <input value={saslUser} onChange={(e) => setSaslUser(e.target.value)} />
-            <label>SASL password (optional)</label>
-            <input type="password" value={saslPass} onChange={(e) => setSaslPass(e.target.value)} placeholder={editingFeed?.saslPass ? "unchanged" : ""} />
-            <label>Channel</label>
-            <input value={channel} onChange={(e) => setChannel(e.target.value)} placeholder="#announces" required />
-            <label>Announce regex (named groups: title, url)</label>
-            <input value={announceRegex} onChange={(e) => setAnnounceRegex(e.target.value)} placeholder={EXAMPLE_REGEX} required />
-            <label>Protocol</label>
-            <select value={protocol} onChange={(e) => setProtocol(e.target.value as "torrent" | "usenet")}>
+            <label htmlFor="ircfeeds-nickname-4">Nickname</label>
+            <input id="ircfeeds-nickname-4" value={nickname} onChange={(e) => setNickname(e.target.value)} required />
+            <label htmlFor="ircfeeds-sasl-username-optional-5">SASL username (optional)</label>
+            <input id="ircfeeds-sasl-username-optional-5" value={saslUser} onChange={(e) => setSaslUser(e.target.value)} />
+            <label htmlFor="ircfeeds-sasl-password-optional-6">SASL password (optional)</label>
+            <input id="ircfeeds-sasl-password-optional-6" type="password" value={saslPass} onChange={(e) => setSaslPass(e.target.value)} placeholder={editingFeed?.saslPass ? "unchanged" : ""} />
+            <label htmlFor="ircfeeds-channel-7">Channel</label>
+            <input id="ircfeeds-channel-7" value={channel} onChange={(e) => setChannel(e.target.value)} placeholder="#announces" required />
+            <label htmlFor="ircfeeds-announce-regex-named-groups-title-url-8">Announce regex (named groups: title, url)</label>
+            <input id="ircfeeds-announce-regex-named-groups-title-url-8" value={announceRegex} onChange={(e) => setAnnounceRegex(e.target.value)} placeholder={EXAMPLE_REGEX} required />
+            <label htmlFor="ircfeeds-protocol-9">Protocol</label>
+            <select id="ircfeeds-protocol-9" value={protocol} onChange={(e) => setProtocol(e.target.value as "torrent" | "usenet")}>
               <option value="torrent">Torrent</option>
               <option value="usenet">Usenet</option>
             </select>

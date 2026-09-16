@@ -194,11 +194,11 @@ export default function DownloadClients() {
       {mode !== null && (mode === "add" || editingClient) && (
         <Modal title={mode === "add" ? "Add Download Client" : `Edit — ${editingClient!.name}`} onClose={() => setMode(null)}>
           <form className="form-panel" onSubmit={submit} style={{ padding: 0 }}>
-            <label>Name</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} required />
+            <label htmlFor="downloadclients-name-1">Name</label>
+            <input id="downloadclients-name-1" value={name} onChange={(e) => setName(e.target.value)} required />
 
-            <label>Type</label>
-            <select value={type} onChange={(e) => setType(e.target.value as ClientType)}>
+            <label htmlFor="downloadclients-type-2">Type</label>
+            <select id="downloadclients-type-2" value={type} onChange={(e) => setType(e.target.value as ClientType)}>
               <option value="qbittorrent">qBittorrent</option>
               <option value="sabnzbd">SABnzbd</option>
               <option value="http">Direct HTTP download (for DDL/RSS indexer results)</option>
@@ -212,33 +212,33 @@ export default function DownloadClients() {
 
             {needsHost && (
               <>
-                <label>Host</label>
-                <input value={host} onChange={(e) => setHost(e.target.value)} required placeholder="192.168.1.10" />
-                <label>Port</label>
-                <input value={port} onChange={(e) => setPort(e.target.value)} type="number" required />
+                <label htmlFor="downloadclients-host-3">Host</label>
+                <input id="downloadclients-host-3" value={host} onChange={(e) => setHost(e.target.value)} required placeholder="192.168.1.10" />
+                <label htmlFor="downloadclients-port-4">Port</label>
+                <input id="downloadclients-port-4" value={port} onChange={(e) => setPort(e.target.value)} type="number" required />
               </>
             )}
 
             {type === "qbittorrent" && (
               <>
-                <label>Username</label>
-                <input value={username} onChange={(e) => setUsername(e.target.value)} />
-                <label>Password{mode !== "add" && " (leave blank to keep current)"}</label>
-                <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" />
+                <label htmlFor="downloadclients-username-5">Username</label>
+                <input id="downloadclients-username-5" value={username} onChange={(e) => setUsername(e.target.value)} />
+                <label htmlFor="downloadclients-password-mode-add-leave-blank-to-keep-cu-6">Password{mode !== "add" && " (leave blank to keep current)"}</label>
+                <input id="downloadclients-password-mode-add-leave-blank-to-keep-cu-6" value={password} onChange={(e) => setPassword(e.target.value)} type="password" />
               </>
             )}
 
             {type === "sabnzbd" && (
               <>
-                <label>API key</label>
-                <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+                <label htmlFor="downloadclients-api-key-7">API key</label>
+                <input id="downloadclients-api-key-7" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
               </>
             )}
 
             {type === "realdebrid" && (
               <>
-                <label>API token</label>
-                <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+                <label htmlFor="downloadclients-api-token-8">API token</label>
+                <input id="downloadclients-api-token-8" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
                   From real-debrid.com → Account → API Token. AoNarr sends grabbed magnet/torrent
                   links to Real-Debrid, waits for it to cache them, then downloads the unrestricted
@@ -249,8 +249,8 @@ export default function DownloadClients() {
 
             {needsWatchFolder && (
               <>
-                <label>Watch folder path</label>
-                <input value={host} onChange={(e) => setHost(e.target.value)} required placeholder="/downloads/blackhole" />
+                <label htmlFor="downloadclients-watch-folder-path-9">Watch folder path</label>
+                <input id="downloadclients-watch-folder-path-9" value={host} onChange={(e) => setHost(e.target.value)} required placeholder="/downloads/blackhole" />
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
                   Fire-and-forget: for a client with no usable API, AoNarr just drops a .torrent/
                   .magnet/.nzb file here for a separately-configured external client watching this same
@@ -263,8 +263,8 @@ export default function DownloadClients() {
 
             {type === "alldebrid" && (
               <>
-                <label>API key</label>
-                <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+                <label htmlFor="downloadclients-api-key-10">API key</label>
+                <input id="downloadclients-api-key-10" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
                   From alldebrid.com → Account → API keys. AoNarr sends grabbed magnet/torrent links
                   to AllDebrid, waits for it to cache them, then downloads the unlocked link(s)
@@ -275,8 +275,8 @@ export default function DownloadClients() {
 
             {type === "torbox" && (
               <>
-                <label>API key</label>
-                <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+                <label htmlFor="downloadclients-api-key-11">API key</label>
+                <input id="downloadclients-api-key-11" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
                   From torbox.app → Settings → API key. AoNarr sends grabbed magnet/torrent links to
                   TorBox, waits for it to cache them, then downloads the file(s) directly — no
@@ -294,8 +294,8 @@ export default function DownloadClients() {
 
             {type === "slskd" && (
               <>
-                <label>API key</label>
-                <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+                <label htmlFor="downloadclients-api-key-12">API key</label>
+                <input id="downloadclients-api-key-12" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
                   slskd's own configured API key (slskd.yml → web → authentication). AoNarr searches
                   Soulseek directly for Music library items and enqueues downloads through slskd, the
@@ -307,8 +307,8 @@ export default function DownloadClients() {
 
             {needsHost && (
               <>
-                <label>Category</label>
-                <input value={category} onChange={(e) => setCategory(e.target.value)} />
+                <label htmlFor="downloadclients-category-13">Category</label>
+                <input id="downloadclients-category-13" value={category} onChange={(e) => setCategory(e.target.value)} />
               </>
             )}
 

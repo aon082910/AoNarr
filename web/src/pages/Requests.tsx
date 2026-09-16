@@ -73,8 +73,8 @@ export default function Requests() {
 
       {!auth.isAdmin && (
         <form className="form-panel" onSubmit={submitRequest}>
-          <label>Library</label>
-          <select value={type} onChange={(e) => setType(e.target.value)} required>
+          <label htmlFor="requests-library-1">Library</label>
+          <select id="requests-library-1" value={type} onChange={(e) => setType(e.target.value)} required>
             <option value="">Select a library...</option>
             {allowedTypes.map((t) => (
               <option key={t.key} value={t.key}>
@@ -82,12 +82,12 @@ export default function Requests() {
               </option>
             ))}
           </select>
-          <label>Title</label>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} required />
-          <label>Year (optional)</label>
-          <input value={year} onChange={(e) => setYear(e.target.value)} />
-          <label>Note (optional)</label>
-          <input value={note} onChange={(e) => setNote(e.target.value)} />
+          <label htmlFor="requests-title-2">Title</label>
+          <input id="requests-title-2" value={title} onChange={(e) => setTitle(e.target.value)} required />
+          <label htmlFor="requests-year-optional-3">Year (optional)</label>
+          <input id="requests-year-optional-3" value={year} onChange={(e) => setYear(e.target.value)} />
+          <label htmlFor="requests-note-optional-4">Note (optional)</label>
+          <input id="requests-note-optional-4" value={note} onChange={(e) => setNote(e.target.value)} />
           <button type="submit">Submit request</button>
         </form>
       )}

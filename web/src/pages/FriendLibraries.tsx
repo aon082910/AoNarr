@@ -133,18 +133,18 @@ export default function FriendLibraries() {
       {mode !== null && (mode === "add" || editingLibrary) && (
         <Modal title={mode === "add" ? "Add Friend Library" : `Edit — ${editingLibrary!.name}`} onClose={() => setMode(null)}>
           <form className="form-panel" onSubmit={submit} style={{ padding: 0 }}>
-            <label>Name</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Alex's Plex" required />
-            <label>Type</label>
-            <select value={type} onChange={(e) => setType(e.target.value as FriendLibrary["type"])}>
+            <label htmlFor="friendlibraries-name-1">Name</label>
+            <input id="friendlibraries-name-1" value={name} onChange={(e) => setName(e.target.value)} placeholder="Alex's Plex" required />
+            <label htmlFor="friendlibraries-type-2">Type</label>
+            <select id="friendlibraries-type-2" value={type} onChange={(e) => setType(e.target.value as FriendLibrary["type"])}>
               <option value="plex">Plex</option>
               <option value="jellyfin">Jellyfin</option>
               <option value="emby">Emby</option>
             </select>
-            <label>URL (base, as reachable from this instance)</label>
-            <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://192.168.1.60:32400" required />
-            <label>Token / API key{mode !== "add" && " (leave blank to keep current)"}</label>
-            <input
+            <label htmlFor="friendlibraries-url-base-as-reachable-from-this-instance-3">URL (base, as reachable from this instance)</label>
+            <input id="friendlibraries-url-base-as-reachable-from-this-instance-3" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://192.168.1.60:32400" required />
+            <label htmlFor="friendlibraries-token-api-key-mode-add-leave-blank-to-ke-4">Token / API key{mode !== "add" && " (leave blank to keep current)"}</label>
+            <input id="friendlibraries-token-api-key-mode-add-leave-blank-to-ke-4"
               value={token}
               onChange={(e) => setToken(e.target.value)}
               placeholder={type === "plex" ? "X-Plex-Token, from your friend's account" : "API key, from your friend's server"}

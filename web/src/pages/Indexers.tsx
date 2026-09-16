@@ -156,11 +156,11 @@ export default function Indexers() {
       {showAdd && (
         <Modal title="Add Indexer" onClose={() => setShowAdd(false)} maxWidth={560}>
       <form className="form-panel" onSubmit={submit} style={{ padding: 0 }}>
-        <label>Name</label>
-        <input value={name} onChange={(e) => setName(e.target.value)} required />
+        <label htmlFor="indexers-name-1">Name</label>
+        <input id="indexers-name-1" value={name} onChange={(e) => setName(e.target.value)} required />
 
-        <label>Protocol</label>
-        <select value={protocol} onChange={(e) => setProtocol(e.target.value as Protocol)}>
+        <label htmlFor="indexers-protocol-2">Protocol</label>
+        <select id="indexers-protocol-2" value={protocol} onChange={(e) => setProtocol(e.target.value as Protocol)}>
           <option value="torznab">Torznab (torrent)</option>
           <option value="newznab">Newznab (usenet)</option>
           <option value="rss">RSS feed</option>
@@ -181,8 +181,8 @@ export default function Indexers() {
           required
         />
 
-        <label>API key {protocol === "ddl" && "(sent as a Bearer token, if set)"}</label>
-        <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+        <label htmlFor="indexers-api-key-protocol-ddl-sent-as-a-bearer-to-3">API key {protocol === "ddl" && "(sent as a Bearer token, if set)"}</label>
+        <input id="indexers-api-key-protocol-ddl-sent-as-a-bearer-to-3" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
 
         {protocol === "ddl" && (
           <>
@@ -191,18 +191,18 @@ export default function Indexers() {
               <code>result.name</code>. Leave "Results path" blank if the response is already an
               array at the root.
             </p>
-            <label>Results path</label>
-            <input value={resultsPath} onChange={(e) => setResultsPath(e.target.value)} placeholder="data.items" />
-            <label>Title field</label>
-            <input value={titleField} onChange={(e) => setTitleField(e.target.value)} required />
-            <label>Download URL field</label>
-            <input value={downloadUrlField} onChange={(e) => setDownloadUrlField(e.target.value)} required />
-            <label>Size field (bytes, optional)</label>
-            <input value={sizeField} onChange={(e) => setSizeField(e.target.value)} />
-            <label>Seeders field (optional)</label>
-            <input value={seedersField} onChange={(e) => setSeedersField(e.target.value)} />
-            <label>Publish date field (optional)</label>
-            <input value={publishDateField} onChange={(e) => setPublishDateField(e.target.value)} />
+            <label htmlFor="indexers-results-path-4">Results path</label>
+            <input id="indexers-results-path-4" value={resultsPath} onChange={(e) => setResultsPath(e.target.value)} placeholder="data.items" />
+            <label htmlFor="indexers-title-field-5">Title field</label>
+            <input id="indexers-title-field-5" value={titleField} onChange={(e) => setTitleField(e.target.value)} required />
+            <label htmlFor="indexers-download-url-field-6">Download URL field</label>
+            <input id="indexers-download-url-field-6" value={downloadUrlField} onChange={(e) => setDownloadUrlField(e.target.value)} required />
+            <label htmlFor="indexers-size-field-bytes-optional-7">Size field (bytes, optional)</label>
+            <input id="indexers-size-field-bytes-optional-7" value={sizeField} onChange={(e) => setSizeField(e.target.value)} />
+            <label htmlFor="indexers-seeders-field-optional-8">Seeders field (optional)</label>
+            <input id="indexers-seeders-field-optional-8" value={seedersField} onChange={(e) => setSeedersField(e.target.value)} />
+            <label htmlFor="indexers-publish-date-field-optional-9">Publish date field (optional)</label>
+            <input id="indexers-publish-date-field-optional-9" value={publishDateField} onChange={(e) => setPublishDateField(e.target.value)} />
           </>
         )}
 

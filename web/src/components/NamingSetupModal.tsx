@@ -125,8 +125,8 @@ export default function NamingSetupModal({
         </p>
       )}
 
-      <label>Template</label>
-      <input ref={inputRef} value={template} onChange={(e) => setTemplate(e.target.value)} disabled={!enabled} style={{ fontFamily: "monospace" }} />
+      <label htmlFor="namingsetupmodal-template-1">Template</label>
+      <input id="namingsetupmodal-template-1" ref={inputRef} value={template} onChange={(e) => setTemplate(e.target.value)} disabled={!enabled} style={{ fontFamily: "monospace" }} />
 
       <p style={{ color: "var(--muted)", fontSize: "0.8rem", margin: "10px 0 4px" }}>Insert a token:</p>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>

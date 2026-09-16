@@ -952,8 +952,8 @@ export default function Settings() {
           browser — e.g. share links, if the URL your browser is on doesn't match your actual
           public URL (common behind a reverse proxy). Leave blank to just use the browser's URL.
         </p>
-        <label>External URL</label>
-        <input
+        <label htmlFor="settings-external-url-1">External URL</label>
+        <input id="settings-external-url-1"
           key={settings.externalUrl ?? "external-url-empty"}
           defaultValue={settings.externalUrl ?? ""}
           placeholder="https://aonarr.example.com"
@@ -984,8 +984,8 @@ export default function Settings() {
 
       <h2>Security</h2>
       <div className="form-panel">
-        <label>API key</label>
-        <input value={settings.apiKey ?? ""} readOnly />
+        <label htmlFor="settings-api-key-2">API key</label>
+        <input id="settings-api-key-2" value={settings.apiKey ?? ""} readOnly />
         <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
           Required by every request to this instance's API. The web UI already stores it after you
           logged in with it.
@@ -994,8 +994,8 @@ export default function Settings() {
           Regenerate
         </button>
 
-        <label>Authentication</label>
-        <select
+        <label htmlFor="settings-authentication-3">Authentication</label>
+        <select id="settings-authentication-3"
           value={settings.authRequired === "0" ? "0" : "1"}
           onChange={(e) => saveSetting("authRequired", e.target.value)}
         >
@@ -1008,8 +1008,8 @@ export default function Settings() {
           (e.g. behind your own VPN) and is never exposed directly to the internet.
         </p>
 
-        <label>Allowed CORS origins</label>
-        <input
+        <label htmlFor="settings-allowed-cors-origins-4">Allowed CORS origins</label>
+        <input id="settings-allowed-cors-origins-4"
           key={settings.corsAllowedOrigins ?? "cors-empty"}
           defaultValue={settings.corsAllowedOrigins ?? ""}
           placeholder="unset — allows any origin (default)"
@@ -1032,8 +1032,8 @@ export default function Settings() {
           token — it authenticates with the API key above, the same way any other automation
           already does, so it can do anything that key can do.
         </p>
-        <label>Endpoint URL</label>
-        <input value={`${window.location.origin}/api/mcp`} readOnly onFocus={(e) => e.target.select()} />
+        <label htmlFor="settings-endpoint-url-5">Endpoint URL</label>
+        <input id="settings-endpoint-url-5" value={`${window.location.origin}/api/mcp`} readOnly onFocus={(e) => e.target.select()} />
         <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
           Connect with an <code>X-Api-Key</code> header set to the API key above (Streamable HTTP
           transport).
@@ -1053,8 +1053,8 @@ export default function Settings() {
             <p>
               <span className="badge ok">Enabled</span>
             </p>
-            <label>Enter a current code to disable</label>
-            <input value={totpDisableCode} onChange={(e) => setTotpDisableCode(e.target.value)} maxLength={6} />
+            <label htmlFor="settings-enter-a-current-code-to-disable-6">Enter a current code to disable</label>
+            <input id="settings-enter-a-current-code-to-disable-6" value={totpDisableCode} onChange={(e) => setTotpDisableCode(e.target.value)} maxLength={6} />
             <button type="button" className="danger" onClick={disableTotp}>
               Disable 2FA
             </button>
@@ -1066,12 +1066,12 @@ export default function Settings() {
               scan-by-URL isn't available here, so enter the secret manually as a "time-based"
               key:
             </p>
-            <label>Secret</label>
-            <input value={totpSetup.secret} readOnly />
-            <label>otpauth URL (some apps accept pasting this directly)</label>
-            <input value={totpSetup.otpauthUrl} readOnly />
-            <label>Enter the 6-digit code from your app to confirm</label>
-            <input value={totpCode} onChange={(e) => setTotpCode(e.target.value)} maxLength={6} autoFocus />
+            <label htmlFor="settings-secret-7">Secret</label>
+            <input id="settings-secret-7" value={totpSetup.secret} readOnly />
+            <label htmlFor="settings-otpauth-url-some-apps-accept-pasting-thi-8">otpauth URL (some apps accept pasting this directly)</label>
+            <input id="settings-otpauth-url-some-apps-accept-pasting-thi-8" value={totpSetup.otpauthUrl} readOnly />
+            <label htmlFor="settings-enter-the-6-digit-code-from-your-app-to--9">Enter the 6-digit code from your app to confirm</label>
+            <input id="settings-enter-the-6-digit-code-from-your-app-to--9" value={totpCode} onChange={(e) => setTotpCode(e.target.value)} maxLength={6} autoFocus />
             <div style={{ display: "flex", gap: 8 }}>
               <button type="button" onClick={confirmTotpSetup}>
                 Confirm &amp; enable
@@ -1097,8 +1097,8 @@ export default function Settings() {
         </p>
         {opdsUrl ? (
           <>
-            <label>Catalog URL</label>
-            <input value={opdsUrl} readOnly onFocus={(e) => e.target.select()} />
+            <label htmlFor="settings-catalog-url-10">Catalog URL</label>
+            <input id="settings-catalog-url-10" value={opdsUrl} readOnly onFocus={(e) => e.target.select()} />
             <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
               Includes a dedicated token, not your API key — anyone with this URL can browse and
               download from these libraries, nothing else.
@@ -1123,8 +1123,8 @@ export default function Settings() {
           approved sender on Amazon's side first, since Amazon only accepts mail from addresses you
           allow.
         </p>
-        <label>Kindle email address</label>
-        <input
+        <label htmlFor="settings-kindle-email-address-11">Kindle email address</label>
+        <input id="settings-kindle-email-address-11"
           key={settings.kindleEmailAddress ?? "kindle-email-empty"}
           defaultValue={settings.kindleEmailAddress ?? ""}
           placeholder="yourname@kindle.com"
@@ -1139,8 +1139,8 @@ export default function Settings() {
           scheduled cleanup job (Jobs page) purges them. See the Recycle Bin page to restore or
           permanently delete an entry early.
         </p>
-        <label>Recycle bin</label>
-        <select
+        <label htmlFor="settings-recycle-bin-12">Recycle bin</label>
+        <select id="settings-recycle-bin-12"
           key={settings.recycleBinEnabled ?? "recycle-enabled-empty"}
           defaultValue={settings.recycleBinEnabled ?? "1"}
           onChange={(e) => saveSetting("recycleBinEnabled", e.target.value)}
@@ -1148,23 +1148,23 @@ export default function Settings() {
           <option value="1">Enabled</option>
           <option value="0">Disabled (delete files outright)</option>
         </select>
-        <label>Retention (days)</label>
-        <input
+        <label htmlFor="settings-retention-days-13">Retention (days)</label>
+        <input id="settings-retention-days-13"
           type="number"
           style={{ maxWidth: 120 }}
           key={settings.recycleBinRetentionDays ?? "recycle-days-empty"}
           defaultValue={settings.recycleBinRetentionDays ?? "30"}
           onBlur={(e) => saveSetting("recycleBinRetentionDays", e.target.value)}
         />
-        <label>Recycle bin directory (blank = config dir's recycle-bin/ folder)</label>
-        <input
+        <label htmlFor="settings-recycle-bin-directory-blank-config-dir-s-14">Recycle bin directory (blank = config dir's recycle-bin/ folder)</label>
+        <input id="settings-recycle-bin-directory-blank-config-dir-s-14"
           key={settings.recycleBinDir ?? "recycle-dir-empty"}
           defaultValue={settings.recycleBinDir ?? ""}
           placeholder="/config/recycle-bin"
           onBlur={(e) => saveSetting("recycleBinDir", e.target.value)}
         />
-        <label>Corrupt media</label>
-        <select
+        <label htmlFor="settings-corrupt-media-15">Corrupt media</label>
+        <select id="settings-corrupt-media-15"
           key={settings.corruptMediaReviewEnabled ?? "corrupt-review-empty"}
           defaultValue={settings.corruptMediaReviewEnabled ?? "0"}
           onChange={(e) => saveSetting("corruptMediaReviewEnabled", e.target.value)}
@@ -1227,8 +1227,8 @@ export default function Settings() {
             const key = `default${t.key.charAt(0).toUpperCase()}${t.key.slice(1)}Provider`;
             return (
               <div key={t.key}>
-                <label>{t.label}</label>
-                <select
+                <label htmlFor={`settings-default-provider-${t.key}`}>{t.label}</label>
+                <select id={`settings-default-provider-${t.key}`}
                   key={settings[key] ?? `${key}-empty`}
                   defaultValue={settings[key] ?? metadataProviders[t.key]?.[0]}
                   onChange={(e) => saveSetting(key, e.target.value)}
@@ -1255,22 +1255,22 @@ export default function Settings() {
           Customize the message text sent to every enabled provider above. Leave blank to use the
           default.
         </p>
-        <label>Grabbed — tokens: {"{mediaTitle}"} {"{releaseTitle}"}</label>
-        <input
+        <label htmlFor="settings-grabbed-tokens-mediatitle-releasetitle-17">Grabbed — tokens: {"{mediaTitle}"} {"{releaseTitle}"}</label>
+        <input id="settings-grabbed-tokens-mediatitle-releasetitle-17"
           key={settings.notifyTemplateGrabbed ?? "notify-grabbed-empty"}
           defaultValue={settings.notifyTemplateGrabbed ?? ""}
           placeholder={"{mediaTitle}\\n{releaseTitle}"}
           onBlur={(e) => saveSetting("notifyTemplateGrabbed", e.target.value)}
         />
-        <label>Imported — tokens: {"{mediaTitle}"} {"{fileName}"}</label>
-        <input
+        <label htmlFor="settings-imported-tokens-mediatitle-filename-18">Imported — tokens: {"{mediaTitle}"} {"{fileName}"}</label>
+        <input id="settings-imported-tokens-mediatitle-filename-18"
           key={settings.notifyTemplateImported ?? "notify-imported-empty"}
           defaultValue={settings.notifyTemplateImported ?? ""}
           placeholder={"{mediaTitle}\\n{fileName}"}
           onBlur={(e) => saveSetting("notifyTemplateImported", e.target.value)}
         />
-        <label>Failed — tokens: {"{mediaTitle}"} {"{reason}"}</label>
-        <input
+        <label htmlFor="settings-failed-tokens-mediatitle-reason-19">Failed — tokens: {"{mediaTitle}"} {"{reason}"}</label>
+        <input id="settings-failed-tokens-mediatitle-reason-19"
           key={settings.notifyTemplateFailed ?? "notify-failed-empty"}
           defaultValue={settings.notifyTemplateFailed ?? ""}
           placeholder={"{mediaTitle}: {reason}"}
@@ -1303,7 +1303,9 @@ export default function Settings() {
                   </div>
                 ))}
                 <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
-                  <label>Music track filename (tokens: {"{trackNumber}"}, {"{trackTitle}"}, {"{parentTitle}"}, {"{childTitle}"})</label>
+                  <label htmlFor="settings-naming-artist-track-template">
+                    Music track filename (tokens: {"{trackNumber}"}, {"{trackTitle}"}, {"{parentTitle}"}, {"{childTitle}"})
+                  </label>
                   <p style={{ color: "var(--muted)", fontSize: "0.78rem", marginTop: 0 }}>
                     The Music config above only templates the album folder — individual track files
                     were always kept exactly as downloaded, with no way to rename them to match a
@@ -1313,6 +1315,7 @@ export default function Settings() {
                     same enable/disable toggle as Music's own naming config above.
                   </p>
                   <input
+                    id="settings-naming-artist-track-template"
                     key={settings.namingArtistTrackTemplate ?? "naming-artist-track-empty"}
                     defaultValue={settings.namingArtistTrackTemplate ?? "{trackNumber:00} - {trackTitle}"}
                     onBlur={(e) => saveSetting("namingArtistTrackTemplate", e.target.value)}
@@ -1336,8 +1339,8 @@ export default function Settings() {
                   release date per item rather than separate theatrical/digital/physical dates.
                   This only gates the scheduled auto-search; a manual search is never blocked.
                 </p>
-                <label>Default for newly-added movies</label>
-                <select
+                <label htmlFor="settings-default-for-newly-added-movies-20">Default for newly-added movies</label>
+                <select id="settings-default-for-newly-added-movies-20"
                   key={settings.defaultMinimumAvailability ?? "min-avail-empty"}
                   defaultValue={settings.defaultMinimumAvailability ?? "announced"}
                   onChange={(e) => saveSetting("defaultMinimumAvailability", e.target.value)}
@@ -1346,8 +1349,8 @@ export default function Settings() {
                   <option value="inCinemas">In cinemas — wait for the release date</option>
                   <option value="released">Released — wait release date + delay below</option>
                 </select>
-                <label>"Released" delay (days after release date)</label>
-                <input
+                <label htmlFor="settings-released-delay-days-after-release-date-21">"Released" delay (days after release date)</label>
+                <input id="settings-released-delay-days-after-release-date-21"
                   type="number"
                   min={0}
                   style={{ maxWidth: 120 }}
@@ -1370,8 +1373,8 @@ export default function Settings() {
                   without also wanting files auto-archived, or vice versa.
                 </p>
 
-                <label>Watch-status sync</label>
-                <select
+                <label htmlFor="settings-watch-status-sync-22">Watch-status sync</label>
+                <select id="settings-watch-status-sync-22"
                   key={settings.watchStatusSyncEnabled ?? "watch-status-sync-empty"}
                   defaultValue={settings.watchStatusSyncEnabled ?? "0"}
                   onChange={(e) => saveSetting("watchStatusSyncEnabled", e.target.value)}
@@ -1385,8 +1388,8 @@ export default function Settings() {
                   real time; this is the periodic fallback/complement for when a webhook isn't set up).
                 </p>
 
-                <label>Library scan sync</label>
-                <select
+                <label htmlFor="settings-library-scan-sync-23">Library scan sync</label>
+                <select id="settings-library-scan-sync-23"
                   key={settings.mediaServerScanSyncEnabled ?? "media-server-scan-sync-empty"}
                   defaultValue={settings.mediaServerScanSyncEnabled ?? "0"}
                   onChange={(e) => saveSetting("mediaServerScanSyncEnabled", e.target.value)}
@@ -1400,8 +1403,8 @@ export default function Settings() {
                   top of that, useful if files sometimes land outside AoNarr's own import path.
                 </p>
 
-                <label>Plex watchlist sync</label>
-                <select
+                <label htmlFor="settings-plex-watchlist-sync-24">Plex watchlist sync</label>
+                <select id="settings-plex-watchlist-sync-24"
                   key={settings.plexWatchlistSyncEnabled ?? "plex-watchlist-sync-empty"}
                   defaultValue={settings.plexWatchlistSyncEnabled ?? "0"}
                   onChange={(e) => saveSetting("plexWatchlistSyncEnabled", e.target.value)}
@@ -1423,8 +1426,8 @@ export default function Settings() {
                   outright. Items marked <code>protected</code> on their detail page are always skipped.
                   Runs every 6 hours; you can also trigger a run from the System page.
                 </p>
-                <label>Enable auto-archival</label>
-                <select
+                <label htmlFor="settings-enable-auto-archival-25">Enable auto-archival</label>
+                <select id="settings-enable-auto-archival-25"
                   key={settings.archiveEnabled ?? "archive-enabled-empty"}
                   defaultValue={settings.archiveEnabled ?? "0"}
                   onChange={(e) => saveSetting("archiveEnabled", e.target.value)}
@@ -1432,8 +1435,8 @@ export default function Settings() {
                   <option value="0">Disabled</option>
                   <option value="1">Enabled</option>
                 </select>
-                <label>Media server</label>
-                <select
+                <label htmlFor="settings-media-server-26">Media server</label>
+                <select id="settings-media-server-26"
                   key={settings.mediaServerType ?? "media-server-type-empty"}
                   defaultValue={settings.mediaServerType ?? "plex"}
                   onChange={(e) => saveSetting("mediaServerType", e.target.value)}
@@ -1442,15 +1445,15 @@ export default function Settings() {
                   <option value="jellyfin">Jellyfin</option>
                   <option value="emby">Emby</option>
                 </select>
-                <label>Media server URL</label>
-                <input
+                <label htmlFor="settings-media-server-url-27">Media server URL</label>
+                <input id="settings-media-server-url-27"
                   key={settings.mediaServerUrl ?? "media-server-url-empty"}
                   defaultValue={settings.mediaServerUrl ?? ""}
                   placeholder="http://plex:32400"
                   onBlur={(e) => saveSetting("mediaServerUrl", e.target.value)}
                 />
-                <label>Media server token / API key</label>
-                <input
+                <label htmlFor="settings-media-server-token-api-key-28">Media server token / API key</label>
+                <input id="settings-media-server-token-api-key-28"
                   key={settings.mediaServerToken ?? "media-server-token-empty"}
                   defaultValue={settings.mediaServerToken ?? ""}
                   onBlur={(e) => saveSetting("mediaServerToken", e.target.value)}
@@ -1478,8 +1481,8 @@ export default function Settings() {
                     </p>
                   </div>
                 )}
-                <label>Refresh media server library after each import</label>
-                <select
+                <label htmlFor="settings-refresh-media-server-library-after-each--29">Refresh media server library after each import</label>
+                <select id="settings-refresh-media-server-library-after-each--29"
                   key={settings.mediaServerRefreshOnImport ?? "media-server-refresh-empty"}
                   defaultValue={settings.mediaServerRefreshOnImport ?? "0"}
                   onChange={(e) => saveSetting("mediaServerRefreshOnImport", e.target.value)}
@@ -1510,23 +1513,23 @@ export default function Settings() {
                   </>
                 )}
 
-                <label>Archive after (days watched &amp; untouched)</label>
-                <input
+                <label htmlFor="settings-archive-after-days-watched-amp-untouched-30">Archive after (days watched &amp; untouched)</label>
+                <input id="settings-archive-after-days-watched-amp-untouched-30"
                   type="number"
                   key={settings.archiveAfterDays ?? "archive-days-empty"}
                   defaultValue={settings.archiveAfterDays ?? "30"}
                   style={{ width: 100 }}
                   onBlur={(e) => saveSetting("archiveAfterDays", e.target.value)}
                 />
-                <label>Archive folder (files are moved here, not deleted)</label>
-                <input
+                <label htmlFor="settings-archive-folder-files-are-moved-here-not--31">Archive folder (files are moved here, not deleted)</label>
+                <input id="settings-archive-folder-files-are-moved-here-not--31"
                   key={settings.archiveFolder ?? "archive-folder-empty"}
                   defaultValue={settings.archiveFolder ?? ""}
                   placeholder="/media/archive"
                   onBlur={(e) => saveSetting("archiveFolder", e.target.value)}
                 />
-                <label>Permanently delete instead of archiving</label>
-                <select
+                <label htmlFor="settings-permanently-delete-instead-of-archiving-32">Permanently delete instead of archiving</label>
+                <select id="settings-permanently-delete-instead-of-archiving-32"
                   key={settings.archivePermanentDelete ?? "archive-delete-empty"}
                   defaultValue={settings.archivePermanentDelete ?? "0"}
                   onChange={(e) => saveSetting("archivePermanentDelete", e.target.value)}
@@ -1581,29 +1584,29 @@ export default function Settings() {
                   server (usable within seconds) — leave it blank to register globally (can take
                   up to an hour to propagate everywhere the bot is added).
                 </p>
-                <label>Interactions Endpoint URL (paste into Discord's application settings)</label>
-                <input value={`${window.location.origin}/api/discord/interactions`} readOnly onFocus={(e) => e.target.select()} />
-                <label>Bot token</label>
-                <input
+                <label htmlFor="settings-interactions-endpoint-url-paste-into-dis-33">Interactions Endpoint URL (paste into Discord's application settings)</label>
+                <input id="settings-interactions-endpoint-url-paste-into-dis-33" value={`${window.location.origin}/api/discord/interactions`} readOnly onFocus={(e) => e.target.select()} />
+                <label htmlFor="settings-bot-token-34">Bot token</label>
+                <input id="settings-bot-token-34"
                   type="password"
                   key={settings.discordBotToken ?? "discord-bot-token-empty"}
                   defaultValue={settings.discordBotToken ?? ""}
                   onBlur={(e) => saveSetting("discordBotToken", e.target.value)}
                 />
-                <label>Application ID</label>
-                <input
+                <label htmlFor="settings-application-id-35">Application ID</label>
+                <input id="settings-application-id-35"
                   key={settings.discordApplicationId ?? "discord-app-id-empty"}
                   defaultValue={settings.discordApplicationId ?? ""}
                   onBlur={(e) => saveSetting("discordApplicationId", e.target.value)}
                 />
-                <label>Public key</label>
-                <input
+                <label htmlFor="settings-public-key-36">Public key</label>
+                <input id="settings-public-key-36"
                   key={settings.discordPublicKey ?? "discord-public-key-empty"}
                   defaultValue={settings.discordPublicKey ?? ""}
                   onBlur={(e) => saveSetting("discordPublicKey", e.target.value)}
                 />
-                <label>Guild ID (optional — blank registers globally)</label>
-                <input
+                <label htmlFor="settings-guild-id-optional-blank-registers-global-37">Guild ID (optional — blank registers globally)</label>
+                <input id="settings-guild-id-optional-blank-registers-global-37"
                   key={settings.discordGuildId ?? "discord-guild-id-empty"}
                   defaultValue={settings.discordGuildId ?? ""}
                   onBlur={(e) => saveSetting("discordGuildId", e.target.value)}
@@ -1706,15 +1709,15 @@ export default function Settings() {
                   Prowlarr's own per-indexer proxy, so indexer credentials stay managed there. Runs on a
                   schedule (see Jobs), or sync immediately from the Indexers page.
                 </p>
-                <label>Prowlarr URL</label>
-                <input
+                <label htmlFor="settings-prowlarr-url-38">Prowlarr URL</label>
+                <input id="settings-prowlarr-url-38"
                   key={settings.prowlarrUrl ?? "prowlarr-url-empty"}
                   defaultValue={settings.prowlarrUrl ?? ""}
                   placeholder="http://prowlarr:9696"
                   onBlur={(e) => saveSetting("prowlarrUrl", e.target.value)}
                 />
-                <label>Prowlarr API key</label>
-                <input
+                <label htmlFor="settings-prowlarr-api-key-39">Prowlarr API key</label>
+                <input id="settings-prowlarr-api-key-39"
                   key={settings.prowlarrApiKey ?? "prowlarr-key-empty"}
                   defaultValue={settings.prowlarrApiKey ?? ""}
                   onBlur={(e) => saveSetting("prowlarrApiKey", e.target.value)}
@@ -1734,15 +1737,15 @@ export default function Settings() {
                   Jackett is torrent-only (no Usenet indexers). Runs on a schedule (see Jobs), or sync
                   immediately from the Indexers page.
                 </p>
-                <label>Jackett URL</label>
-                <input
+                <label htmlFor="settings-jackett-url-40">Jackett URL</label>
+                <input id="settings-jackett-url-40"
                   key={settings.jackettUrl ?? "jackett-url-empty"}
                   defaultValue={settings.jackettUrl ?? ""}
                   placeholder="http://jackett:9117"
                   onBlur={(e) => saveSetting("jackettUrl", e.target.value)}
                 />
-                <label>Jackett API key</label>
-                <input
+                <label htmlFor="settings-jackett-api-key-41">Jackett API key</label>
+                <input id="settings-jackett-api-key-41"
                   key={settings.jackettApiKey ?? "jackett-key-empty"}
                   defaultValue={settings.jackettApiKey ?? ""}
                   onBlur={(e) => saveSetting("jackettApiKey", e.target.value)}
@@ -1765,8 +1768,8 @@ export default function Settings() {
                   instance; then enable "Route requests through FlareSolverr" on the specific indexers that
                   need it. Indexers without it enabled are unaffected.
                 </p>
-                <label>FlareSolverr URL</label>
-                <input
+                <label htmlFor="settings-flaresolverr-url-42">FlareSolverr URL</label>
+                <input id="settings-flaresolverr-url-42"
                   key={settings.flaresolverrUrl ?? "flaresolverr-url-empty"}
                   defaultValue={settings.flaresolverrUrl ?? ""}
                   placeholder="http://flaresolverr:8191"
@@ -1786,8 +1789,8 @@ export default function Settings() {
                   client APIs) through a SOCKS5 proxy. Leave blank to disable. Takes effect immediately —
                   no restart needed.
                 </p>
-                <label>Proxy URL</label>
-                <input
+                <label htmlFor="settings-proxy-url-43">Proxy URL</label>
+                <input id="settings-proxy-url-43"
                   key={settings.socks5ProxyUrl ?? "socks5-empty"}
                   defaultValue={settings.socks5ProxyUrl ?? ""}
                   placeholder="socks5://user:pass@host:1080"
@@ -1809,8 +1812,8 @@ export default function Settings() {
                   enabled unless you actually need it. Has no effect while a SOCKS5 proxy above is
                   configured (the proxy connection doesn't go through this same TLS path).
                 </p>
-                <label>Certificate validation</label>
-                <select
+                <label htmlFor="settings-certificate-validation-44">Certificate validation</label>
+                <select id="settings-certificate-validation-44"
                   key={settings.tlsRejectUnauthorized ?? "tls-reject-empty"}
                   defaultValue={settings.tlsRejectUnauthorized ?? "1"}
                   onChange={(e) => saveSetting("tlsRejectUnauthorized", e.target.value)}
@@ -1832,8 +1835,8 @@ export default function Settings() {
                   overnight or grabbing while someone's actively streaming. Manual searches and grabs
                   still work normally; this only pauses the scheduled auto-search.
                 </p>
-                <label>Enable quiet hours</label>
-                <select
+                <label htmlFor="settings-enable-quiet-hours-45">Enable quiet hours</label>
+                <select id="settings-enable-quiet-hours-45"
                   key={settings.quietHoursEnabled ?? "quiet-hours-enabled-empty"}
                   defaultValue={settings.quietHoursEnabled ?? "0"}
                   onChange={(e) => saveSetting("quietHoursEnabled", e.target.value)}
@@ -1841,15 +1844,15 @@ export default function Settings() {
                   <option value="0">Disabled</option>
                   <option value="1">Enabled</option>
                 </select>
-                <label>Start (24h, local time)</label>
-                <input
+                <label htmlFor="settings-start-24h-local-time-46">Start (24h, local time)</label>
+                <input id="settings-start-24h-local-time-46"
                   type="time"
                   key={settings.quietHoursStart ?? "quiet-hours-start-empty"}
                   defaultValue={settings.quietHoursStart ?? "22:00"}
                   onBlur={(e) => saveSetting("quietHoursStart", e.target.value)}
                 />
-                <label>End (24h, local time)</label>
-                <input
+                <label htmlFor="settings-end-24h-local-time-47">End (24h, local time)</label>
+                <input id="settings-end-24h-local-time-47"
                   type="time"
                   key={settings.quietHoursEnd ?? "quiet-hours-end-empty"}
                   defaultValue={settings.quietHoursEnd ?? "06:00"}
@@ -1870,8 +1873,8 @@ export default function Settings() {
                   interval around the clock. Manual searches are unaffected. Independent of Quiet Hours;
                   configuring both is redundant but harmless.
                 </p>
-                <label>Enable search window</label>
-                <select
+                <label htmlFor="settings-enable-search-window-48">Enable search window</label>
+                <select id="settings-enable-search-window-48"
                   key={settings.searchWindowEnabled ?? "search-window-enabled-empty"}
                   defaultValue={settings.searchWindowEnabled ?? "0"}
                   onChange={(e) => saveSetting("searchWindowEnabled", e.target.value)}
@@ -1879,15 +1882,15 @@ export default function Settings() {
                   <option value="0">Disabled</option>
                   <option value="1">Enabled</option>
                 </select>
-                <label>Start (24h, local time)</label>
-                <input
+                <label htmlFor="settings-start-24h-local-time-49">Start (24h, local time)</label>
+                <input id="settings-start-24h-local-time-49"
                   type="time"
                   key={settings.searchWindowStart ?? "search-window-start-empty"}
                   defaultValue={settings.searchWindowStart ?? "02:00"}
                   onBlur={(e) => saveSetting("searchWindowStart", e.target.value)}
                 />
-                <label>End (24h, local time)</label>
-                <input
+                <label htmlFor="settings-end-24h-local-time-50">End (24h, local time)</label>
+                <input id="settings-end-24h-local-time-50"
                   type="time"
                   key={settings.searchWindowEnd ?? "search-window-end-empty"}
                   defaultValue={settings.searchWindowEnd ?? "06:00"}
@@ -1909,8 +1912,8 @@ export default function Settings() {
                   at each item's cutoff. Off by default since it uses the same indexer/download-client
                   capacity as any other search.
                 </p>
-                <label>Enable auto upgrade</label>
-                <select
+                <label htmlFor="settings-enable-auto-upgrade-51">Enable auto upgrade</label>
+                <select id="settings-enable-auto-upgrade-51"
                   key={settings.autoUpgradeEnabled ?? "auto-upgrade-enabled-empty"}
                   defaultValue={settings.autoUpgradeEnabled ?? "0"}
                   onChange={(e) => saveSetting("autoUpgradeEnabled", e.target.value)}
@@ -1934,8 +1937,8 @@ export default function Settings() {
                   no automatic retry, the next scheduled auto-search (or a manual search) picks it
                   up instead.
                 </p>
-                <label>Behavior</label>
-                <select
+                <label htmlFor="settings-behavior-52">Behavior</label>
+                <select id="settings-behavior-52"
                   key={settings.failedDownloadBehavior ?? "failed-behavior-empty"}
                   defaultValue={settings.failedDownloadBehavior ?? "blocklistAndSearch"}
                   onChange={(e) => saveSetting("failedDownloadBehavior", e.target.value)}
@@ -1943,8 +1946,8 @@ export default function Settings() {
                   <option value="blocklistAndSearch">Blocklist and search again (default)</option>
                   <option value="blocklistOnly">Blocklist only</option>
                 </select>
-                <label>Max automatic retries</label>
-                <input
+                <label htmlFor="settings-max-automatic-retries-53">Max automatic retries</label>
+                <input id="settings-max-automatic-retries-53"
                   type="number"
                   min={0}
                   key={settings.maxAutoRetries ?? "max-retries-empty"}
@@ -1972,8 +1975,8 @@ export default function Settings() {
                   remote-mounted virtual file, and the library entry just points at it instead of
                   physically copying a multi-GB file that was never local to begin with.
                 </p>
-                <label>Strategy</label>
-                <select
+                <label htmlFor="settings-strategy-54">Strategy</label>
+                <select id="settings-strategy-54"
                   key={settings.importStrategy ?? "import-strategy-empty"}
                   defaultValue={settings.importStrategy ?? "move"}
                   onChange={(e) => saveSetting("importStrategy", e.target.value)}
@@ -2001,8 +2004,8 @@ export default function Settings() {
                   <em>after</em> completing (an import error, not a client-side failure) is never
                   touched — its file is left in place for Manual import....
                 </p>
-                <label>Remove completed downloads</label>
-                <select
+                <label htmlFor="settings-remove-completed-downloads-55">Remove completed downloads</label>
+                <select id="settings-remove-completed-downloads-55"
                   key={settings.removeCompletedDownloads ?? "remove-completed-empty"}
                   defaultValue={settings.removeCompletedDownloads ?? "1"}
                   onChange={(e) => saveSetting("removeCompletedDownloads", e.target.value)}
@@ -2010,8 +2013,8 @@ export default function Settings() {
                   <option value="1">Enabled</option>
                   <option value="0">Disabled</option>
                 </select>
-                <label>Remove failed downloads</label>
-                <select
+                <label htmlFor="settings-remove-failed-downloads-56">Remove failed downloads</label>
+                <select id="settings-remove-failed-downloads-56"
                   key={settings.removeFailedDownloads ?? "remove-failed-empty"}
                   defaultValue={settings.removeFailedDownloads ?? "1"}
                   onChange={(e) => saveSetting("removeFailedDownloads", e.target.value)}
@@ -2034,8 +2037,8 @@ export default function Settings() {
                   AoNarr already imported into the library. Leave either field blank to not gate
                   on it; leave both blank to disable this entirely (the default).
                 </p>
-                <label>Seed ratio goal</label>
-                <input
+                <label htmlFor="settings-seed-ratio-goal-57">Seed ratio goal</label>
+                <input id="settings-seed-ratio-goal-57"
                   type="number"
                   step="0.1"
                   key={settings.torrentSeedRatioGoal ?? "seed-ratio-empty"}
@@ -2043,8 +2046,8 @@ export default function Settings() {
                   placeholder="e.g. 1.0"
                   onBlur={(e) => saveSetting("torrentSeedRatioGoal", e.target.value)}
                 />
-                <label>Seed time goal (hours)</label>
-                <input
+                <label htmlFor="settings-seed-time-goal-hours-58">Seed time goal (hours)</label>
+                <input id="settings-seed-time-goal-hours-58"
                   type="number"
                   key={settings.torrentSeedTimeGoalHours ?? "seed-time-empty"}
                   defaultValue={settings.torrentSeedTimeGoalHours ?? ""}
@@ -2066,8 +2069,8 @@ export default function Settings() {
                   metadata even opened outside AoNarr. MP3 only — FLAC/OGG/M4A files are left
                   untouched (each needs its own tag format, not implemented here).
                 </p>
-                <label>Write audio tags on import</label>
-                <select
+                <label htmlFor="settings-write-audio-tags-on-import-59">Write audio tags on import</label>
+                <select id="settings-write-audio-tags-on-import-59"
                   key={settings.writeAudioTagsOnImport ?? "write-audio-tags-empty"}
                   defaultValue={settings.writeAudioTagsOnImport ?? "0"}
                   onChange={(e) => saveSetting("writeAudioTagsOnImport", e.target.value)}
@@ -2091,8 +2094,8 @@ export default function Settings() {
                   EPs/singles/live broadcasts. Applies the next time an artist's albums are fetched
                   (add, or a re-fetch), not retroactively to already-added artists.
                 </p>
-                <label>Album types</label>
-                <input
+                <label htmlFor="settings-album-types-60">Album types</label>
+                <input id="settings-album-types-60"
                   key={settings.musicAlbumTypes ?? "album-types-empty"}
                   defaultValue={settings.musicAlbumTypes ?? "album"}
                   placeholder="album"
@@ -2120,8 +2123,8 @@ export default function Settings() {
                   Use a download archive (never re-download a video already grabbed once, even
                   across restarts)
                 </label>
-                <label>SponsorBlock categories to remove (comma-separated; blank = disabled)</label>
-                <input
+                <label htmlFor="settings-sponsorblock-categories-to-remove-comma--61">SponsorBlock categories to remove (comma-separated; blank = disabled)</label>
+                <input id="settings-sponsorblock-categories-to-remove-comma--61"
                   key={settings.ytdlpSponsorBlockCategories ?? "sponsorblock-empty"}
                   defaultValue={settings.ytdlpSponsorBlockCategories ?? ""}
                   placeholder="sponsor,selfpromo,interaction"
@@ -2136,8 +2139,8 @@ export default function Settings() {
                   />
                   Fetch and embed subtitles (including auto-generated) via yt-dlp itself
                 </label>
-                <label>Subtitle languages</label>
-                <input
+                <label htmlFor="settings-subtitle-languages-62">Subtitle languages</label>
+                <input id="settings-subtitle-languages-62"
                   key={settings.ytdlpSubtitleLangs ?? "sub-langs-empty"}
                   defaultValue={settings.ytdlpSubtitleLangs ?? "en"}
                   placeholder="en"
@@ -2160,8 +2163,8 @@ export default function Settings() {
                   ROMs/Adult and single-file collection types (Books, Comics, Manga, Online
                   Videos, Courses) only; series episodes and Music tracks aren't covered.
                 </p>
-                <label>Write NFO on import</label>
-                <select
+                <label htmlFor="settings-write-nfo-on-import-63">Write NFO on import</label>
+                <select id="settings-write-nfo-on-import-63"
                   key={settings.writeNfoOnImport ?? "write-nfo-empty"}
                   defaultValue={settings.writeNfoOnImport ?? "0"}
                   onChange={(e) => saveSetting("writeNfoOnImport", e.target.value)}
@@ -2184,8 +2187,8 @@ export default function Settings() {
                   stays queued instead). Turn this off only if the check is giving false positives
                   for your setup (e.g. a filesystem that misreports free space).
                 </p>
-                <label>Free space check</label>
-                <select
+                <label htmlFor="settings-free-space-check-64">Free space check</label>
+                <select id="settings-free-space-check-64"
                   key={settings.skipFreeSpaceCheck ?? "skip-free-space-empty"}
                   defaultValue={settings.skipFreeSpaceCheck ?? "0"}
                   onChange={(e) => saveSetting("skipFreeSpaceCheck", e.target.value)}
@@ -2208,8 +2211,8 @@ export default function Settings() {
                   into the folder before anything's actually been downloaded yet. Only the item's
                   own top-level folder is created, not season/episode subfolders.
                 </p>
-                <label>Create empty folders</label>
-                <select
+                <label htmlFor="settings-create-empty-folders-65">Create empty folders</label>
+                <select id="settings-create-empty-folders-65"
                   key={settings.createEmptyFoldersOnAdd ?? "create-empty-folders-empty"}
                   defaultValue={settings.createEmptyFoldersOnAdd ?? "0"}
                   onChange={(e) => saveSetting("createEmptyFoldersOnAdd", e.target.value)}
@@ -2233,8 +2236,8 @@ export default function Settings() {
                   by default — left monitored, so it gets auto-re-searched and redownloaded like
                   any other missing item) versus left monitored so AoNarr tries to get it back.
                 </p>
-                <label>Unmonitor on delete</label>
-                <select
+                <label htmlFor="settings-unmonitor-on-delete-66">Unmonitor on delete</label>
+                <select id="settings-unmonitor-on-delete-66"
                   key={settings.unmonitorDeletedFiles ?? "unmonitor-deleted-empty"}
                   defaultValue={settings.unmonitorDeletedFiles ?? "0"}
                   onChange={(e) => saveSetting("unmonitorDeletedFiles", e.target.value)}
@@ -2258,8 +2261,8 @@ export default function Settings() {
                   itself is running as root; a permission-denied chown/chmod is logged and skipped
                   rather than failing the import.
                 </p>
-                <label>Enable</label>
-                <select
+                <label htmlFor="settings-enable-67">Enable</label>
+                <select id="settings-enable-67"
                   key={settings.setPermissionsEnabled ?? "set-perms-enabled-empty"}
                   defaultValue={settings.setPermissionsEnabled ?? "0"}
                   onChange={(e) => saveSetting("setPermissionsEnabled", e.target.value)}
@@ -2267,32 +2270,32 @@ export default function Settings() {
                   <option value="0">Disabled</option>
                   <option value="1">Enabled</option>
                 </select>
-                <label>File chmod (octal, e.g. 644)</label>
-                <input
+                <label htmlFor="settings-file-chmod-octal-e-g-644-68">File chmod (octal, e.g. 644)</label>
+                <input id="settings-file-chmod-octal-e-g-644-68"
                   key={settings.fileChmod ?? "file-chmod-empty"}
                   defaultValue={settings.fileChmod ?? "644"}
                   placeholder="644"
                   style={{ maxWidth: 120 }}
                   onBlur={(e) => saveSetting("fileChmod", e.target.value.trim())}
                 />
-                <label>Folder chmod (octal, e.g. 755)</label>
-                <input
+                <label htmlFor="settings-folder-chmod-octal-e-g-755-69">Folder chmod (octal, e.g. 755)</label>
+                <input id="settings-folder-chmod-octal-e-g-755-69"
                   key={settings.folderChmod ?? "folder-chmod-empty"}
                   defaultValue={settings.folderChmod ?? "755"}
                   placeholder="755"
                   style={{ maxWidth: 120 }}
                   onBlur={(e) => saveSetting("folderChmod", e.target.value.trim())}
                 />
-                <label>Chown UID (blank = don't chown)</label>
-                <input
+                <label htmlFor="settings-chown-uid-blank-don-t-chown-70">Chown UID (blank = don't chown)</label>
+                <input id="settings-chown-uid-blank-don-t-chown-70"
                   key={settings.chownUid ?? "chown-uid-empty"}
                   defaultValue={settings.chownUid ?? ""}
                   placeholder="1000"
                   style={{ maxWidth: 120 }}
                   onBlur={(e) => saveSetting("chownUid", e.target.value.trim())}
                 />
-                <label>Chown GID (blank = don't chown)</label>
-                <input
+                <label htmlFor="settings-chown-gid-blank-don-t-chown-71">Chown GID (blank = don't chown)</label>
+                <input id="settings-chown-gid-blank-don-t-chown-71"
                   key={settings.chownGid ?? "chown-gid-empty"}
                   defaultValue={settings.chownGid ?? ""}
                   placeholder="1000"
@@ -2315,8 +2318,8 @@ export default function Settings() {
                   with. Applies to Comics and Manga; a failed re-encode (a corrupt page image) is
                   logged and skipped rather than failing the import.
                 </p>
-                <label>Enable</label>
-                <select
+                <label htmlFor="settings-enable-72">Enable</label>
+                <select id="settings-enable-72"
                   key={settings.comicImageConvertEnabled ?? "comic-convert-enabled-empty"}
                   defaultValue={settings.comicImageConvertEnabled ?? "0"}
                   onChange={(e) => saveSetting("comicImageConvertEnabled", e.target.value)}
@@ -2324,8 +2327,8 @@ export default function Settings() {
                   <option value="0">Disabled</option>
                   <option value="1">Enabled</option>
                 </select>
-                <label>Format</label>
-                <select
+                <label htmlFor="settings-format-73">Format</label>
+                <select id="settings-format-73"
                   key={settings.comicImageFormat ?? "comic-format-empty"}
                   defaultValue={settings.comicImageFormat ?? "webp"}
                   onChange={(e) => saveSetting("comicImageFormat", e.target.value)}
@@ -2333,8 +2336,8 @@ export default function Settings() {
                   <option value="webp">WebP (smaller, needs a WebP-aware reader)</option>
                   <option value="jpeg">JPEG (safer compatibility, less savings)</option>
                 </select>
-                <label>Quality (1-100)</label>
-                <input
+                <label htmlFor="settings-quality-1-100-74">Quality (1-100)</label>
+                <input id="settings-quality-1-100-74"
                   type="number"
                   min={1}
                   max={100}
@@ -2360,8 +2363,8 @@ export default function Settings() {
                   acts on the watch-history basis, never "because you added X" — what's in the
                   library says nothing about whether anyone wanted it.
                 </p>
-                <label>Enable</label>
-                <select
+                <label htmlFor="settings-enable-75">Enable</label>
+                <select id="settings-enable-75"
                   key={settings.autoRequestFromWatchHistoryEnabled ?? "auto-request-enabled-empty"}
                   defaultValue={settings.autoRequestFromWatchHistoryEnabled ?? "0"}
                   onChange={(e) => saveSetting("autoRequestFromWatchHistoryEnabled", e.target.value)}
@@ -2369,8 +2372,8 @@ export default function Settings() {
                   <option value="0">Disabled</option>
                   <option value="1">Enabled</option>
                 </select>
-                <label>Max additions per run</label>
-                <input
+                <label htmlFor="settings-max-additions-per-run-76">Max additions per run</label>
+                <input id="settings-max-additions-per-run-76"
                   type="number"
                   min={1}
                   style={{ maxWidth: 120 }}
@@ -2392,8 +2395,8 @@ export default function Settings() {
                   retried with the next-best release (same as a failed grab) — schedule for the cleanup
                   job itself is on the Jobs page.
                 </p>
-                <label>Stalled after (hours)</label>
-                <input
+                <label htmlFor="settings-stalled-after-hours-77">Stalled after (hours)</label>
+                <input id="settings-stalled-after-hours-77"
                   type="number"
                   style={{ maxWidth: 120 }}
                   key={settings.stalledDownloadHours ?? "stalled-hours-empty"}
@@ -2422,8 +2425,8 @@ export default function Settings() {
                   a monitored movie or TV show — reuses the Trakt Client ID set above under Metadata
                   Providers. Runs every 12 hours; never removes items the list no longer has.
                 </p>
-                <label>Enable Trakt sync</label>
-                <select
+                <label htmlFor="settings-enable-trakt-sync-78">Enable Trakt sync</label>
+                <select id="settings-enable-trakt-sync-78"
                   key={settings.traktSyncEnabled ?? "trakt-sync-enabled-empty"}
                   defaultValue={settings.traktSyncEnabled ?? "0"}
                   onChange={(e) => saveSetting("traktSyncEnabled", e.target.value)}
@@ -2431,8 +2434,8 @@ export default function Settings() {
                   <option value="0">Disabled</option>
                   <option value="1">Enabled</option>
                 </select>
-                <label>List URL</label>
-                <input
+                <label htmlFor="settings-list-url-79">List URL</label>
+                <input id="settings-list-url-79"
                   key={settings.traktSyncUrl ?? "trakt-sync-url-empty"}
                   defaultValue={settings.traktSyncUrl ?? ""}
                   placeholder="https://trakt.tv/users/you/lists/to-watch"
@@ -2455,28 +2458,28 @@ export default function Settings() {
             maxWidth: 480,
             render: () => (
               <div className="form-panel">
-                <label>Name (optional — shown on this tile instead of the path)</label>
-                <input
+                <label htmlFor="settings-name-optional-shown-on-this-tile-instead-80">Name (optional — shown on this tile instead of the path)</label>
+                <input id="settings-name-optional-shown-on-this-tile-instead-80"
                   key={f.name ?? `root-folder-name-empty-${f.id}`}
                   defaultValue={f.name ?? ""}
                   placeholder={f.path}
                   onBlur={(e) => updateFolderQuota(f.id, "name", e.target.value)}
                 />
-                <label>Path</label>
-                <input value={f.path} disabled />
-                <label>Media type</label>
-                <input value={mediaTypes.find((t) => t.key === f.mediaType)?.label ?? f.mediaType} disabled />
-                <label>Free space</label>
-                <input value={typeof f.freeBytes === "number" ? formatBytes(f.freeBytes) : "unknown"} disabled />
-                <label>Quota % (pause/warn when used space reaches this)</label>
-                <input
+                <label htmlFor="settings-path-81">Path</label>
+                <input id="settings-path-81" value={f.path} disabled />
+                <label htmlFor="settings-media-type-82">Media type</label>
+                <input id="settings-media-type-82" value={mediaTypes.find((t) => t.key === f.mediaType)?.label ?? f.mediaType} disabled />
+                <label htmlFor="settings-free-space-83">Free space</label>
+                <input id="settings-free-space-83" value={typeof f.freeBytes === "number" ? formatBytes(f.freeBytes) : "unknown"} disabled />
+                <label htmlFor="settings-quota-pause-warn-when-used-space-reaches-84">Quota % (pause/warn when used space reaches this)</label>
+                <input id="settings-quota-pause-warn-when-used-space-reaches-84"
                   type="number"
                   defaultValue={f.quotaPercent ?? ""}
                   placeholder="off"
                   onBlur={(e) => updateFolderQuota(f.id, "quotaPercent", e.target.value === "" ? null : Number(e.target.value))}
                 />
-                <label>Minimum free space (GB) — health warning below this, independent of quota %</label>
-                <input
+                <label htmlFor="settings-minimum-free-space-gb-health-warning-bel-85">Minimum free space (GB) — health warning below this, independent of quota %</label>
+                <input id="settings-minimum-free-space-gb-health-warning-bel-85"
                   type="number"
                   defaultValue={f.minFreeSpaceGb ?? ""}
                   placeholder="off"
@@ -2493,9 +2496,10 @@ export default function Settings() {
                 </label>
                 {rootFolders.filter((other) => other.mediaType === f.mediaType && other.id !== f.id).length > 0 && (
                   <>
-                    <label>Move all files to another root folder</label>
+                    <label htmlFor={`settings-move-root-folder-${f.id}`}>Move all files to another root folder</label>
                     <div className="toolbar" style={{ gap: 8 }}>
                       <select
+                        id={`settings-move-root-folder-${f.id}`}
                         defaultValue=""
                         onChange={(e) => {
                           const destId = Number(e.target.value);
@@ -2531,9 +2535,9 @@ export default function Settings() {
             maxWidth: 480,
             render: () => (
               <form className="form-panel" onSubmit={addFolder}>
-                <label>Path</label>
+                <label htmlFor="settings-add-root-folder-path">Path</label>
                 <div className="toolbar">
-                  <input value={folderPath} onChange={(e) => setFolderPath(e.target.value)} placeholder="/media/movies" required style={{ flex: 1 }} />
+                  <input id="settings-add-root-folder-path" value={folderPath} onChange={(e) => setFolderPath(e.target.value)} placeholder="/media/movies" required style={{ flex: 1 }} />
                   <button type="button" className="secondary" onClick={() => setShowFolderPicker(true)}>
                     Browse...
                   </button>
@@ -2548,8 +2552,8 @@ export default function Settings() {
                     }}
                   />
                 )}
-                <label>Media type</label>
-                <select value={folderType} onChange={(e) => setFolderType(e.target.value as MediaType)}>
+                <label htmlFor="settings-media-type-86">Media type</label>
+                <select id="settings-media-type-86" value={folderType} onChange={(e) => setFolderType(e.target.value as MediaType)}>
                   {mediaTypes.map((t) => (
                     <option key={t.key} value={t.key}>
                       {t.label}
@@ -2577,8 +2581,8 @@ export default function Settings() {
                   wins.
                 </p>
                 <form className="form-panel" onSubmit={addTag}>
-                  <label>Name</label>
-                  <input value={tagName} onChange={(e) => setTagName(e.target.value)} required />
+                  <label htmlFor="settings-name-87">Name</label>
+                  <input id="settings-name-87" value={tagName} onChange={(e) => setTagName(e.target.value)} required />
                   <button type="submit">Add tag</button>
                 </form>
                 <table>
@@ -2648,25 +2652,25 @@ export default function Settings() {
                   is a soft target only, used to break ties between otherwise-equal releases at this
                   quality.
                 </p>
-                <label>Name</label>
-                <input
+                <label htmlFor="settings-name-88">Name</label>
+                <input id="settings-name-88"
                   defaultValue={q.name}
                   onBlur={(e) => e.target.value !== q.name && renameQuality(q.id, e.target.value)}
                 />
-                <label>Min size (MB)</label>
-                <input
+                <label htmlFor="settings-min-size-mb-89">Min size (MB)</label>
+                <input id="settings-min-size-mb-89"
                   type="number"
                   defaultValue={q.minSizeMb ?? ""}
                   onBlur={(e) => saveQualitySize(q.id, "minSizeMb", e.target.value)}
                 />
-                <label>Max size (MB)</label>
-                <input
+                <label htmlFor="settings-max-size-mb-90">Max size (MB)</label>
+                <input id="settings-max-size-mb-90"
                   type="number"
                   defaultValue={q.maxSizeMb ?? ""}
                   onBlur={(e) => saveQualitySize(q.id, "maxSizeMb", e.target.value)}
                 />
-                <label>Preferred size (MB)</label>
-                <input
+                <label htmlFor="settings-preferred-size-mb-91">Preferred size (MB)</label>
+                <input id="settings-preferred-size-mb-91"
                   type="number"
                   defaultValue={q.preferredSizeMb ?? ""}
                   onBlur={(e) => saveQualitySize(q.id, "preferredSizeMb", e.target.value)}
@@ -2689,20 +2693,20 @@ export default function Settings() {
             maxWidth: 480,
             render: () => (
               <div className="form-panel">
-                <label>Name</label>
-                <input value={p.name} disabled />
-                <label>Allowed qualities</label>
-                <input value={p.allowedQualities.join(", ")} disabled />
-                <label>Cutoff (stop upgrading at)</label>
-                <input value={p.cutoff} disabled />
-                <label>Min format score</label>
-                <input
+                <label htmlFor="settings-name-92">Name</label>
+                <input id="settings-name-92" value={p.name} disabled />
+                <label htmlFor="settings-allowed-qualities-93">Allowed qualities</label>
+                <input id="settings-allowed-qualities-93" value={p.allowedQualities.join(", ")} disabled />
+                <label htmlFor="settings-cutoff-stop-upgrading-at-94">Cutoff (stop upgrading at)</label>
+                <input id="settings-cutoff-stop-upgrading-at-94" value={p.cutoff} disabled />
+                <label htmlFor="settings-min-format-score-95">Min format score</label>
+                <input id="settings-min-format-score-95"
                   type="number"
                   defaultValue={p.minFormatScore}
                   onBlur={(e) => saveMinFormatScore(p.id, Number(e.target.value))}
                 />
-                <label>Maximum size (GB) — reject any release over this, regardless of quality</label>
-                <input
+                <label htmlFor="settings-maximum-size-gb-reject-any-release-over--96">Maximum size (GB) — reject any release over this, regardless of quality</label>
+                <input id="settings-maximum-size-gb-reject-any-release-over--96"
                   key={p.maxSizeGb ?? `profile-max-size-empty-${p.id}`}
                   type="number"
                   step="0.1"
@@ -2724,10 +2728,10 @@ export default function Settings() {
             maxWidth: 480,
             render: () => (
               <form className="form-panel" onSubmit={addProfile}>
-                <label>Name</label>
-                <input value={profileName} onChange={(e) => setProfileName(e.target.value)} required />
-                <label>Allowed qualities</label>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 8 }}>
+                <label htmlFor="settings-name-97">Name</label>
+                <input id="settings-name-97" value={profileName} onChange={(e) => setProfileName(e.target.value)} required />
+                <label id="settings-allowed-qualities-label">Allowed qualities</label>
+                <div role="group" aria-labelledby="settings-allowed-qualities-label" style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 8 }}>
                   {qualities.map((q) => (
                     <label key={q.id} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.85rem", margin: 0 }}>
                       <input
@@ -2740,8 +2744,8 @@ export default function Settings() {
                     </label>
                   ))}
                 </div>
-                <label>Cutoff (stop upgrading at)</label>
-                <select value={profileCutoff} onChange={(e) => setProfileCutoff(e.target.value)}>
+                <label htmlFor="settings-cutoff-stop-upgrading-at-98">Cutoff (stop upgrading at)</label>
+                <select id="settings-cutoff-stop-upgrading-at-98" value={profileCutoff} onChange={(e) => setProfileCutoff(e.target.value)}>
                   {qualities.map((q) => (
                     <option key={q.id} value={q.name}>
                       {q.name}
@@ -2774,8 +2778,8 @@ export default function Settings() {
                   />
                   Allow Usenet
                 </label>
-                <label>Usenet delay (minutes)</label>
-                <input
+                <label htmlFor="settings-usenet-delay-minutes-99">Usenet delay (minutes)</label>
+                <input id="settings-usenet-delay-minutes-99"
                   type="number"
                   defaultValue={d.usenetDelayMinutes}
                   onBlur={(e) => updateDelayProfile(d.id, { usenetDelayMinutes: Number(e.target.value) || 0 })}
@@ -2789,8 +2793,8 @@ export default function Settings() {
                   />
                   Allow Torrent
                 </label>
-                <label>Torrent delay (minutes)</label>
-                <input
+                <label htmlFor="settings-torrent-delay-minutes-100">Torrent delay (minutes)</label>
+                <input id="settings-torrent-delay-minutes-100"
                   type="number"
                   defaultValue={d.torrentDelayMinutes}
                   onBlur={(e) => updateDelayProfile(d.id, { torrentDelayMinutes: Number(e.target.value) || 0 })}
@@ -2817,8 +2821,8 @@ export default function Settings() {
             maxWidth: 420,
             render: () => (
               <div className="form-panel">
-                <label>Applies to</label>
-                <select value={newDelayProfileTagId} onChange={(e) => setNewDelayProfileTagId(e.target.value)}>
+                <label htmlFor="settings-applies-to-101">Applies to</label>
+                <select id="settings-applies-to-101" value={newDelayProfileTagId} onChange={(e) => setNewDelayProfileTagId(e.target.value)}>
                   <option value="">Default (untagged / no more specific match)</option>
                   {tags.map((t) => (
                     <option key={t.id} value={t.id}>
@@ -2854,10 +2858,10 @@ export default function Settings() {
                   />
                   Enabled
                 </label>
-                <label>Name</label>
-                <input defaultValue={rp.name} onBlur={(e) => e.target.value !== rp.name && updateReleaseProfile(rp.id, { name: e.target.value })} />
-                <label>Must Contain (comma-separated)</label>
-                <input
+                <label htmlFor="settings-name-102">Name</label>
+                <input id="settings-name-102" defaultValue={rp.name} onBlur={(e) => e.target.value !== rp.name && updateReleaseProfile(rp.id, { name: e.target.value })} />
+                <label htmlFor="settings-must-contain-comma-separated-103">Must Contain (comma-separated)</label>
+                <input id="settings-must-contain-comma-separated-103"
                   defaultValue={rp.mustContain.join(", ")}
                   onBlur={(e) =>
                     updateReleaseProfile(rp.id, {
@@ -2865,8 +2869,8 @@ export default function Settings() {
                     })
                   }
                 />
-                <label>Must Not Contain (comma-separated)</label>
-                <input
+                <label htmlFor="settings-must-not-contain-comma-separated-104">Must Not Contain (comma-separated)</label>
+                <input id="settings-must-not-contain-comma-separated-104"
                   defaultValue={rp.mustNotContain.join(", ")}
                   onBlur={(e) =>
                     updateReleaseProfile(rp.id, {
@@ -2874,8 +2878,8 @@ export default function Settings() {
                     })
                   }
                 />
-                <label>Preferred (one "term: score" per line)</label>
-                <textarea
+                <label htmlFor="settings-preferred-one-term-score-per-line-105">Preferred (one "term: score" per line)</label>
+                <textarea id="settings-preferred-one-term-score-per-line-105"
                   rows={4}
                   defaultValue={rp.preferred.map((p) => `${p.term}: ${p.score}`).join("\n")}
                   onBlur={(e) => {
@@ -2902,8 +2906,8 @@ export default function Settings() {
             maxWidth: 420,
             render: () => (
               <div className="form-panel">
-                <label>Name</label>
-                <input value={newReleaseProfileName} onChange={(e) => setNewReleaseProfileName(e.target.value)} placeholder="e.g. Prefer HDR" />
+                <label htmlFor="settings-name-106">Name</label>
+                <input id="settings-name-106" value={newReleaseProfileName} onChange={(e) => setNewReleaseProfileName(e.target.value)} placeholder="e.g. Prefer HDR" />
                 <button type="button" onClick={addReleaseProfile} style={{ marginTop: 8 }}>
                   Add release profile
                 </button>
@@ -2917,10 +2921,10 @@ export default function Settings() {
             maxWidth: 560,
             render: () => (
               <div className="form-panel">
-                <label>Name</label>
-                <input value={f.name} disabled />
-                <label>Conditions</label>
-                <textarea
+                <label htmlFor="settings-name-107">Name</label>
+                <input id="settings-name-107" value={f.name} disabled />
+                <label htmlFor="settings-conditions-108">Conditions</label>
+                <textarea id="settings-conditions-108"
                   disabled
                   rows={4}
                   value={f.conditionGroups
@@ -2947,8 +2951,8 @@ export default function Settings() {
                     })
                     .join(" AND\n")}
                 />
-                <label>Applies to (leave all unchecked for every library)</label>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 8 }}>
+                <label id="settings-release-profile-applies-to-label">Applies to (leave all unchecked for every library)</label>
+                <div role="group" aria-labelledby="settings-release-profile-applies-to-label" style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 8 }}>
                   {mediaTypes.map((t) => (
                     <label key={t.key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.85rem", margin: 0 }}>
                       <input
@@ -3001,18 +3005,18 @@ export default function Settings() {
                   quality profile from the Format Scores tile.
                 </p>
                 <form className="form-panel" onSubmit={addCustomFormat}>
-                  <label>Name</label>
-                  <input value={formatName} onChange={(e) => setFormatName(e.target.value)} required />
-                  <label>Conditions (one group per line)</label>
-                  <textarea
+                  <label htmlFor="settings-name-109">Name</label>
+                  <input id="settings-name-109" value={formatName} onChange={(e) => setFormatName(e.target.value)} required />
+                  <label htmlFor="settings-conditions-one-group-per-line-110">Conditions (one group per line)</label>
+                  <textarea id="settings-conditions-one-group-per-line-110"
                     value={formatPatterns}
                     onChange={(e) => setFormatPatterns(e.target.value)}
                     placeholder={"SOURCE: Remux, Bluray\nNOT x265\nRESOLUTION: 2160p\nNOT LANG: french"}
                     rows={5}
                     required
                   />
-                  <label>Applies to (leave all unchecked for every library)</label>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 8 }}>
+                  <label id="settings-custom-format-applies-to-label">Applies to (leave all unchecked for every library)</label>
+                  <div role="group" aria-labelledby="settings-custom-format-applies-to-label" style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 8 }}>
                     {mediaTypes.map((t) => (
                       <label key={t.key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.85rem", margin: 0 }}>
                         <input
@@ -3048,14 +3052,14 @@ export default function Settings() {
                 </div>
 
                 <div className="form-panel">
-                  <label>Import from TRaSH-Guides (or a Radarr/Sonarr custom format export)</label>
+                  <label htmlFor="settings-trash-import-json">Import from TRaSH-Guides (or a Radarr/Sonarr custom format export)</label>
                   <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
                     Paste the format's JSON (from TRaSH-Guides' GitHub repo, or Radarr/Sonarr's own "Export"
                     on a custom format). Title/release-group/size conditions translate directly; language
                     and other condition types aren't supported and get skipped (reported after import) since
                     they use Radarr/Sonarr's own internal ids.
                   </p>
-                  <textarea value={trashJson} onChange={(e) => setTrashJson(e.target.value)} rows={6} placeholder='{"name": "...", "specifications": [...]}' />
+                  <textarea id="settings-trash-import-json" value={trashJson} onChange={(e) => setTrashJson(e.target.value)} rows={6} placeholder='{"name": "...", "specifications": [...]}' />
                   {trashError && <p style={{ color: "var(--danger)" }}>{trashError}</p>}
                   <button type="button" onClick={importTrashFormat}>
                     Import
@@ -3076,16 +3080,16 @@ export default function Settings() {
                   score each contributes for a given quality profile — the same scoring the search/grab
                   pipeline uses, without needing a real search result.
                 </p>
-                <label>Release title</label>
-                <input
+                <label htmlFor="settings-release-title-111">Release title</label>
+                <input id="settings-release-title-111"
                   value={testReleaseTitle}
                   onChange={(e) => setTestReleaseTitle(e.target.value)}
                   placeholder="Movie.Name.2024.2160p.UHD.BluRay.REMUX.HDR.DTS-HD.MA.5.1-GROUP"
                 />
-                <label>Size (MB, optional — needed for size-based conditions)</label>
-                <input value={testReleaseSizeMb} onChange={(e) => setTestReleaseSizeMb(e.target.value)} type="number" style={{ maxWidth: 160 }} />
-                <label>Quality profile (optional — scores are per-profile)</label>
-                <select value={testQualityProfileId} onChange={(e) => setTestQualityProfileId(e.target.value)}>
+                <label htmlFor="settings-size-mb-optional-needed-for-size-based-c-112">Size (MB, optional — needed for size-based conditions)</label>
+                <input id="settings-size-mb-optional-needed-for-size-based-c-112" value={testReleaseSizeMb} onChange={(e) => setTestReleaseSizeMb(e.target.value)} type="number" style={{ maxWidth: 160 }} />
+                <label htmlFor="settings-quality-profile-optional-scores-are-per--113">Quality profile (optional — scores are per-profile)</label>
+                <select id="settings-quality-profile-optional-scores-are-per--113" value={testQualityProfileId} onChange={(e) => setTestQualityProfileId(e.target.value)}>
                   <option value="">No profile (show matches only, no scores)</option>
                   {profiles.map((p) => (
                     <option key={p.id} value={p.id}>
@@ -3155,8 +3159,8 @@ export default function Settings() {
                 )}
                 {customFormats.length > 0 && profiles.length > 0 && (
                   <>
-                    <label>Quality profile</label>
-                    <select
+                    <label htmlFor="settings-quality-profile-114">Quality profile</label>
+                    <select id="settings-quality-profile-114"
                       value={scoreProfileId}
                       onChange={(e) => setScoreProfileId(e.target.value ? Number(e.target.value) : "")}
                       style={{ maxWidth: 260, marginBottom: 12 }}
@@ -3254,8 +3258,8 @@ export default function Settings() {
             description: "Re-align subtitle timing after download",
             render: () => (
               <div>
-                <label>Sync subtitle timing after download</label>
-                <select
+                <label htmlFor="settings-sync-subtitle-timing-after-download-115">Sync subtitle timing after download</label>
+                <select id="settings-sync-subtitle-timing-after-download-115"
                   key={settings.subtitleSyncEnabled ?? "sub-sync-empty"}
                   defaultValue={settings.subtitleSyncEnabled ?? "1"}
                   onChange={(e) => saveSetting("subtitleSyncEnabled", e.target.value)}
@@ -3280,12 +3284,12 @@ export default function Settings() {
             maxWidth: 420,
             render: () => (
               <div className="form-panel">
-                <label>Name</label>
-                <input value={p.name} disabled />
-                <label>Type</label>
-                <input value={p.type === "custom" ? "Custom (JSON API)" : "OpenSubtitles"} disabled />
-                <label>Languages</label>
-                <input value={p.languages} disabled />
+                <label htmlFor="settings-name-116">Name</label>
+                <input id="settings-name-116" value={p.name} disabled />
+                <label htmlFor="settings-type-117">Type</label>
+                <input id="settings-type-117" value={p.type === "custom" ? "Custom (JSON API)" : "OpenSubtitles"} disabled />
+                <label htmlFor="settings-languages-118">Languages</label>
+                <input id="settings-languages-118" value={p.languages} disabled />
                 <button className="danger" onClick={() => removeProvider(p.id)}>
                   Delete subtitle provider
                 </button>
@@ -3307,26 +3311,26 @@ export default function Settings() {
                   terms of service; use Custom instead if your provider has an API of its own.
                 </p>
                 <form className="form-panel" onSubmit={addProvider}>
-                  <label>Provider type</label>
-                  <select value={subType} onChange={(e) => setSubType(e.target.value as "opensubtitles" | "custom")}>
+                  <label htmlFor="settings-provider-type-119">Provider type</label>
+                  <select id="settings-provider-type-119" value={subType} onChange={(e) => setSubType(e.target.value as "opensubtitles" | "custom")}>
                     <option value="opensubtitles">OpenSubtitles</option>
                     <option value="custom">Custom (JSON API)</option>
                   </select>
-                  <label>Name</label>
-                  <input value={subName} onChange={(e) => setSubName(e.target.value)} />
+                  <label htmlFor="settings-name-120">Name</label>
+                  <input id="settings-name-120" value={subName} onChange={(e) => setSubName(e.target.value)} />
 
                   {subType === "opensubtitles" ? (
                     <>
-                      <label>OpenSubtitles API key</label>
-                      <input value={subApiKey} onChange={(e) => setSubApiKey(e.target.value)} required />
-                      <label>Hearing-impaired subtitles</label>
-                      <select value={subHearingImpaired} onChange={(e) => setSubHearingImpaired(e.target.value)}>
+                      <label htmlFor="settings-opensubtitles-api-key-121">OpenSubtitles API key</label>
+                      <input id="settings-opensubtitles-api-key-121" value={subApiKey} onChange={(e) => setSubApiKey(e.target.value)} required />
+                      <label htmlFor="settings-hearing-impaired-subtitles-122">Hearing-impaired subtitles</label>
+                      <select id="settings-hearing-impaired-subtitles-122" value={subHearingImpaired} onChange={(e) => setSubHearingImpaired(e.target.value)}>
                         <option value="">No preference (either)</option>
                         <option value="exclude">Exclude</option>
                         <option value="only">Require</option>
                       </select>
-                      <label>Forced subtitles (foreign-dialogue-only)</label>
-                      <select value={subForeignPartsOnly} onChange={(e) => setSubForeignPartsOnly(e.target.value)}>
+                      <label htmlFor="settings-forced-subtitles-foreign-dialogue-only-123">Forced subtitles (foreign-dialogue-only)</label>
+                      <select id="settings-forced-subtitles-foreign-dialogue-only-123" value={subForeignPartsOnly} onChange={(e) => setSubForeignPartsOnly(e.target.value)}>
                         <option value="">No preference (either)</option>
                         <option value="exclude">Exclude</option>
                         <option value="only">Require</option>
@@ -3334,28 +3338,28 @@ export default function Settings() {
                     </>
                   ) : (
                     <>
-                      <label>API key (sent as a Bearer token, if your provider needs one)</label>
-                      <input value={subApiKey} onChange={(e) => setSubApiKey(e.target.value)} />
-                      <label>Search URL template ({"{query}"} and {"{languages}"} get substituted)</label>
-                      <input
+                      <label htmlFor="settings-api-key-sent-as-a-bearer-token-if-your-p-124">API key (sent as a Bearer token, if your provider needs one)</label>
+                      <input id="settings-api-key-sent-as-a-bearer-token-if-your-p-124" value={subApiKey} onChange={(e) => setSubApiKey(e.target.value)} />
+                      <label htmlFor="settings-search-url-template-query-and-languages--125">Search URL template ({"{query}"} and {"{languages}"} get substituted)</label>
+                      <input id="settings-search-url-template-query-and-languages--125"
                         value={subSearchUrlTemplate}
                         onChange={(e) => setSubSearchUrlTemplate(e.target.value)}
                         placeholder="https://example.com/api/search?q={query}&lang={languages}"
                         required
                       />
-                      <label>Results array path (dot path; blank if the response itself is the array)</label>
-                      <input value={subResultsPath} onChange={(e) => setSubResultsPath(e.target.value)} placeholder="data.results" />
-                      <label>Download URL field (dot path within each result)</label>
-                      <input value={subDownloadUrlField} onChange={(e) => setSubDownloadUrlField(e.target.value)} required />
-                      <label>Language field</label>
-                      <input value={subLanguageField} onChange={(e) => setSubLanguageField(e.target.value)} />
-                      <label>Release name field</label>
-                      <input value={subReleaseField} onChange={(e) => setSubReleaseField(e.target.value)} />
+                      <label htmlFor="settings-results-array-path-dot-path-blank-if-the-126">Results array path (dot path; blank if the response itself is the array)</label>
+                      <input id="settings-results-array-path-dot-path-blank-if-the-126" value={subResultsPath} onChange={(e) => setSubResultsPath(e.target.value)} placeholder="data.results" />
+                      <label htmlFor="settings-download-url-field-dot-path-within-each--127">Download URL field (dot path within each result)</label>
+                      <input id="settings-download-url-field-dot-path-within-each--127" value={subDownloadUrlField} onChange={(e) => setSubDownloadUrlField(e.target.value)} required />
+                      <label htmlFor="settings-language-field-128">Language field</label>
+                      <input id="settings-language-field-128" value={subLanguageField} onChange={(e) => setSubLanguageField(e.target.value)} />
+                      <label htmlFor="settings-release-name-field-129">Release name field</label>
+                      <input id="settings-release-name-field-129" value={subReleaseField} onChange={(e) => setSubReleaseField(e.target.value)} />
                     </>
                   )}
 
-                  <label>Languages (comma-separated ISO codes)</label>
-                  <input value={subLanguages} onChange={(e) => setSubLanguages(e.target.value)} />
+                  <label htmlFor="settings-languages-comma-separated-iso-codes-130">Languages (comma-separated ISO codes)</label>
+                  <input id="settings-languages-comma-separated-iso-codes-130" value={subLanguages} onChange={(e) => setSubLanguages(e.target.value)} />
                   <button type="submit">Add subtitle provider</button>
                 </form>
               </div>

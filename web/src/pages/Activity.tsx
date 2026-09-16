@@ -377,8 +377,8 @@ export default function Activity() {
             first. Pick the one that's actually this download if AoNarr couldn't find or match it
             automatically.
           </p>
-          <label>Quality</label>
-          <select value={overrideQuality} onChange={(e) => setOverrideQuality(e.target.value)} style={{ marginBottom: 10 }}>
+          <label htmlFor="activity-quality-1">Quality</label>
+          <select id="activity-quality-1" value={overrideQuality} onChange={(e) => setOverrideQuality(e.target.value)} style={{ marginBottom: 10 }}>
             <option value="">Auto-detected — {manualImportFor.quality ?? "unknown"}</option>
             {qualities.map((q) => (
               <option key={q.id} value={q.name}>

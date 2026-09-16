@@ -382,8 +382,8 @@ export default function AddMedia() {
       <h1>Add Media</h1>
 
       <div className="form-panel">
-        <label>Type</label>
-        <select
+        <label htmlFor="addmedia-type-1">Type</label>
+        <select id="addmedia-type-1"
           value={type}
           onChange={(e) => {
             setType(e.target.value as MediaType);
@@ -400,8 +400,8 @@ export default function AddMedia() {
 
         {!manual && (
           <>
-            <label>Metadata provider</label>
-            <select value={provider} onChange={(e) => setProvider(e.target.value)} style={{ marginBottom: 10 }}>
+            <label htmlFor="addmedia-metadata-provider-2">Metadata provider</label>
+            <select id="addmedia-metadata-provider-2" value={provider} onChange={(e) => setProvider(e.target.value)} style={{ marginBottom: 10 }}>
               {(providers[type] ?? []).map((p) => (
                 <option key={p} value={p}>
                   {PROVIDER_LABELS[p] ?? p}
@@ -420,10 +420,11 @@ export default function AddMedia() {
 
             {searchMode === "title" ? (
               <form onSubmit={runSearch}>
-                <label>Search</label>
+                <label htmlFor="add-media-search-title">Search</label>
                 <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                  <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Title..." style={{ flex: 1 }} />
+                  <input id="add-media-search-title" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Title..." style={{ flex: 1 }} />
                   <input
+                    aria-label="Year"
                     value={searchYear}
                     onChange={(e) => setSearchYear(e.target.value)}
                     placeholder="Year"
@@ -438,8 +439,8 @@ export default function AddMedia() {
               </form>
             ) : (
               <form onSubmit={runIdMatch}>
-                <label>ID or URL</label>
-                <input
+                <label htmlFor="addmedia-id-or-url-3">ID or URL</label>
+                <input id="addmedia-id-or-url-3"
                   value={idInput}
                   onChange={(e) => setIdInput(e.target.value)}
                   placeholder='e.g. "tt1234567", "603", an ISBN, or a full themoviedb.org/imdb.com/anilist.co/... link'
@@ -472,8 +473,8 @@ export default function AddMedia() {
             Import from .nfo file instead
           </summary>
           <form onSubmit={loadNfo} style={{ marginTop: 8 }}>
-            <label>Path to .nfo (relative to downloads directory)</label>
-            <input
+            <label htmlFor="addmedia-path-to-nfo-relative-to-downloads-direct-4">Path to .nfo (relative to downloads directory)</label>
+            <input id="addmedia-path-to-nfo-relative-to-downloads-direct-4"
               value={nfoPath}
               onChange={(e) => setNfoPath(e.target.value)}
               placeholder="Some Movie (2020)/movie.nfo"
@@ -491,8 +492,8 @@ export default function AddMedia() {
               Import from a course page URL
             </summary>
             <form onSubmit={loadCourseUrl} style={{ marginTop: 8 }}>
-              <label>Coursera / edX / Udemy (or any) course URL</label>
-              <input
+              <label htmlFor="addmedia-coursera-edx-udemy-or-any-course-url-5">Coursera / edX / Udemy (or any) course URL</label>
+              <input id="addmedia-coursera-edx-udemy-or-any-course-url-5"
                 value={courseUrl}
                 onChange={(e) => setCourseUrl(e.target.value)}
                 placeholder="https://www.coursera.org/learn/..."
@@ -534,14 +535,14 @@ export default function AddMedia() {
 
       {(manual || selected) && (
         <form className="form-panel" onSubmit={confirmImport}>
-          <label>Title</label>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} required />
+          <label htmlFor="addmedia-title-6">Title</label>
+          <input id="addmedia-title-6" value={title} onChange={(e) => setTitle(e.target.value)} required />
 
-          <label>Year</label>
-          <input value={year} onChange={(e) => setYear(e.target.value)} type="number" />
+          <label htmlFor="addmedia-year-7">Year</label>
+          <input id="addmedia-year-7" value={year} onChange={(e) => setYear(e.target.value)} type="number" />
 
-          <label>Overview</label>
-          <textarea value={overview} onChange={(e) => setOverview(e.target.value)} rows={3} />
+          <label htmlFor="addmedia-overview-8">Overview</label>
+          <textarea id="addmedia-overview-8" value={overview} onChange={(e) => setOverview(e.target.value)} rows={3} />
 
           {type === "rom" && romDetailsLoading && (
             <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>Looking up system/maker...</p>
@@ -562,8 +563,8 @@ export default function AddMedia() {
             />
           )}
 
-          <label>Root folder</label>
-          <select value={rootFolderId} onChange={(e) => setRootFolderId(e.target.value ? Number(e.target.value) : "")}>
+          <label htmlFor="addmedia-root-folder-9">Root folder</label>
+          <select id="addmedia-root-folder-9" value={rootFolderId} onChange={(e) => setRootFolderId(e.target.value ? Number(e.target.value) : "")}>
             <option value="">Auto (most free space)</option>
             {foldersForType.map((f) => (
               <option key={f.id} value={f.id}>
@@ -573,8 +574,8 @@ export default function AddMedia() {
             ))}
           </select>
 
-          <label>Quality profile</label>
-          <select
+          <label htmlFor="addmedia-quality-profile-10">Quality profile</label>
+          <select id="addmedia-quality-profile-10"
             value={qualityProfileId}
             onChange={(e) => setQualityProfileId(e.target.value ? Number(e.target.value) : "")}
           >
@@ -587,8 +588,8 @@ export default function AddMedia() {
 
           {activeTypeInfo?.shape === "episodic" && (
             <>
-              <label>Monitor</label>
-              <select value={monitorStrategy} onChange={(e) => setMonitorStrategy(e.target.value as MonitorStrategy)}>
+              <label htmlFor="addmedia-monitor-11">Monitor</label>
+              <select id="addmedia-monitor-11" value={monitorStrategy} onChange={(e) => setMonitorStrategy(e.target.value as MonitorStrategy)}>
                 {Object.entries(MONITOR_STRATEGY_LABELS).map(([key, label]) => (
                   <option key={key} value={key}>
                     {label}

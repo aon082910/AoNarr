@@ -127,8 +127,8 @@ export default function CustomColumns() {
       {mode !== null && (mode === "add" || editing) && (
         <Modal title={mode === "add" ? "Add Custom Column" : `Edit — ${editing!.label}`} onClose={() => setMode(null)}>
           <form className="form-panel" onSubmit={submit} style={{ padding: 0 }}>
-            <label>Field</label>
-            <select value={fieldPreset} onChange={(e) => selectPreset(e.target.value)}>
+            <label htmlFor="customcolumns-field-1">Field</label>
+            <select id="customcolumns-field-1" value={fieldPreset} onChange={(e) => selectPreset(e.target.value)}>
               {FIELD_PRESETS.map((p) => (
                 <option key={p.key} value={p.key}>
                   {p.label}
@@ -138,16 +138,16 @@ export default function CustomColumns() {
 
             {fieldPreset === "custom" && (
               <>
-                <label>Metadata path</label>
-                <input value={path} onChange={(e) => setPath(e.target.value)} required placeholder="extraMetadata.tmdb.overview" />
+                <label htmlFor="customcolumns-metadata-path-2">Metadata path</label>
+                <input id="customcolumns-metadata-path-2" value={path} onChange={(e) => setPath(e.target.value)} required placeholder="extraMetadata.tmdb.overview" />
               </>
             )}
 
-            <label>Column label</label>
-            <input value={label} onChange={(e) => setLabel(e.target.value)} required placeholder="Video codec" />
+            <label htmlFor="customcolumns-column-label-3">Column label</label>
+            <input id="customcolumns-column-label-3" value={label} onChange={(e) => setLabel(e.target.value)} required placeholder="Video codec" />
 
-            <label>Library type (blank = all)</label>
-            <select value={mediaType} onChange={(e) => setMediaType(e.target.value as MediaType | "")}>
+            <label htmlFor="customcolumns-library-type-blank-all-4">Library type (blank = all)</label>
+            <select id="customcolumns-library-type-blank-all-4" value={mediaType} onChange={(e) => setMediaType(e.target.value as MediaType | "")}>
               <option value="">All libraries</option>
               {mediaTypes.map((t) => (
                 <option key={t.key} value={t.key}>

@@ -156,8 +156,8 @@ export default function Users() {
 
       {newInviteUrl && (
         <div className="form-panel" style={{ marginBottom: 16 }}>
-          <label>Invite link — share this with the person you're inviting</label>
-          <input value={newInviteUrl} readOnly onFocus={(e) => e.target.select()} />
+          <label htmlFor="users-invite-link-share-this-with-the-person-y-1">Invite link — share this with the person you're inviting</label>
+          <input id="users-invite-link-share-this-with-the-person-y-1" value={newInviteUrl} readOnly onFocus={(e) => e.target.select()} />
           <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
             One-time use — it stops working the moment they finish creating their account.
           </p>
@@ -170,12 +170,12 @@ export default function Users() {
       {mode !== null && (mode === "add" || editingUser) && (
         <Modal title={mode === "add" ? "Add User" : `Edit — ${editingUser!.username}`} onClose={() => setMode(null)}>
           <form className="form-panel" onSubmit={submit} style={{ padding: 0 }}>
-            <label>Username</label>
-            <input value={username} onChange={(e) => setUsername(e.target.value)} required />
-            <label>Password{mode !== "add" && " (leave blank to keep current)"}</label>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required={mode === "add"} />
-            <label>Library access</label>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+            <label htmlFor="users-username-2">Username</label>
+            <input id="users-username-2" value={username} onChange={(e) => setUsername(e.target.value)} required />
+            <label htmlFor="users-password-mode-add-leave-blank-to-keep-cu-3">Password{mode !== "add" && " (leave blank to keep current)"}</label>
+            <input id="users-password-mode-add-leave-blank-to-keep-cu-3" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required={mode === "add"} />
+            <label id="users-library-access-label">Library access</label>
+            <div role="group" aria-labelledby="users-library-access-label" style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
               {mediaTypes.map((t) => (
                 <label key={t.key} style={{ display: "flex", alignItems: "center", gap: 4 }}>
                   <input type="checkbox" checked={allowedTypes.includes(t.key)} onChange={() => toggleType(t.key)} />
@@ -183,8 +183,8 @@ export default function Users() {
                 </label>
               ))}
             </div>
-            <label>Max pending requests (blank = unlimited)</label>
-            <input
+            <label htmlFor="users-max-pending-requests-blank-unlimited-4">Max pending requests (blank = unlimited)</label>
+            <input id="users-max-pending-requests-blank-unlimited-4"
               type="number"
               style={{ maxWidth: 120 }}
               value={maxPendingRequests}
@@ -194,8 +194,8 @@ export default function Users() {
               <input type="checkbox" checked={autoApprove} onChange={(e) => setAutoApprove(e.target.checked)} />
               Auto-approve this user's requests
             </label>
-            <label>Max content rating (blank = no restriction)</label>
-            <select value={maxContentRating} onChange={(e) => setMaxContentRating(e.target.value)} style={{ maxWidth: 200 }}>
+            <label htmlFor="users-max-content-rating-blank-no-restriction-5">Max content rating (blank = no restriction)</label>
+            <select id="users-max-content-rating-blank-no-restriction-5" value={maxContentRating} onChange={(e) => setMaxContentRating(e.target.value)} style={{ maxWidth: 200 }}>
               <option value="">No restriction</option>
               {contentRatings.map((r) => (
                 <option key={r} value={r}>
@@ -238,8 +238,8 @@ export default function Users() {
                 )}
                 {showInviteForm && (
                   <form className="form-panel" onSubmit={createInvite} style={{ marginTop: 8 }}>
-                    <label>Library access</label>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+                    <label id="users-invite-library-access-label">Library access</label>
+                    <div role="group" aria-labelledby="users-invite-library-access-label" style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
                       {mediaTypes.map((t) => (
                         <label key={t.key} style={{ display: "flex", alignItems: "center", gap: 4 }}>
                           <input type="checkbox" checked={inviteAllowedTypes.includes(t.key)} onChange={() => toggleInviteType(t.key)} />
@@ -247,8 +247,8 @@ export default function Users() {
                         </label>
                       ))}
                     </div>
-                    <label>Max content rating (blank = no restriction)</label>
-                    <select value={inviteMaxContentRating} onChange={(e) => setInviteMaxContentRating(e.target.value)} style={{ maxWidth: 200 }}>
+                    <label htmlFor="users-max-content-rating-blank-no-restriction-6">Max content rating (blank = no restriction)</label>
+                    <select id="users-max-content-rating-blank-no-restriction-6" value={inviteMaxContentRating} onChange={(e) => setInviteMaxContentRating(e.target.value)} style={{ maxWidth: 200 }}>
                       <option value="">No restriction</option>
                       {contentRatings.map((r) => (
                         <option key={r} value={r}>
@@ -256,13 +256,13 @@ export default function Users() {
                         </option>
                       ))}
                     </select>
-                    <label>Role</label>
-                    <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value as "user" | "admin")} style={{ maxWidth: 200 }}>
+                    <label htmlFor="users-role-7">Role</label>
+                    <select id="users-role-7" value={inviteRole} onChange={(e) => setInviteRole(e.target.value as "user" | "admin")} style={{ maxWidth: 200 }}>
                       <option value="user">Household user</option>
                       <option value="admin">Admin</option>
                     </select>
-                    <label>Expires after (days, blank = never)</label>
-                    <input
+                    <label htmlFor="users-expires-after-days-blank-never-8">Expires after (days, blank = never)</label>
+                    <input id="users-expires-after-days-blank-never-8"
                       type="number"
                       min={1}
                       style={{ maxWidth: 120 }}

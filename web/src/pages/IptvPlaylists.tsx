@@ -284,12 +284,12 @@ export default function IptvPlaylists() {
       {clipMode !== null && (clipMode === "add" || editingClip) && (
         <Modal title={clipMode === "add" ? "Add Filler Clip" : `Edit — ${editingClip?.name ?? ""}`} onClose={() => setClipMode(null)}>
           <form className="form-panel" onSubmit={submitClip} style={{ padding: 0 }}>
-            <label>Name</label>
-            <input value={clipName} onChange={(e) => setClipName(e.target.value)} required />
-            <label>URL (your own content)</label>
-            <input value={clipUrl} onChange={(e) => setClipUrl(e.target.value)} placeholder="https://example.com/my-bumper.mp4" required />
-            <label>Category (optional)</label>
-            <input value={clipCategory} onChange={(e) => setClipCategory(e.target.value)} placeholder="e.g. intro, mid-roll" />
+            <label htmlFor="iptvplaylists-name-1">Name</label>
+            <input id="iptvplaylists-name-1" value={clipName} onChange={(e) => setClipName(e.target.value)} required />
+            <label htmlFor="iptvplaylists-url-your-own-content-2">URL (your own content)</label>
+            <input id="iptvplaylists-url-your-own-content-2" value={clipUrl} onChange={(e) => setClipUrl(e.target.value)} placeholder="https://example.com/my-bumper.mp4" required />
+            <label htmlFor="iptvplaylists-category-optional-3">Category (optional)</label>
+            <input id="iptvplaylists-category-optional-3" value={clipCategory} onChange={(e) => setClipCategory(e.target.value)} placeholder="e.g. intro, mid-roll" />
             <div className="toolbar" style={{ justifyContent: "space-between", marginTop: 8 }}>
               <button type="submit">{clipMode === "add" ? "Add clip" : "Save"}</button>
               {clipMode !== "add" && (
@@ -305,17 +305,17 @@ export default function IptvPlaylists() {
       {mode !== null && (mode === "add" || editingPlaylist) && (
         <Modal title={mode === "add" ? "Add Playlist" : `Edit — ${editingPlaylist?.name ?? ""}`} onClose={() => setMode(null)} maxWidth={760}>
           <form className="form-panel" onSubmit={submit} style={{ padding: 0 }}>
-            <label>Name</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} required />
-            <label>Insert filler after each item</label>
-            <select value={insertAfterEachItem ? "1" : "0"} onChange={(e) => setInsertAfterEachItem(e.target.value === "1")}>
+            <label htmlFor="iptvplaylists-name-4">Name</label>
+            <input id="iptvplaylists-name-4" value={name} onChange={(e) => setName(e.target.value)} required />
+            <label htmlFor="iptvplaylists-insert-filler-after-each-item-5">Insert filler after each item</label>
+            <select id="iptvplaylists-insert-filler-after-each-item-5" value={insertAfterEachItem ? "1" : "0"} onChange={(e) => setInsertAfterEachItem(e.target.value === "1")}>
               <option value="0">No</option>
               <option value="1">Yes</option>
             </select>
             {!insertAfterEachItem && (
               <>
-                <label>Insert filler every N minutes (blank = never)</label>
-                <input
+                <label htmlFor="iptvplaylists-insert-filler-every-n-minutes-blank-neve-6">Insert filler every N minutes (blank = never)</label>
+                <input id="iptvplaylists-insert-filler-every-n-minutes-blank-neve-6"
                   type="number"
                   style={{ maxWidth: 120 }}
                   value={insertAfterMinutes}
@@ -330,8 +330,8 @@ export default function IptvPlaylists() {
             <>
               {feedUrl && (
                 <div className="form-panel">
-                  <label>Feed URL — paste into Plex/Jellyfin's Live TV / tuner source setup</label>
-                  <input value={feedUrl} readOnly onFocus={(e) => e.target.select()} />
+                  <label htmlFor="iptvplaylists-feed-url-paste-into-plex-jellyfin-s-live-7">Feed URL — paste into Plex/Jellyfin's Live TV / tuner source setup</label>
+                  <input id="iptvplaylists-feed-url-paste-into-plex-jellyfin-s-live-7" value={feedUrl} readOnly onFocus={(e) => e.target.select()} />
                 </div>
               )}
 
@@ -379,23 +379,23 @@ export default function IptvPlaylists() {
 
               <h3>Items</h3>
               <form className="form-panel" onSubmit={addItem}>
-                <label>Title</label>
-                <input value={itemTitle} onChange={(e) => setItemTitle(e.target.value)} required />
-                <label>Source</label>
-                <select value={itemKind} onChange={(e) => setItemKind(e.target.value as "external" | "movie" | "episode")}>
+                <label htmlFor="iptvplaylists-title-8">Title</label>
+                <input id="iptvplaylists-title-8" value={itemTitle} onChange={(e) => setItemTitle(e.target.value)} required />
+                <label htmlFor="iptvplaylists-source-9">Source</label>
+                <select id="iptvplaylists-source-9" value={itemKind} onChange={(e) => setItemKind(e.target.value as "external" | "movie" | "episode")}>
                   <option value="external">External stream URL</option>
                   <option value="movie">AoNarr movie (by media item id)</option>
                   <option value="episode">AoNarr TV episode (by episode id)</option>
                 </select>
                 {itemKind === "external" ? (
                   <>
-                    <label>Stream URL</label>
-                    <input value={itemUrl} onChange={(e) => setItemUrl(e.target.value)} required />
+                    <label htmlFor="iptvplaylists-stream-url-10">Stream URL</label>
+                    <input id="iptvplaylists-stream-url-10" value={itemUrl} onChange={(e) => setItemUrl(e.target.value)} required />
                   </>
                 ) : (
                   <>
-                    <label>{itemKind === "movie" ? "Media item ID" : "Episode ID"}</label>
-                    <input
+                    <label htmlFor="iptvplaylists-itemkind-movie-media-item-id-episode-id-11">{itemKind === "movie" ? "Media item ID" : "Episode ID"}</label>
+                    <input id="iptvplaylists-itemkind-movie-media-item-id-episode-id-11"
                       type="number"
                       style={{ maxWidth: 140 }}
                       value={itemRefId}
@@ -407,8 +407,8 @@ export default function IptvPlaylists() {
                     </p>
                   </>
                 )}
-                <label>Duration in seconds (used for the "every N minutes" filler timing; optional)</label>
-                <input type="number" style={{ maxWidth: 140 }} value={itemDuration} onChange={(e) => setItemDuration(e.target.value)} />
+                <label htmlFor="iptvplaylists-duration-in-seconds-used-for-the-every-n-12">Duration in seconds (used for the "every N minutes" filler timing; optional)</label>
+                <input id="iptvplaylists-duration-in-seconds-used-for-the-every-n-12" type="number" style={{ maxWidth: 140 }} value={itemDuration} onChange={(e) => setItemDuration(e.target.value)} />
                 <button type="submit">Add item</button>
               </form>
 

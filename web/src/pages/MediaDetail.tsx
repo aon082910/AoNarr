@@ -1646,22 +1646,22 @@ export default function MediaDetail() {
 
       {showEditMetadata && (
         <form className="form-panel" onSubmit={saveMetadata}>
-          <label>Title</label>
-          <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} required />
-          <label>Year</label>
-          <input value={editYear} onChange={(e) => setEditYear(e.target.value)} type="number" />
-          <label>Overview</label>
-          <textarea value={editOverview} onChange={(e) => setEditOverview(e.target.value)} rows={4} />
-          <label>Poster URL</label>
+          <label htmlFor="mediadetail-title-1">Title</label>
+          <input id="mediadetail-title-1" value={editTitle} onChange={(e) => setEditTitle(e.target.value)} required />
+          <label htmlFor="mediadetail-year-2">Year</label>
+          <input id="mediadetail-year-2" value={editYear} onChange={(e) => setEditYear(e.target.value)} type="number" />
+          <label htmlFor="mediadetail-overview-3">Overview</label>
+          <textarea id="mediadetail-overview-3" value={editOverview} onChange={(e) => setEditOverview(e.target.value)} rows={4} />
+          <label htmlFor="mediadetail-poster-url">Poster URL</label>
           <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-            <input value={editPosterUrl} onChange={(e) => setEditPosterUrl(e.target.value)} placeholder="https://..." style={{ flex: 1 }} />
+            <input id="mediadetail-poster-url" value={editPosterUrl} onChange={(e) => setEditPosterUrl(e.target.value)} placeholder="https://..." style={{ flex: 1 }} />
             {editPosterUrl && (
               <img src={editPosterUrl} alt="" style={{ width: 46, aspectRatio: "2 / 3", objectFit: "cover", borderRadius: 4, flexShrink: 0 }} />
             )}
           </div>
-          <label>Backdrop URL</label>
+          <label htmlFor="mediadetail-backdrop-url">Backdrop URL</label>
           <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-            <input value={editBackdropUrl} onChange={(e) => setEditBackdropUrl(e.target.value)} placeholder="https://..." style={{ flex: 1 }} />
+            <input id="mediadetail-backdrop-url" value={editBackdropUrl} onChange={(e) => setEditBackdropUrl(e.target.value)} placeholder="https://..." style={{ flex: 1 }} />
             {editBackdropUrl && (
               <img src={editBackdropUrl} alt="" style={{ width: 80, aspectRatio: "16 / 9", objectFit: "cover", borderRadius: 4, flexShrink: 0 }} />
             )}
@@ -1960,8 +1960,8 @@ export default function MediaDetail() {
                     {addingChild ? "Adding..." : `+ Add ${childLabel.toLowerCase()}`}
                   </button>
                 </form>
-                <label>Default target {childLabel.toLowerCase()} (applies to files below with no target picked)</label>
-                <select
+                <label htmlFor="mediadetail-default-target-childlabel-tolowercase-ap-4">Default target {childLabel.toLowerCase()} (applies to files below with no target picked)</label>
+                <select id="mediadetail-default-target-childlabel-tolowercase-ap-4"
                   value={importSubItemId}
                   onChange={(e) => setImportSubItemId(e.target.value ? Number(e.target.value) : "")}
                 >

@@ -117,8 +117,8 @@ export default function GroupPicker({
         const disabled = idx > 0 && chain[idx - 1] === null;
         return (
           <div key={kind}>
-            <label>{GROUP_KIND_LABEL[kind] ?? kind}</label>
-            <select value={chain[idx] ?? ""} disabled={disabled} onChange={(e) => selectAt(idx, e.target.value)}>
+            <label htmlFor={`grouppicker-${kind}`}>{GROUP_KIND_LABEL[kind] ?? kind}</label>
+            <select id={`grouppicker-${kind}`} value={chain[idx] ?? ""} disabled={disabled} onChange={(e) => selectAt(idx, e.target.value)}>
               <option value="">
                 {disabled ? `Select a ${GROUP_KIND_LABEL[groupLevels[idx - 1]]} first` : `Select ${GROUP_KIND_LABEL[kind]}...`}
               </option>

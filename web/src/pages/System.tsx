@@ -837,8 +837,8 @@ export default function System() {
                   disk (e.g. a mapped Unraid share), keeping only the most recent N copies. Runs on an
                   hourly check, so a new backup lands within an hour of the configured interval elapsing.
                 </p>
-                <label>Enable scheduled backups</label>
-                <select
+                <label htmlFor="system-enable-scheduled-backups-1">Enable scheduled backups</label>
+                <select id="system-enable-scheduled-backups-1"
                   key={settings.backupEnabled ?? "backup-enabled-empty"}
                   defaultValue={settings.backupEnabled ?? "0"}
                   onChange={(e) => saveSetting("backupEnabled", e.target.value)}
@@ -846,9 +846,10 @@ export default function System() {
                   <option value="0">Disabled</option>
                   <option value="1">Enabled</option>
                 </select>
-                <label>Backup directory (path inside the container)</label>
+                <label htmlFor="system-backup-dir">Backup directory (path inside the container)</label>
                 <div className="toolbar">
                   <input
+                    id="system-backup-dir"
                     key={settings.backupDir ?? "backup-dir-empty"}
                     defaultValue={settings.backupDir ?? ""}
                     placeholder="/backups"
@@ -869,8 +870,8 @@ export default function System() {
                     }}
                   />
                 )}
-                <label>Interval (hours)</label>
-                <input
+                <label htmlFor="system-interval-hours-2">Interval (hours)</label>
+                <input id="system-interval-hours-2"
                   type="number"
                   min={1}
                   style={{ maxWidth: 120 }}
@@ -878,8 +879,8 @@ export default function System() {
                   defaultValue={settings.backupIntervalHours ?? "24"}
                   onBlur={(e) => saveSetting("backupIntervalHours", e.target.value)}
                 />
-                <label>Keep last N backups</label>
-                <input
+                <label htmlFor="system-keep-last-n-backups-3">Keep last N backups</label>
+                <input id="system-keep-last-n-backups-3"
                   type="number"
                   min={1}
                   style={{ maxWidth: 120 }}
@@ -893,8 +894,8 @@ export default function System() {
                   Backblaze B2, etc.) so it survives the host itself dying, not just a bad DB write. Uses
                   the same interval/keep-count above; remote objects are rotated the same way.
                 </p>
-                <label>Upload to S3</label>
-                <select
+                <label htmlFor="system-upload-to-s3-4">Upload to S3</label>
+                <select id="system-upload-to-s3-4"
                   key={settings.s3Enabled ?? "s3-enabled-empty"}
                   defaultValue={settings.s3Enabled ?? "0"}
                   onChange={(e) => saveSetting("s3Enabled", e.target.value)}
@@ -902,42 +903,42 @@ export default function System() {
                   <option value="0">Disabled</option>
                   <option value="1">Enabled</option>
                 </select>
-                <label>Bucket</label>
-                <input
+                <label htmlFor="system-bucket-5">Bucket</label>
+                <input id="system-bucket-5"
                   key={settings.s3Bucket ?? "s3-bucket-empty"}
                   defaultValue={settings.s3Bucket ?? ""}
                   placeholder="my-aonarr-backups"
                   onBlur={(e) => saveSetting("s3Bucket", e.target.value)}
                 />
-                <label>Region</label>
-                <input
+                <label htmlFor="system-region-6">Region</label>
+                <input id="system-region-6"
                   key={settings.s3Region ?? "s3-region-empty"}
                   defaultValue={settings.s3Region ?? ""}
                   placeholder="us-east-1"
                   onBlur={(e) => saveSetting("s3Region", e.target.value)}
                 />
-                <label>Custom endpoint (blank for AWS S3; set for MinIO/B2/etc.)</label>
-                <input
+                <label htmlFor="system-custom-endpoint-blank-for-aws-s3-set-for-7">Custom endpoint (blank for AWS S3; set for MinIO/B2/etc.)</label>
+                <input id="system-custom-endpoint-blank-for-aws-s3-set-for-7"
                   key={settings.s3Endpoint ?? "s3-endpoint-empty"}
                   defaultValue={settings.s3Endpoint ?? ""}
                   placeholder="https://s3.us-west-000.backblazeb2.com"
                   onBlur={(e) => saveSetting("s3Endpoint", e.target.value)}
                 />
-                <label>Access key ID</label>
-                <input
+                <label htmlFor="system-access-key-id-8">Access key ID</label>
+                <input id="system-access-key-id-8"
                   key={settings.s3AccessKeyId ?? "s3-access-key-empty"}
                   defaultValue={settings.s3AccessKeyId ?? ""}
                   onBlur={(e) => saveSetting("s3AccessKeyId", e.target.value)}
                 />
-                <label>Secret access key</label>
-                <input
+                <label htmlFor="system-secret-access-key-9">Secret access key</label>
+                <input id="system-secret-access-key-9"
                   type="password"
                   key={settings.s3SecretAccessKey ?? "s3-secret-key-empty"}
                   defaultValue={settings.s3SecretAccessKey ?? ""}
                   onBlur={(e) => saveSetting("s3SecretAccessKey", e.target.value)}
                 />
-                <label>Key prefix (optional folder path within the bucket)</label>
-                <input
+                <label htmlFor="system-key-prefix-optional-folder-path-within-t-10">Key prefix (optional folder path within the bucket)</label>
+                <input id="system-key-prefix-optional-folder-path-within-t-10"
                   key={settings.s3Prefix ?? "s3-prefix-empty"}
                   defaultValue={settings.s3Prefix ?? ""}
                   placeholder="aonarr-backups"
@@ -1339,8 +1340,8 @@ export default function System() {
           The last 2000 log lines, newest first — the same output as{" "}
           <code>docker compose logs aonarr-server</code> without needing shell access.
         </p>
-        <label>Log verbosity</label>
-        <select
+        <label htmlFor="system-log-verbosity-11">Log verbosity</label>
+        <select id="system-log-verbosity-11"
           key={settings.logLevel ?? "log-level-empty"}
           defaultValue={settings.logLevel ?? "info"}
           onChange={(e) => saveSetting("logLevel", e.target.value)}

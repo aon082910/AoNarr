@@ -161,12 +161,12 @@ export default function WatchlistImport() {
 
           {addMode === "single" && (
             <div className="form-panel" style={{ padding: 0 }}>
-              <label>Title</label>
-              <input value={singleTitle} onChange={(e) => setSingleTitle(e.target.value)} autoFocus />
-              <label>Year (optional)</label>
-              <input value={singleYear} onChange={(e) => setSingleYear(e.target.value)} placeholder="2024" />
-              <label>Type</label>
-              <select value={singleType} onChange={(e) => setSingleType(e.target.value as MediaType)}>
+              <label htmlFor="watchlistimport-title-1">Title</label>
+              <input id="watchlistimport-title-1" value={singleTitle} onChange={(e) => setSingleTitle(e.target.value)} autoFocus />
+              <label htmlFor="watchlistimport-year-optional-2">Year (optional)</label>
+              <input id="watchlistimport-year-optional-2" value={singleYear} onChange={(e) => setSingleYear(e.target.value)} placeholder="2024" />
+              <label htmlFor="watchlistimport-type-3">Type</label>
+              <select id="watchlistimport-type-3" value={singleType} onChange={(e) => setSingleType(e.target.value as MediaType)}>
                 {mediaTypes.map((t) => (
                   <option key={t.key} value={t.key}>
                     {t.label}
