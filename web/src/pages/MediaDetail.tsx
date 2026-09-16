@@ -1630,7 +1630,7 @@ export default function MediaDetail() {
               artwork from their own metadata provider instead (see fetchArtworkFor in metadata.ts).
               Author/audiobook/course have no artwork source at all — Open Library/Google Books/
               manual-only don't expose a second image to fetch, so there's nothing to offer. */}
-          {["movie", "series", "sports", "artist", "rom", "manga", "comic", "video", "adult"].includes(item.type) && (
+          {["movie", "series", "sports", "ppv", "artist", "rom", "manga", "comic", "video", "adult"].includes(item.type) && (
             <button onClick={toggleArtwork} className="secondary">
               {showArtwork ? "Hide artwork" : "Artwork"}
             </button>

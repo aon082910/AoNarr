@@ -846,7 +846,7 @@ mediaRouter.post(
     }
 
     const info = await probeMediaInfo(row.path);
-    const looksLikeVideo = ["movie", "series", "anime", "sports", "video", "course", "adult"].includes(row.type);
+    const looksLikeVideo = ["movie", "series", "anime", "sports", "ppv", "video", "course", "adult"].includes(row.type);
     const corrupt = !info || (looksLikeVideo && !info.videoCodec);
 
     if (corrupt) {

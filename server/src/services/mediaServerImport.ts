@@ -43,23 +43,31 @@ export interface MediaServerImportResult {
  * already there. Movies only — TV would additionally need per-episode season/episode numbers and
  * parent-show matching, a larger job left for later.
  */
-export async function importMoviesFromMediaServer(rootFolderId: number, signal?: AbortSignal): Promise<MediaServerImportResult> {
+export async function importMoviesFromMediaServer(
+  rootFolderId: number,
+  signal?: AbortSignal,
+  type: string = "movie"
+): Promise<MediaServerImportResult> {
   const items = await fetchMediaServerMovies();
-  return importMovieItems(items, rootFolderId, signal);
+  return importMovieItems(items, rootFolderId, signal, type);
 }
 
-/** Core matching/creation logic shared by every movie-library source (Plex/Jellyfin/Emby via
- * fetchMediaServerMovies above, Radarr via starrImport.ts) — takes already-fetched items so each
- * source only needs to know how to fetch and shape its own data into MediaServerLibraryItem. */
+/** Core matching/creation logic shared by every movie-shaped library source (Plex/Jellyfin/Emby
+ * via fetchMediaServerMovies above, Radarr via starrImport.ts) — takes already-fetched items so
+ * each source only needs to know how to fetch and shape its own data into MediaServerLibraryItem.
+ * `type` lets this import into any "single"-shape library (Movies by default, or Sports PPV —
+ * both are one-file-per-item and otherwise identical, same reasoning as importSeriesData's own
+ * `type` param for the two episodic libraries). */
 export async function importMovieItems(
   items: MediaServerLibraryItem[],
   rootFolderId: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  type: string = "movie"
 ): Promise<MediaServerImportResult> {
   const result: MediaServerImportResult = { matched: 0, created: 0, skipped: 0 };
 
   const knownTails = new Set(
-    ((await db.prepare("SELECT path FROM media_items WHERE type = 'movie' AND path IS NOT NULL").all()) as { path: string }[]).map((r) =>
+    ((await db.prepare("SELECT path FROM media_items WHERE type = ? AND path IS NOT NULL").all(type)) as { path: string }[]).map((r) =>
       pathTail(r.path)
     )
   );
@@ -68,7 +76,7 @@ export async function importMovieItems(
   // already-imported movie became invisible to this match the moment it had a file, so a second
   // media-server item for the same movie (a re-scan, a slightly different path/tail, a duplicate
   // library entry on the media-server side) always fell to "no match" and created a new row.
-  const allMovies = (await db.prepare("SELECT * FROM media_items WHERE type = 'movie'").all()) as any[];
+  const allMovies = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[];
   const qualityProfileId = await defaultQualityProfileId();
 
   for (const item of items) {
@@ -120,9 +128,10 @@ export async function importMovieItems(
       const insertResult = await db
         .prepare(
           `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, has_file, status)
-           VALUES ('movie', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 'unknown')`
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 'unknown')`
         )
         .run(
+          type,
           item.title,
           item.title.toLowerCase(),
           item.year,
@@ -148,7 +157,7 @@ export async function importMovieItems(
     }
   }
 
-  log.info(`[mediaServerImport] movies: matched ${result.matched}, created ${result.created}, skipped ${result.skipped}`);
+  log.info(`[mediaServerImport] ${type}: matched ${result.matched}, created ${result.created}, skipped ${result.skipped}`);
   return result;
 }
 

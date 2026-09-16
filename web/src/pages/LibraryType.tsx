@@ -655,7 +655,7 @@ export function LibraryItemGrid({
   useEffect(() => {
     if (auth.isAdmin) api.get<Tag[]>("/tags").then(setTags);
   }, [auth.isAdmin]);
-  const mediaServerImportable = type === "movie" || type === "series" || type === "anime" || type === "sports";
+  const mediaServerImportable = type === "movie" || type === "series" || type === "anime" || type === "sports" || type === "ppv";
   useEffect(() => {
     if (auth.isAdmin && mediaServerImportable) {
       api.get<Record<string, string>>("/settings").then((s) => setMediaServerConfigured(!!s.mediaServerType && !!s.mediaServerUrl && !!s.mediaServerToken));
@@ -676,8 +676,8 @@ export function LibraryItemGrid({
     if (!mediaServerImportFolderId) return;
     setMediaServerImporting(true);
     try {
-      if (type === "movie") {
-        await api.post("/media-server-import/movies", { rootFolderId: mediaServerImportFolderId });
+      if (type === "movie" || type === "ppv") {
+        await api.post("/media-server-import/movies", { rootFolderId: mediaServerImportFolderId, type });
       } else {
         await api.post("/media-server-import/series", { rootFolderId: mediaServerImportFolderId, type });
       }
@@ -1123,7 +1123,7 @@ export function LibraryItemGrid({
             <button type="button" onClick={() => exportMetadata("json")}>
               Export metadata (JSON)
             </button>
-            {["movie", "series", "anime", "sports"].includes(type) && (
+            {["movie", "series", "anime", "sports", "ppv"].includes(type) && (
               <button
                 type="button"
                 onClick={() => exportMetadata("plexmatch")}

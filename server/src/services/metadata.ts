@@ -1720,7 +1720,7 @@ export async function fetchTrailerFor(type: MediaType, externalIds: Record<strin
   const key = getSetting("tmdbApiKey");
   if (!key) return null;
 
-  const kind = type === "movie" ? "movie" : "tv";
+  const kind = type === "movie" || type === "ppv" ? "movie" : "tv";
   const url = new URL(`https://api.themoviedb.org/3/${kind}/${externalIds.tmdb}/videos`);
   url.searchParams.set("api_key", key);
 
@@ -1867,8 +1867,11 @@ const SEARCH_FNS: Record<string, (query: string) => Promise<MetadataSearchResult
 // A few providers (TMDB, Trakt) search differently depending on media type despite being offered
 // for more than one — this overrides SEARCH_FNS above for those (type, provider) combinations.
 const TYPE_SPECIFIC_SEARCH_FNS: Record<string, Record<string, (query: string) => Promise<MetadataSearchResult[]>>> = {
-  tmdb: { movie: searchMoviesTmdb, series: searchSeriesTmdb, anime: searchSeriesTmdb },
-  trakt: { movie: searchMoviesTrakt, series: searchSeriesTrakt },
+  tmdb: { movie: searchMoviesTmdb, ppv: searchMoviesTmdb, series: searchSeriesTmdb, anime: searchSeriesTmdb },
+  // "sports" lists trakt as a valid provider (services/mediaTypes.ts) but had no entry here until
+  // now — selecting Trakt for that type hit the same "No search implementation" error this ppv
+  // addition was caught by live-testing below.
+  trakt: { movie: searchMoviesTrakt, ppv: searchMoviesTrakt, series: searchSeriesTrakt, sports: searchSeriesTrakt },
   anilist: { series: searchSeriesAnilist, anime: searchSeriesAnilist, manga: searchMangaAnilist },
   itunes: { author: searchAuthorsItunes, podcast: searchPodcastsItunes },
 };
@@ -1949,7 +1952,7 @@ export async function searchMetadata(
 export async function fetchByExternalId(type: MediaType, provider: string, id: string): Promise<MetadataSearchResult> {
   switch (provider) {
     case "tmdb": {
-      if (type === "movie") return fetchMovieByTmdbId(id);
+      if (type === "movie" || type === "ppv") return fetchMovieByTmdbId(id);
       if (type === "series" || type === "anime") return fetchSeriesByTmdbId(id);
       throw new Error(`TMDB id lookup isn't available for "${type}"`);
     }
@@ -2350,7 +2353,7 @@ async function fetchArtworkAdultThePornDb(sceneId: string): Promise<ArtworkOptio
  * provider genuinely offers beyond the one poster already stored from search.
  */
 export async function fetchArtworkFor(type: MediaType, externalIds: Record<string, string>): Promise<ArtworkOptions> {
-  if (type === "movie" && externalIds.tmdb) return fetchArtworkFanart("movies", externalIds.tmdb);
+  if ((type === "movie" || type === "ppv") && externalIds.tmdb) return fetchArtworkFanart("movies", externalIds.tmdb);
   if ((type === "series" || type === "sports") && externalIds.tvdb) return fetchArtworkFanart("tv", externalIds.tvdb);
   if (type === "artist" && externalIds.musicbrainz) return fetchArtworkFanart("music", externalIds.musicbrainz);
   if (type === "rom") return fetchArtworkRom(externalIds);
@@ -2392,7 +2395,7 @@ async function fetchCreditsTmdb(kind: "movie" | "tv", tmdbId: string): Promise<C
 /** Cast list for a media item already in the library — needs its TMDB id, same as artwork lookup. */
 export async function fetchCastFor(type: MediaType, externalIds: Record<string, string>): Promise<CastMember[]> {
   if (!externalIds.tmdb) throw new Error("Cast lookup needs a TMDB id — this item doesn't have one");
-  if (type === "movie") return fetchCreditsTmdb("movie", externalIds.tmdb);
+  if (type === "movie" || type === "ppv") return fetchCreditsTmdb("movie", externalIds.tmdb);
   if (type === "series") return fetchCreditsTmdb("tv", externalIds.tmdb);
   throw new Error(`Cast lookup isn't available for "${type}"`);
 }
@@ -2420,7 +2423,7 @@ export async function fetchAlternateTitlesFor(type: MediaType, externalIds: Reco
 
   if (!externalIds.tmdb) throw new Error("Alternate titles lookup needs a TMDB id — this item doesn't have one");
   const key = requireSetting("tmdbApiKey", "TMDB API key");
-  const kind = type === "movie" ? "movie" : type === "series" ? "tv" : null;
+  const kind = type === "movie" || type === "ppv" ? "movie" : type === "series" ? "tv" : null;
   if (!kind) throw new Error(`Alternate titles aren't available for "${type}"`);
 
   const res = await fetch(`https://api.themoviedb.org/3/${kind}/${externalIds.tmdb}/alternative_titles?api_key=${key}`);

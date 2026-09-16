@@ -3,6 +3,25 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 212 — a movie-shaped Sports PPV library
+- **New library type: Sports PPV**, sitting alongside last round's Sports type rather than folded
+  into it — a weekly broadcast (Raw, a league's regular season) is naturally episodic and fits
+  Sports well, but a pay-per-view (WrestleMania, a numbered UFC event) is a single self-contained
+  release with its own poster/title/year and no recurring-show structure, a movie in every way that
+  matters here. Modeled on Movies' shape and provider list exactly (TMDB/OMDb/Trakt) — TMDB
+  genuinely catalogs many PPVs as standalone entries, so this needed no new provider integration
+  either, same as Sports itself last round. Wired into the same handful of places Sports was:
+  artwork lookup, cast/trailer fetch, corrupt-file detection, TRaSH-guide sync, media-server
+  import, TMDB-id matching, and the UI affordances that check media type explicitly.
+- **Live-tested this one properly before shipping** — built and ran a local server image, drove the
+  Add Media flow for both new types through the actual browser, and caught two real bugs doing it:
+  Sports PPV's TMDB search and Sports' own Trakt search both failed with "No search implementation
+  for provider" instead of reaching the real API (a type-specific provider-function table needed
+  entries for the new types that weren't there — the Trakt/Sports one was a latent bug from last
+  round, not something this round introduced, just surfaced by testing more thoroughly this time).
+  Fixed both; re-verified live that each now fails with the correct "API key not configured"
+  message instead of the wrong error, confirming they reach the real search code.
+
 ## Round 211 — a Sports library, episode-import parity, a real mobile bug fixed
 - **New library type: Sports** (WWE, UFC, league broadcasts, etc.) — modeled as an episodic type,
   the same shape TV Shows already uses: a promotion/league is the "series," each event/match/

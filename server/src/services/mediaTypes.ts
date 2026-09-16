@@ -97,6 +97,24 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     metadataProviders: ["tvdb", "tvmaze", "trakt"],
     defaultProvider: "tvdb",
   },
+  ppv: {
+    key: "ppv",
+    label: "Sports PPV",
+    // A weekly/nightly broadcast (Raw, Smackdown, a league's regular season) fits "sports" above —
+    // recurring, dated, naturally episodic. A pay-per-view (WrestleMania, an numbered UFC event) is
+    // the opposite: a single self-contained release with its own poster/title/year, no season or
+    // recurring-show structure at all — a movie in every way that matters here. TMDB (this type's
+    // metadata source, same as Movies) actually catalogs many of these as standalone entries for
+    // exactly that reason, so this shares Movies' shape and provider list rather than inventing
+    // anything new.
+    shape: "single",
+    extensions: VIDEO_EXT,
+    // Same reasoning as sports.indexerCategory: a PPV release could be filed under either Movies
+    // (2000) or TV/Sport (5060) depending on the indexer, so both are searched.
+    indexerCategory: "2000,5060",
+    metadataProviders: ["tmdb", "omdb", "trakt"],
+    defaultProvider: "tmdb",
+  },
   artist: {
     key: "artist",
     label: "Music",

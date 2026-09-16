@@ -11,7 +11,7 @@ const CF_DIR: Record<"radarr" | "sonarr", string> = {
  * left unrestricted, since a Radarr-only format (e.g. a resolution/size tier) has no reason to also
  * apply to TV libraries. A user can always broaden the scope afterward like any other format. */
 const APP_MEDIA_TYPES: Record<"radarr" | "sonarr", string[]> = {
-  radarr: ["movie"],
+  radarr: ["movie", "ppv"],
   sonarr: ["series", "anime", "sports"],
 };
 
