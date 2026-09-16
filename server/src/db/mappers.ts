@@ -145,6 +145,7 @@ export function rootFolderFromRow(row: any) {
   return {
     id: row.id,
     path: row.path,
+    name: row.name,
     mediaType: row.media_type,
     lastScannedAt: row.last_scanned_at,
     quotaPercent: row.quota_percent,

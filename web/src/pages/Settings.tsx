@@ -850,7 +850,7 @@ export default function Settings() {
     );
   }
 
-  async function updateFolderQuota(id: number, field: "quotaPercent" | "pauseGrabsAtQuota" | "minFreeSpaceGb", value: number | boolean | null) {
+  async function updateFolderQuota(id: number, field: "name" | "quotaPercent" | "pauseGrabsAtQuota" | "minFreeSpaceGb", value: number | boolean | string | null) {
     await api.patch(`/root-folders/${id}`, { [field]: value });
     load();
   }
@@ -2400,7 +2400,7 @@ export default function Settings() {
           },
           ...rootFolders.map((f) => ({
             key: `rootFolder-${f.id}`,
-            label: f.path,
+            label: f.name?.trim() || f.path,
             description: mediaTypes.find((t) => t.key === f.mediaType)?.label ?? f.mediaType,
             badge:
               typeof f.percentUsed === "number" && f.quotaPercent != null && f.percentUsed >= f.quotaPercent
@@ -2412,6 +2412,13 @@ export default function Settings() {
             maxWidth: 480,
             render: () => (
               <div className="form-panel">
+                <label>Name (optional — shown on this tile instead of the path)</label>
+                <input
+                  key={f.name ?? `root-folder-name-empty-${f.id}`}
+                  defaultValue={f.name ?? ""}
+                  placeholder={f.path}
+                  onBlur={(e) => updateFolderQuota(f.id, "name", e.target.value)}
+                />
                 <label>Path</label>
                 <input value={f.path} disabled />
                 <label>Media type</label>
@@ -2461,7 +2468,7 @@ export default function Settings() {
                           .filter((other) => other.mediaType === f.mediaType && other.id !== f.id)
                           .map((other) => (
                             <option key={other.id} value={other.id}>
-                              {other.path}
+                              {other.name?.trim() || other.path}
                             </option>
                           ))}
                       </select>

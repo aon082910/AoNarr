@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 205 — library UI polish
+- **"Filename doesn't match title" library filter**: a new Status filter option flags movies (and
+  other single-file library types) whose actual file on disk shares fewer than half its
+  significant words with the matched title — catches a bad indexer match, a manual import into the
+  wrong item, or a file that was moved/renamed outside AoNarr. Scoped to `media_items.path` only;
+  series/music/book-style items spread files across episodes/sub_items instead, each with its own
+  title to compare, which needs a different UI (an episode/track list) than the library grid this
+  filter lives on.
+- **Removed the redundant status text under poster cards**: the poster grid already shows a
+  colored Downloaded/Missing/etc. banner across the poster itself — the "Poster info" field for
+  Status was *also* repeating that as plain text underneath, which was pure duplication. Still
+  shown in Overview (row) view, which has no banner of its own.
+- **Named root folders**: Library Sync's root folder tiles showed the raw filesystem path as the
+  tile label, which gets unwieldy with several folders on similar-looking paths (`/media/movies`
+  vs `/media/movies-4k`). Added an optional display name per root folder — the tile, and the
+  "move all files to another root folder" destination picker, now show it instead of the path when
+  set, falling back to the path exactly as before when it isn't.
+
 ## Round 204 — graceful shutdown
 - **`docker stop` no longer just kills the process mid-work**: there was no SIGTERM/SIGINT handler
   at all — Node's default disposition for those signals is immediate termination, whatever a

@@ -43,6 +43,50 @@ export function toFts5Query(q: string): string {
     .join(" ");
 }
 
+const TITLE_MATCH_STOPWORDS = new Set(["the", "and", "of", "a", "an", "in", "on", "to", "for"]);
+
+/** Lowercased, punctuation/extension-stripped significant words (len > 2, stopwords dropped) —
+ * used to compare a title against a filename with basic word overlap rather than an exact string
+ * match, since real filenames carry release-group tags, resolution, year, and separators a title
+ * never has. */
+function significantWords(s: string): string[] {
+  return s
+    .toLowerCase()
+    .replace(/\.[a-z0-9]{2,4}$/, "")
+    .replace(/[._\-]+/g, " ")
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !TITLE_MATCH_STOPWORDS.has(w));
+}
+
+function basename(p: string): string {
+  return p.split(/[\\/]/).pop() ?? p;
+}
+
+/** True when fewer than half of a title's significant words show up anywhere in the file's name —
+ * a rough but effective signal for "this file probably isn't actually this item" (a bad indexer
+ * match, a manual import into the wrong item, a renamed/moved file that predates being tracked).
+ * Titles with no significant words of their own (all stopwords, or very short) never flag — there's
+ * nothing meaningful to compare. */
+function filenameLooksMismatched(title: string, filePath: string): boolean {
+  const titleWords = significantWords(title);
+  if (titleWords.length === 0) return false;
+  const fileWords = new Set(significantWords(basename(filePath)));
+  const matchedCount = titleWords.filter((w) => fileWords.has(w)).length;
+  return matchedCount / titleWords.length < 0.5;
+}
+
+/** Scoped to `media_items.path` only — the single file a movie (or other single-file library type)
+ * owns directly. Series/music/book-style items spread their files across episodes/sub_items
+ * instead, each with its own title to compare against; surfacing those would need a different UI
+ * (an episode/track list, not the library grid this filter lives on), so that's left for later. */
+async function findFilenameMismatchIds(): Promise<number[]> {
+  const rows = (await db
+    .prepare(`SELECT id, title, path FROM media_items WHERE has_file = 1 AND path IS NOT NULL`)
+    .all()) as { id: number; title: string; path: string }[];
+  return rows.filter((r) => filenameLooksMismatched(r.title, r.path)).map((r) => r.id);
+}
+
 /** Radarr/Sonarr-style "cutoff unmet" — every downloaded item whose current quality ranks below
  * its own quality profile's cutoff, i.e. still eligible for an automatic upgrade search. Resolved
  * as a plain id set (rather than a SQL join + CASE expression) since quality-name-to-rank is
@@ -100,6 +144,11 @@ export async function buildMediaQuery(filters: MediaQueryFilters): Promise<Media
     conditions.push("(m.external_ids IS NULL OR m.external_ids = '' OR m.external_ids = '{}')");
   } else if (filters.status === "cutoffUnmet") {
     const ids = await findCutoffUnmetIds();
+    if (ids.length === 0) return { where: null, params: [], fromClause: "" };
+    conditions.push(`m.id IN (${ids.map(() => "?").join(",")})`);
+    params.push(...ids);
+  } else if (filters.status === "filenameMismatch") {
+    const ids = await findFilenameMismatchIds();
     if (ids.length === 0) return { where: null, params: [], fromClause: "" };
     conditions.push(`m.id IN (${ids.map(() => "?").join(",")})`);
     params.push(...ids);

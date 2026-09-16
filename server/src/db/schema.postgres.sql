@@ -7,7 +7,8 @@
 CREATE TABLE IF NOT EXISTS root_folders (
   id SERIAL PRIMARY KEY,
   path TEXT NOT NULL UNIQUE,
-  media_type TEXT NOT NULL
+  media_type TEXT NOT NULL,
+  name TEXT
 );
 
 CREATE TABLE IF NOT EXISTS quality_profiles (

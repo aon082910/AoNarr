@@ -12,7 +12,7 @@ import RenamePreviewModal from "../components/RenamePreviewModal.js";
 type SortKey = "title" | "year" | "added" | "status" | "monitored" | "quality" | "contentRating" | "releaseDate" | "path" | "sizeOnDisk";
 type ViewMode = "poster" | "overview" | "list";
 type PosterSize = "xsmall" | "small" | "medium" | "large" | "xlarge";
-type StatusFilter = "all" | "monitored" | "unmonitored" | "missing" | "downloaded" | "unmatched" | "cutoffUnmet";
+type StatusFilter = "all" | "monitored" | "unmonitored" | "missing" | "downloaded" | "unmatched" | "cutoffUnmet" | "filenameMismatch";
 
 /** Page size options for the server-side-paginated library grid/list, and the default when a type
  * has no saved preference yet — the "unmatched" status filter and every other sort/filter option
@@ -998,6 +998,7 @@ export function LibraryItemGrid({
           <option value="missing">Missing</option>
           <option value="cutoffUnmet">Cutoff unmet</option>
           <option value="unmatched">Unmatched (no metadata match)</option>
+          <option value="filenameMismatch">Filename doesn't match title</option>
         </select>
         {tags.length > 0 && (
           <select
@@ -1299,7 +1300,11 @@ export function LibraryItemGrid({
                 <div className="title">{item.title}</div>
                 <div className="sub">
                   {allFieldKeys
-                    .filter((f) => posterFields.has(f))
+                    // "status" is deliberately excluded here even when selected in Poster info — the
+                    // colored poster-banner above already shows Downloaded/Missing/etc. at a glance;
+                    // repeating it as plain text underneath was pure duplication. Still shown in
+                    // Overview view (see below), which has no banner of its own.
+                    .filter((f) => posterFields.has(f) && f !== "status")
                     .map((f) => (f === "monitored" && item.monitored ? "" : fieldValue(item, f, customColumnsForType)))
                     .filter(Boolean)
                     .join(" · ")}

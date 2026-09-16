@@ -148,6 +148,7 @@ export interface QualityProfile {
 export interface RootFolder {
   id: number;
   path: string;
+  name?: string | null;
   mediaType: MediaType;
   freeBytes?: number | null;
   totalBytes?: number | null;

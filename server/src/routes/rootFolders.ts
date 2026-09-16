@@ -53,6 +53,10 @@ rootFoldersRouter.patch(
     const b = req.body ?? {};
     const sets: string[] = [];
     const values: any[] = [];
+    if (b.name !== undefined) {
+      sets.push("name = ?");
+      values.push(typeof b.name === "string" && b.name.trim() ? b.name.trim() : null);
+    }
     if (b.quotaPercent !== undefined) {
       sets.push("quota_percent = ?");
       values.push(b.quotaPercent === null ? null : Number(b.quotaPercent));
