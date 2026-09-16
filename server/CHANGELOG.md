@@ -3,6 +3,23 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 208 — per-profile maximum release size
+- **Quality profiles can now set a hard maximum release size**: independent of the existing
+  per-quality min/max size bounds (which only compare a release against the range configured for
+  the specific quality it parsed as), a profile can set a flat ceiling — any release over it is
+  rejected outright, regardless of which quality it is. Enforced in `scoreRelease`, the single
+  function both the automatic grab pipeline and the manual Search page's result annotations
+  already share, so this applies consistently everywhere a release gets scored, with no separate
+  filter logic to keep in sync. Skipped when a release's size isn't known at all (same
+  "don't reject on missing data" default the existing per-quality size condition type already
+  uses). New "Maximum size (GB)" field on each quality profile in Settings, blank/no limit by
+  default. Added test coverage (rejects over the limit, allows within it, no-op when unset, no-op
+  when size unknown).
+- **Gap-checked** against Radarr/Sonarr/Lidarr/Readarr/Youtarr/Whisparr again; the one real find —
+  Radarr's import-list genre/rating/vote-count filtering has no equivalent here (AoNarr's import
+  lists add everything the source list has, unfiltered) — is sizable enough to be its own round
+  rather than folded into this one.
+
 ## Round 207 — Search page also searches metadata providers to add new media
 - The Search page only ever searched the existing library — finding something to add still meant
   navigating to Add Media separately and re-typing the query there. It now fires both searches in

@@ -143,6 +143,7 @@ export interface QualityProfile {
   allowedQualities: string[];
   cutoff: string;
   minFormatScore: number;
+  maxSizeGb?: number | null;
 }
 
 export interface RootFolder {

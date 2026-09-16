@@ -22,9 +22,10 @@ qualityProfilesRouter.post(
     if (!b.name || !Array.isArray(b.allowedQualities) || !b.cutoff) {
       throw new HttpError(400, "name, allowedQualities (array) and cutoff are required");
     }
+    const maxSizeGb = b.maxSizeGb === undefined || b.maxSizeGb === null || b.maxSizeGb === "" ? null : Number(b.maxSizeGb);
     const result = await db
-      .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff) VALUES (?, ?, ?)")
-      .run(b.name, JSON.stringify(b.allowedQualities), b.cutoff);
+      .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff, max_size_gb) VALUES (?, ?, ?, ?)")
+      .run(b.name, JSON.stringify(b.allowedQualities), b.cutoff, maxSizeGb);
     const row = await db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(qualityProfileFromRow(row));
   })
@@ -51,6 +52,10 @@ qualityProfilesRouter.patch(
     if (b.minFormatScore !== undefined) {
       sets.push("min_format_score = ?");
       values.push(b.minFormatScore);
+    }
+    if (b.maxSizeGb !== undefined) {
+      sets.push("max_size_gb = ?");
+      values.push(b.maxSizeGb === null || b.maxSizeGb === "" ? null : Number(b.maxSizeGb));
     }
     if (sets.length > 0) {
       values.push(req.params.id);

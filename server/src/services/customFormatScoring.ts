@@ -257,6 +257,28 @@ export async function scoreRelease(
   }
 
   const profileResult = await evaluateReleaseProfiles(releaseTitle, mediaType);
+  let rejected = profileResult.rejected;
+  let rejectReason = profileResult.rejectReason;
+
+  // A quality profile's maximum size is a hard ceiling independent of any per-quality min/max
+  // bounds (services/quality.ts's sizeWithinQualityBounds, which only ever compares a release
+  // against the bounds configured for the specific quality it parsed as) — this rejects a release
+  // outright once it's over the profile's own limit, regardless of which quality that was. Skipped
+  // when the release's size isn't known at all, same "don't reject on missing data" default the
+  // size condition type above already uses.
+  if (!rejected && qualityProfileId && releaseSizeBytes != null) {
+    const profileRow = (await db.prepare("SELECT max_size_gb FROM quality_profiles WHERE id = ?").get(qualityProfileId)) as
+      | { max_size_gb: number | null }
+      | undefined;
+    if (profileRow?.max_size_gb != null) {
+      const maxBytes = profileRow.max_size_gb * 1e9;
+      if (releaseSizeBytes > maxBytes) {
+        rejected = true;
+        rejectReason = `Exceeds this quality profile's maximum size (${profileRow.max_size_gb} GB)`;
+      }
+    }
+  }
+
   const totalScore = matches.reduce((sum, m) => sum + m.score, 0) + profileResult.scoreBonus;
-  return { totalScore, matches, rejected: profileResult.rejected, rejectReason: profileResult.rejectReason };
+  return { totalScore, matches, rejected, rejectReason };
 }

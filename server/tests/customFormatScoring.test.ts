@@ -215,4 +215,40 @@ describe("scoreRelease (DB-backed custom formats + release profiles)", () => {
     const result = await scoreRelease("Movie.2023.SHOULDNOTREJECT.1080p-GROUP", null, qualityProfileId, "movie");
     expect(result.rejected).toBe(false);
   });
+
+  it("rejects a release over the quality profile's configured maximum size", async () => {
+    const { scoreRelease } = await import("../src/services/customFormatScoring.js");
+    await db.prepare("DELETE FROM release_profiles").run();
+    await db.prepare("UPDATE quality_profiles SET max_size_gb = 5 WHERE id = ?").run(qualityProfileId);
+    try {
+      const tooBig = await scoreRelease("Movie.2023.2160p.REMUX-GROUP", 6_000_000_000, qualityProfileId, "movie");
+      expect(tooBig.rejected).toBe(true);
+      expect(tooBig.rejectReason).toMatch(/maximum size/i);
+
+      const withinLimit = await scoreRelease("Movie.2023.1080p.WEB-DL-GROUP", 4_000_000_000, qualityProfileId, "movie");
+      expect(withinLimit.rejected).toBe(false);
+    } finally {
+      await db.prepare("UPDATE quality_profiles SET max_size_gb = NULL WHERE id = ?").run(qualityProfileId);
+    }
+  });
+
+  it("never rejects on size when the profile has no maximum size configured", async () => {
+    const { scoreRelease } = await import("../src/services/customFormatScoring.js");
+    await db.prepare("DELETE FROM release_profiles").run();
+    await db.prepare("UPDATE quality_profiles SET max_size_gb = NULL WHERE id = ?").run(qualityProfileId);
+    const result = await scoreRelease("Movie.2023.2160p.REMUX-GROUP", 80_000_000_000, qualityProfileId, "movie");
+    expect(result.rejected).toBe(false);
+  });
+
+  it("never rejects on size when the release's size is unknown", async () => {
+    const { scoreRelease } = await import("../src/services/customFormatScoring.js");
+    await db.prepare("DELETE FROM release_profiles").run();
+    await db.prepare("UPDATE quality_profiles SET max_size_gb = 1 WHERE id = ?").run(qualityProfileId);
+    try {
+      const result = await scoreRelease("Movie.2023.2160p.REMUX-GROUP", null, qualityProfileId, "movie");
+      expect(result.rejected).toBe(false);
+    } finally {
+      await db.prepare("UPDATE quality_profiles SET max_size_gb = NULL WHERE id = ?").run(qualityProfileId);
+    }
+  });
 });

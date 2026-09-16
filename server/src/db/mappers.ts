@@ -138,6 +138,7 @@ export function qualityProfileFromRow(row: any) {
     allowedQualities: JSON.parse(row.allowed_qualities),
     cutoff: row.cutoff,
     minFormatScore: row.min_format_score,
+    maxSizeGb: row.max_size_gb,
   };
 }
 

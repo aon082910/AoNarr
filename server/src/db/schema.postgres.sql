@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS quality_profiles (
   name TEXT NOT NULL UNIQUE,
   allowed_qualities TEXT NOT NULL, -- JSON array, worst -> best
   cutoff TEXT NOT NULL,
-  min_format_score INTEGER NOT NULL DEFAULT 0
+  min_format_score INTEGER NOT NULL DEFAULT 0,
+  max_size_gb REAL
 );
 
 CREATE TABLE IF NOT EXISTS media_items (

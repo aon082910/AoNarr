@@ -111,6 +111,11 @@ export interface QualityProfile {
   name: string;
   allowedQualities: string; // JSON array of quality names, ordered worst->best
   cutoff: string; // quality name at which upgrading stops
+  minFormatScore?: number;
+  /** Hard ceiling on release size, independent of any per-quality min/max size bounds (see
+   * services/quality.ts's sizeWithinQualityBounds) — rejects a release outright if it's over this
+   * regardless of which quality it parsed as. Null/undefined means no limit. */
+  maxSizeGb?: number | null;
 }
 
 export interface RootFolder {

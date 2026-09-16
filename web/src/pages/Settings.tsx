@@ -714,6 +714,12 @@ export default function Settings() {
     setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, minFormatScore } : p)));
   }
 
+  async function saveMaxSizeGb(profileId: number, value: string) {
+    const maxSizeGb = value.trim() === "" ? null : Number(value);
+    await api.patch(`/quality-profiles/${profileId}`, { maxSizeGb });
+    setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, maxSizeGb } : p)));
+  }
+
   async function addTag(e: FormEvent) {
     e.preventDefault();
     if (!tagName.trim()) return;
@@ -2695,6 +2701,16 @@ export default function Settings() {
                   defaultValue={p.minFormatScore}
                   onBlur={(e) => saveMinFormatScore(p.id, Number(e.target.value))}
                 />
+                <label>Maximum size (GB) — reject any release over this, regardless of quality</label>
+                <input
+                  key={p.maxSizeGb ?? `profile-max-size-empty-${p.id}`}
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  defaultValue={p.maxSizeGb ?? ""}
+                  placeholder="No limit"
+                  onBlur={(e) => saveMaxSizeGb(p.id, e.target.value)}
+                />
                 <button className="danger" onClick={() => removeProfile(p.id)}>
                   Delete quality profile
                 </button>
@@ -3098,9 +3114,7 @@ export default function Settings() {
                         </p>
                       </div>
                     )}
-                    {testResult.rejected && (
-                      <p style={{ color: "var(--danger)" }}>Rejected by a Release Profile: {testResult.rejectReason}</p>
-                    )}
+                    {testResult.rejected && <p style={{ color: "var(--danger)" }}>Rejected: {testResult.rejectReason}</p>}
                     <p>
                       <strong>Total score: {testResult.totalScore}</strong>
                     </p>

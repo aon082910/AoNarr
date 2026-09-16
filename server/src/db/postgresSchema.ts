@@ -96,6 +96,7 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE root_folders ADD COLUMN IF NOT EXISTS min_free_space_gb INTEGER`,
   `ALTER TABLE import_lists ADD COLUMN IF NOT EXISTS require_review INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE root_folders ADD COLUMN IF NOT EXISTS name TEXT`,
+  `ALTER TABLE quality_profiles ADD COLUMN IF NOT EXISTS max_size_gb REAL`,
 ];
 
 /**
