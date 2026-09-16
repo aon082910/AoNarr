@@ -200,7 +200,7 @@ export default function EpisodeDetail() {
             {searching ? "Searching..." : "Search"}
           </button>
           <button className="secondary" onClick={toggleImport}>
-            {showImport ? "Hide manual import" : "Manual Import"}
+            Manual Import
           </button>
           {!!episode.hasFile && (
             <button className="danger" onClick={markAsMissing} title="Removed the file yourself? This resets AoNarr's record so it searches for it again.">
@@ -216,55 +216,52 @@ export default function EpisodeDetail() {
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
 
       {showImport && (
-        <>
-          <h2>Manual Import</h2>
-          <div className="form-panel">
-            <p style={{ color: "var(--muted)", fontSize: "0.82rem", marginTop: 0 }}>
-              Browsing downloads: /{browsePath || ""}
-            </p>
-            {browsePath && (
-              <button type="button" className="secondary" onClick={() => browse(browsePath.split("/").slice(0, -1).join("/"))}>
-                Up
-              </button>
-            )}
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Size</th>
-                  <th></th>
+        <Modal title="Manual Import" onClose={() => setShowImport(false)} maxWidth={640}>
+          <p style={{ color: "var(--muted)", fontSize: "0.82rem", marginTop: 0 }}>
+            Browsing downloads: /{browsePath || ""}
+          </p>
+          {browsePath && (
+            <button type="button" className="secondary" onClick={() => browse(browsePath.split("/").slice(0, -1).join("/"))}>
+              Up
+            </button>
+          )}
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Size</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {browseEntries.map((e) => (
+                <tr key={e.path}>
+                  <td>{e.isDirectory ? "📁 " : ""}{e.name}</td>
+                  <td>{e.size ? `${(e.size / 1e6).toFixed(1)} MB` : "-"}</td>
+                  <td>
+                    {e.isDirectory && (
+                      <button type="button" className="secondary" onClick={() => browse(e.path)}>
+                        Open
+                      </button>
+                    )}
+                    {e.isMediaFile && (
+                      <button onClick={() => manualImport(e)} disabled={importingPath === e.path}>
+                        {importingPath === e.path ? "Importing..." : "Import"}
+                      </button>
+                    )}
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {browseEntries.map((e) => (
-                  <tr key={e.path}>
-                    <td>{e.isDirectory ? "📁 " : ""}{e.name}</td>
-                    <td>{e.size ? `${(e.size / 1e6).toFixed(1)} MB` : "-"}</td>
-                    <td>
-                      {e.isDirectory && (
-                        <button type="button" className="secondary" onClick={() => browse(e.path)}>
-                          Open
-                        </button>
-                      )}
-                      {e.isMediaFile && (
-                        <button onClick={() => manualImport(e)} disabled={importingPath === e.path}>
-                          {importingPath === e.path ? "Importing..." : "Import"}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-                {browseEntries.length === 0 && (
-                  <tr>
-                    <td colSpan={3} className="empty">
-                      Empty.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </>
+              ))}
+              {browseEntries.length === 0 && (
+                <tr>
+                  <td colSpan={3} className="empty">
+                    Empty.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </Modal>
       )}
 
       {results && (

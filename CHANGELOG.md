@@ -3,6 +3,28 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 210 — AI-assisted identification, Manual Import redesigned
+- **The AI Providers feature is finally wired to something**: Settings → AI Providers (add a
+  local Ollama-style or cloud OpenAI-compatible provider, test the connection) has existed for a
+  while, but nothing in the app ever actually called it — `queryAi` had zero real callers. Manual
+  Import now has an "🤖 Identify" button per file: for video, it grabs a frame ~25% into the file
+  and asks the configured vision-capable model what movie/show (with season/episode if visible) it
+  looks like; for audio, since a general chat-completion API has no way to actually listen to a
+  clip through this integration, it reads the file's own embedded ID3/Vorbis tags with ffprobe and
+  asks the model to make sense of/clean up whatever's there. Either way it's a text suggestion for
+  a human to read and act on in the normal picker — it never applies a match on its own. Falls back
+  to a filename-only guess when frame extraction fails or an audio file has no tags.
+- **Manual Import is now a popup**, matching the Manual Search popup from last round instead of an
+  ever-growing inline section — the batch file-browser/target-picker on a movie/series/album page,
+  and the simpler single-file picker on an episode page.
+- **Manual Import can now browse and import from any folder**, not just the downloads directory —
+  a text field to jump to an absolute path, same trust level (admin-only) as the root-folder
+  picker's own already-unrestricted directory browsing. Scoped to the movie/series/album page's
+  richer batch picker; the simpler per-episode picker stays downloads-only for now.
+- Modeled after Radarr/Sonarr's own Manual Import/Interactive Search screens in shape — a popup,
+  per-file target/quality picking, batch import with per-file results — not a pixel clone of
+  either app's actual UI.
+
 ## Round 209 — import-list filtering, search results as a popup
 - **Import-list genre/rating/vote-count filtering** (the gap flagged at the end of Round 208): a
   list still adds everything it has by default, but each list can now set a minimum rating,

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, downloadFile } from "../api/client.js";
 import GroupPicker from "../components/GroupPicker.js";
@@ -123,6 +123,13 @@ interface BrowseEntry {
   isDirectory: boolean;
   isMediaFile: boolean;
   size: number | null;
+}
+
+interface BrowseResponse {
+  path: string;
+  anyFolder?: boolean;
+  parent?: string | null;
+  entries: BrowseEntry[];
 }
 
 interface ArtworkOptions {
@@ -275,6 +282,11 @@ export default function MediaDetail() {
   });
   const [applyingMerge, setApplyingMerge] = useState(false);
   const [browseEntries, setBrowseEntries] = useState<BrowseEntry[]>([]);
+  const [browseAnyFolder, setBrowseAnyFolder] = useState(false);
+  const [browseParent, setBrowseParent] = useState<string | null>(null);
+  const [customFolderInput, setCustomFolderInput] = useState("");
+  const [aiGuesses, setAiGuesses] = useState<Record<string, string>>({});
+  const [aiIdentifying, setAiIdentifying] = useState<string | null>(null);
   const [importSubItemId, setImportSubItemId] = useState<number | "">("");
   const [newChildTitle, setNewChildTitle] = useState("");
   const [addingChild, setAddingChild] = useState(false);
@@ -325,7 +337,6 @@ export default function MediaDetail() {
   const [importingBatch, setImportingBatch] = useState(false);
   const [importOnlyEpisodeId, setImportOnlyEpisodeId] = useState<number | null>(null);
   const [importOnlySeasonNumber, setImportOnlySeasonNumber] = useState<number | null>(null);
-  const importPanelRef = useRef<HTMLDivElement>(null);
   const [seasonActionBusy, setSeasonActionBusy] = useState<{ seasonNumber: number; action: string } | null>(null);
   const [seasonView, setSeasonView] = useState<"list" | "tile">(() => (localStorage.getItem("aonarr_season_view") as "list" | "tile") || "list");
   const [showSplit, setShowSplit] = useState(false);
@@ -978,12 +989,17 @@ export default function MediaDetail() {
    * pre-fill targets using the value from *before* that same click's setState call. */
   async function browse(
     nextPath: string,
-    overrides?: { onlyEpisodeId?: number | null; subItemId?: number | ""; onlySeasonNumber?: number | null }
+    overrides?: { onlyEpisodeId?: number | null; subItemId?: number | ""; onlySeasonNumber?: number | null; anyFolder?: boolean }
   ) {
-    const res = await api.get<{ path: string; entries: BrowseEntry[] }>(
-      `/import/browse?path=${encodeURIComponent(nextPath)}`
+    // Same stale-closure reasoning as the other overrides below: a caller that just flipped
+    // browseAnyFolder via setState can't rely on that state being visible yet this render.
+    const anyFolder = overrides && "anyFolder" in overrides ? overrides.anyFolder! : browseAnyFolder;
+    const res = await api.get<BrowseResponse>(
+      `/import/browse?path=${encodeURIComponent(nextPath)}${anyFolder ? "&anyFolder=1" : ""}`
     );
     setBrowsePath(res.path);
+    setBrowseAnyFolder(!!res.anyFolder);
+    setBrowseParent(res.parent ?? null);
     setBrowseEntries(res.entries);
 
     // Pre-fills each media file's target (episode auto-guessed from its filename for episodic
@@ -1015,8 +1031,7 @@ export default function MediaDetail() {
     setImportOnlyEpisodeId(null);
     setImportOnlySeasonNumber(null);
     setShowImport(true);
-    browse("", { onlyEpisodeId: null, subItemId, onlySeasonNumber: null });
-    requestAnimationFrame(() => importPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    browse("", { onlyEpisodeId: null, subItemId, onlySeasonNumber: null, anyFolder: false });
   }
 
   /** Opens Manual Import with the target dropdown limited to one season's episodes — the season
@@ -1027,8 +1042,7 @@ export default function MediaDetail() {
     setImportOnlySeasonNumber(seasonNumber);
     setImportOnlyEpisodeId(null);
     setShowImport(true);
-    browse("", { onlyEpisodeId: null, onlySeasonNumber: seasonNumber });
-    requestAnimationFrame(() => importPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    browse("", { onlyEpisodeId: null, onlySeasonNumber: seasonNumber, anyFolder: false });
   }
 
   function toggleImport(episodeId?: number) {
@@ -1037,10 +1051,7 @@ export default function MediaDetail() {
     setImportOnlySeasonNumber(null);
     setShowImport(next);
     if (next) {
-      browse("", { onlyEpisodeId: episodeId ?? null, onlySeasonNumber: null });
-      // The panel renders far down the page from a per-episode "Manual Import" button deep in
-      // the season table — without this the admin has no idea it opened at all.
-      requestAnimationFrame(() => importPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+      browse("", { onlyEpisodeId: episodeId ?? null, onlySeasonNumber: null, anyFolder: false });
     }
   }
 
@@ -1068,6 +1079,33 @@ export default function MediaDetail() {
   function setImportTarget(path: string, value: number | "") {
     setImportTargets((prev) => ({ ...prev, [path]: value }));
     setImportChecked((prev) => ({ ...prev, [path]: value !== "" }));
+  }
+
+  /** For a file the automatic filename-based matching couldn't confidently place — grabs a video
+   * frame (or, for audio, the file's own embedded tags) and asks the configured AI provider to
+   * suggest what it is. This only ever returns a text guess to read; it never picks a target or
+   * imports anything on its own. */
+  async function aiIdentifyFile(entry: BrowseEntry) {
+    if (!item) return;
+    setAiIdentifying(entry.path);
+    try {
+      const result = await api.post<{ guess: string }>("/import/ai-identify", { sourcePath: entry.path, mediaType: item.type });
+      setAiGuesses((prev) => ({ ...prev, [entry.path]: result.guess }));
+    } catch (e) {
+      setAiGuesses((prev) => ({ ...prev, [entry.path]: `Error: ${(e as Error).message}` }));
+    } finally {
+      setAiIdentifying(null);
+    }
+  }
+
+  function goToCustomFolder() {
+    if (!customFolderInput.trim()) return;
+    browse(customFolderInput.trim(), { anyFolder: true });
+  }
+
+  function backToDownloads() {
+    setCustomFolderInput("");
+    browse("", { anyFolder: false });
   }
 
   /** Sonarr-style bulk manual import: every checked file, each with its own target episode/child
@@ -1516,7 +1554,7 @@ export default function MediaDetail() {
             </button>
           )}
           <button onClick={() => toggleImport()} className="secondary">
-            {showImport ? "Hide manual import" : "Manual Import"}
+            Manual Import
           </button>
           <button
             className="secondary"
@@ -1891,11 +1929,13 @@ export default function MediaDetail() {
       )}
 
       {showImport && (
-        <div ref={importPanelRef}>
-          <h2>
-            Manual Import
-            {importOnlyEpisodeId != null ? " — this episode" : importOnlySeasonNumber != null ? ` — Season ${importOnlySeasonNumber}` : ""}
-          </h2>
+        <Modal
+          title={`Manual Import${
+            importOnlyEpisodeId != null ? " — this episode" : importOnlySeasonNumber != null ? ` — Season ${importOnlySeasonNumber}` : ""
+          }`}
+          onClose={() => setShowImport(false)}
+          maxWidth={960}
+        >
           <div className="form-panel">
             {shape === "episodic" && importOnlyEpisodeId == null && (
               <p style={{ color: "var(--muted)", fontSize: "0.82rem", marginTop: 0 }}>
@@ -1935,18 +1975,37 @@ export default function MediaDetail() {
               </>
             )}
 
-            <p style={{ color: "var(--muted)", fontSize: "0.82rem", marginTop: 12 }}>
-              Browsing downloads: /{browsePath || ""}
+            <p style={{ color: "var(--muted)", fontSize: "0.82rem", marginTop: 12, marginBottom: 4 }}>
+              Browsing {browseAnyFolder ? browsePath : `downloads: /${browsePath || ""}`}
             </p>
-            {browsePath && (
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => browse(browsePath.split("/").slice(0, -1).join("/"))}
-              >
-                Up
-              </button>
-            )}
+            <div className="toolbar" style={{ marginBottom: 8, gap: 8 }}>
+              {browseAnyFolder ? (
+                <button type="button" className="secondary" onClick={backToDownloads}>
+                  Back to downloads folder
+                </button>
+              ) : (
+                <>
+                  <input
+                    value={customFolderInput}
+                    onChange={(e) => setCustomFolderInput(e.target.value)}
+                    placeholder="/path/to/any/folder"
+                    style={{ flex: 1, minWidth: 200 }}
+                  />
+                  <button type="button" className="secondary" onClick={goToCustomFolder} disabled={!customFolderInput.trim()}>
+                    Browse this folder
+                  </button>
+                </>
+              )}
+              {(browseAnyFolder ? browseParent != null : !!browsePath) && (
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => (browseAnyFolder ? browse(browseParent ?? "/", { anyFolder: true }) : browse(browsePath.split("/").slice(0, -1).join("/")))}
+                >
+                  Up
+                </button>
+              )}
+            </div>
             <table>
               <thead>
                 <tr>
@@ -1954,6 +2013,7 @@ export default function MediaDetail() {
                   <th>Name</th>
                   <th>Size</th>
                   <th>Target</th>
+                  <th>AI identify</th>
                   <th></th>
                 </tr>
               </thead>
@@ -2002,9 +2062,29 @@ export default function MediaDetail() {
                         </select>
                       )}
                     </td>
+                    <td style={{ maxWidth: 220 }}>
+                      {e.isMediaFile && (
+                        <>
+                          <button
+                            type="button"
+                            className="secondary"
+                            disabled={aiIdentifying === e.path}
+                            onClick={() => aiIdentifyFile(e)}
+                            title="Grab a frame (video) or read embedded tags (audio) and ask the configured AI provider what this is"
+                          >
+                            {aiIdentifying === e.path ? "Asking..." : "🤖 Identify"}
+                          </button>
+                          {aiGuesses[e.path] && (
+                            <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: 4, wordBreak: "break-word" }}>
+                              {aiGuesses[e.path]}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </td>
                     <td>
                       {e.isDirectory && (
-                        <button type="button" className="secondary" onClick={() => browse(e.path)}>
+                        <button type="button" className="secondary" onClick={() => browse(e.path, { anyFolder: browseAnyFolder })}>
                           Open
                         </button>
                       )}
@@ -2013,7 +2093,7 @@ export default function MediaDetail() {
                 ))}
                 {browseEntries.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="empty">
+                    <td colSpan={6} className="empty">
                       Empty.
                     </td>
                   </tr>
@@ -2031,7 +2111,7 @@ export default function MediaDetail() {
                 : `Import ${Object.entries(importChecked).filter(([p, c]) => c && importTargets[p] !== "").length} checked file(s)`}
             </button>
           </div>
-        </div>
+        </Modal>
       )}
 
       {results && (

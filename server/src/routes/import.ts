@@ -8,6 +8,7 @@ import { placeFile } from "../services/importer.js";
 import { parseReleaseTitle } from "../services/releaseParser.js";
 import { parseNfo } from "../services/nfoParser.js";
 import { scrapeCoursePage } from "../services/courseScraper.js";
+import { identifyMediaFile } from "../services/aiIdentify.js";
 
 export const importRouter = Router();
 importRouter.use(requireAdmin);
@@ -28,12 +29,30 @@ function resolveInDownloads(relativePath: string): string {
   return resolved;
 }
 
-/** GET /api/import/browse?path=sub/dir — lists the downloads directory (or a subdirectory) for manual import. */
+/**
+ * Resolves a manual-import source path for /manual and /manual-batch. An absolute path is trusted
+ * outright — this route is admin-only, and browsing anywhere is already exactly what /browse's own
+ * anyFolder mode (and system.ts's unrestricted /browse-directory, used for root-folder picking)
+ * offers at the same trust level: nothing reachable here is more sensitive than what's already
+ * mounted into the container. A relative path keeps the original downloads-dir-only behavior.
+ */
+function resolveImportSource(sourcePath: string): string {
+  return path.isAbsolute(sourcePath) ? path.resolve(sourcePath) : resolveInDownloads(sourcePath);
+}
+
+/**
+ * GET /api/import/browse?path=sub/dir — lists the downloads directory (or a subdirectory) for
+ * manual import. `anyFolder=1` switches to browsing an absolute filesystem path instead (`path` is
+ * then that absolute path, defaulting to `/`) — Radarr/Sonarr's Manual Import isn't limited to one
+ * configured folder either, and an admin already has this same level of filesystem access via the
+ * root-folder picker's own unrestricted browse-directory endpoint.
+ */
 importRouter.get(
   "/browse",
   asyncHandler(async (req, res) => {
-    const relativePath = (req.query.path as string | undefined) ?? "";
-    const target = resolveInDownloads(relativePath);
+    const anyFolder = req.query.anyFolder === "1";
+    const requestedPath = (req.query.path as string | undefined) ?? "";
+    const target = anyFolder ? path.resolve(requestedPath || "/") : resolveInDownloads(requestedPath);
 
     let entries: fs.Dirent[];
     try {
@@ -44,13 +63,16 @@ importRouter.get(
 
     const listing = entries
       .map((entry) => {
-        const entryRelative = path.join(relativePath, entry.name);
+        // In anyFolder mode every entry's path is absolute (so it can be browsed/imported directly
+        // with no separate root to remember); in the default mode it stays relative to downloadsDir,
+        // unchanged from before.
+        const entryPath = anyFolder ? path.join(target, entry.name) : path.join(requestedPath, entry.name);
         const full = path.join(target, entry.name);
         const isMediaFile = entry.isFile() && MEDIA_EXTENSIONS.has(path.extname(entry.name).toLowerCase());
         const isNfoFile = entry.isFile() && path.extname(entry.name).toLowerCase() === ".nfo";
         return {
           name: entry.name,
-          path: entryRelative,
+          path: entryPath,
           isDirectory: entry.isDirectory(),
           isMediaFile,
           isNfoFile,
@@ -60,7 +82,32 @@ importRouter.get(
       .filter((e) => e.isDirectory || e.isMediaFile || e.isNfoFile)
       .sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.localeCompare(b.name));
 
-    res.json({ path: relativePath, entries: listing });
+    const parent = anyFolder ? (path.dirname(target) === target ? null : path.dirname(target)) : null;
+    res.json({ path: anyFolder ? target : requestedPath, anyFolder, parent, entries: listing });
+  })
+);
+
+/**
+ * POST /api/import/ai-identify — best-effort AI-assisted identification for a file whose name
+ * alone didn't match confidently (see services/aiIdentify.ts). Body: { sourcePath, mediaType,
+ * providerId? }. Returns a text guess for a human to read and act on — never applies anything on
+ * its own.
+ */
+importRouter.post(
+  "/ai-identify",
+  asyncHandler(async (req, res) => {
+    const b = req.body ?? {};
+    if (!b.sourcePath) throw new HttpError(400, "sourcePath is required");
+    const sourceFile = resolveImportSource(b.sourcePath);
+    if (!fs.existsSync(sourceFile) || !fs.statSync(sourceFile).isFile()) {
+      throw new HttpError(404, "Source file not found");
+    }
+    try {
+      const result = await identifyMediaFile(sourceFile, b.mediaType ?? "movie", b.providerId ?? null);
+      res.json(result);
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
   })
 );
 
@@ -103,7 +150,8 @@ importRouter.post(
   })
 );
 
-/** POST /api/import/manual — assign a specific downloads-dir file to a media item/episode/sub-item. */
+/** POST /api/import/manual — assign a specific file (downloads-dir-relative, or an absolute path
+ * anywhere the container can see) to a media item/episode/sub-item. */
 importRouter.post(
   "/manual",
   asyncHandler(async (req, res) => {
@@ -112,7 +160,7 @@ importRouter.post(
       throw new HttpError(400, "mediaItemId and sourcePath are required");
     }
 
-    const sourceFile = resolveInDownloads(b.sourcePath);
+    const sourceFile = resolveImportSource(b.sourcePath);
     if (!fs.existsSync(sourceFile) || !fs.statSync(sourceFile).isFile()) {
       throw new HttpError(404, "Source file not found");
     }
@@ -154,7 +202,7 @@ importRouter.post(
         continue;
       }
       try {
-        const sourceFile = resolveInDownloads(sourcePath);
+        const sourceFile = resolveImportSource(sourcePath);
         if (!fs.existsSync(sourceFile) || !fs.statSync(sourceFile).isFile()) {
           throw new Error("Source file not found");
         }
