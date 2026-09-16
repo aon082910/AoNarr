@@ -14,6 +14,26 @@ interface ImportList {
   last_synced_at: string | null;
   last_added_count: number | null;
   last_error: string | null;
+  min_rating: number | null;
+  min_votes: number | null;
+  exclude_genres: string | null; // JSON array
+}
+
+/** Last.fm's top-artists endpoint has no rating/vote/genre data to filter on — these fields are a
+ * no-op for that type either way (services/importLists.ts's passesListFilters never rejects on
+ * data an entry doesn't have), but hiding them for lastfm avoids implying they do something. */
+function listSupportsFilters(type: ImportList["type"]): boolean {
+  return type !== "lastfm";
+}
+
+function parseGenresList(json: string | null): string {
+  if (!json) return "";
+  try {
+    const arr = JSON.parse(json);
+    return Array.isArray(arr) ? arr.join(", ") : "";
+  } catch {
+    return "";
+  }
 }
 
 const TYPE_LABELS: Record<ImportList["type"], string> = { trakt: "Trakt", imdb: "IMDb", lastfm: "Last.fm", tmdb: "TMDB" };
@@ -32,6 +52,9 @@ export default function ImportLists() {
   const [url, setUrl] = useState("");
   const [qualityProfileId, setQualityProfileId] = useState<number | "">("");
   const [requireReview, setRequireReview] = useState(false);
+  const [minRating, setMinRating] = useState("");
+  const [minVotes, setMinVotes] = useState("");
+  const [excludeGenres, setExcludeGenres] = useState("");
   const [syncingId, setSyncingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reviewCounts, setReviewCounts] = useState<Record<number, number>>({});
@@ -53,9 +76,26 @@ export default function ImportLists() {
   async function addList(e: FormEvent) {
     e.preventDefault();
     if (!name || !url) return;
-    await api.post("/import-lists", { name, type, url, qualityProfileId: qualityProfileId || null, requireReview });
+    await api.post("/import-lists", {
+      name,
+      type,
+      url,
+      qualityProfileId: qualityProfileId || null,
+      requireReview,
+      minRating: minRating || null,
+      minVotes: minVotes || null,
+      excludeGenres: excludeGenres || null,
+    });
     setName("");
     setUrl("");
+    setMinRating("");
+    setMinVotes("");
+    setExcludeGenres("");
+    load();
+  }
+
+  async function saveFilter(list: ImportList, field: "minRating" | "minVotes" | "excludeGenres", value: string) {
+    await api.patch(`/import-lists/${list.id}`, { [field]: value || null });
     load();
   }
 
@@ -123,6 +163,29 @@ export default function ImportLists() {
             </select>
           </>
         )}
+        {listSupportsFilters(type) && (
+          <>
+            <label>Minimum rating (0-10, optional)</label>
+            <input
+              type="number"
+              min="0"
+              max="10"
+              step="0.1"
+              value={minRating}
+              onChange={(e) => setMinRating(e.target.value)}
+              placeholder="No minimum"
+            />
+            <label>Minimum vote count (optional)</label>
+            <input type="number" min="0" value={minVotes} onChange={(e) => setMinVotes(e.target.value)} placeholder="No minimum" />
+            <label>Exclude genres (comma-separated, optional)</label>
+            <input value={excludeGenres} onChange={(e) => setExcludeGenres(e.target.value)} placeholder="e.g. Horror, Documentary" />
+            <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+              A list still adds everything it has by default — these narrow it down. Skipped for an
+              item whose rating/votes/genres aren't known, rather than excluding it over missing
+              data.
+            </p>
+          </>
+        )}
         <label className="toolbar" style={{ gap: 8 }}>
           <input type="checkbox" checked={requireReview} onChange={(e) => setRequireReview(e.target.checked)} style={{ width: "auto" }} />
           Require review before adding
@@ -145,6 +208,7 @@ export default function ImportLists() {
               <th>Type</th>
               <th>Enabled</th>
               <th>Review before add</th>
+              <th>Filters</th>
               <th>Last synced</th>
               <th>Last result</th>
               <th></th>
@@ -160,6 +224,44 @@ export default function ImportLists() {
                 </td>
                 <td>
                   <input type="checkbox" checked={!!l.require_review} onChange={() => toggleRequireReview(l)} />
+                </td>
+                <td>
+                  {listSupportsFilters(l.type) ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 140 }}>
+                      <input
+                        key={`${l.id}-rating-${l.min_rating}`}
+                        type="number"
+                        min="0"
+                        max="10"
+                        step="0.1"
+                        defaultValue={l.min_rating ?? ""}
+                        placeholder="Min rating"
+                        title="Minimum rating (0-10)"
+                        onBlur={(e) => saveFilter(l, "minRating", e.target.value)}
+                        style={{ fontSize: "0.8rem" }}
+                      />
+                      <input
+                        key={`${l.id}-votes-${l.min_votes}`}
+                        type="number"
+                        min="0"
+                        defaultValue={l.min_votes ?? ""}
+                        placeholder="Min votes"
+                        title="Minimum vote count"
+                        onBlur={(e) => saveFilter(l, "minVotes", e.target.value)}
+                        style={{ fontSize: "0.8rem" }}
+                      />
+                      <input
+                        key={`${l.id}-genres-${l.exclude_genres}`}
+                        defaultValue={parseGenresList(l.exclude_genres)}
+                        placeholder="Exclude genres"
+                        title="Comma-separated genres to exclude"
+                        onBlur={(e) => saveFilter(l, "excludeGenres", e.target.value)}
+                        style={{ fontSize: "0.8rem" }}
+                      />
+                    </div>
+                  ) : (
+                    <span style={{ color: "var(--muted)", fontSize: "0.8rem" }}>N/A</span>
+                  )}
                 </td>
                 <td>{l.last_synced_at ?? "Never"}</td>
                 <td>

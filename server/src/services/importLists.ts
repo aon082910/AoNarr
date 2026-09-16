@@ -18,8 +18,57 @@ export interface ImportListRow {
   last_synced_at: string | null;
   last_added_count: number | null;
   last_error: string | null;
+  min_rating: number | null;
+  min_votes: number | null;
+  exclude_genres: string | null; // JSON array of lowercased genre names
   created_at: string;
 }
+
+/**
+ * Radarr-style import-list filtering — a list still adds *everything* it has by default (unchanged
+ * behavior), but a rating/vote-count/genre floor lets an admin curate what a broad list (a Trakt
+ * "Popular" list, someone else's IMDb list) actually adds instead of importing all of it
+ * unfiltered. `rating`/`votes` being unknown (not every source provides them, or a specific item
+ * might lack one) never rejects on its own — the same "don't reject on missing data" default the
+ * quality-profile size cap and custom-format size conditions already use — only a *known* value
+ * that fails the threshold does. Genre names are compared case-insensitively.
+ */
+export function passesListFilters(
+  list: Pick<ImportListRow, "min_rating" | "min_votes" | "exclude_genres">,
+  entry: { rating?: number | null; votes?: number | null; genres?: string[] | null }
+): boolean {
+  if (list.min_rating != null && entry.rating != null && entry.rating < list.min_rating) return false;
+  if (list.min_votes != null && entry.votes != null && entry.votes < list.min_votes) return false;
+  if (list.exclude_genres && entry.genres && entry.genres.length > 0) {
+    let excluded: string[];
+    try {
+      excluded = JSON.parse(list.exclude_genres);
+    } catch {
+      excluded = [];
+    }
+    if (excluded.length > 0) {
+      const entryGenres = new Set(entry.genres.map((g) => g.toLowerCase()));
+      if (excluded.some((g) => entryGenres.has(g))) return false;
+    }
+  }
+  return true;
+}
+
+/** TMDB's genre id → name maps — stable, effectively-static reference data (TMDB's own genre list
+ * changes on the order of once a year, if that), so this avoids an extra API call per list sync
+ * just to resolve the numeric `genre_ids` a TMDB list item carries into names exclude_genres can
+ * actually compare against. Movie and TV use different id spaces. */
+const TMDB_MOVIE_GENRES: Record<number, string> = {
+  28: "action", 12: "adventure", 16: "animation", 35: "comedy", 80: "crime", 99: "documentary",
+  18: "drama", 10751: "family", 14: "fantasy", 36: "history", 27: "horror", 10402: "music",
+  9648: "mystery", 10749: "romance", 878: "science fiction", 10770: "tv movie", 53: "thriller",
+  10752: "war", 37: "western",
+};
+const TMDB_TV_GENRES: Record<number, string> = {
+  10759: "action & adventure", 16: "animation", 35: "comedy", 80: "crime", 99: "documentary",
+  18: "drama", 10751: "family", 10762: "kids", 9648: "mystery", 10763: "news", 10764: "reality",
+  10765: "sci-fi & fantasy", 10766: "soap", 10767: "talk", 10768: "war & politics", 37: "western",
+};
 
 async function existingTmdbIds(type: string): Promise<Set<string>> {
   const rows = (await db.prepare("SELECT external_ids FROM media_items WHERE type = ?").all(type)) as {
@@ -119,8 +168,11 @@ async function syncTraktList(list: ImportListRow, qualityProfileId: number | nul
   const target = parseTraktListUrl(list.url);
   if (!target) throw new Error("URL is not a recognized Trakt list/watchlist URL");
 
+  // extended=full is what actually puts rating/votes/genres on each movie/show object — without
+  // it Trakt's list endpoints only return the bare minimum (title/year/ids), which is enough for
+  // adding but not enough for passesListFilters to have anything to check.
   const path = target.listSlug ? `lists/${target.listSlug}/items` : "watchlist";
-  const res = await fetch(`https://api.trakt.tv/users/${target.username}/${path}`, {
+  const res = await fetch(`https://api.trakt.tv/users/${target.username}/${path}?extended=full`, {
     headers: { "trakt-api-version": "2", "trakt-api-key": clientId, "Content-Type": "application/json" },
   });
   if (!res.ok) throw new Error(`Trakt list request failed: HTTP ${res.status}`);
@@ -137,6 +189,7 @@ async function syncTraktList(list: ImportListRow, qualityProfileId: number | nul
         const tmdbId = m.ids?.tmdb;
         if (!tmdbId || existingMovies.has(String(tmdbId))) continue;
         if (await isExcluded("movie", m.title, m.year ?? null, String(tmdbId), "tmdb")) continue;
+        if (!passesListFilters(list, { rating: m.rating ?? null, votes: m.votes ?? null, genres: m.genres ?? null })) continue;
         if (list.require_review) {
           await queueForReview({ source: list.name, importListId: list.id, type: "movie", title: m.title, year: m.year ?? null });
           continue;
@@ -160,6 +213,7 @@ async function syncTraktList(list: ImportListRow, qualityProfileId: number | nul
         const tmdbId = s.ids?.tmdb;
         if (!tmdbId || existingSeries.has(String(tmdbId))) continue;
         if (await isExcluded("series", s.title, s.year ?? null, String(tmdbId), "tmdb")) continue;
+        if (!passesListFilters(list, { rating: s.rating ?? null, votes: s.votes ?? null, genres: s.genres ?? null })) continue;
         if (list.require_review) {
           await queueForReview({ source: list.name, importListId: list.id, type: "series", title: s.title, year: s.year ?? null });
           continue;
@@ -224,6 +278,10 @@ async function syncImdbList(list: ImportListRow, qualityProfileId: number | null
     try {
       if ((await findPossibleDuplicates(type as any, title, year)).length > 0) continue;
       if (await isExcluded(type, title, year, "", "")) continue;
+      const rating = row["IMDb Rating"] ? Number(row["IMDb Rating"]) : null;
+      const votes = row["Num Votes"] ? Number(row["Num Votes"].replace(/,/g, "")) : null;
+      const genres = row["Genres"] ? row["Genres"].split(",").map((g) => g.trim()) : null;
+      if (!passesListFilters(list, { rating, votes, genres })) continue;
 
       const query = year ? `${title} ${year}` : title;
       const results = await searchMetadata(type as any, query).catch(() => []);
@@ -367,6 +425,8 @@ async function syncTmdbList(list: ImportListRow, qualityProfileId: number | null
         const year = entry.first_air_date ? Number(String(entry.first_air_date).slice(0, 4)) : null;
         if (!title) continue;
         if (await isExcluded("series", title, year, String(tmdbId), "tmdb")) continue;
+        const tvGenres = Array.isArray(entry.genre_ids) ? entry.genre_ids.map((id: number) => TMDB_TV_GENRES[id]).filter(Boolean) : null;
+        if (!passesListFilters(list, { rating: entry.vote_average ?? null, votes: entry.vote_count ?? null, genres: tvGenres })) continue;
         if (list.require_review) {
           await queueForReview({ source: list.name, importListId: list.id, type: "series", title, year });
           continue;
@@ -387,6 +447,8 @@ async function syncTmdbList(list: ImportListRow, qualityProfileId: number | null
         const year = entry.release_date ? Number(String(entry.release_date).slice(0, 4)) : null;
         if (!title) continue;
         if (await isExcluded("movie", title, year, String(tmdbId), "tmdb")) continue;
+        const movieGenres = Array.isArray(entry.genre_ids) ? entry.genre_ids.map((id: number) => TMDB_MOVIE_GENRES[id]).filter(Boolean) : null;
+        if (!passesListFilters(list, { rating: entry.vote_average ?? null, votes: entry.vote_count ?? null, genres: movieGenres })) continue;
         if (list.require_review) {
           await queueForReview({ source: list.name, importListId: list.id, type: "movie", title, year });
           continue;

@@ -94,6 +94,9 @@ ensureColumn("root_folders", "min_free_space_gb", "min_free_space_gb INTEGER");
 ensureColumn("import_lists", "require_review", "require_review INTEGER NOT NULL DEFAULT 0");
 ensureColumn("root_folders", "name", "name TEXT");
 ensureColumn("quality_profiles", "max_size_gb", "max_size_gb REAL");
+ensureColumn("import_lists", "min_rating", "min_rating REAL");
+ensureColumn("import_lists", "min_votes", "min_votes INTEGER");
+ensureColumn("import_lists", "exclude_genres", "exclude_genres TEXT");
 
 /**
  * indexers.protocol and download_clients.type originally shipped with a rigid `CHECK (... IN (...))`

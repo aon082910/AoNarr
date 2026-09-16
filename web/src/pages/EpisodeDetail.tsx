@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client.js";
+import Modal from "../components/Modal.js";
 import { useAuth } from "../context/AuthContext.js";
 import type { MediaInfo, SearchResult } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
@@ -267,39 +268,41 @@ export default function EpisodeDetail() {
       )}
 
       {results && (
-        <table style={{ marginTop: 16 }}>
-          <thead>
-            <tr>
-              <th>Title</th>
-              <th>Size</th>
-              <th>Seeders</th>
-              <th>Quality</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {results.length === 0 && (
+        <Modal title="Search results" onClose={() => setResults(null)} maxWidth={800}>
+          <table>
+            <thead>
               <tr>
-                <td colSpan={5} className="empty">
-                  No results.
-                </td>
+                <th>Title</th>
+                <th>Size</th>
+                <th>Seeders</th>
+                <th>Quality</th>
+                <th></th>
               </tr>
-            )}
-            {results.map((r, i) => (
-              <tr key={i}>
-                <td>{r.title}</td>
-                <td>{(r.size / 1e9).toFixed(2)} GB</td>
-                <td>{r.seeders ?? "-"}</td>
-                <td>{r.parsedQuality ?? "-"}</td>
-                <td>
-                  <button className="secondary" onClick={() => grab(r)}>
-                    Grab
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {results.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="empty">
+                    No results.
+                  </td>
+                </tr>
+              )}
+              {results.map((r, i) => (
+                <tr key={i}>
+                  <td>{r.title}</td>
+                  <td>{(r.size / 1e9).toFixed(2)} GB</td>
+                  <td>{r.seeders ?? "-"}</td>
+                  <td>{r.parsedQuality ?? "-"}</td>
+                  <td>
+                    <button className="secondary" onClick={() => grab(r)}>
+                      Grab
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Modal>
       )}
     </div>
   );

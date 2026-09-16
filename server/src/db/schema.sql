@@ -465,6 +465,9 @@ CREATE TABLE IF NOT EXISTS import_lists (
   last_synced_at TEXT,
   last_added_count INTEGER,
   last_error TEXT,
+  min_rating REAL,
+  min_votes INTEGER,
+  exclude_genres TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

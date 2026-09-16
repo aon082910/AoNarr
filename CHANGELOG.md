@@ -3,6 +3,23 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 209 — import-list filtering, search results as a popup
+- **Import-list genre/rating/vote-count filtering** (the gap flagged at the end of Round 208): a
+  list still adds everything it has by default, but each list can now set a minimum rating,
+  minimum vote count, and/or excluded genres to narrow what it actually adds — Trakt (via
+  `extended=full`, which is what actually puts rating/votes/genres on a Trakt list item), IMDb
+  (its CSV export's own Rating/Num Votes/Genres columns), and TMDB (`vote_average`/`vote_count`,
+  plus a static id→name map for `genre_ids` — TMDB's genre list is stable enough that resolving it
+  doesn't need an extra API call per sync). Last.fm's top-artists source has no rating/vote/genre
+  data to filter on, so those fields are hidden for that type rather than implying they do
+  something. An item whose rating/votes/genres aren't known from its source is never excluded over
+  missing data — same default the size-cap and custom-format size conditions already use. Added
+  pure unit tests for the shared filter-evaluation function.
+- **Manual search results on a media/episode/album page are now a popup**, not an ever-growing
+  section pushing the rest of the page down — the same pattern already used for manual import and
+  add-media flows elsewhere in the app. No change to the search/grab logic itself, just where the
+  results render.
+
 ## Round 208 — per-profile maximum release size
 - **Quality profiles can now set a hard maximum release size**: independent of the existing
   per-quality min/max size bounds (which only compare a release against the range configured for

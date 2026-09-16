@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import { useNavigate, useParams } from "react-router-dom";
 import { api, downloadFile } from "../api/client.js";
 import GroupPicker from "../components/GroupPicker.js";
+import Modal from "../components/Modal.js";
 import SearchMatchModal, { type MetadataSearchResult } from "../components/SearchMatchModal.js";
 import RenamePreviewModal from "../components/RenamePreviewModal.js";
 import type { LibraryGroup } from "../types.js";
@@ -2034,8 +2035,7 @@ export default function MediaDetail() {
       )}
 
       {results && (
-        <>
-          <h2>Search results{target ? ` — ${target.label}` : ""}</h2>
+        <Modal title={`Search results${target ? ` — ${target.label}` : ""}`} onClose={() => setResults(null)} maxWidth={1000}>
           {results.length === 0 && <p className="empty">No results found.</p>}
           {results.length > 0 && (
             <table>
@@ -2112,7 +2112,7 @@ export default function MediaDetail() {
               </tbody>
             </table>
           )}
-        </>
+        </Modal>
       )}
 
       {shape === "episodic" && (item.children as Episode[]).length > 0 && (
