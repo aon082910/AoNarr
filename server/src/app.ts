@@ -74,6 +74,7 @@ import { updateCheckRouter } from "./routes/updateCheck.js";
 import { libraryGroupsRouter } from "./routes/libraryGroups.js";
 import { libraryViewsRouter } from "./routes/libraryViews.js";
 import { calendarEventsRouter } from "./routes/calendarEvents.js";
+import { remotePathMappingsRouter } from "./routes/remotePathMappings.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { recycleBinRouter } from "./routes/recycleBin.js";
 import { duplicatesRouter } from "./routes/duplicates.js";
@@ -232,6 +233,7 @@ export async function createApp(): Promise<Express> {
   app.use("/api/library-groups", libraryGroupsRouter);
   app.use("/api/library-views", libraryViewsRouter);
   app.use("/api/calendar-events", calendarEventsRouter);
+  app.use("/api/remote-path-mappings", remotePathMappingsRouter);
   app.use("/api/jobs", jobsRouter);
   app.use("/api/recycle-bin", recycleBinRouter);
   app.use("/api/duplicates", duplicatesRouter);

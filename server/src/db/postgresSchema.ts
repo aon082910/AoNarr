@@ -100,6 +100,7 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE import_lists ADD COLUMN IF NOT EXISTS min_rating REAL`,
   `ALTER TABLE import_lists ADD COLUMN IF NOT EXISTS min_votes INTEGER`,
   `ALTER TABLE import_lists ADD COLUMN IF NOT EXISTS exclude_genres TEXT`,
+  `ALTER TABLE queue ADD COLUMN IF NOT EXISTS download_path TEXT`,
 ];
 
 /**

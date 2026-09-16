@@ -18,6 +18,12 @@ export interface QueueStatusUpdate {
   downloadId: string;
   progress: number; // 0-1
   status: "downloading" | "completed" | "failed";
+  /** Absolute path this download's data lives at, in the CLIENT's own filesystem namespace — as
+   * reported directly by the client's own API (qBittorrent's save_path/content_path, SABnzbd's
+   * history "storage" field). Only set on "completed" for the adapters that expose one; the
+   * scheduler runs it through applyRemotePathMapping() before storing it, so nothing downstream
+   * ever sees an un-translated remote path. */
+  remotePath?: string;
 }
 
 /** Common surface every download client backend implements. `releaseTitle` is only used by the
@@ -241,6 +247,10 @@ class QBittorrentAdapter implements DownloadClientAdapter {
       downloadId: t.hash,
       progress: t.progress ?? 0,
       status: t.progress >= 1 ? "completed" : t.state === "error" ? "failed" : "downloading",
+      // content_path (API v2.8.4+) points straight at the torrent's actual file/folder; save_path
+      // is only the download root it was saved under. Older qBittorrent builds lack content_path
+      // entirely, so fall back to save_path rather than reporting no path at all.
+      remotePath: t.content_path || t.save_path || undefined,
     }));
   }
 
@@ -395,6 +405,9 @@ class SabnzbdAdapter implements DownloadClientAdapter {
             downloadId: h.nzo_id,
             progress: 1,
             status: h.status === "Failed" ? "failed" : "completed",
+            // "storage" is the final on-disk path of the completed job, in SABnzbd's own
+            // filesystem namespace — absent on a failed job (nothing was ever finished/moved).
+            remotePath: h.storage || undefined,
           });
         }
       }
@@ -1095,6 +1108,50 @@ const adapters: Record<DownloadClient["type"], DownloadClientAdapter> = {
 
 export function getDownloadClientAdapter(type: DownloadClient["type"]): DownloadClientAdapter {
   return adapters[type];
+}
+
+/** Strips a trailing slash (either style) so a stored mapping of "/downloads/" and one of
+ * "/downloads" behave identically, and comparisons below don't have to special-case it. */
+function stripTrailingSlash(p: string): string {
+  return p.replace(/[/\\]+$/, "");
+}
+
+/**
+ * Radarr/Sonarr-style remote path mapping: a download client that doesn't share AoNarr's exact
+ * filesystem layout (different host, different container, an SMB/NFS share mounted at a different
+ * point on each side) reports its own completed-download path in ITS OWN namespace — qBittorrent's
+ * content_path/save_path, SABnzbd's history "storage" field (see QueueStatusUpdate.remotePath).
+ * That path is useless to AoNarr as-is; this rewrites whichever configured remote_path prefix it
+ * starts with to the matching local_path, so services/scheduler.ts's pollQueue can store a path
+ * AoNarr can actually open. Case-insensitive prefix match and mixed-slash tolerant (a Windows
+ * qBittorrent box reporting "C:\Downloads\..." against a mapping typed with forward slashes should
+ * still match) since the two sides of a mapping are typically different operating systems.
+ * Returns the input unchanged when no mapping applies — every existing single-host setup (the
+ * overwhelming majority, where the client already writes straight into the shared downloadsDir)
+ * keeps working exactly as before with zero mappings configured.
+ */
+export async function applyRemotePathMapping(downloadClientId: number, remotePath: string): Promise<string> {
+  const mappings = (await db
+    .prepare("SELECT remote_path, local_path FROM remote_path_mappings WHERE download_client_id = ?")
+    .all(downloadClientId)) as { remote_path: string; local_path: string }[];
+  if (mappings.length === 0) return remotePath;
+
+  const normalizedRemote = stripTrailingSlash(remotePath).replace(/\\/g, "/").toLowerCase();
+  // Longest prefix wins, so a more specific mapping (e.g. "/downloads/movies") takes priority over
+  // a broader one covering the same root (e.g. "/downloads") when both are configured.
+  let best: { remote_path: string; local_path: string } | null = null;
+  for (const m of mappings) {
+    const candidate = stripTrailingSlash(m.remote_path).replace(/\\/g, "/").toLowerCase();
+    if (normalizedRemote === candidate || normalizedRemote.startsWith(candidate + "/")) {
+      if (!best || candidate.length > stripTrailingSlash(best.remote_path).replace(/\\/g, "/").length) best = m;
+    }
+  }
+  if (!best) return remotePath;
+
+  const remotePrefixLen = stripTrailingSlash(best.remote_path).length;
+  const suffix = remotePath.slice(remotePrefixLen).replace(/^[/\\]+/, "");
+  const localBase = stripTrailingSlash(best.local_path);
+  return suffix ? `${localBase}/${suffix.replace(/\\/g, "/")}` : localBase;
 }
 
 /**

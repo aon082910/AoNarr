@@ -197,10 +197,10 @@ function walk(dir: string, extensions: string[], maxDepth: number, depth = 0): s
   return found;
 }
 
-function scoreByTokenOverlap(filePaths: string[], releaseTitle: string): FileCandidate[] {
+function scoreByTokenOverlap(filePaths: string[], releaseTitle: string, baseDir: string): FileCandidate[] {
   const wantedTokens = new Set(normalizeTokens(releaseTitle));
   return filePaths.map((filePath) => {
-    const relative = path.relative(config.downloadsDir, filePath);
+    const relative = path.relative(baseDir, filePath);
     const fileTokens = new Set(normalizeTokens(relative));
     let overlap = 0;
     for (const t of wantedTokens) if (fileTokens.has(t)) overlap++;
@@ -221,30 +221,68 @@ function scoreByTokenOverlap(filePaths: string[], releaseTitle: string): FileCan
  * queue row picks its own file instead of racing the others for the top token-overlap score.
  * Falls back to plain token overlap when nothing parses that precisely (e.g. non-standard
  * per-episode release naming).
+ *
+ * `searchRoot`, when given, is this specific download's own location — either the remote-path-
+ * mapping-translated queue.download_path (see services/downloadClient.ts's applyRemotePathMapping)
+ * or an already-local path a caller resolved some other way. A single matching file there (the
+ * common case for a non-season-pack torrent, where the client reports the file itself) is returned
+ * immediately with no scoring needed at all — the client already told us exactly which download
+ * this is, which is both more accurate and cheaper than fuzzy-matching against the whole downloads
+ * directory. A directory is walked and scored the same way the full downloadsDir normally is, just
+ * scoped to that one release's own files (so a season pack's several episodes don't have to
+ * compete against every other in-flight download for top score). Any way this narrower search
+ * comes up empty (a stale mapping, a path that no longer exists) falls through to the normal
+ * downloadsDir-wide search rather than failing outright.
  */
 export function findDownloadedFile(
   releaseTitle: string,
   mediaType: MediaType,
-  target?: { season: number; episode: number } | { airDate: string }
+  target?: { season: number; episode: number } | { airDate: string },
+  searchRoot?: string | null
 ): string | null {
   const extensions = getMediaTypeConfig(mediaType).extensions;
-  const candidates = walk(config.downloadsDir, extensions, 4);
+
+  if (searchRoot) {
+    try {
+      const stat = fs.statSync(searchRoot);
+      if (stat.isFile()) {
+        if (extensions.includes(path.extname(searchRoot).toLowerCase())) return searchRoot;
+      } else if (stat.isDirectory()) {
+        const scoped = findDownloadedFileIn(searchRoot, releaseTitle, extensions, target);
+        if (scoped) return scoped;
+      }
+    } catch {
+      // Mapped path doesn't exist (stale mapping, or the client hasn't actually written there) —
+      // fall through to the full downloadsDir search below exactly as if no path had been given.
+    }
+  }
+
+  return findDownloadedFileIn(config.downloadsDir, releaseTitle, extensions, target);
+}
+
+function findDownloadedFileIn(
+  baseDir: string,
+  releaseTitle: string,
+  extensions: string[],
+  target?: { season: number; episode: number } | { airDate: string }
+): string | null {
+  const candidates = walk(baseDir, extensions, 4);
   if (candidates.length === 0) return null;
 
   if (target) {
     const episodeMatches = candidates.filter((filePath) => {
-      const relative = path.relative(config.downloadsDir, filePath);
+      const relative = path.relative(baseDir, filePath);
       const parsed = parseReleaseTitle(relative);
       return "airDate" in target ? releaseMatchesAirDate(parsed, target.airDate) : releaseMatchesEpisode(parsed, target.season, target.episode);
     });
     if (episodeMatches.length > 0) {
-      const scored = scoreByTokenOverlap(episodeMatches, releaseTitle);
+      const scored = scoreByTokenOverlap(episodeMatches, releaseTitle, baseDir);
       scored.sort((a, b) => b.score - a.score || b.size - a.size);
       return scored[0].filePath;
     }
   }
 
-  const scored = scoreByTokenOverlap(candidates, releaseTitle);
+  const scored = scoreByTokenOverlap(candidates, releaseTitle, baseDir);
   scored.sort((a, b) => b.score - a.score || b.size - a.size);
   const best = scored[0];
   return best.score >= 0.4 ? best.filePath : null;
@@ -815,7 +853,7 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
     sourceFile = resolved;
   } else {
     await unpackDownloadedArchives();
-    sourceFile = findDownloadedFile(queueItem.title, item.type, episodeTarget);
+    sourceFile = findDownloadedFile(queueItem.title, item.type, episodeTarget, queueItem.downloadPath);
   }
   if (!sourceFile) {
     throw new Error(`No matching file found in downloads directory for "${queueItem.title}"`);

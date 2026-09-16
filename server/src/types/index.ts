@@ -143,6 +143,12 @@ export interface QueueItem {
   addedAt: string;
   updatedAt: string;
   retryCount: number;
+  /** Remote-path-mapping-translated location of this download on disk, as AoNarr sees it — set by
+   * pollQueue when the download client reports one (qBittorrent's save_path/content_path,
+   * SABnzbd's history "storage" field) and a mapping is configured for that client. Null when the
+   * client reported no path, no mapping applies, or that adapter doesn't support it — importer.ts
+   * falls back to its existing downloads-directory-wide fuzzy scan in that case. */
+  downloadPath: string | null;
 }
 
 export interface HistoryEvent {

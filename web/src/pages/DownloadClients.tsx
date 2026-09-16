@@ -15,6 +15,14 @@ interface ClientHealthStats {
   torrentsOverRatioLimit: number;
 }
 
+interface RemotePathMapping {
+  id: number;
+  downloadClientId: number;
+  remotePath: string;
+  localPath: string;
+  createdAt: string;
+}
+
 const TYPE_LABELS: Record<ClientType, string> = {
   qbittorrent: "qBittorrent",
   sabnzbd: "SABnzbd",
@@ -45,13 +53,37 @@ export default function DownloadClients() {
   const [category, setCategory] = useState("aonarr");
   const [audioOnly, setAudioOnly] = useState(false);
 
+  const [mappings, setMappings] = useState<RemotePathMapping[]>([]);
+  const [mappingClientId, setMappingClientId] = useState<number | "">("");
+  const [mappingRemotePath, setMappingRemotePath] = useState("");
+  const [mappingLocalPath, setMappingLocalPath] = useState("");
+
   const needsHost = type === "qbittorrent" || type === "sabnzbd" || type === "slskd";
   const needsWatchFolder = type === "blackhole";
 
   function load() {
     api.get<DownloadClient[]>("/download-clients").then(setClients);
+    api.get<RemotePathMapping[]>("/remote-path-mappings").then(setMappings);
   }
   useEffect(load, []);
+
+  async function addMapping(e: FormEvent) {
+    e.preventDefault();
+    if (!mappingClientId || !mappingRemotePath.trim() || !mappingLocalPath.trim()) return;
+    await api.post("/remote-path-mappings", {
+      downloadClientId: mappingClientId,
+      remotePath: mappingRemotePath.trim(),
+      localPath: mappingLocalPath.trim(),
+    });
+    setMappingRemotePath("");
+    setMappingLocalPath("");
+    load();
+  }
+
+  async function removeMapping(id: number) {
+    await api.del(`/remote-path-mappings/${id}`);
+    load();
+  }
 
   function resetForm() {
     setName("");
@@ -190,6 +222,89 @@ export default function DownloadClients() {
         ))}
       </div>
       {clients.length === 0 && <p className="empty">No download clients configured yet.</p>}
+
+      {clients.length > 0 && (
+        <div className="form-panel" style={{ marginTop: 24, maxWidth: 640 }}>
+          <h2 style={{ marginBottom: 4 }}>Remote Path Mappings</h2>
+          <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
+            Only needed when a download client runs on a different host/container than AoNarr and
+            doesn't share the exact same filesystem layout (an SMB/NFS share mounted at a different
+            path on each side, say). Rewrites the path prefix that client reports for a completed
+            download (qBittorrent's content/save path, SABnzbd's history storage path) to the
+            matching path AoNarr sees, so the importer can locate that specific download's files
+            directly instead of falling back to its usual downloads-directory-wide fuzzy match.
+            Leave empty if AoNarr and your download client(s) already share one downloads folder —
+            the overwhelming majority of setups need no mappings at all.
+          </p>
+
+          {mappings.length > 0 && (
+            <table style={{ marginBottom: 12 }}>
+              <thead>
+                <tr>
+                  <th>Client</th>
+                  <th>Remote path</th>
+                  <th>Local path</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {mappings.map((m) => (
+                  <tr key={m.id}>
+                    <td>{clients.find((c) => c.id === m.downloadClientId)?.name ?? `#${m.downloadClientId}`}</td>
+                    <td style={{ fontFamily: "monospace", fontSize: "0.85rem" }}>{m.remotePath}</td>
+                    <td style={{ fontFamily: "monospace", fontSize: "0.85rem" }}>{m.localPath}</td>
+                    <td>
+                      <button type="button" className="danger" onClick={() => removeMapping(m.id)}>
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          <form onSubmit={addMapping} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div>
+              <label htmlFor="remotepathmapping-client">Client</label>
+              <select
+                id="remotepathmapping-client"
+                value={mappingClientId}
+                onChange={(e) => setMappingClientId(e.target.value ? Number(e.target.value) : "")}
+                required
+              >
+                <option value="">Select...</option>
+                {clients.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div style={{ flex: 1, minWidth: 160 }}>
+              <label htmlFor="remotepathmapping-remote">Remote path</label>
+              <input
+                id="remotepathmapping-remote"
+                value={mappingRemotePath}
+                onChange={(e) => setMappingRemotePath(e.target.value)}
+                placeholder="C:\Downloads"
+                required
+              />
+            </div>
+            <div style={{ flex: 1, minWidth: 160 }}>
+              <label htmlFor="remotepathmapping-local">Local path</label>
+              <input
+                id="remotepathmapping-local"
+                value={mappingLocalPath}
+                onChange={(e) => setMappingLocalPath(e.target.value)}
+                placeholder="/downloads"
+                required
+              />
+            </div>
+            <button type="submit">Add mapping</button>
+          </form>
+        </div>
+      )}
 
       {mode !== null && (mode === "add" || editingClient) && (
         <Modal title={mode === "add" ? "Add Download Client" : `Edit — ${editingClient!.name}`} onClose={() => setMode(null)}>

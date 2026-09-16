@@ -97,6 +97,11 @@ ensureColumn("quality_profiles", "max_size_gb", "max_size_gb REAL");
 ensureColumn("import_lists", "min_rating", "min_rating REAL");
 ensureColumn("import_lists", "min_votes", "min_votes INTEGER");
 ensureColumn("import_lists", "exclude_genres", "exclude_genres TEXT");
+ensureColumn(
+  "queue",
+  "download_path",
+  "download_path TEXT" // remote-path-mapping-translated location of this download, set by pollQueue when the client reports one (see services/downloadClient.ts's applyRemotePathMapping)
+);
 
 /**
  * indexers.protocol and download_clients.type originally shipped with a rigid `CHECK (... IN (...))`

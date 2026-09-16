@@ -3,7 +3,7 @@ import { db } from "../db/index.js";
 import { nowExpr, nowOffsetHoursExpr } from "../db/asyncDb.js";
 import { config } from "../config.js";
 import { searchAllIndexers } from "./indexerClient.js";
-import { getDownloadClientAdapter, removeQueueItemDownload } from "./downloadClient.js";
+import { getDownloadClientAdapter, removeQueueItemDownload, applyRemotePathMapping } from "./downloadClient.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import { pickBestAllowedQuality, preferredSizeDistance, sizeWithinQualityBounds } from "./quality.js";
 import { scoreRelease } from "./customFormatScoring.js";
@@ -986,19 +986,28 @@ async function pollQueue() {
       for (const status of statuses) {
         const match = relevant.find((q) => q.downloadId === status.downloadId);
         if (!match) continue;
+        // Translated through any configured remote path mapping before it's ever stored, so
+        // nothing downstream (importer.ts included) has to know or care whether one applies —
+        // undefined (the common case: no mapping configured, or this adapter doesn't report a
+        // path at all) leaves the column untouched rather than clobbering it with null.
+        const downloadPath = status.remotePath
+          ? await applyRemotePathMapping(client.id, status.remotePath)
+          : undefined;
+
         // last_progress_at only moves forward when progress actually changed — that's the signal
         // stalled-download cleanup uses to tell "still downloading, just slow" apart from "stuck".
         if (status.progress !== match.progress) {
           await db
             .prepare(
-              `UPDATE queue SET progress = ?, status = ?, updated_at = ${nowExpr(db)}, last_progress_at = ${nowExpr(db)} WHERE id = ?`
+              `UPDATE queue SET progress = ?, status = ?, updated_at = ${nowExpr(db)}, last_progress_at = ${nowExpr(db)}${downloadPath !== undefined ? ", download_path = ?" : ""} WHERE id = ?`
             )
-            .run(status.progress, status.status, match.id);
+            .run(...(downloadPath !== undefined ? [status.progress, status.status, downloadPath, match.id] : [status.progress, status.status, match.id]));
         } else {
-          await db.prepare(`UPDATE queue SET status = ?, updated_at = ${nowExpr(db)} WHERE id = ?`).run(
-            status.status,
-            match.id
-          );
+          await db
+            .prepare(
+              `UPDATE queue SET status = ?, updated_at = ${nowExpr(db)}${downloadPath !== undefined ? ", download_path = ?" : ""} WHERE id = ?`
+            )
+            .run(...(downloadPath !== undefined ? [status.status, downloadPath, match.id] : [status.status, match.id]));
         }
         notifyQueueChanged();
 

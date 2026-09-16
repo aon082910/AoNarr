@@ -173,6 +173,7 @@ export function queueItemFromRow(row: any) {
     addedAt: row.added_at,
     updatedAt: row.updated_at,
     retryCount: row.retry_count ?? 0,
+    downloadPath: row.download_path ?? null,
   };
 }
 

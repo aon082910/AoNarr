@@ -3,6 +3,32 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 214 — remote path mappings for download clients
+- **New: Radarr/Sonarr-style remote path mappings.** Investigated a handful of Radarr/Sonarr
+  features AoNarr didn't have yet (FlareSolverr, seed-ratio cleanup, tags, queue priority, backup/
+  restore — all already present) and found one genuine gap: nothing translated a download client's
+  own reported path when it doesn't share AoNarr's exact filesystem layout. Turned out the deeper
+  story was that AoNarr's importer never asked the client for a path at all — it fuzzy-matches the
+  release title against every file under the shared downloads directory, which works but can't
+  help a client on a different host/mount. Added the real mechanism: qBittorrent's
+  content_path/save_path and SABnzbd's history "storage" field are now captured per download,
+  rewritten through any configured remote_path → local_path mapping (Settings-adjacent "Remote
+  Path Mappings" section on the Download Clients page — client dropdown, two path fields, a table
+  of existing mappings), and stored on the queue row. The importer now searches that download's own
+  specific file/folder first — more accurate even with zero mappings configured, since a season
+  pack's files no longer compete against every other in-flight download for best fuzzy-match score
+  — falling back to the original downloads-directory-wide scan whenever no mapping applies or the
+  translated path doesn't exist, so the existing shared-volume setup every current install uses
+  keeps working identically.
+- **New test file** (`server/tests/remotePathMapping.test.ts`, 7 cases: prefix rewrite, exact
+  match, case/slash-style tolerance, longest-prefix-wins when mappings overlap, per-client
+  isolation, and the untouched-passthrough default) plus the full existing suite (91 tests total)
+  re-run in a disposable Linux container — this machine's local `better-sqlite3` binary can't run
+  DB-backed tests at all on Windows, so a scratch `node:20-slim` container with the repo copied in
+  (not bind-mounted, to avoid cross-platform native-binary contamination) stood in for CI. Also
+  live-verified the new Settings UI end-to-end in a Docker test instance: added a download client,
+  added/listed/deleted a mapping, confirmed the client-name lookup and table rendering all work.
+
 ## Round 213 — route-based code splitting, and the label/input accessibility pass
 - **Frontend bundle split by route**: every page except Dashboard/Onboarding is now `React.lazy`-
   loaded behind a `<Suspense>` boundary instead of sitting in one eager bundle — cuts the main JS

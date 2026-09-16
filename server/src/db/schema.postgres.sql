@@ -163,7 +163,8 @@ CREATE TABLE IF NOT EXISTS queue (
   progress REAL NOT NULL DEFAULT 0,
   added_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
   updated_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
-  last_progress_at TEXT
+  last_progress_at TEXT,
+  download_path TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_queue_media_item_id ON queue(media_item_id);
 CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
@@ -629,6 +630,16 @@ CREATE TABLE IF NOT EXISTS custom_calendar_events (
   title TEXT NOT NULL,
   date TEXT NOT NULL, -- YYYY-MM-DD
   note TEXT,
+  created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+);
+
+-- See schema.sql's copy of this table for the full explanation (remote_path -> local_path
+-- rewriting for download clients that don't share AoNarr's filesystem layout).
+CREATE TABLE IF NOT EXISTS remote_path_mappings (
+  id SERIAL PRIMARY KEY,
+  download_client_id INTEGER NOT NULL REFERENCES download_clients(id) ON DELETE CASCADE,
+  remote_path TEXT NOT NULL,
+  local_path TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
 );
 

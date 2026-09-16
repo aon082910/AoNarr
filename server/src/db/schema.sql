@@ -175,7 +175,8 @@ CREATE TABLE IF NOT EXISTS queue (
   progress REAL NOT NULL DEFAULT 0,
   added_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  last_progress_at TEXT
+  last_progress_at TEXT,
+  download_path TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_queue_media_item_id ON queue(media_item_id);
 CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
@@ -679,6 +680,22 @@ CREATE TABLE IF NOT EXISTS custom_calendar_events (
   title TEXT NOT NULL,
   date TEXT NOT NULL, -- YYYY-MM-DD
   note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Radarr/Sonarr-style remote path mappings: when a download client runs on a different host/
+-- container than AoNarr and doesn't share an identical filesystem layout, the client reports a
+-- completed download's location in its OWN path namespace (qBittorrent's save_path/content_path,
+-- SABnzbd's history "storage" field) which AoNarr can't read directly. Each mapping rewrites a
+-- remote_path prefix that client reports to the local_path prefix AoNarr actually sees (e.g. an
+-- NFS/SMB share mounted at different paths on each side). Applied in services/downloadClient.ts's
+-- applyRemotePathMapping(); scoped per download_client_id since two clients could use different
+-- mount layouts even for the same underlying storage.
+CREATE TABLE IF NOT EXISTS remote_path_mappings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  download_client_id INTEGER NOT NULL REFERENCES download_clients(id) ON DELETE CASCADE,
+  remote_path TEXT NOT NULL,
+  local_path TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
