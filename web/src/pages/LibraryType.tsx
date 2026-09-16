@@ -655,7 +655,7 @@ export function LibraryItemGrid({
   useEffect(() => {
     if (auth.isAdmin) api.get<Tag[]>("/tags").then(setTags);
   }, [auth.isAdmin]);
-  const mediaServerImportable = type === "movie" || type === "series" || type === "anime";
+  const mediaServerImportable = type === "movie" || type === "series" || type === "anime" || type === "sports";
   useEffect(() => {
     if (auth.isAdmin && mediaServerImportable) {
       api.get<Record<string, string>>("/settings").then((s) => setMediaServerConfigured(!!s.mediaServerType && !!s.mediaServerUrl && !!s.mediaServerToken));
@@ -1123,7 +1123,7 @@ export function LibraryItemGrid({
             <button type="button" onClick={() => exportMetadata("json")}>
               Export metadata (JSON)
             </button>
-            {["movie", "series", "anime"].includes(type) && (
+            {["movie", "series", "anime", "sports"].includes(type) && (
               <button
                 type="button"
                 onClick={() => exportMetadata("plexmatch")}

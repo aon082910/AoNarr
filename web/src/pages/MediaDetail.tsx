@@ -15,7 +15,7 @@ import { useContentRatings } from "../hooks/useContentRatings.js";
 /** Maps a recognized external-id provider key to a link builder — unrecognized providers still
  * show as plain text, this is just a convenience for the common ones. */
 const EXTERNAL_ID_LINKS: Record<string, (id: string, type: string) => string> = {
-  tmdb: (id, type) => `https://www.themoviedb.org/${type === "series" || type === "anime" ? "tv" : "movie"}/${id}`,
+  tmdb: (id, type) => `https://www.themoviedb.org/${type === "series" || type === "anime" || type === "sports" ? "tv" : "movie"}/${id}`,
   imdb: (id) => `https://www.imdb.com/title/${id}/`,
   tvdb: (id) => `https://thetvdb.com/?id=${id}&tab=series`,
   tvmaze: (id) => `https://www.tvmaze.com/shows/${id}`,
@@ -25,7 +25,7 @@ const EXTERNAL_ID_LINKS: Record<string, (id: string, type: string) => string> = 
   openlibrary: (id) => `https://openlibrary.org${id.startsWith("/") ? id : `/${id}`}`,
   comicvine: (id) => `https://comicvine.gamespot.com/-/${id}/`,
   igdb: (id) => `https://www.igdb.com/games/${id}`,
-  trakt: (id, type) => `https://trakt.tv/${type === "series" || type === "anime" ? "shows" : "movies"}/${id}`,
+  trakt: (id, type) => `https://trakt.tv/${type === "series" || type === "anime" || type === "sports" ? "shows" : "movies"}/${id}`,
 };
 
 interface CastMember {
@@ -1630,7 +1630,7 @@ export default function MediaDetail() {
               artwork from their own metadata provider instead (see fetchArtworkFor in metadata.ts).
               Author/audiobook/course have no artwork source at all — Open Library/Google Books/
               manual-only don't expose a second image to fetch, so there's nothing to offer. */}
-          {["movie", "series", "artist", "rom", "manga", "comic", "video", "adult"].includes(item.type) && (
+          {["movie", "series", "sports", "artist", "rom", "manga", "comic", "video", "adult"].includes(item.type) && (
             <button onClick={toggleArtwork} className="secondary">
               {showArtwork ? "Hide artwork" : "Artwork"}
             </button>

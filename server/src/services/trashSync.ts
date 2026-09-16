@@ -12,7 +12,7 @@ const CF_DIR: Record<"radarr" | "sonarr", string> = {
  * apply to TV libraries. A user can always broaden the scope afterward like any other format. */
 const APP_MEDIA_TYPES: Record<"radarr" | "sonarr", string[]> = {
   radarr: ["movie"],
-  sonarr: ["series", "anime"],
+  sonarr: ["series", "anime", "sports"],
 };
 
 interface GithubContentEntry {

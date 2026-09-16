@@ -110,7 +110,10 @@ body {
 }
 
 @media (max-width: 640px) {
-  .content { padding: 16px; }
+  /* padding-top clears the fixed ☰ sidebar-toggle button (top:12, height:40 — see App.tsx), which
+     otherwise sits on top of/overlaps whatever a page's own <h1> renders first at this width, since
+     16px of top padding alone isn't enough clearance below a 40px-tall button starting at y:12. */
+  .content { padding: 16px; padding-top: 60px; }
 }
 
 /* Full-width layout preference — stored per-browser (localStorage) and toggled from the topbar,

@@ -77,6 +77,26 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     metadataProviders: ["anilist", "tvdb", "tmdb"],
     defaultProvider: "anilist",
   },
+  sports: {
+    key: "sports",
+    label: "Sports",
+    shape: "episodic",
+    extensions: VIDEO_EXT,
+    // 5060 is Newznab/Torznab's own "TV/Sport" subcategory; 5000 (the parent TV category) is
+    // included alongside it the same way rom.indexerCategory lists both a specific and a parent
+    // category — most indexers file WWE/UFC/league-broadcast releases under one or the other
+    // inconsistently, so searching both catches what a 5060-only search would miss.
+    indexerCategory: "5060,5000",
+    // A promotion/league (WWE, UFC, Premier League) is modeled the same way any other TV show is
+    // — a "series" with dated "episodes" for each event/match/broadcast — which is exactly how
+    // TVDB and TVmaze already catalog this content themselves (WWE Raw, UFC events, etc. are real
+    // entries there), so this reuses the identical series search/episode-fetch code with zero new
+    // provider integration. TheSportsDB (a sports-specific database) was investigated and turned
+    // out not to be viable as a default: its free tier is a locked demo (10 soccer leagues only,
+    // 1-result search caps) with real coverage gated behind a paid key — see CHANGELOG.
+    metadataProviders: ["tvdb", "tvmaze", "trakt"],
+    defaultProvider: "tvdb",
+  },
   artist: {
     key: "artist",
     label: "Music",

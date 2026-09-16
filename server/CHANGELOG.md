@@ -3,6 +3,41 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 211 — a Sports library, episode-import parity, a real mobile bug fixed
+- **New library type: Sports** (WWE, UFC, league broadcasts, etc.) — modeled as an episodic type,
+  the same shape TV Shows already uses: a promotion/league is the "series," each event/match/
+  broadcast is a dated "episode." This is deliberately how TVDB and TVmaze already catalog this
+  exact content themselves (WWE Raw, UFC events, and so on are real entries there) — so Sports
+  reuses the identical series search/episode-fetch code with zero new provider integration, which
+  means it gets every filter/sort/quality-profile/custom-format/naming/monitoring feature TV Shows
+  already has, for free. TheSportsDB (a sports-specific database) was investigated as a metadata
+  source and found not viable as a default: live-checked its free tier and found it's a locked demo
+  (10 soccer leagues total, 1-result search caps) with real coverage gated behind a paid key —
+  TVDB/TVmaze/Trakt are what's actually wired up, matching TV Shows' own provider list. Also wired
+  into artwork lookup (Fanart.tv), corrupt-file detection, TRaSH-guide custom format sync, Plex/
+  Jellyfin/Emby library import, and the .plexmatch/artwork UI affordances — the same handful of
+  places a couple of earlier rounds found still keyed off an explicit `type === "series"` check
+  instead of reading from the shape-driven registry.
+- **Episode-page Manual Import now matches the movie/series page's**: any-folder browsing and the
+  AI "Identify" button from last round, previously only on the richer batch picker.
+- **A real mobile bug, caught and fixed**: built and ran the app in an isolated local Docker
+  container (this dev machine can't run the DB-backed server directly — see prior rounds) and drove
+  it live at a 375px mobile viewport. Found the fixed ☰ sidebar-toggle button overlapping every
+  page's own heading (visibly: "Dashboard" rendered as "shboard," the button sitting on top of the
+  first few letters) — `.content`'s mobile padding wasn't accounting for the button's height. Fixed
+  with more top clearance; verified live afterward, plus spot-checked several other pages (Library,
+  Activity, System, Indexers, Users) for horizontal overflow — none found, the existing responsive
+  foundation held up.
+- **Accessibility spot-check**, also verified live rather than guessed at: Modal's focus trap/
+  aria-modal/labelled-close-button held up under inspection, no `outline: none` anywhere suppressing
+  focus indicators, and `--muted` text against the dark background computes to a 5.7:1 contrast
+  ratio (passes WCAG AA's 4.5:1 for normal text). The one real, sizable finding: essentially no form
+  `<label>` in the app is programmatically associated with its input (no `htmlFor`/`id` pairing or
+  nesting) — confirmed live (27 of 27 sampled inputs on Settings had zero association) — meaning a
+  screen reader gets no context on most fields. This is a genuine gap, not a small one (hundreds of
+  instances across the whole app), and fixing it safely needs to be its own dedicated pass rather
+  than a rushed mechanical sweep at the tail of this round.
+
 ## Round 210 — AI-assisted identification, Manual Import redesigned
 - **The AI Providers feature is finally wired to something**: Settings → AI Providers (add a
   local Ollama-style or cloud OpenAI-compatible provider, test the connection) has existed for a

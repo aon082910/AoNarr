@@ -62,7 +62,7 @@ async function corruptReason(filePath: string, type: string): Promise<string | n
   }
   if (!info) return "ffprobe couldn't read this file (corrupt or unrecognized data)";
 
-  const looksLikeVideo = ["movie", "series", "anime", "video", "course", "adult"].includes(type);
+  const looksLikeVideo = ["movie", "series", "anime", "sports", "video", "course", "adult"].includes(type);
   if (looksLikeVideo && !info.videoCodec) return "No video stream found — likely a fake/mislabeled release";
   return null;
 }

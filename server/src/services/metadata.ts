@@ -2351,7 +2351,7 @@ async function fetchArtworkAdultThePornDb(sceneId: string): Promise<ArtworkOptio
  */
 export async function fetchArtworkFor(type: MediaType, externalIds: Record<string, string>): Promise<ArtworkOptions> {
   if (type === "movie" && externalIds.tmdb) return fetchArtworkFanart("movies", externalIds.tmdb);
-  if (type === "series" && externalIds.tvdb) return fetchArtworkFanart("tv", externalIds.tvdb);
+  if ((type === "series" || type === "sports") && externalIds.tvdb) return fetchArtworkFanart("tv", externalIds.tvdb);
   if (type === "artist" && externalIds.musicbrainz) return fetchArtworkFanart("music", externalIds.musicbrainz);
   if (type === "rom") return fetchArtworkRom(externalIds);
   if (type === "manga") return fetchArtworkManga(externalIds);

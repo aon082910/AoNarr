@@ -31,7 +31,7 @@ mediaServerImportRouter.post(
   asyncHandler(async (req, res) => {
     if (!getMediaServerConfig()) throw new HttpError(400, "No media server configured — set one up in Settings first");
     const rootFolderId = Number(req.body?.rootFolderId);
-    const type = req.body?.type === "anime" ? "anime" : "series";
+    const type = req.body?.type === "anime" ? "anime" : req.body?.type === "sports" ? "sports" : "series";
     if (!rootFolderId) throw new HttpError(400, "rootFolderId is required");
 
     importSeriesFromMediaServer(type, rootFolderId).catch((err) =>

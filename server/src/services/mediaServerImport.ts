@@ -169,7 +169,7 @@ export interface MediaServerSeriesImportResult {
  * just needs to say which library the import is for.
  */
 export async function importSeriesFromMediaServer(
-  type: "series" | "anime",
+  type: "series" | "anime" | "sports",
   rootFolderId: number,
   signal?: AbortSignal
 ): Promise<MediaServerSeriesImportResult> {
@@ -182,7 +182,7 @@ export async function importSeriesFromMediaServer(
 export async function importSeriesData(
   shows: MediaServerSeriesLibrary["shows"],
   episodes: MediaServerSeriesLibrary["episodes"],
-  type: "series" | "anime",
+  type: "series" | "anime" | "sports",
   rootFolderId: number,
   signal?: AbortSignal
 ): Promise<MediaServerSeriesImportResult> {

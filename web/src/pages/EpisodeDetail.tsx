@@ -30,6 +30,13 @@ interface BrowseEntry {
   size: number | null;
 }
 
+interface BrowseResponse {
+  path: string;
+  anyFolder?: boolean;
+  parent?: string | null;
+  entries: BrowseEntry[];
+}
+
 export default function EpisodeDetail() {
   const { mediaId, episodeId } = useParams<{ mediaId: string; episodeId: string }>();
   const navigate = useNavigate();
@@ -42,8 +49,13 @@ export default function EpisodeDetail() {
   const [error, setError] = useState<string | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [browsePath, setBrowsePath] = useState("");
+  const [browseAnyFolder, setBrowseAnyFolder] = useState(false);
+  const [browseParent, setBrowseParent] = useState<string | null>(null);
+  const [customFolderInput, setCustomFolderInput] = useState("");
   const [browseEntries, setBrowseEntries] = useState<BrowseEntry[]>([]);
   const [importingPath, setImportingPath] = useState<string | null>(null);
+  const [aiGuesses, setAiGuesses] = useState<Record<string, string>>({});
+  const [aiIdentifying, setAiIdentifying] = useState<string | null>(null);
 
   function load() {
     api.get<EpisodeDetailResponse>(`/media/${mediaId}/episodes/${episodeId}`).then(setEpisode);
@@ -74,16 +86,31 @@ export default function EpisodeDetail() {
     setEpisode({ ...episode, hasFile: updated.hasFile, filePath: updated.filePath, quality: updated.quality });
   }
 
-  async function browse(nextPath: string) {
-    const res = await api.get<{ path: string; entries: BrowseEntry[] }>(`/import/browse?path=${encodeURIComponent(nextPath)}`);
+  async function browse(nextPath: string, anyFolderOverride?: boolean) {
+    const anyFolder = anyFolderOverride ?? browseAnyFolder;
+    const res = await api.get<BrowseResponse>(
+      `/import/browse?path=${encodeURIComponent(nextPath)}${anyFolder ? "&anyFolder=1" : ""}`
+    );
     setBrowsePath(res.path);
+    setBrowseAnyFolder(!!res.anyFolder);
+    setBrowseParent(res.parent ?? null);
     setBrowseEntries(res.entries);
   }
 
   function toggleImport() {
     const next = !showImport;
     setShowImport(next);
-    if (next) browse("");
+    if (next) browse("", false);
+  }
+
+  function goToCustomFolder() {
+    if (!customFolderInput.trim()) return;
+    browse(customFolderInput.trim(), true);
+  }
+
+  function backToDownloads() {
+    setCustomFolderInput("");
+    browse("", false);
   }
 
   async function manualImport(entry: BrowseEntry) {
@@ -97,6 +124,20 @@ export default function EpisodeDetail() {
       alert((e as Error).message);
     } finally {
       setImportingPath(null);
+    }
+  }
+
+  /** Same reasoning as MediaDetail.tsx's own aiIdentifyFile — a text suggestion for a human to
+   * read, never an automatic match. */
+  async function aiIdentifyFile(entry: BrowseEntry) {
+    setAiIdentifying(entry.path);
+    try {
+      const result = await api.post<{ guess: string }>("/import/ai-identify", { sourcePath: entry.path, mediaType: episode?.parent?.type ?? "series" });
+      setAiGuesses((prev) => ({ ...prev, [entry.path]: result.guess }));
+    } catch (e) {
+      setAiGuesses((prev) => ({ ...prev, [entry.path]: `Error: ${(e as Error).message}` }));
+    } finally {
+      setAiIdentifying(null);
     }
   }
 
@@ -216,20 +257,44 @@ export default function EpisodeDetail() {
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
 
       {showImport && (
-        <Modal title="Manual Import" onClose={() => setShowImport(false)} maxWidth={640}>
-          <p style={{ color: "var(--muted)", fontSize: "0.82rem", marginTop: 0 }}>
-            Browsing downloads: /{browsePath || ""}
+        <Modal title="Manual Import" onClose={() => setShowImport(false)} maxWidth={720}>
+          <p style={{ color: "var(--muted)", fontSize: "0.82rem", marginTop: 0, marginBottom: 4 }}>
+            Browsing {browseAnyFolder ? browsePath : `downloads: /${browsePath || ""}`}
           </p>
-          {browsePath && (
-            <button type="button" className="secondary" onClick={() => browse(browsePath.split("/").slice(0, -1).join("/"))}>
-              Up
-            </button>
-          )}
+          <div className="toolbar" style={{ marginBottom: 8, gap: 8 }}>
+            {browseAnyFolder ? (
+              <button type="button" className="secondary" onClick={backToDownloads}>
+                Back to downloads folder
+              </button>
+            ) : (
+              <>
+                <input
+                  value={customFolderInput}
+                  onChange={(e) => setCustomFolderInput(e.target.value)}
+                  placeholder="/path/to/any/folder"
+                  style={{ flex: 1, minWidth: 200 }}
+                />
+                <button type="button" className="secondary" onClick={goToCustomFolder} disabled={!customFolderInput.trim()}>
+                  Browse this folder
+                </button>
+              </>
+            )}
+            {(browseAnyFolder ? browseParent != null : !!browsePath) && (
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => (browseAnyFolder ? browse(browseParent ?? "/", true) : browse(browsePath.split("/").slice(0, -1).join("/")))}
+              >
+                Up
+              </button>
+            )}
+          </div>
           <table>
             <thead>
               <tr>
                 <th>Name</th>
                 <th>Size</th>
+                <th>AI identify</th>
                 <th></th>
               </tr>
             </thead>
@@ -238,9 +303,29 @@ export default function EpisodeDetail() {
                 <tr key={e.path}>
                   <td>{e.isDirectory ? "📁 " : ""}{e.name}</td>
                   <td>{e.size ? `${(e.size / 1e6).toFixed(1)} MB` : "-"}</td>
+                  <td style={{ maxWidth: 200 }}>
+                    {e.isMediaFile && (
+                      <>
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={aiIdentifying === e.path}
+                          onClick={() => aiIdentifyFile(e)}
+                          title="Grab a frame (video) or read embedded tags (audio) and ask the configured AI provider what this is"
+                        >
+                          {aiIdentifying === e.path ? "Asking..." : "🤖 Identify"}
+                        </button>
+                        {aiGuesses[e.path] && (
+                          <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: 4, wordBreak: "break-word" }}>
+                            {aiGuesses[e.path]}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </td>
                   <td>
                     {e.isDirectory && (
-                      <button type="button" className="secondary" onClick={() => browse(e.path)}>
+                      <button type="button" className="secondary" onClick={() => browse(e.path, browseAnyFolder)}>
                         Open
                       </button>
                     )}
@@ -254,7 +339,7 @@ export default function EpisodeDetail() {
               ))}
               {browseEntries.length === 0 && (
                 <tr>
-                  <td colSpan={3} className="empty">
+                  <td colSpan={4} className="empty">
                     Empty.
                   </td>
                 </tr>
