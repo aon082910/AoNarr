@@ -20,6 +20,7 @@ import {
   type CustomSubtitleProviderConfig,
 } from "./subtitleClient.js";
 import { unpackDownloadedArchives } from "./archiveExtract.js";
+import { removeQueueItemDownload } from "./downloadClient.js";
 import { syncSubtitleToVideo } from "./subtitleSync.js";
 import { DEFAULT_SHAPE_TEMPLATES, DEFAULT_TRACK_TEMPLATE, renderTemplate } from "./naming.js";
 import { getMediaTypeConfig, isProbeableFile } from "./mediaTypes.js";
@@ -850,9 +851,60 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
     });
   }
 
-  await db.prepare(`UPDATE queue SET status = 'imported', updated_at = ${nowExpr(db)} WHERE id = ?`).run(queueItemId);
+  // The queue row is deleted outright rather than left at status='imported' — the 'imported' event
+  // this call just recorded in the `history` table (above, in placeFile/placeAlbumFiles/
+  // placeSeasonPackFiles) is already the permanent record the Activity page's Timeline reads from,
+  // so there's nothing left for a finished queue row to still be useful for. Leaving it around was
+  // the actual cause of the queue silently accumulating every successful import forever.
+  await db.prepare(`DELETE FROM queue WHERE id = ?`).run(queueItemId);
   notifyQueueChanged();
   await recordGroupSuccess(parseReleaseTitle(queueItem.title).releaseGroup);
+
+  if (getSetting("removeCompletedDownloads") !== "0") {
+    await removeQueueItemDownload(queueItem, strategyDeletesSourceData());
+  }
+  cleanupDownloadSourceFolder(sourceFile);
+}
+
+/** True when the configured import strategy actually moves/copies the file's bytes out of the
+ * downloads directory (the default "move" strategy, and cross-filesystem "hardlink" falls back to
+ * a non-deleting copy — but this is about whether it's SAFE to delete the source, not which one
+ * actually happened) — false for "hardlink"/"symlink", which both need the original data to keep
+ * existing. Shared by the source-folder cleanup below and the download-client removal call, so
+ * both agree on when destroying the original data is safe. */
+function strategyDeletesSourceData(): boolean {
+  const strategy = getSetting("importStrategy") ?? "move";
+  return strategy !== "hardlink" && strategy !== "symlink";
+}
+
+/**
+ * Radarr/Sonarr's real "remove completed downloads" behavior: once a download's matched file has
+ * been moved into the library, everything else its release folder had (samples, .nfo, other junk,
+ * the now-empty folder itself) is disposable — not just the one file the importer cared about.
+ * Deletes the file's immediate containing folder wholesale (recursively), then walks upward
+ * removing whatever's now empty above that (e.g. a per-category subfolder), same as
+ * removeEmptyParents. Deliberately conservative about where it stops: never touches
+ * config.downloadsDir itself, and — critically — never runs at all for "hardlink"/"symlink" import
+ * strategies, since those exist specifically to keep the original download's data alive (continued
+ * seeding, or a remote mount that was never really "downloaded" here to begin with). Best-effort:
+ * a locked file or permissions error is logged and otherwise ignored, same as every other
+ * filesystem side-effect in this module.
+ */
+function cleanupDownloadSourceFolder(sourceFile: string): void {
+  if (!strategyDeletesSourceData()) return;
+  if (getSetting("removeCompletedDownloads") === "0") return;
+
+  const resolvedDownloadsDir = path.resolve(config.downloadsDir);
+  const releaseDir = path.dirname(path.resolve(sourceFile));
+  if (releaseDir === resolvedDownloadsDir || !releaseDir.startsWith(resolvedDownloadsDir + path.sep)) return;
+
+  try {
+    fs.rmSync(releaseDir, { recursive: true, force: true });
+    removeEmptyParents(path.dirname(releaseDir), resolvedDownloadsDir);
+    log.info(`[importer] removed source download folder ${releaseDir}`);
+  } catch (err) {
+    log.warn(`[importer] failed to remove source download folder ${releaseDir}:`, (err as Error).message);
+  }
 }
 
 /** Removes now-empty directories left behind by a rename, walking upward from a file's old folder

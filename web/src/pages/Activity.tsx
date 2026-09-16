@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, getApiKey, getSessionToken } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import type { QueueItem, Quality } from "../types.js";
@@ -28,6 +28,17 @@ const TIMELINE_LABELS: Record<string, string> = {
   request_rejected: "Request rejected",
 };
 
+type QueueStatusFilter = "all" | "queued" | "downloading" | "failed";
+type QueueSortKey = "title" | "status" | "progress" | "size";
+type HistorySortDir = "desc" | "asc";
+
+const QUEUE_STATUS_OPTIONS: { value: QueueStatusFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "downloading", label: "Downloading" },
+  { value: "queued", label: "Queued" },
+  { value: "failed", label: "Failed" },
+];
+
 export default function Activity() {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
@@ -38,6 +49,26 @@ export default function Activity() {
   const [candidates, setCandidates] = useState<ImportCandidate[] | null>(null);
   const [candidatesError, setCandidatesError] = useState<string | null>(null);
   const [importing, setImporting] = useState<string | null>(null);
+
+  const [queueStatusFilter, setQueueStatusFilter] = useState<QueueStatusFilter>(
+    () => (localStorage.getItem("aonarr_activity_queue_status") as QueueStatusFilter) || "all"
+  );
+  const [queueSortKey, setQueueSortKey] = useState<QueueSortKey>("status");
+  const [queueSortDir, setQueueSortDir] = useState<HistorySortDir>("desc");
+
+  const [historyTypeFilter, setHistoryTypeFilter] = useState<string>(
+    () => localStorage.getItem("aonarr_activity_history_type") || "all"
+  );
+  const [historySearch, setHistorySearch] = useState("");
+  const [historySortDir, setHistorySortDir] = useState<HistorySortDir>("desc");
+
+  useEffect(() => {
+    localStorage.setItem("aonarr_activity_queue_status", queueStatusFilter);
+  }, [queueStatusFilter]);
+
+  useEffect(() => {
+    localStorage.setItem("aonarr_activity_history_type", historyTypeFilter);
+  }, [historyTypeFilter]);
 
   function load() {
     api.get<QueueItem[]>("/activity/queue").then(setQueue);
@@ -53,7 +84,7 @@ export default function Activity() {
 
     // /activity/stream is admin-only (same as every /activity route) and EventSource can't set the
     // X-Api-Key/X-Session-Token headers, so whichever credential this session actually has travels
-    // as a query param instead — requireAuth accepts both as a fallback for exactly this case.
+    // as a query param instead — requireAuth already accepts both as a fallback for exactly this case.
     let stream: EventSource | null = null;
     const apiKey = getApiKey();
     const sessionToken = getSessionToken();
@@ -127,24 +158,97 @@ export default function Activity() {
     return `${(bytes / 1e3).toFixed(0)} KB`;
   }
 
+  function toggleQueueSort(key: QueueSortKey) {
+    if (queueSortKey === key) {
+      setQueueSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setQueueSortKey(key);
+      setQueueSortDir("asc");
+    }
+  }
+
+  const QUEUE_STATUS_RANK: Record<string, number> = { downloading: 0, importing: 1, queued: 2, failed: 3, completed: 4, imported: 5 };
+
+  const visibleQueue = useMemo(() => {
+    const filtered = queueStatusFilter === "all" ? queue : queue.filter((q) => q.status === queueStatusFilter);
+    const sorted = [...filtered].sort((a, b) => {
+      let cmp = 0;
+      if (queueSortKey === "title") cmp = a.title.localeCompare(b.title);
+      else if (queueSortKey === "status") cmp = (QUEUE_STATUS_RANK[a.status] ?? 9) - (QUEUE_STATUS_RANK[b.status] ?? 9);
+      else if (queueSortKey === "progress") cmp = a.progress - b.progress;
+      else if (queueSortKey === "size") cmp = (a.size ?? 0) - (b.size ?? 0);
+      return queueSortDir === "asc" ? cmp : -cmp;
+    });
+    return sorted;
+  }, [queue, queueStatusFilter, queueSortKey, queueSortDir]);
+
+  const historyTypes = useMemo(() => Array.from(new Set(timeline.map((t) => t.type))).sort(), [timeline]);
+
+  const visibleHistory = useMemo(() => {
+    const needle = historySearch.trim().toLowerCase();
+    let filtered = timeline;
+    if (historyTypeFilter !== "all") filtered = filtered.filter((t) => t.type === historyTypeFilter);
+    if (needle) {
+      filtered = filtered.filter(
+        (t) => t.title.toLowerCase().includes(needle) || (t.detail ?? "").toLowerCase().includes(needle)
+      );
+    }
+    const sorted = [...filtered].sort((a, b) => {
+      const cmp = a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0;
+      return historySortDir === "asc" ? cmp : -cmp;
+    });
+    return sorted;
+  }, [timeline, historyTypeFilter, historySearch, historySortDir]);
+
+  function sortIndicator(active: boolean, dir: HistorySortDir) {
+    if (!active) return null;
+    return <span style={{ marginLeft: 4, opacity: 0.7 }}>{dir === "asc" ? "▲" : "▼"}</span>;
+  }
+
   return (
     <div>
       <h1>Activity</h1>
+
+      <h2 style={{ marginBottom: 4 }}>Queue</h2>
+      <div className="toolbar" style={{ marginBottom: 10, gap: 8 }}>
+        <select value={queueStatusFilter} onChange={(e) => setQueueStatusFilter(e.target.value as QueueStatusFilter)} style={{ maxWidth: 180 }}>
+          {QUEUE_STATUS_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        <button className="secondary" onClick={load}>
+          Refresh
+        </button>
+        <span style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
+          {visibleQueue.length} of {queue.length}
+        </span>
+      </div>
       {queue.length === 0 && <p className="empty">Nothing in the queue.</p>}
-      {queue.length > 0 && (
+      {queue.length > 0 && visibleQueue.length === 0 && <p className="empty">No queue items match this filter.</p>}
+      {visibleQueue.length > 0 && (
         <table>
           <thead>
             <tr>
-              <th>Title</th>
-              <th>Status</th>
-              <th>Progress</th>
+              <th style={{ cursor: "pointer" }} onClick={() => toggleQueueSort("title")}>
+                Title{sortIndicator(queueSortKey === "title", queueSortDir)}
+              </th>
+              <th style={{ cursor: "pointer" }} onClick={() => toggleQueueSort("status")}>
+                Status{sortIndicator(queueSortKey === "status", queueSortDir)}
+              </th>
+              <th style={{ cursor: "pointer" }} onClick={() => toggleQueueSort("progress")}>
+                Progress{sortIndicator(queueSortKey === "progress", queueSortDir)}
+              </th>
               <th>Quality</th>
-              <th>Size</th>
+              <th style={{ cursor: "pointer" }} onClick={() => toggleQueueSort("size")}>
+                Size{sortIndicator(queueSortKey === "size", queueSortDir)}
+              </th>
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {queue.map((q) => (
+            {visibleQueue.map((q) => (
               <tr key={q.id}>
                 <td>
                   {q.title}
@@ -203,24 +307,46 @@ export default function Activity() {
         </table>
       )}
 
-      <h2>Timeline</h2>
-      <p style={{ color: "var(--muted)" }}>
+      <h2 style={{ marginBottom: 4, marginTop: 32 }}>History</h2>
+      <p style={{ color: "var(--muted)", marginTop: 0 }}>
         Grabs, imports, failures, auto-archival, and request activity across every library, merged
         into one chronological feed.
       </p>
+      <div className="toolbar" style={{ marginBottom: 10, gap: 8 }}>
+        <select value={historyTypeFilter} onChange={(e) => setHistoryTypeFilter(e.target.value)} style={{ maxWidth: 200 }}>
+          <option value="all">All events</option>
+          {historyTypes.map((t) => (
+            <option key={t} value={t}>
+              {TIMELINE_LABELS[t] ?? t}
+            </option>
+          ))}
+        </select>
+        <input
+          value={historySearch}
+          onChange={(e) => setHistorySearch(e.target.value)}
+          placeholder="Search title or detail..."
+          style={{ maxWidth: 260 }}
+        />
+        <span style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
+          {visibleHistory.length} of {timeline.length}
+        </span>
+      </div>
       {timeline.length === 0 && <p className="empty">Nothing has happened yet.</p>}
-      {timeline.length > 0 && (
+      {timeline.length > 0 && visibleHistory.length === 0 && <p className="empty">No history entries match this filter.</p>}
+      {visibleHistory.length > 0 && (
         <table>
           <thead>
             <tr>
-              <th>When</th>
+              <th style={{ cursor: "pointer" }} onClick={() => setHistorySortDir((d) => (d === "asc" ? "desc" : "asc"))}>
+                When{sortIndicator(true, historySortDir)}
+              </th>
               <th>Event</th>
               <th>Title</th>
               <th>Detail</th>
             </tr>
           </thead>
           <tbody>
-            {timeline.map((t, idx) => (
+            {visibleHistory.map((t, idx) => (
               <tr key={idx}>
                 <td>{t.timestamp}</td>
                 <td>

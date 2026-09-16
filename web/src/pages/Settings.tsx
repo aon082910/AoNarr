@@ -1980,6 +1980,43 @@ export default function Settings() {
             ),
           },
           {
+            key: "downloadCleanup",
+            label: "Download Cleanup",
+            description: "Remove finished downloads from the client and downloads folder",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Once a download is done with — imported successfully, or failed at the download
+                  client itself with nothing worth keeping — AoNarr removes it from the download
+                  client (qBittorrent, SABnzbd; other client types are left alone, no API to do
+                  this) and deletes its now-unneeded release folder from the downloads directory.
+                  Both skipped automatically when Import Strategy above is Hardlink or Symlink,
+                  since those need the original download to keep existing. A download that failed{" "}
+                  <em>after</em> completing (an import error, not a client-side failure) is never
+                  touched — its file is left in place for Manual import....
+                </p>
+                <label>Remove completed downloads</label>
+                <select
+                  key={settings.removeCompletedDownloads ?? "remove-completed-empty"}
+                  defaultValue={settings.removeCompletedDownloads ?? "1"}
+                  onChange={(e) => saveSetting("removeCompletedDownloads", e.target.value)}
+                >
+                  <option value="1">Enabled</option>
+                  <option value="0">Disabled</option>
+                </select>
+                <label>Remove failed downloads</label>
+                <select
+                  key={settings.removeFailedDownloads ?? "remove-failed-empty"}
+                  defaultValue={settings.removeFailedDownloads ?? "1"}
+                  onChange={(e) => saveSetting("removeFailedDownloads", e.target.value)}
+                >
+                  <option value="1">Enabled</option>
+                  <option value="0">Disabled</option>
+                </select>
+              </div>
+            ),
+          },
+          {
             key: "seedGoalCleanup",
             label: "Seed Goal Cleanup",
             description: "Remove a torrent from the client once it's met a seed ratio/time goal",

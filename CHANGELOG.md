@@ -3,6 +3,36 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 206 — the download queue actually clears itself out
+- **Fixed: successful imports left the queue growing forever.** A queue row was left at
+  status='imported' after a successful import rather than removed — every import ever made just
+  accumulated in the Activity page's queue table with nothing to clear it out. The `history` table
+  already records the same "imported" event permanently (that's what the Activity page's History
+  section reads from), so the queue row is now deleted outright once import succeeds — same fix
+  applied to the old 'failed' row left behind whenever an auto-retry successfully grabs a
+  replacement release (it was never removed, just orphaned alongside the new grab's row). A
+  'failed' row that's never acted on (no retry, no manual import, no manual removal) is now also
+  pruned automatically after a week, so it doesn't sit there forever either — its own `history`
+  entry already has the permanent record.
+- **Fixed: nothing removed a finished download's files or client-side task.** Once a file was
+  imported, its leftover release folder (samples, .nfo, junk, the emptied folder itself) just sat
+  in the downloads directory permanently, and the finished torrent/nzb stayed at the download
+  client forever too — the only existing cleanup (seed-goal cleanup) only ever ran for torrents
+  with a configured seed ratio/time goal. Added real cleanup: after a successful import, the
+  release folder is deleted and the download is removed from its client (qBittorrent, SABnzbd —
+  the two adapters that support it; others are left alone, no API to do this). Deliberately
+  scoped by download-safety, not just success/failure: skipped entirely for Hardlink/Symlink import
+  strategies (their whole point is keeping the original data around), and never touches a file when
+  the failure happened *after* a download completed (an import-matching error) — that file is
+  exactly what Manual import... needs to still be there. A download that fails *at the client
+  itself* (dead torrent, failed usenet repair) has nothing worth keeping, so that path *does* clean
+  up immediately. Both behaviors are configurable (Settings → Download Cleanup), on by default.
+- **Activity page redesign**: split into a filterable/sortable Queue section (status filter,
+  click-to-sort columns) and a renamed History section with an event-type filter and a title/detail
+  search box, closer to Radarr's own Activity screen. The queue naturally reads very differently
+  now that it isn't full of years of resolved items — this made the filters and sort actually useful
+  instead of decorative.
+
 ## Round 205 — library UI polish
 - **"Filename doesn't match title" library filter**: a new Status filter option flags movies (and
   other single-file library types) whose actual file on disk shares fewer than half its

@@ -4,7 +4,9 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { config } from "../config.js";
-import type { DownloadClient } from "../types/index.js";
+import { db } from "../db/index.js";
+import { downloadClientFromRow } from "../db/mappers.js";
+import type { DownloadClient, QueueItem } from "../types/index.js";
 import { decodeSlskdDownloadUrl } from "./soulseek.js";
 import { getSetting } from "./settingsStore.js";
 
@@ -43,6 +45,13 @@ export interface DownloadClientAdapter {
    * seeding forever unless the client's own ratio-limit settings happen to be configured
    * separately. Only meaningful for backends that actually seed. */
   removeSeededTorrents?(client: DownloadClient, ratioGoal: number | null, seedTimeGoalMinutes: number | null): Promise<number>;
+  /** Removes one finished (or dead) download from the client itself — called once AoNarr is done
+   * with it, either because it imported successfully or because it failed at the client and won't
+   * be retried from that same task. `deleteFiles` also removes the client's own copy of the data;
+   * false only makes sense for a torrent client where the data must keep existing (still seeding).
+   * Optional: not every backend has anything to remove (the in-process http/ytdlp adapters, a
+   * blackhole watch folder) or an API that supports it — callers check for its presence first. */
+  removeDownload?(client: DownloadClient, downloadId: string, deleteFiles: boolean): Promise<void>;
 }
 
 export interface ClientHealthStats {
@@ -308,6 +317,16 @@ class QBittorrentAdapter implements DownloadClientAdapter {
     if (!removeRes.ok) throw new Error(`qBittorrent torrents/delete failed: HTTP ${removeRes.status}`);
     return eligible.length;
   }
+
+  async removeDownload(client: DownloadClient, downloadId: string, deleteFiles: boolean): Promise<void> {
+    const cookie = await this.login(client);
+    const res = await fetch(`${baseUrl(client)}/api/v2/torrents/delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
+      body: new URLSearchParams({ hashes: downloadId, deleteFiles: deleteFiles ? "true" : "false" }),
+    });
+    if (!res.ok) throw new Error(`qBittorrent torrents/delete failed: HTTP ${res.status}`);
+  }
 }
 
 /** SABnzbd adapter. */
@@ -400,6 +419,34 @@ class SabnzbdAdapter implements DownloadClientAdapter {
     url.searchParams.set("output", "json");
     const res = await fetch(url.toString());
     if (!res.ok) throw new Error(`SABnzbd priority change failed: HTTP ${res.status}`);
+  }
+
+  /** A job can be sitting in either the active queue (a client-level failure caught it before it
+   * ever finished) or history (successfully completed, or failed during post-processing) —
+   * SABnzbd's delete calls are per-location, and there's no single "delete regardless of where it
+   * is" endpoint, so this tries both. Neither failing is unexpected (an id genuinely not in that
+   * location returns a normal "not found" response, not an HTTP error) — only surfaced if both
+   * requests themselves fail outright. */
+  async removeDownload(client: DownloadClient, downloadId: string, deleteFiles: boolean): Promise<void> {
+    let anyOk = false;
+    let lastErr: Error | null = null;
+
+    for (const mode of ["queue", "history"] as const) {
+      try {
+        const url = new URL(`${baseUrl(client)}/api`);
+        url.searchParams.set("mode", mode);
+        url.searchParams.set("name", "delete");
+        url.searchParams.set("value", downloadId);
+        if (mode === "history") url.searchParams.set("del_files", deleteFiles ? "1" : "0");
+        url.searchParams.set("apikey", client.apiKey ?? "");
+        url.searchParams.set("output", "json");
+        const res = await fetch(url.toString());
+        if (res.ok) anyOk = true;
+      } catch (err) {
+        lastErr = err as Error;
+      }
+    }
+    if (!anyOk && lastErr) throw lastErr;
   }
 }
 
@@ -1048,4 +1095,27 @@ const adapters: Record<DownloadClient["type"], DownloadClientAdapter> = {
 
 export function getDownloadClientAdapter(type: DownloadClient["type"]): DownloadClientAdapter {
   return adapters[type];
+}
+
+/**
+ * Best-effort removal of a queue item's download at its originating client, once AoNarr is done
+ * with it (imported, or failed and won't be retried from that task) — shared by the success path
+ * (services/importer.ts) and the client-level-failure path (services/scheduler.ts) so both follow
+ * the same "look up the client, check the adapter supports it, don't throw on failure" shape.
+ * `deleteFiles` should be true whenever the client's own copy of the data is safe to lose — not
+ * true for a torrent still expected to seed (the "hardlink"/"symlink" import strategies exist
+ * specifically to keep that data around; callers pass deleteFiles accordingly).
+ */
+export async function removeQueueItemDownload(queueItem: Pick<QueueItem, "downloadClientId" | "downloadId" | "title">, deleteFiles: boolean): Promise<void> {
+  if (!queueItem.downloadClientId || !queueItem.downloadId) return;
+  try {
+    const clientRow = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(queueItem.downloadClientId);
+    if (!clientRow) return;
+    const client = downloadClientFromRow(clientRow as any);
+    const adapter = getDownloadClientAdapter(client.type);
+    if (!adapter.removeDownload) return;
+    await adapter.removeDownload(client, queueItem.downloadId, deleteFiles);
+  } catch (err) {
+    log.warn(`[downloadClient] failed to remove completed download for "${queueItem.title}" from its client:`, (err as Error).message);
+  }
 }

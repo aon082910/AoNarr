@@ -3,7 +3,7 @@ import { db } from "../db/index.js";
 import { nowExpr, nowOffsetHoursExpr } from "../db/asyncDb.js";
 import { config } from "../config.js";
 import { searchAllIndexers } from "./indexerClient.js";
-import { getDownloadClientAdapter } from "./downloadClient.js";
+import { getDownloadClientAdapter, removeQueueItemDownload } from "./downloadClient.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import { pickBestAllowedQuality, preferredSizeDistance, sizeWithinQualityBounds } from "./quality.js";
 import { scoreRelease } from "./customFormatScoring.js";
@@ -952,6 +952,12 @@ async function retryFailedGrab(match: QueueItem, reason: string): Promise<void> 
     }
 
     await grab(targetClient, item, match.episodeId, match.subItemId, best, match.retryCount + 1);
+    // grab() just inserted a brand-new queue row for the replacement release — this old row (still
+    // sitting at status='failed', its own download already dealt with by the caller above) is now
+    // superseded and would otherwise linger in the queue forever alongside the active retry, which
+    // was the other half of the queue-never-clears-out bug this fixes.
+    await db.prepare("DELETE FROM queue WHERE id = ?").run(match.id);
+    notifyQueueChanged();
     log.info(`[scheduler] retried failed grab for "${mediaTitle}" with "${best.result.title}"`);
   } catch (err) {
     log.warn(`[scheduler] retry failed for "${mediaTitle}":`, (err as Error).message);
@@ -1018,6 +1024,14 @@ async function pollQueue() {
             }
           }
         } else if (status.status === "failed") {
+          // A client-level failure (the download itself died — a bad torrent, a failed usenet
+          // repair) means there's no completed data worth keeping around, unlike an import-level
+          // failure (handled above), where the file did finish downloading and the "Manual
+          // import..." picker needs it to still be there. Removed before retrying, not after, so
+          // it happens whether or not a replacement release is found.
+          if (getSetting("removeFailedDownloads") !== "0") {
+            await removeQueueItemDownload(match, true);
+          }
           await retryFailedGrab(match, "Download failed at the download client");
         }
       }
@@ -1043,15 +1057,33 @@ async function cleanupStalledDownloads(): Promise<void> {
   ).map(queueItemFromRow) as QueueItem[];
 
   for (const item of stalled) {
-    // Not every download-client adapter exposes a way to cancel a specific download at the
-    // client itself (no such method in the shared adapter interface) — this drops it from
-    // AoNarr's own queue and retries the search; the stale entry may need manual cleanup at the
-    // download client's own UI.
     await db.prepare(`UPDATE queue SET status = 'failed', updated_at = ${nowExpr(db)} WHERE id = ?`).run(item.id);
     notifyQueueChanged();
+    // Not every download-client adapter can cancel a specific download at the client itself
+    // (optional on the adapter interface — see downloadClient.ts) — where it can (qBittorrent,
+    // SABnzbd), a stalled download is dead weight worth clearing out rather than leaving it stuck
+    // at the client's own UI too; where it can't, this is still a no-op, same as before.
+    if (getSetting("removeFailedDownloads") !== "0") {
+      await removeQueueItemDownload(item, true);
+    }
     await retryFailedGrab(item, `Stalled: no progress for over ${thresholdHours}h`);
     log.info(`[scheduler] cleaned up stalled download "${item.title}"`);
   }
+}
+
+/** A queue row at status='failed' stays visible on purpose — Retry import / Manual import... /
+ * Remove all need something to act on — but if nobody ever does, it would otherwise sit there
+ * forever, right back to the same "queue never clears out" problem this whole cleanup pass exists
+ * to fix. Prunes any 'failed' row untouched for over a week; its own 'failed' history entry (see
+ * retryFailedGrab) already recorded the permanent record, so nothing is lost by dropping the row. */
+async function pruneOldFailedQueueItems(): Promise<void> {
+  const stale = (await db
+    .prepare(`SELECT id FROM queue WHERE status = 'failed' AND updated_at <= ${nowOffsetHoursExpr(db, -24 * 7)}`)
+    .all()) as { id: number }[];
+  if (stale.length === 0) return;
+  await db.prepare(`DELETE FROM queue WHERE id IN (${stale.map(() => "?").join(",")})`).run(...stale.map((s) => s.id));
+  notifyQueueChanged();
+  log.info(`[scheduler] pruned ${stale.length} week-old failed queue item(s) nobody acted on`);
 }
 
 /**
@@ -1238,7 +1270,10 @@ export function startScheduler() {
     name: "Stalled Download Cleanup",
     scheduleType: "cron",
     defaultSchedule: "0 * * * *",
-    run: () => cleanupStalledDownloads(),
+    run: async () => {
+      await cleanupStalledDownloads();
+      await pruneOldFailedQueueItems();
+    },
   });
 
   registerJob({
