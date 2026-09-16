@@ -3,6 +3,22 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 207 — Search page also searches metadata providers to add new media
+- The Search page only ever searched the existing library — finding something to add still meant
+  navigating to Add Media separately and re-typing the query there. It now fires both searches in
+  parallel: the existing library search, plus one metadata-provider search per library type that
+  has one configured (TMDB, TVDB, MusicBrainz, Open Library, etc. — whatever each type's provider
+  is), shown in a new "Add new" section below the library results. A type with no provider
+  configured (a missing API key, or a type like Courses that only supports manual add) just
+  contributes nothing to that section rather than surfacing an error for every other type's
+  results. Results already sitting in the library (matched by title in the search above) are
+  filtered out of "Add new" so it doesn't suggest adding something twice. Clicking a result takes
+  you to Add Media with the type and title already filled in, to finish through the full add flow
+  (root folder, quality profile, monitoring) — this reuses the same deep-link prefill Add Media
+  already supported for Friend Libraries' "Add" button, not new server-side surface. Admin-only,
+  matching Add Media itself (a household account never sees this section, and the underlying
+  `/metadata/search` route was already admin-gated).
+
 ## Round 206 — the download queue actually clears itself out
 - **Fixed: successful imports left the queue growing forever.** A queue row was left at
   status='imported' after a successful import rather than removed — every import ever made just
