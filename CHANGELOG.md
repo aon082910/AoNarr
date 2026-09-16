@@ -3,6 +3,17 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 216 — sortable tables on System's Health tab
+- Closed out the gap flagged at the end of Round 215: System.tsx has ~15 tables and only 2
+  (release-group reputation, log files) got the `useSortableTable` treatment before. Added it to
+  the rest of the Health tab — indexer health, download client health, stuck queue items, repeated
+  imports, and upgrade candidates — since those are the ones that can genuinely grow into long
+  lists on a big library. Left System's other small/summary tables (system info, library counts,
+  disk usage, root-folder-scoped orphan/rename lists) alone, same reasoning as before: real
+  Sonarr/Radarr doesn't make single-digit status tables sortable either.
+- Live-verified the Health tab's new sortable headers render and the sort-arrow indicator shows
+  correctly in a fresh Docker test instance.
+
 ## Round 215 — Servarr-style navigation icons, sortable tables, and a poster-grid Collections page
 - **Icon-led navigation, matching Sonarr/Radarr/Lidarr's chrome.** Every sidebar/topbar nav link
   (including each per-media-type Library entry and every admin group) now shows a small inline SVG

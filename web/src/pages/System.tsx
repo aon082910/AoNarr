@@ -184,6 +184,15 @@ export default function System() {
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [resources, setResources] = useState<SystemResources | null>(null);
   const [health, setHealth] = useState<HealthReport | null>(null);
+  const { sortRows: sortIndexerHealth, sortableHeader: indexerHealthHeader } = useSortableTable<IndexerHealth, "indexer" | "status" | "rate">("indexer");
+  const { sortRows: sortClientHealth, sortableHeader: clientHealthHeader } = useSortableTable<DownloadClientHealth, "client" | "status">("client");
+  const { sortRows: sortStuckQueue, sortableHeader: stuckQueueHeader } = useSortableTable<StuckQueueEntry, "media" | "release" | "status" | "added">(
+    "added"
+  );
+  const { sortRows: sortRepeatedImports, sortableHeader: repeatedImportsHeader } = useSortableTable<RepeatedImport, "item" | "count">("count", "desc");
+  const { sortRows: sortUpgradeCandidates, sortableHeader: upgradeCandidatesHeader } = useSortableTable<UpgradeCandidate, "item" | "current" | "cutoff">(
+    "item"
+  );
   const [orphaned, setOrphaned] = useState<OrphanedFile[] | null>(null);
   const [orphanedIncremental, setOrphanedIncremental] = useState(false);
   const [scanning, setScanning] = useState(false);
@@ -629,13 +638,17 @@ export default function System() {
           <table>
             <thead>
               <tr>
-                <th>Indexer</th>
-                <th>Status</th>
-                <th>Recent success rate</th>
+                {indexerHealthHeader("indexer", "Indexer")}
+                {indexerHealthHeader("status", "Status")}
+                {indexerHealthHeader("rate", "Recent success rate")}
               </tr>
             </thead>
             <tbody>
-              {health.indexers.map((i) => (
+              {sortIndexerHealth(health.indexers, (a, b, key) => {
+                if (key === "indexer") return a.name.localeCompare(b.name);
+                if (key === "status") return Number(b.ok) - Number(a.ok);
+                return (a.recent?.successRate ?? -1) - (b.recent?.successRate ?? -1);
+              }).map((i) => (
                 <tr key={i.id}>
                   <td>{i.name}</td>
                   <td>
@@ -668,12 +681,14 @@ export default function System() {
             <table style={{ marginTop: 12 }}>
               <thead>
                 <tr>
-                  <th>Download Client</th>
-                  <th>Status</th>
+                  {clientHealthHeader("client", "Download Client")}
+                  {clientHealthHeader("status", "Status")}
                 </tr>
               </thead>
               <tbody>
-                {health.downloadClients.map((c) => (
+                {sortClientHealth(health.downloadClients, (a, b, key) =>
+                  key === "client" ? a.name.localeCompare(b.name) : Number(b.ok) - Number(a.ok)
+                ).map((c) => (
                   <tr key={c.id}>
                     <td>{c.name}</td>
                     <td>
@@ -702,14 +717,19 @@ export default function System() {
             <table>
               <thead>
                 <tr>
-                  <th>Media</th>
-                  <th>Release</th>
-                  <th>Status</th>
-                  <th>Added</th>
+                  {stuckQueueHeader("media", "Media")}
+                  {stuckQueueHeader("release", "Release")}
+                  {stuckQueueHeader("status", "Status")}
+                  {stuckQueueHeader("added", "Added")}
                 </tr>
               </thead>
               <tbody>
-                {health.stuckQueue.map((q) => (
+                {sortStuckQueue(health.stuckQueue, (a, b, key) => {
+                  if (key === "media") return a.mediaTitle.localeCompare(b.mediaTitle);
+                  if (key === "release") return a.title.localeCompare(b.title);
+                  if (key === "status") return a.status.localeCompare(b.status);
+                  return a.addedAt.localeCompare(b.addedAt);
+                }).map((q) => (
                   <tr key={q.id}>
                     <td>{q.mediaTitle}</td>
                     <td>{q.title}</td>
@@ -731,13 +751,15 @@ export default function System() {
               <table>
                 <thead>
                   <tr>
-                    <th>Item</th>
-                    <th>Times imported</th>
+                    {repeatedImportsHeader("item", "Item")}
+                    {repeatedImportsHeader("count", "Times imported")}
                     <th>Quality history</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {health.repeatedImports.map((r) => (
+                  {sortRepeatedImports(health.repeatedImports, (a, b, key) =>
+                    key === "item" ? a.target.localeCompare(b.target) : a.importCount - b.importCount
+                  ).map((r) => (
                     <tr key={`${r.mediaItemId}-${r.target}`}>
                       <td>{r.target}</td>
                       <td>{r.importCount}</td>
@@ -759,14 +781,18 @@ export default function System() {
               <table>
                 <thead>
                   <tr>
-                    <th>Item</th>
-                    <th>Current quality</th>
-                    <th>Profile cutoff</th>
+                    {upgradeCandidatesHeader("item", "Item")}
+                    {upgradeCandidatesHeader("current", "Current quality")}
+                    {upgradeCandidatesHeader("cutoff", "Profile cutoff")}
                     <th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {health.upgradeCandidates.map((u) => (
+                  {sortUpgradeCandidates(health.upgradeCandidates, (a, b, key) => {
+                    if (key === "item") return a.target.localeCompare(b.target);
+                    if (key === "current") return a.currentQuality.localeCompare(b.currentQuality);
+                    return a.cutoff.localeCompare(b.cutoff);
+                  }).map((u) => (
                     <tr key={`${u.mediaItemId}-${u.target}`}>
                       <td>{u.target}</td>
                       <td>{u.currentQuality}</td>
