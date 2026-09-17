@@ -3,6 +3,32 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 231 — more test coverage (rate limiting, request tracing, child counts, exclusions, types)
+No behavior changes. Continues Round 229/230's test-coverage push.
+
+- `tests/rateLimiter.test.ts` — the in-memory login/API-key brute-force limiter: allows under the
+  failure threshold, locks out at it with a `retryAfterSeconds`, `recordSuccess` actually resets the
+  failure count (not just lifts a lockout), a lockout expires on its own after the window, an
+  unlocked bucket's failures don't carry into a new window once stale, and separate keys stay
+  independent.
+- `tests/requestContext.test.ts` — the `AsyncLocalStorage`-based request-id propagation every log
+  line gets tagged with: survives an `await`, doesn't leak between two concurrent requests, and
+  doesn't leak past the end of the request that set it.
+- `tests/childCounts.test.ts` — `attachChildCounts`' per-shape branching (episodic uses `episodes`,
+  collection uses `sub_items`, single-shape is left untouched) and that an episodic/collection item
+  with zero children yet gets no count attached at all rather than `{0, 0}`.
+- `tests/importExclusions.test.ts` — `isExcluded`'s external-id-first-then-title-fallback matching,
+  including that an external id match requires the *provider* to agree too, and that the title
+  fallback is scoped to both media type and (when both sides have one) year.
+- `tests/mediaTypes.test.ts` — `getMediaTypeConfig`/`isValidMediaType`/`isProbeableFile`, and that
+  `multiFilePerChild` is set on exactly the two types where a child's download is normally many
+  files (Music albums, Audiobook chapters) — written expecting it to be Music-only, corrected once
+  the test itself revealed Audiobooks also carries the flag.
+
+Test count: 166 → 197 (18 → 23 files).
+
+Verified: `tsc --noEmit` clean, all 197 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 230 — a Round 227 fix that was never actually applied, caught by its own regression test
 While continuing to expand test coverage (more of Round 229's work), writing a regression test for
 Round 227's "custom format size condition ignores negate when size is unknown" fix immediately
