@@ -3,6 +3,28 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 263 — more test coverage (ffprobe media analysis)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/ffprobe.test.ts` — `probeMediaInfo` against `node:child_process`'s `execFile` mocked to
+  return controlled ffprobe-shaped JSON: basic field extraction (codecs, resolution, duration,
+  bitrate, bit depth), fractional frame-rate parsing (`24000/1001` → `23.98`) including the `0/0`
+  divide-by-zero guard, graceful nulls for an audio-only file with no video stream, multi-stream
+  audio/subtitle extraction (language, bitrate, default/forced flags), and the full HDR/Dolby Vision
+  detection matrix — plain HDR10 (PQ transfer), HLG, HDR10+ (side-data), single-layer Dolby Vision
+  (both the DOVI-config-record and codec-tag-string signaling paths), dual-layer Dolby Vision with
+  an HDR10 base layer, plain SDR, and the "unknown transfer function" fallback — as well as the
+  one-retry-then-give-up behavior on a transient "moov atom not found"-style error (succeeding on
+  the second attempt, and returning `null` if the retry also fails), no retry at all for a
+  non-transient error (e.g. ffprobe itself missing), and a `null` return instead of a throw on
+  unparseable JSON output. The "no retry" and "exactly one retry" claims are backed by an explicit
+  `execFile` call counter rather than queue-length alone — a queue-length check can't actually prove
+  it, since `Array.shift()` on an empty queue is a silent no-op.
+
+Test count: 653 → 672 (73 → 74 files).
+
+Verified: `tsc --noEmit` clean, all 672 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 262 — more test coverage (audiobook chapter merging)
 No behavior changes. Continues the test-coverage push.
 
