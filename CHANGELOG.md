@@ -3,6 +3,28 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 268 — more test coverage (subtitle search/download clients)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/subtitleClient.test.ts` — `searchSubtitles`'s OpenSubtitles request shape (query/languages
+  params, the optional hearing-impaired/foreign-parts-only filters, the Api-Key header) and response
+  mapping (the release-name fallback chain: `release` → `feature_details.title` → the queried file
+  name; booleans coerced from OpenSubtitles' raw fields); `pickBestSubtitle`'s full ranking algorithm
+  (a movie-hash match always wins regardless of popularity, otherwise highest `downloadCount` wins
+  with a missing count treated as 0, a "custom" provider result is eligible despite a null `fileId`,
+  and the input array is never mutated) and `pickBestSubtitleForLanguage`'s per-language scoping;
+  `downloadSubtitleContent`'s two-step POST-for-a-signed-link-then-fetch-it handoff and all three of
+  its failure modes; `searchCustomSubtitles`'s generic dot-path JSON adapter (`{query}`/`{languages}`
+  template substitution, the Bearer header only when an API key is configured, resolving the results
+  array via a configured dot path or the response body itself when unconfigured, field-mapping via
+  dot path with "unknown"/the queried file name as defaults, and silently skipping an item whose
+  download-URL field doesn't resolve); and `downloadSubtitleFromUrl`'s direct fetch-and-return-text.
+  Genuinely zero-import aside from global `fetch`, so no `setupTestDb()` needed.
+
+Test count: 725 → 753 (80 → 81 files).
+
+Verified: `tsc --noEmit` clean, all 753 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 267 — more test coverage (hand-rolled IRC client)
 No behavior changes. Continues the test-coverage push.
 
