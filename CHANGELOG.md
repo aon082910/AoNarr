@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 262 — more test coverage (audiobook chapter merging)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/audiobookConvert.test.ts` — `convertSubItemToM4b`'s full validation chain (sub-item not
+  found, no downloaded folder yet, fewer than 2 downloaded tracks, a track file missing on disk,
+  ffprobe unable to read a duration, and the output-path-collides-with-a-source-track guard), then
+  the success path against real track files on disk: the ffmpeg args include every input track and
+  the chapter metadata file, the DB transaction correctly replaces N per-track rows with one merged
+  row (summed `duration_seconds`, `track_number` reset to 1), the original track files get deleted,
+  and the temp chapter-metadata file is cleaned up in both the success case and when ffmpeg itself
+  fails — the latter also confirming a failed merge never touches the database or deletes anything.
+  `ffprobe.js`'s `probeMediaInfo` and `node:child_process`'s `execFile` (ffmpeg) are both mocked;
+  `metadataExport.js`'s `safeFileName` runs for real.
+
+Test count: 643 → 653 (72 → 73 files).
+
+Verified: `tsc --noEmit` clean, all 653 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 261 — more test coverage (CBZ comic image re-encoding)
 No behavior changes. Continues the test-coverage push.
 
