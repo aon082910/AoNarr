@@ -3,6 +3,25 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 241 — more test coverage (scheduled/remote backup)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/scheduledBackup.test.ts` — `looksLikeBackupBundle`'s zip-magic-number check,
+  `backupFileExtension` for the SQLite dialect, and a real `writeBackupBundle`/`readBackupBundle`
+  round trip against the live test database (no mocking — `better-sqlite3`'s own online backup
+  API and a real `adm-zip` bundle). `runScheduledBackup`'s full orchestration: no-ops when disabled
+  or unconfigured, writes a real bundle and records `lastScheduledBackupAt` when it runs, skips a
+  second run before the configured interval elapses, and rotates out the oldest backups beyond
+  `backupKeepCount` while keeping the newest ones.
+- `tests/remoteBackup.test.ts` — `uploadBackupToRemote`'s three no-op gates (not enabled, enabled
+  without a bucket, bucket without credentials), each proven by passing a nonexistent local file
+  path — since the function returns before ever reading it, reaching those branches at all confirms
+  the AWS SDK is never touched.
+
+Test count: 414 → 428 (49 → 51 files).
+
+Verified: `tsc --noEmit` clean, all 428 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 240 — more test coverage (logging, HTTP range streaming)
 No behavior changes. Continues the test-coverage push.
 
