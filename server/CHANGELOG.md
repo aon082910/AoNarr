@@ -3,6 +3,29 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 222 — one more sortable-header catch, closing the Round 215 plan for good
+- Full sweep of every page for a plain `<table>` not yet using `useSortableTable` turned up one
+  more: `DownloadClients.tsx`'s Remote Path Mappings sub-table (Client / Remote path / Local path)
+  — a bonus catch not on the original Round 215 file list, added for the same reason as every other
+  conversion this thread has done.
+- Confirmed the remaining plain tables are deliberately out of scope: `LibraryType.tsx`'s Table
+  view is driven by a server-side sort dropdown (not per-column client-side sort — a different,
+  more capable mechanism, not a gap), `Dashboard.tsx`'s widgets are fixed-recency glance lists
+  (sorting would defeat their purpose, same as real Sonarr's dashboard), and `Settings.tsx`'s
+  handful of small config tables live inside `render: () => (...)` callbacks from the
+  `SettingsSectionTiles` pattern — the exact hooks-rules-violation shape fixed in Round 215's
+  Users.tsx, so wiring a hook in there needs its own component-extraction pass rather than a quick
+  addition here.
+- Live-verified against the local Docker test stack (`docker compose up -d --build aonarr-server`
+  to pick up the change, since the container had been running a pre-Round-214 image without the
+  remote-path-mappings route at all — caught as a 404 during this test, not a regression):
+  created a test download client and two mappings via the UI/API, confirmed the table defaults to
+  sorting by Client, and clicking "Remote path" re-sorted the rows (Apple before Zebra) with the
+  arrow indicator moving to the clicked column. Cleaned up the test client afterward.
+- This closes every item from the original "make every page match Sonarr/Radarr/Lidarr/Readarr/
+  Whisparr" request: nav icon rail, poster-grid conversions, and sortable columns are now
+  consistent across the entire app.
+
 ## Round 221 — last two sortable-header holdouts
 - Closed out the Round 215 sortable-column plan: `NetworkStats.tsx`'s two tables (download-client
   bandwidth totals, queue-by-status breakdown) were the last real list tables in the app still

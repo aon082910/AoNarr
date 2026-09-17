@@ -3,6 +3,7 @@ import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import type { DownloadClient } from "../types.js";
 import { formatBytes } from "../utils/format.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 
 type ClientType = "qbittorrent" | "sabnzbd" | "http" | "ytdlp" | "realdebrid" | "alldebrid" | "torbox" | "blackhole" | "slskd";
 
@@ -57,6 +58,7 @@ export default function DownloadClients() {
   const [mappingClientId, setMappingClientId] = useState<number | "">("");
   const [mappingRemotePath, setMappingRemotePath] = useState("");
   const [mappingLocalPath, setMappingLocalPath] = useState("");
+  const mappingSort = useSortableTable<RemotePathMapping, "client" | "remote" | "local">("client");
 
   const needsHost = type === "qbittorrent" || type === "sabnzbd" || type === "slskd";
   const needsWatchFolder = type === "blackhole";
@@ -241,14 +243,24 @@ export default function DownloadClients() {
             <table style={{ marginBottom: 12 }}>
               <thead>
                 <tr>
-                  <th>Client</th>
-                  <th>Remote path</th>
-                  <th>Local path</th>
+                  {mappingSort.sortableHeader("client", "Client")}
+                  {mappingSort.sortableHeader("remote", "Remote path")}
+                  {mappingSort.sortableHeader("local", "Local path")}
                   <th></th>
                 </tr>
               </thead>
               <tbody>
-                {mappings.map((m) => (
+                {mappingSort
+                  .sortRows(mappings, (a, b, key) => {
+                    if (key === "client") {
+                      const nameA = clients.find((c) => c.id === a.downloadClientId)?.name ?? "";
+                      const nameB = clients.find((c) => c.id === b.downloadClientId)?.name ?? "";
+                      return nameA.localeCompare(nameB);
+                    }
+                    if (key === "remote") return a.remotePath.localeCompare(b.remotePath);
+                    return a.localPath.localeCompare(b.localPath);
+                  })
+                  .map((m) => (
                   <tr key={m.id}>
                     <td>{clients.find((c) => c.id === m.downloadClientId)?.name ?? `#${m.downloadClientId}`}</td>
                     <td style={{ fontFamily: "monospace", fontSize: "0.85rem" }}>{m.remotePath}</td>
