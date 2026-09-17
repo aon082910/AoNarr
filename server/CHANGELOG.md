@@ -3,6 +3,31 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 245 — more test coverage (SOCKS5/TLS dispatcher settings)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/socksProxy.test.ts` — `applySocksProxySetting`'s decision logic for undici's global fetch
+  dispatcher: restoring the true default when the proxy URL is cleared, installing a cert-
+  validation-disabled agent when TLS validation is off, rejecting an unparseable URL or one with
+  the wrong protocol without touching the dispatcher or throwing, installing a real agent for a
+  valid `socks5://` (and bare `socks://`) URL, and the settings-signature memoization that skips
+  reinstalling the dispatcher on a repeated call with unchanged settings while still reinstalling
+  when the URL actually changes. Deliberately scoped to this synchronous decision layer rather than
+  the SOCKS5 handshake itself (delegated to the well-established `socks` and `tls` packages).
+
+Caught a real design flaw in the test's own first draft before running it: `applySocksProxySetting`
+memoizes on a signature string held in module-private state that isn't reset between tests, so
+reusing the same proxy URL (or relying on comparing against a single captured "default" dispatcher)
+across multiple tests meant a later test's call could silently no-op — or a leftover dispatcher
+from an earlier test could be mistaken for the untouched case — depending on execution order. Fixed
+by generating a guaranteed-unique proxy URL per call and, for the one test that needed to prove
+"clearing the URL restores the true default," doing the install-then-clear sequence within a single
+test so each step's signature is guaranteed fresh relative to its own immediately preceding call.
+
+Test count: 464 → 472 (55 → 56 files).
+
+Verified: `tsc --noEmit` clean, all 472 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 244 — more test coverage (SMTP client)
 No behavior changes. Continues the test-coverage push.
 
