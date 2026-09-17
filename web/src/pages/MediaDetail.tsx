@@ -2273,11 +2273,31 @@ export default function MediaDetail() {
                 .map((seasonNumber) => {
                   const seasonEpisodes = (item.children as Episode[]).filter((ep) => ep.seasonNumber === seasonNumber);
                   const seasonHave = seasonEpisodes.filter((ep) => ep.hasFile).length;
+                  const seasonAllMonitored = seasonEpisodes.length > 0 && seasonEpisodes.every((ep) => ep.monitored);
                   const seasonPoster = item.seasons?.find((s) => s.seasonNumber === seasonNumber)?.posterUrl ?? item.posterUrl;
                   return (
                     <div key={seasonNumber} className="card" onClick={() => selectSeasonTile(seasonNumber)}>
                       <div className="poster" style={seasonPoster ? { backgroundImage: `url(${seasonPoster})` } : undefined}>
                         {!seasonPoster && "No poster"}
+                        {isAdmin && (
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            style={{
+                              position: "absolute",
+                              top: 4,
+                              right: 4,
+                              background: "rgba(0,0,0,0.55)",
+                              borderRadius: "50%",
+                              width: 24,
+                              height: 24,
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                            }}
+                          >
+                            <MonitorToggle monitored={seasonAllMonitored} onToggle={() => toggleSeasonMonitor(seasonNumber, !seasonAllMonitored)} />
+                          </div>
+                        )}
                       </div>
                       <div className="meta">
                         <div className="title">Season {seasonNumber}</div>
@@ -2298,6 +2318,7 @@ export default function MediaDetail() {
                 .filter((ep) => ep.seasonNumber === seasonNumber)
                 .sort((a, b) => a.episodeNumber - b.episodeNumber);
               const seasonHave = seasonEpisodes.filter((ep) => ep.hasFile).length;
+              const seasonAllMonitored = seasonEpisodes.length > 0 && seasonEpisodes.every((ep) => ep.monitored);
               const isOpen = openSeasons.has(seasonNumber);
               return (
                 <div key={seasonNumber} data-season={seasonNumber} className="form-panel" style={{ marginBottom: 12, padding: 0, maxWidth: "none" }}>
@@ -2333,19 +2354,18 @@ export default function MediaDetail() {
                     <span className="badge ok">{seasonHave}</span>
                     <span className="badge">{seasonEpisodes.length}</span>
                     {isAdmin && (
-                      <div style={{ display: "flex", gap: 6 }} onClick={(e) => e.stopPropagation()}>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
+                        <MonitorToggle
+                          monitored={seasonAllMonitored}
+                          onToggle={() => toggleSeasonMonitor(seasonNumber, !seasonAllMonitored)}
+                          title={seasonAllMonitored ? "Season monitored — click to unmonitor all episodes" : "Click to monitor all episodes in this season"}
+                        />
                         <button
                           className="secondary"
                           disabled={searching}
                           onClick={() => runSearch({ seasonNumber, label: `Season ${seasonNumber}` })}
                         >
                           Search season
-                        </button>
-                        <button className="secondary" onClick={() => toggleSeasonMonitor(seasonNumber, true)}>
-                          Monitor
-                        </button>
-                        <button className="secondary" onClick={() => toggleSeasonMonitor(seasonNumber, false)}>
-                          Unmonitor
                         </button>
                         <button
                           className="secondary"

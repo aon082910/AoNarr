@@ -3,6 +3,23 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 219 — season-level monitor toggle, replacing the Monitor/Unmonitor button pair
+- Extended last round's `MonitorToggle` to the season level on `MediaDetail.tsx`'s episode list:
+  the season header's separate "Monitor"/"Unmonitor" text buttons are now a single icon — filled
+  when every episode in the season is monitored, outline otherwise — clicking it calls the same
+  `toggleSeasonMonitor` bulk endpoint that pair already used. Also added the same icon as a poster-
+  corner overlay on the season "Tiles" view, matching the per-episode/per-item placement from last
+  round. Real Sonarr does this identically: one icon that reflects and sets the whole season's
+  state, not two separate buttons.
+- Live-verified with a real series + 2 episodes created via the manual episode-add endpoint
+  (`POST /media/:id/episodes` — no metadata provider needed for a from-scratch test item): toggled
+  the season icon off (both episodes flipped to unmonitored, confirmed via each icon's title
+  attribute), then back on, and confirmed the `PATCH /media/:id/season/:n/monitor` call succeeded
+  both times. Also confirmed the season-tile view's corner overlay renders correctly. A couple of
+  unrelated 400s on `/cast` and `/alternate-titles` showed up in the console during testing — traced
+  to the test series having no real TMDB id (expected for a manually-created item), not a
+  regression from this change.
+
 ## Round 218 — clickable monitor toggles, matching Sonarr/Radarr/Lidarr's poster-corner star
 - **New: `components/MonitorToggle.tsx`** — a small bookmark-ribbon icon (filled when monitored,
   outline when not) that toggles monitored status with one click, without navigating into the
