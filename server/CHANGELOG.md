@@ -3,6 +3,29 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 261 — more test coverage (CBZ comic image re-encoding)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/comicImageConvert.test.ts` — `convertComicImages` against real `adm-zip`-built CBZ
+  fixtures (`node:child_process`'s `execFile` mocked to stand in for ffmpeg): the CBR/RAR rejection,
+  a no-op for an archive with no image entries, re-encoding to both WebP and JPEG with the pages
+  correctly renamed, non-image entries (a `ComicInfo.xml`) left untouched alongside converted pages,
+  and — the fix this file's own history is built around — two pages that only differ by original
+  extension (`page01.png`/`page01.jpg`) both mapping to `page01.webp` get disambiguated
+  (`page01-2.webp`) instead of one silently overwriting the other. `convertComicImagesBestEffort`'s
+  three ways of not throwing (success, an unsupported extension, an ffmpeg failure mid-conversion)
+  round it out.
+
+Caught the same convention slip flagged in Round 251's memory update before this file ever ran:
+`comicImageConvert.ts` imports `logger.js`, which touches `config.js`/`db/index.js` transitively —
+the first draft skipped `setupTestDb()` entirely. Fixed before the first run, the same way and for
+the same reason as `subtitleSync.test.ts` — every file needs its imports checked for this, not just
+the ones that look database-adjacent at a glance.
+
+Test count: 633 → 643 (71 → 72 files).
+
+Verified: `tsc --noEmit` clean, all 643 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 260 — more test coverage (Radarr/Sonarr/Lidarr one-time library migration)
 No behavior changes. Continues the test-coverage push.
 
