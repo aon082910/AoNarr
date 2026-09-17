@@ -3,6 +3,25 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 250 — more test coverage (background job registry/scheduler)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/jobRegistry.test.ts` — the shared cron/interval job registry underneath every scheduled
+  background task: `registerJob` picking up a previously persisted schedule over the default,
+  `runJobNow` recording success/error outcomes and refusing a second trigger while a job is still
+  running, `cancelJob` aborting a running job's signal and the resulting status becoming
+  "cancelled" once it settles, and `updateJobSchedule`'s validation for both cron (via `node-cron`'s
+  own validator) and interval (whole seconds, 5s minimum) schedule types. Deliberately never calls
+  `startAllJobs`/`startTask` directly — only `updateJobSchedule`'s own success path does, as a real
+  side effect of a real `cron`/interval timer — so every test unconditionally calls the exported
+  `stopAllJobs()` in `afterEach`, since `defs`/`state` are module-private and never reset between
+  tests in the same file and an unstopped timer could otherwise fire into a later, unrelated test.
+  Every test uses its own unique job key for the same reason.
+
+Test count: 512 → 527 (60 → 61 files).
+
+Verified: `tsc --noEmit` clean, all 527 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 249 — more test coverage (media server library validation)
 No behavior changes. Continues the test-coverage push.
 
