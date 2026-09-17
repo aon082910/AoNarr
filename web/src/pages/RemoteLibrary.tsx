@@ -80,6 +80,7 @@ export default function RemoteLibrary() {
   }
 
   useEffect(() => {
+    setTypeFilter("all");
     if (selectedId === "") return;
     setError(null);
     api

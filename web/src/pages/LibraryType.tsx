@@ -72,7 +72,9 @@ function loadFieldSet(key: string, fallback: ExtraField[]): Set<ExtraField> {
     const raw = localStorage.getItem(key);
     if (!raw) return new Set(fallback);
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.length > 0 ? new Set(parsed) : new Set(fallback);
+    // A saved empty array is a deliberate "no extra fields" choice, not "nothing saved yet" —
+    // only fall back to the default set when there's no stored value at all.
+    return Array.isArray(parsed) ? new Set(parsed) : new Set(fallback);
   } catch {
     return new Set(fallback);
   }

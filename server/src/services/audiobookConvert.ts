@@ -73,6 +73,11 @@ export async function convertSubItemToM4b(subItemId: number): Promise<{ path: st
 
   const destDir = fs.statSync(subRow.file_path).isDirectory() ? subRow.file_path : path.dirname(subRow.file_path);
   const outputPath = path.join(destDir, `${safeFileName(subRow.title)}.m4b`);
+  // ffmpeg's -y would happily truncate an input it's also reading from (e.g. re-running this on
+  // an already-merged book, or a same-named source track) — fail clearly instead of corrupting it.
+  if (tracks.some((t) => path.resolve(t.filePath) === path.resolve(outputPath))) {
+    throw new Error(`Output path "${outputPath}" collides with one of the source track files`);
+  }
   const chapterMetaPath = path.join(destDir, `.aonarr-chapters-${subItemId}.txt`);
   fs.writeFileSync(chapterMetaPath, buildChapterMetadata(tracks.map((t, i) => ({ title: t.title, durationMs: durations[i] }))));
 
@@ -107,14 +112,11 @@ export async function convertSubItemToM4b(subItemId: number): Promise<{ path: st
 
   const totalDurationSeconds = Math.round(durations.reduce((a, b) => a + b, 0) / 1000);
 
+  // Do the DB swap first and only delete source files once it has committed — deleting inside
+  // the transaction meant a failed INSERT rolled the DB back while the files were already gone.
   await db.transaction(async () => {
     for (const t of tracks) {
       await db.prepare("DELETE FROM tracks WHERE id = ?").run(t.id);
-      try {
-        fs.unlinkSync(t.filePath);
-      } catch (err) {
-        log.warn(`[audiobookConvert] couldn't remove source track ${t.filePath}:`, (err as Error).message);
-      }
     }
     await db
       .prepare(
@@ -123,6 +125,14 @@ export async function convertSubItemToM4b(subItemId: number): Promise<{ path: st
       )
       .run(subItemId, subRow.title, totalDurationSeconds, outputPath);
   });
+
+  for (const t of tracks) {
+    try {
+      fs.unlinkSync(t.filePath);
+    } catch (err) {
+      log.warn(`[audiobookConvert] couldn't remove source track ${t.filePath}:`, (err as Error).message);
+    }
+  }
 
   return { path: outputPath };
 }

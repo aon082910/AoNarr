@@ -3,6 +3,33 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 226 — clean up Round 225's deferred low-priority findings
+The five findings flagged LOW severity/confidence at the end of Round 225's audit and deliberately
+left open — closed out:
+- `comicImageConvert.ts`: two pages that only differed by original extension (e.g. `page01.png` and
+  `page01.jpg`) both mapped to the same re-encoded name (`page01.webp`) — adm-zip's `addFile`
+  silently overwrites on a name collision, so the second page vanished from the archive. Now
+  disambiguates with a `-2`, `-3`, ... suffix on collision.
+- `audiobookConvert.ts`: (1) the merged output path wasn't checked against the source track paths
+  before running `ffmpeg -y`, which would truncate an input while reading it if the two ever
+  collided (e.g. re-running the merge on an already-converted book) — now throws clearly instead.
+  (2) Source track files were `unlinkSync`'d *inside* the `db.transaction` that swaps the per-track
+  rows for the single merged row — a failed INSERT rolled the DB back but left the files already
+  deleted, permanently losing the source audio with no matching DB row. Deletion now happens after
+  the transaction commits successfully.
+- `RemoteLibrary.tsx`: switching the selected remote instance didn't reset `typeFilter`, so a type
+  filter picked for one instance silently carried over and filtered browsing of the next one.
+- `LibraryType.tsx`'s `loadFieldSet` treated a saved *empty* column-set the same as "nothing saved
+  yet" and fell back to the defaults — a user who deliberately cleared all extra fields couldn't
+  make that choice stick across reloads.
+- `IptvPlaylists.tsx`: creating a playlist calls `setMode(created.id)` to jump straight into edit
+  mode, but the modal's render guard required `editingPlaylist` (looked up from the `playlists`
+  array) to be non-null — and the new row doesn't land in that array until the follow-up `load()`
+  resolves a moment later. That unmounted and remounted the modal for one frame, dropping focus and
+  re-running its open-focus effect. Gate now only checks `mode !== null`.
+
+Verified: `tsc --noEmit` clean on both packages, 91/91 server tests passing.
+
 ## Round 225 — full-codebase bug audit: ~45 fixes across security, data integrity, and the UI
 Four parallel exhaustive read-throughs (server services A–I, services J–Z, every route + DB layer +
 middleware + MCP, and the entire web frontend), each finding verified against the source before

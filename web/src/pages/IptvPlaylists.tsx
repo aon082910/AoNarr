@@ -302,8 +302,12 @@ export default function IptvPlaylists() {
         </Modal>
       )}
 
-      {mode !== null && (mode === "add" || editingPlaylist) && (
-        <Modal title={mode === "add" ? "Add Playlist" : `Edit — ${editingPlaylist?.name ?? ""}`} onClose={() => setMode(null)} maxWidth={760}>
+      {mode !== null && (
+        // Creating a playlist calls setMode(created.id) to flip straight into edit mode, but the
+        // new row doesn't land in `playlists` (and so `editingPlaylist`) until the follow-up
+        // load() resolves — gating this on editingPlaylist would unmount Modal for that one frame
+        // and remount it moments later, dropping focus and replaying the open-focus effect.
+        <Modal title={mode === "add" ? "Add Playlist" : `Edit — ${editingPlaylist?.name ?? name}`} onClose={() => setMode(null)} maxWidth={760}>
           <form className="form-panel" onSubmit={submit} style={{ padding: 0 }}>
             <label htmlFor="iptvplaylists-name-4">Name</label>
             <input id="iptvplaylists-name-4" value={name} onChange={(e) => setName(e.target.value)} required />

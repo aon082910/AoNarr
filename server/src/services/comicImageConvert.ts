@@ -36,6 +36,7 @@ export async function convertComicImages(filePath: string, format: "webp" | "jpe
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-comic-"));
   const outExt = format === "webp" ? ".webp" : ".jpg";
+  const usedNames = new Set(entries.map((e) => e.entryName));
   try {
     for (const entry of entries) {
       const srcPath = path.join(tmpDir, "in" + path.extname(entry.entryName).toLowerCase());
@@ -49,7 +50,18 @@ export async function convertComicImages(filePath: string, format: "webp" | "jpe
       await execFileAsync("ffmpeg", args, { timeout: 60_000 });
 
       const newBuf = fs.readFileSync(outPath);
-      const newName = entry.entryName.replace(/\.[^./\\]+$/, outExt);
+      let newName = entry.entryName.replace(/\.[^./\\]+$/, outExt);
+      // Two pages that only differ by original extension (e.g. page01.png / page01.jpg) would
+      // otherwise both map to page01.webp — adm-zip's addFile silently overwrites on a name
+      // collision, dropping a page. Disambiguate instead of losing one.
+      if (newName !== entry.entryName && usedNames.has(newName)) {
+        const base = newName.slice(0, -outExt.length);
+        let n = 2;
+        while (usedNames.has(`${base}-${n}${outExt}`)) n++;
+        newName = `${base}-${n}${outExt}`;
+      }
+      usedNames.delete(entry.entryName);
+      usedNames.add(newName);
       zip.deleteFile(entry.entryName);
       zip.addFile(newName, newBuf);
 
