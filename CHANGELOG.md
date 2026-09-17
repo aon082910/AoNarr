@@ -3,6 +3,28 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 238 — more test coverage (archive extraction, media compatibility analysis)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/archiveExtract.test.ts` — `unpackDownloadedArchives` against real `.zip` archives built
+  with `adm-zip` (no mocking needed): extraction into a sibling directory, the `.aonarr-extracted`
+  marker preventing a second pass from re-extracting (verified by tampering with the extracted
+  output and confirming it survives a second run), recursive discovery in subdirectories, the
+  walk's max-depth guard never finding an archive nested too deep, and that non-archive files are
+  left alone. Also confirms the documented "never throws" contract for a `.rar` needing the
+  `unrar` binary this environment doesn't have — the same kind of environment-driven determinism
+  Round 228's `multiDiscAlbum.test.ts` already relies on for ffprobe.
+- `tests/mediaAnalysis.test.ts` — `analyzeCompatibility`'s full rule set (codec/HDR-format/bit-depth/
+  audio-codec/image-subtitle notes, including that SDR content gets no HDR note at all and that two
+  identical uncommon-codec notes are deduplicated rather than repeated) and `getLibraryAnalysis`'s
+  aggregation across media_items/episodes/sub_items: codec/resolution/language counts, per-item
+  compatibility notes, type scoping, and that a missing, malformed-JSON, or pre-Round-60-shape
+  media_info value is treated as "not yet analyzed" instead of throwing or polluting the summary.
+
+Test count: 359 → 381 (43 → 45 files).
+
+Verified: `tsc --noEmit` clean, all 381 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 237 — more test coverage (deleted-file detection, import review queue, settings store)
 No behavior changes. Continues the test-coverage push.
 
