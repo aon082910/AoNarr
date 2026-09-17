@@ -3,6 +3,27 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 255 — more test coverage (scheduled subtitle rescan)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/subtitleRescan.test.ts` — `rescanMissingSubtitles`'s gating (no enabled provider, a non-
+  custom provider missing its api key, an empty configured-languages string), then the matching
+  pass across single-shape items and episodes: video-extension filtering, skipping a `collection`-
+  shaped type even with a path set, one download attempt per configured language, and that a
+  thrown download error for one language doesn't stop the next language or item from still being
+  attempted. `importer.js`'s `downloadSubtitleForLanguage` is mocked; everything else is real.
+
+Caught the same class of bug flagged in earlier rounds' memory before this one ever ran:
+`rescanMissingSubtitles` re-scans the *entire* library every call with no memory of prior runs, so
+a movie or episode left behind by one test would be silently reprocessed by the next, corrupting a
+"never called" or exact-call-count assertion. Fixed with a full `episodes`/`media_items`/
+`subtitle_providers` wipe in `afterEach` rather than relying on unique fixture titles, since the
+whole point of several of these tests is asserting on what the *entire table* contains.
+
+Test count: 568 → 577 (65 → 66 files).
+
+Verified: `tsc --noEmit` clean, all 577 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 254 — more test coverage (TMDB/Last.fm recommendations, auto-request from watch history)
 No behavior changes. Continues the test-coverage push — the session's first pass at
 `recommendations.ts`, deferred twice earlier for its size (TMDB + Last.fm + media server + auto-
