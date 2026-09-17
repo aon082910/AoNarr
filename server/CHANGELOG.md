@@ -3,6 +3,23 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 259 — more test coverage (book ISBN scanning)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/bookIsbnScan.test.ts` — `findIsbnInText`'s checksum-validated ISBN-10/13 extraction
+  (labeled, bare, hyphenated, and the ISBN-10→13 conversion), all grounded against a real published
+  book's genuine ISBN-10/13 pair rather than an invented one, plus a rejected checksum-invalid
+  number. `extractIsbnFromBookFile`'s epub path against real `adm-zip`-built EPUB fixtures (a valid
+  container.xml/OPF pair, a missing container.xml, an OPF with no `dc:identifier`, and a corrupt
+  non-zip file) — no mocking needed, since `xml2js`/`adm-zip` are simple enough to exercise for
+  real. The unsupported-extension short-circuit and the "never throws" contract for a `.pdf` that
+  `pdf-parse` can't actually parse round it out, along with `fetchBookByIsbn`'s Open Library
+  mapping (including its medium-then-large cover fallback) and error handling.
+
+Test count: 606 → 623 (69 → 70 files).
+
+Verified: `tsc --noEmit` clean, all 623 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 258 — more test coverage (AI provider HTTP client)
 No behavior changes. Continues the test-coverage push.
 
