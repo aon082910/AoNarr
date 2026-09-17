@@ -3,6 +3,29 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 239 — more test coverage (corrupt media detection, audio tag writing)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/corruptMediaCheck.test.ts` — `checkForCorruptMedia` across its full decision tree: a
+  missing file is recycled and marked missing by default, but only queued to `corrupt_media_review`
+  (leaving the item alone) when review mode is enabled — and re-checking never queues a second
+  review row for the same item. A non-probeable type (an ebook) is never flagged just because
+  ffprobe can't parse it, and a `multiFilePerChild` sub-item (artist albums) is skipped entirely.
+  One test drives the genuine ffprobe-failure path end to end — this environment has no ffprobe
+  binary, so a real, stable file legitimately fails both the probe and its one retry, the same
+  environment-driven determinism `archiveExtract.test.ts` and `multiDiscAlbum.test.ts` already
+  lean on — and runs in ~7s real time since `corruptReason`'s anti-false-positive retry deliberately
+  sleeps rather than using a mockable timer. Also covers `recycleAndMarkMissing` clearing the right
+  path column (`file_path`, not `path`) for an episode row.
+- `tests/audioTagWriter.test.ts` — `writeAudioTags` against a real `node-id3` round-trip (write then
+  read back), no mocking needed: title/artist/album/track/year land correctly on an mp3, a non-mp3
+  file is left byte-for-byte untouched, a missing target file never throws, and omitted optional
+  fields don't error.
+
+Test count: 381 → 393 (45 → 47 files).
+
+Verified: `tsc --noEmit` clean, all 393 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 238 — more test coverage (archive extraction, media compatibility analysis)
 No behavior changes. Continues the test-coverage push.
 
