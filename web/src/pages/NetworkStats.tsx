@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
 import { formatBytes } from "../utils/format.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 
 interface ClientStat {
   id: number;
@@ -29,6 +30,8 @@ interface NetworkStatsResponse {
  * a packet-level capture — AoNarr doesn't proxy the traffic itself. */
 export default function NetworkStats() {
   const [data, setData] = useState<NetworkStatsResponse | null>(null);
+  const clientSort = useSortableTable<ClientStat, "client" | "uploaded" | "downloaded" | "ratio">("client");
+  const queueSort = useSortableTable<QueueStat, "status" | "count" | "size">("status");
 
   useEffect(() => {
     api.get<NetworkStatsResponse>("/system/network-stats").then(setData);
@@ -37,6 +40,18 @@ export default function NetworkStats() {
   if (!data) return <p className="empty">Loading...</p>;
 
   const totalQueued = data.queueByStatus.reduce((sum, q) => sum + q.totalBytes, 0);
+
+  const sortedClients = clientSort.sortRows(data.clients, (a, b, key) => {
+    if (key === "client") return a.name.localeCompare(b.name);
+    if (key === "uploaded") return (a.uploadedTotalBytes ?? 0) - (b.uploadedTotalBytes ?? 0);
+    if (key === "downloaded") return (a.downloadedTotalBytes ?? 0) - (b.downloadedTotalBytes ?? 0);
+    return (a.globalRatio ?? 0) - (b.globalRatio ?? 0);
+  });
+  const sortedQueue = queueSort.sortRows(data.queueByStatus, (a, b, key) => {
+    if (key === "status") return a.status.localeCompare(b.status);
+    if (key === "count") return a.count - b.count;
+    return a.totalBytes - b.totalBytes;
+  });
 
   return (
     <div>
@@ -52,14 +67,14 @@ export default function NetworkStats() {
         <table>
           <thead>
             <tr>
-              <th>Client</th>
-              <th>Uploaded</th>
-              <th>Downloaded</th>
-              <th>Ratio</th>
+              {clientSort.sortableHeader("client", "Client")}
+              {clientSort.sortableHeader("uploaded", "Uploaded")}
+              {clientSort.sortableHeader("downloaded", "Downloaded")}
+              {clientSort.sortableHeader("ratio", "Ratio")}
             </tr>
           </thead>
           <tbody>
-            {data.clients.map((c) => (
+            {sortedClients.map((c) => (
               <tr key={c.id}>
                 <td>
                   {c.name} <span style={{ color: "var(--muted)", fontSize: "0.8rem" }}>({c.type})</span>
@@ -86,13 +101,13 @@ export default function NetworkStats() {
       <table>
         <thead>
           <tr>
-            <th>Status</th>
-            <th>Count</th>
-            <th>Size</th>
+            {queueSort.sortableHeader("status", "Status")}
+            {queueSort.sortableHeader("count", "Count")}
+            {queueSort.sortableHeader("size", "Size")}
           </tr>
         </thead>
         <tbody>
-          {data.queueByStatus.map((q) => (
+          {sortedQueue.map((q) => (
             <tr key={q.status}>
               <td>{q.status}</td>
               <td>{q.count}</td>

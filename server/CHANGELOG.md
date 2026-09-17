@@ -3,6 +3,25 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 221 — last two sortable-header holdouts
+- Closed out the Round 215 sortable-column plan: `NetworkStats.tsx`'s two tables (download-client
+  bandwidth totals, queue-by-status breakdown) were the last real list tables in the app still
+  using plain static `<th>` headers. Wired both into the shared `useSortableTable` hook — Client/
+  Uploaded/Downloaded/Ratio and Status/Count/Size are all clickable now, same arrow-indicator
+  pattern as every other converted table.
+- Audited the two remaining plain tables the plan flagged and confirmed both are correctly *not*
+  sortable rather than missed: `TrackDetail.tsx`'s table is a single-row key/value detail view (no
+  list to sort), and `IptvPlaylists.tsx`'s two tables (attached filler-clip rotation order, playlist
+  items) are manually reordered via explicit Up/Down controls — sorting would fight the position the
+  admin just set. `Duplicates.tsx`'s per-group item tables were left alone too: each group only ever
+  has a couple of rows, and they're rendered per-group inside a `.map()`, so a shared sort hook
+  wouldn't cleanly apply per-instance.
+- Live-verified in the Docker test container: logged into a fresh admin session (reset the test
+  container's `admin` password directly in its sqlite db via the server's own scrypt hashing since
+  the session token from earlier rounds had expired), opened `/network-stats`, and confirmed
+  clicking "Count" moved the sort-arrow indicator from the default "Status ▲" to "Count ▲".
+  `npx tsc --noEmit` clean.
+
 ## Round 220 — the last few plain "Yes"/"No" monitored columns
 - Grepped the whole codebase for the literal pattern that started this whole thread
   (`monitored ? "Yes" : "No"`) and found three stragglers `MonitorToggle` hadn't reached yet:
