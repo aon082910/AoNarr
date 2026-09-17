@@ -3,6 +3,34 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 236 — more test coverage (env var resolution, admin bootstrap, friend library comparison)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/env.test.ts` — `readEnvOrFile`'s Docker-secrets `_FILE` precedence over the plain env var,
+  trimming file contents, and failing closed (returning `undefined`, not falling back to the plain
+  var) when a configured `_FILE` path can't be read.
+- `tests/bootstrapAdmin.test.ts` — `bootstrapAdminFromEnv`'s "only ever acts once" gate (a no-op
+  once any admin exists, whatever the env vars say), the minimum-password-length refusal, username
+  trimming, that the stored value is a hash and not the plaintext password, and the `_FILE` variant
+  for both username and password.
+- `tests/friendLibraries.test.ts` — `compareFriendLibrary` across all three friend-server shapes
+  (Plex's section-based API, Jellyfin's and Emby's shared Items API differing only by the `/emby`
+  path prefix), fetch-mocked by URL like Round 235's `trashSync.test.ts`. Covers title/year matching
+  (case- and punctuation-insensitive, ±1 year tolerance, a `null` year on either side always
+  matching), deduplication of repeated friend titles, alphabetical sorting of the result, a single
+  failed Plex section not losing the others, and that a friend with zero users is never queried for
+  items at all.
+
+Caught one test-authoring bug in this batch: `bootstrapAdminFromEnv` only ever acts when *no* admin
+exists yet in the whole database, but `server/tests/` gives every test in a file the same DB — so
+the first test to successfully create an admin was silently making every later test in the same
+file a no-op. Fixed by wiping the `users` table in an `afterEach`, giving each test in
+`bootstrapAdmin.test.ts` a truly clean slate rather than relying on execution order.
+
+Test count: 312 → 336 (37 → 40 files).
+
+Verified: `tsc --noEmit` clean, all 336 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 235 — more test coverage (cleanup suggestions, TRaSH-Guides format translation/sync)
 No behavior changes. Continues the test-coverage push.
 
