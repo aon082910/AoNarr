@@ -3,6 +3,30 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 267 — more test coverage (hand-rolled IRC client)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/ircClient.test.ts` — `IrcConnection` against a real local `net.createServer` standing in
+  for an ircd (same reasoning as `smtp.ts`'s own tests — a hand-rolled protocol client built
+  directly on sockets is best proven against a real socket, not a guess at what a mocked one should
+  emit): NICK/USER registration and JOIN once welcomed, replying to a server PING with a matching
+  PONG, the full SASL PLAIN exchange (CAP REQ/ACK, the base64 `\0user\0pass` payload decoded and
+  verified, 903 success), SASL being skipped without blocking registration on a CAP NAK, SASL
+  failing via a 904 reply after a full AUTHENTICATE round-trip, PRIVMSG routing (matched case-
+  insensitively against the configured channel, ignoring a PRIVMSG to a different channel or to the
+  bot's own nick), and the automatic-reconnect behavior after the server drops the connection
+  (versus never reconnecting once `stop()` has been called). The reconnect test mixes real socket
+  I/O with fake timers (`toFake: ["setTimeout", "clearTimeout"]` only, so the actual TCP handshake
+  keeps running for real) — the first version raced the real close-event propagation against
+  advancing the fake clock and hung until Vitest's own timeout, fixed by spying on `log.warn` and
+  polling via `setImmediate` (never faked) until the reconnect's own `setTimeout` call is confirmed
+  registered before advancing it. TLS (`useSsl: true`) is left untested — the branch is a one-line
+  `tls.connect` vs `net.connect` choice, not worth a full TLS handshake fixture for this round.
+
+Test count: 717 → 725 (79 → 80 files).
+
+Verified: `tsc --noEmit` clean, all 725 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 266 — more test coverage (Soulseek/slskd search client)
 No behavior changes. Continues the test-coverage push.
 
