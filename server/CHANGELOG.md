@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 258 — more test coverage (AI provider HTTP client)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/aiClient.test.ts` — `queryAi`'s two backends: Ollama's native chat API (`/api/chat`,
+  trailing slash stripped, an `images` array added only when a frame is supplied, Authorization
+  only sent when an api key is configured) and the OpenAI-compatible chat-completions shape
+  (`/chat/completions`, an `image_url` data-URI content part added for vision requests), plus both
+  backends' error handling — a non-ok response throwing with the status code, the cloud path also
+  surfacing the provider's own error message when the error body parses as JSON and degrading
+  gracefully when it doesn't, and an unexpected response shape (missing message content) throwing
+  a clear error instead of returning `undefined`. No database at all in this file's own import
+  chain, so — unlike nearly every other file this session — a plain static import and zero
+  `setupTestDb()` call; the whole file runs in single-digit milliseconds.
+
+Test count: 595 → 606 (68 → 69 files).
+
+Verified: `tsc --noEmit` clean, all 606 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 257 — more test coverage (AI-assisted media identification)
 No behavior changes. Continues the test-coverage push.
 
