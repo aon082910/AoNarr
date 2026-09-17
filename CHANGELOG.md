@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 232 — more test coverage (media query building, blocklist, audit log, upgrade candidates)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/mediaQuery.test.ts` — `buildMediaQuery`, the shared WHERE-clause builder behind both
+  `GET /api/media` and its stats endpoint: the security-critical empty-`allowedTypes` short-circuit
+  (`where: null` so the caller never runs a query that could leak rows), content-rating exclusion
+  list construction, tag/group/status filter branches, and `toFts5Query`/`clampLimit`/`clampOffset`.
+- `tests/blocklist.test.ts` — exact (non-fuzzy) release-title matching, scoped per media item.
+- `tests/audit.test.ts` — `logAuditEvent`'s fire-and-forget write and `auditActor`'s session-user
+  vs. bare-API-key attribution.
+- `tests/upgradeCandidates.test.ts` — `findUpgradeCandidates` across all three shapes (movie,
+  episode, sub-item), including that an item with no quality profile assigned is skipped rather
+  than throwing.
+
+Test count: 197 → 226 (23 → 27 files).
+
+Verified: `tsc --noEmit` clean, all 226 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 231 — more test coverage (rate limiting, request tracing, child counts, exclusions, types)
 No behavior changes. Continues Round 229/230's test-coverage push.
 
