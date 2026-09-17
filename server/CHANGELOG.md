@@ -3,6 +3,25 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 257 — more test coverage (AI-assisted media identification)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/aiIdentify.test.ts` — `identifyMediaFile`'s provider resolution (no provider configured,
+  a specifically-requested provider that's disabled, the default provider versus an explicitly
+  requested non-default one), and its three-way prompt strategy: a vision prompt built from an
+  extracted video frame, a text prompt built from an audio file's embedded tags, and the filename-
+  only fallback used both when frame/tag extraction fails *and* for any other file type outright.
+  `aiClient.js`'s `queryAi` is mocked, and — using the same technique as Round 251's
+  `subtitleSync.test.ts` — `node:child_process`'s `execFile` is mocked to drive both the genuine,
+  environment-driven failure path (no `ffmpeg`/`ffprobe` in this container, so the fallback-to-
+  filename behavior is exercised for real) and, by simulating a successful `ffmpeg`/`ffprobe` run,
+  the frame-extraction and tag-extraction success paths that the missing binaries alone could never
+  reach.
+
+Test count: 586 → 595 (67 → 68 files).
+
+Verified: `tsc --noEmit` clean, all 595 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 256 — more test coverage (IRC feed connection lifecycle)
 No behavior changes. Continues the test-coverage push.
 
