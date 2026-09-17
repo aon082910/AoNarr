@@ -3,6 +3,36 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 235 — more test coverage (cleanup suggestions, TRaSH-Guides format translation/sync)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/cleanupSuggestions.test.ts` — `findUnmonitoredNoFile`'s monitored/has_file filtering, and
+  `findDuplicateFiles`' byte-identical-content detection (same size *and* matching partial hash,
+  not just same size) across movies, episodes, and sub-items (albums), including that a missing
+  file on disk is skipped rather than throwing and that episode/sub-item labels are built from
+  their parent title correctly.
+- `tests/trashFormats.test.ts` — `translateTrashFormat`'s mapping of each portable TRaSH-Guides
+  specification (title, release group, size with its GB→MB conversion, and resolution's known-value
+  table), and that anything else — an internal-only implementation, an unmapped resolution value, or
+  a spec with the wrong value type — is reported back as skipped rather than silently dropped or
+  guessed at.
+- `tests/trashSync.test.ts` — this session's first network-mocked test file (`vi.stubGlobal` on
+  `fetch`, keyed by URL). Covers `syncTrashFormats`' add-vs-update branch (matched by `trash_id`),
+  per-app library-type scoping (radarr → movie/ppv, sonarr → series/anime/sports), unsupported-format
+  reporting, and three independent failure paths that must never abort the rest of a sync: a failed
+  directory listing, a single file's download failing or throwing, and a name collision with an
+  existing manually-created format (`custom_formats.name` is UNIQUE).
+
+Caught one test-authoring bug in this batch: the first draft of the episode-duplicate test in
+`cleanupSuggestions.test.ts` inserted two episode rows at the same (show, season, episode) to give
+them identical file content, which collided with the real `UNIQUE(media_item_id, season_number,
+episode_number)` constraint. Fixed by using two different episode numbers — the realistic shape
+for a content-level duplicate anyway, since two rows can never share one episode slot.
+
+Test count: 284 → 312 (34 → 37 files).
+
+Verified: `tsc --noEmit` clean, all 312 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 234 — more test coverage (storage forecast, root folder auto-select/quota, release group stats)
 No behavior changes. Continues the test-coverage push.
 
