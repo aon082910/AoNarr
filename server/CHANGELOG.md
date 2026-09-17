@@ -3,6 +3,23 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 249 — more test coverage (media server library validation)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/libraryValidation.test.ts` — `findLibraryMismatches` (`mediaServer.js`'s
+  `fetchAllLibraryFiles` mocked, `archival.js`'s `pathTail` left real since it's a simple, already-
+  understood helper): the empty-server-response short-circuit, matching/non-matching movies and
+  episodes, the last-3-path-segments tail-matching heuristic tolerating both different mount-point
+  prefixes and case differences between AoNarr's own path and the media server's, the episode
+  label's `SxxEyy` formatting, that every single-shape type beyond just movie/series is checked
+  (verified with `ppv`), and that a `collection`-shaped type (`author`) is never checked at all,
+  even with fields deliberately set up to look like a mismatch — proving the type-scoping filter
+  itself excludes it rather than relying on those fields never occurring together in practice.
+
+Test count: 504 → 512 (59 → 60 files).
+
+Verified: `tsc --noEmit` clean, all 512 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 248 — more test coverage (Trakt list/watchlist sync)
 No behavior changes. Continues the test-coverage push.
 
