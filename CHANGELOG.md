@@ -3,6 +3,37 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 264 — more test coverage (realtime SSE, Prowlarr/Jackett indexer sync)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/realtime.test.ts` — `realtime.ts`'s SSE broadcast channel: only currently-registered
+  clients receive a broadcast, an immediate broadcast fires when nothing has been sent recently, a
+  burst of rapid calls coalesces into exactly one broadcast after the 1500ms cooldown window (proven
+  by asserting the write count is exactly 1, not 2, after advancing fake timers — 2 would mean a
+  second timer was wrongly scheduled), and a write failure on one half-closed client doesn't throw or
+  stop the broadcast from reaching the others. Genuinely zero-runtime-import (only an erased `import
+  type` from `express`), so no `setupTestDb()` needed — but the module's own `lastSentAt`/
+  `pendingTimer` state persists across tests in the file, so each test jumps fake system time far
+  past the cooldown window first and flushes any pending timer in `afterEach` to guarantee the next
+  test starts clean.
+- `tests/prowlarrSync.test.ts` / `tests/jackettSync.test.ts` — both sync services' shared shape: a
+  config-missing guard that never calls `fetch` at all, an HTTP-error-status response, a
+  request-level network error, a real API-key-header request, inserting a new `indexers` row per
+  returned entry (protocol mapping and proxy-URL construction verified), updating rather than
+  duplicating an existing row on re-sync (matched by the indexer id stashed in `config`), and one
+  malformed indexer (a real `indexers.name` NOT NULL violation) getting logged and skipped without
+  aborting the rest of the batch. `prowlarrSync.test.ts` additionally targets the exact concern its
+  own source comment calls out: a numeric id search is terminated with the JSON's closing brace so
+  indexer id 5 can't accidentally match an already-synced row for id 50 or 500 — verified by syncing
+  ids 9250 and 92500 first, then confirming a later sync of 925 creates a genuinely new third row
+  instead of updating either. `jackettSync.test.ts` covers its own distinct shape instead (string
+  slug ids quoted in the stored JSON, `encodeURIComponent`-escaping an id into the per-indexer proxy
+  path, `enabled` always forced to 1 rather than read from the API response).
+
+Test count: 672 → 691 (74 → 77 files).
+
+Verified: `tsc --noEmit` clean, all 691 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 263 — more test coverage (ffprobe media analysis)
 No behavior changes. Continues the test-coverage push.
 
