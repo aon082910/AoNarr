@@ -4,11 +4,11 @@
  * `db` export in resolved promises — zero behavior change, just an async-shaped call surface) and
  * PostgreSQL (a real `pg` connection).
  *
- * NOT WIRED INTO THE APP YET. Every route/service still imports the synchronous `db` from
- * `db/client.ts` directly. This module is phase 1 of DATABASE_MIGRATION.md's plan: prove the
- * abstraction itself is correct against a real Postgres instance before touching any of the ~70
- * files that would need `await` added to actually use it. Converting those files is the bulk of
- * the remaining work and happens in later rounds.
+ * Wired in via `db/index.ts`'s `db` export (a `Proxy` over whichever driver `initDb()` picked) —
+ * nearly every route/service file imports `db` from there now, not from `db/client.ts` directly.
+ * SQLite-dialect bugs here are theoretical (it's a thin async wrapper over the same synchronous
+ * `better-sqlite3` calls); Postgres-dialect bugs are live, since real query results now flow
+ * through this interface into production code.
  *
  * Design choices that keep the 444 existing call sites' *shape* (not yet their sync-ness) mostly
  * unchanged once they are converted:

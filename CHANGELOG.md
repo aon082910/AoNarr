@@ -3,6 +3,29 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 224 — Postgres bulk-rename count bug, found by a dedicated audit pass
+- With the Servarr-parity redesign thread fully closed out, ran a dedicated bug-hunting pass (a
+  background subagent read broadly across `server/src/services/`, `server/src/routes/`, and the
+  dual-dialect DB layer, then went deep on the most suspicious spots) instead of inventing more
+  visual-parity work. Found one genuine, reachable bug.
+- `services/importer.ts`'s `renameLibraryFiles()` — the bulk "Organize & Rename" operation — added
+  `count.c` (a `SELECT COUNT(*) AS c ...` result) straight into `result.skippedMusic` without a
+  `Number()` wrap, the one call site in the whole codebase that skipped it (every other `COUNT(*)`
+  site already wraps correctly — `media.ts`, `childCounts.ts`, `metrics.ts`, `system.ts`,
+  `upgradeCandidates.ts`). Harmless on SQLite (returns a real `number`), but on Postgres `node-pg`
+  returns `COUNT(*)` as a **string**, so `+=` silently switched to string concatenation
+  (`"0" + "3"` → `"03"`, then `"03" + "12"` → `"0312"`) — a Postgres admin running a bulk rename
+  across more than one Music album with existing files would see a garbage "skipped Music item(s)"
+  count in the response instead of the real sum. One-line fix: `Number(count.c)`.
+- Also fixed a stale doc comment the same audit flagged in passing: `db/asyncDb.ts`'s header still
+  claimed the async DB layer was "NOT WIRED INTO THE APP YET," left over from Round 102's original
+  phase-1 design — `db/index.ts` has wired it in as the sole `db` export for ~100 of ~102 route/
+  service files since that same round. Left future readers correctly warned that Postgres-dialect
+  bugs in this layer are live, not theoretical (this round's own finding being the proof).
+- Verified via the full server test suite in a disposable `node:20-slim` container (clean
+  `node_modules` reinstall, not a bind-mount, per this session's established native-binding
+  workaround): 91/91 tests pass, both before confirming the bug's shape and after the fix.
+
 ## Round 223 — sortable headers inside Settings' render-callback tiles
 - The one deliberately-skipped item from Round 222: `Settings.tsx`'s four small config list tables
   (Blocklist, Tags, Format Scores, Import Exclusions) live inside `SettingsSectionTiles`' `render: ()

@@ -1079,7 +1079,7 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
       const count = (await db.prepare("SELECT COUNT(*) AS c FROM sub_items WHERE media_item_id = ? AND has_file = 1").get(item.id)) as {
         c: number;
       };
-      result.skippedMusic += count.c;
+      result.skippedMusic += Number(count.c);
     } else if (typeConfig.shape === "collection") {
       const subItems = (await db
         .prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND has_file = 1 AND file_path IS NOT NULL")
