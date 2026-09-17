@@ -3,6 +3,30 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 234 — more test coverage (storage forecast, root folder auto-select/quota, release group stats)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/storageForecast.test.ts` — `recordDiskUsageSamples`' once-per-calendar-day dedup and its
+  skip-unreachable-folders-without-throwing behavior, and `getStorageForecast`'s straight-line
+  days-until-full projection: needs 2+ samples spanning a trustworthy time window, only ever uses
+  the oldest and newest sample (ignoring any in between), and reports no forecast (rather than a
+  negative or infinite one) when free space is growing instead of shrinking.
+- `tests/rootFolderSelect.test.ts` — `autoSelectRootFolderId`'s most-free-space selection when a
+  media type has multiple root folders (`fs.statfsSync` mocked via `vi.spyOn` for deterministic
+  free-space values, since real temp dirs in the test environment share one filesystem), skipping
+  straight to the only folder without touching the filesystem at all when there's just one, and
+  treating an unreachable path as least-preferred rather than throwing. `isRootFolderOverQuota`'s
+  live statfs-based percentage check, its quota-not-configured and quota-disabled null-guards, and
+  that an unreachable path is never reported as over quota.
+- `tests/releaseGroupStats.test.ts` — `recordGroupSuccess`/`recordGroupFailure`'s UPSERT counters
+  staying independent per group and per outcome type, `getGroupReputation`'s neutral 0.5 default
+  for unknown groups and groups with fewer than 3 recorded outcomes (so one lucky/unlucky grab
+  can't swing ranking), and `listReleaseGroupStats`' sort by total activity.
+
+Test count: 257 → 284 (31 → 34 files).
+
+Verified: `tsc --noEmit` clean, all 284 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 233 — more test coverage (metadata export, HTTP metrics, indexer health, recycle bin)
 No behavior changes. Continues the test-coverage push.
 
