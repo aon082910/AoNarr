@@ -3,6 +3,33 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 242 — more test coverage (update check, TheXEM scene numbering)
+No behavior changes. Continues the test-coverage push — the first round tackling the harder,
+network-mocked services after clearing the low-risk backlog.
+
+- `tests/updateCheck.test.ts` — `checkForUpdate`'s round-number comparison (parsed from both the
+  local `CHANGELOG.md`, mocked via `vi.spyOn(fs, "readFileSync")`, and GitHub's raw copy, mocked
+  via `vi.stubGlobal("fetch", ...)`): update-available only when remote is strictly ahead, an
+  unreadable local file or unparseable remote content treated as "unknown" rather than thrown, a
+  non-ok HTTP response and a network-level failure both propagating as real rejections, and that
+  the title regex accepts both an em dash and a plain hyphen separator.
+- `tests/sceneNumbering.test.ts` — `syncSceneNumbering`'s full error surface (item not found, no
+  external ids, no TVDB id specifically, TheXEM HTTP failure, network failure) versus its "nothing
+  to map" non-error case, applying a `scene`/`scene_2` mapping to the matching episode row, skipping
+  an incomplete or non-matching entry without counting it, and `syncAllSceneNumbering`'s
+  type-filtering (series/anime only, movies never even requested).
+
+Caught one test-authoring bug before it ever ran: the first draft of the `syncAllSceneNumbering`
+test assumed it would only see the show it just inserted, but that function re-scans every
+series/anime row in the table — including ones earlier tests in the same file left behind — so a
+mock that only handled two specific TVDB ids and an exact call-count assertion would have broken
+the moment other tests ran first. Fixed by making the mock tolerate any TVDB id and asserting on
+the specific (nonexistent) id a movie would have used instead of a fragile total call count.
+
+Test count: 428 → 449 (51 → 53 files).
+
+Verified: `tsc --noEmit` clean, all 449 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 241 — more test coverage (scheduled/remote backup)
 No behavior changes. Continues the test-coverage push.
 
