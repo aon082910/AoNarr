@@ -3,6 +3,23 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 246 — more test coverage (Overseerr/Jellyseerr webhook receiver)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/overseerrWebhook.test.ts` — `handleOverseerrWebhook`'s full gate sequence (only
+  MEDIA_APPROVED/MEDIA_AUTO_APPROVED act, an unrecognized `media_type` or missing `tmdbId` is
+  reported back rather than throwing, and a tmdb id already in the library is declined *before*
+  ever fetching metadata for it), then the success path for both movies and series — including
+  that a series still gets added even when fetching its episode list fails, matching the source's
+  deliberate `.catch(() => [])` around that call. This session's first `vi.mock()` of a *local*
+  sibling module (`metadata.js`) rather than an npm package or the global `fetch` — the mock
+  factory closes over module-scoped `vi.fn()`s via a thin indirection layer to sidestep vitest's
+  hoisting of `vi.mock()` above the `const` declarations it would otherwise reference.
+
+Test count: 472 → 480 (56 → 57 files).
+
+Verified: `tsc --noEmit` clean, all 480 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 245 — more test coverage (SOCKS5/TLS dispatcher settings)
 No behavior changes. Continues the test-coverage push.
 
