@@ -3,6 +3,26 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 266 — more test coverage (Soulseek/slskd search client)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/soulseek.test.ts` — `encodeSlskdDownloadUrl`/`decodeSlskdDownloadUrl`'s round-trip fidelity
+  (including usernames/filenames needing URI-escaping — spaces, parens, unicode) and both malformed-
+  URL error cases (missing username, missing filename); `searchSlskd`'s full async poll loop under
+  `vi.useFakeTimers()` + `advanceTimersByTimeAsync` — creates a search, polls until `isComplete`,
+  then fetches and maps responses into `SearchResult[]` (title reduced to the basename across both
+  `/` and `\` separators, `seeders` derived from `hasFreeUploadSlot`); the https-scheme/API-key-
+  header request shape; a single non-OK poll response being skipped rather than aborting the search;
+  giving up politely and still returning gathered responses once the real 15-second deadline is
+  exceeded; and the three failure modes (search-creation request failing, no search id returned, the
+  final responses fetch failing). One test initially left a real unhandled-rejection window — the
+  fake-timer advance drove the promise to rejection before the next line could attach `.rejects` —
+  fixed by attaching the rejection expectation immediately after the call, before advancing timers.
+
+Test count: 706 → 717 (78 → 79 files).
+
+Verified: `tsc --noEmit` clean, all 717 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 265 — more test coverage (course landing-page scraping)
 No behavior changes. Continues the test-coverage push.
 
