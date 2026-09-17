@@ -632,6 +632,13 @@ export async function placeAlbumFiles(params: {
   if (!subRow) throw new Error(`Sub-item ${subItemId} not found`);
 
   const sourceDir = path.dirname(anchorFile);
+  // A multi-disc download often lays each disc out as its own subfolder (e.g. "Album [2CD]/CD1",
+  // "Album [2CD]/CD2") — if the anchor file resolves inside one of those, sourceDir alone is just
+  // that one disc. Detect that shape and treat the disc folder's parent (the actual album folder)
+  // as the real source instead, so every disc's tracks get collected below and, when naming is
+  // disabled, the destination folder keeps the album's own name rather than "CD1".
+  const DISC_SUBFOLDER_RE = /^(cd|disc|disk)\s*[-_]?\s*\d+$/i;
+  const albumSourceDir = DISC_SUBFOLDER_RE.test(path.basename(sourceDir)) ? path.dirname(sourceDir) : sourceDir;
   // Music's individual track filenames are always kept as-downloaded (see the per-file loop
   // below) — there's no separate "filename" to bypass independently the way single/episodic have,
   // so for this shape the album FOLDER is the naming toggle's equivalent of a filename: the
@@ -645,12 +652,41 @@ export async function placeAlbumFiles(params: {
   const parentFolderSegments = templatedSegments.slice(0, -1);
   const albumFolderName = getNamingEnabled(item.type)
     ? templatedSegments[templatedSegments.length - 1]
-    : sanitizeForPath(path.basename(sourceDir));
+    : sanitizeForPath(path.basename(albumSourceDir));
   const destFolder = path.join(rootFolder.path, ...parentFolderSegments, albumFolderName);
-  const siblings = fs
-    .readdirSync(sourceDir, { withFileTypes: true })
-    .filter((e) => e.isFile() && typeConfig.extensions.includes(path.extname(e.name).toLowerCase()))
-    .map((e) => path.join(sourceDir, e.name));
+  function collectAudioFiles(dir: string): string[] {
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isFile() && typeConfig.extensions.includes(path.extname(e.name).toLowerCase()))
+      .map((e) => path.join(dir, e.name));
+  }
+  // A disc subfolder's own filenames typically restart at "01" per disc, but fetchAlbumTracksFor's
+  // MusicBrainz fetch (metadata.ts) numbers tracks continuously across media — disc 2's DB
+  // track_number picks up after disc 1's count, not from 1 again. Without an offset, disc 2's
+  // "01 - Song.mp3" would match disc 1's own track 1 by leading number alone. Offsets are inferred
+  // from file counts per disc folder (sorted by the number embedded in the folder name), which only
+  // lines up correctly if the download's own file count per disc matches the medium's real track
+  // count — if it doesn't, the fallback is simply no match (original filename kept), same as when
+  // no track list has been fetched yet, not a wrong one.
+  const trackNumberOffsetForFile = new Map<string, number>();
+  let siblings: string[];
+  if (albumSourceDir === sourceDir) {
+    siblings = collectAudioFiles(sourceDir);
+  } else {
+    const discFolderNames = fs
+      .readdirSync(albumSourceDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort((a, b) => (Number(a.match(/(\d+)/)?.[1]) || 0) - (Number(b.match(/(\d+)/)?.[1]) || 0));
+    siblings = collectAudioFiles(albumSourceDir);
+    let offset = 0;
+    for (const discName of discFolderNames) {
+      const discFiles = collectAudioFiles(path.join(albumSourceDir, discName));
+      for (const f of discFiles) trackNumberOffsetForFile.set(f, offset);
+      siblings.push(...discFiles);
+      offset += discFiles.length;
+    }
+  }
 
   const tracks = (await db.prepare("SELECT * FROM tracks WHERE sub_item_id = ?").all(subItemId)) as any[];
   const namingEnabled = getNamingEnabled(item.type);
@@ -661,7 +697,9 @@ export async function placeAlbumFiles(params: {
   let anchorDest: string | null = null;
   for (const src of siblings) {
     const leadingNumber = path.basename(src).match(/^(\d{1,3})/);
-    const track = leadingNumber && tracks.length > 0 ? tracks.find((t) => t.track_number === Number(leadingNumber[1])) : undefined;
+    const discOffset = trackNumberOffsetForFile.get(src) ?? 0;
+    const track =
+      leadingNumber && tracks.length > 0 ? tracks.find((t) => t.track_number === Number(leadingNumber[1]) + discOffset) : undefined;
 
     // A matched track gets its filename templated the same way every other shape's filename
     // already is; an unmatched file (no leading track number, or no track list fetched yet) has

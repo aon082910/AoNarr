@@ -118,27 +118,39 @@ export default function IptvPlaylists() {
       insertAfterMinutes: insertAfterMinutes ? Number(insertAfterMinutes) : null,
       insertAfterEachItem,
     };
-    if (mode === "add") {
-      const created = await api.post<Playlist>("/iptv/playlists", body);
-      setMode(created.id);
-      loadItems(created.id);
-      loadFillers(created.id);
-    } else if (typeof mode === "number") {
-      await api.patch(`/iptv/playlists/${mode}`, body);
+    try {
+      if (mode === "add") {
+        const created = await api.post<Playlist>("/iptv/playlists", body);
+        setMode(created.id);
+        loadItems(created.id);
+        loadFillers(created.id);
+      } else if (typeof mode === "number") {
+        await api.patch(`/iptv/playlists/${mode}`, body);
+      }
+      load();
+    } catch (err) {
+      alert((err as Error).message);
     }
-    load();
   }
 
   async function removePlaylist(id: number) {
-    await api.del(`/iptv/playlists/${id}`);
-    setMode(null);
-    load();
+    try {
+      await api.del(`/iptv/playlists/${id}`);
+      setMode(null);
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }
 
   async function regenerateToken() {
     if (!confirm("Regenerate the playlist token? Every feed URL already pasted into a media server will stop working until updated.")) return;
-    const result = await api.post<{ token: string }>("/iptv/token/regenerate", {});
-    setToken(result.token);
+    try {
+      const result = await api.post<{ token: string }>("/iptv/token/regenerate", {});
+      setToken(result.token);
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }
 
   async function addItem(e: FormEvent) {
@@ -149,36 +161,56 @@ export default function IptvPlaylists() {
     else if (itemKind === "movie") body.mediaItemId = Number(itemRefId);
     else body.episodeId = Number(itemRefId);
 
-    await api.post(`/iptv/playlists/${mode}/items`, body);
-    resetItemForm();
-    loadItems(mode);
-    load();
+    try {
+      await api.post(`/iptv/playlists/${mode}/items`, body);
+      resetItemForm();
+      loadItems(mode);
+      load();
+    } catch (err) {
+      alert((err as Error).message);
+    }
   }
 
   async function moveItem(itemId: number, direction: "up" | "down") {
     if (typeof mode !== "number") return;
-    const updated = await api.post<PlaylistItem[]>(`/iptv/playlists/${mode}/items/${itemId}/move`, { direction });
-    setItems(updated);
+    try {
+      const updated = await api.post<PlaylistItem[]>(`/iptv/playlists/${mode}/items/${itemId}/move`, { direction });
+      setItems(updated);
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }
 
   async function removeItem(itemId: number) {
     if (typeof mode !== "number") return;
-    await api.del(`/iptv/playlists/${mode}/items/${itemId}`);
-    loadItems(mode);
-    load();
+    try {
+      await api.del(`/iptv/playlists/${mode}/items/${itemId}`);
+      loadItems(mode);
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }
 
   async function attachFiller() {
     if (typeof mode !== "number" || !fillerToAttach) return;
-    await api.post(`/iptv/playlists/${mode}/fillers`, { fillerClipId: Number(fillerToAttach) });
-    setFillerToAttach("");
-    loadFillers(mode);
+    try {
+      await api.post(`/iptv/playlists/${mode}/fillers`, { fillerClipId: Number(fillerToAttach) });
+      setFillerToAttach("");
+      loadFillers(mode);
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }
 
   async function detachFiller(attachmentId: number) {
     if (typeof mode !== "number") return;
-    await api.del(`/iptv/playlists/${mode}/fillers/${attachmentId}`);
-    loadFillers(mode);
+    try {
+      await api.del(`/iptv/playlists/${mode}/fillers/${attachmentId}`);
+      loadFillers(mode);
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }
 
   function resetClipForm() {
@@ -203,19 +235,27 @@ export default function IptvPlaylists() {
     e.preventDefault();
     if (!clipName || !clipUrl) return;
     const body = { name: clipName, url: clipUrl, category: clipCategory || null };
-    if (clipMode === "add") {
-      await api.post("/iptv/filler-clips", body);
-    } else if (typeof clipMode === "number") {
-      await api.patch(`/iptv/filler-clips/${clipMode}`, body);
+    try {
+      if (clipMode === "add") {
+        await api.post("/iptv/filler-clips", body);
+      } else if (typeof clipMode === "number") {
+        await api.patch(`/iptv/filler-clips/${clipMode}`, body);
+      }
+      setClipMode(null);
+      load();
+    } catch (err) {
+      alert((err as Error).message);
     }
-    setClipMode(null);
-    load();
   }
 
   async function removeClip(id: number) {
-    await api.del(`/iptv/filler-clips/${id}`);
-    setClipMode(null);
-    load();
+    try {
+      await api.del(`/iptv/filler-clips/${id}`);
+      setClipMode(null);
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }
 
   const editingPlaylist = typeof mode === "number" ? playlists.find((p) => p.id === mode) ?? null : null;

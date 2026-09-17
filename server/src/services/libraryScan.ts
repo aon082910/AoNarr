@@ -62,6 +62,18 @@ async function upsertTrackFromFile(subItemId: number, filePath: string): Promise
   const base = path.basename(filePath, path.extname(filePath));
   const leadingNumber = base.match(/^(\d{1,3})\b/);
   let trackNumber = leadingNumber ? Number(leadingNumber[1]) : null;
+  if (trackNumber) {
+    // A multi-disc album's filenames typically restart at "01" per disc, but track_number is one
+    // continuous sequence for the whole album (fetchAlbumTracksMusicbrainz already numbers a 2nd+
+    // medium starting after the previous one's count) — if this exact number already belongs to a
+    // DIFFERENT file, it almost certainly means this file is a later disc's own "01", not a
+    // re-scan of the same track. Falls through to "no confident number" below (appended at the
+    // end) instead of silently overwriting the earlier disc's already-tracked file.
+    const existing = (await db
+      .prepare("SELECT file_path FROM tracks WHERE sub_item_id = ? AND track_number = ?")
+      .get(subItemId, trackNumber)) as { file_path: string | null } | undefined;
+    if (existing?.file_path && path.resolve(existing.file_path) !== path.resolve(filePath)) trackNumber = null;
+  }
   if (trackNumber === null || trackNumber === 0) {
     const maxRow = (await db
       .prepare("SELECT COALESCE(MAX(track_number), 0) AS m FROM tracks WHERE sub_item_id = ?")
@@ -442,7 +454,11 @@ async function scanAndImportLibraryInner(
           // Album is whichever folder the file directly sits in (relSegments[0] = parent/artist,
           // so a real "Artist/Album/track.mp3" layout has the album as relSegments[1]; a flatter
           // "Artist/track.mp3" layout with no album subfolder falls back to the artist's own name
-          // as a single self-titled album rather than being skipped outright).
+          // as a single self-titled album rather than being skipped outright). This also already
+          // correctly identifies the shared album folder for a multi-disc layout laid out as
+          // "Artist/Album [2CD]/CD1/track.mp3" (relSegments[1] is still "Album [2CD]" regardless
+          // of how many disc-subfolder levels sit beneath it) — see albumDir below for why the
+          // *file_path* side of that case needed a matching fix.
           const albumFolderName = relSegments.length >= 3 ? relSegments[1] : relSegments[0];
           const albumTitle = guessTitleFromText(albumFolderName);
           if (!albumTitle) {
@@ -450,6 +466,13 @@ async function scanAndImportLibraryInner(
             result.skippedFiles.push({ path: filePath, reason: `couldn't guess an album title from the folder name "${albumFolderName}"` });
             continue;
           }
+          // The album's own directory, not necessarily the specific file's immediate parent — for
+          // a multi-disc album (CD1/CD2 subfolders under the album folder), the file's immediate
+          // parent is one specific disc's subfolder, but sub_items.file_path needs to point at the
+          // folder that actually contains every disc, or a later disc's tracks look "missing" to
+          // anything that treats file_path as the album's whole location (deletedFileCheck.ts,
+          // cleanupSuggestions.ts). Matches albumFolderName's own segment choice above exactly.
+          const albumDir = relSegments.length >= 3 ? path.join(folder.path, relSegments[0], relSegments[1]) : path.join(folder.path, relSegments[0]);
           let childMatch = childSubItems.find((s) => titlesMatch(s.title, albumTitle));
           if (!childMatch) {
             const insertResult = await db
@@ -459,7 +482,7 @@ async function scanAndImportLibraryInner(
             childSubItems.push(childMatch);
           }
           if (!childMatch.has_file) {
-            await db.prepare("UPDATE sub_items SET has_file = 1, file_path = ? WHERE id = ?").run(parentDir, childMatch.id);
+            await db.prepare("UPDATE sub_items SET has_file = 1, file_path = ? WHERE id = ?").run(albumDir, childMatch.id);
             childMatch.has_file = 1;
             result.matched++;
           } else {

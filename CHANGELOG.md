@@ -3,6 +3,60 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 228 — close out Round 227's deferred multi-disc findings + remaining error-handling gaps
+Two items were deliberately left open at the end of Round 227 as "medium confidence/severity,
+needs a clear head rather than audit-time-pressure to fix safely" — closed out properly this round,
+plus a second related bug found while re-examining the first, and the last few pages from Round
+227's "add missing error handling" sweep that hadn't been reached yet.
+
+**Multi-disc album handling**
+- Scan & Import's Music branch identified a multi-disc album's folder correctly (e.g.
+  "Artist/Album [2CD]/CD1/track.mp3" already correctly guessed "Album [2CD]" as the title,
+  regardless of the CD1/CD2 subfolder), but `sub_items.file_path` was set to whichever specific
+  disc subfolder was scanned *first* — a second disc's tracks got recorded, but the album's own
+  file-path pointed at only one disc's folder, which anything treating that column as "the album's
+  whole location" (`deletedFileCheck.ts`, `cleanupSuggestions.ts`) would misread. Now points at the
+  shared album folder instead of the first-scanned disc (`services/libraryScan.ts`).
+- The download-import path (`placeAlbumFiles`) only ever listed files directly inside the anchor
+  file's own folder — for a multi-disc download laid out as disc subfolders, only the anchor's own
+  disc ever got moved/imported; every other disc's tracks were silently left behind in the downloads
+  folder forever, uncleaned-up and unimported. Now detects a disc-subfolder layout (folder name like
+  "CD1"/"Disc 2") and collects every disc's files (one level of subfolders, not arbitrary
+  recursion, so an unrelated nested folder like artwork doesn't get swept in) — and, when naming is
+  disabled, keeps the destination folder named after the album rather than "CD1"
+  (`services/importer.ts`).
+- Found while fixing the above: a disc's own filenames typically restart at "01", but a multi-disc
+  album's `tracks.track_number` is one continuous sequence across the whole album (disc 2 picks up
+  after disc 1's count) — matching a file to a track by its literal leading number alone, with no
+  disc awareness, let disc 2's "01" silently overwrite disc 1's real track 1's `has_file`/`file_path`
+  and leave disc 2's own track permanently unmatched. Fixed in both places this matching happens:
+  `placeAlbumFiles` now offsets each disc's own leading numbers by the track count of every earlier
+  disc (`services/importer.ts`), and the Scan & Import / `backfillMissingAlbumTracks` shared
+  `upsertTrackFromFile` helper now detects when a computed track number is already claimed by a
+  *different* file and falls back to appending a new one instead of overwriting
+  (`services/libraryScan.ts`) — both degrade safely to "no confident match" (original behavior)
+  rather than a wrong match if the heuristic doesn't apply cleanly.
+- Added `tests/multiDiscAlbum.test.ts`, covering both the download-import path and the
+  already-organized-on-disk scan path against a real 2-disc fixture on a real filesystem — asserts
+  every track lands on its correct, distinct `track_number` and `sub_items.file_path` ends up at the
+  shared album folder in both cases.
+
+**Frontend — remaining error-handling gaps from Round 227's sweep**
+- `IptvPlaylists.tsx`: all ten mutating actions (add/edit/delete playlist, regenerate token, add/
+  move/remove item, attach/detach filler, add/edit/delete filler clip) now surface a failure instead
+  of leaving the modal in an inconsistent state with no feedback.
+- `Account.tsx`: starting 2FA setup now surfaces a failure (relevant now that re-keying an
+  already-enabled account correctly requires the current code, per Round 227 — see that entry).
+- `AuditLog.tsx`: a failed page load now shows an error instead of either a permanently blank page
+  (on the very first load) or silently continuing to show the previous page's rows with no
+  indication the requested page never actually loaded.
+- `NamingSetupModal.tsx`: a failed save now shows an error instead of failing as an unhandled
+  promise rejection with no visible feedback.
+
+Verified: `tsc --noEmit` clean on both packages, 93/93 server tests passing (91 from Round 227 + 2
+new multi-disc regression tests), and a live rebuild of the local Docker stack confirming a clean
+boot and normal page behavior.
+
 ## Round 227 — second full-codebase bug audit: ~50 fixes across security, data integrity, and the UI
 Seven parallel exhaustive read-throughs (media-pipeline services, downloads/search/quality
 services, integrations/infra services, routes A + the DB layer, routes B, and two web-frontend

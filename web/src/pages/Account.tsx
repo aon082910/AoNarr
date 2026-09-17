@@ -16,9 +16,13 @@ export default function Account() {
 
   async function startSetup() {
     setError(null);
-    const result = await api.post<{ secret: string; otpauthUrl: string }>("/auth/totp/setup", {});
-    setTotpSetup(result);
-    setCode("");
+    try {
+      const result = await api.post<{ secret: string; otpauthUrl: string }>("/auth/totp/setup", {});
+      setTotpSetup(result);
+      setCode("");
+    } catch (err) {
+      setError((err as Error).message);
+    }
   }
 
   async function confirmSetup() {

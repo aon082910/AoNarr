@@ -100,6 +100,8 @@ export default function NamingSetupModal({
     try {
       await onSave(template, enabled);
       onClose();
+    } catch (err) {
+      alert((err as Error).message);
     } finally {
       setSaving(false);
     }

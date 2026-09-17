@@ -52,12 +52,15 @@ export default function AuditLog() {
   const [data, setData] = useState<AuditLogResponse | null>(null);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     api
       .get<AuditLogResponse>(`/audit-log?page=${page}&pageSize=100`)
       .then(setData)
+      .catch((err) => setError((err as Error).message))
       .finally(() => setLoading(false));
   }, [page]);
 
@@ -72,6 +75,7 @@ export default function AuditLog() {
     : [];
 
   if (loading && !data) return <p className="empty">Loading...</p>;
+  if (error && !data) return <p style={{ color: "var(--danger)" }}>{error}</p>;
   if (!data) return null;
 
   return (
@@ -83,6 +87,7 @@ export default function AuditLog() {
         across every household account — most recent first. {data.total} event
         {data.total === 1 ? "" : "s"} total.
       </p>
+      {error && <p style={{ color: "var(--danger)" }}>{error} — showing the last page that loaded successfully.</p>}
       {data.rows.length === 0 && <p className="empty">Nothing logged yet.</p>}
       {data.rows.length > 0 && (
         <>
