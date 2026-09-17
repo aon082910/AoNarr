@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 265 — more test coverage (course landing-page scraping)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/courseScraper.test.ts` — `scrapeCoursePage`'s URL validation (a non-URL string, a non-
+  http(s) protocol), network-failure handling (`fetch` itself throwing, a non-OK HTTP status), and
+  title extraction (og:title preferred over `<title>`, falling back to `<title>` when og:title is
+  absent, throwing when neither is present, HTML entity decoding for both named and numeric
+  entities, and the edX-only "| edX" suffix stripping — confirmed to NOT apply to a similarly-shaped
+  suffix on a non-edX hostname). Also covers `extractMetaContent`'s two documented robustness cases:
+  a `content` attribute appearing before `property`/`name` in the tag, and a double-quoted content
+  value containing an internal apostrophe not getting cut short — the exact scenario called out in
+  the source's own comment. Genuinely zero-import aside from global `fetch`, so no `setupTestDb()`
+  needed.
+
+Test count: 691 → 706 (77 → 78 files).
+
+Verified: `tsc --noEmit` clean, all 706 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 264 — more test coverage (realtime SSE, Prowlarr/Jackett indexer sync)
 No behavior changes. Continues the test-coverage push.
 
