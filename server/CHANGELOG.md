@@ -3,6 +3,34 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 240 — more test coverage (logging, HTTP range streaming)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/logger.test.ts` — the ring-buffer log store nearly every other test file already depends
+  on indirectly, finally with its own coverage: level tagging, `Error`-argument serialization
+  (stack, not `[object Object]`), the `level`/`search`/`since` filters on `getRecentLogs` (search
+  case-insensitive, `since` a strict `>=` on timestamp), newest-first ordering, the configurable
+  `logLevel` threshold actually suppressing lower-level entries from persistence, and the daily
+  log file plumbing — `listLogFiles` reflecting a real file on disk and `resolveLogFilePath`
+  rejecting a path-traversal attempt outright.
+- `tests/rangeStream.test.ts` — `streamFileWithRangeSupport` against a real file and a hand-built
+  fake Express response (a `PassThrough` decorated with `writeHead`/`status`/`set`/`json`, since
+  `pipeline` needs a real writable stream to pipe into): the no-Range 200 fallback, a plain byte
+  range, an open-ended range, a suffix range, clamping an out-of-bounds end instead of erroring,
+  416 for a syntactically invalid or out-of-bounds range, 404 for a missing file, and the
+  extension-to-Content-Type table including its `application/octet-stream` fallback.
+
+Caught two test-authoring bugs in this batch, both in the test doubles rather than the source: the
+range-stream fake `res.set` only implemented Express's object-argument form, silently swallowing
+the real two-argument `res.set("Content-Range", value)` call the source actually makes (fixed by
+supporting both signatures, matching Express itself); and the logger test's file-listing check ran
+synchronously right after logging, racing `fs.createWriteStream`'s asynchronous file-open — fixed
+by awaiting a short tick first rather than relying on incidental timing from other startup logging.
+
+Test count: 393 → 414 (47 → 49 files).
+
+Verified: `tsc --noEmit` clean, all 414 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 239 — more test coverage (corrupt media detection, audio tag writing)
 No behavior changes. Continues the test-coverage push.
 
