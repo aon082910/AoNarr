@@ -68,7 +68,7 @@ function groupPasses(group: ConditionGroup, title: string, sizeBytes: number | n
   }
 
   if (group.type === "size") {
-    if (sizeBytes == null) return false;
+    if (sizeBytes == null) return group.negate ? true : false;
     const sizeMb = sizeBytes / 1_000_000;
     const inRange = (group.minMb == null || sizeMb >= group.minMb) && (group.maxMb == null || sizeMb <= group.maxMb);
     return group.negate ? !inRange : inRange;

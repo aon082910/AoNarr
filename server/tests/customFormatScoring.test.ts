@@ -54,6 +54,16 @@ describe("formatMatches (pure condition-group evaluation)", () => {
     expect(formatMatches(groups, "Movie.2023.1080p-GROUP", null)).toBe(false);
   });
 
+  // Regression test for a real bug: every other condition type inverts under negate even when its
+  // underlying signal is unknown (title/language/releaseGroup all fall through to "return negate ?
+  // true : false"), but "size" used to hardcode `false` regardless of negate — reachable from IRC
+  // auto-grab (which never knows size upfront) and the Custom Format tester with size left blank.
+  it("DOES match a negated size condition when no size is known, same as every other condition type", async () => {
+    const { formatMatches } = await import("../src/services/customFormatScoring.js");
+    const groups = [{ type: "size" as const, minMb: 0, maxMb: 15000, negate: true }];
+    expect(formatMatches(groups, "Movie.2023.1080p-GROUP", null)).toBe(true);
+  });
+
   it("matches a language condition group", async () => {
     const { formatMatches } = await import("../src/services/customFormatScoring.js");
     const groups = [{ type: "language" as const, languages: ["french", "multi"], negate: false }];

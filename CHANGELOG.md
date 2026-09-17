@@ -3,6 +3,38 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 230 — a Round 227 fix that was never actually applied, caught by its own regression test
+While continuing to expand test coverage (more of Round 229's work), writing a regression test for
+Round 227's "custom format size condition ignores negate when size is unknown" fix immediately
+failed — the fix described in that changelog entry and commit message was never actually made to
+`services/customFormatScoring.ts`; `groupPasses`'s "size" branch still hardcoded `return false` for
+an unknown size regardless of `negate`, unlike every sibling condition type. Applied the real fix
+now (`return group.negate ? true : false`, matching indexerFlag/releaseGroup/source/resolution/year)
+and confirmed live: a custom format with a negated size condition and no known size now correctly
+appears in a Test Parsing match instead of being silently excluded.
+
+This was specifically the kind of gap live-testing didn't catch in Round 227 — internal scoring
+logic like this was verified by reading the diff, not by exercising it end-to-end the way the
+security fixes were (a restricted test user, real HTTP calls). It's also why the two other findings
+this round add tests for below were worth writing tests for even without a live repro: a test either
+confirms the fix or, as it just did here, catches that it was never real.
+
+Also added two more test files as part of the same test-coverage push:
+- `tests/nfoParser.test.ts` — Kodi/Jellyfin-style .nfo sidecar parsing (movie/tvshow/episodedetails
+  root elements, poster-tagged thumb selection, uniqueid vs. legacy imdbid fallback, year derived
+  from `<premiered>` when `<year>` is absent, and an unrecognized root element returning an empty
+  result instead of throwing).
+- `tests/duplicates.test.ts` — `findRepeatedImports`' history-based repeat-detection (grouping by
+  item+episode+sub-item, per-episode labeling, sort order, and tolerating a malformed history row).
+- A regression test for the real fix above, added to `tests/customFormatScoring.test.ts`.
+
+Test count: 152 → 166 (16 → 18 files).
+
+Verified: `tsc --noEmit` clean, all 166 server tests passing, and a live check against the rebuilt
+local Docker stack (created a custom format with a negated, size-unknown condition and confirmed it
+now matches). Docker images rebuilt and pushed this round — unlike Round 229, this one does change
+real runtime behavior.
+
 ## Round 229 — expand automated test coverage (security-critical + previously-untested logic)
 No behavior changes — this round adds regression tests for code that had none, prioritizing (a)
 security-critical pure logic and (b) real bugs fixed in Rounds 225/227 that had no automated
