@@ -3,6 +3,28 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 233 — more test coverage (metadata export, HTTP metrics, indexer health, recycle bin)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/metadataExport.test.ts` — the .nfo/.opf/.plexmatch/.json export builders (root element by
+  shape, XML-escaping, omitting absent optional fields rather than emitting empty tags),
+  `safeFileName`, and `writeNfoSidecar`'s "never throw" contract.
+- `tests/httpMetrics.test.ts` — per-route request/error/latency aggregation, and that only 5xx
+  responses count as errors.
+- `tests/indexerHealth.test.ts` — success-rate/average-response-time computation, last-check
+  outcome reporting, the 50-row-per-indexer cap, and that each indexer's history stays independent.
+- `tests/recycleBin.test.ts` — the most load-bearing new file this round: real file and directory
+  moves (a Music album is a directory, not a file) through recycle/restore/purge, *and* the
+  cross-filesystem (EXDEV) fallback path specifically, forced via `vi.spyOn` on `fsp.rename` since
+  the test environment's own temp dirs share one real filesystem and would never otherwise exercise
+  it. This is the regression test the Round 227/228 "recycle bin couldn't handle directories" fix
+  never had — confirms moving, restoring, and purging a directory all work, in both the same-
+  filesystem and cross-filesystem cases.
+
+Test count: 226 → 257 (27 → 31 files).
+
+Verified: `tsc --noEmit` clean, all 257 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 232 — more test coverage (media query building, blocklist, audit log, upgrade candidates)
 No behavior changes. Continues the test-coverage push.
 
