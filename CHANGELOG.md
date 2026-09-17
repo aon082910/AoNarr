@@ -3,6 +3,27 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 251 — more test coverage (subtitle timing sync)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/subtitleSync.test.ts` — `syncSubtitleToVideo` on both paths: the genuine, environment-
+  driven failure case (this container has no `ffsubsync` binary, so a real ENOENT proves the
+  documented "never throws, keeps the original" contract, plus that the temp-file cleanup branch
+  handles a temp file that was never created), and — via `vi.mock("node:child_process")` — the
+  success path, where the mock simulates ffsubsync actually writing its output file before exiting
+  0, proving the real rename-to-original and no-leftover-temp-file behavior.
+
+Caught a real convention slip while drafting the test, before ever running it: `subtitleSync.ts`
+imports `logger.js`, which touches `config.js`/`db/index.js` transitively to compute its log
+directory — the first draft used a static top-level import with no `setupTestDb()` call at all,
+which would have let those modules read whatever ambient config the container happened to have
+instead of an isolated per-test temp dir. Fixed by adding `setupTestDb()` and switching to the
+suite's usual dynamic-import-after-setup pattern before the test was ever run.
+
+Test count: 527 → 531 (61 → 62 files).
+
+Verified: `tsc --noEmit` clean, all 531 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 250 — more test coverage (background job registry/scheduler)
 No behavior changes. Continues the test-coverage push.
 
