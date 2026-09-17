@@ -3,6 +3,35 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 254 — more test coverage (TMDB/Last.fm recommendations, auto-request from watch history)
+No behavior changes. Continues the test-coverage push — the session's first pass at
+`recommendations.ts`, deferred twice earlier for its size (TMDB + Last.fm + media server + auto-
+select-root-folder + metadata dependencies all in one file) until enough of the individual mocking
+patterns below had been validated separately.
+
+- `tests/recommendations.test.ts` — `getRecommendations`'s "because you added X" (TMDB/Last.fm
+  similarity, seeded from the most recently added library items) and "because you watched X"
+  (seeded from actual watch history instead) paths: empty output with no fetch calls at all when
+  neither API key is configured, deduping a TMDB suggestion already in the library, honoring the
+  exclusion list, correctly tagging watch-history-sourced suggestions with `basis: "watched"`, and
+  Last.fm artist suggestions (mbid mapping, large-image extraction, case-insensitive dedup against
+  owned artists). `runAutoRequestFromWatchHistory`'s gating (disabled, or no watched-basis
+  candidates), respecting its configured limit, and never re-adding a tmdb id already in the
+  library. `mediaServer.js` (`getMediaServerConfig`/`fetchWatchedFiles`) and `metadata.js`
+  (`fetchSeriesEpisodesFor`) are mocked; the TMDB/Last.fm calls themselves go through
+  `vi.stubGlobal("fetch", ...)` keyed by URL substring.
+
+Caught one test-authoring bug before it ever passed: `getRecommendations()` calls
+`fetchWatchedFiles()` twice per run (once each for the movie and series "watched" branches), but
+three tests only queued a single `mockResolvedValueOnce` — the second call fell through to an
+unconfigured mock returning `undefined`, and `undefined.length` threw inside
+`recentlyWatchedLibraryItems`. Fixed by using a persistent `mockResolvedValue` instead, since the
+series branch's response content didn't matter for these movie-focused tests anyway.
+
+Test count: 558 → 568 (64 → 65 files).
+
+Verified: `tsc --noEmit` clean, all 568 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 253 — more test coverage (media server watch-event webhooks/sync)
 No behavior changes. Continues the test-coverage push.
 
