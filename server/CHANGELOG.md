@@ -3,6 +3,31 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 256 — more test coverage (IRC feed connection lifecycle)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/ircFeedManager.test.ts` — `restartIrcFeeds`'s config mapping from an `irc_feeds` row to a
+  connection config (host/port/useSsl/nickname/channel), skipping disabled feeds, decrypting an
+  encrypted `sasl_pass` versus passing a `null` one through untouched, stopping every previous
+  connection before establishing new ones on a repeated call, the announce callback wiring
+  (invoking it calls `handleAnnounce` with the right feed/text), and — the one worth calling out —
+  that a `handleAnnounce` rejection never escapes as an unhandled promise rejection. `ircClient.js`'s
+  `IrcConnection` and `ircAnnounce.js`'s `handleAnnounce` are both mocked.
+
+Caught two real bugs in the test itself before it ever ran: the mock for `IrcConnection` (a class
+the source instantiates with `new`) was first written as an arrow-function indirection, which
+throws "is not a constructor" — fixed with a plain `function` wrapper instead, relying on the fact
+that returning an explicit object from a constructor call overrides the implicit `this` regardless
+of whether `new` was used internally. Separately, the first draft of the "rejection doesn't escape"
+test only asserted the callback doesn't throw *synchronously* — which would have passed even if the
+source's `.catch()` were deleted, since the wrapper never awaits `handleAnnounce()` and the
+rejection only happens on a later microtask. Fixed by listening for a real `process`
+`'unhandledRejection'` event instead, which actually proves the `.catch()` is doing its job.
+
+Test count: 577 → 586 (66 → 67 files).
+
+Verified: `tsc --noEmit` clean, all 586 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 255 — more test coverage (scheduled subtitle rescan)
 No behavior changes. Continues the test-coverage push.
 
