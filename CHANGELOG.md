@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 247 — more test coverage (Plex watchlist sync)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/plexWatchlistSync.test.ts` — `runPlexWatchlistSync`'s three-way enable gate (sync off,
+  media server not Plex, no token — each a no-op that never even calls `fetch`), a failed watchlist
+  request surfacing as `{added: 0, error}` rather than throwing, adding a new movie/show (with the
+  CDN-prefix-vs-already-absolute poster URL logic), skipping one already in the library or on the
+  exclusions list, skipping an item with no matching external id, and a show still getting added
+  even when fetching its episode list fails. `metadata.js`'s `fetchSeriesEpisodesFor` is mocked
+  (same closure-indirection pattern as Round 246) while `mediaServer.js`'s `parsePlexExternalIds`
+  and `importExclusions.js`'s `isExcluded` run for real — both are simple enough (a pure regex
+  parser, a DB lookup already covered by its own test file) that mocking them would only have
+  hidden real integration bugs for no benefit.
+
+Test count: 480 → 490 (57 → 58 files).
+
+Verified: `tsc --noEmit` clean, all 490 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 246 — more test coverage (Overseerr/Jellyseerr webhook receiver)
 No behavior changes. Continues the test-coverage push.
 
