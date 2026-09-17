@@ -3,6 +3,30 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 248 — more test coverage (Trakt list/watchlist sync)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/traktSync.test.ts` — `runTraktSync`'s three-way enable gate, an unrecognized list URL
+  format reported as an error without ever calling `fetch`, the URL-parsing branch that builds the
+  right Trakt API path for a plain `/watchlist` versus a named `/lists/<slug>` URL, a failed Trakt
+  request surfacing as an error rather than throwing, adding a movie/show (recording both its tmdb
+  *and* trakt ids), the usual dedup/exclusion/no-id skip cases, a show still getting added when its
+  episode fetch fails, and a non-movie/non-show list entry being ignored rather than crashing the
+  rest of the sync — mirroring Round 247's `plexWatchlistSync.test.ts` closely, since the two
+  services share nearly the same add-from-external-list shape.
+
+Caught one test-authoring bug before it shipped: the "ignores a non-movie/non-show entry" test
+reused the shared `movieEntry()` fixture helper with only its `title` overridden, leaving the
+default `ids.tmdb` (4001) in place — which collided with an *earlier* test's already-inserted movie
+using that same tmdb id, so the dedup check (keyed on tmdb id, not title) silently skipped it and
+`added` came back 0 instead of the expected 1. Fixed by giving that entry its own unique tmdb id, a
+reminder that overriding only the field a test cares about isn't enough when a shared fixture
+helper's other defaults can collide with unrelated tests via the suite's shared-DB-per-file state.
+
+Test count: 490 → 504 (58 → 59 files).
+
+Verified: `tsc --noEmit` clean, all 504 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 247 — more test coverage (Plex watchlist sync)
 No behavior changes. Continues the test-coverage push.
 
