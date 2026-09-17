@@ -3,6 +3,38 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 260 — more test coverage (Radarr/Sonarr/Lidarr one-time library migration)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/starrImport.test.ts` — `fetchRadarrMovies`' file-path derivation (a direct `movieFile.
+  path`, a `path` + `movieFile.relativePath` combination, and the `radarr:<tmdbId>` fallback id for
+  a monitored-but-undownloaded movie) and its skip of entries with no title. `importArtistsFromLidarr`
+  exercising the Lidarr/Readarr-shared `importCollectionData` matching core: creating a new parent
+  and child, matching an existing parent by external id (even under a renamed title) or by exact
+  title, coalescing a matched parent's missing fields without overwriting existing ones, skipping a
+  child whose derived path tail is already tracked, updating a previously-fileless child once a real
+  path appears, and never resetting an already-downloaded child back to missing when Lidarr no
+  longer reports a file for it.
+
+Caught three real bugs in the test before any of them passed, none of them subtle mock issues —
+genuine gaps in understanding the source's actual behavior: (1) `root_folder_id` is a real foreign
+key, and a literal `1` only works if a root folder with that id exists — fixed by inserting one for
+real. (2) The most consequential one: `importCollectionData` never iterates parents directly — it
+only ever resolves one as a side effect of processing a child that references it, so a Starr artist
+with zero albums in the mocked response is completely invisible to the matching logic, and two
+tests asserting on parent-matching with no album fixture were passing vacuously (nothing was ever
+touched) rather than proving anything. Fixed by giving every parent-matching test at least one
+child. (3) `pathTail` keeps only the last 3 path segments, and Lidarr-derived children are always
+stored as a *folder* path, not the track file itself — a naive same-tail fixture pairing a filename-
+terminated existing path against a freshly-derived folder path silently fails to collide, since the
+segment 3 levels up differs by construction. Fixed by aligning both fixtures on folder paths that
+share their last 3 segments, isolating the "different mount point" difference to a segment outside
+that window — which is the actual case the test means to cover.
+
+Test count: 623 → 633 (70 → 71 files).
+
+Verified: `tsc --noEmit` clean, all 633 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 259 — more test coverage (book ISBN scanning)
 No behavior changes. Continues the test-coverage push.
 
