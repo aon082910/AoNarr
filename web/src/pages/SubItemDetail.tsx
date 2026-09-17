@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
@@ -70,10 +70,25 @@ export default function SubItemDetail() {
   const [sendingToKindle, setSendingToKindle] = useState(false);
   const [convertingM4b, setConvertingM4b] = useState(false);
 
+  // Navigating between sibling sub-items (a series/narrator sibling link, or browser Back/Forward)
+  // reuses this mounted component — without a request-ordering guard, a slower response for a
+  // previous sub-item could land after a newer one and overwrite it. The search-results modal isn't
+  // itself a blocking overlay here, so it also needs to reset on id change, or a stale result list
+  // stays visible (and grabbable) against whatever sub-item is now showing.
+  const loadRequestRef = useRef(0);
   function load() {
-    api.get<SubItemDetailResponse>(`/media/${mediaId}/subitems/${subItemId}`).then(setSubItem);
+    const requestId = ++loadRequestRef.current;
+    setSubItem(null);
+    api.get<SubItemDetailResponse>(`/media/${mediaId}/subitems/${subItemId}`).then((data) => {
+      if (loadRequestRef.current === requestId) setSubItem(data);
+    });
   }
   useEffect(load, [mediaId, subItemId]);
+  useEffect(() => {
+    setResults(null);
+    setError(null);
+    setSearching(false);
+  }, [mediaId, subItemId]);
 
   const typeInfo = subItem ? mediaTypes.find((t) => t.key === subItem.parent?.type) : undefined;
   const childLabel = typeInfo?.childLabel ?? "Item";
@@ -123,17 +138,21 @@ export default function SubItemDetail() {
     setSubItem({ ...subItem, hasFile: updated.hasFile, filePath: updated.filePath, quality: updated.quality });
   }
 
+  const searchRequestRef = useRef(0);
   async function runSearch() {
+    const requestId = ++searchRequestRef.current;
     setSearching(true);
     setError(null);
     setResults(null);
     try {
       const res = await api.get<SearchResult[]>(`/search/${mediaId}?subItemId=${subItemId}`);
+      if (searchRequestRef.current !== requestId) return;
       setResults(res);
     } catch (e) {
+      if (searchRequestRef.current !== requestId) return;
       setError((e as Error).message);
     } finally {
-      setSearching(false);
+      if (searchRequestRef.current === requestId) setSearching(false);
     }
   }
 

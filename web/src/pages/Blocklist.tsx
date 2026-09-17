@@ -17,15 +17,23 @@ export default function Blocklist() {
   useEffect(load, []);
 
   async function remove(id: number) {
-    await api.del(`/blocklist/${id}`);
-    setEntries((prev) => prev?.filter((e) => e.id !== id) ?? null);
+    try {
+      await api.del(`/blocklist/${id}`);
+      setEntries((prev) => prev?.filter((e) => e.id !== id) ?? null);
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }
 
   async function clearAll() {
     if (!entries || entries.length === 0) return;
     if (!confirm(`Remove all ${entries.length} blocklist entries? This lets every one of them be grabbed again.`)) return;
-    await api.del("/blocklist");
-    setEntries([]);
+    try {
+      await api.del("/blocklist");
+      setEntries([]);
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }
 
   const { sortRows, sortableHeader } = useSortableTable<BlocklistEntry, "media" | "release" | "reason" | "date">("date", "desc");

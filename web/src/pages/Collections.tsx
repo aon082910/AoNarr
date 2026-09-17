@@ -34,25 +34,33 @@ export default function Collections() {
           addedAfterDays: filterAddedAfterDays ? Number(filterAddedAfterDays) : undefined,
         }
       : undefined;
-    const created = await api.post<Collection>("/collections", {
-      name: name.trim(),
-      description: description || null,
-      smartFilter,
-    });
-    setName("");
-    setDescription("");
-    setIsSmart(false);
-    setFilterType("");
-    setFilterMonitored("");
-    setFilterHasFile("");
-    setFilterAddedAfterDays("");
-    navigate(`/collections/${created.id}`);
+    try {
+      const created = await api.post<Collection>("/collections", {
+        name: name.trim(),
+        description: description || null,
+        smartFilter,
+      });
+      setName("");
+      setDescription("");
+      setIsSmart(false);
+      setFilterType("");
+      setFilterMonitored("");
+      setFilterHasFile("");
+      setFilterAddedAfterDays("");
+      navigate(`/collections/${created.id}`);
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }
 
   async function removeCollection(id: number) {
     if (!confirm("Delete this collection? Media items themselves are not affected.")) return;
-    await api.del(`/collections/${id}`);
-    load();
+    try {
+      await api.del(`/collections/${id}`);
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }
 
   return (

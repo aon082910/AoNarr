@@ -367,6 +367,21 @@ iptvPublicRouter.get(
     const { kind, id } = req.params;
     if (kind !== "media" && kind !== "episode") throw new HttpError(400, "Unknown stream kind");
 
+    // The playlist token is a single, static, instance-wide secret — without confirming the
+    // requested id is actually attached to a currently-enabled playlist, this doubles as a raw
+    // single/episodic-library file server reachable by anyone holding the token, for anything in
+    // the library (including e.g. the adult type), not just what was actually added to a playlist.
+    const onPlaylist = await db
+      .prepare(
+        kind === "media"
+          ? `SELECT 1 FROM iptv_playlist_items pi JOIN iptv_playlists p ON p.id = pi.playlist_id
+             WHERE p.enabled = 1 AND pi.media_item_id = ? LIMIT 1`
+          : `SELECT 1 FROM iptv_playlist_items pi JOIN iptv_playlists p ON p.id = pi.playlist_id
+             WHERE p.enabled = 1 AND pi.episode_id = ? LIMIT 1`
+      )
+      .get(id);
+    if (!onPlaylist) throw new HttpError(404, "No file for this item");
+
     const row =
       kind === "media"
         ? ((await db.prepare("SELECT path AS file_path FROM media_items WHERE id = ?").get(id)) as any)

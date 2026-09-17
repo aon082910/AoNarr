@@ -1,7 +1,7 @@
 import express, { type Express } from "express";
 import cors from "cors";
 import helmet from "helmet";
-import { initDb } from "./db/index.js";
+import { db, initDb } from "./db/index.js";
 import { loadSettingsCache, getSetting } from "./services/settingsStore.js";
 import { loadQualityCaches } from "./services/quality.js";
 import { backfillEpisodicAndCollectionHasFile, backfillMissingAlbumTracks } from "./services/libraryScan.js";
@@ -11,6 +11,8 @@ import { bootstrapAdminFromEnv } from "./services/bootstrapAdmin.js";
 import { applySocksProxySetting } from "./services/socksProxy.js";
 import { generateRequestId, runWithRequestId } from "./services/requestContext.js";
 import { recordHttpRequest } from "./services/httpMetrics.js";
+import { encryptValue, isEncryptedValue } from "./services/encryption.js";
+import { log } from "./services/logger.js";
 
 import { mediaRouter } from "./routes/media.js";
 import { indexersRouter } from "./routes/indexers.js";
@@ -83,6 +85,60 @@ import { themeRouter } from "./routes/theme.js";
 import { friendLibrariesRouter } from "./routes/friendLibraries.js";
 
 /**
+ * download_clients.password/.api_key, irc_feeds.sasl_pass, and ai_providers.api_key live in their
+ * own dedicated tables rather than the generic `settings` table, so settingsStore.ts's own
+ * self-healing re-encryption (loadSettingsCache) never sees them — an install that predates
+ * encryption-at-rest support for these three tables has plaintext rows here. Same idea, scoped to
+ * these instead: read, and if a value isn't already in our encrypted format, encrypt and write it
+ * back, so a stolen/leaked DB backup can't recover it in plaintext from the next boot onward
+ * without anyone re-entering it by hand.
+ */
+async function reencryptLegacyCredentials(): Promise<void> {
+  let count = 0;
+
+  const clients = (await db.prepare("SELECT id, password, api_key FROM download_clients").all()) as {
+    id: number;
+    password: string | null;
+    api_key: string | null;
+  }[];
+  for (const c of clients) {
+    const sets: string[] = [];
+    const values: string[] = [];
+    if (c.password && !isEncryptedValue(c.password)) {
+      sets.push("password = ?");
+      values.push(encryptValue(c.password));
+    }
+    if (c.api_key && !isEncryptedValue(c.api_key)) {
+      sets.push("api_key = ?");
+      values.push(encryptValue(c.api_key));
+    }
+    if (sets.length > 0) {
+      values.push(String(c.id));
+      await db.prepare(`UPDATE download_clients SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+      count++;
+    }
+  }
+
+  const feeds = (await db.prepare("SELECT id, sasl_pass FROM irc_feeds").all()) as { id: number; sasl_pass: string | null }[];
+  for (const f of feeds) {
+    if (f.sasl_pass && !isEncryptedValue(f.sasl_pass)) {
+      await db.prepare("UPDATE irc_feeds SET sasl_pass = ? WHERE id = ?").run(encryptValue(f.sasl_pass), f.id);
+      count++;
+    }
+  }
+
+  const providers = (await db.prepare("SELECT id, api_key FROM ai_providers").all()) as { id: number; api_key: string | null }[];
+  for (const p of providers) {
+    if (p.api_key && !isEncryptedValue(p.api_key)) {
+      await db.prepare("UPDATE ai_providers SET api_key = ? WHERE id = ?").run(encryptValue(p.api_key), p.id);
+      count++;
+    }
+  }
+
+  if (count > 0) log.info(`[encryption] encrypted ${count} legacy plaintext credential(s) at rest`);
+}
+
+/**
  * Builds and returns the fully-initialized Express app (DB ready, settings/quality caches warm,
  * every route registered) WITHOUT starting the HTTP listener or the cron scheduler — split out of
  * index.ts so tests (server/tests/**) can supertest-drive real routes against a real (SQLite or
@@ -92,6 +148,7 @@ import { friendLibrariesRouter } from "./routes/friendLibraries.js";
 export async function createApp(): Promise<Express> {
   await initDb();
   await loadSettingsCache();
+  await reencryptLegacyCredentials();
   await loadQualityCaches();
   await bootstrapAdminFromEnv();
   applySocksProxySetting();

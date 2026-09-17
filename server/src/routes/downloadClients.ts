@@ -5,6 +5,7 @@ import { downloadClientFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { getDownloadClientAdapter, testDownloadClientConnection } from "../services/downloadClient.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
+import { encryptValue } from "../services/encryption.js";
 
 export const downloadClientsRouter = Router();
 downloadClientsRouter.use(requireAdmin);
@@ -37,8 +38,8 @@ downloadClientsRouter.post(
         port: b.port ?? null,
         useSsl: b.useSsl ? 1 : 0,
         username: b.username ?? null,
-        password: b.password ?? null,
-        apiKey: b.apiKey ?? null,
+        password: b.password ? encryptValue(b.password) : null,
+        apiKey: b.apiKey ? encryptValue(b.apiKey) : null,
         category: b.category ?? null,
         enabled: b.enabled === false ? 0 : 1,
         audioOnly: b.audioOnly ? 1 : 0,
@@ -70,13 +71,15 @@ downloadClientsRouter.patch(
     const booleanKeys = new Set(["useSsl", "enabled", "audioOnly"]);
     const sets: string[] = [];
     const values: any[] = [];
+    const secretKeys = new Set(["password", "apiKey"]);
     for (const [key, col] of Object.entries(map)) {
       if (b[key] !== undefined) {
         sets.push(`${col} = ?`);
         // Postgres (like better-sqlite3) rejects binding a raw JS boolean to an INTEGER column —
         // coerce true/false to 1/0 for the handful of columns that are actually booleans
-        // (everything else passes through as-is).
-        values.push(booleanKeys.has(key) ? (b[key] ? 1 : 0) : b[key]);
+        // (everything else passes through as-is). password/apiKey are encrypted at rest, same as
+        // the equivalent settings-table credentials — see services/encryption.ts.
+        values.push(booleanKeys.has(key) ? (b[key] ? 1 : 0) : secretKeys.has(key) && b[key] ? encryptValue(b[key]) : b[key]);
       }
     }
     if (sets.length > 0) {

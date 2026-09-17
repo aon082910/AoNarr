@@ -690,6 +690,9 @@ mediaRouter.get(
     if (allowedTypes && !allowedTypes.includes(item.type)) {
       throw new HttpError(403, "You don't have access to this library");
     }
+    if (req.auth?.user?.maxContentRating && isRatingBlocked(item.contentRating, req.auth.user.maxContentRating)) {
+      throw new HttpError(403, "You don't have access to this item");
+    }
 
     const externalIds = item.externalIds ? JSON.parse(item.externalIds) : {};
     try {
@@ -711,6 +714,9 @@ mediaRouter.get(
     const allowedTypes = allowedTypesFor(req);
     if (allowedTypes && !allowedTypes.includes(item.type)) {
       throw new HttpError(403, "You don't have access to this library");
+    }
+    if (req.auth?.user?.maxContentRating && isRatingBlocked(item.contentRating, req.auth.user.maxContentRating)) {
+      throw new HttpError(403, "You don't have access to this item");
     }
 
     const externalIds = item.externalIds ? JSON.parse(item.externalIds) : {};
@@ -734,6 +740,9 @@ mediaRouter.get(
     const allowedTypes = allowedTypesFor(req);
     if (allowedTypes && !allowedTypes.includes(item.type)) {
       throw new HttpError(403, "You don't have access to this library");
+    }
+    if (req.auth?.user?.maxContentRating && isRatingBlocked(item.contentRating, req.auth.user.maxContentRating)) {
+      throw new HttpError(403, "You don't have access to this item");
     }
 
     const externalIds = item.externalIds ? JSON.parse(item.externalIds) : {};
@@ -764,6 +773,9 @@ mediaRouter.get(
     const allowedTypes = allowedTypesFor(req);
     if (allowedTypes && !allowedTypes.includes(item.type)) {
       throw new HttpError(403, "You don't have access to this library");
+    }
+    if (req.auth?.user?.maxContentRating && isRatingBlocked(item.contentRating, req.auth.user.maxContentRating)) {
+      throw new HttpError(403, "You don't have access to this item");
     }
     if (item.type !== "movie") throw new HttpError(400, "Collections are only available for movies");
 
@@ -809,6 +821,9 @@ mediaRouter.get(
     if (allowedTypes && !allowedTypes.includes(item.type)) {
       throw new HttpError(403, "You don't have access to this library");
     }
+    if (req.auth?.user?.maxContentRating && isRatingBlocked(item.contentRating, req.auth.user.maxContentRating)) {
+      throw new HttpError(403, "You don't have access to this item");
+    }
 
     const externalIds = item.externalIds ? JSON.parse(item.externalIds) : {};
     const url = await fetchTrailerFor(item.type, externalIds).catch(() => null);
@@ -822,11 +837,16 @@ mediaRouter.get(
 mediaRouter.get(
   "/:id/history",
   asyncHandler(async (req, res) => {
-    const row = await db.prepare("SELECT type FROM media_items WHERE id = ?").get(req.params.id);
+    const row = (await db.prepare("SELECT type, content_rating FROM media_items WHERE id = ?").get(req.params.id)) as
+      | { type: string; content_rating: string | null }
+      | undefined;
     if (!row) throw new HttpError(404, "Media item not found");
     const allowedTypes = allowedTypesFor(req);
-    if (allowedTypes && !allowedTypes.includes((row as { type: string }).type)) {
+    if (allowedTypes && !allowedTypes.includes(row.type)) {
       throw new HttpError(403, "You don't have access to this library");
+    }
+    if (req.auth?.user?.maxContentRating && isRatingBlocked(row.content_rating, req.auth.user.maxContentRating)) {
+      throw new HttpError(403, "You don't have access to this item");
     }
     const rows = await db
       .prepare("SELECT * FROM history WHERE media_item_id = ? ORDER BY created_at DESC LIMIT 200")
@@ -1415,17 +1435,26 @@ mediaRouter.get(
       .get(req.params.subItemId, req.params.id)) as any;
     if (!row) throw new HttpError(404, "Sub-item not found");
 
+    // A series/narrator tag can span sub_items under different-type or differently-rated parents
+    // (the whole point of this widget), so siblings need the same library-visibility gate the
+    // parent item itself already went through — otherwise a sibling's title/poster/hasFile leaks
+    // across a type or content-rating boundary the requesting user can't otherwise see.
+    const allowedTypes = allowedTypesFor(req);
+    const maxContentRating = req.auth?.user?.maxContentRating ?? null;
+    const siblingVisible = (s: { type: string; content_rating: string | null }) =>
+      (!allowedTypes || allowedTypes.includes(s.type)) && !(maxContentRating && isRatingBlocked(s.content_rating, maxContentRating));
+
     let series: any[] = [];
     if (row.series_name) {
       const siblingRows = (await db
         .prepare(
-          `SELECT s.id, s.media_item_id, s.title, s.series_position, s.poster_url, s.has_file, m.title AS parent_title
+          `SELECT s.id, s.media_item_id, s.title, s.series_position, s.poster_url, s.has_file, m.title AS parent_title, m.type, m.content_rating
            FROM sub_items s JOIN media_items m ON m.id = s.media_item_id
            WHERE LOWER(s.series_name) = LOWER(?) AND s.id != ?
            ORDER BY s.series_position ASC, s.title ASC`
         )
         .all(row.series_name, row.id)) as any[];
-      series = siblingRows.map((s) => ({
+      series = siblingRows.filter(siblingVisible).map((s) => ({
         id: s.id,
         mediaItemId: s.media_item_id,
         title: s.title,
@@ -1440,13 +1469,13 @@ mediaRouter.get(
     if (row.narrator) {
       const narratorRows = (await db
         .prepare(
-          `SELECT s.id, s.media_item_id, s.title, s.poster_url, s.has_file, m.title AS parent_title
+          `SELECT s.id, s.media_item_id, s.title, s.poster_url, s.has_file, m.title AS parent_title, m.type, m.content_rating
            FROM sub_items s JOIN media_items m ON m.id = s.media_item_id
            WHERE LOWER(s.narrator) = LOWER(?) AND s.id != ?
            ORDER BY s.title ASC`
         )
         .all(row.narrator, row.id)) as any[];
-      byNarrator = narratorRows.map((s) => ({
+      byNarrator = narratorRows.filter(siblingVisible).map((s) => ({
         id: s.id,
         mediaItemId: s.media_item_id,
         title: s.title,

@@ -78,7 +78,11 @@ export type EventKey = (typeof EVENT_KEYS)[number];
 
 function isEventEnabledFor(providerKey: string, event: string): boolean {
   const raw = getSetting(`${providerKey}Events`);
-  if (!raw) return true;
+  // A truly-unset setting (never saved) means "every event" — but an explicitly-saved empty
+  // string means every event was deliberately unchecked, which must NOT also mean "every event"
+  // (the empty-string split below already correctly evaluates to false for a real event key once
+  // this distinguishes the two instead of treating both as falsy).
+  if (raw == null) return true;
   return raw
     .split(",")
     .map((s) => s.trim())

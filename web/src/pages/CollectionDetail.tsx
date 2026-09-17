@@ -35,10 +35,18 @@ export default function CollectionDetail() {
     if (!collection) return;
     const target = index + direction;
     if (target < 0 || target >= collection.items.length) return;
-    const reordered = [...collection.items];
+    const previous = collection.items;
+    const reordered = [...previous];
     [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
     setCollection({ ...collection, items: reordered });
-    await api.put(`/collections/${id}/items/order`, { orderedIds: reordered.map((i) => i.id) });
+    try {
+      await api.put(`/collections/${id}/items/order`, { orderedIds: reordered.map((i) => i.id) });
+    } catch (e) {
+      // Revert the optimistic reorder — without this, a failed save left the UI showing the new
+      // order indefinitely with no error, silently diverging from the server until a full reload.
+      setCollection((prev) => (prev ? { ...prev, items: previous } : prev));
+      alert((e as Error).message);
+    }
   }
 
   async function exportList(format: "m3u" | "json") {
@@ -89,6 +97,7 @@ export default function CollectionDetail() {
           {collection.retentionDays !== null && collection.retentionDays !== -1 && (
             <input
               type="number"
+              key={`retention-${collection.retentionDays}`}
               style={{ width: 80 }}
               defaultValue={collection.retentionDays}
               onBlur={(e) => updateRetention(e.target.value)}

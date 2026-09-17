@@ -144,8 +144,11 @@ export default function AddMedia() {
 
   useEffect(() => {
     setProvider(providers[type]?.[0] ?? "");
-    // A type with no metadata provider (e.g. Courses) can only be added manually.
-    if (activeTypeInfo && !activeTypeInfo.hasMetadataSearch) setManual(true);
+    // A type with no metadata provider (e.g. Courses) can only be added manually; one that does
+    // support search resets back to it — this used to only ever force manual on, never back off,
+    // so switching from a no-search type to a search-capable one left the manual entry form
+    // showing with no obvious reason why the search box had disappeared.
+    setManual(!!activeTypeInfo && !activeTypeInfo.hasMetadataSearch);
   }, [type, providers]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Deep-linked from another page (e.g. Friend Libraries "Add") with a query/type already chosen

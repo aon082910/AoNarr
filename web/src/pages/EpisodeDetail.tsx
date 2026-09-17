@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
@@ -63,10 +63,32 @@ export default function EpisodeDetail() {
   const [aiGuesses, setAiGuesses] = useState<Record<string, string>>({});
   const [aiIdentifying, setAiIdentifying] = useState<string | null>(null);
 
+  // Navigating between episodes (Prev/Next, or browser Back/Forward) reuses this mounted component
+  // — without a request-ordering guard, a slower response for a previous episode could land after a
+  // newer one and overwrite it. The search-results and manual-import-browse panels aren't blocking
+  // overlays here either, so they also need to reset on id change, or a stale result/file list
+  // stays visible (and grabbable/importable) against whatever episode is now showing.
+  const loadRequestRef = useRef(0);
   function load() {
-    api.get<EpisodeDetailResponse>(`/media/${mediaId}/episodes/${episodeId}`).then(setEpisode);
+    const requestId = ++loadRequestRef.current;
+    setEpisode(null);
+    api.get<EpisodeDetailResponse>(`/media/${mediaId}/episodes/${episodeId}`).then((data) => {
+      if (loadRequestRef.current === requestId) setEpisode(data);
+    });
   }
   useEffect(load, [mediaId, episodeId]);
+  useEffect(() => {
+    setResults(null);
+    setError(null);
+    setSearching(false);
+    setShowImport(false);
+    setBrowseEntries([]);
+    setBrowsePath("");
+    setBrowseAnyFolder(false);
+    setBrowseParent(null);
+    setCustomFolderInput("");
+    setAiGuesses({});
+  }, [mediaId, episodeId]);
 
   async function toggleMonitored() {
     if (!episode) return;
@@ -147,17 +169,21 @@ export default function EpisodeDetail() {
     }
   }
 
+  const searchRequestRef = useRef(0);
   async function runSearch() {
+    const requestId = ++searchRequestRef.current;
     setSearching(true);
     setError(null);
     setResults(null);
     try {
       const res = await api.get<SearchResult[]>(`/search/${mediaId}?episodeId=${episodeId}`);
+      if (searchRequestRef.current !== requestId) return;
       setResults(res);
     } catch (e) {
+      if (searchRequestRef.current !== requestId) return;
       setError((e as Error).message);
     } finally {
-      setSearching(false);
+      if (searchRequestRef.current === requestId) setSearching(false);
     }
   }
 

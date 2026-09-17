@@ -4,6 +4,7 @@ import { db } from "../db/index.js";
 import { ircFeedFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { restartIrcFeeds } from "../services/ircFeedManager.js";
+import { encryptValue } from "../services/encryption.js";
 
 export const ircFeedsRouter = Router();
 ircFeedsRouter.use(requireAdmin);
@@ -38,7 +39,7 @@ ircFeedsRouter.post(
         b.useSsl === false ? 0 : 1,
         b.nickname,
         b.saslUser ?? null,
-        b.saslPass ?? null,
+        b.saslPass ? encryptValue(b.saslPass) : null,
         b.channel,
         b.announceRegex,
         b.protocol === "usenet" ? "usenet" : "torrent",
@@ -76,7 +77,8 @@ ircFeedsRouter.patch(
       // "leave unchanged" rather than actually overwriting the real secret with asterisks.
       if (key === "saslPass" && b[key] === "********") continue;
       sets.push(`${col} = ?`);
-      values.push(booleanKeys.has(key) ? (b[key] ? 1 : 0) : b[key]);
+      // Encrypted at rest, same as the equivalent settings-table credentials — see services/encryption.ts.
+      values.push(booleanKeys.has(key) ? (b[key] ? 1 : 0) : key === "saslPass" && b[key] ? encryptValue(b[key]) : b[key]);
     }
     if (sets.length > 0) {
       values.push(req.params.id);

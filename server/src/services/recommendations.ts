@@ -260,8 +260,25 @@ export async function runAutoRequestFromWatchHistory(): Promise<void> {
   const qualityProfileId =
     ((await db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get()) as { id: number } | undefined)?.id ?? null;
 
+  // getRecommendations() can independently surface the same tmdb id twice in one batch — two
+  // different source items both recommending it, or it showing up under both the "added" and
+  // "watched" bases (each computed with its own fresh, unrelated `seen` set) — and this loop used
+  // to insert unconditionally. Re-checked here against the live library and against ids already
+  // inserted earlier in this same run, so a duplicate recommendation can't create two library rows.
+  const alreadyInLibrary = new Map<string, Set<string>>([
+    ["movie", await existingExternalIds("movie", "tmdb")],
+    ["series", await existingExternalIds("series", "tmdb")],
+  ]);
+  const insertedThisRun = new Set<string>();
+
   let added = 0;
   for (const rec of candidates) {
+    const tmdbId = rec.externalIds.tmdb;
+    if (tmdbId) {
+      const key = `${rec.type}:${tmdbId}`;
+      if (alreadyInLibrary.get(rec.type)?.has(tmdbId) || insertedThisRun.has(key)) continue;
+      insertedThisRun.add(key);
+    }
     try {
       const rootFolderId = await autoSelectRootFolderId(rec.type);
       const result = await db

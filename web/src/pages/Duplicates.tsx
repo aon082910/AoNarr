@@ -41,22 +41,30 @@ export default function Duplicates() {
 
   async function toggleItemMonitored(item: DuplicateGroupItem) {
     const nextMonitored = !item.monitored;
-    await api.patch(`/media/${item.id}`, { monitored: nextMonitored ? 1 : 0 });
-    setGroups(
-      (prev) =>
-        prev?.map((g) => ({
-          ...g,
-          items: g.items.map((i) => (i.id === item.id ? { ...i, monitored: nextMonitored } : i)),
-        })) ?? null
-    );
+    try {
+      await api.patch(`/media/${item.id}`, { monitored: nextMonitored ? 1 : 0 });
+      setGroups(
+        (prev) =>
+          prev?.map((g) => ({
+            ...g,
+            items: g.items.map((i) => (i.id === item.id ? { ...i, monitored: nextMonitored } : i)),
+          })) ?? null
+      );
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }
 
   async function dismiss(g: DuplicateGroup) {
     if (!confirm(`Mark "${g.title}"${g.year ? ` (${g.year})` : ""} as not a duplicate? Both items stay in your library untouched, and this group won't be flagged again.`)) {
       return;
     }
-    await api.post("/duplicates/dismiss", { key: g.key });
-    setGroups((prev) => prev?.filter((group) => group.key !== g.key) ?? null);
+    try {
+      await api.post("/duplicates/dismiss", { key: g.key });
+      setGroups((prev) => prev?.filter((group) => group.key !== g.key) ?? null);
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }
 
   async function merge(g: DuplicateGroup) {

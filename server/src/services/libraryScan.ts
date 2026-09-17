@@ -374,9 +374,20 @@ async function scanAndImportLibraryInner(
         const mediaInfo = isProbeableFile(filePath) ? await probeMediaInfo(filePath) : null;
         const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
         const existingEp = (await db
-          .prepare("SELECT id FROM episodes WHERE media_item_id = ? AND season_number = ? AND episode_number = ?")
-          .get(seriesMatch.id, season, episode)) as { id: number } | undefined;
-        if (existingEp) {
+          .prepare("SELECT id, has_file, file_path FROM episodes WHERE media_item_id = ? AND season_number = ? AND episode_number = ?")
+          .get(seriesMatch.id, season, episode)) as { id: number; has_file: number; file_path: string | null } | undefined;
+        if (existingEp?.has_file && existingEp.file_path !== filePath) {
+          // Already has a different file — same reasoning as the "single" shape branch below:
+          // leave the already-tracked file alone rather than silently repointing the episode at
+          // an unrelated second file (a leftover sample, a stray duplicate) that merely parses to
+          // the same season/episode.
+          result.skipped++;
+          result.skippedFiles.push({
+            path: filePath,
+            reason: `matched existing episode S${season}E${episode} which already has a file — left in place rather than duplicating or overwriting`,
+          });
+          continue;
+        } else if (existingEp) {
           await db
             .prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?")
             .run(filePath, quality, mediaInfoJson, existingEp.id);
@@ -476,7 +487,16 @@ async function scanAndImportLibraryInner(
           const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
 
           const childMatch = childSubItems.find((s) => titlesMatch(s.title, childTitle));
-          if (childMatch) {
+          if (childMatch?.has_file && childMatch.file_path !== filePath) {
+            // Same reasoning as the episodic and "single" shape branches — don't clobber an
+            // already-tracked file with an unrelated second file that merely guesses the same title.
+            result.skipped++;
+            result.skippedFiles.push({
+              path: filePath,
+              reason: `matched existing "${childMatch.title}" which already has a file — left in place rather than duplicating or overwriting`,
+            });
+            continue;
+          } else if (childMatch) {
             await db
               .prepare("UPDATE sub_items SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?")
               .run(filePath, quality, mediaInfoJson, childMatch.id);

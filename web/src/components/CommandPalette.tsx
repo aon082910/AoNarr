@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.js";
+import { openModals } from "./Modal.js";
 
 interface Command {
   label: string;
@@ -49,6 +50,22 @@ export default function CommandPalette() {
     return commands.filter((c) => c.label.toLowerCase().includes(needle));
   }, [commands, query]);
 
+  // Shares Modal.tsx's own open-dialog stack so Escape only closes whichever is actually on top —
+  // without this, opening the palette (Ctrl/Cmd+K works globally, even over an open Modal-based
+  // dialog) and pressing Escape closed both simultaneously, since each reacted to it independently.
+  const layerRef = useRef<symbol | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const layer = Symbol("command-palette");
+    layerRef.current = layer;
+    openModals.push(layer);
+    return () => {
+      const idx = openModals.indexOf(layer);
+      if (idx !== -1) openModals.splice(idx, 1);
+      layerRef.current = null;
+    };
+  }, [open]);
+
   useEffect(() => {
     function isTypingTarget(el: EventTarget | null): boolean {
       if (!(el instanceof HTMLElement)) return false;
@@ -62,6 +79,7 @@ export default function CommandPalette() {
         return;
       }
       if (e.key === "Escape" && open) {
+        if (openModals[openModals.length - 1] !== layerRef.current) return;
         setOpen(false);
         return;
       }

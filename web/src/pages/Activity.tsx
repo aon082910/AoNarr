@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, getApiKey, getSessionToken } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import type { QueueItem, Quality } from "../types.js";
@@ -126,7 +126,12 @@ export default function Activity() {
     }
   }
 
+  // Guards against opening manual-import for one queue item, then quickly for another before the
+  // first's candidate list has loaded — without this, a slow response for the first request could
+  // land after the second and overwrite its (correctly labeled) modal with the first item's files.
+  const manualImportRequestRef = useRef(0);
   function openManualImport(item: QueueItem) {
+    const requestId = ++manualImportRequestRef.current;
     setManualImportFor(item);
     setCandidates(null);
     setCandidatesError(null);
@@ -134,8 +139,12 @@ export default function Activity() {
     if (qualities.length === 0) api.get<Quality[]>("/qualities").then(setQualities);
     api
       .get<ImportCandidate[]>(`/activity/queue/${item.id}/import-candidates`)
-      .then(setCandidates)
-      .catch((e) => setCandidatesError((e as Error).message));
+      .then((c) => {
+        if (manualImportRequestRef.current === requestId) setCandidates(c);
+      })
+      .catch((e) => {
+        if (manualImportRequestRef.current === requestId) setCandidatesError((e as Error).message);
+      });
   }
 
   async function manualImport(sourceFile: string) {

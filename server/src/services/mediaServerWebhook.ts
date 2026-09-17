@@ -121,17 +121,23 @@ export async function syncWatchStatusFromMediaServer(): Promise<{ recorded: numb
     const episode = !item ? episodesByTail.get(tail) : undefined;
     const subItem = !item && !episode ? subItemsByTail.get(tail) : undefined;
 
+    // The cursor only advances past a file once it's actually matched and recorded — a file
+    // watched before AoNarr imported/matched it must stay eligible for a later run to pick up once
+    // it *is* matched, rather than being permanently excluded by a cursor that moved past its
+    // timestamp on a run where it happened to still be unmatched.
     if (item) {
       await db.prepare("INSERT INTO watch_events (media_item_id) VALUES (?)").run(item.id);
       recorded++;
+      if (file.lastPlayedAt > maxSeen) maxSeen = file.lastPlayedAt;
     } else if (episode) {
       await db.prepare("INSERT INTO watch_events (media_item_id, episode_id) VALUES (?, ?)").run(episode.media_item_id, episode.id);
       recorded++;
+      if (file.lastPlayedAt > maxSeen) maxSeen = file.lastPlayedAt;
     } else if (subItem) {
       await db.prepare("INSERT INTO watch_events (media_item_id, sub_item_id) VALUES (?, ?)").run(subItem.media_item_id, subItem.id);
       recorded++;
+      if (file.lastPlayedAt > maxSeen) maxSeen = file.lastPlayedAt;
     }
-    if (file.lastPlayedAt > maxSeen) maxSeen = file.lastPlayedAt;
   }
 
   setSetting("watchStatusSyncLastRunAt", maxSeen.toISOString());

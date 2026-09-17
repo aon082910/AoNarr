@@ -7,6 +7,12 @@ import { isValidMediaType } from "../services/mediaTypes.js";
 
 export const libraryViewsRouter = Router();
 
+/** Restricted users only see the library types an admin has granted them; admins see everything. */
+function allowedTypesFor(req: import("express").Request): string[] | null {
+  if (req.auth?.isAdmin) return null;
+  return req.auth?.user?.allowedTypes ?? [];
+}
+
 /** Saved sort/filter/column combinations for a library page — shared instance-wide (same model
  * as quality profiles/custom formats) rather than per-user, so a household agrees on and reuses
  * the same named views instead of everyone keeping their own private set. */
@@ -15,6 +21,10 @@ libraryViewsRouter.get(
   asyncHandler(async (req, res) => {
     const mediaType = req.query.mediaType as string | undefined;
     if (!mediaType || !isValidMediaType(mediaType)) throw new HttpError(400, "A valid mediaType is required");
+    const allowedTypes = allowedTypesFor(req);
+    if (allowedTypes && !allowedTypes.includes(mediaType)) {
+      throw new HttpError(403, "You don't have access to this library");
+    }
     const rows = await db.prepare("SELECT * FROM saved_library_views WHERE media_type = ? ORDER BY name").all(mediaType);
     res.json(rows.map(savedLibraryViewFromRow));
   })

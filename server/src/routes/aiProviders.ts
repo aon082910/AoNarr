@@ -4,6 +4,7 @@ import { db } from "../db/index.js";
 import { aiProviderFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { queryAi } from "../services/aiClient.js";
+import { encryptValue } from "../services/encryption.js";
 
 export const aiProvidersRouter = Router();
 aiProvidersRouter.use(requireAdmin);
@@ -33,7 +34,7 @@ aiProvidersRouter.post(
 
     const result = await db
       .prepare(`INSERT INTO ai_providers (name, type, base_url, api_key, model, enabled, is_default) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(b.name, b.type, b.baseUrl.replace(/\/+$/, ""), b.apiKey ?? null, b.model, b.enabled ?? 1, b.isDefault ? 1 : 0);
+      .run(b.name, b.type, b.baseUrl.replace(/\/+$/, ""), b.apiKey ? encryptValue(b.apiKey) : null, b.model, b.enabled ?? 1, b.isDefault ? 1 : 0);
     const row = await db.prepare("SELECT * FROM ai_providers WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(aiProviderFromRow(row));
   })
@@ -60,7 +61,15 @@ aiProvidersRouter.patch(
     for (const [key, col] of Object.entries(map)) {
       if (b[key] === undefined) continue;
       sets.push(`${col} = ?`);
-      values.push(key === "baseUrl" ? String(b[key]).replace(/\/+$/, "") : key === "isDefault" ? (b[key] ? 1 : 0) : b[key]);
+      values.push(
+        key === "baseUrl"
+          ? String(b[key]).replace(/\/+$/, "")
+          : key === "isDefault"
+          ? (b[key] ? 1 : 0)
+          : key === "apiKey" && b[key]
+          ? encryptValue(b[key])
+          : b[key]
+      );
     }
     if (sets.length > 0) {
       values.push(req.params.id);
@@ -88,9 +97,10 @@ aiProvidersRouter.post(
   asyncHandler(async (req, res) => {
     const row = (await db.prepare("SELECT * FROM ai_providers WHERE id = ?").get(req.params.id)) as any;
     if (!row) throw new HttpError(404, "AI provider not found");
+    const provider = aiProviderFromRow(row);
     try {
       const reply = await queryAi(
-        { type: row.type, baseUrl: row.base_url, apiKey: row.api_key, model: row.model },
+        { type: provider.type, baseUrl: provider.baseUrl, apiKey: provider.apiKey, model: provider.model },
         "Reply with exactly one word: OK"
       );
       res.json({ ok: true, reply: reply.trim().slice(0, 200) });

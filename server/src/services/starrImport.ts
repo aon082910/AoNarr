@@ -6,7 +6,7 @@ import {
   externalIdsOverlap,
   importMovieItems,
   importSeriesData,
-  titlesMatch,
+  exactTitlesMatch,
   type MediaServerImportResult,
   type MediaServerSeriesImportResult,
 } from "./mediaServerImport.js";
@@ -372,7 +372,7 @@ async function importCollectionData(
       } catch {
         externalIds = {};
       }
-      return externalIdsOverlap(externalIds, info.externalIds) || titlesMatch(m.title, info.title);
+      return externalIdsOverlap(externalIds, info.externalIds) || exactTitlesMatch(m.title, info.title);
     });
 
     if (match) {

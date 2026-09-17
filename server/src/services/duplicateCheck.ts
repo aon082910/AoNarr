@@ -199,8 +199,11 @@ const REASSIGN_TABLES = ["queue", "history", "corrupt_media_review", "share_link
  *   own; any other loser file is left on disk (deleteFiles: true recycles it) rather than guessing
  *   which file is "better" and silently overwriting.
  * - "episodic"/"collection": a loser's episode/sub-item moves to the keeper unless the keeper
- *   already has one at that season+episode / that title — a colliding loser child is left alone
- *   (and its file, if deleteFiles) rather than picked between automatically.
+ *   already has one at that season+episode / that title — a colliding loser child's file is left
+ *   on disk untouched (recycled instead if deleteFiles) rather than picked between automatically.
+ *   Its own row is not spared, though: once the loser's media_items row is deleted below, the
+ *   collided episode/sub_item row goes with it via ON DELETE CASCADE, so AoNarr stops tracking
+ *   that file even when its bytes were deliberately left alone.
  */
 export async function mergeMediaItems(keeperId: number, loserIds: number[], deleteFiles: boolean): Promise<{ merged: number }> {
   const ids = [...new Set(loserIds)].filter((id) => id !== keeperId);

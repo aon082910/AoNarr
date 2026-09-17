@@ -3,6 +3,210 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 227 — second full-codebase bug audit: ~50 fixes across security, data integrity, and the UI
+Seven parallel exhaustive read-throughs (media-pipeline services, downloads/search/quality
+services, integrations/infra services, routes A + the DB layer, routes B, and two web-frontend
+halves), each finding independently verified against source — and for the security-relevant ones,
+against a live restricted-account/token test on the rebuilt local Docker stack — before being
+touched. This is a second pass on top of Round 225/226, so most of what's left here is subtler:
+cross-file inconsistencies, race conditions, and edge cases the first pass's broader sweep missed.
+
+**Security / access control**
+- Six per-item routes (`/:id/cast`, `/alternate-titles`, `/ratings`, `/collection`, `/trailer`,
+  `/history`) checked library-type access but not content rating, unlike `GET /:id` itself — a
+  restricted user's blocked R-rated movie still leaked its cast, trailer, ratings, and grab history
+  through these siblings. Now gated identically (`routes/media.ts`).
+- The series/narrator sibling widget on the sub-item detail page (audiobook/book series, shared
+  audiobook narrators) had no type/rating filter at all, leaking a sibling's title/poster/hasFile
+  across a library boundary the requesting user couldn't otherwise see (`routes/media.ts`).
+- Approving a request never checked whether the title was already in the library — a household
+  member's request for something an admin had already added directly silently created a second,
+  independently-monitored duplicate. Now checks (and 409s with the match, same as `POST /media`,
+  overridable with `confirmDuplicate`); auto-approve leaves the request pending instead of guessing
+  (`routes/requests.ts`).
+- Per-user TOTP `/setup` (when 2FA is already enabled) and `/disable` only required a valid session
+  token — a hijacked token alone (XSS, a leaked/shared session) could silently re-key or strip 2FA
+  from an account, defeating the entire point of a second factor surviving a token compromise. Both
+  now require the current TOTP code, matching what the client already collects and sends
+  (`routes/authRoutes.ts`).
+- `GET /api/library-views` had no library-type scoping — a restricted user could enumerate saved
+  view names/filters for a library type they have no access to (`routes/libraryViews.ts`).
+- OPDS's `GET /item/:id` and both download endpoints never checked the item's own type against the
+  four documented OPDS-eligible types — the shared OPDS token doubled as a raw file server for
+  Music/Video/Podcast/Course (and any other type), not just books/comics/audiobooks
+  (`routes/opds.ts`).
+- IPTV's `/stream/:kind/:id` served any single/episodic library item by raw id with no check that it
+  was actually attached to an enabled playlist — the shared playlist token could stream anything in
+  the library, including an `adult`-type item never added to any playlist (`routes/iptv.ts`).
+- Dashboard `/library-counts` and `/library-sizes` filtered by library type but not content rating,
+  unlike every other route in the file — a restricted user's per-type counts/disk-usage included
+  rating-blocked items they can't actually browse (`routes/dashboard.ts`).
+- `GET /api/settings/` returned the live per-instance TOTP secret/pending-secret in plaintext to any
+  admin session — unlike every other credential type here, this one exists specifically to survive
+  a compromise of that same admin session, so exposing it defeated the point. Now excluded from the
+  generic settings dump (`routes/settings.ts`).
+- The actor/person credits page cross-referenced the library with no type/rating filter, revealing
+  "in your library" for a title a restricted user isn't allowed to see (`routes/people.ts`).
+- A user's library-access grant (`POST`/`PATCH /users`) deleted and re-inserted access rows outside
+  a transaction — a DB error mid-loop could leave a user's access deleted but only partially
+  restored. Now wrapped in `db.transaction()` (`routes/users.ts`).
+- Encryption-at-rest (AES-256-GCM, same mechanism as the `settings` table) extended to
+  `download_clients.password`/`.api_key`, `irc_feeds.sasl_pass`, and `ai_providers.api_key` — these
+  live in their own tables rather than `settings`, so they were never covered by the existing
+  encryption despite carrying real credentials. A startup migration re-encrypts any legacy plaintext
+  rows automatically, same self-healing pattern as the settings-table fix
+  (`app.ts`, `db/mappers.ts`, `routes/downloadClients.ts`, `routes/aiProviders.ts`,
+  `routes/ircFeeds.ts`, `services/ircFeedManager.ts`, `services/aiIdentify.ts`) — verified live: a
+  plaintext credential inserted directly into the DB was automatically re-encrypted on the next
+  boot, and the API still round-trips the correct decrypted value back to the admin.
+
+**Data integrity / silent misbehavior**
+- Scan & Import's episodic and single-file-per-child branches looked up an existing episode/item by
+  id only and unconditionally overwrote its `has_file`/`file_path` — unlike the sibling "single"
+  shape branch, which already skips rather than clobbers. A stray duplicate or sample file that
+  merely parsed to the same season/episode silently repointed AoNarr's record at the wrong file,
+  orphaning the real one. Now skips and logs, matching the "single" shape's existing behavior
+  (`services/libraryScan.ts`).
+- Migrating a Lidarr/Readarr library (artist/author matching) used a substring-tolerant title match
+  with no year to gate it — the exact class of bug `libraryScan.ts`'s own `titlesMatch` was made
+  exact-only to fix, reintroduced here for Music/Books imports. Added an exact-match variant and
+  switched Starr's artist/author resolution to it (`services/mediaServerImport.ts`,
+  `services/starrImport.ts`).
+- Cross-filesystem archive moves (`/config` vs `/media` in Docker) fell back to a fully synchronous
+  copy, blocking the entire event loop — every user's request stalls for as long as a multi-GB
+  archive move takes. `recycleBin.ts` was already fixed for this exact issue; `archival.ts` wasn't.
+  Now uses the same async `fsp.cp`/`fsp.rm` pattern (`services/archival.ts`).
+- The recycle bin's move/purge/restore path used `copyFile`/`unlink`, which throw on a directory —
+  Music's `sub_items.file_path` is a directory, so recycling/deleting/restoring an album silently
+  failed (swallowed as "already gone") and orphaned it on disk untracked. Now uses `fsp.cp`/`fsp.rm`
+  with `recursive: true`, which handles both files and directories (`services/recycleBin.ts`).
+- The media-server mismatch check (Settings → System health) only ever queried `movie`/`series`,
+  silently reporting zero mismatches for anime/sports/ppv/adult libraries regardless of actual state
+  — now covers every single/episodic-shape type (`services/libraryValidation.ts`).
+- `media_items.size_bytes`, `queue.size`, and `recycle_bin.size_bytes` were never `Number()`-wrapped
+  like every other aggregate in this codebase — under the Postgres driver, node-pg returns a BIGINT
+  column as a JS string, silently turning size arithmetic into string concatenation
+  (`db/mappers.ts`, `routes/recycleBin.ts`).
+- Season/episode zero-padding in Wanted/Calendar labels broke for a season or episode numbered 100+
+  (some long-running anime number this way), rendering e.g. "E100" as "E00" (`routes/wanted.ts`).
+- The hand-rolled SMTP client had no socket timeout at all — a mail host that accepts the TCP
+  connection but never replies hung `sendEmail()` forever, and since `scheduler.ts`'s `grab()`
+  awaits the notification synchronously, one unreachable SMTP host wedged the entire grab pipeline,
+  not just email. Added a 30s idle timeout (`services/smtp.ts`). The IRC client had the same gap for
+  a connection that goes silent without ever closing — added a 10-minute idle timeout, well past any
+  compliant ircd's own keepalive interval (`services/ircClient.ts`).
+- "Because you watched X" auto-request could recommend the same tmdb id twice in one batch (two
+  source items both recommending it, or it appearing under both the "added" and "watched" bases,
+  each computed with its own unrelated dedup set) and inserted it as two separate library rows with
+  no existence check. Now re-checked against the live library and against ids already inserted
+  earlier in the same run (`services/recommendations.ts`).
+- The watch-status sync cursor advanced past every watched file's timestamp regardless of whether it
+  matched anything in the library — a title watched before AoNarr imported/matched it permanently
+  lost its watch event once the cursor moved past that timestamp. Now only advances past a file once
+  it's actually matched and recorded (`services/mediaServerWebhook.ts`).
+- TorBox and AllDebrid download-client adapters polled a stuck/dead torrent forever — the shared
+  `DEBRID_POLL_TIMEOUT_MS` deadline was only enforced in RealDebrid's own poll loop. Both now enforce
+  it too (`services/downloadClient.ts`).
+- A custom format's "size" condition returned a hardcoded `false` when size was unknown, ignoring
+  `negate` — every other condition type correctly inverts under `negate`, per the function's own
+  documented contract. Reachable from IRC auto-grab (which never knows size upfront) and the Custom
+  Format tester (`services/customFormatScoring.ts`).
+- Merging an audiobook's tracks into one M4B didn't clean up the partial output file if ffmpeg
+  failed or hit its 30-minute timeout, leaving an orphaned (possibly corrupt) file in the library
+  folder (`services/audiobookConvert.ts`).
+- The SOCKS5 proxy's TLS connector left a stale `error` listener attached after a successful
+  handshake — an unrelated later socket reset (e.g. an idle keep-alive connection dropped by the
+  proxy) could re-invoke the undici connector callback a second time, undefined behavior for a
+  contract that requires exactly one call (`services/socksProxy.ts`).
+- The pre-restore SQLite safety snapshot never checkpointed the WAL before copying the file — in WAL
+  mode, recently-committed transactions can live only in `-wal` until the next automatic checkpoint,
+  so the snapshot taken just before a restore could miss them (`routes/system.ts`).
+- `duplicateCheck.ts`'s `mergeMediaItems` doc comment inaccurately described a colliding child's
+  fate — its file is left alone, but its own DB row is still lost via `ON DELETE CASCADE` once the
+  loser is deleted, even when `deleteFiles` is false. Comment corrected to describe actual behavior.
+
+**Frontend**
+- `MediaDetail.tsx`'s inline edit-metadata/artwork/move/split panels (unlike Manual Import and
+  Search Results, these render inline rather than in a blocking Modal) didn't reset when navigating
+  to a different item via a collection/sibling link — editing Movie A's metadata, then clicking a
+  sibling to Movie B without closing the panel, silently saved A's stale fields onto B on submit.
+  `load()` and `runSearch()` also had no stale-response guard, so a slow response for a previous
+  item could land after a newer one and show/grab against the wrong item. All now reset on item
+  change and guard against stale responses. `SubItemDetail.tsx` and `EpisodeDetail.tsx` had the same
+  gaps for their own search-results (and, for episodes, the manual-import browse) panels — fixed the
+  same way.
+- `LibraryType.tsx`: the poster grid's Unreleased/Missing banner parsed a date-only release date as
+  UTC midnight, shifting the boundary by the viewer's UTC offset (the same class of bug already
+  fixed in Calendar.tsx/Dashboard.tsx) — now compares local calendar days. The content-rating filter
+  wasn't reset when switching library type, so a filter like "R" carried over and silently emptied a
+  library with no matching ratings. The scroll-restore-on-Back guard was a single boolean that
+  latched permanently true on its first use, silently disabling scroll restoration for every other
+  library type visited afterward in the same session — now tracked per URL.
+- Unchecking the last enabled event for a notification provider snapped every checkbox straight back
+  to checked — both the frontend's read side and the server's `isEventEnabledFor` treated "no
+  preference, saved as empty string" and "explicitly zero events" as the same falsy value. Fixed on
+  both sides so an explicitly-empty selection actually means "send nothing," not "send everything"
+  (`components/SettingsProviderTiles.tsx`, `services/notifications.ts`).
+- AI Providers' "Test connection" always tested the persisted row, never the form's current values —
+  editing a wrong Base URL and testing before saving silently verified the old value. Now saves the
+  form first (`pages/AiProviders.tsx`).
+- Remote Library: switching the selected instance reset the type filter (Round 226) but not the
+  stale item grid/error from the previous instance, which stayed on screen with no indication it was
+  stale (`pages/RemoteLibrary.tsx`).
+- Opening Manual Import for two different queue items in quick succession could show/import the
+  wrong file if the first request resolved after the second (`pages/Activity.tsx`).
+- Dashboard's six parallel widget requests had no `.catch()` — one failure rendered every widget as
+  legitimately empty with no indication anything failed. Now surfaces a visible error banner
+  (`pages/Dashboard.tsx`).
+- Media Analyzer didn't clear stale data or surface an error on a failed reload after switching
+  library type, silently showing the previous type's stats/file list (`pages/MediaAnalyzer.tsx`).
+- Watchlist Import's single-title form was cleared even when the import failed, forcing a retype to
+  retry (`pages/WatchlistImport.tsx`).
+- Download Clients' Delete closed the modal unconditionally regardless of whether the delete
+  actually succeeded, and Add/Edit had no error handling at all (`pages/DownloadClients.tsx`).
+- System's "Delete all unmonitored" bulk action had no error handling or busy guard — one failure
+  mid-loop left already-deleted items still listed with no indication, and re-clicking re-attempted
+  deletes on rows already gone. Now removes items as each delete actually succeeds, disables the
+  button while running, and reports any failures (`pages/System.tsx`).
+- Reordering collection items optimistically updated the UI with no rollback on failure, silently
+  diverging from the server until a full reload (`pages/CollectionDetail.tsx`).
+- Switching Add Media's Type dropdown to one that supports metadata search didn't exit manual-entry
+  mode if a previous no-search type had forced it on (`pages/AddMedia.tsx`).
+- Global Search had no guard against overlapping searches — re-searching (e.g. via a "Recent" badge)
+  while a slower metadata-provider fetch was still in flight could show a stale query's "Add new"
+  results (`pages/GlobalSearch.tsx`). Settings' Format Scores tile had the same gap when rapidly
+  switching the quality-profile dropdown (`pages/Settings.tsx`).
+- Import Review's apply-match flow made two sequential POSTs with no error handling — if the import
+  succeeded but marking it resolved failed, retrying the same match would create a duplicate library
+  item with no warning (`pages/ImportReview.tsx`).
+- Comparing friend libraries in quick succession had the same overlapping-request gap, letting a
+  stale comparison overwrite a newer one (`pages/FriendLibraries.tsx`).
+- Three retention/query-limit inputs (Settings tags, Collection detail, Indexers) used an
+  uncontrolled input with no `key` tied to the underlying value, unlike the correct pattern already
+  used in `ImportLists.tsx` — an externally-changed value (a second admin, an MCP call) kept
+  showing the stale one until manually edited.
+- The What's New page's minimal markdown renderer never handled inline `**bold**` or `` `code` ``
+  spans, showing literal asterisks/backticks across nearly every bullet point in the real changelog
+  content (`pages/Changelog.tsx`).
+- The command palette (Ctrl/Cmd+K) had its own independent Escape handler, so opening it over an
+  already-open Modal-based dialog and pressing Escape closed both at once. Now shares `Modal.tsx`'s
+  own dialog stack so only the topmost overlay reacts (`components/CommandPalette.tsx`,
+  `components/Modal.tsx`).
+- The router had no catch-all route — a mistyped/bookmarked URL, or a household account following a
+  link to an admin-only page (whose `<Route>` isn't even registered for them), rendered a blank
+  content area with no redirect (`App.tsx`).
+- Added missing error handling to several admin actions that previously failed silently with no
+  feedback: Blocklist remove/clear-all, Duplicates monitor-toggle/dismiss, Jobs run-now/cancel, IRC
+  Feeds remove, Collections create/delete, and Requests approve/reject/cancel (which also now
+  handles the new duplicate-request 409 the same way the request-submission form already did).
+
+Verified: `tsc --noEmit` clean on both packages, 91/91 server tests passing, plus a live
+restricted-account/token pass on the rebuilt local Docker stack covering every access-control fix
+above (all six per-item rating gates, dashboard counts/sizes, OPDS/IPTV token scoping in both
+directions, TOTP setup/disable rejection, the settings TOTP-secret exclusion, the request
+duplicate-check and its override, and the encryption-at-rest round-trip including the legacy-
+plaintext migration).
+
 ## Round 226 — clean up Round 225's deferred low-priority findings
 The five findings flagged LOW severity/confidence at the end of Round 225's audit and deliberately
 left open — closed out:

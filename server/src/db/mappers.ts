@@ -1,5 +1,14 @@
 /** better-sqlite3 returns raw column names (snake_case); map rows to the camelCase API types. */
 
+import { decryptValue } from "../services/encryption.js";
+
+/** decryptValue() already returns a value unchanged if it isn't in the encrypted format, so this
+ * is safe to call on a column that predates encryption-at-rest support for it — just needs the
+ * null-guard decryptValue itself doesn't do. */
+function decryptIfSet(value: string | null): string | null {
+  return value ? decryptValue(value) : value;
+}
+
 export function mediaItemFromRow(row: any) {
   return {
     id: row.id,
@@ -29,7 +38,10 @@ export function mediaItemFromRow(row: any) {
     backdropUrl: row.backdrop_url,
     rating: row.rating,
     runtimeMinutes: row.runtime_minutes,
-    sizeBytes: row.size_bytes,
+    // node-pg returns a BIGINT column as a JS string, not a number — better-sqlite3 doesn't, but
+    // wrapping unconditionally is safe for both and matches every COUNT()/SUM() elsewhere in the
+    // codebase that has to do the same thing under the Postgres driver.
+    sizeBytes: row.size_bytes == null ? null : Number(row.size_bytes),
     studio: row.studio,
   };
 }
@@ -123,8 +135,8 @@ export function downloadClientFromRow(row: any) {
     port: row.port,
     useSsl: row.use_ssl,
     username: row.username,
-    password: row.password,
-    apiKey: row.api_key,
+    password: decryptIfSet(row.password),
+    apiKey: decryptIfSet(row.api_key),
     category: row.category,
     enabled: row.enabled,
     audioOnly: row.audio_only,
@@ -166,7 +178,8 @@ export function queueItemFromRow(row: any) {
     indexerId: row.indexer_id,
     downloadClientId: row.download_client_id,
     downloadId: row.download_id,
-    size: row.size,
+    // Same BIGINT-returned-as-string-under-Postgres concern as media_items.size_bytes above.
+    size: row.size == null ? null : Number(row.size),
     quality: row.quality,
     status: row.status,
     progress: row.progress,
@@ -386,7 +399,7 @@ export function aiProviderFromRow(row: any) {
     name: row.name,
     type: row.type,
     baseUrl: row.base_url,
-    apiKey: row.api_key,
+    apiKey: decryptIfSet(row.api_key),
     model: row.model,
     enabled: row.enabled,
     isDefault: row.is_default,

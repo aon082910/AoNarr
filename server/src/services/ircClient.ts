@@ -56,6 +56,12 @@ export class IrcConnection {
     this.socket = socket;
 
     socket.setEncoding("utf-8");
+    // A generous idle timeout — well past any compliant ircd's own keepalive PING interval
+    // (typically a few minutes, already handled by the PING/PONG reply in handleLine) — so a
+    // connection that accepts the TCP handshake but then goes completely silent, with no error and
+    // no close event, gets force-reconnected instead of sitting dead forever unnoticed.
+    socket.setTimeout(10 * 60 * 1000);
+    socket.once("timeout", () => socket.destroy());
     // A TLSSocket emits both 'connect' and 'secureConnect' — registering on either would run the
     // handshake twice (duplicate CAP REQ/NICK/USER), which strict ircds reject.
     socket.on(useSsl ? "secureConnect" : "connect", () => this.onConnect());

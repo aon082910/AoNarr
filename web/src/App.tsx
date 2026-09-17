@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
-import { NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { api } from "./api/client.js";
 import Dashboard from "./pages/Dashboard.js";
 import Onboarding, { shouldShowOnboarding } from "./pages/Onboarding.js";
@@ -566,6 +566,10 @@ export default function App() {
           {isAdmin && <Route path="/api-docs" element={<ApiDocs />} />}
           {isAdmin && <Route path="/remote-library" element={<RemoteLibrary />} />}
           {isAdmin && <Route path="/friend-libraries" element={<FriendLibraries />} />}
+          {/* Catches a mistyped/bookmarked URL and, since an admin-only Route above isn't even
+              registered for a non-admin, a household account following a link to one — both
+              otherwise rendered a blank content area next to a normal-looking sidebar. */}
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         </Suspense>
       </main>

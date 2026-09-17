@@ -30,7 +30,7 @@ export function isRecycleBinEnabled(): boolean {
 export async function recycleFile(filePath: string, mediaType: string, title: string, mediaItemId: number | null): Promise<void> {
   if (!isRecycleBinEnabled()) {
     try {
-      await fsp.unlink(filePath);
+      await fsp.rm(filePath, { recursive: true, force: true });
     } catch {
       // already gone — fine
     }
@@ -53,7 +53,7 @@ export async function recycleFile(filePath: string, mediaType: string, title: st
   } catch (err) {
     log.warn(`[recycleBin] failed to recycle "${filePath}", deleting instead:`, (err as Error).message);
     try {
-      await fsp.unlink(filePath);
+      await fsp.rm(filePath, { recursive: true, force: true });
     } catch {
       // already gone
     }
@@ -71,8 +71,10 @@ async function moveFileAsync(src: string, dest: string): Promise<void> {
     await fsp.rename(src, dest);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
-    await fsp.copyFile(src, dest);
-    await fsp.unlink(src);
+    // fsp.cp handles both a single file and a directory (Music's sub_items.file_path is a
+    // directory) — fsp.copyFile alone would throw EISDIR on a directory and leave it stranded.
+    await fsp.cp(src, dest, { recursive: true });
+    await fsp.rm(src, { recursive: true, force: true });
   }
 }
 
@@ -109,7 +111,7 @@ export async function purgeRecycleBinEntry(id: number): Promise<void> {
   if (!row) return;
   if (row.restoring) throw new Error("This item is being restored — wait for that to finish first");
   try {
-    fs.unlinkSync(row.recycle_path);
+    fs.rmSync(row.recycle_path, { recursive: true, force: true });
   } catch {
     // already gone
   }

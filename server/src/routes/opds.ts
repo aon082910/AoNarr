@@ -186,6 +186,7 @@ opdsPublicRouter.get(
 
     const parent = (await db.prepare("SELECT id, title, type FROM media_items WHERE id = ?").get(req.params.id)) as any;
     if (!parent) throw new HttpError(404, "Item not found");
+    if (!(OPDS_TYPES as readonly string[]).includes(parent.type)) throw new HttpError(400, "Not an OPDS-eligible library type");
     const typeConfig = getMediaTypeConfig(parent.type);
 
     let xml = feedHeader(
@@ -244,8 +245,16 @@ opdsPublicRouter.get(
   "/download/subitem/:id",
   asyncHandler(async (req, res) => {
     checkToken(req);
-    const row = (await db.prepare("SELECT file_path FROM sub_items WHERE id = ?").get(req.params.id)) as { file_path: string } | undefined;
+    const row = (await db
+      .prepare(
+        `SELECT s.file_path, m.type FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE s.id = ?`
+      )
+      .get(req.params.id)) as { file_path: string; type: string } | undefined;
     if (!row?.file_path) throw new HttpError(404, "No file for this item");
+    // The OPDS token is a single, static, instance-wide secret with no per-user/per-type concept —
+    // without this check it doubles as a bare-id file server for every library, not just the four
+    // book/comic types OPDS is meant to expose (see OPDS_TYPES above).
+    if (!(OPDS_TYPES as readonly string[]).includes(row.type)) throw new HttpError(404, "No file for this item");
     streamFileWithRangeSupport(req, res, row.file_path);
   })
 );
@@ -254,8 +263,16 @@ opdsPublicRouter.get(
   "/download/track/:id",
   asyncHandler(async (req, res) => {
     checkToken(req);
-    const row = (await db.prepare("SELECT file_path FROM tracks WHERE id = ?").get(req.params.id)) as { file_path: string } | undefined;
+    const row = (await db
+      .prepare(
+        `SELECT t.file_path, m.type FROM tracks t
+         JOIN sub_items s ON s.id = t.sub_item_id
+         JOIN media_items m ON m.id = s.media_item_id
+         WHERE t.id = ?`
+      )
+      .get(req.params.id)) as { file_path: string; type: string } | undefined;
     if (!row?.file_path) throw new HttpError(404, "No file for this track");
+    if (!(OPDS_TYPES as readonly string[]).includes(row.type)) throw new HttpError(404, "No file for this track");
     streamFileWithRangeSupport(req, res, row.file_path);
   })
 );

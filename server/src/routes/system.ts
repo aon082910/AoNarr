@@ -631,6 +631,12 @@ systemRouter.post(
       throw new HttpError(400, "Uploaded file is not a valid SQLite database (or backup bundle)");
     }
 
+    // In WAL mode, recently-committed transactions can live only in the -wal file until the next
+    // automatic checkpoint (every ~1000 pages) — without an explicit one here, a raw copy of just
+    // the main DB file can miss them. sqliteDb.close() below does checkpoint on close, but by then
+    // both this snapshot and the destructive overwrite have already happened, so it's too late to
+    // protect this copy specifically.
+    sqliteDb.pragma("wal_checkpoint(TRUNCATE)");
     const preRestorePath = `${config.dbPath}.pre-restore`;
     fs.copyFileSync(config.dbPath, preRestorePath);
 

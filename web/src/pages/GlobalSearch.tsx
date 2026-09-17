@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
@@ -52,25 +52,33 @@ export default function GlobalSearch() {
   const [recent, setRecent] = useState<string[]>(getRecentSearches());
   const labelFor = (key: string) => mediaTypes.find((t) => t.key === key)?.label ?? key;
 
+  // Guards against overlapping searches (e.g. re-searching via a "Recent" badge, which has no
+  // disabled guard, while the previous search's slower metadata-provider fetches are still in
+  // flight) — without it, an older query's results could resolve after a newer one's and overwrite
+  // the library/add-new results shown for the query currently in the input.
+  const searchRequestRef = useRef(0);
   async function doSearch(q: string) {
     if (!q.trim()) return;
+    const requestId = ++searchRequestRef.current;
     setSearching(true);
     const trimmed = q.trim();
 
     const libraryPromise = api
       .get<LibrarySearchResult[]>(`/library-search?q=${encodeURIComponent(trimmed)}`)
       .then((res) => {
-        setResults(res);
+        if (searchRequestRef.current === requestId) setResults(res);
         return res;
       })
       .catch((e: Error) => {
         // Surface the failure and let the "Add new" metadata results still render instead of
         // letting a rejected promise abort the whole search silently.
         alert(`Library search failed: ${e.message}`);
-        setResults([]);
+        if (searchRequestRef.current === requestId) setResults([]);
         return [] as LibrarySearchResult[];
       })
-      .finally(() => setSearching(false));
+      .finally(() => {
+        if (searchRequestRef.current === requestId) setSearching(false);
+      });
 
     // "Add new" is admin-only, same as the Add Media page itself (/add is not even routed for a
     // non-admin household account) — /metadata/search is admin-gated server-side too, so this also
@@ -82,8 +90,10 @@ export default function GlobalSearch() {
       return;
     }
 
-    setAddSearching(true);
-    setAddResults(null);
+    if (searchRequestRef.current === requestId) {
+      setAddSearching(true);
+      setAddResults(null);
+    }
 
     // Fired alongside the library search (not after it) so "search everything" doesn't feel
     // slower than it used to — every library-type with a real metadata backend (TMDB, TVDB,
@@ -107,13 +117,13 @@ export default function GlobalSearch() {
         .map((s) => s.value)
         .map((g) => ({ ...g, results: g.results.filter((r) => !ownedTitles.has(`${g.type}:${normalizeTitle(r.title)}`)) }))
         .filter((g) => g.results.length > 0);
-      setAddResults(groups);
+      if (searchRequestRef.current === requestId) setAddResults(groups);
     });
 
     try {
       await Promise.all([libraryPromise, addPromise]);
     } finally {
-      setAddSearching(false);
+      if (searchRequestRef.current === requestId) setAddSearching(false);
       addRecentSearch(q);
       setRecent(getRecentSearches());
     }

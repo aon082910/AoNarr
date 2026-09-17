@@ -34,16 +34,28 @@ export default function ImportReview() {
   }, []);
 
   async function applyMatch(item: ReviewItem, result: MetadataSearchResult) {
-    await api.post("/metadata/import", {
-      type: item.type,
-      title: result.title,
-      year: result.year,
-      overview: result.overview,
-      posterUrl: result.posterUrl,
-      externalIds: result.externalIds,
-    });
-    await api.post(`/import-review/${item.id}/resolve`, {});
+    try {
+      await api.post("/metadata/import", {
+        type: item.type,
+        title: result.title,
+        year: result.year,
+        overview: result.overview,
+        posterUrl: result.posterUrl,
+        externalIds: result.externalIds,
+      });
+    } catch (e) {
+      alert(`Import failed: ${(e as Error).message}`);
+      return;
+    }
     setMatching(null);
+    try {
+      await api.post(`/import-review/${item.id}/resolve`, {});
+    } catch (e) {
+      // The library item above was already created successfully — only marking this review row
+      // resolved failed. Surfacing that distinction matters: retrying the match here would create
+      // a duplicate library item, since the import itself already went through.
+      alert(`"${item.title}" was imported, but marking it resolved failed: ${(e as Error).message}. Don't match it again — reload this page instead.`);
+    }
     load();
   }
 

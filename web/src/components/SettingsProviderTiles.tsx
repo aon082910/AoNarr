@@ -142,8 +142,13 @@ export default function SettingsProviderTiles({
               <label>Send on</label>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 4 }}>
                 {EVENT_OPTIONS.map((opt) => {
-                  const raw = settings[openProvider.eventsKey!] ?? "";
-                  const enabledEvents = raw ? raw.split(",").map((s) => s.trim()) : EVENT_OPTIONS.map((o) => o.key);
+                  // A key that was never saved (undefined) means "no preference — every event" —
+                  // distinct from a key explicitly saved as "" (every event deliberately
+                  // unchecked). Collapsing "all checked" into the empty string on save used to
+                  // make those two indistinguishable on read, so unchecking the very last event
+                  // snapped every checkbox straight back to checked.
+                  const raw = settings[openProvider.eventsKey!];
+                  const enabledEvents = raw === undefined ? EVENT_OPTIONS.map((o) => o.key) : raw ? raw.split(",").map((s) => s.trim()) : [];
                   const checked = enabledEvents.includes(opt.key);
                   return (
                     <label key={opt.key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.85rem", margin: 0 }}>
@@ -153,7 +158,7 @@ export default function SettingsProviderTiles({
                         checked={checked}
                         onChange={() => {
                           const next = checked ? enabledEvents.filter((e) => e !== opt.key) : [...enabledEvents, opt.key];
-                          saveSetting(openProvider.eventsKey!, EVENT_OPTIONS.every((o) => next.includes(o.key)) ? "" : next.join(","));
+                          saveSetting(openProvider.eventsKey!, next.join(","));
                         }}
                       />
                       {opt.label}

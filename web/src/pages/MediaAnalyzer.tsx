@@ -134,6 +134,7 @@ export default function MediaAnalyzer() {
   const [type, setType] = useState<string>("");
   const [data, setData] = useState<AnalysisResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [filterLevel, setFilterLevel] = useState<"all" | "caution" | "incompatible">("all");
   const [statFilter, setStatFilter] = useState<StatFilter | null>(null);
@@ -142,10 +143,15 @@ export default function MediaAnalyzer() {
   function load() {
     setLoading(true);
     setStatFilter(null);
+    setLoadError(null);
+    // Cleared up front, not just on success — otherwise a failed reload after switching type kept
+    // showing the previous type's stats/file list with no indication it's stale/wrong-type data.
+    setData(null);
     const qs = type ? `?type=${type}` : "";
     api
       .get<AnalysisResponse>(`/media-analysis${qs}`)
       .then(setData)
+      .catch((e) => setLoadError((e as Error).message))
       .finally(() => setLoading(false));
   }
 
@@ -202,6 +208,8 @@ export default function MediaAnalyzer() {
           {running ? "Analyzing..." : "Analyze now"}
         </button>
       </div>
+
+      {loadError && <p style={{ color: "var(--danger)" }}>{loadError}</p>}
 
       {data && (
         <>

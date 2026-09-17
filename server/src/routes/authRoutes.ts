@@ -155,6 +155,16 @@ authRouter.post(
   "/totp/setup",
   asyncHandler(async (req, res) => {
     if (!req.auth?.user) throw new HttpError(401, "Not authenticated");
+    const user = (await db.prepare("SELECT totp_secret, totp_enabled FROM users WHERE id = ?").get(req.auth.user.id)) as
+      | { totp_secret: string | null; totp_enabled: number }
+      | undefined;
+    // Re-keying an already-enabled account needs proof of the *current* second factor first — a
+    // session-token-only compromise (XSS, a leaked/shared token) could otherwise silently swap in
+    // the attacker's own authenticator as the account's 2FA, invisibly to the real owner, since
+    // "2FA enabled" in the UI wouldn't change. First-time setup has no prior secret to prove.
+    if (user?.totp_enabled && (!user.totp_secret || !verifyTotp(user.totp_secret, req.body?.code ?? ""))) {
+      throw new HttpError(400, "Enter your current 2FA code to set up a new one");
+    }
     const secret = generateBase32Secret();
     await db.prepare("UPDATE users SET totp_secret = ? WHERE id = ?").run(secret, req.auth.user.id);
     res.json({ secret, otpauthUrl: buildOtpauthUrl(secret, req.auth.user.username) });
@@ -179,6 +189,15 @@ authRouter.post(
   "/totp/disable",
   asyncHandler(async (req, res) => {
     if (!req.auth?.user) throw new HttpError(401, "Not authenticated");
+    const user = (await db.prepare("SELECT totp_secret FROM users WHERE id = ?").get(req.auth.user.id)) as
+      | { totp_secret: string | null }
+      | undefined;
+    // The client already collects and sends a code for this (Account.tsx's "Enter a code to
+    // disable it") — it just wasn't being checked, so a hijacked session token alone could strip
+    // 2FA from an account, defeating the point of 2FA surviving a token-only compromise.
+    if (!user?.totp_secret || !verifyTotp(user.totp_secret, req.body?.code ?? "")) {
+      throw new HttpError(400, "Invalid code");
+    }
     await db.prepare("UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE id = ?").run(req.auth.user.id);
     res.status(204).send();
   })

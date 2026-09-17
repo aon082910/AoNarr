@@ -135,18 +135,27 @@ export default function DownloadClients() {
       category,
       audioOnly,
     };
-    if (mode === "add") {
-      await api.post("/download-clients", body);
-    } else if (typeof mode === "number") {
-      await api.patch(`/download-clients/${mode}`, body);
+    try {
+      if (mode === "add") {
+        await api.post("/download-clients", body);
+      } else if (typeof mode === "number") {
+        await api.patch(`/download-clients/${mode}`, body);
+      }
+      setMode(null);
+      load();
+    } catch (e) {
+      alert((e as Error).message);
     }
-    setMode(null);
-    load();
   }
 
   async function remove(id: number) {
-    await api.del(`/download-clients/${id}`);
-    load();
+    try {
+      await api.del(`/download-clients/${id}`);
+      setMode(null);
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }
 
   async function loadHealth(id: number) {
@@ -478,10 +487,7 @@ export default function DownloadClients() {
                 <button
                   type="button"
                   className="danger"
-                  onClick={() => {
-                    remove(mode as number);
-                    setMode(null);
-                  }}
+                  onClick={() => remove(mode as number)}
                 >
                   Delete
                 </button>

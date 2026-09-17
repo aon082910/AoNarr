@@ -97,6 +97,7 @@ function TagsTable({
               {t.retentionDays !== null && t.retentionDays !== -1 && (
                 <input
                   type="number"
+                  key={`${t.id}-retention-${t.retentionDays}`}
                   style={{ width: 80, display: "inline-block" }}
                   defaultValue={t.retentionDays}
                   onBlur={(e) => onUpdateRetention(t.id, e.target.value)}
@@ -626,9 +627,15 @@ export default function Settings() {
     });
   }
 
+  // Guards against rapidly switching the quality-profile dropdown letting an older profile's
+  // scores resolve after a newer selection and briefly show under the wrong profile's name.
+  const formatScoresRequestRef = useRef(0);
   useEffect(() => {
     if (scoreProfileId === "") return;
-    api.get<FormatScore[]>(`/custom-formats/scores/${scoreProfileId}`).then(setFormatScores);
+    const requestId = ++formatScoresRequestRef.current;
+    api.get<FormatScore[]>(`/custom-formats/scores/${scoreProfileId}`).then((scores) => {
+      if (formatScoresRequestRef.current === requestId) setFormatScores(scores);
+    });
   }, [scoreProfileId, customFormats]);
 
   /**

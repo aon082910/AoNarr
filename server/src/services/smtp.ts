@@ -12,6 +12,21 @@ export interface SmtpConfig {
   to: string;
 }
 
+// An idle timeout, not a total-transaction deadline — bounds how long any single stage (initial
+// connect, waiting on a reply, the STARTTLS upgrade) can go completely silent. Without this, a
+// host that accepts the TCP connection but never replies (a firewall silently drops the response,
+// a broken relay) hangs sendEmail() forever — and since notifications.ts's fan-out awaits every
+// target via Promise.allSettled, and scheduler.ts's grab() awaits notifyGrabbed() synchronously,
+// one such host wedges the entire grab pipeline, not just email delivery.
+const SMTP_IDLE_TIMEOUT_MS = 30_000;
+
+function armIdleTimeout(socket: net.Socket, cfg: SmtpConfig): void {
+  socket.setTimeout(SMTP_IDLE_TIMEOUT_MS);
+  socket.once("timeout", () => {
+    socket.destroy(new Error(`SMTP connection to ${cfg.host}:${cfg.port} timed out after ${SMTP_IDLE_TIMEOUT_MS / 1000}s of inactivity`));
+  });
+}
+
 /**
  * Handshake shared by every send — connect, optional STARTTLS upgrade, optional AUTH LOGIN.
  * Returns a `send` closure (writes one line, awaits the reply) and the final active socket
@@ -22,6 +37,7 @@ async function connectAndAuth(cfg: SmtpConfig): Promise<{ send: (line: string) =
   const socket: net.Socket = cfg.secure
     ? tls.connect({ host: cfg.host, port: cfg.port, servername: cfg.host })
     : net.connect({ host: cfg.host, port: cfg.port });
+  armIdleTimeout(socket, cfg);
 
   await new Promise<void>((resolve, reject) => {
     socket.once("connect", () => resolve());
@@ -74,6 +90,7 @@ async function connectAndAuth(cfg: SmtpConfig): Promise<{ send: (line: string) =
       const t = tls.connect({ socket: plainSocket, servername: cfg.host }, () => resolve(t));
       t.once("error", reject);
     });
+    armIdleTimeout(upgraded, cfg);
     activeSocket = upgraded;
     ehloReply = await send(`EHLO aonarr`);
   }

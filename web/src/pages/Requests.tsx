@@ -53,19 +53,38 @@ export default function Requests() {
     }
   }
 
-  async function approve(id: number) {
-    await api.post(`/requests/${id}/approve`, {});
-    load();
+  async function approve(id: number, confirmDuplicate = false) {
+    try {
+      await api.post(`/requests/${id}/approve`, { confirmDuplicate });
+      load();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409 && err.body?.duplicates?.length) {
+        const names = err.body.duplicates.map((d: { title: string; year: number | null }) => `${d.title}${d.year ? ` (${d.year})` : ""}`).join(", ");
+        if (confirm(`Already in the library as: ${names}. Approve anyway and create a separate entry?`)) {
+          await approve(id, true);
+        }
+      } else {
+        alert((err as Error).message);
+      }
+    }
   }
 
   async function reject(id: number) {
-    await api.post(`/requests/${id}/reject`, {});
-    load();
+    try {
+      await api.post(`/requests/${id}/reject`, {});
+      load();
+    } catch (err) {
+      alert((err as Error).message);
+    }
   }
 
   async function cancel(id: number) {
-    await api.del(`/requests/${id}`);
-    load();
+    try {
+      await api.del(`/requests/${id}`);
+      load();
+    } catch (err) {
+      alert((err as Error).message);
+    }
   }
 
   return (

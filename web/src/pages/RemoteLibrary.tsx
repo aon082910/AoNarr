@@ -81,8 +81,12 @@ export default function RemoteLibrary() {
 
   useEffect(() => {
     setTypeFilter("all");
-    if (selectedId === "") return;
+    // Cleared unconditionally (not just when a new instance is actually selected) — otherwise the
+    // previously-browsed instance's grid (or its error) stayed on screen with no indication it's
+    // stale after switching the dropdown, until "Browse" was clicked again.
+    setItems(null);
     setError(null);
+    if (selectedId === "") return;
     api
       .get<RemoteMediaTypeInfo[]>(`/remote-instances/${selectedId}/media-types`)
       .then(setRemoteTypes)

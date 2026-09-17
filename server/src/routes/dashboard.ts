@@ -86,12 +86,22 @@ dashboardRouter.get(
   "/library-counts",
   asyncHandler(async (req, res) => {
     const allowedTypes = allowedTypesFor(req);
-    const rows = (await db.prepare("SELECT type, COUNT(*) AS count FROM media_items GROUP BY type").all()) as {
+    const blocked = ratingBlockedFor(req);
+    // Counted in JS rather than SQL COUNT()/GROUP BY — rating-blocking isn't a simple equality
+    // filter (it walks CONTENT_RATING_ORDER), so it can't be pushed into the aggregate query.
+    // Otherwise a restricted user's per-type count on the Library landing page included
+    // rating-blocked items they can't actually open — the same gate every other route here applies.
+    const rows = (await db.prepare("SELECT type, content_rating FROM media_items").all()) as {
       type: string;
-      count: number;
+      content_rating: string | null;
     }[];
-    const filtered = allowedTypes ? rows.filter((r) => allowedTypes.includes(r.type)) : rows;
-    res.json(Object.fromEntries(filtered.map((r) => [r.type, Number(r.count)])));
+    const counts: Record<string, number> = {};
+    for (const r of rows) {
+      if (allowedTypes && !allowedTypes.includes(r.type)) continue;
+      if (blocked(r.content_rating ?? null)) continue;
+      counts[r.type] = (counts[r.type] ?? 0) + 1;
+    }
+    res.json(counts);
   })
 );
 
@@ -111,24 +121,31 @@ function addSize(sizes: Record<string, number>, type: string, filePath: string |
   }
 }
 
+// Keyed by "typecontentRating" rather than just type — lets /library-sizes filter out
+// rating-blocked content for a restricted user at request time without re-statting the whole
+// library (which only happens once per cache TTL) just because who's asking changed.
+function sizeKey(type: string, contentRating: string | null): string {
+  return `${type}${contentRating ?? ""}`;
+}
+
 async function computeLibrarySizes(): Promise<Record<string, number>> {
   const sizes: Record<string, number> = {};
-  for (const row of (await db.prepare("SELECT type, path FROM media_items WHERE has_file = 1").all()) as any[]) {
-    addSize(sizes, row.type, row.path);
+  for (const row of (await db.prepare("SELECT type, path, content_rating FROM media_items WHERE has_file = 1").all()) as any[]) {
+    addSize(sizes, sizeKey(row.type, row.content_rating), row.path);
   }
   for (const row of (await db
     .prepare(
-      `SELECT m.type, e.file_path FROM episodes e JOIN media_items m ON m.id = e.media_item_id WHERE e.has_file = 1`
+      `SELECT m.type, e.file_path, m.content_rating FROM episodes e JOIN media_items m ON m.id = e.media_item_id WHERE e.has_file = 1`
     )
     .all()) as any[]) {
-    addSize(sizes, row.type, row.file_path);
+    addSize(sizes, sizeKey(row.type, row.content_rating), row.file_path);
   }
   for (const row of (await db
     .prepare(
-      `SELECT m.type, s.file_path FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE s.has_file = 1`
+      `SELECT m.type, s.file_path, m.content_rating FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE s.has_file = 1`
     )
     .all()) as any[]) {
-    addSize(sizes, row.type, row.file_path);
+    addSize(sizes, sizeKey(row.type, row.content_rating), row.file_path);
   }
   return sizes;
 }
@@ -140,9 +157,14 @@ dashboardRouter.get(
       sizeCache = { at: Date.now(), sizes: await computeLibrarySizes() };
     }
     const allowedTypes = allowedTypesFor(req);
-    const sizes = allowedTypes
-      ? Object.fromEntries(Object.entries(sizeCache.sizes).filter(([type]) => allowedTypes.includes(type)))
-      : sizeCache.sizes;
+    const blocked = ratingBlockedFor(req);
+    const sizes: Record<string, number> = {};
+    for (const [key, bytes] of Object.entries(sizeCache.sizes)) {
+      const [type, contentRating] = key.split("");
+      if (allowedTypes && !allowedTypes.includes(type)) continue;
+      if (blocked(contentRating || null)) continue;
+      sizes[type] = (sizes[type] ?? 0) + bytes;
+    }
     res.json(sizes);
   })
 );

@@ -109,16 +109,18 @@ export default function WatchlistImport() {
     setResults(null);
   }
 
-  async function runImportRows(importRows: ParsedRow[]) {
-    if (importRows.length === 0) return;
+  async function runImportRows(importRows: ParsedRow[]): Promise<boolean> {
+    if (importRows.length === 0) return false;
     setImporting(true);
     setResults(null);
     try {
       const response = await api.post<{ results: RowResult[] }>("/watchlist-import", { rows: importRows });
       setResults(response.results);
       setShowAdd(false);
+      return true;
     } catch (e) {
       alert((e as Error).message);
+      return false;
     } finally {
       setImporting(false);
     }
@@ -127,9 +129,13 @@ export default function WatchlistImport() {
   async function submitSingle() {
     if (!singleTitle.trim()) return;
     const year = singleYear && /^\d{4}$/.test(singleYear) ? Number(singleYear) : null;
-    await runImportRows([{ title: singleTitle.trim(), year, type: singleType }]);
-    setSingleTitle("");
-    setSingleYear("");
+    const ok = await runImportRows([{ title: singleTitle.trim(), year, type: singleType }]);
+    // Only clear on success — runImportRows already alerts on failure, and wiping the fields too
+    // meant retrying a transient failure required retyping the title from scratch.
+    if (ok) {
+      setSingleTitle("");
+      setSingleYear("");
+    }
   }
 
   return (

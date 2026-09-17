@@ -102,9 +102,13 @@ export default function IrcFeeds() {
 
   async function removeFeed(id: number) {
     if (!confirm("Remove this IRC announce feed? It'll disconnect immediately.")) return;
-    await api.del(`/irc-feeds/${id}`);
-    setMode(null);
-    load();
+    try {
+      await api.del(`/irc-feeds/${id}`);
+      setMode(null);
+      load();
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }
 
   const editingFeed = typeof mode === "number" ? feeds.find((f) => f.id === mode) ?? null : null;

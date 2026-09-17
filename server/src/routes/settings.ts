@@ -17,7 +17,13 @@ settingsRouter.use(requireAdmin);
 settingsRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
-    res.json(getAllSettings());
+    // Never echo the live TOTP secret back — unlike other stored credentials here (an SMTP
+    // password, an indexer API key), this one exists specifically to survive a compromise of the
+    // admin's own session/API key. Exposing it through the generic settings dump would silently
+    // defeat that guarantee; the dedicated /totp/* endpoints below only ever verify a code against
+    // it, never return it once set.
+    const { totpSecret: _totpSecret, totpPendingSecret: _totpPendingSecret, ...safeSettings } = getAllSettings();
+    res.json(safeSettings);
   })
 );
 

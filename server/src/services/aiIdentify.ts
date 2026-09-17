@@ -6,6 +6,7 @@ import path from "node:path";
 import { db } from "../db/index.js";
 import { queryAi, type AiProviderConfig } from "./aiClient.js";
 import { log } from "./logger.js";
+import { aiProviderFromRow } from "../db/mappers.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -17,8 +18,8 @@ async function getAiProviderConfig(providerId?: number | null): Promise<AiProvid
     ? await db.prepare("SELECT * FROM ai_providers WHERE id = ? AND enabled = 1").get(providerId)
     : await db.prepare("SELECT * FROM ai_providers WHERE is_default = 1 AND enabled = 1 LIMIT 1").get();
   if (!row) return null;
-  const r = row as any;
-  return { type: r.type, baseUrl: r.base_url, apiKey: r.api_key, model: r.model };
+  const provider = aiProviderFromRow(row);
+  return { type: provider.type, baseUrl: provider.baseUrl, apiKey: provider.apiKey, model: provider.model };
 }
 
 async function probeDurationSeconds(filePath: string): Promise<number | null> {

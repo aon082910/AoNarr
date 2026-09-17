@@ -28,7 +28,7 @@ wantedRouter.get(
     const episodes = await db
       .prepare(
         `SELECT m.id AS "mediaItemId", m.title AS "mediaTitle", m.type, e.id AS "episodeId", NULL AS "subItemId",
-                ('S' || substr('00' || e.season_number, length('00' || e.season_number) - 1, 2) || 'E' || substr('00' || e.episode_number, length('00' || e.episode_number) - 1, 2)) AS label,
+                ('S' || (CASE WHEN e.season_number < 10 THEN '0' || CAST(e.season_number AS TEXT) ELSE CAST(e.season_number AS TEXT) END) || 'E' || (CASE WHEN e.episode_number < 10 THEN '0' || CAST(e.episode_number AS TEXT) ELSE CAST(e.episode_number AS TEXT) END)) AS label,
                 e.air_date AS "sortKey"
          FROM episodes e
          JOIN media_items m ON m.id = e.media_item_id
@@ -66,7 +66,7 @@ wantedRouter.get(
     const episodes = await db
       .prepare(
         `SELECT m.id AS "mediaItemId", m.title AS "mediaTitle", m.type AS type, e.id AS "episodeId", NULL AS "subItemId",
-                ('S' || substr('00' || e.season_number, length('00' || e.season_number) - 1, 2) || 'E' || substr('00' || e.episode_number, length('00' || e.episode_number) - 1, 2) ||
+                ('S' || (CASE WHEN e.season_number < 10 THEN '0' || CAST(e.season_number AS TEXT) ELSE CAST(e.season_number AS TEXT) END) || 'E' || (CASE WHEN e.episode_number < 10 THEN '0' || CAST(e.episode_number AS TEXT) ELSE CAST(e.episode_number AS TEXT) END) ||
                  CASE WHEN e.title IS NOT NULL THEN ' - ' || e.title ELSE '' END) AS label,
                 e.air_date AS date, e.has_file AS "hasFile", 'media' AS kind
          FROM episodes e

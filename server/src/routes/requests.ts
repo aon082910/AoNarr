@@ -9,12 +9,26 @@ import { isValidMediaType } from "../services/mediaTypes.js";
 import { logAuditEvent } from "../services/audit.js";
 import { sendPush } from "../services/push.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
+import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 
 export const requestsRouter = Router();
 
 /** Shared by the admin approve endpoint and auto-approval on submit — creates the real library
- * entry from a request row exactly the way adding media manually does. */
-async function approveRequestRow(request: any, rootFolderIdOverride: number | null, qualityProfileId: number | null): Promise<number> {
+ * entry from a request row exactly the way adding media manually does. Checks for an existing
+ * library item first (the same check POST /api/media makes before creating one directly) — without
+ * this, approving a request for something an admin already added straight to the library silently
+ * created a second, independently-monitored duplicate. */
+async function approveRequestRow(
+  request: any,
+  rootFolderIdOverride: number | null,
+  qualityProfileId: number | null,
+  confirmDuplicate: boolean
+): Promise<{ mediaItemId: number } | { duplicates: Awaited<ReturnType<typeof findPossibleDuplicates>> }> {
+  if (!confirmDuplicate) {
+    const duplicates = await findPossibleDuplicates(request.type, request.title, request.year ?? null);
+    if (duplicates.length > 0) return { duplicates };
+  }
+
   const rootFolderId = rootFolderIdOverride ?? (await autoSelectRootFolderId(request.type));
   const mediaResult = await db
     .prepare(
@@ -38,7 +52,7 @@ async function approveRequestRow(request: any, rootFolderIdOverride: number | nu
   await db
     .prepare(`UPDATE requests SET status = 'approved', media_item_id = ?, resolved_at = ${nowExpr(db)} WHERE id = ?`)
     .run(mediaItemId, request.id);
-  return mediaItemId;
+  return { mediaItemId };
 }
 
 function fileSize(filePath: string | null): number {
@@ -195,9 +209,15 @@ requestsRouter.post(
     let row = (await db.prepare("SELECT * FROM requests WHERE id = ?").get(result.lastInsertRowid)) as any;
     logAuditEvent(user.id, user.username, "request_submitted", b.title);
     if (user.autoApprove) {
-      await approveRequestRow(row, null, null);
-      row = await db.prepare("SELECT * FROM requests WHERE id = ?").get(result.lastInsertRowid);
-      logAuditEvent(user.id, user.username, "request_auto_approved", b.title);
+      const approval = await approveRequestRow(row, null, null, false);
+      if ("mediaItemId" in approval) {
+        row = await db.prepare("SELECT * FROM requests WHERE id = ?").get(result.lastInsertRowid);
+        logAuditEvent(user.id, user.username, "request_auto_approved", b.title);
+      } else {
+        // Already in the library under a possible duplicate title/year — leave the request
+        // pending instead of silently creating a second entry or auto-approving with none.
+        logAuditEvent(user.id, user.username, "request_auto_approve_skipped_possible_duplicate", b.title);
+      }
     }
     res.status(201).json(requestFromRow(row));
   })
@@ -212,7 +232,12 @@ requestsRouter.post(
     if (request.status !== "pending") throw new HttpError(400, "Request has already been resolved");
 
     const b = req.body ?? {};
-    const mediaItemId = await approveRequestRow(request, b.rootFolderId ?? null, b.qualityProfileId ?? null);
+    const approval = await approveRequestRow(request, b.rootFolderId ?? null, b.qualityProfileId ?? null, !!b.confirmDuplicate);
+    if ("duplicates" in approval) {
+      res.status(409).json({ duplicates: approval.duplicates });
+      return;
+    }
+    const mediaItemId = approval.mediaItemId;
     logAuditEvent(null, "admin", "request_approved", request.title);
     sendPush("Request approved", request.title, request.user_id).catch(() => {});
 

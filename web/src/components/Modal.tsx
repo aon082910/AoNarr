@@ -1,8 +1,10 @@
 import { useEffect, useRef, type ReactNode } from "react";
 
 // Open modals, oldest first. Only the topmost one reacts to Escape — a FolderPicker opened from
-// inside an "Add Root Folder" modal would otherwise close both on a single keypress.
-const openModals: symbol[] = [];
+// inside an "Add Root Folder" modal would otherwise close both on a single keypress. Exported so
+// other top-level Escape-closable overlays (CommandPalette, which isn't built on this component)
+// can share the same stack instead of reacting to Escape independently of whatever's on top of it.
+export const openModals: symbol[] = [];
 
 /** Shared popup shell — dark overlay + centered panel. Used by every "Add X" flow that used to be
  * an always-visible inline form at the top of its list page (Starr-app style: a button opens

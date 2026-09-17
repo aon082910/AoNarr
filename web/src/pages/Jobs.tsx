@@ -25,13 +25,21 @@ export default function Jobs() {
   }, []);
 
   async function runNow(key: string) {
-    await api.post(`/jobs/${key}/run`, {});
-    setTimeout(load, 500);
+    try {
+      await api.post(`/jobs/${key}/run`, {});
+      setTimeout(load, 500);
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }
 
   async function cancel(key: string) {
-    await api.post(`/jobs/${key}/cancel`, {});
-    setTimeout(load, 500);
+    try {
+      await api.post(`/jobs/${key}/cancel`, {});
+      setTimeout(load, 500);
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }
 
   async function saveSchedule(key: string) {

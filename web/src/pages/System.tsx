@@ -234,6 +234,7 @@ export default function System() {
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [showBackupDirPicker, setShowBackupDirPicker] = useState(false);
   const [unmonitoredNoFile, setUnmonitoredNoFile] = useState<UnmonitoredNoFileItem[] | null>(null);
+  const [deletingAllUnmonitored, setDeletingAllUnmonitored] = useState(false);
   const { sortRows: sortUnmonitoredNoFile, sortableHeader: unmonitoredNoFileHeader } = useSortableTable<
     UnmonitoredNoFileItem,
     "title" | "type" | "added"
@@ -421,10 +422,22 @@ export default function System() {
   async function deleteAllUnmonitoredNoFile() {
     if (!unmonitoredNoFile || unmonitoredNoFile.length === 0) return;
     if (!confirm(`Delete all ${unmonitoredNoFile.length} unmonitored, fileless item(s)? This cannot be undone.`)) return;
+    setDeletingAllUnmonitored(true);
+    // Removed from state as each delete actually succeeds, and one failure doesn't abort the rest
+    // — the old unconditional `for` loop threw on the first error and never reached
+    // setUnmonitoredNoFile([]), leaving already-deleted items still listed with no error shown,
+    // and re-clicking would re-attempt deletes on rows already gone server-side.
+    const failures: string[] = [];
     for (const item of unmonitoredNoFile) {
-      await api.del(`/media/${item.id}`);
+      try {
+        await api.del(`/media/${item.id}`);
+        setUnmonitoredNoFile((prev) => prev?.filter((i) => i.id !== item.id) ?? null);
+      } catch (e) {
+        failures.push(`${item.title}: ${(e as Error).message}`);
+      }
     }
-    setUnmonitoredNoFile([]);
+    setDeletingAllUnmonitored(false);
+    if (failures.length > 0) alert(`${failures.length} item(s) failed to delete:\n${failures.join("\n")}`);
   }
 
   async function loadDuplicateFiles() {
@@ -1202,8 +1215,8 @@ export default function System() {
             </p>
             {unmonitoredNoFile.length > 0 && (
               <>
-                <button className="danger" onClick={deleteAllUnmonitoredNoFile} style={{ marginBottom: 8 }}>
-                  Delete all {unmonitoredNoFile.length}
+                <button className="danger" onClick={deleteAllUnmonitoredNoFile} disabled={deletingAllUnmonitored} style={{ marginBottom: 8 }}>
+                  {deletingAllUnmonitored ? "Deleting..." : `Delete all ${unmonitoredNoFile.length}`}
                 </button>
                 <table>
                   <thead>

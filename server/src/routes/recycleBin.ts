@@ -19,7 +19,7 @@ recycleBinRouter.get(
         mediaType: r.media_type,
         title: r.title,
         originalPath: r.original_path,
-        sizeBytes: r.size_bytes,
+        sizeBytes: r.size_bytes == null ? null : Number(r.size_bytes),
         deletedAt: r.deleted_at,
         restoring: !!r.restoring,
         restoreError: r.restore_error,

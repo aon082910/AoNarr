@@ -76,9 +76,11 @@ export default function Dashboard() {
   const [librarySizes, setLibrarySizes] = useState<Record<string, number>>({});
   const [libraryCounts, setLibraryCounts] = useState<Record<string, number>>({});
   const [health, setHealth] = useState<HealthSummary | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
+    setLoadError(null);
     Promise.all([
       api.get<MediaItem[]>("/dashboard/recently-added"),
       api.get<RecentlyChangedEntry[]>("/dashboard/recent"),
@@ -97,6 +99,9 @@ export default function Dashboard() {
         setLibrarySizes(sizes);
         setLibraryCounts(counts);
       })
+      // Without this, one failed request left every widget rendering as legitimately empty
+      // ("Nothing added yet.", 0 items) with no indication anything actually failed.
+      .catch((e) => setLoadError((e as Error).message))
       .finally(() => setLoading(false));
 
     // Surfaces the same checks the System page computes on demand, right where an admin will
@@ -348,6 +353,13 @@ export default function Dashboard() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {loadError && (
+        <div className="form-panel" style={{ borderColor: "var(--danger)", marginBottom: 16 }}>
+          <strong style={{ color: "var(--danger)" }}>Couldn't load the dashboard</strong>
+          <p style={{ margin: "6px 0 0", fontSize: "0.85rem" }}>{loadError}</p>
         </div>
       )}
 

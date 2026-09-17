@@ -312,6 +312,7 @@ function IndexersTable({
                 <input
                   type="number"
                   min={0}
+                  key={`${i.id}-query-limit-${i.queryLimitPerHour ?? ""}`}
                   defaultValue={i.queryLimitPerHour ?? ""}
                   placeholder="unlimited"
                   style={{ width: 90 }}

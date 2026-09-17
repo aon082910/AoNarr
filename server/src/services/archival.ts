@@ -1,5 +1,5 @@
 import { log } from "./logger.js";
-import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { db } from "../db/index.js";
 import { getSetting } from "./settingsStore.js";
@@ -46,13 +46,17 @@ async function moveOrDelete(
     await recycleFile(filePath, mediaType, title, mediaItemId);
     return;
   }
-  fs.mkdirSync(archiveFolder, { recursive: true });
+  await fsp.mkdir(archiveFolder, { recursive: true });
   const dest = path.join(archiveFolder, path.basename(filePath));
   try {
-    fs.renameSync(filePath, dest);
-  } catch {
-    fs.copyFileSync(filePath, dest);
-    fs.unlinkSync(filePath);
+    await fsp.rename(filePath, dest);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
+    // Cross-filesystem (e.g. /config vs /media in Docker) — fsp.cp/rm hand the copy off to
+    // libuv's thread pool instead of blocking Node's single event loop for as long as a
+    // multi-GB archive move takes, same reasoning as recycleBin.ts's moveFileAsync.
+    await fsp.cp(filePath, dest, { recursive: true });
+    await fsp.rm(filePath, { recursive: true, force: true });
   }
 }
 

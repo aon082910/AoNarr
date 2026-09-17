@@ -17,6 +17,16 @@ export function titlesMatch(a: string, b: string): boolean {
   return na === nb || na.includes(nb) || nb.includes(na);
 }
 
+/** Exact-only comparison — no substring tolerance. Safe for matching that has no year (or other
+ * independent signal) to gate the fuzzier titlesMatch() against, e.g. artist/author names, where
+ * substring tolerance would merge unrelated entries whose names happen to be a subset of one
+ * another (the same class of bug libraryScan.ts's own titlesMatch was made exact-only to fix). */
+export function exactTitlesMatch(a: string, b: string): boolean {
+  const na = normalizeForMatch(a);
+  const nb = normalizeForMatch(b);
+  return !!na && na === nb;
+}
+
 /** Title+year fallback match for items with no shared external id. The substring-tolerant
  * `titlesMatch` is only safe when a real year also agrees — two unknown years match each other
  * trivially and would fold "Extraction 2" into "Extraction". */

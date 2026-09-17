@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, downloadFile } from "../api/client.js";
 import GroupPicker from "../components/GroupPicker.js";
@@ -351,8 +351,16 @@ export default function MediaDetail() {
   const [splitTitle, setSplitTitle] = useState("");
   const [splittingItem, setSplittingItem] = useState(false);
 
+  // Item -> item navigation (a TMDB collection part, a series sibling) reuses this mounted
+  // component rather than remounting it, so a slower response for the previous id resolving after
+  // a newer navigation would otherwise overwrite the new item's header/episodes with the old one's.
+  const loadRequestRef = useRef(0);
   function load() {
-    api.get<MediaDetailResponse>(`/media/${id}`).then(setItem);
+    const requestId = ++loadRequestRef.current;
+    setItem(null);
+    api.get<MediaDetailResponse>(`/media/${id}`).then((data) => {
+      if (loadRequestRef.current === requestId) setItem(data);
+    });
   }
 
   useEffect(load, [id]);
@@ -524,13 +532,27 @@ export default function MediaDetail() {
   }
 
   // Item → item navigation (a TMDB collection part, a series sibling) reuses this mounted
-  // component, so per-item panels must reset or B's page opens with A's history listed under it.
+  // component, so per-item panels must reset or B's page opens with A's history listed under it —
+  // or worse, with A's still-open edit-metadata/artwork/move/split form silently applying its
+  // stale fields to B on save, since those panels render inline rather than in a blocking Modal.
   useEffect(() => {
     setHistory(null);
     setShowHistory(false);
     setShowFileDetails(false);
     setSeededSeasons(false);
     setOpenSeasons(new Set());
+    setShowEditMetadata(false);
+    setShowArtwork(false);
+    setArtworkOptions(null);
+    setShowMove(false);
+    setPendingGroupId(null);
+    setShowSplit(false);
+    setSplitSelected(new Set());
+    setSplitTitle("");
+    setResults(null);
+    setTarget(null);
+    setSearching(false);
+    setError(null);
   }, [id]);
 
   function toggleHistory() {
@@ -910,7 +932,13 @@ export default function MediaDetail() {
     }
   }
 
+  // Guards against a search started for this item resolving after the admin has already navigated
+  // to a different item (a TMDB collection sibling, say) — without it, a slow response could
+  // populate `results`/`target` for whatever item happens to be mounted by the time it lands,
+  // letting a subsequent "Grab" attach the found release to the wrong item.
+  const searchRequestRef = useRef(0);
   async function runSearch(t: SearchTarget) {
+    const requestId = ++searchRequestRef.current;
     setTarget(t);
     setSearching(true);
     setError(null);
@@ -922,11 +950,13 @@ export default function MediaDetail() {
       if (t?.subItemId) params.set("subItemId", String(t.subItemId));
       const qs = params.toString();
       const res = await api.get<SearchResult[]>(`/search/${id}${qs ? `?${qs}` : ""}`);
+      if (searchRequestRef.current !== requestId) return;
       setResults(res);
     } catch (e) {
+      if (searchRequestRef.current !== requestId) return;
       setError((e as Error).message);
     } finally {
-      setSearching(false);
+      if (searchRequestRef.current === requestId) setSearching(false);
     }
   }
 

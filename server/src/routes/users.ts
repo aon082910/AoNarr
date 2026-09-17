@@ -53,9 +53,11 @@ usersRouter.post(
     }
 
     const userId = Number(result.lastInsertRowid);
-    for (const t of allowedTypes) {
-      await db.prepare("INSERT INTO user_library_access (user_id, media_type) VALUES (?, ?)").run(userId, t);
-    }
+    await db.transaction(async () => {
+      for (const t of allowedTypes) {
+        await db.prepare("INSERT INTO user_library_access (user_id, media_type) VALUES (?, ?)").run(userId, t);
+      }
+    });
     logAuditEvent(null, "admin", "user_created", b.username);
 
     const row = await db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
@@ -99,10 +101,15 @@ usersRouter.patch(
       for (const t of b.allowedTypes) {
         if (!isValidMediaType(t)) throw new HttpError(400, `Unknown media type "${t}"`);
       }
-      await db.prepare("DELETE FROM user_library_access WHERE user_id = ?").run(req.params.id);
-      for (const t of b.allowedTypes) {
-        await db.prepare("INSERT INTO user_library_access (user_id, media_type) VALUES (?, ?)").run(req.params.id, t);
-      }
+      // Transactional so a DB error mid-loop can't leave a user with access deleted but only
+      // partially re-granted — an admin's intended replacement set either fully applies or the
+      // user keeps whatever access they had before this request.
+      await db.transaction(async () => {
+        await db.prepare("DELETE FROM user_library_access WHERE user_id = ?").run(req.params.id);
+        for (const t of b.allowedTypes) {
+          await db.prepare("INSERT INTO user_library_access (user_id, media_type) VALUES (?, ?)").run(req.params.id, t);
+        }
+      });
       permissionChanges.push(`allowed libraries → ${b.allowedTypes.length ? b.allowedTypes.join(", ") : "none"}`);
     }
     if (permissionChanges.length > 0) {

@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
@@ -76,18 +76,24 @@ export default function FriendLibraries() {
     load();
   }
 
+  // Guards against clicking Compare on one library, then quickly another before the first
+  // request resolves — without it, the first (now-stale) library's results could land after the
+  // second's and overwrite the table while the "Comparing..." label and selection still show the
+  // second, correct library.
+  const compareRequestRef = useRef(0);
   async function compare(id: number) {
+    const requestId = ++compareRequestRef.current;
     setSelectedId(id);
     setLoading(true);
     setError(null);
     setMissing(null);
     try {
       const result = await api.get<FriendLibraryItem[]>(`/friend-libraries/${id}/compare`);
-      setMissing(result);
+      if (compareRequestRef.current === requestId) setMissing(result);
     } catch (e) {
-      setError((e as Error).message);
+      if (compareRequestRef.current === requestId) setError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (compareRequestRef.current === requestId) setLoading(false);
     }
   }
 

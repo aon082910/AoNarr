@@ -2,6 +2,7 @@ import { db } from "../db/index.js";
 import { log } from "./logger.js";
 import { IrcConnection, type IrcFeedConfig } from "./ircClient.js";
 import { handleAnnounce, type IrcFeedRow } from "./ircAnnounce.js";
+import { decryptValue } from "./encryption.js";
 
 let connections: IrcConnection[] = [];
 
@@ -25,7 +26,7 @@ export async function restartIrcFeeds(): Promise<void> {
       useSsl: !!row.use_ssl,
       nickname: row.nickname,
       saslUser: row.sasl_user,
-      saslPass: row.sasl_pass,
+      saslPass: row.sasl_pass ? decryptValue(row.sasl_pass) : row.sasl_pass,
       channel: row.channel,
     };
     const feed: IrcFeedRow = { id: row.id, name: row.name, announce_regex: row.announce_regex, protocol: row.protocol };

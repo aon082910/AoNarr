@@ -86,8 +86,14 @@ export default function AiProviders() {
     setTesting(true);
     setTestResult(null);
     try {
+      // Saves the form first — the test endpoint tests the persisted row, so testing before saving
+      // an edit (e.g. a corrected Base URL) would otherwise silently verify the OLD value, making a
+      // real fix look like it "didn't work" or a still-broken new value look "verified".
+      const body = { name, type, baseUrl, model, isDefault, ...(apiKey ? { apiKey } : {}) };
+      await api.patch(`/ai-providers/${id}`, body);
       const result = await api.post<{ ok: boolean; reply?: string; error?: string }>(`/ai-providers/${id}/test`, {});
       setTestResult(result);
+      load();
     } catch (e) {
       setTestResult({ ok: false, error: (e as Error).message });
     } finally {

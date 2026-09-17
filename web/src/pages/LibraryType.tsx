@@ -55,13 +55,24 @@ const EXTRA_FIELD_LABELS: Record<string, string> = {
 const DEFAULT_LIST_COLUMNS: ExtraField[] = ["year", "status", "monitored"];
 const DEFAULT_POSTER_FIELDS: ExtraField[] = ["year", "status", "monitored"];
 
+/** item.releaseDate is a date-only string ("2026-09-20") — new Date(str) parses that as UTC
+ * midnight, which shifts the Unreleased/Missing boundary by the viewer's UTC offset (the same
+ * class of bug already fixed in Calendar.tsx/Dashboard.tsx). Compares local calendar days instead. */
+function isAfterToday(dateOnly: string): boolean {
+  const [y, m, d] = dateOnly.split("-").map(Number);
+  if (!y || !m || !d) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return new Date(y, m - 1, d).getTime() > today.getTime();
+}
+
 /** Radarr-style bottom-of-poster status strip — computed client-side from fields already on the
  * item (no extra API call), same signal the "Status" field/badge already shows, just presented as
  * a colored banner instead of text so it reads at a glance across a dense poster grid. */
 function posterBanner(item: MediaItem): { label: string; cls: string } {
   if (item.hasFile) return { label: "Downloaded", cls: "downloaded" };
   if (!item.monitored) return { label: "Unmonitored", cls: "unmonitored" };
-  if (item.releaseDate && new Date(item.releaseDate).getTime() > Date.now()) {
+  if (item.releaseDate && isAfterToday(item.releaseDate)) {
     return { label: "Unreleased", cls: "unreleased" };
   }
   return { label: "Missing", cls: "missing" };
@@ -437,7 +448,11 @@ export function LibraryItemGrid({
   const location = useLocation();
   const navigationType = useNavigationType();
   const [letterIndex, setLetterIndex] = useState<{ id: number; letter: string }[]>([]);
-  const restoredScrollRef = useRef(false);
+  // Which location (pathname+search) has already had its scroll position restored — a string key
+  // rather than a plain boolean, since this component instance is reused across different library
+  // types/filters in one mount; a boolean that only ever latches true would let the very first
+  // Back-navigation restore succeed and silently block it for every other library visited after.
+  const restoredScrollRef = useRef<string | null>(null);
   const pendingLetterItemIdRef = useRef<number | null>(null);
 
   /** Server-driven filters/sort/pagination shared by load() and loadStats() — status/contentRating/
@@ -511,10 +526,12 @@ export function LibraryItemGrid({
   // a filter/sort change should still land at the top like normal. Waits for loading to finish so
   // the page already has its real height before scrolling, and only fires once per mount.
   useEffect(() => {
-    if (restoredScrollRef.current || navigationType !== "POP" || loading) return;
-    const saved = sessionStorage.getItem(`aonarr_library_scroll:${location.pathname}${location.search}`);
+    if (navigationType !== "POP" || loading) return;
+    const key = `${location.pathname}${location.search}`;
+    if (restoredScrollRef.current === key) return;
+    const saved = sessionStorage.getItem(`aonarr_library_scroll:${key}`);
     if (saved == null) return;
-    restoredScrollRef.current = true;
+    restoredScrollRef.current = key;
     const y = Number(saved);
     requestAnimationFrame(() => requestAnimationFrame(() => window.scrollTo(0, y)));
   }, [loading, navigationType, location.pathname, location.search]);
@@ -772,6 +789,12 @@ export function LibraryItemGrid({
     setStatusFilter((localStorage.getItem(`aonarr_library_status_${type}`) as StatusFilter) || "all");
     setSortKey((localStorage.getItem(`aonarr_library_sort_${type}`) as SortKey) || "added");
     setPageSize(Number(localStorage.getItem(`aonarr_library_page_size_${type}`)) || DEFAULT_PAGE_SIZE);
+    // Not persisted per-type like the filters above, so it isn't restored here — just cleared. A
+    // rating filter left over from a previous type (e.g. "R") can be entirely absent from the new
+    // type's own rating vocabulary, silently rendering "Nothing here yet" with the dropdown itself
+    // gone (it only shows when the current type actually has ratings), with no visible way to tell
+    // why the library looks empty.
+    setContentRatingFilter("all");
   }, [type]);
   useEffect(() => {
     localStorage.setItem("aonarr_library_columns", JSON.stringify(Array.from(listColumns)));
