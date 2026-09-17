@@ -3,6 +3,24 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 244 — more test coverage (SMTP client)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/smtp.test.ts` — `sendEmail`/`sendEmailWithAttachment` against a real local TCP server (a
+  ~60-line hand-rolled fake SMTP server in the test itself, not a mocked socket) rather than mocking
+  `net`/`tls`: the full EHLO/MAIL/RCPT/DATA/QUIT handshake, AUTH LOGIN sent with base64-encoded
+  credentials when configured and skipped entirely when not, dot-stuffing a body line that would
+  otherwise terminate the DATA block early (verified by confirming content *after* the escaped line
+  still arrives in the same captured payload, which would be impossible if the escaping were
+  broken), a rejected command surfacing as a real thrown "SMTP error", and the attachment path's
+  multipart MIME structure and base64-encoded content. No `vi.mock` at all — since this client
+  doesn't validate reply text, only the numeric status code, a real server that replies "250 OK" to
+  anything outside a DATA block is enough to drive the whole implementation genuinely end to end.
+
+Test count: 458 → 464 (54 → 55 files).
+
+Verified: `tsc --noEmit` clean, all 464 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 243 — more test coverage (web push notifications)
 No behavior changes. Continues the test-coverage push.
 
