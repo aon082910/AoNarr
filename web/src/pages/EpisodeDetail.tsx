@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
+import MonitorToggle from "../components/MonitorToggle.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { MediaInfo, SearchResult } from "../types.js";
@@ -207,7 +208,9 @@ export default function EpisodeDetail() {
           </tr>
           <tr>
             <th>Monitored</th>
-            <td>{episode.monitored ? "Yes" : "No"}</td>
+            <td>
+              <MonitorToggle monitored={!!episode.monitored} onToggle={toggleMonitored} />
+            </td>
           </tr>
           {episode.quality && (
             <tr>

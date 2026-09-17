@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
+import MonitorToggle from "../components/MonitorToggle.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
@@ -318,7 +319,9 @@ export default function SubItemDetail() {
           </tr>
           <tr>
             <th>Monitored</th>
-            <td>{subItem.monitored ? "Yes" : "No"}</td>
+            <td>
+              <MonitorToggle monitored={!!subItem.monitored} onToggle={toggleMonitored} />
+            </td>
           </tr>
           {subItem.quality && (
             <tr>

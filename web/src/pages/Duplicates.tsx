@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
-import type { DuplicateGroup } from "../types.js";
+import MonitorToggle from "../components/MonitorToggle.js";
+import type { DuplicateGroup, DuplicateGroupItem } from "../types.js";
 
 /** One duplicate group's row-level state: which item is currently selected to keep. Kept outside
  * the fetched data so re-rendering (or a merge elsewhere on the page) doesn't reset a choice the
@@ -37,6 +38,18 @@ export default function Duplicates() {
     });
   }
   useEffect(load, [typeFilter]);
+
+  async function toggleItemMonitored(item: DuplicateGroupItem) {
+    const nextMonitored = !item.monitored;
+    await api.patch(`/media/${item.id}`, { monitored: nextMonitored ? 1 : 0 });
+    setGroups(
+      (prev) =>
+        prev?.map((g) => ({
+          ...g,
+          items: g.items.map((i) => (i.id === item.id ? { ...i, monitored: nextMonitored } : i)),
+        })) ?? null
+    );
+  }
 
   async function dismiss(g: DuplicateGroup) {
     if (!confirm(`Mark "${g.title}"${g.year ? ` (${g.year})` : ""} as not a duplicate? Both items stay in your library untouched, and this group won't be flagged again.`)) {
@@ -164,7 +177,9 @@ export default function Duplicates() {
                       )}
                     </td>
                     <td>{item.childCount > 0 ? item.childCount : ""}</td>
-                    <td>{item.monitored ? "Yes" : "No"}</td>
+                    <td>
+                      <MonitorToggle monitored={item.monitored} onToggle={() => toggleItemMonitored(item)} />
+                    </td>
                     <td>{item.addedAt ? new Date(item.addedAt).toLocaleDateString() : "-"}</td>
                   </tr>
                 ))}

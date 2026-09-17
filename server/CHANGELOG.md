@@ -3,6 +3,23 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 220 — the last few plain "Yes"/"No" monitored columns
+- Grepped the whole codebase for the literal pattern that started this whole thread
+  (`monitored ? "Yes" : "No"`) and found three stragglers `MonitorToggle` hadn't reached yet:
+  `Duplicates.tsx`'s per-candidate comparison table (added a new `toggleItemMonitored` using the
+  same `PATCH /media/:id` call every other per-item toggle already uses), and the single-row
+  detail tables on `EpisodeDetail.tsx`/`SubItemDetail.tsx` — both of which already had a separate
+  "Monitor"/"Unmonitor" button below the table, now sharing that exact same handler so the icon
+  and the button can never disagree. That grep now returns nothing — every monitored indicator in
+  the app is the same clickable icon.
+- Live-verified: on `EpisodeDetail.tsx`, clicked the new icon directly and confirmed the button
+  below it flipped from "Unmonitor" to "Monitor" in the same render, proving both point at the
+  same state. Tried to seed a real duplicate pair to verify `Duplicates.tsx` visually too, but the
+  metadata-import endpoint correctly rejects a same-title-and-year duplicate with 409 — confirms
+  that safeguard works, just not useful for forcing a test fixture; that one file's change is a
+  one-line swap of an already-proven component, checked by code review and a clean typecheck
+  instead.
+
 ## Round 219 — season-level monitor toggle, replacing the Monitor/Unmonitor button pair
 - Extended last round's `MonitorToggle` to the season level on `MediaDetail.tsx`'s episode list:
   the season header's separate "Monitor"/"Unmonitor" text buttons are now a single icon — filled
