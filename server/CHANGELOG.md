@@ -3,6 +3,35 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 237 — more test coverage (deleted-file detection, import review queue, settings store)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/deletedFileCheck.test.ts` — `checkForDeletedFiles` across movies, episodes, and sub-items:
+  clearing `has_file`/path fields when a file has vanished from disk, leaving present files alone,
+  the opt-in `unmonitorDeletedFiles` setting also clearing `monitored`, and the episodic/collection
+  parent-rollup (a series' own `has_file` flips back to 0 once its last file-bearing episode is
+  gone, but stays 1 while any sibling episode still has one).
+- `tests/importReview.test.ts` — `queueForReview`'s dedup check against *any* existing row for the
+  same (source, list, type, title, year) regardless of its status — including the `IS NOT DISTINCT
+  FROM` null-safe comparison for a `null` list id or `null` year matching another `null` rather than
+  failing the equality check the way plain `=` would.
+- `tests/settingsStore.test.ts` — this suite's first dedicated coverage of the setting cache that
+  nearly every other test file already depends on indirectly. Covers the synchronous cache read
+  immediately reflecting a `setSetting()` call (the whole reason this store isn't a plain async DB
+  wrapper), encryption-at-rest for sensitive-looking key names (case-insensitively, across every
+  recognized suffix: password/apikey/token/secret/privatekey/userkey/webhookurl) while the cache
+  keeps serving plaintext, overwrite-not-duplicate semantics, and `deleteSetting` clearing both the
+  cache and the underlying row.
+
+Caught one test-authoring bug in this batch: the first draft of `importReview.test.ts`'s
+different-import-list-ids test used bare `importListId: 1`/`2`, tripping the real
+`import_list_id` foreign key (no such `import_lists` rows existed). Fixed by inserting two real
+`import_lists` rows first and using their actual generated ids.
+
+Test count: 336 → 359 (40 → 43 files).
+
+Verified: `tsc --noEmit` clean, all 359 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 236 — more test coverage (env var resolution, admin bootstrap, friend library comparison)
 No behavior changes. Continues the test-coverage push.
 
