@@ -3,6 +3,23 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 252 — more test coverage (IRC instant-grab announce matching)
+No behavior changes. Continues the test-coverage push — the most involved orchestrator tested yet.
+
+- `tests/ircAnnounce.test.ts` — `handleAnnounce`'s full decision chain: an invalid or non-matching
+  announce regex is a no-op rather than a throw, no download clients configured is a no-op, then
+  the real matching pipeline for both movies and episodes — title matching, the already-queued
+  check, allowed-quality filtering, blocklist filtering, and the minimum-custom-format-score gate —
+  all running against a real database and the codebase's own already-tested pieces
+  (`releaseParser`, `libraryScan`'s `titlesMatch`/`guessTitleFromText`, `customFormatScoring`,
+  `blocklist`). Only `scheduler.js`'s `grab` is mocked, and via `importOriginal()` rather than a
+  full module replacement, so `isAlreadyQueued` and `pickClientForProtocol` — both cheap and DB-
+  or-pure — keep running for real instead of needing their own hand-written stand-ins.
+
+Test count: 531 → 541 (62 → 63 files).
+
+Verified: `tsc --noEmit` clean, all 541 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 251 — more test coverage (subtitle timing sync)
 No behavior changes. Continues the test-coverage push.
 
