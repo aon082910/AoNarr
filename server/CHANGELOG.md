@@ -3,6 +3,26 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 218 — clickable monitor toggles, matching Sonarr/Radarr/Lidarr's poster-corner star
+- **New: `components/MonitorToggle.tsx`** — a small bookmark-ribbon icon (filled when monitored,
+  outline when not) that toggles monitored status with one click, without navigating into the
+  item — exactly the affordance Sonarr/Radarr/Lidarr use on their season/episode/album lists
+  instead of making you open a detail page just to flip one flag. Every "Monitored" column in the
+  app used to be plain "Yes"/"No" text; this replaces all of them:
+  - `LibraryType.tsx`: all three views — a corner overlay on the poster-grid card (Sonarr's actual
+    placement), next to the poster thumbnail in Overview view, and in the Monitored column of
+    Table view. Added a shared `toggleItemMonitored()` reusing the same `PATCH /media/:id` call
+    the existing single-item detail toggle already used.
+  - `MediaDetail.tsx`: the per-episode Monitored column (season accordion tables) and a new
+    Monitored column on the collection-children table (albums/books under an artist/author) that
+    didn't have one before at all — both wired to the same per-item PATCH endpoints
+    EpisodeDetail.tsx/SubItemDetail.tsx already used for their own single-item toggle buttons.
+- Live-verified end-to-end: created a real test movie via the metadata-import endpoint (to get an
+  actual poster to click on, since a fresh instance has nothing seeded), toggled it in all three
+  Library views, and confirmed the icon flips filled↔outline, the poster-banner text updates
+  (Missing↔Unmonitored) in step, and — critically — clicking the toggle never triggers the row's
+  own click-to-navigate handler.
+
 ## Round 217 — sortable tables on the rest of System's tabs
 - Finished the sweep started last round: Maintenance (upcoming archivals, orphaned files, renamed
   files, rename errors, unmonitored-with-no-file cleanup candidates) and Insights (disk space,

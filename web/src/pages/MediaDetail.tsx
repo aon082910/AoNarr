@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api, downloadFile } from "../api/client.js";
 import GroupPicker from "../components/GroupPicker.js";
 import Modal from "../components/Modal.js";
+import MonitorToggle from "../components/MonitorToggle.js";
 import SearchMatchModal, { type MetadataSearchResult } from "../components/SearchMatchModal.js";
 import RenamePreviewModal from "../components/RenamePreviewModal.js";
 import type { LibraryGroup } from "../types.js";
@@ -864,6 +865,24 @@ export default function MediaDetail() {
         const replacement = updated.find((u) => u.id === ep.id);
         return replacement ?? ep;
       }),
+    });
+  }
+
+  async function toggleEpisodeMonitored(ep: Episode) {
+    if (!item) return;
+    const updated = await api.patch<Episode>(`/media/${item.id}/episodes/${ep.id}`, { monitored: ep.monitored ? 0 : 1 });
+    setItem({
+      ...item,
+      children: (item.children as Episode[]).map((e) => (e.id === ep.id ? updated : e)),
+    });
+  }
+
+  async function toggleSubItemMonitored(si: SubItem) {
+    if (!item) return;
+    const updated = await api.patch<SubItem>(`/media/${item.id}/subitems/${si.id}`, { monitored: si.monitored ? 0 : 1 });
+    setItem({
+      ...item,
+      children: (item.children as SubItem[]).map((c) => (c.id === si.id ? updated : c)),
     });
   }
 
@@ -2377,7 +2396,9 @@ export default function MediaDetail() {
                             <td>{ep.episodeNumber}</td>
                             <td>{ep.title ?? <span style={{ color: "var(--muted)", fontStyle: "italic" }}>Episode {ep.episodeNumber}</span>}</td>
                             <td>{ep.airDate ?? "-"}</td>
-                            <td>{ep.monitored ? "Yes" : "No"}</td>
+                            <td>
+                              <MonitorToggle monitored={!!ep.monitored} onToggle={() => toggleEpisodeMonitored(ep)} />
+                            </td>
                             <td>
                               <span className={`badge ${ep.hasFile ? "ok" : ""}`}>{ep.hasFile ? "Downloaded" : "Missing"}</span>
                             </td>
@@ -2440,6 +2461,7 @@ export default function MediaDetail() {
                 <th></th>
                 {childHeader("title", "Title")}
                 {childHeader("releaseDate", "Release date")}
+                <th>Monitored</th>
                 <th>File</th>
                 <th>Quality</th>
                 <th></th>
@@ -2476,6 +2498,9 @@ export default function MediaDetail() {
                   </td>
                   <td>{si.title}</td>
                   <td>{si.releaseDate ?? "-"}</td>
+                  <td onClick={(e) => e.stopPropagation()}>
+                    <MonitorToggle monitored={!!si.monitored} onToggle={() => toggleSubItemMonitored(si)} />
+                  </td>
                   <td>
                     <span className={`badge ${si.hasFile ? "ok" : ""}`}>{si.hasFile ? "Downloaded" : "Missing"}</span>
                   </td>

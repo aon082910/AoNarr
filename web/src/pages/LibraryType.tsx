@@ -7,6 +7,7 @@ import type { CustomColumn, LibraryGroup, MediaItem, QualityProfile, RootFolder,
 import { formatBytes } from "../utils/format.js";
 import DropdownMenu from "../components/DropdownMenu.js";
 import Modal from "../components/Modal.js";
+import MonitorToggle from "../components/MonitorToggle.js";
 import RenamePreviewModal from "../components/RenamePreviewModal.js";
 
 type SortKey = "title" | "year" | "added" | "status" | "monitored" | "quality" | "contentRating" | "releaseDate" | "path" | "sizeOnDisk";
@@ -799,6 +800,11 @@ export function LibraryItemGrid({
     load();
   }
 
+  async function toggleItemMonitored(item: MediaItem) {
+    const updated = await api.patch<MediaItem>(`/media/${item.id}`, { monitored: item.monitored ? 0 : 1 });
+    setItems((prev) => prev.map((i) => (i.id === item.id ? updated : i)));
+  }
+
   const [bulkEditProfiles, setBulkEditProfiles] = useState<QualityProfile[]>([]);
   const [bulkEditFolders, setBulkEditFolders] = useState<RootFolder[]>([]);
   const [bulkEditQualityProfileId, setBulkEditQualityProfileId] = useState<number | "">("");
@@ -1294,6 +1300,22 @@ export function LibraryItemGrid({
               )}
               <div className="poster" style={item.posterUrl ? { backgroundImage: `url(${item.posterUrl})` } : undefined}>
                 {!item.posterUrl && "No poster"}
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 4,
+                    right: 4,
+                    background: "rgba(0,0,0,0.55)",
+                    borderRadius: "50%",
+                    width: 24,
+                    height: 24,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <MonitorToggle monitored={!!item.monitored} onToggle={() => toggleItemMonitored(item)} />
+                </div>
                 <div className={`poster-banner ${posterBanner(item).cls}`}>{posterBanner(item).label}</div>
               </div>
               <div className="meta">
@@ -1337,6 +1359,7 @@ export function LibraryItemGrid({
                     onChange={() => {}}
                   />
                 )}
+                <MonitorToggle monitored={!!item.monitored} onToggle={() => toggleItemMonitored(item)} />
                 <div className="poster-thumb" style={item.posterUrl ? { backgroundImage: `url(${item.posterUrl})` } : undefined} />
                 <div className="overview-main">
                   <div className="overview-title">{item.title}</div>
@@ -1419,7 +1442,9 @@ export function LibraryItemGrid({
                         <span className={`badge ${item.hasFile ? "ok" : ""}`}>{item.hasFile ? "Downloaded" : "Missing"}</span>
                       </td>
                     ) : f === "monitored" ? (
-                      <td key={f}>{item.monitored ? "Yes" : "No"}</td>
+                      <td key={f}>
+                        <MonitorToggle monitored={!!item.monitored} onToggle={() => toggleItemMonitored(item)} />
+                      </td>
                     ) : (
                       <td key={f}>{fieldValue(item, f, customColumnsForType)}</td>
                     )
