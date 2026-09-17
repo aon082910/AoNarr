@@ -5,11 +5,186 @@ import NamingSetupModal from "../components/NamingSetupModal.js";
 import SettingsProviderTiles, { type SettingsProviderDef } from "../components/SettingsProviderTiles.js";
 import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
-import type { BlocklistEntry, CustomFormat, DelayProfile, ImportExclusion, MediaType, Quality, QualityProfile, ReleaseProfile, RootFolder, Tag } from "../types.js";
+import type { BlocklistEntry, CustomFormat, DelayProfile, ImportExclusion, MediaType, MediaTypeInfo, Quality, QualityProfile, ReleaseProfile, RootFolder, Tag } from "../types.js";
 import { formatBytes } from "../utils/format.js";
+import { useSortableTable } from "../hooks/useSortableTable.js";
 
 interface FormatScore extends CustomFormat {
   score: number;
+}
+
+/** Extracted so `useSortableTable` is a real component-level hook call — `SettingsSectionTiles`
+ * invokes each section's `render()` as a plain function, and only the currently-open section's
+ * `render()` runs, so a hook called directly inside one of those callbacks would violate the rules
+ * of hooks (same bug class fixed in Round 215's Users.tsx). Returning a mounted component sidesteps
+ * that: React owns this component's own render and hook order. */
+function BlocklistTable({ entries, onRemove }: { entries: BlocklistEntry[]; onRemove: (id: number) => void }) {
+  const { sortRows, sortableHeader } = useSortableTable<BlocklistEntry, "media" | "release" | "date">("date", "desc");
+  const sorted = sortRows(entries, (a, b, key) => {
+    if (key === "media") return a.mediaTitle.localeCompare(b.mediaTitle);
+    if (key === "release") return a.releaseTitle.localeCompare(b.releaseTitle);
+    return a.createdAt.localeCompare(b.createdAt);
+  });
+  return (
+    <table>
+      <thead>
+        <tr>
+          {sortableHeader("media", "Media item")}
+          {sortableHeader("release", "Release")}
+          {sortableHeader("date", "Blocklisted")}
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((b) => (
+          <tr key={b.id}>
+            <td>{b.mediaTitle}</td>
+            <td>{b.releaseTitle}</td>
+            <td>{b.createdAt}</td>
+            <td>
+              <button className="danger" onClick={() => onRemove(b.id)}>
+                Remove
+              </button>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function TagsTable({
+  tags,
+  onUpdateRetention,
+  onRemove,
+}: {
+  tags: Tag[];
+  onUpdateRetention: (id: number, value: string) => void;
+  onRemove: (id: number) => void;
+}) {
+  const { sortRows, sortableHeader } = useSortableTable<Tag, "name" | "retention">("name");
+  const sorted = sortRows(tags, (a, b, key) => {
+    if (key === "name") return a.name.localeCompare(b.name);
+    return (a.retentionDays ?? 0) - (b.retentionDays ?? 0);
+  });
+  return (
+    <table>
+      <thead>
+        <tr>
+          {sortableHeader("name", "Name")}
+          {sortableHeader("retention", "Archival retention (days)")}
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((t) => (
+          <tr key={t.id}>
+            <td>{t.name}</td>
+            <td>
+              <select
+                value={t.retentionDays === null ? "" : t.retentionDays === -1 ? "never" : "custom"}
+                onChange={(e) => {
+                  if (e.target.value === "") onUpdateRetention(t.id, "");
+                  else if (e.target.value === "never") onUpdateRetention(t.id, "-1");
+                  else if (e.target.value === "custom") onUpdateRetention(t.id, "30");
+                }}
+                style={{ display: "inline-block", width: "auto", marginRight: 6 }}
+              >
+                <option value="">Use default</option>
+                <option value="custom">Custom days...</option>
+                <option value="never">Never archive</option>
+              </select>
+              {t.retentionDays !== null && t.retentionDays !== -1 && (
+                <input
+                  type="number"
+                  style={{ width: 80, display: "inline-block" }}
+                  defaultValue={t.retentionDays}
+                  onBlur={(e) => onUpdateRetention(t.id, e.target.value)}
+                />
+              )}
+            </td>
+            <td>
+              <button className="danger" onClick={() => onRemove(t.id)}>
+                Delete
+              </button>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function FormatScoresTable({ scores, onSaveScore }: { scores: FormatScore[]; onSaveScore: (id: number, score: number) => void }) {
+  const { sortRows, sortableHeader } = useSortableTable<FormatScore, "format" | "score">("format");
+  const sorted = sortRows(scores, (a, b, key) => (key === "format" ? a.name.localeCompare(b.name) : a.score - b.score));
+  return (
+    <table>
+      <thead>
+        <tr>
+          {sortableHeader("format", "Format")}
+          {sortableHeader("score", "Score")}
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((f) => (
+          <tr key={f.id}>
+            <td>{f.name}</td>
+            <td>
+              <input type="number" defaultValue={f.score} style={{ width: 80 }} onBlur={(e) => onSaveScore(f.id, Number(e.target.value))} />
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function ImportExclusionsTable({
+  exclusions,
+  mediaTypes,
+  onRemove,
+}: {
+  exclusions: ImportExclusion[];
+  mediaTypes: MediaTypeInfo[];
+  onRemove: (id: number) => void;
+}) {
+  const { sortRows, sortableHeader } = useSortableTable<ImportExclusion, "title" | "type" | "reason">("title");
+  const typeLabel = (t: MediaType) => mediaTypes.find((mt) => mt.key === t)?.label ?? t;
+  const sorted = sortRows(exclusions, (a, b, key) => {
+    if (key === "title") return a.title.localeCompare(b.title);
+    if (key === "type") return typeLabel(a.type).localeCompare(typeLabel(b.type));
+    return (a.reason ?? "").localeCompare(b.reason ?? "");
+  });
+  return (
+    <table>
+      <thead>
+        <tr>
+          {sortableHeader("title", "Title")}
+          {sortableHeader("type", "Type")}
+          {sortableHeader("reason", "Reason")}
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((ex) => (
+          <tr key={ex.id}>
+            <td>
+              {ex.title}
+              {ex.year ? ` (${ex.year})` : ""}
+            </td>
+            <td>{typeLabel(ex.type)}</td>
+            <td>{ex.reason ?? "-"}</td>
+            <td>
+              <button className="danger" onClick={() => onRemove(ex.id)}>
+                Remove
+              </button>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
 }
 
 interface SubtitleProvider {
@@ -1636,30 +1811,7 @@ export default function Settings() {
                     <button type="button" className="danger" onClick={clearBlocklist} style={{ marginBottom: 8 }}>
                       Clear all
                     </button>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Media item</th>
-                          <th>Release</th>
-                          <th>Blocklisted</th>
-                          <th></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {blocklist.map((b) => (
-                          <tr key={b.id}>
-                            <td>{b.mediaTitle}</td>
-                            <td>{b.releaseTitle}</td>
-                            <td>{b.createdAt}</td>
-                            <td>
-                              <button className="danger" onClick={() => removeBlocklistEntry(b.id)}>
-                                Remove
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                    <BlocklistTable entries={blocklist} onRemove={removeBlocklistEntry} />
                   </>
                 )}
               </div>
@@ -2585,50 +2737,7 @@ export default function Settings() {
                   <input id="settings-name-87" value={tagName} onChange={(e) => setTagName(e.target.value)} required />
                   <button type="submit">Add tag</button>
                 </form>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Archival retention (days)</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {tags.map((t) => (
-                      <tr key={t.id}>
-                        <td>{t.name}</td>
-                        <td>
-                          <select
-                            value={t.retentionDays === null ? "" : t.retentionDays === -1 ? "never" : "custom"}
-                            onChange={(e) => {
-                              if (e.target.value === "") updateTagRetention(t.id, "");
-                              else if (e.target.value === "never") updateTagRetention(t.id, "-1");
-                              else if (e.target.value === "custom") updateTagRetention(t.id, "30");
-                            }}
-                            style={{ display: "inline-block", width: "auto", marginRight: 6 }}
-                          >
-                            <option value="">Use default</option>
-                            <option value="custom">Custom days...</option>
-                            <option value="never">Never archive</option>
-                          </select>
-                          {t.retentionDays !== null && t.retentionDays !== -1 && (
-                            <input
-                              type="number"
-                              style={{ width: 80, display: "inline-block" }}
-                              defaultValue={t.retentionDays}
-                              onBlur={(e) => updateTagRetention(t.id, e.target.value)}
-                            />
-                          )}
-                        </td>
-                        <td>
-                          <button className="danger" onClick={() => removeTag(t.id)}>
-                            Delete
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <TagsTable tags={tags} onUpdateRetention={updateTagRetention} onRemove={removeTag} />
                 {tags.length === 0 && <p className="empty">No tags yet.</p>}
               </div>
             ),
@@ -3171,29 +3280,7 @@ export default function Settings() {
                         </option>
                       ))}
                     </select>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Format</th>
-                          <th>Score</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {formatScores.map((f) => (
-                          <tr key={f.id}>
-                            <td>{f.name}</td>
-                            <td>
-                              <input
-                                type="number"
-                                defaultValue={f.score}
-                                style={{ width: 80 }}
-                                onBlur={(e) => saveFormatScore(f.id, Number(e.target.value))}
-                              />
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                    <FormatScoresTable scores={formatScores} onSaveScore={saveFormatScore} />
                   </>
                 )}
               </div>
@@ -3221,33 +3308,7 @@ export default function Settings() {
                 </p>
                 {exclusions.length === 0 && <p className="empty">Nothing excluded yet.</p>}
                 {exclusions.length > 0 && (
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Title</th>
-                        <th>Type</th>
-                        <th>Reason</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {exclusions.map((ex) => (
-                        <tr key={ex.id}>
-                          <td>
-                            {ex.title}
-                            {ex.year ? ` (${ex.year})` : ""}
-                          </td>
-                          <td>{mediaTypes.find((t) => t.key === ex.type)?.label ?? ex.type}</td>
-                          <td>{ex.reason ?? "-"}</td>
-                          <td>
-                            <button className="danger" onClick={() => removeExclusion(ex.id)}>
-                              Remove
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <ImportExclusionsTable exclusions={exclusions} mediaTypes={mediaTypes} onRemove={removeExclusion} />
                 )}
               </div>
             ),

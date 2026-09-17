@@ -3,6 +3,28 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 223 — sortable headers inside Settings' render-callback tiles
+- The one deliberately-skipped item from Round 222: `Settings.tsx`'s four small config list tables
+  (Blocklist, Tags, Format Scores, Import Exclusions) live inside `SettingsSectionTiles`' `render: ()
+  => (...)` callbacks — `openSection.render()` is invoked as a plain function call, and only the
+  currently-open section's callback runs, so calling `useSortableTable` directly inside one would
+  violate the rules of hooks (same bug class fixed for `Users.tsx` in Round 215).
+- Fixed the right way instead of skipping again: extracted each table into its own real component
+  (`BlocklistTable`, `TagsTable`, `FormatScoresTable`, `ImportExclusionsTable`), each taking the
+  already-loaded data and callbacks as props and calling `useSortableTable` in its own function body.
+  `render: () => <TagsTable ... />` now returns a mounted component instance instead of invoking a
+  hook inline, so React owns that component's own hook order — no violation. The transient
+  Test-Custom-Formats match-results table was left alone (one-off output, not a persistent list).
+- Live-verified against the local Docker test stack: created two tags via direct API calls
+  (`Zebra Tag`, `Apple Tag`), opened the Tags settings tile, and confirmed the table defaulted to
+  alphabetical order (Apple before Zebra) with the "Name ▲" arrow indicator showing — the same
+  sort-hook behavior already proven across 20+ other pages this session. Cleaned up the test tags
+  afterward. `npx tsc --noEmit` clean.
+- This was the last carve-out from the "make every page match Sonarr/Radarr/Lidarr/Readarr/
+  Whisparr" plan — every list table in the app is now sortable except the two still deliberately
+  out of scope (`LibraryType.tsx`'s server-side sort dropdown, `Dashboard.tsx`'s fixed-recency
+  widgets) and the truly non-list detail/manually-ordered tables.
+
 ## Round 222 — one more sortable-header catch, closing the Round 215 plan for good
 - Full sweep of every page for a plain `<table>` not yet using `useSortableTable` turned up one
   more: `DownloadClients.tsx`'s Remote Path Mappings sub-table (Client / Remote path / Local path)
