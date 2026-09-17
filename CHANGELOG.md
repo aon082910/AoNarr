@@ -3,6 +3,30 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 243 — more test coverage (web push notifications)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/push.test.ts` — this session's first `vi.mock()` of an entire npm package (`web-push`,
+  which talks to browser push services directly rather than through the global `fetch`
+  `vi.stubGlobal` already covers). `ensureVapidKeys` generating and persisting keys once, then
+  reusing them rather than regenerating. `saveSubscription`'s upsert-by-endpoint and
+  `removeSubscription`. `sendPush` targeting every global subscription when no user is given versus
+  only one user's own subscriptions, and its expired-subscription cleanup: a 404/410 send failure
+  removes that subscription, any other failure logs and keeps it.
+
+Caught two related test-authoring bugs before they ever ran, both from `Promise.all`-driven
+concurrent sends: `mockRejectedValueOnce` rejects whichever call happens to land first, not
+necessarily the target endpoint's — irrelevant when there's exactly one target, but wrong once
+`sendPush` fans out across several. Fixed by keying the mock's rejection off the endpoint argument
+itself instead of call order, and by asserting per-endpoint outcomes rather than an exact call
+count in the "sends to every global subscription" test, since this suite's shared-DB-per-file
+convention means earlier tests' subscriptions are still present when a later test's `sendPush` fans
+out to "every global target."
+
+Test count: 449 → 458 (53 → 54 files).
+
+Verified: `tsc --noEmit` clean, all 458 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 242 — more test coverage (update check, TheXEM scene numbering)
 No behavior changes. Continues the test-coverage push — the first round tackling the harder,
 network-mocked services after clearing the low-risk backlog.
