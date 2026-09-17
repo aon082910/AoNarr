@@ -3,6 +3,23 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 253 — more test coverage (media server watch-event webhooks/sync)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/mediaServerWebhook.test.ts` — Plex's scrobble-only webhook payload parsing (`mediaServer.
+  js`'s `resolvePlexFilePath` mocked), Jellyfin/Emby's payload parsing (a pure function, run for
+  real — including that a missing notification-type field is accepted rather than filtered, and
+  the `Item.Path` fallback), `recordWatchEvent`'s path-tail matching across all three shapes
+  (media_items/episodes/sub_items), and `syncWatchStatusFromMediaServer`'s batch cursor logic: no
+  new watch events when nothing's newly watched, a matched file recorded and the cursor advanced to
+  its timestamp, an *unmatched* file with a later timestamp never advancing the cursor past the
+  last genuinely matched one, and an already-processed file (at or before the stored cursor) never
+  reprocessed.
+
+Test count: 541 → 558 (63 → 64 files).
+
+Verified: `tsc --noEmit` clean, all 558 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 252 — more test coverage (IRC instant-grab announce matching)
 No behavior changes. Continues the test-coverage push — the most involved orchestrator tested yet.
 
