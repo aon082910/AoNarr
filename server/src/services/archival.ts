@@ -68,7 +68,7 @@ async function moveOrDelete(
  * protective* one wins — never beats any duration, and among durations the longest wins — since
  * these overrides exist to protect content the default policy would otherwise sweep up.
  */
-async function effectiveRetentionDays(mediaItemId: number, globalDefaultDays: number): Promise<number | null> {
+export async function effectiveRetentionDays(mediaItemId: number, globalDefaultDays: number): Promise<number | null> {
   const tagOverrides = (
     (await db
       .prepare(

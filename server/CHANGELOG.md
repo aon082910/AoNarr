@@ -3,6 +3,47 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 229 — expand automated test coverage (security-critical + previously-untested logic)
+No behavior changes — this round adds regression tests for code that had none, prioritizing (a)
+security-critical pure logic and (b) real bugs fixed in Rounds 225/227 that had no automated
+regression coverage guarding them, so a future edit that reintroduces one of them fails a test
+instead of waiting for a third audit to catch it. Two helper functions were exported (no logic
+changes) specifically so their tests could call them directly rather than only exercising them
+indirectly through a much heavier end-to-end path: `isEventEnabledFor` (`services/notifications.ts`)
+and `effectiveRetentionDays` (`services/archival.ts`).
+
+- `tests/encryption.test.ts` — the AES-256-GCM encrypt/decrypt round trip now protecting three more
+  credential tables as of Round 227, including that a legacy plaintext value passes through
+  unchanged, and that a key mismatch (the documented "backup restored into a different config
+  volume" failure mode) throws loudly rather than returning silently-wrong plaintext.
+- `tests/totp.test.ts` — per-user TOTP: input validation, accepting a real code within the ±1 step
+  clock-drift window, and rejecting one from further away or generated for a different secret.
+- `tests/auth.test.ts` — password hashing, one-time pending-login tokens, session creation/
+  expiry/destruction, and a regression test for Round 225's `listActiveSessions` fix (comparing an
+  ISO `expires_at` against "now" as raw text made any same-day-expiring session look still-active,
+  since `'T'` sorts above `' '` at the character position the two formats otherwise agree on).
+- `tests/contentRatings.test.ts` — the `isRatingBlocked`/`CONTENT_RATING_ORDER` logic gating most of
+  Round 227's access-control fixes, previously exercised only indirectly through route-level tests.
+- `tests/mediaServerImport.test.ts` — `titlesMatch`, `externalIdsOverlap`, `titleAndYearMatch`'s
+  year-gating branches, and a regression test for Round 227's `exactTitlesMatch` fix (Starr/Lidarr/
+  Readarr artist-author matching must not fold "Extraction" into "Extraction 2" the way the
+  substring-tolerant `titlesMatch` would).
+- `tests/notifications.test.ts` — a regression test for Round 227's `isEventEnabledFor` fix (a
+  provider's events setting being unset vs. explicitly saved empty must not read the same way, or
+  unchecking the last event silently re-enables all of them).
+- `tests/archival.test.ts` — `pathTail`'s cross-mount-point/case-insensitive matching, and
+  `effectiveRetentionDays`'s override resolution (tag vs. collection, `-1`/never-archive beating any
+  duration, the longest duration winning among several, an override-less tag/collection being
+  ignored).
+
+Test count: 93 → 152 (9 → 16 files). Docker images were not rebuilt for this round — nothing in the
+compiled server's actual behavior changed (the two newly-exported functions are unchanged aside
+from visibility), so a multi-arch rebuild/push would ship an identical runtime for no benefit.
+
+Verified: `tsc --noEmit` clean, all 152 server tests passing (including catching and fixing one bug
+in the tests themselves — an incorrect column name in a new `auth.test.ts` assertion — before this
+was committed).
+
 ## Round 228 — close out Round 227's deferred multi-disc findings + remaining error-handling gaps
 Two items were deliberately left open at the end of Round 227 as "medium confidence/severity,
 needs a clear head rather than audit-time-pressure to fix safely" — closed out properly this round,
