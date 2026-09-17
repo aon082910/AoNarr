@@ -523,6 +523,16 @@ export default function MediaDetail() {
     setItem({ ...item, contentRating: updated.contentRating });
   }
 
+  // Item → item navigation (a TMDB collection part, a series sibling) reuses this mounted
+  // component, so per-item panels must reset or B's page opens with A's history listed under it.
+  useEffect(() => {
+    setHistory(null);
+    setShowHistory(false);
+    setShowFileDetails(false);
+    setSeededSeasons(false);
+    setOpenSeasons(new Set());
+  }, [id]);
+
   function toggleHistory() {
     if (!item) return;
     const next = !showHistory;
@@ -921,23 +931,24 @@ export default function MediaDetail() {
   }
 
   async function grab(result: SearchResult) {
-    const clients = await api.get<{ id: number }[]>("/download-clients");
-    if (clients.length === 0) {
-      alert("Add a download client first.");
-      return;
+    // The server picks an enabled client matching the release's protocol (usenet → SABnzbd,
+    // torrent → qBittorrent/debrid) — the first client in the list isn't necessarily either.
+    try {
+      await api.post(`/search/${id}/grab`, {
+        downloadUrl: result.downloadUrl,
+        indexerId: result.indexerId,
+        title: result.title,
+        size: result.size,
+        protocol: result.protocol,
+        episodeId: target?.episodeId ?? null,
+        subItemId: target?.subItemId ?? null,
+        seasonNumber: target?.episodeId ? null : target?.seasonNumber ?? null,
+      });
+      alert(`Sent "${result.title}" to download client.`);
+      load();
+    } catch (e) {
+      alert(`Grab failed: ${(e as Error).message}`);
     }
-    await api.post(`/search/${id}/grab`, {
-      downloadUrl: result.downloadUrl,
-      indexerId: result.indexerId,
-      title: result.title,
-      size: result.size,
-      downloadClientId: clients[0].id,
-      episodeId: target?.episodeId ?? null,
-      subItemId: target?.subItemId ?? null,
-      seasonNumber: target?.episodeId ? null : target?.seasonNumber ?? null,
-    });
-    alert(`Sent "${result.title}" to download client.`);
-    load();
   }
 
   async function downloadVideo(sub: SubItem) {

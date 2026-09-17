@@ -497,6 +497,13 @@ export default function Settings() {
   const [plexAuthUrl, setPlexAuthUrl] = useState<string | null>(null);
   const [plexSigningIn, setPlexSigningIn] = useState(false);
   const [plexSignInStatus, setPlexSignInStatus] = useState<"waiting" | "claimed" | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const [customFormats, setCustomFormats] = useState<CustomFormat[]>([]);
   const [formatName, setFormatName] = useState("");
   const [formatPatterns, setFormatPatterns] = useState("");
@@ -847,14 +854,29 @@ export default function Settings() {
       setPlexSignInStatus("waiting");
       window.open(pin.authUrl, "_blank", "noopener,noreferrer");
 
+      // Plex PINs expire after ~15 minutes; stop polling then (or when this page unmounts) and
+      // keep polling through a transient network error instead of silently dying on it.
+      const deadline = Date.now() + 15 * 60 * 1000;
       const poll = async () => {
-        const result = await api.get<{ claimed: boolean }>(`/settings/plex-auth/pin/${pin.pinId}`);
-        if (result.claimed) {
-          setPlexSignInStatus("claimed");
-          const fresh = await api.get<Record<string, string>>("/settings");
-          setSettings(fresh);
+        if (!mountedRef.current) return;
+        if (Date.now() > deadline) {
+          setPlexSignInStatus(null);
           setPlexAuthUrl(null);
           return;
+        }
+        try {
+          const result = await api.get<{ claimed: boolean }>(`/settings/plex-auth/pin/${pin.pinId}`);
+          if (result.claimed) {
+            if (!mountedRef.current) return;
+            setPlexSignInStatus("claimed");
+            const fresh = await api.get<Record<string, string>>("/settings");
+            if (!mountedRef.current) return;
+            setSettings(fresh);
+            setPlexAuthUrl(null);
+            return;
+          }
+        } catch {
+          // transient — try again on the next tick
         }
         setTimeout(poll, 2000);
       };

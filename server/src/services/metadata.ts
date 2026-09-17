@@ -627,11 +627,14 @@ async function fetchAlbumTracksMusicbrainz(releaseGroupMbid: string): Promise<Me
   if (!relRes.ok) throw new Error(`MusicBrainz release lookup failed: HTTP ${relRes.status}`);
   const relBody: any = await relRes.json();
 
+  // Track numbers restart at 1 on every disc of a multi-disc release; `tracks` is keyed
+  // UNIQUE(sub_item_id, track_number), so number them continuously across discs instead.
   const tracks: MetadataTrack[] = [];
   for (const medium of relBody.media ?? []) {
+    const offset = tracks.length;
     for (const track of medium.tracks ?? []) {
       tracks.push({
-        trackNumber: Number(track.number) || tracks.length + 1,
+        trackNumber: offset + (Number(track.number) || tracks.length - offset + 1),
         title: track.title ?? `Track ${track.number}`,
         durationSeconds: track.length ? Math.round(track.length / 1000) : null,
       });

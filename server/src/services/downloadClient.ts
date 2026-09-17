@@ -7,8 +7,30 @@ import { config } from "../config.js";
 import { db } from "../db/index.js";
 import { downloadClientFromRow } from "../db/mappers.js";
 import type { DownloadClient, QueueItem } from "../types/index.js";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { decodeSlskdDownloadUrl } from "./soulseek.js";
 import { getSetting } from "./settingsStore.js";
+
+/** Streams a fetch() body to disk with backpressure, and on any failure closes the write stream
+ * and removes the partial file — a leftover partial in downloadsDir would otherwise be picked up
+ * by the importer's fuzzy filename match as if it were a finished download. */
+async function saveBodyToFile(body: ReadableStream<Uint8Array>, dest: string, onChunk?: (bytes: number) => void): Promise<void> {
+  const source = Readable.fromWeb(body as any);
+  if (onChunk) source.on("data", (chunk: Buffer) => onChunk(chunk.length));
+  const out = fs.createWriteStream(dest);
+  try {
+    await pipeline(source, out);
+  } catch (err) {
+    out.destroy();
+    await fs.promises.unlink(dest).catch(() => {});
+    throw err;
+  }
+}
+
+/** Debrid services can sit in a "waiting"/"queued" state indefinitely for a dead torrent — give
+ * up after this long rather than polling forever with the queue row never resolving. */
+const DEBRID_POLL_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 
 export interface GrabResult {
   downloadId: string;
@@ -197,6 +219,22 @@ export async function testDownloadClientConnection(client: DownloadClient): Prom
 class QBittorrentAdapter implements DownloadClientAdapter {
   private cookieCache = new Map<number, string>();
 
+  /** fetch() with the cached SID; on a 403 (qBittorrent restarted / session expired) the cookie
+   * is dropped and the request retried once with a fresh login instead of failing every poll
+   * until AoNarr itself restarts. */
+  private async authedFetch(client: DownloadClient, url: string, init: RequestInit = {}): Promise<Response> {
+    const attempt = async () => {
+      const cookie = await this.login(client);
+      return fetch(url, { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Cookie: cookie } });
+    };
+    let res = await attempt();
+    if (res.status === 403) {
+      this.cookieCache.delete(client.id);
+      res = await attempt();
+    }
+    return res;
+  }
+
   private async login(client: DownloadClient): Promise<string> {
     const cached = this.cookieCache.get(client.id);
     if (cached) return cached;
@@ -219,13 +257,12 @@ class QBittorrentAdapter implements DownloadClientAdapter {
   }
 
   async addDownload(client: DownloadClient, downloadUrl: string, category: string | null): Promise<GrabResult> {
-    const cookie = await this.login(client);
     const form = new URLSearchParams({ urls: downloadUrl });
     if (category) form.set("category", category);
 
-    const res = await fetch(`${baseUrl(client)}/api/v2/torrents/add`, {
+    const res = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/add`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: form,
     });
     if (!res.ok) throw new Error(`qBittorrent add failed: HTTP ${res.status}`);
@@ -236,10 +273,7 @@ class QBittorrentAdapter implements DownloadClientAdapter {
   }
 
   async getStatus(client: DownloadClient, _downloadIds: string[]): Promise<QueueStatusUpdate[]> {
-    const cookie = await this.login(client);
-    const res = await fetch(`${baseUrl(client)}/api/v2/torrents/info`, {
-      headers: { Cookie: cookie },
-    });
+    const res = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/info`);
     if (!res.ok) throw new Error(`qBittorrent status failed: HTTP ${res.status}`);
     const torrents = (await res.json()) as any[];
 
@@ -257,23 +291,20 @@ class QBittorrentAdapter implements DownloadClientAdapter {
   /** qBittorrent orders torrents by queue position; `topPrio`/`bottomPrio` move one to either end
    * (there's no direct "set numeric priority" call in the Web API). */
   async setPriority(client: DownloadClient, downloadId: string, priority: "top" | "normal"): Promise<void> {
-    const cookie = await this.login(client);
     const endpoint = priority === "top" ? "topPrio" : "bottomPrio";
-    const res = await fetch(`${baseUrl(client)}/api/v2/torrents/${endpoint}`, {
+    const res = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/${endpoint}`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ hashes: downloadId }),
     });
     if (!res.ok) throw new Error(`qBittorrent ${endpoint} failed: HTTP ${res.status}`);
   }
 
   async getHealthStats(client: DownloadClient): Promise<ClientHealthStats> {
-    const cookie = await this.login(client);
-
     const [transferRes, prefsRes, torrentsRes] = await Promise.all([
-      fetch(`${baseUrl(client)}/api/v2/transfer/info`, { headers: { Cookie: cookie } }),
-      fetch(`${baseUrl(client)}/api/v2/app/preferences`, { headers: { Cookie: cookie } }),
-      fetch(`${baseUrl(client)}/api/v2/torrents/info`, { headers: { Cookie: cookie } }),
+      this.authedFetch(client, `${baseUrl(client)}/api/v2/transfer/info`),
+      this.authedFetch(client, `${baseUrl(client)}/api/v2/app/preferences`),
+      this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/info`),
     ]);
     if (!transferRes.ok || !prefsRes.ok || !torrentsRes.ok) {
       throw new Error("qBittorrent health stats request failed");
@@ -302,8 +333,7 @@ class QBittorrentAdapter implements DownloadClientAdapter {
 
   async removeSeededTorrents(client: DownloadClient, ratioGoal: number | null, seedTimeGoalMinutes: number | null): Promise<number> {
     if (ratioGoal === null && seedTimeGoalMinutes === null) return 0;
-    const cookie = await this.login(client);
-    const res = await fetch(`${baseUrl(client)}/api/v2/torrents/info`, { headers: { Cookie: cookie } });
+    const res = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/info`);
     if (!res.ok) throw new Error(`qBittorrent torrents/info failed: HTTP ${res.status}`);
     const torrents = (await res.json()) as any[];
 
@@ -319,9 +349,9 @@ class QBittorrentAdapter implements DownloadClientAdapter {
     });
     if (eligible.length === 0) return 0;
 
-    const removeRes = await fetch(`${baseUrl(client)}/api/v2/torrents/delete`, {
+    const removeRes = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/delete`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ hashes: eligible.map((t) => t.hash).join("|"), deleteFiles: "false" }),
     });
     if (!removeRes.ok) throw new Error(`qBittorrent torrents/delete failed: HTTP ${removeRes.status}`);
@@ -329,10 +359,9 @@ class QBittorrentAdapter implements DownloadClientAdapter {
   }
 
   async removeDownload(client: DownloadClient, downloadId: string, deleteFiles: boolean): Promise<void> {
-    const cookie = await this.login(client);
-    const res = await fetch(`${baseUrl(client)}/api/v2/torrents/delete`, {
+    const res = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/delete`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ hashes: downloadId, deleteFiles: deleteFiles ? "true" : "false" }),
     });
     if (!res.ok) throw new Error(`qBittorrent torrents/delete failed: HTTP ${res.status}`);
@@ -496,13 +525,10 @@ class HttpDownloadAdapter implements DownloadClientAdapter {
 
         const total = Number(res.headers.get("content-length") ?? 0);
         let received = 0;
-        const fileStream = fs.createWriteStream(dest);
-        for await (const chunk of res.body as any) {
-          fileStream.write(chunk);
-          received += chunk.length;
+        await saveBodyToFile(res.body, dest, (bytes) => {
+          received += bytes;
           if (total > 0) this.jobs.set(downloadId, { progress: Math.min(received / total, 0.99), status: "downloading" });
-        }
-        await new Promise<void>((resolve, reject) => fileStream.end((err: any) => (err ? reject(err) : resolve())));
+        });
         this.jobs.set(downloadId, { progress: 1, status: "completed" });
       } catch (err) {
         log.warn(`[http-download] failed for "${releaseTitle ?? downloadUrl}":`, (err as Error).message);
@@ -623,15 +649,20 @@ class RealDebridAdapter implements DownloadClientAdapter {
     (async () => {
       try {
         const torrentId = await this.addToRealDebrid(client, downloadUrl);
-        await fetch(`${this.base}/torrents/selectFiles/${torrentId}`, {
+        const selectRes = await fetch(`${this.base}/torrents/selectFiles/${torrentId}`, {
           method: "POST",
           headers: { ...this.headers(client), "Content-Type": "application/x-www-form-urlencoded" },
           body: "files=all",
         });
+        // 202 = already selected (re-added torrent); anything else non-2xx leaves the torrent stuck
+        // in waiting_files_selection forever, so fail fast instead of polling it.
+        if (!selectRes.ok && selectRes.status !== 202) throw new Error(`Real-Debrid selectFiles failed: HTTP ${selectRes.status}`);
 
         // Poll RD's own caching/download progress until it's fully fetched on their end.
         let links: string[] = [];
+        const deadline = Date.now() + DEBRID_POLL_TIMEOUT_MS;
         for (;;) {
+          if (Date.now() > deadline) throw new Error("Real-Debrid did not finish within the polling window");
           const res = await fetch(`${this.base}/torrents/info/${torrentId}`, { headers: this.headers(client) });
           if (!res.ok) throw new Error(`Real-Debrid status check failed: HTTP ${res.status}`);
           const info: any = await res.json();
@@ -661,9 +692,7 @@ class RealDebridAdapter implements DownloadClientAdapter {
           if (!fileRes.ok || !fileRes.body) throw new Error(`Downloading unrestricted link failed: HTTP ${fileRes.status}`);
           const filename = sanitizeFilename(unrestricted.filename || releaseTitle || downloadId);
           const dest = path.join(config.downloadsDir, filename);
-          const fileStream = fs.createWriteStream(dest);
-          for await (const chunk of fileRes.body as any) fileStream.write(chunk);
-          await new Promise<void>((resolve, reject) => fileStream.end((err: any) => (err ? reject(err) : resolve())));
+          await saveBodyToFile(fileRes.body, dest);
         }
 
         this.jobs.set(downloadId, { progress: 1, status: "completed" });
@@ -779,9 +808,7 @@ class TorBoxAdapter implements DownloadClientAdapter {
           if (!fileRes.ok || !fileRes.body) throw new Error(`Downloading TorBox link failed: HTTP ${fileRes.status}`);
           const filename = sanitizeFilename(file.name || releaseTitle || downloadId);
           const dest = path.join(config.downloadsDir, filename);
-          const fileStream = fs.createWriteStream(dest);
-          for await (const chunk of fileRes.body as any) fileStream.write(chunk);
-          await new Promise<void>((resolve, reject) => fileStream.end((err: any) => (err ? reject(err) : resolve())));
+          await saveBodyToFile(fileRes.body, dest);
         }
 
         this.jobs.set(downloadId, { progress: 1, status: "completed" });
@@ -972,9 +999,7 @@ class AllDebridAdapter implements DownloadClientAdapter {
           if (!fileRes.ok || !fileRes.body) throw new Error(`Downloading unlocked link failed: HTTP ${fileRes.status}`);
           const filename = sanitizeFilename(unlockData.filename || remoteFilename || releaseTitle || downloadId);
           const dest = path.join(config.downloadsDir, filename);
-          const fileStream = fs.createWriteStream(dest);
-          for await (const chunk of fileRes.body as any) fileStream.write(chunk);
-          await new Promise<void>((resolve, reject) => fileStream.end((err: any) => (err ? reject(err) : resolve())));
+          await saveBodyToFile(fileRes.body, dest);
         }
 
         this.jobs.set(downloadId, { progress: 1, status: "completed" });

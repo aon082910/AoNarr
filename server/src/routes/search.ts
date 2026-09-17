@@ -19,7 +19,7 @@ import { log } from "../services/logger.js";
 import { sizeWithinQualityBounds } from "../services/quality.js";
 import { getBlocklistedTitles, isBlocklisted } from "../services/blocklist.js";
 import { searchSlskd } from "../services/soulseek.js";
-import { searchAndGrabTargets, type BulkSearchTarget } from "../services/scheduler.js";
+import { pickClientForProtocol, searchAndGrabTargets, type BulkSearchTarget } from "../services/scheduler.js";
 import type { SearchResult } from "../types/index.js";
 
 export const searchRouter = Router();
@@ -223,15 +223,25 @@ searchRouter.post(
     const item = mediaItemFromRow(itemRow);
 
     const b = req.body ?? {};
-    if (!b.downloadUrl || !b.downloadClientId) {
-      throw new HttpError(400, "downloadUrl and downloadClientId are required");
-    }
+    if (!b.downloadUrl) throw new HttpError(400, "downloadUrl is required");
     if (b.title && (await isBlocklisted(Number(req.params.mediaItemId), b.title))) {
       throw new HttpError(400, "This release is blocklisted for this media item");
     }
 
-    const clientRow = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(b.downloadClientId);
-    if (!clientRow) throw new HttpError(404, "Download client not found");
+    // Either an explicit client id, or (the UI's normal path) the release's protocol — an NZB
+    // handed to qBittorrent, or a torrent to a disabled client, just fails at the client.
+    let clientRow: unknown;
+    if (b.downloadClientId) {
+      clientRow = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(b.downloadClientId);
+      if (!clientRow) throw new HttpError(404, "Download client not found");
+    } else {
+      const enabled = ((await db.prepare("SELECT * FROM download_clients WHERE enabled = 1").all()) as any[]).map(downloadClientFromRow);
+      if (enabled.length === 0) throw new HttpError(400, "Add and enable a download client first");
+      const protocol = b.protocol === "usenet" || b.protocol === "torrent" || b.protocol === "http" ? b.protocol : "torrent";
+      const picked = pickClientForProtocol(enabled as any, protocol);
+      if (!picked) throw new HttpError(400, `No enabled download client can handle a "${protocol}" release`);
+      clientRow = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(picked.id);
+    }
     const client = downloadClientFromRow(clientRow) as any;
 
     const adapter = getDownloadClientAdapter(client.type);

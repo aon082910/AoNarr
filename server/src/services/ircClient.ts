@@ -56,8 +56,9 @@ export class IrcConnection {
     this.socket = socket;
 
     socket.setEncoding("utf-8");
-    socket.on("connect", () => this.onConnect());
-    socket.on("secureConnect", () => this.onConnect());
+    // A TLSSocket emits both 'connect' and 'secureConnect' — registering on either would run the
+    // handshake twice (duplicate CAP REQ/NICK/USER), which strict ircds reject.
+    socket.on(useSsl ? "secureConnect" : "connect", () => this.onConnect());
     socket.on("data", (chunk: string) => this.onData(chunk));
     socket.on("error", (err) => log.warn(`[irc:${this.config.name}] socket error:`, err.message));
     socket.on("close", () => this.scheduleReconnect());
@@ -65,11 +66,22 @@ export class IrcConnection {
 
   private onConnect(): void {
     log.info(`[irc:${this.config.name}] connected to ${this.config.host}:${this.config.port}`);
+    this.saslDone = false;
     if (this.config.saslUser && this.config.saslPass) {
+      // NICK/USER go out alongside CAP REQ (registration is suspended until CAP END either way);
+      // sending them only after a 90x reply left the connection stuck if the server never ACKed.
       this.send("CAP REQ :sasl");
+      this.registerNickAndUser();
     } else {
       this.registerNickAndUser();
     }
+  }
+
+  private finishSasl(failed: boolean): void {
+    if (this.saslDone) return;
+    this.saslDone = true;
+    if (failed) log.warn(`[irc:${this.config.name}] SASL auth failed or unsupported — continuing without it`);
+    this.send("CAP END");
   }
 
   private registerNickAndUser(): void {
@@ -99,8 +111,14 @@ export class IrcConnection {
       return;
     }
 
-    if (line.startsWith("CAP") && line.includes("ACK") && line.includes("sasl")) {
-      this.send("AUTHENTICATE PLAIN");
+    // Servers prefix CAP replies (":irc.host CAP * ACK :sasl"); match with or without the prefix.
+    const cap = line.match(/^(?::\S+ )?CAP \S+ (ACK|NAK) :?(.*)$/i);
+    if (cap) {
+      if (cap[1].toUpperCase() === "ACK" && /\bsasl\b/i.test(cap[2])) {
+        this.send("AUTHENTICATE PLAIN");
+      } else {
+        this.finishSasl(true);
+      }
       return;
     }
     if (line.startsWith("AUTHENTICATE +")) {
@@ -109,15 +127,10 @@ export class IrcConnection {
       this.send(`AUTHENTICATE ${payload}`);
       return;
     }
-    // 903 = SASL successful, 904/905 = failed — either way, stop trying to authenticate and
-    // proceed with registration so a misconfigured SASL doesn't block the connection forever.
-    if (/^:\S+ 90[345]\b/.test(line)) {
-      if (!this.saslDone) {
-        this.saslDone = true;
-        if (/ 904 | 905 /.test(line)) log.warn(`[irc:${this.config.name}] SASL auth failed`);
-        this.send("CAP END");
-        this.registerNickAndUser();
-      }
+    // 903 = SASL successful, 904/905/906/907 = failed/aborted — either way, stop trying to
+    // authenticate and finish registration so a misconfigured SASL doesn't block the connection.
+    if (/^:\S+ 90[3-7]\b/.test(line)) {
+      this.finishSasl(!/ 903 /.test(line));
       return;
     }
 

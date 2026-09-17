@@ -45,7 +45,7 @@ iptvRouter.get(
         const count = (await db.prepare("SELECT COUNT(*) AS c FROM iptv_playlist_items WHERE playlist_id = ?").get(row.id)) as {
           c: number;
         };
-        return { ...iptvPlaylistFromRow(row), itemCount: count.c };
+        return { ...iptvPlaylistFromRow(row), itemCount: Number(count.c) };
       })
     );
     res.json(playlists);

@@ -18,6 +18,34 @@ export interface AuthContext {
   user?: SessionUser;
 }
 
+function isPrivateAddress(addr: string): boolean {
+  const ip = addr.replace(/^::ffff:/, "");
+  return (
+    ip === "127.0.0.1" ||
+    ip === "::1" ||
+    /^10\./.test(ip) ||
+    /^192\.168\./.test(ip) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ||
+    /^169\.254\./.test(ip) ||
+    /^f[cd][0-9a-f]{2}:/i.test(ip)
+  );
+}
+
+/**
+ * The address to key rate limits on. Every shipped deployment puts nginx in front of this
+ * process (combined image: same container; split images: docker network), and it sets
+ * `X-Real-IP` to the real client — `req.ip` would otherwise be the proxy's own address for every
+ * request, collapsing all users into one shared lockout bucket (10 bad API-key attempts from one
+ * stranger would 429 the real admin too). Only honored when the direct peer is a private/loopback
+ * address, so an X-Real-IP header arriving straight from the internet can't spoof the key.
+ */
+export function clientIp(req: Request): string {
+  const peer = req.socket.remoteAddress ?? req.ip ?? "unknown";
+  const realIp = req.header("X-Real-IP");
+  if (realIp && isPrivateAddress(peer)) return realIp.trim();
+  return peer;
+}
+
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
@@ -65,7 +93,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     return;
   }
 
-  const rateLimitKey = `authkey:${req.ip}`;
+  const rateLimitKey = `authkey:${clientIp(req)}`;
   const rateLimit = checkRateLimit(rateLimitKey);
   if (!rateLimit.allowed) {
     res.status(429).json({ error: "Too many failed attempts. Try again later.", retryAfterSeconds: rateLimit.retryAfterSeconds });

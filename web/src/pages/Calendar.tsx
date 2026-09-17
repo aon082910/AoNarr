@@ -23,8 +23,14 @@ interface CustomEvent {
   createdAt: string;
 }
 
+/** Local calendar date, not `toISOString()` — that converts to UTC first, which shifts every
+ * local-midnight grid cell to the previous day for anyone east of UTC (and "today" to tomorrow
+ * for evenings west of it). */
 function toIsoDate(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function startOfMonth(d: Date): Date {

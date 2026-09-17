@@ -3,6 +3,132 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 225 — full-codebase bug audit: ~45 fixes across security, data integrity, and the UI
+Four parallel exhaustive read-throughs (server services A–I, services J–Z, every route + DB layer +
+middleware + MCP, and the entire web frontend), each finding verified against the source before
+being touched. Grouped by impact:
+
+**Security / access control**
+- `/api/mcp` was reachable by any signed-in household account — every MCP tool proxies to the REST
+  API with the instance admin key, so a restricted user could call `set_setting`/`delete_media`
+  with full admin rights. Now `requireAdmin` (`app.ts`).
+- `routes/collections.ts` had no auth gating at all: a household user could create a smart
+  collection over a library they're not allowed into and read every item (including on-disk paths
+  via the m3u export), or delete admin-built collections. Writes and the export are admin-only;
+  reads filter members through the same allowed-types + content-rating gate as `GET /media/:id`.
+  Also validates `smartFilter` (a non-numeric `addedAfterDays` produced `interval 'NaN days'` on
+  Postgres and 500'd every subsequent collections listing).
+- The auth/login/TOTP rate limiters were keyed on `req.ip`, which behind the shipped nginx is
+  always the proxy's own address — one shared bucket, so 10 bad API-key attempts from any stranger
+  locked out the real admin for 15 minutes. New `clientIp()` honors `X-Real-IP` only when the direct
+  peer is a private/loopback address (so it can't be spoofed from the internet).
+- `GET /media/:id/episodes/:episodeId`, `/subitems/:subItemId`, `/subitems/:id/tracks/:trackId` and
+  `/watch-state` skipped the library/content-rating checks the parent route applies — sequential
+  ids made another library's file paths trivially enumerable. All four now go through one
+  `loadVisibleParent()` gate.
+- `DELETE /users/:id` could remove the last admin (which silently reopens the unauthenticated
+  first-run `/auth/setup`) or the caller's own account; both refused now.
+- The public media-server webhook ran `multer()` (in-memory, no limits) *before* checking the
+  token — an unauthenticated multi-GB multipart POST was fully buffered into RAM, then 401'd. Token
+  check is now a middleware ahead of the parser, and the parser has size/count limits.
+- Dashboard widgets (recently added / changed / watched) applied `allowedTypes` but never
+  `maxContentRating`; library-group reads weren't scoped to allowed types at all. Both fixed.
+- Invite redemption wasn't atomic — two concurrent POSTs on one single-use link (an admin-role
+  invite, say) could both pass the `used_at` check and mint two accounts. Now claimed with a
+  conditional UPDATE first, released again only if the username turns out to be taken.
+- `settingsStore`'s sensitive-key regex claimed to cover every `*Token`/`*Secret` but only matched
+  three specific spellings — `mediaServerToken` (the Plex token), `s3SecretAccessKey`,
+  `igdbClientSecret`, `traktClientSecret`, `discogsToken`, `hardcoverApiToken` and
+  `vapidPrivateKey` were stored plaintext. Widened; the existing startup self-healing re-encrypts
+  them on next boot.
+
+**Data integrity / silent misbehavior**
+- `importer.ts`'s post-import cleanup `rmSync`'d the imported file's parent folder recursively. For
+  a single-file torrent saved straight into a client's category folder (`/downloads/tv/x.mkv`)
+  that parent is the shared category folder — every other download in it was wiped. Radarr's rule
+  now applies: never remove a folder that still holds other non-sample media.
+- Auto-upgrade had no "actually better" gate and no already-queued check: an item below cutoff
+  whose indexers only offered its *current* quality was re-grabbed every 6h and re-imported over
+  itself (firing "Upgraded" each time), and a still-downloading upgrade was grabbed again on the
+  next run. Candidates in the queue are skipped; a grab must strictly out-rank the on-disk quality.
+- Per-item "Scan & Import" created a duplicate show/artist instead of attaching to the target when
+  the filename-guessed title only loosely matched ("The Office" vs "The Office (US)") — the exact
+  duplicate the loose-match comment said it prevented. The target's id is now passed through and
+  used as the fallback match.
+- "Organize & Rename" used the *import* strategy for library-internal moves: under `hardlink` the
+  old file was left behind (library size doubles), under `symlink` the DB ended up pointing at a
+  symlink to a symlink. Renames are always real moves now.
+- `duplicates.ts`'s repeated-import check grouped on `episodeId`/`subItemId`/`quality` fields that
+  no `'imported'` history writer ever recorded — every 24-episode series was reported as "imported
+  24 times". The writers record them now.
+- qBittorrent's SID cookie was cached forever: after a qBittorrent restart every poll/add/remove
+  threw HTTP 403 until AoNarr itself restarted. Now invalidated and retried once on 403.
+- SOCKS5 proxy broke every HTTPS request: undici only does TLS itself for an options-object
+  `connect`; a custom connector owns TLS, and ours returned the raw tunnel socket, so plaintext
+  HTTP went to port 443. The tunneled socket is now wrapped in `tls.connect` for `https:`.
+- IRC feeds with SASL never registered: the CAP ACK check required an unprefixed line, but every
+  real ircd sends `:irc.host CAP * ACK :sasl`; a NAK'd request was also a dead end; and on TLS the
+  handshake fired twice (`connect` + `secureConnect`). Prefixed/NAK forms handled, NICK/USER sent
+  alongside CAP REQ, single connect handler.
+- IMDb list CSV parsing dropped empty fields, shifting every column after the (almost always
+  blank) Description left — `Year` got the genre string, `Title` got the original title. Proper
+  positional split now.
+- Multi-disc MusicBrainz releases produced duplicate track numbers (each disc restarts at 1) on a
+  `UNIQUE(sub_item_id, track_number)` table, so disc 2's titles overwrote disc 1's. Numbered
+  continuously across discs.
+- Prowlarr sync's `LIKE '%"prowlarrId":5%'` also matched ids 50/500…; terminated on the closing
+  brace.
+- Scheduled channel/podcast auto-downloads passed the raw snake_case DB row to the adapter, so
+  `audioOnly` was always undefined — scheduled yt-dlp grabs fetched full video where manual ones
+  fetched mp3. Mapped through `downloadClientFromRow` like `grab()` does.
+- Plex watchlist posters were double-prefixed (`https://metadata-static.plex.tvhttps://…`) — Plex
+  Discover returns absolute URLs, unlike a local PMS. Only relative paths get the host now.
+- Jellyfin/Emby watch sync returned each shared file once per user, recording N duplicate
+  `watch_events` rows; collapsed to one per path.
+- Range streaming (`rangeStream.ts`) leaked a file descriptor on every client abort (every seek)
+  via `.pipe()`; switched to `stream.pipeline`. Suffix ranges (`bytes=-500`, how players read an
+  MP4's trailing `moov`) were served as `0-500`. Both fixed.
+- Real-Debrid `selectFiles` failure was unchecked and the status poll had no exit, so a dead
+  torrent polled every 5s forever with the queue row never resolving; all four in-process download
+  adapters also leaked their write stream (and left a partial file the importer could fuzzy-match)
+  on a mid-download error. One `saveBodyToFile` helper with `pipeline` + cleanup, and a 6h debrid
+  poll deadline.
+- Deleted-file check and auto-archival cleared episode/sub-item `has_file` but never rolled the
+  parent's back, hiding a fully-vanished series from the Missing views until the next full scan.
+- `listActiveSessions` compared ISO `expires_at` against the DB's `YYYY-MM-DD HH:MM:SS` now-string
+  as text (`'T' > ' '`), so a session that expired this morning still showed as active all day.
+- Album import probed media info at the anchor's *original* filename after the track template had
+  renamed it — `media_info` was NULL for every album import with naming on.
+- Course scraper's `<meta content=…>` regex stopped at the first apostrophe (`"Everything you"`).
+- `wanted.ts` used SQLite-only `substr(x, -2)` for zero-padding — Postgres returned `S001E005`.
+- `iptv.ts` playlist `itemCount` was a string on Postgres (one more unwrapped `COUNT(*)`).
+- Media-server import's title+year fallback matched two items with *unknown* years trivially
+  (`null === null`), folding "Extraction 2" into "Extraction".
+- SMTP client accumulated an `error` listener per command; backup download's error callback threw
+  outside Express (client hung instead of a 500); library validation crashed on a `has_file=1`
+  row with a NULL path.
+
+**Frontend**
+- Manual "Grab" sent every release to `clients[0]` regardless of protocol or enabled state — an
+  NZB to qBittorrent, or to a disabled client — and the three `grab()` functions had no error
+  handling, so the failure was silent. The server now picks an enabled client by the release's
+  protocol when no id is given; the UI sends the protocol and reports failures.
+- Calendar month grid and Dashboard "Upcoming" built dates with `toISOString()`, which converts to
+  UTC first: every cell was one day off east of UTC, and "today" was tomorrow for evenings west of
+  it. Local date formatting everywhere.
+- A–Z jump sidebar ignored the active search query (page math against the unfiltered index
+  landed on an empty page); the library list had no out-of-order response guard (fast "Series"
+  response overwritten by the slower "Movies" one) — both fixed.
+- Escape closed every open modal, not just the topmost (FolderPicker inside Add Root Folder
+  discarded the parent form). Modals now track a stack and only the top one reacts.
+- MediaDetail kept the previous item's History panel/seasons open when navigating item → item;
+  AddMedia carried a ROM group id into a movie added after switching types; Discover keyed cards
+  by title alone (remakes collided); GlobalSearch/Indexers "Test all" left unhandled rejections /
+  a stuck "Testing…" state; the Plex sign-in poll ran forever and past unmount.
+
+Verification: `tsc --noEmit` clean on both packages; full server suite in a disposable
+`node:20-slim` container; local Docker test stack rebuilt and smoke-tested.
+
 ## Round 224 — Postgres bulk-rename count bug, found by a dedicated audit pass
 - With the Servarr-parity redesign thread fully closed out, ran a dedicated bug-hunting pass (a
   background subagent read broadly across `server/src/services/`, `server/src/routes/`, and the

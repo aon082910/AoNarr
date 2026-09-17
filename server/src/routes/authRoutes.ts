@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
+import { clientIp } from "../middleware/auth.js";
 import {
   consumePendingLogin,
   createPendingLogin,
@@ -67,7 +68,7 @@ authRouter.post(
     const { username, password } = req.body ?? {};
     if (!username || !password) throw new HttpError(400, "username and password are required");
 
-    const rateLimitKey = `login:${req.ip}`;
+    const rateLimitKey = `login:${clientIp(req)}`;
     const rateLimit = checkRateLimit(rateLimitKey);
     if (!rateLimit.allowed) {
       res.status(429).json({ error: "Too many failed attempts. Try again later.", retryAfterSeconds: rateLimit.retryAfterSeconds });
@@ -113,7 +114,7 @@ authRouter.post(
     const { pendingToken, code } = req.body ?? {};
     if (!pendingToken || !code) throw new HttpError(400, "pendingToken and code are required");
 
-    const rateLimitKey = `logintotp:${req.ip}`;
+    const rateLimitKey = `logintotp:${clientIp(req)}`;
     const rateLimit = checkRateLimit(rateLimitKey);
     if (!rateLimit.allowed) {
       res.status(429).json({ error: "Too many failed attempts. Try again later.", retryAfterSeconds: rateLimit.retryAfterSeconds });

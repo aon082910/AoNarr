@@ -17,6 +17,16 @@ export function titlesMatch(a: string, b: string): boolean {
   return na === nb || na.includes(nb) || nb.includes(na);
 }
 
+/** Title+year fallback match for items with no shared external id. The substring-tolerant
+ * `titlesMatch` is only safe when a real year also agrees — two unknown years match each other
+ * trivially and would fold "Extraction 2" into "Extraction". */
+export function titleAndYearMatch(existingTitle: string, existingYear: number | null, title: string, year: number | null): boolean {
+  if (existingYear == null || year == null) {
+    return normalizeForMatch(existingTitle) === normalizeForMatch(title) && existingYear == year;
+  }
+  return existingYear === year && titlesMatch(existingTitle, title);
+}
+
 export function externalIdsOverlap(a: Record<string, string> | null, b: Record<string, string>): boolean {
   if (!a) return false;
   return Object.entries(b).some(([provider, id]) => a[provider] === id);
@@ -97,7 +107,7 @@ export async function importMovieItems(
       } catch {
         externalIds = {};
       }
-      return externalIdsOverlap(externalIds, item.externalIds) || (titlesMatch(m.title, item.title) && m.year === item.year);
+      return externalIdsOverlap(externalIds, item.externalIds) || titleAndYearMatch(m.title, m.year ?? null, item.title, item.year ?? null);
     });
 
     if (match) {
@@ -225,7 +235,7 @@ export async function importSeriesData(
       } catch {
         externalIds = {};
       }
-      return externalIdsOverlap(externalIds, info.externalIds) || (titlesMatch(m.title, info.title) && m.year === info.year);
+      return externalIdsOverlap(externalIds, info.externalIds) || titleAndYearMatch(m.title, m.year ?? null, info.title, info.year ?? null);
     });
 
     if (match) {

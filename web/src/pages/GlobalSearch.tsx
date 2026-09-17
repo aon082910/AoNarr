@@ -63,6 +63,13 @@ export default function GlobalSearch() {
         setResults(res);
         return res;
       })
+      .catch((e: Error) => {
+        // Surface the failure and let the "Add new" metadata results still render instead of
+        // letting a rejected promise abort the whole search silently.
+        alert(`Library search failed: ${e.message}`);
+        setResults([]);
+        return [] as LibrarySearchResult[];
+      })
       .finally(() => setSearching(false));
 
     // "Add new" is admin-only, same as the Add Media page itself (/add is not even routed for a

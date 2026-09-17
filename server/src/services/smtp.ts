@@ -34,13 +34,19 @@ async function connectAndAuth(cfg: SmtpConfig): Promise<{ send: (line: string) =
 
   function readResponse(): Promise<string> {
     return new Promise((resolve, reject) => {
+      const socket = activeSocket;
+      const onError = (err: Error) => {
+        socket.off("data", onData);
+        reject(err);
+      };
       const onData = (chunk: Buffer) => {
         buffer += chunk.toString("utf-8");
         // An SMTP multi-line reply ends on a line "NNN " (space, not dash) — wait for that.
         const lines = buffer.split("\r\n").filter(Boolean);
         const last = lines[lines.length - 1];
         if (last && /^\d{3} /.test(last)) {
-          activeSocket.off("data", onData);
+          socket.off("data", onData);
+          socket.off("error", onError);
           const code = Number(buffer.slice(0, 3));
           const result = buffer;
           buffer = "";
@@ -48,8 +54,8 @@ async function connectAndAuth(cfg: SmtpConfig): Promise<{ send: (line: string) =
           else resolve(result);
         }
       };
-      activeSocket.on("data", onData);
-      activeSocket.once("error", reject);
+      socket.on("data", onData);
+      socket.once("error", onError);
     });
   }
 

@@ -64,15 +64,18 @@ export interface SessionSummary {
 
 /** Lists every active (non-expired) session across all users, newest activity first, for the admin session-management screen. */
 export async function listActiveSessions(): Promise<SessionSummary[]> {
+  // expires_at is an ISO string ("2026-09-17T10:00:00.000Z") while nowExpr yields the DB's own
+  // "YYYY-MM-DD HH:MM:SS" form — comparing them as text puts every session expiring today after
+  // "now" because 'T' sorts above ' '. Filter in JS instead; the table is small.
   const rows = (await db
     .prepare(
       `SELECT s.token, s.user_id, u.username, s.created_at, s.expires_at, s.last_used_at, s.user_agent
        FROM sessions s JOIN users u ON u.id = s.user_id
-       WHERE s.expires_at > ${nowExpr(db)}
        ORDER BY s.last_used_at DESC NULLS LAST, s.created_at DESC`
     )
     .all()) as any[];
-  return rows.map((r) => ({
+  const now = Date.now();
+  return rows.filter((r) => new Date(r.expires_at).getTime() > now).map((r) => ({
     token: r.token,
     userId: r.user_id,
     username: r.username,

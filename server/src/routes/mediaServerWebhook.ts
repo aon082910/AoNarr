@@ -7,7 +7,19 @@ import { getSetting, setSetting } from "../services/settingsStore.js";
 import { parseJellyfinEmbyPayload, parsePlexPayload, recordWatchEvent } from "../services/mediaServerWebhook.js";
 import { log } from "../services/logger.js";
 
-const upload = multer();
+// Plex's multipart payload is a small JSON field plus (optionally) a poster thumbnail — cap it so
+// an unauthenticated POST can't make multer buffer an arbitrarily large body into memory.
+const upload = multer({ limits: { fileSize: 5 * 1024 * 1024, files: 2, fields: 20, fieldSize: 1024 * 1024 } });
+
+function requireWebhookToken(req: import("express").Request, _res: import("express").Response, next: import("express").NextFunction): void {
+  const token = req.query.token as string | undefined;
+  const expected = getSetting("mediaServerWebhookToken");
+  if (!expected || !token || !safeEqual(token, expected)) {
+    next(new HttpError(401, "Invalid or missing webhook token"));
+    return;
+  }
+  next();
+}
 
 export const mediaServerWebhookTokenRouter = Router();
 mediaServerWebhookTokenRouter.use(requireAdmin);
@@ -51,12 +63,9 @@ export const mediaServerWebhookRouter = Router();
  */
 mediaServerWebhookRouter.post(
   "/",
+  requireWebhookToken,
   upload.any(),
   asyncHandler(async (req, res) => {
-    const token = req.query.token as string | undefined;
-    const expected = getSetting("mediaServerWebhookToken");
-    if (!expected || !token || !safeEqual(token, expected)) throw new HttpError(401, "Invalid or missing webhook token");
-
     let signal = null;
     try {
       if (typeof req.body?.payload === "string") {

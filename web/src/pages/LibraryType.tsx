@@ -449,8 +449,13 @@ export function LibraryItemGrid({
     return params;
   }
 
+  // Monotonic request id so a slow response for a previous library/filter can't land after a
+  // faster one for the current view and overwrite it (same out-of-order guard the library-sizes
+  // effect below already has).
+  const loadRequestRef = useRef(0);
   function load() {
     setLoading(true);
+    const requestId = ++loadRequestRef.current;
     const params = scopeParams();
     if (statusFilter !== "all") params.set("status", statusFilter);
     if (contentRatingFilter !== "all") params.set("contentRating", contentRatingFilter);
@@ -461,11 +466,14 @@ export function LibraryItemGrid({
     api
       .get<{ items: MediaItem[]; total: number }>(`/media?${params.toString()}`)
       .then((data) => {
+        if (requestId !== loadRequestRef.current) return;
         setItems(data.items);
         setFilteredTotal(data.total);
         setSelected(new Set());
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (requestId === loadRequestRef.current) setLoading(false);
+      });
   }
 
   function loadStats() {
@@ -522,6 +530,9 @@ export function LibraryItemGrid({
     const params = scopeParams();
     if (statusFilter !== "all") params.set("status", statusFilter);
     if (contentRatingFilter !== "all") params.set("contentRating", contentRatingFilter);
+    // Must mirror load()'s own filters exactly (including the search query) — a letter's page
+    // offset is only meaningful against the same result set the pages are cut from.
+    if (searchQuery) params.set("q", searchQuery);
     params.set("sort", "title");
     params.set("limit", "100000");
     params.set("offset", "0");
@@ -537,7 +548,7 @@ export function LibraryItemGrid({
     return () => {
       cancelled = true;
     };
-  }, [type, groupId, tagFilter, statusFilter, contentRatingFilter, sortKey]);
+  }, [type, groupId, tagFilter, statusFilter, contentRatingFilter, sortKey, searchQuery]);
 
   // Once a letter jump has moved to a different page, waits for that page's items to actually
   // arrive before scrolling — the target row doesn't exist in the DOM until then.

@@ -74,6 +74,22 @@ function allowedTypesFor(req: import("express").Request): string[] | null {
   return req.auth?.user?.allowedTypes ?? [];
 }
 
+/** The same library/content-rating gate GET /:id applies, for the child routes (episode, sub-item,
+ * track, watch-state) that would otherwise hand a restricted household account another item's
+ * file paths by id. Returns the parent row for the caller's own use. */
+async function loadVisibleParent(req: import("express").Request, mediaItemId: string): Promise<any> {
+  const parentRow = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId)) as any;
+  if (!parentRow) throw new HttpError(404, "Media item not found");
+  const allowedTypes = allowedTypesFor(req);
+  if (allowedTypes && !allowedTypes.includes(parentRow.type)) {
+    throw new HttpError(403, "You don't have access to this library");
+  }
+  if (req.auth?.user?.maxContentRating && isRatingBlocked(parentRow.content_rating ?? null, req.auth.user.maxContentRating)) {
+    throw new HttpError(403, "You don't have access to this item");
+  }
+  return parentRow;
+}
+
 async function getTagsForMediaItem(mediaItemId: number) {
   const rows = (await db
     .prepare(
@@ -1192,6 +1208,7 @@ mediaRouter.post(
 mediaRouter.get(
   "/:id/watch-state",
   asyncHandler(async (req, res) => {
+    await loadVisibleParent(req, req.params.id);
     const row = (await db
       .prepare(
         "SELECT watched_at FROM watch_events WHERE media_item_id = ? AND episode_id IS NULL AND sub_item_id IS NULL ORDER BY watched_at DESC LIMIT 1"
@@ -1312,12 +1329,12 @@ mediaRouter.post(
 mediaRouter.get(
   "/:id/episodes/:episodeId",
   asyncHandler(async (req, res) => {
+    const parentRow = await loadVisibleParent(req, req.params.id);
     const row = await db
       .prepare("SELECT * FROM episodes WHERE id = ? AND media_item_id = ?")
       .get(req.params.episodeId, req.params.id);
     if (!row) throw new HttpError(404, "Episode not found");
-    const parentRow = (await db.prepare("SELECT id, title, type FROM media_items WHERE id = ?").get(req.params.id)) as any;
-    res.json({ ...episodeFromRow(row), parent: parentRow ? { id: parentRow.id, title: parentRow.title, type: parentRow.type } : null });
+    res.json({ ...episodeFromRow(row), parent: { id: parentRow.id, title: parentRow.title, type: parentRow.type } });
   })
 );
 
@@ -1392,11 +1409,11 @@ mediaRouter.post(
 mediaRouter.get(
   "/:id/subitems/:subItemId",
   asyncHandler(async (req, res) => {
+    const parentRow = await loadVisibleParent(req, req.params.id);
     const row = (await db
       .prepare("SELECT * FROM sub_items WHERE id = ? AND media_item_id = ?")
       .get(req.params.subItemId, req.params.id)) as any;
     if (!row) throw new HttpError(404, "Sub-item not found");
-    const parentRow = (await db.prepare("SELECT id, title, type FROM media_items WHERE id = ?").get(req.params.id)) as any;
 
     let series: any[] = [];
     if (row.series_name) {
@@ -1472,6 +1489,7 @@ mediaRouter.post(
 mediaRouter.get(
   "/:id/subitems/:subItemId/tracks/:trackId",
   asyncHandler(async (req, res) => {
+    const parentRow = await loadVisibleParent(req, req.params.id);
     const row = await db
       .prepare("SELECT * FROM tracks WHERE id = ? AND sub_item_id = ?")
       .get(req.params.trackId, req.params.subItemId);
@@ -1480,11 +1498,10 @@ mediaRouter.get(
       .prepare("SELECT id, title FROM sub_items WHERE id = ? AND media_item_id = ?")
       .get(req.params.subItemId, req.params.id)) as any;
     if (!subItemRow) throw new HttpError(404, "Sub-item not found");
-    const parentRow = (await db.prepare("SELECT id, title, type FROM media_items WHERE id = ?").get(req.params.id)) as any;
     res.json({
       ...trackFromRow(row),
       subItem: { id: subItemRow.id, title: subItemRow.title },
-      parent: parentRow ? { id: parentRow.id, title: parentRow.title, type: parentRow.type } : null,
+      parent: { id: parentRow.id, title: parentRow.title, type: parentRow.type },
     });
   })
 );

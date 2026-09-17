@@ -103,20 +103,27 @@ export default function Indexers() {
   }
 
   async function test(id: number) {
-    const result = await api.post<{ ok: boolean; resultCount?: number; error?: string }>(`/indexers/${id}/test`);
-    setTestResults((prev) => ({
-      ...prev,
-      [id]: result.ok ? `OK (${result.resultCount} results)` : `Failed: ${result.error}`,
-    }));
+    try {
+      const result = await api.post<{ ok: boolean; resultCount?: number; error?: string }>(`/indexers/${id}/test`);
+      setTestResults((prev) => ({
+        ...prev,
+        [id]: result.ok ? `OK (${result.resultCount} results)` : `Failed: ${result.error}`,
+      }));
+    } catch (e) {
+      setTestResults((prev) => ({ ...prev, [id]: `Failed: ${(e as Error).message}` }));
+    }
     load(); // the test itself just recorded a new health entry — refresh to show it
   }
 
   async function testAll() {
     setTestingAll(true);
-    // Sequential, not parallel — an indexer with a configured query limit shouldn't have its whole
-    // hourly budget spent testing every other indexer at the exact same moment.
-    for (const i of indexers) await test(i.id);
-    setTestingAll(false);
+    try {
+      // Sequential, not parallel — an indexer with a configured query limit shouldn't have its
+      // whole hourly budget spent testing every other indexer at the exact same moment.
+      for (const i of indexers) await test(i.id);
+    } finally {
+      setTestingAll(false);
+    }
   }
 
   function healthLabel(i: Indexer): { text: string; className: string } {

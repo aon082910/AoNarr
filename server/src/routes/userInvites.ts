@@ -95,19 +95,28 @@ inviteAcceptRouter.post(
     if (String(b.password).length < 8) throw new HttpError(400, "Password must be at least 8 characters");
 
     const allowedTypes: string[] = row.allowed_types ? JSON.parse(row.allowed_types) : [];
+
+    // Claim the invite first with a conditional UPDATE so two concurrent redemptions of the same
+    // one-time link can't both pass the used_at check above and each mint an account.
+    const claim = await db
+      .prepare("UPDATE user_invites SET used_at = ? WHERE id = ? AND used_at IS NULL")
+      .run(new Date().toISOString(), row.id);
+    if (claim.changes === 0) throw new HttpError(410, "This invite link has already been used");
+
     let result;
     try {
       result = await db
         .prepare("INSERT INTO users (username, password_hash, role, max_content_rating) VALUES (?, ?, ?, ?)")
         .run(b.username, hashPassword(b.password), row.role, row.max_content_rating);
     } catch {
+      await db.prepare("UPDATE user_invites SET used_at = NULL WHERE id = ?").run(row.id);
       throw new HttpError(409, "That username is already taken");
     }
     const userId = Number(result.lastInsertRowid);
     for (const t of allowedTypes) {
       await db.prepare("INSERT INTO user_library_access (user_id, media_type) VALUES (?, ?)").run(userId, t);
     }
-    await db.prepare("UPDATE user_invites SET used_at = ?, used_by_user_id = ? WHERE id = ?").run(new Date().toISOString(), userId, row.id);
+    await db.prepare("UPDATE user_invites SET used_by_user_id = ? WHERE id = ?").run(userId, row.id);
     logAuditEvent(null, "admin", "user_created_via_invite", b.username);
 
     const session = await createSession(userId, req.header("User-Agent"));

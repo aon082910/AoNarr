@@ -1,5 +1,9 @@
 import { useEffect, useRef, type ReactNode } from "react";
 
+// Open modals, oldest first. Only the topmost one reacts to Escape — a FolderPicker opened from
+// inside an "Add Root Folder" modal would otherwise close both on a single keypress.
+const openModals: symbol[] = [];
+
 /** Shared popup shell — dark overlay + centered panel. Used by every "Add X" flow that used to be
  * an always-visible inline form at the top of its list page (Starr-app style: a button opens
  * this instead). */
@@ -17,6 +21,15 @@ export default function Modal({
   const panelRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const titleId = useRef(`modal-title-${Math.random().toString(36).slice(2)}`).current;
+  const instance = useRef(Symbol("modal")).current;
+
+  useEffect(() => {
+    openModals.push(instance);
+    return () => {
+      const idx = openModals.indexOf(instance);
+      if (idx !== -1) openModals.splice(idx, 1);
+    };
+  }, [instance]);
 
   // Deliberately separate from the keydown-handling effect below, and deliberately empty deps:
   // this must run exactly once per modal open, not on every render. Callers almost always pass
@@ -51,6 +64,7 @@ export default function Modal({
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
+      if (openModals[openModals.length - 1] !== instance) return;
       if (e.key === "Escape") {
         onClose();
         return;
@@ -78,7 +92,7 @@ export default function Modal({
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+  }, [onClose, instance]);
 
   return (
     <div

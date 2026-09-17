@@ -57,7 +57,10 @@ async function fetchJellyfinLikeFiles(cfg: MediaServerConfig, basePath: string, 
   if (!usersRes.ok) throw new Error(`${cfg.type} users request failed: ${usersRes.status}`);
   const users = (await usersRes.json()) as { Id: string }[];
 
-  const files: WatchedFile[] = [];
+  // The same library file comes back once per user who can see it — collapse to one entry per
+  // path (most recent play wins) so the watch-status sync doesn't record N duplicate events for
+  // one shared household file.
+  const byPath = new Map<string, WatchedFile>();
   for (const user of users) {
     const playedFilter = onlyWatched ? "&IsPlayed=true" : "";
     const itemsRes = await fetch(
@@ -69,10 +72,12 @@ async function fetchJellyfinLikeFiles(cfg: MediaServerConfig, basePath: string, 
     for (const item of body.Items ?? []) {
       const lastPlayed = item.UserData?.LastPlayedDate;
       if (!item.Path || (onlyWatched && !lastPlayed)) continue;
-      files.push({ path: item.Path, lastPlayedAt: lastPlayed ? new Date(lastPlayed) : new Date(0) });
+      const entry = { path: item.Path, lastPlayedAt: lastPlayed ? new Date(lastPlayed) : new Date(0) };
+      const existing = byPath.get(item.Path);
+      if (!existing || entry.lastPlayedAt > existing.lastPlayedAt) byPath.set(item.Path, entry);
     }
   }
-  return files;
+  return Array.from(byPath.values());
 }
 
 async function fetchFiles(onlyWatched: boolean): Promise<WatchedFile[]> {

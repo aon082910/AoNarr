@@ -39,7 +39,10 @@ export default function Discover() {
   }, [auth.isAdmin]);
 
   function keyFor(item: DiscoverItem) {
-    return `${item.type}-${item.title}`;
+    // Trending routinely holds two titles that only differ by year (remakes) — key on the
+    // provider id when there is one so "Request" on one doesn't mark the other as requested too.
+    const id = item.externalIds?.tmdb ?? item.externalIds?.tvdb ?? item.externalIds?.imdb ?? `${item.title}-${item.year ?? ""}`;
+    return `${item.type}-${id}`;
   }
 
   async function addDirectly(item: DiscoverItem) {

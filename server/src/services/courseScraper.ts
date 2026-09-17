@@ -43,9 +43,12 @@ function decodeHtmlEntities(s: string): string {
 }
 
 function extractMetaContent(html: string, property: string): string | null {
-  const re = new RegExp(`<meta[^>]+(?:property|name)=["']${property}["'][^>]+content=["']([^"']*)["']`, "i");
-  const m = html.match(re) || html.match(new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]+(?:property|name)=["']${property}["']`, "i"));
-  return m ? decodeHtmlEntities(m[1]).trim() : null;
+  // The content value must end on the same quote character that opened it — `[^"']*` would cut
+  // "Everything you'll need" off at the apostrophe.
+  const re = new RegExp(`<meta[^>]+(?:property|name)=["']${property}["'][^>]+content=("([^"]*)"|'([^']*)')`, "i");
+  const m = html.match(re) || html.match(new RegExp(`<meta[^>]+content=("([^"]*)"|'([^']*)')[^>]+(?:property|name)=["']${property}["']`, "i"));
+  if (!m) return null;
+  return decodeHtmlEntities(m[2] ?? m[3] ?? "").trim();
 }
 
 /** Strips the "| edX" / "- edX" style site-name suffix some platforms tack onto <title>/og:title. */

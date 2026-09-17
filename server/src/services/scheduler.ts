@@ -5,7 +5,7 @@ import { config } from "../config.js";
 import { searchAllIndexers } from "./indexerClient.js";
 import { getDownloadClientAdapter, removeQueueItemDownload, applyRemotePathMapping } from "./downloadClient.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
-import { pickBestAllowedQuality, preferredSizeDistance, sizeWithinQualityBounds } from "./quality.js";
+import { pickBestAllowedQuality, preferredSizeDistance, qualityRank, sizeWithinQualityBounds } from "./quality.js";
 import { scoreRelease } from "./customFormatScoring.js";
 import { getMediaTypeConfig } from "./mediaTypes.js";
 import {
@@ -593,6 +593,8 @@ export interface BulkSearchTarget {
   mediaItemId: number;
   episodeId?: number | null;
   subItemId?: number | null;
+  /** When set (auto-upgrade), only a release strictly better than this quality is grabbed. */
+  upgradeFromQuality?: string | null;
 }
 
 export interface BulkSearchResult extends BulkSearchTarget {
@@ -671,6 +673,10 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
         results.push({ ...t, grabbed: false, error: "No matching results" });
         continue;
       }
+      if (t.upgradeFromQuality && qualityRank(best.quality) <= qualityRank(t.upgradeFromQuality)) {
+        results.push({ ...t, grabbed: false, error: `Best available (${best.quality}) isn't an upgrade over ${t.upgradeFromQuality}` });
+        continue;
+      }
       const targetClient = pickClientForProtocol(clients, best.result.protocol);
       if (!targetClient) {
         results.push({ ...t, grabbed: false, error: `No "${best.result.protocol}" download client configured` });
@@ -699,11 +705,20 @@ async function runAutoUpgrade(): Promise<void> {
   const candidates = await findUpgradeCandidates();
   if (candidates.length === 0) return;
 
-  const targets: BulkSearchTarget[] = candidates.map((c) => ({
-    mediaItemId: c.mediaItemId,
-    episodeId: c.episodeId ?? null,
-    subItemId: c.subItemId ?? null,
-  }));
+  // Skip anything with an upgrade already in flight — the candidate's on-disk quality doesn't
+  // change until that import lands, so it would otherwise be re-grabbed every run. The
+  // upgradeFromQuality gate below stops an equal-or-worse release from replacing the existing file.
+  const targets: BulkSearchTarget[] = [];
+  for (const c of candidates) {
+    if (await isAlreadyQueued(c.mediaItemId, c.episodeId ?? null, c.subItemId ?? null)) continue;
+    targets.push({
+      mediaItemId: c.mediaItemId,
+      episodeId: c.episodeId ?? null,
+      subItemId: c.subItemId ?? null,
+      upgradeFromQuality: c.currentQuality,
+    });
+  }
+  if (targets.length === 0) return;
   const results = await searchAndGrabTargets(targets);
   const grabbed = results.filter((r) => r.grabbed).length;
   if (grabbed > 0) log.info(`[scheduler] auto-upgrade: grabbed ${grabbed} of ${candidates.length} upgrade candidate(s)`);
@@ -721,7 +736,10 @@ async function checkVideoChannels(): Promise<void> {
   const channels = (await db.prepare("SELECT * FROM media_items WHERE type = 'video' AND monitored = 1").all()) as any[];
   if (channels.length === 0) return;
 
+  // Mapped like grab() does — the raw snake_case row would hand the adapter `audio_only`
+  // where it reads `audioOnly`, so scheduled channel downloads ignored the audio-only setting.
   const ytClientRow = (await db.prepare("SELECT * FROM download_clients WHERE type = 'ytdlp' AND enabled = 1 LIMIT 1").get()) as any;
+  const ytClient = ytClientRow ? downloadClientFromRow(ytClientRow) : null;
 
   let newVideos = 0;
   for (const channel of channels) {
@@ -757,17 +775,17 @@ async function checkVideoChannels(): Promise<void> {
         .run(channel.id, child.title, child.releaseDate, child.externalId);
       newVideos++;
 
-      if (ytClientRow) {
+      if (ytClient) {
         try {
           const sourceUrl = `https://www.youtube.com/watch?v=${child.externalId}`;
-          const adapter = getDownloadClientAdapter(ytClientRow.type);
-          const grab = await adapter.addDownload(ytClientRow, sourceUrl, ytClientRow.category, child.title);
+          const adapter = getDownloadClientAdapter(ytClient.type);
+          const grab = await adapter.addDownload(ytClient, sourceUrl, ytClient.category, child.title);
           await db
             .prepare(
               `INSERT INTO queue (media_item_id, episode_id, sub_item_id, title, indexer_id, download_client_id, download_id, size, quality, status)
              VALUES (?, NULL, ?, ?, NULL, ?, ?, 0, NULL, 'queued')`
             )
-            .run(channel.id, insertResult.lastInsertRowid, child.title, ytClientRow.id, grab.downloadId);
+            .run(channel.id, insertResult.lastInsertRowid, child.title, ytClient.id, grab.downloadId);
           await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
             channel.id,
             JSON.stringify({ title: child.title, source: sourceUrl })
@@ -796,6 +814,7 @@ async function checkPodcastFeeds(): Promise<void> {
   if (podcasts.length === 0) return;
 
   const httpClientRow = (await db.prepare("SELECT * FROM download_clients WHERE type = 'http' AND enabled = 1 LIMIT 1").get()) as any;
+  const httpClient = httpClientRow ? downloadClientFromRow(httpClientRow) : null;
 
   let newEpisodes = 0;
   for (const podcast of podcasts) {
@@ -831,16 +850,16 @@ async function checkPodcastFeeds(): Promise<void> {
         .run(podcast.id, child.title, child.releaseDate, child.externalId);
       newEpisodes++;
 
-      if (httpClientRow) {
+      if (httpClient) {
         try {
-          const adapter = getDownloadClientAdapter(httpClientRow.type);
-          const grab = await adapter.addDownload(httpClientRow, child.externalId, httpClientRow.category, child.title);
+          const adapter = getDownloadClientAdapter(httpClient.type);
+          const grab = await adapter.addDownload(httpClient, child.externalId, httpClient.category, child.title);
           await db
             .prepare(
               `INSERT INTO queue (media_item_id, episode_id, sub_item_id, title, indexer_id, download_client_id, download_id, size, quality, status)
              VALUES (?, NULL, ?, ?, NULL, ?, ?, 0, NULL, 'queued')`
             )
-            .run(podcast.id, insertResult.lastInsertRowid, child.title, httpClientRow.id, grab.downloadId);
+            .run(podcast.id, insertResult.lastInsertRowid, child.title, httpClient.id, grab.downloadId);
           await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
             podcast.id,
             JSON.stringify({ title: child.title, source: child.externalId })

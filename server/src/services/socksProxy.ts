@@ -1,3 +1,4 @@
+import tls from "node:tls";
 import { Agent, setGlobalDispatcher, getGlobalDispatcher } from "undici";
 import { SocksClient } from "socks";
 import { getSetting } from "./settingsStore.js";
@@ -14,11 +15,10 @@ let appliedSignature: string | null = null;
  * a custom undici Agent whose `connect` performs the SOCKS5 handshake via the `socks` package, then
  * installs it as the global dispatcher — the officially documented way to customize connection
  * behavior for every fetch() call app-wide without threading a dispatcher through every call site
- * individually. The two settings only combine when no SOCKS proxy is configured — disabling cert
- * validation *while proxying through SOCKS5* would need TLS handled inside the custom `connect`
- * function above, which the existing SOCKS agent doesn't do (it hands back a raw un-upgraded
- * socket); that combination is rare enough it's not worth the added complexity, so it's a documented
- * limitation rather than something silently half-applied.
+ * individually. undici only performs the TLS handshake itself when `connect` is an options
+ * object; a custom `connect` function owns TLS, so for https: destinations the SOCKS-tunneled
+ * socket is wrapped in `tls.connect` here (honoring the cert-validation setting) — without that,
+ * every https fetch through the proxy would write plaintext to port 443.
  */
 export function applySocksProxySetting(): void {
   const url = getSetting("socks5ProxyUrl");
@@ -56,12 +56,26 @@ export function applySocksProxySetting(): void {
 
   const agent = new Agent({
     connect: (opts: any, callback: any) => {
+      const isTls = opts.protocol === "https:";
       SocksClient.createConnection({
         proxy: { host: proxyHost, port: proxyPort, type: 5, userId, password },
         command: "connect",
-        destination: { host: opts.hostname, port: Number(opts.port) || (opts.protocol === "https:" ? 443 : 80) },
+        destination: { host: opts.hostname, port: Number(opts.port) || (isTls ? 443 : 80) },
       })
-        .then(({ socket }) => callback(null, socket))
+        .then(({ socket }) => {
+          if (!isTls) {
+            callback(null, socket);
+            return;
+          }
+          const secure = tls.connect({
+            socket,
+            servername: opts.servername || opts.hostname,
+            rejectUnauthorized,
+            ALPNProtocols: ["http/1.1"],
+          });
+          secure.once("secureConnect", () => callback(null, secure));
+          secure.once("error", (err) => callback(err, null));
+        })
         .catch((err) => callback(err, null));
     },
   });

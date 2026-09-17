@@ -7,6 +7,13 @@ import { parsePlexExternalIds } from "./mediaServer.js";
 
 const DISCOVER_BASE = "https://discover.provider.plex.tv";
 
+/** Plex Discover returns absolute artwork URLs; a local PMS returns "/library/metadata/..."
+ * paths. Only the latter needs the CDN host prepended. */
+function plexThumbUrl(thumb: unknown): string | null {
+  if (typeof thumb !== "string" || !thumb) return null;
+  return /^https?:\/\//i.test(thumb) ? thumb : `https://metadata-static.plex.tv${thumb}`;
+}
+
 async function fetchWatchlistItems(token: string): Promise<any[]> {
   const url = `${DISCOVER_BASE}/library/sections/watchlist/all?includeCollections=1&includeExternalMedia=1`;
   const res = await fetch(url, { headers: { Accept: "application/json", "X-Plex-Token": token } });
@@ -82,7 +89,7 @@ export async function runPlexWatchlistSync(): Promise<{ added: number; error?: s
             String(item.title).toLowerCase(),
             item.year ?? null,
             item.summary ?? null,
-            item.thumb ? `https://metadata-static.plex.tv${item.thumb}` : null,
+            plexThumbUrl(item.thumb),
             JSON.stringify({ tmdb: tmdbId, ...(ids.imdb ? { imdb: ids.imdb } : {}) }),
             qualityProfileId
           );
@@ -102,7 +109,7 @@ export async function runPlexWatchlistSync(): Promise<{ added: number; error?: s
             String(item.title).toLowerCase(),
             item.year ?? null,
             item.summary ?? null,
-            item.thumb ? `https://metadata-static.plex.tv${item.thumb}` : null,
+            plexThumbUrl(item.thumb),
             JSON.stringify(externalIds),
             qualityProfileId
           );

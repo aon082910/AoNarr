@@ -224,7 +224,8 @@ export async function scanAndImportLibrary(
   type: string,
   signal?: AbortSignal,
   onlyTitle?: string,
-  onlySeasonNumber?: number
+  onlySeasonNumber?: number,
+  onlyMediaItemId?: number
 ): Promise<ScanImportResult> {
   if (!onlyTitle && scansInProgress.has(type)) {
     log.warn(`[libraryScan] a scan for "${type}" is already running — skipping this overlapping request`);
@@ -232,13 +233,19 @@ export async function scanAndImportLibrary(
   }
   if (!onlyTitle) scansInProgress.add(type);
   try {
-    return await scanAndImportLibraryInner(type, signal, onlyTitle, onlySeasonNumber);
+    return await scanAndImportLibraryInner(type, signal, onlyTitle, onlySeasonNumber, onlyMediaItemId);
   } finally {
     if (!onlyTitle) scansInProgress.delete(type);
   }
 }
 
-async function scanAndImportLibraryInner(type: string, signal?: AbortSignal, onlyTitle?: string, onlySeasonNumber?: number): Promise<ScanImportResult> {
+async function scanAndImportLibraryInner(
+  type: string,
+  signal?: AbortSignal,
+  onlyTitle?: string,
+  onlySeasonNumber?: number,
+  onlyMediaItemId?: number
+): Promise<ScanImportResult> {
   const typeConfig = getMediaTypeConfig(type);
   const result: ScanImportResult = { matched: 0, created: 0, skipped: 0, skippedFiles: [] };
 
@@ -321,6 +328,10 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal, onl
         const quality = parsed.quality === "Unknown" ? null : parsed.quality;
 
         let seriesMatch = seriesItems.find((m) => titlesMatch(m.title, guessedTitle));
+        // A per-item scan already passed the loose onlyTitle gate above for this file — it belongs
+        // to the known target, so attach it there rather than creating a "The Office" twin next to
+        // "The Office (US)" because the strict match missed.
+        if (!seriesMatch && onlyMediaItemId) seriesMatch = seriesItems.find((m) => m.id === onlyMediaItemId);
         if (!seriesMatch) {
           // No existing series to match against at all — create one, same as the single-shape
           // branch already does for movies. Otherwise a fresh TV library with nothing pre-added
@@ -402,6 +413,7 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal, onl
         if (onlyTitle && !looseTitlesMatch(parentTitle, onlyTitle)) continue;
 
         let parentMatch = collectionParents.find((m) => titlesMatch(m.title, parentTitle));
+        if (!parentMatch && onlyMediaItemId) parentMatch = collectionParents.find((m) => m.id === onlyMediaItemId);
         if (!parentMatch) {
           const insertResult = await db
             .prepare(
@@ -489,7 +501,9 @@ async function scanAndImportLibraryInner(type: string, signal?: AbortSignal, onl
         const parsed = parseReleaseTitle(base);
         const quality = parsed.quality === "Unknown" ? null : parsed.quality;
 
-        const match = singleShapeItems.find((m) => titlesMatch(m.title, guessedTitle));
+        const match =
+          singleShapeItems.find((m) => titlesMatch(m.title, guessedTitle)) ??
+          (onlyMediaItemId ? singleShapeItems.find((m) => m.id === onlyMediaItemId) : undefined);
         if (match && match.has_file && match.path !== filePath) {
           // Already has a different file — most likely an extra copy, a sample, or a re-download
           // sitting alongside the one already tracked. Matching (not creating a new row) but not
@@ -699,7 +713,7 @@ export async function refreshOneMediaItem(mediaItemId: number, onlySeasonNumber?
 export async function scanAndImportOneMediaItem(mediaItemId: number, signal?: AbortSignal, seasonNumber?: number): Promise<ScanImportResult> {
   const item = (await db.prepare("SELECT type, title FROM media_items WHERE id = ?").get(mediaItemId)) as { type: string; title: string } | undefined;
   if (!item) return { matched: 0, created: 0, skipped: 0, skippedFiles: [] };
-  return scanAndImportLibrary(item.type, signal, item.title, seasonNumber);
+  return scanAndImportLibrary(item.type, signal, item.title, seasonNumber, mediaItemId);
 }
 
 /** Inserts any episode/child a metadata provider lists that isn't already tracked for this item —

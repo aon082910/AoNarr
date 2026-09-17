@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { pipeline } from "node:stream";
 import type { Request, Response } from "express";
 
 export const CONTENT_TYPES: Record<string, string> = {
@@ -44,20 +45,33 @@ export function streamFileWithRangeSupport(req: Request, res: Response, filePath
   const contentType = CONTENT_TYPES[path.extname(filePath).toLowerCase()] ?? "application/octet-stream";
   const range = req.headers.range;
 
+  // stream.pipeline (not .pipe) so a client that aborts mid-stream — every seek a video player
+  // makes — destroys the read stream and releases its file descriptor instead of leaking one
+  // per request, and so a read error ends the response instead of surfacing as an unhandled
+  // 'error' event.
   if (!range) {
     res.writeHead(200, { "Content-Length": stat.size, "Content-Type": contentType, "Accept-Ranges": "bytes" });
-    fs.createReadStream(filePath).pipe(res);
+    pipeline(fs.createReadStream(filePath), res, () => {});
     return;
   }
 
   const match = range.match(/bytes=(\d*)-(\d*)/);
-  if (!match) {
+  if (!match || (!match[1] && !match[2])) {
     res.status(416).set("Content-Range", `bytes */${stat.size}`).end();
     return;
   }
-  const start = match[1] ? Number(match[1]) : 0;
-  const end = match[2] ? Number(match[2]) : stat.size - 1;
-  if (start >= stat.size || end >= stat.size || start > end) {
+  let start: number;
+  let end: number;
+  if (!match[1]) {
+    // Suffix range ("bytes=-500"): the LAST N bytes — MP4 moov atoms and MKV cues live there.
+    const suffix = Math.min(Number(match[2]), stat.size);
+    start = stat.size - suffix;
+    end = stat.size - 1;
+  } else {
+    start = Number(match[1]);
+    end = match[2] ? Math.min(Number(match[2]), stat.size - 1) : stat.size - 1;
+  }
+  if (start >= stat.size || start > end) {
     res.status(416).set("Content-Range", `bytes */${stat.size}`).end();
     return;
   }
@@ -68,5 +82,5 @@ export function streamFileWithRangeSupport(req: Request, res: Response, filePath
     "Content-Length": end - start + 1,
     "Content-Type": contentType,
   });
-  fs.createReadStream(filePath, { start, end }).pipe(res);
+  pipeline(fs.createReadStream(filePath, { start, end }), res, () => {});
 }

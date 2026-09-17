@@ -39,7 +39,8 @@ export async function syncFromProwlarr(): Promise<{ synced: number; error?: stri
       const url = `${prowlarrUrl}/${idx.id}`;
       const config = JSON.stringify({ prowlarrId: idx.id });
 
-      const existing = (await db.prepare(`SELECT id FROM indexers WHERE config LIKE ?`).get(`%"prowlarrId":${idx.id}%`)) as
+      // Terminated with the closing brace so id 5 can't match the row for id 50/500.
+      const existing = (await db.prepare(`SELECT id FROM indexers WHERE config LIKE ?`).get(`%"prowlarrId":${idx.id}}%`)) as
         | { id: number }
         | undefined;
 

@@ -10,8 +10,9 @@ import { log } from "../services/logger.js";
  * Every tool below is a thin proxy onto AoNarr's own REST API (loopback, authenticated with the
  * same instance API key any other automation already uses) rather than a reimplementation of its
  * logic — one source of truth for validation/business rules, and an MCP client gets exactly what
- * the web UI itself would do. Mounted at /api/mcp, so it inherits the same requireAuth gate (and
- * the "full control" trust level that implies) as every other /api route — no separate token.
+ * the web UI itself would do. Mounted at /api/mcp behind requireAuth + requireAdmin (app.ts):
+ * because every call here carries the instance admin key, the endpoint itself must only be
+ * reachable by an admin credential — no separate token.
  */
 async function callApi(method: string, path: string, body?: unknown): Promise<unknown> {
   const apiKey = getSetting("apiKey");

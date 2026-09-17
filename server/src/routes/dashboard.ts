@@ -5,6 +5,7 @@ import { mediaItemFromRow } from "../db/mappers.js";
 import { asyncHandler } from "../middleware/errorHandler.js";
 import { fetchWatchedFiles, getMediaServerConfig } from "../services/mediaServer.js";
 import { findWatchedMatch } from "../services/archival.js";
+import { isRatingBlocked } from "../services/contentRatings.js";
 
 export const dashboardRouter = Router();
 
@@ -13,13 +14,25 @@ function allowedTypesFor(req: import("express").Request): string[] | null {
   return req.auth?.user?.allowedTypes ?? [];
 }
 
+/** Same gate GET /media/:id applies — a household account's max content rating hides an item
+ * here too, not just when it's opened directly. */
+function ratingBlockedFor(req: import("express").Request): (contentRating: string | null) => boolean {
+  const max = req.auth?.isAdmin ? null : req.auth?.user?.maxContentRating ?? null;
+  if (!max) return () => false;
+  return (rating) => isRatingBlocked(rating, max);
+}
+
 /** Most recently added library items, for the home dashboard's "Recently Added" widget. */
 dashboardRouter.get(
   "/recently-added",
   asyncHandler(async (req, res) => {
     const allowedTypes = allowedTypesFor(req);
-    let rows = (await db.prepare("SELECT * FROM media_items ORDER BY added_at DESC LIMIT 50").all()) as any[];
-    if (allowedTypes) rows = rows.filter((r) => allowedTypes.includes(r.type));
+    const blocked = ratingBlockedFor(req);
+    // Over-fetch for restricted accounts so filtering out other libraries' rows still leaves a
+    // full widget when enough of their own exist.
+    const limit = allowedTypes ? 300 : 50;
+    let rows = (await db.prepare(`SELECT * FROM media_items ORDER BY added_at DESC LIMIT ${limit}`).all()) as any[];
+    if (allowedTypes) rows = rows.filter((r) => allowedTypes.includes(r.type) && !blocked(r.content_rating ?? null));
     res.json(rows.slice(0, 12).map(mediaItemFromRow));
   })
 );
@@ -33,14 +46,15 @@ dashboardRouter.get(
   "/recent",
   asyncHandler(async (req, res) => {
     const allowedTypes = allowedTypesFor(req);
+    const blocked = ratingBlockedFor(req);
     const rows = (await db
       .prepare(
         `SELECT h.event_type AS "eventType", h.data, h.created_at AS "createdAt",
-                m.id AS "mediaItemId", m.title AS "mediaTitle", m.type AS "mediaType"
+                m.id AS "mediaItemId", m.title AS "mediaTitle", m.type AS "mediaType", m.content_rating AS "contentRating"
          FROM history h JOIN media_items m ON m.id = h.media_item_id
          ORDER BY h.created_at DESC LIMIT 100`
       )
-      .all()) as { eventType: string; data: string | null; createdAt: string; mediaItemId: number; mediaTitle: string; mediaType: string }[];
+      .all()) as { eventType: string; data: string | null; createdAt: string; mediaItemId: number; mediaTitle: string; mediaType: string; contentRating: string | null }[];
 
     let entries = rows.map((row) => {
       let detail: string | null = null;
@@ -57,9 +71,11 @@ dashboardRouter.get(
         title: row.mediaTitle,
         type: row.mediaType,
         detail,
+        contentRating: row.contentRating,
       };
     });
-    if (allowedTypes) entries = entries.filter((e) => allowedTypes.includes(e.type));
+    if (allowedTypes) entries = entries.filter((e) => allowedTypes.includes(e.type) && !blocked(e.contentRating));
+    entries = entries.map(({ contentRating: _cr, ...rest }) => rest) as typeof entries;
     res.json(entries.slice(0, 15));
   })
 );
@@ -143,10 +159,11 @@ dashboardRouter.get(
   "/recently-watched",
   asyncHandler(async (req, res) => {
     const allowedTypes = allowedTypesFor(req);
+    const blocked = ratingBlockedFor(req);
     const webhookEvents = (await db
       .prepare(
         `SELECT we.media_item_id, we.episode_id, we.sub_item_id, we.watched_at, m.title AS parent_title, m.type AS parent_type,
-                e.season_number, e.episode_number, s.title AS sub_title
+                m.content_rating AS parent_rating, e.season_number, e.episode_number, s.title AS sub_title
          FROM watch_events we
          JOIN media_items m ON m.id = we.media_item_id
          LEFT JOIN episodes e ON e.id = we.episode_id
@@ -158,7 +175,7 @@ dashboardRouter.get(
 
     const keyed = new Map<string, { mediaItemId: number; type: string; label: string; watchedAt: string }>();
     for (const ev of webhookEvents) {
-      if (allowedTypes && !allowedTypes.includes(ev.parent_type)) continue;
+      if (allowedTypes && (!allowedTypes.includes(ev.parent_type) || blocked(ev.parent_rating ?? null))) continue;
       const label = ev.episode_id
         ? `${ev.parent_title} — S${String(ev.season_number).padStart(2, "0")}E${String(ev.episode_number).padStart(2, "0")}`
         : ev.sub_item_id
@@ -182,10 +199,10 @@ dashboardRouter.get(
 
     const items = (await db.prepare("SELECT * FROM media_items WHERE has_file = 1").all()) as any[];
     const episodes = (await db
-      .prepare("SELECT e.*, m.title AS parent_title, m.type AS parent_type FROM episodes e JOIN media_items m ON m.id = e.media_item_id WHERE e.has_file = 1")
+      .prepare("SELECT e.*, m.title AS parent_title, m.type AS parent_type, m.content_rating AS parent_rating FROM episodes e JOIN media_items m ON m.id = e.media_item_id WHERE e.has_file = 1")
       .all()) as any[];
     const subItems = (await db
-      .prepare("SELECT s.*, m.title AS parent_title, m.type AS parent_type FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE s.has_file = 1")
+      .prepare("SELECT s.*, m.title AS parent_title, m.type AS parent_type, m.content_rating AS parent_rating FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE s.has_file = 1")
       .all()) as any[];
 
     function upsert(key: string, entry: { mediaItemId: number; type: string; label: string; watchedAt: string }) {
@@ -194,12 +211,12 @@ dashboardRouter.get(
     }
 
     for (const item of items) {
-      if (allowedTypes && !allowedTypes.includes(item.type)) continue;
+      if (allowedTypes && (!allowedTypes.includes(item.type) || blocked(item.content_rating ?? null))) continue;
       const match = findWatchedMatch(item.path, watched);
       if (match) upsert(`${item.id}--`, { mediaItemId: item.id, type: item.type, label: item.title, watchedAt: match.lastPlayedAt.toISOString() });
     }
     for (const ep of episodes) {
-      if (allowedTypes && !allowedTypes.includes(ep.parent_type)) continue;
+      if (allowedTypes && (!allowedTypes.includes(ep.parent_type) || blocked(ep.parent_rating ?? null))) continue;
       const match = findWatchedMatch(ep.file_path, watched);
       if (match) {
         const label = `${ep.parent_title} — S${String(ep.season_number).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}`;
@@ -207,7 +224,7 @@ dashboardRouter.get(
       }
     }
     for (const sub of subItems) {
-      if (allowedTypes && !allowedTypes.includes(sub.parent_type)) continue;
+      if (allowedTypes && (!allowedTypes.includes(sub.parent_type) || blocked(sub.parent_rating ?? null))) continue;
       const match = findWatchedMatch(sub.file_path, watched);
       if (match) {
         upsert(`${sub.media_item_id}--${sub.id}`, {

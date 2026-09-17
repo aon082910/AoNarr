@@ -560,7 +560,9 @@ systemRouter.get(
     logAuditEvent(actor.userId, actor.username, "backup_downloaded");
     res.download(tmpFile, `aonarr-backup-${stamp}.${BACKUP_BUNDLE_EXTENSION}`, (err) => {
       fs.unlink(tmpFile, () => {});
-      if (err && !res.headersSent) throw err;
+      // Throwing here lands in process-level uncaughtException, not the route's error handler —
+      // the handler promise already resolved when res.download() was called.
+      if (err && !res.headersSent) res.status(500).json({ error: `Backup download failed: ${err.message}` });
     });
   })
 );

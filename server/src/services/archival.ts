@@ -279,4 +279,13 @@ export async function runAutoArchival(): Promise<void> {
       log.warn(`[archival] failed to archive "${label}":`, (err as Error).message);
     }
   }
+
+  // Parents whose last child file was just archived shouldn't keep reporting has_file = 1.
+  await db
+    .prepare(
+      `UPDATE media_items SET has_file = 0 WHERE has_file = 1 AND path IS NULL
+       AND NOT EXISTS (SELECT 1 FROM episodes e WHERE e.media_item_id = media_items.id AND e.has_file = 1)
+       AND NOT EXISTS (SELECT 1 FROM sub_items s WHERE s.media_item_id = media_items.id AND s.has_file = 1)`
+    )
+    .run();
 }

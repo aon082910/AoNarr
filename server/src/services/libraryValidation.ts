@@ -25,7 +25,7 @@ export async function findLibraryMismatches(): Promise<LibraryMismatch[]> {
   const mismatches: LibraryMismatch[] = [];
 
   const items = (await db
-    .prepare("SELECT id, title, path FROM media_items WHERE has_file = 1 AND type = 'movie'")
+    .prepare("SELECT id, title, path FROM media_items WHERE has_file = 1 AND type = 'movie' AND path IS NOT NULL")
     .all()) as { id: number; title: string; path: string }[];
   for (const item of items) {
     if (!serverTails.has(pathTail(item.path))) {

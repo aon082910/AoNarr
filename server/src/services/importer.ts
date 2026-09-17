@@ -358,10 +358,14 @@ function applyConfiguredPermissions(targetPath: string, isDirectory: boolean): v
  * Rename path instead of the recycle-bin one. mkdir/exists/chmod/chown are cheap metadata
  * operations regardless of file size, so those are left as-is; only the actual file-content copy
  * needed to move off the sync API. */
-async function moveFile(src: string, dest: string): Promise<void> {
+/** `forceMove` ignores the hardlink/symlink import strategy — that setting is about how a
+ * download's bytes enter the library; a rename of a file already inside the library must always
+ * be a real move, or the old file is left behind (hardlink) / the DB ends up pointing at a
+ * symlink to a symlink (symlink). */
+async function moveFile(src: string, dest: string, forceMove = false): Promise<void> {
   const destDir = path.dirname(dest);
   fs.mkdirSync(destDir, { recursive: true });
-  const strategy = getSetting("importStrategy") ?? "move";
+  const strategy = forceMove ? "move" : getSetting("importStrategy") ?? "move";
 
   if (strategy === "symlink") {
     if (fs.existsSync(dest)) fs.unlinkSync(dest);
@@ -570,9 +574,10 @@ export async function placeFile(params: {
     );
   }
 
+  // episodeId/subItemId/quality are what duplicates.ts's repeated-import check groups on.
   await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
     item.id,
-    JSON.stringify({ fileLabel, destPath })
+    JSON.stringify({ fileLabel, destPath, episodeId: episodeId ?? null, subItemId: subItemId ?? null, quality: quality ?? null })
   );
 
   // Radarr's "Kodi (XBMC)/Emby" metadata consumer, off by default there too — an admin who wants
@@ -653,6 +658,7 @@ export async function placeAlbumFiles(params: {
 
   let movedCount = 0;
   let totalMovedBytes = 0;
+  let anchorDest: string | null = null;
   for (const src of siblings) {
     const leadingNumber = path.basename(src).match(/^(\d{1,3})/);
     const track = leadingNumber && tracks.length > 0 ? tracks.find((t) => t.track_number === Number(leadingNumber[1])) : undefined;
@@ -673,6 +679,7 @@ export async function placeAlbumFiles(params: {
         : sanitizeForPath(path.basename(src));
     const dest = path.join(destFolder, fileName);
     await moveFile(src, dest);
+    if (path.resolve(src) === path.resolve(anchorFile)) anchorDest = dest;
     movedCount++;
     totalMovedBytes += await fsp.stat(dest).then((s) => s.size).catch(() => 0);
 
@@ -689,8 +696,8 @@ export async function placeAlbumFiles(params: {
     }
   }
 
-  const anchorDest = path.join(destFolder, sanitizeForPath(path.basename(anchorFile)));
-  const mediaInfo = movedCount > 0 && isProbeableFile(anchorDest) ? await probeMediaInfo(anchorDest) : null;
+  // Probe the anchor at wherever it actually landed (the track template may have renamed it).
+  const mediaInfo = anchorDest && isProbeableFile(anchorDest) ? await probeMediaInfo(anchorDest) : null;
 
   await db.prepare("UPDATE sub_items SET has_file = ?, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?").run(
     movedCount > 0 ? 1 : 0,
@@ -702,7 +709,7 @@ export async function placeAlbumFiles(params: {
   );
   await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
     item.id,
-    JSON.stringify({ destFolder, fileCount: movedCount })
+    JSON.stringify({ destFolder, fileCount: movedCount, subItemId, quality: quality ?? null })
   );
 
   await notifyImported(item.title, `${movedCount} file(s) into ${path.basename(destFolder)}`, destFolder);
@@ -936,6 +943,16 @@ function cleanupDownloadSourceFolder(sourceFile: string): void {
   const releaseDir = path.dirname(path.resolve(sourceFile));
   if (releaseDir === resolvedDownloadsDir || !releaseDir.startsWith(resolvedDownloadsDir + path.sep)) return;
 
+  // A single-file torrent saved straight into a client's category folder (/downloads/tv/x.mkv)
+  // has no release folder of its own — its parent is shared with every other download in that
+  // category. Radarr's rule: never recursively delete a folder that still holds other real media
+  // after the import; only junk (nfo/txt/samples) may remain for wholesale removal.
+  const leftover = findRemainingMediaFile(releaseDir);
+  if (leftover) {
+    log.info(`[importer] leaving ${releaseDir} in place — still contains ${path.basename(leftover)}`);
+    return;
+  }
+
   try {
     fs.rmSync(releaseDir, { recursive: true, force: true });
     removeEmptyParents(path.dirname(releaseDir), resolvedDownloadsDir);
@@ -943,6 +960,40 @@ function cleanupDownloadSourceFolder(sourceFile: string): void {
   } catch (err) {
     log.warn(`[importer] failed to remove source download folder ${releaseDir}:`, (err as Error).message);
   }
+}
+
+const RELEASE_MEDIA_EXTENSIONS = new Set([
+  ...VIDEO_EXTENSIONS,
+  ".mp3", ".flac", ".m4a", ".m4b", ".ogg", ".opus", ".wav", ".aac",
+  ".epub", ".mobi", ".azw3", ".pdf", ".cbz", ".cbr", ".iso",
+]);
+const SAMPLE_MAX_BYTES = 50 * 1024 * 1024;
+
+/** First non-sample media file still under `dir` (recursively), or null if only junk remains. */
+function findRemainingMediaFile(dir: string): string | null {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const nested = findRemainingMediaFile(full);
+      if (nested) return nested;
+      continue;
+    }
+    if (!entry.isFile() || !RELEASE_MEDIA_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
+    if (/\bsample\b/i.test(entry.name)) continue;
+    try {
+      if (fs.statSync(full).size < SAMPLE_MAX_BYTES && VIDEO_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
+    } catch {
+      continue;
+    }
+    return full;
+  }
+  return null;
 }
 
 /** Removes now-empty directories left behind by a rename, walking upward from a file's old folder
@@ -1032,7 +1083,7 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
       if (path.resolve(destPath) === path.resolve(item.path)) return;
       if (!dryRun) {
         const oldDir = path.dirname(item.path);
-        await moveFile(item.path, destPath);
+        await moveFile(item.path, destPath, true);
         removeEmptyParents(oldDir, rootFolder.path);
         await db.prepare("UPDATE media_items SET path = ? WHERE id = ?").run(destPath, item.id);
       }
@@ -1069,7 +1120,7 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
         if (path.resolve(destPath) === path.resolve(epRow.file_path)) continue;
         if (!dryRun) {
           const oldDir = path.dirname(epRow.file_path);
-          await moveFile(epRow.file_path, destPath);
+          await moveFile(epRow.file_path, destPath, true);
           removeEmptyParents(oldDir, rootFolder.path);
           await db.prepare("UPDATE episodes SET file_path = ? WHERE id = ?").run(destPath, epRow.id);
         }
@@ -1091,7 +1142,7 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
         if (path.resolve(destPath) === path.resolve(subRow.file_path)) continue;
         if (!dryRun) {
           const oldDir = path.dirname(subRow.file_path);
-          await moveFile(subRow.file_path, destPath);
+          await moveFile(subRow.file_path, destPath, true);
           removeEmptyParents(oldDir, rootFolder.path);
           await db.prepare("UPDATE sub_items SET file_path = ? WHERE id = ?").run(destPath, subRow.id);
         }

@@ -8,7 +8,7 @@ import { decryptValue, encryptValue, isEncryptedValue } from "./encryption.js";
  * match on the key name rather than a hardcoded list, so a newly added provider's *ApiKey/
  * *Password/*Token/*WebhookUrl setting is automatically covered without a matching edit here. */
 function isSensitiveSettingKey(key: string): boolean {
-  return /password|apikey|accesstoken|authtoken|bottoken|userkey|webhookurl/i.test(key);
+  return /password|apikey|token|secret|privatekey|userkey|webhookurl/i.test(key);
 }
 
 /**

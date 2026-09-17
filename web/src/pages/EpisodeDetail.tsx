@@ -162,21 +162,20 @@ export default function EpisodeDetail() {
   }
 
   async function grab(result: SearchResult) {
-    const clients = await api.get<{ id: number }[]>("/download-clients");
-    if (clients.length === 0) {
-      alert("Add a download client first.");
-      return;
+    try {
+      await api.post(`/search/${mediaId}/grab`, {
+        downloadUrl: result.downloadUrl,
+        indexerId: result.indexerId,
+        title: result.title,
+        size: result.size,
+        protocol: result.protocol,
+        episodeId: Number(episodeId),
+      });
+      alert(`Sent "${result.title}" to download client.`);
+      load();
+    } catch (e) {
+      alert(`Grab failed: ${(e as Error).message}`);
     }
-    await api.post(`/search/${mediaId}/grab`, {
-      downloadUrl: result.downloadUrl,
-      indexerId: result.indexerId,
-      title: result.title,
-      size: result.size,
-      downloadClientId: clients[0].id,
-      episodeId: Number(episodeId),
-    });
-    alert(`Sent "${result.title}" to download client.`);
-    load();
   }
 
   if (!episode) return <p className="empty">Loading...</p>;

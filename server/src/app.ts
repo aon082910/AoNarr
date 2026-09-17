@@ -6,7 +6,7 @@ import { loadSettingsCache, getSetting } from "./services/settingsStore.js";
 import { loadQualityCaches } from "./services/quality.js";
 import { backfillEpisodicAndCollectionHasFile, backfillMissingAlbumTracks } from "./services/libraryScan.js";
 import { errorHandler, asyncHandler } from "./middleware/errorHandler.js";
-import { requireAuth } from "./middleware/auth.js";
+import { requireAdmin, requireAuth } from "./middleware/auth.js";
 import { bootstrapAdminFromEnv } from "./services/bootstrapAdmin.js";
 import { applySocksProxySetting } from "./services/socksProxy.js";
 import { generateRequestId, runWithRequestId } from "./services/requestContext.js";
@@ -179,8 +179,9 @@ export async function createApp(): Promise<Express> {
   // MCP (Model Context Protocol) endpoint — lets an MCP client (Claude, another agent) drive
   // AoNarr directly. No separate token: it sits behind the same requireAuth gate as every other
   // /api route, so an MCP client authenticates with the instance API key exactly like any other
-  // automation already does.
-  app.all("/api/mcp", asyncHandler(handleMcpRequest));
+  // automation already does. Admin-only: every tool proxies to the REST API with the instance
+  // admin key, so a restricted household session reaching it would be a full privilege escalation.
+  app.all("/api/mcp", requireAdmin, asyncHandler(handleMcpRequest));
   app.use("/api/media", mediaRouter);
   app.use("/api/indexers", indexersRouter);
   app.use("/api/download-clients", downloadClientsRouter);

@@ -55,6 +55,19 @@ export async function checkForDeletedFiles(): Promise<{ checked: number; missing
       .run(row.id);
   }
 
+  // A parent whose every episode/sub-item file just vanished must stop claiming has_file = 1
+  // itself, or it stays out of the Missing views and auto-search until the next full library
+  // scan happens to run.
+  if (missing > 0) {
+    await db
+      .prepare(
+        `UPDATE media_items SET has_file = 0 WHERE has_file = 1 AND path IS NULL
+         AND NOT EXISTS (SELECT 1 FROM episodes e WHERE e.media_item_id = media_items.id AND e.has_file = 1)
+         AND NOT EXISTS (SELECT 1 FROM sub_items s WHERE s.media_item_id = media_items.id AND s.has_file = 1)`
+      )
+      .run();
+  }
+
   if (missing > 0) {
     log.info(
       `[deletedFileCheck] found ${missing} file(s) no longer on disk out of ${checked} checked${unmonitor ? " — unmonitored" : ""}`

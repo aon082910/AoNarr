@@ -3,6 +3,8 @@ import { db } from "../db/index.js";
 import { nowOffsetExpr } from "../db/asyncDb.js";
 import { collectionFromRow, mediaItemFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
+import { requireAdmin } from "../middleware/auth.js";
+import { isRatingBlocked } from "../services/contentRatings.js";
 
 export const collectionsRouter = Router();
 
@@ -12,6 +14,29 @@ interface SmartFilter {
   hasFile?: 0 | 1;
   tagId?: number;
   addedAfterDays?: number;
+}
+
+/** Household accounts can browse collections, but only ever see the member items their own
+ * library/content-rating restrictions would let them open directly — same rules as GET /media/:id. */
+function visibleTo(req: import("express").Request): (item: { type: string; contentRating: string | null }) => boolean {
+  if (req.auth?.isAdmin) return () => true;
+  const allowedTypes = req.auth?.user?.allowedTypes ?? [];
+  const maxRating = req.auth?.user?.maxContentRating ?? null;
+  return (item) => allowedTypes.includes(item.type) && !isRatingBlocked(item.contentRating, maxRating);
+}
+
+function sanitizeSmartFilter(raw: any): SmartFilter | null {
+  if (!raw || typeof raw !== "object") return null;
+  const out: SmartFilter = {};
+  if (typeof raw.type === "string" && raw.type) out.type = raw.type;
+  if (raw.monitored === 0 || raw.monitored === 1) out.monitored = raw.monitored;
+  if (raw.hasFile === 0 || raw.hasFile === 1) out.hasFile = raw.hasFile;
+  if (Number.isInteger(Number(raw.tagId)) && raw.tagId !== "" && raw.tagId !== null) out.tagId = Number(raw.tagId);
+  const days = Number(raw.addedAfterDays);
+  if (raw.addedAfterDays !== undefined && raw.addedAfterDays !== null && raw.addedAfterDays !== "" && Number.isFinite(days) && days >= 0) {
+    out.addedAfterDays = Math.floor(days);
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 /** Runs a smart collection's saved filter live against media_items — re-evaluated on every view,
@@ -50,7 +75,8 @@ async function queryMediaItemsForFilter(filter: SmartFilter): Promise<any[]> {
 
 collectionsRouter.get(
   "/",
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
+    const visible = visibleTo(req);
     const rows = (await db
       .prepare(
         `SELECT c.*, COUNT(ci.media_item_id) AS "itemCount"
@@ -71,10 +97,10 @@ collectionsRouter.get(
           let itemCount: number;
           let posterUrls: string[];
           if (collection.smartFilter) {
-            const matches = await queryMediaItemsForFilter(collection.smartFilter);
+            const matches = (await queryMediaItemsForFilter(collection.smartFilter)).map(mediaItemFromRow).filter(visible);
             itemCount = matches.length;
-            posterUrls = matches.slice(0, 4).map((m: any) => m.poster_url).filter(Boolean);
-          } else {
+            posterUrls = matches.slice(0, 4).map((m) => m.posterUrl).filter((p): p is string => !!p);
+          } else if (req.auth?.isAdmin) {
             itemCount = Number(r.itemCount);
             const posterRows = (await db
               .prepare(
@@ -85,6 +111,15 @@ collectionsRouter.get(
               )
               .all(collection.id)) as { poster_url: string }[];
             posterUrls = posterRows.map((p) => p.poster_url);
+          } else {
+            const members = ((await db
+              .prepare(
+                `SELECT m.* FROM collection_items ci JOIN media_items m ON m.id = ci.media_item_id
+                 WHERE ci.collection_id = ? ORDER BY ci.position`
+              )
+              .all(collection.id)) as any[]).map(mediaItemFromRow).filter(visible);
+            itemCount = members.length;
+            posterUrls = members.slice(0, 4).map((m) => m.posterUrl).filter((p): p is string => !!p);
           }
           return { ...collection, itemCount, posterUrls };
         })
@@ -95,12 +130,14 @@ collectionsRouter.get(
 
 collectionsRouter.post(
   "/",
+  requireAdmin,
   asyncHandler(async (req, res) => {
     const b = req.body ?? {};
     if (!b.name) throw new HttpError(400, "name is required");
+    const smartFilter = sanitizeSmartFilter(b.smartFilter);
     const result = await db
       .prepare("INSERT INTO collections (name, description, smart_filter) VALUES (?, ?, ?)")
-      .run(b.name, b.description ?? null, b.smartFilter ? JSON.stringify(b.smartFilter) : null);
+      .run(b.name, b.description ?? null, smartFilter ? JSON.stringify(smartFilter) : null);
     const row = await db.prepare("SELECT * FROM collections WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(collectionFromRow(row));
   })
@@ -124,7 +161,9 @@ collectionsRouter.get(
                ORDER BY ci.position, m.sort_title`
             )
             .all(req.params.id)) as any[])
-    ).map(mediaItemFromRow);
+    )
+      .map(mediaItemFromRow)
+      .filter(visibleTo(req));
 
     res.json({ ...collection, items });
   })
@@ -132,6 +171,7 @@ collectionsRouter.get(
 
 collectionsRouter.patch(
   "/:id",
+  requireAdmin,
   asyncHandler(async (req, res) => {
     const b = req.body ?? {};
     const sets: string[] = [];
@@ -160,6 +200,7 @@ collectionsRouter.patch(
 
 collectionsRouter.delete(
   "/:id",
+  requireAdmin,
   asyncHandler(async (req, res) => {
     const result = await db.prepare("DELETE FROM collections WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Collection not found");
@@ -175,6 +216,7 @@ function assertNotSmart(row: any): void {
 
 collectionsRouter.post(
   "/:id/items",
+  requireAdmin,
   asyncHandler(async (req, res) => {
     const mediaItemId = req.body?.mediaItemId;
     if (!mediaItemId) throw new HttpError(400, "mediaItemId is required");
@@ -197,6 +239,7 @@ collectionsRouter.post(
 
 collectionsRouter.delete(
   "/:id/items/:mediaItemId",
+  requireAdmin,
   asyncHandler(async (req, res) => {
     await db
       .prepare("DELETE FROM collection_items WHERE collection_id = ? AND media_item_id = ?")
@@ -209,6 +252,7 @@ collectionsRouter.delete(
  * desired order (must be exactly the collection's current membership). */
 collectionsRouter.put(
   "/:id/items/order",
+  requireAdmin,
   asyncHandler(async (req, res) => {
     const collectionRow = (await db.prepare("SELECT * FROM collections WHERE id = ?").get(req.params.id)) as any;
     if (!collectionRow) throw new HttpError(404, "Collection not found");
@@ -239,6 +283,7 @@ const M3U_EXTENSIONS = new Set([".mp3", ".flac", ".m4a", ".wav", ".ogg", ".mp4",
  */
 collectionsRouter.get(
   "/:id/export",
+  requireAdmin,
   asyncHandler(async (req, res) => {
     const collectionRow = (await db.prepare("SELECT * FROM collections WHERE id = ?").get(req.params.id)) as any;
     if (!collectionRow) throw new HttpError(404, "Collection not found");

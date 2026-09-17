@@ -144,9 +144,19 @@ usersRouter.delete(
 usersRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
-    const existing = (await db.prepare("SELECT username FROM users WHERE id = ?").get(req.params.id)) as
-      | { username: string }
+    const existing = (await db.prepare("SELECT username, role FROM users WHERE id = ?").get(req.params.id)) as
+      | { username: string; role: string }
       | undefined;
+    if (!existing) throw new HttpError(404, "User not found");
+    if (req.auth?.user && String(req.auth.user.id) === String(req.params.id)) {
+      throw new HttpError(400, "You can't delete the account you're signed in with");
+    }
+    if (existing.role === "admin") {
+      // With no admin row left, the unauthenticated first-run POST /auth/setup reopens and anyone
+      // on the network could claim a fresh admin account.
+      const admins = (await db.prepare("SELECT COUNT(*) AS c FROM users WHERE role = 'admin'").get()) as { c: number };
+      if (Number(admins.c) <= 1) throw new HttpError(400, "Can't delete the last admin account");
+    }
     await db.prepare("DELETE FROM sessions WHERE user_id = ?").run(req.params.id);
     const result = await db.prepare("DELETE FROM users WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "User not found");

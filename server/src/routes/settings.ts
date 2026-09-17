@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAdmin } from "../middleware/auth.js";
+import { clientIp, requireAdmin } from "../middleware/auth.js";
 import crypto from "node:crypto";
 import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
@@ -236,7 +236,7 @@ settingsRouter.post(
       return;
     }
 
-    const rateLimitKey = `totp:${req.ip}`;
+    const rateLimitKey = `totp:${clientIp(req)}`;
     const rateLimit = checkRateLimit(rateLimitKey);
     if (!rateLimit.allowed) {
       res.status(429).json({ ok: false, error: "Too many failed attempts. Try again later.", retryAfterSeconds: rateLimit.retryAfterSeconds });

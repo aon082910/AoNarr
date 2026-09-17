@@ -389,6 +389,10 @@ export default function AddMedia() {
             setType(e.target.value as MediaType);
             setResults(null);
             setSelected(null);
+            // A group belongs to one library type — a SNES group picked under ROMs must not ride
+            // along into a movie added after switching types.
+            setGroupId(null);
+            setRomGroupChain(null);
           }}
         >
           {mediaTypes.map((t) => (

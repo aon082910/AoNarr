@@ -55,12 +55,20 @@ async function groupCounts(mediaType: string): Promise<Map<number, { total: numb
   return new Map(rows.map((r) => [r.group_id, { total: Number(r.total), have: Number(r.have) }]));
 }
 
+/** A household account only sees the group tree of libraries it's allowed into. */
+function assertTypeVisible(req: import("express").Request, mediaType: string): void {
+  if (req.auth?.isAdmin) return;
+  const allowed = req.auth?.user?.allowedTypes ?? [];
+  if (!allowed.includes(mediaType)) throw new HttpError(403, "You don't have access to this library");
+}
+
 /** Lists groups for a type, optionally scoped to one parent (omit parentId for top-level groups). */
 libraryGroupsRouter.get(
   "/",
   asyncHandler(async (req, res) => {
     const { mediaType, parentId } = req.query as { mediaType?: string; parentId?: string };
     if (!mediaType || !isValidMediaType(mediaType)) throw new HttpError(400, "mediaType is required");
+    assertTypeVisible(req, mediaType);
 
     const rows = parentId
       ? await db.prepare("SELECT * FROM library_groups WHERE media_type = ? AND parent_group_id = ? ORDER BY sort_name").all(mediaType, parentId)
@@ -83,6 +91,7 @@ libraryGroupsRouter.get(
   asyncHandler(async (req, res) => {
     const row = (await db.prepare("SELECT * FROM library_groups WHERE id = ?").get(req.params.id)) as any;
     if (!row) throw new HttpError(404, "Group not found");
+    assertTypeVisible(req, row.media_type);
 
     const breadcrumb: ReturnType<typeof libraryGroupFromRow>[] = [];
     let cur = row;
