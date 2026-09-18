@@ -8,6 +8,7 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { BlocklistEntry, CustomFormat, DelayProfile, ImportExclusion, MediaType, MediaTypeInfo, Quality, QualityProfile, ReleaseProfile, RootFolder, Tag } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
+import { TrashIcon, FolderIcon, ArrowUpIcon, ArrowDownIcon } from "../components/ActionIcons.js";
 
 interface FormatScore extends CustomFormat {
   score: number;
@@ -42,8 +43,8 @@ function BlocklistTable({ entries, onRemove }: { entries: BlocklistEntry[]; onRe
             <td>{b.releaseTitle}</td>
             <td>{b.createdAt}</td>
             <td>
-              <button className="danger" onClick={() => onRemove(b.id)}>
-                Remove
+              <button type="button" className="icon-button danger" onClick={() => onRemove(b.id)} title="Remove" aria-label="Remove">
+                <TrashIcon />
               </button>
             </td>
           </tr>
@@ -105,8 +106,8 @@ function TagsTable({
               )}
             </td>
             <td>
-              <button className="danger" onClick={() => onRemove(t.id)}>
-                Delete
+              <button type="button" className="icon-button danger" onClick={() => onRemove(t.id)} title="Delete" aria-label="Delete">
+                <TrashIcon />
               </button>
             </td>
           </tr>
@@ -177,8 +178,8 @@ function ImportExclusionsTable({
             <td>{typeLabel(ex.type)}</td>
             <td>{ex.reason ?? "-"}</td>
             <td>
-              <button className="danger" onClick={() => onRemove(ex.id)}>
-                Remove
+              <button type="button" className="icon-button danger" onClick={() => onRemove(ex.id)} title="Remove" aria-label="Remove">
+                <TrashIcon />
               </button>
             </td>
           </tr>
@@ -2719,8 +2720,8 @@ export default function Settings() {
                 <label htmlFor="settings-add-root-folder-path">Path</label>
                 <div className="toolbar">
                   <input id="settings-add-root-folder-path" value={folderPath} onChange={(e) => setFolderPath(e.target.value)} placeholder="/media/movies" required style={{ flex: 1 }} />
-                  <button type="button" className="secondary" onClick={() => setShowFolderPicker(true)}>
-                    Browse...
+                  <button type="button" className="icon-button" onClick={() => setShowFolderPicker(true)} title="Browse..." aria-label="Browse for a folder">
+                    <FolderIcon />
                   </button>
                 </div>
                 {showFolderPicker && (
@@ -2814,11 +2815,11 @@ export default function Settings() {
                   onBlur={(e) => saveQualitySize(q.id, "preferredSizeMb", e.target.value)}
                 />
                 <div className="toolbar">
-                  <button className="secondary" disabled={idx === 0} onClick={() => moveQuality(idx, -1)}>
-                    Move up
+                  <button type="button" className="icon-button" disabled={idx === 0} onClick={() => moveQuality(idx, -1)} title="Move up" aria-label="Move up">
+                    <ArrowUpIcon />
                   </button>
-                  <button className="secondary" disabled={idx === qualities.length - 1} onClick={() => moveQuality(idx, 1)}>
-                    Move down
+                  <button type="button" className="icon-button" disabled={idx === qualities.length - 1} onClick={() => moveQuality(idx, 1)} title="Move down" aria-label="Move down">
+                    <ArrowDownIcon />
                   </button>
                 </div>
               </div>

@@ -3,6 +3,33 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 299 — Settings.tsx: icon buttons where they actually fit
+Continued the Phase 2 rollout, but `Settings.tsx` (41 buttons in the original survey) turned out to
+need a genuinely different treatment than `Activity.tsx`/`MediaDetail.tsx`/`LibraryType.tsx`. Those
+three pages are built around dense toolbar/table rows — several actions sitting side by side, where
+icons read cleanly as a group. `Settings.tsx` is built around `SettingsSectionTiles`: click a tile,
+get a dedicated, mostly-textual form panel for that one root folder/tag/quality/quality-profile/
+delay-profile/release-profile/custom-format/subtitle-provider, with usually exactly ONE action
+button at the bottom (Delete, Regenerate, Test, Sync, Import, Set up 2FA, ...). Converting a single
+lone button to an icon in the middle of an otherwise all-text, all-label form panel doesn't read as
+"organized" the way a row of several icons does — it reads as an orphaned glyph with no siblings to
+give it context, which is worse than what it replaced. Real Sonarr/Radarr keep exactly this shape
+of button (a lone destructive/consequential action at the bottom of a settings panel) as text too.
+
+So this round converted only what's genuinely row/toolbar-shaped: the three list-style tables at
+the top of the file (Blocklist/Tags/Import-Exclusions, each a real multi-column table with a
+row-level Remove/Delete in the last column — TrashIcon), the root-folder path picker's "Browse..."
+button (paired with an input, same shape already converted in `MediaDetail.tsx` — FolderIcon), and
+the quality ladder's "Move up"/"Move down" pair (a genuine 2-button mini-toolbar with an
+unambiguous icon pair — ArrowUpIcon/ArrowDownIcon). Everything else — every "Delete {X}" at the
+bottom of its own settings panel, every Regenerate/Test/Sync/Import/Show-URL/Register-command
+button, and "Sync Radarr formats"/"Sync Sonarr formats" (same "label carries essential
+distinguishing info" reasoning as `MediaDetail.tsx`'s "Fetch from {provider}") — stays text.
+
+Verified live: the quality reorder icons show correct disabled state at the first/last rank, the
+folder-browse icon opens the picker correctly, and no regressions elsewhere in the tab strip or
+panel forms.
+
 ## Round 298 — audit web/ for the stray-"0" JSX conditional bug
 Follow-up to the bug found in Round 296: any `0 | 1`-typed field (not `boolean`) used bare in a
 JSX `&&` chain — `{subItem.hasFile && (...)}` — renders the literal number `0` as a visible text
