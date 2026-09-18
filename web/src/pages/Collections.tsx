@@ -2,8 +2,10 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
-import { LayersIcon } from "../components/NavIcons.js";
+import { LayersIcon, PlusCircleIcon } from "../components/NavIcons.js";
 import { TrashIcon } from "../components/ActionIcons.js";
+import Modal from "../components/Modal.js";
+import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 import type { Collection } from "../types.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
@@ -12,6 +14,7 @@ export default function Collections() {
   const navigate = useNavigate();
   const mediaTypes = useMediaTypes();
   const [collections, setCollections] = useState<Collection[]>([]);
+  const [showAdd, setShowAdd] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
 
@@ -50,6 +53,7 @@ export default function Collections() {
       setFilterMonitored("");
       setFilterHasFile("");
       setFilterAddedAfterDays("");
+      setShowAdd(false);
       navigate(`/collections/${created.id}`);
     } catch (e) {
       notify.error((e as Error).message);
@@ -75,53 +79,61 @@ export default function Collections() {
         soundtrack album, all in one place.
       </p>
 
-      <form className="form-panel" onSubmit={addCollection}>
-        <label htmlFor="collections-name-1">Name</label>
-        <input id="collections-name-1" value={name} onChange={(e) => setName(e.target.value)} required />
-        <label htmlFor="collections-description-2">Description</label>
-        <input id="collections-description-2" value={description} onChange={(e) => setDescription(e.target.value)} />
-        <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <input type="checkbox" checked={isSmart} onChange={(e) => setIsSmart(e.target.checked)} />
-          Smart collection (live filter, not a fixed list)
-        </label>
-        {isSmart && (
-          <>
-            <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
-              Membership is re-computed every time the collection is viewed — items aren't added or
-              removed manually.
-            </p>
-            <label htmlFor="collections-library-type-3">Library type</label>
-            <select id="collections-library-type-3" value={filterType} onChange={(e) => setFilterType(e.target.value)}>
-              <option value="">Any</option>
-              {mediaTypes.map((t) => (
-                <option key={t.key} value={t.key}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
-            <label htmlFor="collections-monitored-4">Monitored</label>
-            <select id="collections-monitored-4" value={filterMonitored} onChange={(e) => setFilterMonitored(e.target.value)}>
-              <option value="">Any</option>
-              <option value="1">Monitored</option>
-              <option value="0">Unmonitored</option>
-            </select>
-            <label htmlFor="collections-file-status-5">File status</label>
-            <select id="collections-file-status-5" value={filterHasFile} onChange={(e) => setFilterHasFile(e.target.value)}>
-              <option value="">Any</option>
-              <option value="1">Downloaded</option>
-              <option value="0">Missing</option>
-            </select>
-            <label htmlFor="collections-added-within-last-n-days-blank-any-time-6">Added within last N days (blank = any time)</label>
-            <input id="collections-added-within-last-n-days-blank-any-time-6"
-              type="number"
-              style={{ maxWidth: 120 }}
-              value={filterAddedAfterDays}
-              onChange={(e) => setFilterAddedAfterDays(e.target.value)}
-            />
-          </>
-        )}
-        <button type="submit">Create collection</button>
-      </form>
+      <PageToolbar
+        left={<ToolbarButton icon={<PlusCircleIcon />} label="Add" onClick={() => setShowAdd(true)} title="Add collection" />}
+      />
+
+      {showAdd && (
+        <Modal title="New Collection" onClose={() => setShowAdd(false)}>
+          <form className="form-panel" onSubmit={addCollection} style={{ padding: 0 }}>
+            <label htmlFor="collections-name-1">Name</label>
+            <input id="collections-name-1" value={name} onChange={(e) => setName(e.target.value)} required />
+            <label htmlFor="collections-description-2">Description</label>
+            <input id="collections-description-2" value={description} onChange={(e) => setDescription(e.target.value)} />
+            <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <input type="checkbox" checked={isSmart} onChange={(e) => setIsSmart(e.target.checked)} />
+              Smart collection (live filter, not a fixed list)
+            </label>
+            {isSmart && (
+              <>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+                  Membership is re-computed every time the collection is viewed — items aren't added or
+                  removed manually.
+                </p>
+                <label htmlFor="collections-library-type-3">Library type</label>
+                <select id="collections-library-type-3" value={filterType} onChange={(e) => setFilterType(e.target.value)}>
+                  <option value="">Any</option>
+                  {mediaTypes.map((t) => (
+                    <option key={t.key} value={t.key}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+                <label htmlFor="collections-monitored-4">Monitored</label>
+                <select id="collections-monitored-4" value={filterMonitored} onChange={(e) => setFilterMonitored(e.target.value)}>
+                  <option value="">Any</option>
+                  <option value="1">Monitored</option>
+                  <option value="0">Unmonitored</option>
+                </select>
+                <label htmlFor="collections-file-status-5">File status</label>
+                <select id="collections-file-status-5" value={filterHasFile} onChange={(e) => setFilterHasFile(e.target.value)}>
+                  <option value="">Any</option>
+                  <option value="1">Downloaded</option>
+                  <option value="0">Missing</option>
+                </select>
+                <label htmlFor="collections-added-within-last-n-days-blank-any-time-6">Added within last N days (blank = any time)</label>
+                <input id="collections-added-within-last-n-days-blank-any-time-6"
+                  type="number"
+                  style={{ maxWidth: 120 }}
+                  value={filterAddedAfterDays}
+                  onChange={(e) => setFilterAddedAfterDays(e.target.value)}
+                />
+              </>
+            )}
+            <button type="submit">Create collection</button>
+          </form>
+        </Modal>
+      )}
 
       {collections.length === 0 && <p className="empty">No collections yet.</p>}
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))" }}>

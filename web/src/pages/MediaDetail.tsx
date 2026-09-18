@@ -27,8 +27,16 @@ import {
   PlusCircleIcon,
   SlashIcon,
   CpuIcon,
+  CalendarIcon,
+  StarIcon,
+  BriefcaseIcon,
+  UsersIcon,
+  HardDriveIcon,
+  GlobeIcon,
+  SlidersIcon,
 } from "../components/NavIcons.js";
-import { TrashIcon, XIcon, PencilIcon, FolderIcon, EyeIcon, ArrowLeftIcon, ArrowUpIcon, GridIcon } from "../components/ActionIcons.js";
+import { TrashIcon, PencilIcon, FolderIcon, EyeIcon, ArrowLeftIcon, ArrowUpIcon, GridIcon } from "../components/ActionIcons.js";
+import { PageToolbar, ToolbarButton, ToolbarSeparator } from "../components/PageToolbar.js";
 import type { Collection, HistoryEvent, MediaInfo, MediaItem, QualityProfile, RootFolder, SearchResult, Tag } from "../types.js";
 import { formatBytes, formatMediaInfo } from "../utils/format.js";
 import { useContentRatings } from "../hooks/useContentRatings.js";
@@ -555,8 +563,8 @@ export default function MediaDetail() {
 
   // Item → item navigation (a TMDB collection part, a series sibling) reuses this mounted
   // component, so per-item panels must reset or B's page opens with A's history listed under it —
-  // or worse, with A's still-open edit-metadata/artwork/move/split form silently applying its
-  // stale fields to B on save, since those panels render inline rather than in a blocking Modal.
+  // or worse, with A's still-open edit-metadata/artwork/move/split modal silently applying its
+  // stale fields to B on save.
   useEffect(() => {
     setHistory(null);
     setShowHistory(false);
@@ -577,11 +585,12 @@ export default function MediaDetail() {
     setError(null);
   }, [id]);
 
-  function toggleHistory() {
+  // Opens the History modal — Modal's own close button/overlay-click/Escape handles hiding it
+  // again (previously this toggled an inline panel closed too).
+  function openHistory() {
     if (!item) return;
-    const next = !showHistory;
-    setShowHistory(next);
-    if (next && history === null) {
+    setShowHistory(true);
+    if (history === null) {
       setLoadingHistory(true);
       api
         .get<HistoryEvent[]>(`/media/${item.id}/history`)
@@ -608,17 +617,16 @@ export default function MediaDetail() {
     return { label: labels[event.eventType] ?? event.eventType, detail };
   }
 
-  function toggleEditMetadata() {
+  // Opens the Edit Metadata modal, pre-filled from the current item — the modal's own close
+  // button/overlay-click/Escape now handles hiding it (previously this toggled an inline panel).
+  function openEditMetadata() {
     if (!item) return;
-    const next = !showEditMetadata;
-    setShowEditMetadata(next);
-    if (next) {
-      setEditTitle(item.title);
-      setEditYear(item.year ? String(item.year) : "");
-      setEditOverview(item.overview ?? "");
-      setEditPosterUrl(item.posterUrl ?? "");
-      setEditBackdropUrl(item.backdropUrl ?? "");
-    }
+    setEditTitle(item.title);
+    setEditYear(item.year ? String(item.year) : "");
+    setEditOverview(item.overview ?? "");
+    setEditPosterUrl(item.posterUrl ?? "");
+    setEditBackdropUrl(item.backdropUrl ?? "");
+    setShowEditMetadata(true);
   }
 
   async function saveMetadata(e: FormEvent) {
@@ -1049,11 +1057,11 @@ export default function MediaDetail() {
     setResults((prev) => prev && prev.map((r) => (r.title === result.title ? { ...r, blocklisted: true } : r)));
   }
 
-  async function toggleArtwork() {
+  // Opens the Artwork modal and loads its options — Modal's own close button/overlay-click/
+  // Escape handles hiding it (previously this toggled an inline panel closed too).
+  async function openArtwork() {
     if (!item) return;
-    const next = !showArtwork;
-    setShowArtwork(next);
-    if (!next) return;
+    setShowArtwork(true);
     setLoadingArtwork(true);
     setArtworkError(null);
     try {
@@ -1266,6 +1274,100 @@ export default function MediaDetail() {
 
   return (
     <div>
+      {/* Sonarr/Radarr-style page toolbar sits above the poster/backdrop hero, not after it —
+          grouped by purpose with separators. MonitorToggle/Protect/Watched are per-item flag
+          toggles, not page actions, so they live beside the <h1> title inside the hero instead
+          (see below) rather than here. */}
+      {isAdmin && (
+        <PageToolbar
+          left={
+            <>
+              <ToolbarButton
+                icon={<RotateCcwIcon />}
+                label={refreshingItem ? "Refreshing..." : "Refresh"}
+                onClick={refreshItem}
+                disabled={refreshingItem}
+                spinning={refreshingItem}
+                title={refreshingItem ? "Refreshing..." : "Refresh — re-pull this item's own metadata and any missing episodes/children from its metadata provider"}
+              />
+              {shape === "single" && (
+                <ToolbarButton
+                  icon={<SearchIcon />}
+                  label={searching && !target ? "Searching..." : "Search now"}
+                  onClick={() => runSearch(null)}
+                  disabled={searching}
+                  spinning={searching && !target}
+                  title={searching && !target ? "Searching..." : "Search now"}
+                />
+              )}
+              <ToolbarButton
+                icon={<ZapIcon />}
+                label={scanningItem ? "Scanning..." : "Scan & Import"}
+                onClick={scanImportItem}
+                disabled={scanningItem}
+                spinning={scanningItem}
+                title={scanningItem ? "Scanning..." : "Scan this item's root folder for a file matching just this title, same as the library-wide Scan & Import but scoped to this one item"}
+              />
+              <ToolbarButton icon={<InboxIcon />} label="Manual Import" onClick={() => toggleImport()} title="Manual Import" />
+              <ToolbarSeparator />
+              <ToolbarButton
+                icon={<FolderIcon />}
+                label="Organize & Rename"
+                onClick={organizeItem}
+                title="Organize & Rename — move/rename this item's own file(s) to match the current naming template, same as System → Rename Files but scoped to just this item"
+              />
+              <ToolbarButton icon={<ClockIcon />} label="History" onClick={openHistory} title="History" />
+              {shape === "single" && !!item.hasFile && (
+                <ToolbarButton icon={<AlertTriangleIcon />} label="Check Corrupt" onClick={checkCorrupt} title="Check for corruption" />
+              )}
+              <ToolbarSeparator />
+              <ToolbarButton icon={<PencilIcon />} label="Edit" onClick={openEditMetadata} title="Edit metadata" />
+              {typeInfo && typeInfo.groupLevels.length > 0 && (
+                <ToolbarButton icon={<LayersIcon />} label="Move to Group" onClick={() => setShowMove(true)} title="Move to group..." />
+              )}
+              {shape === "episodic" && (
+                <ToolbarButton
+                  icon={<ColumnsIcon />}
+                  label="Split"
+                  onClick={() => setShowSplit(true)}
+                  title="Split — move episodes that were incorrectly matched into this show (from a different folder) out into a brand new show"
+                />
+              )}
+              {/* Movie/series/artist go through Fanart.tv; rom/manga/comic/video/adult each pull extra
+                  artwork from their own metadata provider instead (see fetchArtworkFor in metadata.ts).
+                  Author/audiobook/course have no artwork source at all — Open Library/Google Books/
+                  manual-only don't expose a second image to fetch, so there's nothing to offer. */}
+              {["movie", "series", "sports", "ppv", "artist", "rom", "manga", "comic", "video", "adult"].includes(item.type) && (
+                <ToolbarButton icon={<FilmIcon />} label="Artwork" onClick={openArtwork} title="Artwork" />
+              )}
+              <ToolbarSeparator />
+              <ToolbarButton
+                icon={<DownloadIcon />}
+                label="Export .nfo"
+                onClick={() => downloadFile(`/media/${item.id}/export?format=nfo`, `${item.title}.nfo`)}
+                title="Export .nfo"
+              />
+              {(metadataProviders[item.type]?.length ?? 0) > 0 && (
+                <ToolbarButton
+                  icon={<SearchIcon />}
+                  label="Different Match"
+                  onClick={() => setShowSearchMatch(true)}
+                  title="Search for a different match — search with a custom query and pick a different metadata match, for when the current title is wrong or garbled"
+                />
+              )}
+              <ToolbarButton
+                icon={<DownloadIcon />}
+                label="Export Plex"
+                onClick={() => downloadFile(`/media/${item.id}/export?format=plexmatch`, `.plexmatch`)}
+                title="Export for Plex — renames this file to exactly .plexmatch and places it in this item's own folder for Plex to pick it up. Only useful if this item's own folder is inside a library Plex is scanning as a Movie or TV Show section."
+              />
+              <ToolbarSeparator />
+              <ToolbarButton icon={<TrashIcon />} label="Remove" onClick={remove} danger title="Remove" />
+            </>
+          }
+        />
+      )}
+
       <div
         className="media-backdrop"
         style={
@@ -1289,60 +1391,66 @@ export default function MediaDetail() {
             </div>
           )}
           <div style={{ flex: 1, minWidth: 0 }}>
-            <h1 style={{ margin: "0 0 4px" }}>{item.title}</h1>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 0 4px" }}>
+              <h1 style={{ margin: 0 }}>{item.title}</h1>
+              {/* Monitored bookmark-ribbon + per-item Protect/Watched flag toggles sit beside the
+                  title (Sonarr's own convention) rather than in the page-action toolbar below. */}
+              {isAdmin && <MonitorToggle monitored={!!item.monitored} onToggle={toggleMonitored} />}
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={toggleProtected}
+                  className="icon-button"
+                  style={item.protected ? { color: "var(--accent)" } : undefined}
+                  title={item.protected ? "Protected from watch-status auto-archival — click to unprotect" : "Protect from watch-status auto-archival"}
+                  aria-label={item.protected ? "Unprotect" : "Protect from archival"}
+                >
+                  <ShieldIcon />
+                </button>
+              )}
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={toggleWatched}
+                  className="icon-button"
+                  style={watched ? { color: "var(--accent)" } : undefined}
+                  title={
+                    watched
+                      ? "Mark unwatched"
+                      : "Mark watched — also pushed to your configured media server, if it recognizes this file"
+                  }
+                  aria-label={watched ? "Mark unwatched" : "Mark watched"}
+                >
+                  <EyeIcon />
+                </button>
+              )}
+              {isAdmin && (
+                <button
+                  type="button"
+                  className="icon-button"
+                  title="Share"
+                  aria-label="Share"
+                  onClick={async () => {
+                    const result = await api.post<{ token: string }>(`/media/${item.id}/share`, {});
+                    const url = `${externalUrl || window.location.origin}/share/${result.token}`;
+                    try {
+                      await navigator.clipboard.writeText(url);
+                      notify.success(`Share link copied to clipboard:\n${url}`);
+                    } catch {
+                      await promptDialog({ title: "Share link", label: "Copy this link manually:", defaultValue: url, confirmLabel: "Done" });
+                    }
+                  }}
+                >
+                  <ShareIcon />
+                </button>
+              )}
+            </div>
             {alternateTitles && alternateTitles.length > 0 && (
               <p style={{ color: "var(--muted)", fontSize: "0.8rem", margin: "0 0 6px" }} title="Alternate titles (from TMDB)">
                 AKA {alternateTitles.join(" · ")}
               </p>
             )}
-            <p style={{ color: "var(--muted)" }}>
-              {item.year ?? ""} · {item.type} · {item.status}
-              {typeof item.rating === "number" && item.rating > 0 && (
-                <span className="badge" style={{ marginLeft: 8 }} title="TMDB vote average">
-                  ★ {item.rating.toFixed(1)}
-                </span>
-              )}
-              {typeof externalRatings?.imdbRating === "number" && (
-                <span className="badge" style={{ marginLeft: 6 }} title="IMDb rating (via OMDb)">
-                  IMDb {externalRatings.imdbRating.toFixed(1)}
-                </span>
-              )}
-              {typeof externalRatings?.rottenTomatoesScore === "number" && (
-                <span className="badge" style={{ marginLeft: 6 }} title="Rotten Tomatoes (via OMDb)">
-                  🍅 {externalRatings.rottenTomatoesScore}%
-                </span>
-              )}
-              {typeof externalRatings?.metacriticScore === "number" && (
-                <span className="badge" style={{ marginLeft: 6 }} title="Metacritic (via OMDb)">
-                  MC {externalRatings.metacriticScore}
-                </span>
-              )}
-              {typeof item.runtimeMinutes === "number" && item.runtimeMinutes > 0 && (
-                <span style={{ marginLeft: 8 }}>· {item.runtimeMinutes} min</span>
-              )}
-              {isAdmin && (
-              <button
-                type="button"
-                className="icon-button"
-                style={{ marginLeft: 10, width: 24, height: 24 }}
-                title="Share"
-                aria-label="Share"
-                onClick={async () => {
-                  const result = await api.post<{ token: string }>(`/media/${item.id}/share`, {});
-                  const url = `${externalUrl || window.location.origin}/share/${result.token}`;
-                  try {
-                    await navigator.clipboard.writeText(url);
-                    notify.success(`Share link copied to clipboard:\n${url}`);
-                  } catch {
-                    await promptDialog({ title: "Share link", label: "Copy this link manually:", defaultValue: url, confirmLabel: "Done" });
-                  }
-                }}
-              >
-                <ShareIcon />
-              </button>
-            )}
-          </p>
-          {shape === "single" && (
+            {shape === "single" && (
             <p>
               <span className={`badge ${item.hasFile ? "ok" : ""}`}>{item.hasFile ? "Downloaded" : "Missing"}</span>
               {item.quality && <span className="badge" style={{ marginLeft: 6 }}>{item.quality}</span>}
@@ -1375,112 +1483,109 @@ export default function MediaDetail() {
             </p>
           )}
 
-          {isAdmin && (
-            <table style={{ marginTop: 8 }}>
-              <tbody>
-                <tr>
-                  <th>Added</th>
-                  <td>{new Date(item.addedAt).toLocaleDateString()}</td>
-                </tr>
-                {qualityProfile && (
-                  <tr>
-                    <th>Quality profile</th>
-                    <td>{qualityProfile.name}</td>
-                  </tr>
-                )}
-                {item.studio && (
-                  <tr>
-                    <th>Studio</th>
-                    <td>{item.studio}</td>
-                  </tr>
-                )}
-                {Array.isArray((item.extraMetadata as any)?.performers) && (item.extraMetadata as any).performers.length > 0 && (
-                  <tr>
-                    <th>Performers</th>
-                    <td>{(item.extraMetadata as any).performers.join(", ")}</td>
-                  </tr>
-                )}
-                {shape === "single" && (
-                  <tr>
-                    <th>Minimum availability</th>
-                    <td>
-                      <select
-                        value={item.minimumAvailability ?? "announced"}
-                        onChange={async (e) => {
-                          const updated = await api.patch<MediaItem>(`/media/${item.id}`, { minimumAvailability: e.target.value });
-                          setItem({ ...item, minimumAvailability: updated.minimumAvailability });
-                        }}
-                        style={{ maxWidth: 260 }}
-                      >
-                        <option value="announced">Announced — search immediately</option>
-                        <option value="inCinemas">In cinemas — wait for the release date</option>
-                        <option value="released">Released — wait release date + delay</option>
-                      </select>
-                    </td>
-                  </tr>
-                )}
-                {shape === "episodic" && (
-                  <tr>
-                    <th>Series type</th>
-                    <td>
-                      <select
-                        value={item.seriesType ?? "standard"}
-                        onChange={async (e) => {
-                          const updated = await api.patch<MediaItem>(`/media/${item.id}`, { seriesType: e.target.value });
-                          setItem({ ...item, seriesType: updated.seriesType });
-                        }}
-                        style={{ maxWidth: 260 }}
-                        title="Daily searches/matches releases by air date (e.g. talk shows, news) instead of season/episode"
-                      >
-                        <option value="standard">Standard — season/episode</option>
-                        <option value="daily">Daily — air date (talk shows, news)</option>
-                      </select>
-                    </td>
-                  </tr>
-                )}
-                {rootFolder && (
-                  <tr>
-                    <th>Root folder</th>
-                    <td>{rootFolder.path}</td>
-                  </tr>
-                )}
-                {item.path && (
-                  <tr>
-                    <th>Path</th>
-                    <td style={{ wordBreak: "break-all" }}>{item.path}</td>
-                  </tr>
-                )}
-                {Object.keys(externalIds).length > 0 && (
-                  <tr>
-                    <th>External IDs</th>
-                    <td>
-                      {Object.entries(externalIds).map(([provider, providerId], idx) => {
-                        const link = EXTERNAL_ID_LINKS[provider]?.(providerId, item.type);
-                        return (
-                          <span key={provider}>
-                            {idx > 0 && " · "}
-                            {link ? (
-                              <a href={link} target="_blank" rel="noreferrer">
-                                {provider}: {providerId}
-                              </a>
-                            ) : (
-                              `${provider}: ${providerId}`
-                            )}
-                          </span>
-                        );
-                      })}
-                    </td>
-                  </tr>
-                )}
-                {item.tags && item.tags.length > 0 && (
-                  <tr>
-                    <th>Tags</th>
-                    <td>{item.tags.map((t) => t.name).join(", ")}</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          )}
+          {/* Sonarr/Radarr-style facts strip — read-only icon+text pills, replacing the old inline
+              badge jumble and admin metadata table. Year/type/status/runtime/rating pills are
+              visible to everyone (they were, before this change too); the rest were admin-only in
+              the old table and stay that way. Quality profile / root folder were already read-only
+              here (no edit control existed to relocate); Minimum availability / Series type WERE
+              directly-editable selects in the old table, so their actual <select> controls moved
+              into the Edit Metadata modal (below) and only their current value shows here. */}
+          <div className="detail-pills">
+            {item.year != null && (
+              <span className="pill" title="Year">
+                <CalendarIcon /> {item.year}
+              </span>
+            )}
+            <span className="pill" title="Type / status">
+              {item.type} · {item.status}
+            </span>
+            {typeof item.runtimeMinutes === "number" && item.runtimeMinutes > 0 && (
+              <span className="pill" title="Runtime">
+                <ClockIcon /> {item.runtimeMinutes} min
+              </span>
+            )}
+            {typeof item.rating === "number" && item.rating > 0 && (
+              <span className="pill" title="TMDB vote average">
+                <StarIcon /> {item.rating.toFixed(1)}
+              </span>
+            )}
+            {typeof externalRatings?.imdbRating === "number" && (
+              <span className="pill" title="IMDb rating (via OMDb)">
+                IMDb {externalRatings.imdbRating.toFixed(1)}
+              </span>
+            )}
+            {typeof externalRatings?.rottenTomatoesScore === "number" && (
+              <span className="pill" title="Rotten Tomatoes (via OMDb)">
+                🍅 {externalRatings.rottenTomatoesScore}%
+              </span>
+            )}
+            {typeof externalRatings?.metacriticScore === "number" && (
+              <span className="pill" title="Metacritic (via OMDb)">
+                MC {externalRatings.metacriticScore}
+              </span>
+            )}
+            {isAdmin && (
+              <span className="pill" title="Added">
+                <CalendarIcon /> Added {new Date(item.addedAt).toLocaleDateString()}
+              </span>
+            )}
+            {isAdmin && qualityProfile && (
+              <span className="pill" title="Quality profile">
+                <SlidersIcon /> {qualityProfile.name}
+              </span>
+            )}
+            {isAdmin && item.studio && (
+              <span className="pill" title="Studio">
+                <BriefcaseIcon /> {item.studio}
+              </span>
+            )}
+            {isAdmin && Array.isArray((item.extraMetadata as any)?.performers) && (item.extraMetadata as any).performers.length > 0 && (
+              <span className="pill" title="Performers">
+                <UsersIcon /> {(item.extraMetadata as any).performers.join(", ")}
+              </span>
+            )}
+            {isAdmin && shape === "single" && (
+              <span className="pill" title="Minimum availability — change it in the Edit modal">
+                {item.minimumAvailability === "inCinemas" ? "In cinemas" : item.minimumAvailability === "released" ? "Released" : "Announced"}
+              </span>
+            )}
+            {isAdmin && shape === "episodic" && (
+              <span className="pill" title="Series type — change it in the Edit modal">
+                {item.seriesType === "daily" ? "Daily" : "Standard"}
+              </span>
+            )}
+            {isAdmin && rootFolder && (
+              <span className="pill" title="Root folder">
+                <FolderIcon /> {rootFolder.path}
+              </span>
+            )}
+            {isAdmin && item.path && (
+              <span className="pill" title={item.path} style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis" }}>
+                <HardDriveIcon /> {item.path}
+              </span>
+            )}
+            {isAdmin &&
+              Object.entries(externalIds).map(([provider, providerId]) => {
+                const link = EXTERNAL_ID_LINKS[provider]?.(providerId, item.type);
+                return (
+                  <span key={provider} className="pill" title={`External ID — ${provider}`}>
+                    <GlobeIcon />{" "}
+                    {link ? (
+                      <a href={link} target="_blank" rel="noreferrer">
+                        {provider}: {providerId}
+                      </a>
+                    ) : (
+                      `${provider}: ${providerId}`
+                    )}
+                  </span>
+                );
+              })}
+            {isAdmin && item.tags && item.tags.length > 0 && (
+              <span className="pill" title="Tags">
+                {item.tags.map((t) => t.name).join(", ")}
+              </span>
+            )}
+          </div>
         </div>
         </div>
       </div>
@@ -1645,180 +1750,84 @@ export default function MediaDetail() {
         </div>
       )}
 
-      {isAdmin && (
-        <div className="toolbar">
-          <MonitorToggle monitored={!!item.monitored} onToggle={toggleMonitored} />
-          <button
-            type="button"
-            onClick={toggleProtected}
-            className="icon-button"
-            style={item.protected ? { color: "var(--accent)" } : undefined}
-            title={item.protected ? "Protected from watch-status auto-archival — click to unprotect" : "Protect from watch-status auto-archival"}
-            aria-label={item.protected ? "Unprotect" : "Protect from archival"}
-          >
-            <ShieldIcon />
-          </button>
-          <button
-            type="button"
-            onClick={toggleWatched}
-            className="icon-button"
-            style={watched ? { color: "var(--accent)" } : undefined}
-            title={
-              watched
-                ? "Mark unwatched"
-                : "Mark watched — also pushed to your configured media server, if it recognizes this file"
-            }
-            aria-label={watched ? "Mark unwatched" : "Mark watched"}
-          >
-            <EyeIcon />
-          </button>
-          {shape === "single" && (
-            <button type="button" className="icon-button" onClick={() => runSearch(null)} disabled={searching} title={searching && !target ? "Searching..." : "Search now"} aria-label="Search now">
-              <SearchIcon />
-            </button>
-          )}
-          <button type="button" onClick={() => toggleImport()} className="icon-button" title="Manual Import" aria-label="Manual Import">
-            <InboxIcon />
-          </button>
-          <button
-            type="button"
-            className="icon-button"
-            onClick={scanImportItem}
-            disabled={scanningItem}
-            title={scanningItem ? "Scanning..." : "Scan this item's root folder for a file matching just this title, same as the library-wide Scan & Import but scoped to this one item"}
-            aria-label="Scan & Import"
-          >
-            <ZapIcon />
-          </button>
-          <button
-            type="button"
-            className="icon-button"
-            onClick={refreshItem}
-            disabled={refreshingItem}
-            title={refreshingItem ? "Refreshing..." : "Refresh — re-pull this item's own metadata and any missing episodes/children from its metadata provider"}
-            aria-label="Refresh"
-          >
-            <RotateCcwIcon />
-          </button>
-          <button type="button" onClick={toggleEditMetadata} className="icon-button" title={showEditMetadata ? "Cancel edit" : "Edit metadata"} aria-label={showEditMetadata ? "Cancel edit" : "Edit metadata"}>
-            {showEditMetadata ? <XIcon /> : <PencilIcon />}
-          </button>
-          <button type="button" onClick={toggleHistory} className="icon-button" title={showHistory ? "Hide history" : "History"} aria-label={showHistory ? "Hide history" : "Show history"}>
-            <ClockIcon />
-          </button>
-          <button
-            type="button"
-            className="icon-button"
-            onClick={organizeItem}
-            title="Organize & Rename — move/rename this item's own file(s) to match the current naming template, same as System → Rename Files but scoped to just this item"
-            aria-label="Organize & Rename"
-          >
-            <FolderIcon />
-          </button>
-          {shape === "single" && !!item.hasFile && (
-            <button type="button" className="icon-button" onClick={checkCorrupt} title="Check for corruption" aria-label="Check for corruption">
-              <AlertTriangleIcon />
-            </button>
-          )}
-          <button
-            type="button"
-            className="icon-button"
-            onClick={() => downloadFile(`/media/${item.id}/export?format=nfo`, `${item.title}.nfo`)}
-            title="Export .nfo"
-            aria-label="Export .nfo"
-          >
-            <DownloadIcon />
-          </button>
-          {(metadataProviders[item.type]?.length ?? 0) > 0 && (
-            <button
-              type="button"
-              className="icon-button"
-              onClick={() => setShowSearchMatch(true)}
-              title="Search for a different match — search with a custom query and pick a different metadata match, for when the current title is wrong or garbled"
-              aria-label="Search for a different match"
-            >
-              <SearchIcon />
-            </button>
-          )}
-          <button
-            type="button"
-            className="icon-button"
-            onClick={() => downloadFile(`/media/${item.id}/export?format=plexmatch`, `.plexmatch`)}
-            title="Export for Plex — renames this file to exactly .plexmatch and places it in this item's own folder for Plex to pick it up. Only useful if this item's own folder is inside a library Plex is scanning as a Movie or TV Show section."
-            aria-label="Export for Plex"
-          >
-            <DownloadIcon />
-          </button>
-          {typeInfo && typeInfo.groupLevels.length > 0 && (
-            <button type="button" onClick={() => setShowMove((v) => !v)} className="icon-button" title={showMove ? "Cancel move" : "Move to group..."} aria-label={showMove ? "Cancel move" : "Move to group"}>
-              {showMove ? <XIcon /> : <LayersIcon />}
-            </button>
-          )}
-          {shape === "episodic" && (
-            <button
-              type="button"
-              className="icon-button"
-              onClick={() => setShowSplit((v) => !v)}
-              title={showSplit ? "Cancel split" : "Split — move episodes that were incorrectly matched into this show (from a different folder) out into a brand new show"}
-              aria-label={showSplit ? "Cancel split" : "Split"}
-            >
-              {showSplit ? <XIcon /> : <ColumnsIcon />}
-            </button>
-          )}
-          {/* Movie/series/artist go through Fanart.tv; rom/manga/comic/video/adult each pull extra
-              artwork from their own metadata provider instead (see fetchArtworkFor in metadata.ts).
-              Author/audiobook/course have no artwork source at all — Open Library/Google Books/
-              manual-only don't expose a second image to fetch, so there's nothing to offer. */}
-          {["movie", "series", "sports", "ppv", "artist", "rom", "manga", "comic", "video", "adult"].includes(item.type) && (
-            <button type="button" onClick={toggleArtwork} className="icon-button" title={showArtwork ? "Hide artwork" : "Artwork"} aria-label={showArtwork ? "Hide artwork" : "Show artwork"}>
-              <FilmIcon />
-            </button>
-          )}
-          <button type="button" onClick={remove} className="icon-button danger" title="Remove" aria-label="Remove">
-            <TrashIcon />
-          </button>
-        </div>
-      )}
-
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
       {watchStateError && <p style={{ color: "var(--danger)" }}>{watchStateError}</p>}
 
       {showEditMetadata && (
-        <form className="form-panel" onSubmit={saveMetadata}>
-          <label htmlFor="mediadetail-title-1">Title</label>
-          <input id="mediadetail-title-1" value={editTitle} onChange={(e) => setEditTitle(e.target.value)} required />
-          <label htmlFor="mediadetail-year-2">Year</label>
-          <input id="mediadetail-year-2" value={editYear} onChange={(e) => setEditYear(e.target.value)} type="number" />
-          <label htmlFor="mediadetail-overview-3">Overview</label>
-          <textarea id="mediadetail-overview-3" value={editOverview} onChange={(e) => setEditOverview(e.target.value)} rows={4} />
-          <label htmlFor="mediadetail-poster-url">Poster URL</label>
-          <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-            <input id="mediadetail-poster-url" value={editPosterUrl} onChange={(e) => setEditPosterUrl(e.target.value)} placeholder="https://..." style={{ flex: 1 }} />
-            {editPosterUrl && (
-              <img src={editPosterUrl} alt="" style={{ width: 46, aspectRatio: "2 / 3", objectFit: "cover", borderRadius: 4, flexShrink: 0 }} />
+        <Modal title="Edit Metadata" onClose={() => setShowEditMetadata(false)} maxWidth={560}>
+          <form className="form-panel" onSubmit={saveMetadata} style={{ padding: 0 }}>
+            <label htmlFor="mediadetail-title-1">Title</label>
+            <input id="mediadetail-title-1" value={editTitle} onChange={(e) => setEditTitle(e.target.value)} required />
+            <label htmlFor="mediadetail-year-2">Year</label>
+            <input id="mediadetail-year-2" value={editYear} onChange={(e) => setEditYear(e.target.value)} type="number" />
+            <label htmlFor="mediadetail-overview-3">Overview</label>
+            <textarea id="mediadetail-overview-3" value={editOverview} onChange={(e) => setEditOverview(e.target.value)} rows={4} />
+            <label htmlFor="mediadetail-poster-url">Poster URL</label>
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+              <input id="mediadetail-poster-url" value={editPosterUrl} onChange={(e) => setEditPosterUrl(e.target.value)} placeholder="https://..." style={{ flex: 1 }} />
+              {editPosterUrl && (
+                <img src={editPosterUrl} alt="" style={{ width: 46, aspectRatio: "2 / 3", objectFit: "cover", borderRadius: 4, flexShrink: 0 }} />
+              )}
+            </div>
+            <label htmlFor="mediadetail-backdrop-url">Backdrop URL</label>
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+              <input id="mediadetail-backdrop-url" value={editBackdropUrl} onChange={(e) => setEditBackdropUrl(e.target.value)} placeholder="https://..." style={{ flex: 1 }} />
+              {editBackdropUrl && (
+                <img src={editBackdropUrl} alt="" style={{ width: 80, aspectRatio: "16 / 9", objectFit: "cover", borderRadius: 4, flexShrink: 0 }} />
+              )}
+            </div>
+            <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+              Any direct image URL works for either field — paste one from a search result, Fanart.tv
+              (via the Artwork picker below), or anywhere else. Saving also updates this item's .nfo
+              sidecar on disk, if it has a file, so a media server picks up the poster correction on
+              its next scan.
+            </p>
+            {/* Relocated from the old admin metadata table (Sonarr's Edit-modal convention) — these
+                two selects still PATCH instantly on change, independent of the Save button below,
+                exactly as they did in the table. */}
+            {shape === "single" && (
+              <>
+                <label htmlFor="mediadetail-min-availability">Minimum availability</label>
+                <select
+                  id="mediadetail-min-availability"
+                  value={item.minimumAvailability ?? "announced"}
+                  onChange={async (e) => {
+                    const updated = await api.patch<MediaItem>(`/media/${item.id}`, { minimumAvailability: e.target.value });
+                    setItem({ ...item, minimumAvailability: updated.minimumAvailability });
+                  }}
+                >
+                  <option value="announced">Announced — search immediately</option>
+                  <option value="inCinemas">In cinemas — wait for the release date</option>
+                  <option value="released">Released — wait release date + delay</option>
+                </select>
+              </>
             )}
-          </div>
-          <label htmlFor="mediadetail-backdrop-url">Backdrop URL</label>
-          <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-            <input id="mediadetail-backdrop-url" value={editBackdropUrl} onChange={(e) => setEditBackdropUrl(e.target.value)} placeholder="https://..." style={{ flex: 1 }} />
-            {editBackdropUrl && (
-              <img src={editBackdropUrl} alt="" style={{ width: 80, aspectRatio: "16 / 9", objectFit: "cover", borderRadius: 4, flexShrink: 0 }} />
+            {shape === "episodic" && (
+              <>
+                <label htmlFor="mediadetail-series-type">Series type</label>
+                <select
+                  id="mediadetail-series-type"
+                  value={item.seriesType ?? "standard"}
+                  onChange={async (e) => {
+                    const updated = await api.patch<MediaItem>(`/media/${item.id}`, { seriesType: e.target.value });
+                    setItem({ ...item, seriesType: updated.seriesType });
+                  }}
+                  title="Daily searches/matches releases by air date (e.g. talk shows, news) instead of season/episode"
+                >
+                  <option value="standard">Standard — season/episode</option>
+                  <option value="daily">Daily — air date (talk shows, news)</option>
+                </select>
+              </>
             )}
-          </div>
-          <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
-            Any direct image URL works for either field — paste one from a search result, Fanart.tv
-            (via the Artwork picker below), or anywhere else. Saving also updates this item's .nfo
-            sidecar on disk, if it has a file, so a media server picks up the poster correction on
-            its next scan.
-          </p>
-          <button type="submit" disabled={savingMetadata}>
-            {savingMetadata ? "Saving..." : "Save metadata"}
-          </button>
-        </form>
+            <button type="submit" disabled={savingMetadata}>
+              {savingMetadata ? "Saving..." : "Save metadata"}
+            </button>
+          </form>
+        </Modal>
       )}
 
       {showHistory && (
-        <div className="form-panel">
+        <Modal title="History" onClose={() => setShowHistory(false)} maxWidth={640}>
           {loadingHistory && <p className="empty">Loading...</p>}
           {!loadingHistory && history && history.length === 0 && <p className="empty">No history yet for this item.</p>}
           {!loadingHistory && history && history.length > 0 && (
@@ -1846,7 +1855,7 @@ export default function MediaDetail() {
               </tbody>
             </table>
           )}
-        </div>
+        </Modal>
       )}
 
       {typeInfo && typeInfo.groupLevels.length > 0 && groupBreadcrumb && !showMove && (
@@ -1854,12 +1863,12 @@ export default function MediaDetail() {
       )}
 
       {showMove && typeInfo && (
-        <div className="form-panel">
+        <Modal title="Move to Group" onClose={() => setShowMove(false)}>
           <GroupPicker type={item.type} groupLevels={typeInfo.groupLevels} onChange={setPendingGroupId} />
           <button type="button" onClick={saveGroup} disabled={!pendingGroupId} style={{ marginTop: 8 }}>
             Save location
           </button>
-        </div>
+        </Modal>
       )}
 
       {showSplit &&
@@ -1873,7 +1882,7 @@ export default function MediaDetail() {
             groups.get(key)!.push(ep);
           }
           return (
-            <div className="form-panel">
+            <Modal title="Split" onClose={() => setShowSplit(false)} maxWidth={640}>
               <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
                 Check the episodes that actually belong to a different show (grouped below by their
                 on-disk folder as a guide) and give the new show a title. The checked episodes are
@@ -1912,7 +1921,7 @@ export default function MediaDetail() {
                   {splittingItem ? "Splitting..." : `Split ${splitSelected.size} episode(s) into a new show`}
                 </button>
               </div>
-            </div>
+            </Modal>
           );
         })()}
 
@@ -2021,8 +2030,7 @@ export default function MediaDetail() {
       )}
 
       {showArtwork && (
-        <>
-          <h2>Artwork</h2>
+        <Modal title="Artwork" onClose={() => setShowArtwork(false)} maxWidth={900}>
           {loadingArtwork && <p className="empty">Loading...</p>}
           {artworkError && <p style={{ color: "var(--danger)" }}>{artworkError}</p>}
           {artworkOptions && !loadingArtwork && (
@@ -2064,7 +2072,7 @@ export default function MediaDetail() {
               )}
             </>
           )}
-        </>
+        </Modal>
       )}
 
       {showImport && (

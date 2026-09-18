@@ -5,6 +5,9 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { MediaRequest } from "../types.js";
 import { CheckIcon, XIcon } from "../components/ActionIcons.js";
+import { PlusCircleIcon } from "../components/NavIcons.js";
+import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
+import Modal from "../components/Modal.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
 
@@ -12,6 +15,7 @@ export default function Requests() {
   const { auth } = useAuth();
   const mediaTypes = useMediaTypes();
   const [requests, setRequests] = useState<MediaRequest[]>([]);
+  const [showForm, setShowForm] = useState(false);
   const [type, setType] = useState("");
   const [title, setTitle] = useState("");
   const [year, setYear] = useState("");
@@ -39,6 +43,7 @@ export default function Requests() {
       setTitle("");
       setYear("");
       setNote("");
+      setShowForm(false);
       load();
     } catch (err) {
       if (err instanceof ApiError && err.status === 409 && err.body?.duplicate) {
@@ -96,24 +101,34 @@ export default function Requests() {
       <h1>Requests</h1>
 
       {!auth.isAdmin && (
-        <form className="form-panel" onSubmit={submitRequest}>
-          <label htmlFor="requests-library-1">Library</label>
-          <select id="requests-library-1" value={type} onChange={(e) => setType(e.target.value)} required>
-            <option value="">Select a library...</option>
-            {allowedTypes.map((t) => (
-              <option key={t.key} value={t.key}>
-                {t.label}
-              </option>
-            ))}
-          </select>
-          <label htmlFor="requests-title-2">Title</label>
-          <input id="requests-title-2" value={title} onChange={(e) => setTitle(e.target.value)} required />
-          <label htmlFor="requests-year-optional-3">Year (optional)</label>
-          <input id="requests-year-optional-3" value={year} onChange={(e) => setYear(e.target.value)} />
-          <label htmlFor="requests-note-optional-4">Note (optional)</label>
-          <input id="requests-note-optional-4" value={note} onChange={(e) => setNote(e.target.value)} />
-          <button type="submit">Submit request</button>
-        </form>
+        <PageToolbar
+          left={
+            <ToolbarButton icon={<PlusCircleIcon />} label="New Request" onClick={() => setShowForm(true)} title="Submit a new request" />
+          }
+        />
+      )}
+
+      {!auth.isAdmin && showForm && (
+        <Modal title="New Request" onClose={() => setShowForm(false)}>
+          <form className="form-panel" onSubmit={submitRequest} style={{ padding: 0 }}>
+            <label htmlFor="requests-library-1">Library</label>
+            <select id="requests-library-1" value={type} onChange={(e) => setType(e.target.value)} required>
+              <option value="">Select a library...</option>
+              {allowedTypes.map((t) => (
+                <option key={t.key} value={t.key}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+            <label htmlFor="requests-title-2">Title</label>
+            <input id="requests-title-2" value={title} onChange={(e) => setTitle(e.target.value)} required />
+            <label htmlFor="requests-year-optional-3">Year (optional)</label>
+            <input id="requests-year-optional-3" value={year} onChange={(e) => setYear(e.target.value)} />
+            <label htmlFor="requests-note-optional-4">Note (optional)</label>
+            <input id="requests-note-optional-4" value={note} onChange={(e) => setNote(e.target.value)} />
+            <button type="submit">Submit request</button>
+          </form>
+        </Modal>
       )}
 
       {!auth.isAdmin && requests.length > 0 && (

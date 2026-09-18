@@ -8,6 +8,8 @@ import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { Invite, RequestStats, Session, User } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 import { XIcon, TrashIcon } from "../components/ActionIcons.js";
+import { PlusCircleIcon } from "../components/NavIcons.js";
+import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
 
 export default function Users() {
@@ -137,10 +139,9 @@ export default function Users() {
         the item to the library immediately on request. Click a tile to edit that user.
       </p>
 
+      <PageToolbar left={<ToolbarButton icon={<PlusCircleIcon />} label="Add User" onClick={openAdd} title="Add user" />} />
+
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", marginBottom: 16 }}>
-        <div className="card" onClick={openAdd} style={{ padding: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ fontWeight: 600 }}>+ Add user</div>
-        </div>
         {users.map((u) => (
           <div key={u.id} className="card" onClick={() => openEdit(u)} style={{ padding: 16 }}>
             <div style={{ fontWeight: 600 }}>{u.username}</div>

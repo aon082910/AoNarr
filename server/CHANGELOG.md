@@ -3,6 +3,59 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 310 — Starr-style page toolbars, detail-page pills, and popup-ified forms across the app
+Layout-and-placement pass matching how Sonarr/Radarr/Lidarr/Readarr/Whisparr actually organize a
+page — verified against Sonarr's own frontend source (GitHub), not guessed. Colors are completely
+unchanged; the sidebar/topbar toggle and the centered/full-width layout toggle both work exactly
+as before (neither was touched).
+
+Two new shared pieces: `web/src/components/PageToolbar.tsx` (`PageToolbar`, `ToolbarButton` —
+icon-over-label, for page-level actions — and `ToolbarSeparator`) and a handful of new CSS classes
+in `styles.css` (`.page-toolbar`, `.toolbar-group`, `.toolbar-button`, `.detail-pills`/`.pill`,
+`.spin`), plus five new icons in `ActionIcons.tsx` (`RowsIcon`, `TableIcon`, `FilterIcon`,
+`SortIcon`, `RefreshIcon`). `.page-toolbar` bleeds to the edges of `.content` the same way
+`.media-backdrop` already does, so it automatically respects the layout-width preference. The
+existing icon-only `.icon-button` convention (Round 305) is untouched and still owns every
+per-row/in-context action (a table row's Search/Delete icon, a card's remove icon) — the new
+labeled `ToolbarButton` is only for the page-level toolbar bar.
+
+Rolled out across every admin page with a real page-level action (29 page files): library list
+pages consolidated their two stacked ad hoc toolbars into one left/right `PageToolbar`; every
+detail page (`MediaDetail`, `EpisodeDetail`, `SubItemDetail`, `TrackDetail`, `AddPreview`) moved
+its action-icon row above the poster/backdrop hero (previously it sat awkwardly mid-page) and
+replaced the inline paragraph-of-badges-and-a-table with a proper `.detail-pills` fact row;
+`MediaDetail`'s five inline toggle-panels (Edit Metadata, History, Move to Group, Split, Artwork)
+are now real `Modal` dialogs instead of inline divs, and its two genuinely-editable fields
+(Minimum availability, Series type) moved into the Edit Metadata modal alongside title/year/
+overview/poster/backdrop, with a read-only pill showing the current value on the page itself.
+Several pages that used an always-visible inline form for their one "create X" action (Collections,
+ImportLists, Requests' non-admin submission form) now use an Add-button-opens-Modal pattern
+matching Indexers.tsx, which was built first as the reference implementation every other agent
+worked from. Pages with no real page-level action (Person, RecycleBin, AuditLog, ApiDocs,
+Changelog, NetworkStats, and others) were deliberately left alone rather than growing an invented
+toolbar with nothing meaningful in it.
+
+Verified live against the real running `aonarr-web-dev`/`aonarr-server` containers: the reference
+page (Indexers) and the two highest-risk conversions (`LibraryType`'s consolidated toolbar,
+`MediaDetail`'s full hero/toolbar/modal rework, including opening the new Edit Metadata modal and
+confirming Minimum availability still saves) both in top-bar and collapsed-sidebar layouts, plus
+Collections' new Add-modal and Activity's nested toolbar buttons. Caught and fixed one real bug in
+review: `.toolbar-button.danger` didn't reset `background`, so the pre-existing global
+`button.danger { background: var(--danger) }` rule (matched by class alone, regardless of a
+button's other classes) painted a solid red block over the Remove button's icon and label instead
+of the intended transparent-until-hover treatment — fixed by explicitly setting
+`background: transparent` on the danger variant. `npx tsc --noEmit` and `npm run build` both pass
+clean across the whole `web/` project.
+
+A few deliberate scope boundaries, all noted so they aren't mistaken for oversights: `Settings.tsx`
+and `System.tsx` (large, tab-based pages) had their header/tab-bar placement confirmed already
+correct and were left otherwise untouched — restyling their tab *content* would be a much bigger,
+separate effort. `AddMedia.tsx`'s search/lookup step keeps its existing segmented type/provider
+picker as-is (an in-form tab switcher, not a page-level action row). A small, known inconsistency:
+the read-only "Downloaded/Missing" status fact renders as the original colored `.badge ok/danger`
+in some pages and stays that way deliberately (`.pill` has no green success variant), which is a
+reasonable follow-up if a future round wants to add one.
+
 ## Round 309 — the last native popup: window.prompt() replaced too
 Closes the one gap Round 308 deliberately left open. New `web/src/utils/promptDialog.ts` +
 `web/src/components/PromptModal.tsx` (same architecture as `confirmDialog`/`ConfirmModal`: a

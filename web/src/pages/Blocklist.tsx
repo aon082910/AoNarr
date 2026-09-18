@@ -4,6 +4,7 @@ import { api } from "../api/client.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { BlocklistEntry } from "../types.js";
 import { TrashIcon } from "../components/ActionIcons.js";
+import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
 
@@ -60,11 +61,9 @@ export default function Blocklist() {
         after a grab fails to import. Remove an entry to let it be considered again.
       </p>
       {entries.length > 0 && (
-        <p>
-          <button className="secondary" onClick={clearAll}>
-            Clear all
-          </button>
-        </p>
+        <PageToolbar
+          left={<ToolbarButton icon={<TrashIcon />} label="Clear All" onClick={clearAll} danger title="Clear blocklist" />}
+        />
       )}
       {entries.length === 0 && <p className="empty">Nothing blocklisted.</p>}
       {entries.length > 0 && (

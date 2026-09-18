@@ -8,8 +8,22 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { MediaInfo, SearchResult, Track } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
-import { SearchIcon, DownloadIcon, CpuIcon, AlertTriangleIcon, ShareIcon, RotateCcwIcon } from "../components/NavIcons.js";
-import { ArrowLeftIcon } from "../components/ActionIcons.js";
+import {
+  SearchIcon,
+  DownloadIcon,
+  CpuIcon,
+  AlertTriangleIcon,
+  ShareIcon,
+  RotateCcwIcon,
+  CalendarIcon,
+  LayersIcon,
+  HardDriveIcon,
+  GlobeIcon,
+  ListIcon,
+  UserIcon,
+} from "../components/NavIcons.js";
+import { ArrowLeftIcon, FolderIcon } from "../components/ActionIcons.js";
+import { PageToolbar, ToolbarButton, ToolbarSeparator } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
 import { promptDialog } from "../utils/promptDialog.js";
@@ -324,6 +338,58 @@ export default function SubItemDetail() {
       )}
       <h1>{subItem.title}</h1>
 
+      {isAdmin && (
+        <PageToolbar
+          left={
+            <>
+              {isYoutubeVideo ? (
+                <ToolbarButton icon={<DownloadIcon />} label="Download" onClick={downloadVideo} title="Download" />
+              ) : (
+                <ToolbarButton
+                  icon={<SearchIcon />}
+                  label={searching ? "Searching..." : "Search"}
+                  onClick={runSearch}
+                  disabled={searching}
+                  title={searching ? "Searching..." : "Search"}
+                />
+              )}
+              {subItem.parent?.type === "author" && !!subItem.hasFile && (
+                <ToolbarButton
+                  icon={<CpuIcon />}
+                  label={scanningIsbn ? "Scanning..." : "Scan ISBN"}
+                  onClick={scanIsbn}
+                  disabled={scanningIsbn}
+                  title={scanningIsbn ? "Scanning..." : "Scan for ISBN — scans the file's first and last 15 pages (PDF) or its EPUB metadata for an ISBN, then matches it via Open Library"}
+                />
+              )}
+              {!!subItem.hasFile && subItem.parent?.type !== "audiobook" && (
+                <ToolbarButton
+                  icon={<ShareIcon />}
+                  label={sendingToKindle ? "Sending..." : "Send to Kindle"}
+                  onClick={sendToKindle}
+                  disabled={sendingToKindle}
+                  title={sendingToKindle ? "Sending..." : "Send to Kindle — emails this file to your Kindle's Send to Kindle address (set in Settings → General)"}
+                />
+              )}
+              {!!subItem.hasFile && (
+                <>
+                  <ToolbarSeparator />
+                  <ToolbarButton
+                    icon={<AlertTriangleIcon />}
+                    label="Mark as Missing"
+                    onClick={markAsMissing}
+                    danger
+                    title="Mark as missing — removed the file yourself? This resets AoNarr's record so it searches for it again."
+                  />
+                </>
+              )}
+              <ToolbarSeparator />
+              <ToolbarButton icon={<ArrowLeftIcon />} label="Back" onClick={() => navigate(-1)} title={`Back to ${subItem.parent?.title ?? "parent"}`} />
+            </>
+          }
+        />
+      )}
+
       <div
         onClick={() => isAdmin && editCover()}
         title={isAdmin ? "Click to add/change cover art" : undefined}
@@ -347,80 +413,67 @@ export default function SubItemDetail() {
         )}
       </div>
 
-      <table style={{ maxWidth: 640 }}>
-        <tbody>
-          <tr>
-            <th>Release date</th>
-            <td>{subItem.releaseDate ?? "-"}</td>
-          </tr>
-          <tr>
-            <th>Status</th>
-            <td>
-              <span className={`badge ${subItem.hasFile ? "ok" : ""}`}>{subItem.hasFile ? "Downloaded" : "Missing"}</span>
-            </td>
-          </tr>
-          <tr>
-            <th>Monitored</th>
-            <td>
-              <MonitorToggle monitored={!!subItem.monitored} onToggle={toggleMonitored} />
-            </td>
-          </tr>
-          {subItem.quality && (
-            <tr>
-              <th>Quality</th>
-              <td>{subItem.quality}</td>
-            </tr>
-          )}
-          {formatMediaInfo(subItem.mediaInfo) && (
-            <tr>
-              <th>File info</th>
-              <td>{formatMediaInfo(subItem.mediaInfo)}</td>
-            </tr>
-          )}
-          {subItem.filePath && (
-            <tr>
-              <th>Path</th>
-              <td style={{ wordBreak: "break-all" }}>{subItem.filePath}</td>
-            </tr>
-          )}
-          {subItem.externalId && (
-            <tr>
-              <th>External ID</th>
-              <td>
-                {subItem.externalProvider}: {subItem.externalId}
-              </td>
-            </tr>
-          )}
-          {(subItem.seriesName || isAdmin) && (
-            <tr>
-              <th>Series</th>
-              <td
-                onClick={() => isAdmin && editSeries()}
-                title={isAdmin ? "Click to set/change this item's series" : undefined}
-                style={{ cursor: isAdmin ? "pointer" : "default" }}
-              >
-                {subItem.seriesName
-                  ? `${subItem.seriesName}${subItem.seriesPosition != null ? ` #${subItem.seriesPosition}` : ""}`
-                  : isAdmin
-                    ? "Not part of a series — click to set one"
-                    : "-"}
-              </td>
-            </tr>
-          )}
-          {subItem.parent?.type === "audiobook" && (subItem.narrator || isAdmin) && (
-            <tr>
-              <th>Narrator</th>
-              <td
-                onClick={() => isAdmin && editNarrator()}
-                title={isAdmin ? "Click to set/change this audiobook's narrator" : undefined}
-                style={{ cursor: isAdmin ? "pointer" : "default" }}
-              >
-                {subItem.narrator ?? (isAdmin ? "Not set — click to add" : "-")}
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+      <div className="detail-pills">
+        <span className="pill">
+          <MonitorToggle monitored={!!subItem.monitored} onToggle={toggleMonitored} />
+          {subItem.monitored ? "Monitored" : "Unmonitored"}
+        </span>
+        <span className="pill">
+          <CalendarIcon />
+          {subItem.releaseDate ?? "Unknown release date"}
+        </span>
+        <span className={`badge ${subItem.hasFile ? "ok" : ""}`}>{subItem.hasFile ? "Downloaded" : "Missing"}</span>
+        {subItem.quality && (
+          <span className="pill">
+            <LayersIcon />
+            {subItem.quality}
+          </span>
+        )}
+        {formatMediaInfo(subItem.mediaInfo) && (
+          <span className="pill">
+            <HardDriveIcon />
+            {formatMediaInfo(subItem.mediaInfo)}
+          </span>
+        )}
+        {subItem.filePath && (
+          <span className="pill" style={{ whiteSpace: "normal", wordBreak: "break-all" }}>
+            <FolderIcon />
+            {subItem.filePath}
+          </span>
+        )}
+        {subItem.externalId && (
+          <span className="pill">
+            <GlobeIcon />
+            {subItem.externalProvider}: {subItem.externalId}
+          </span>
+        )}
+        {(subItem.seriesName || isAdmin) && (
+          <span
+            className="pill"
+            onClick={() => isAdmin && editSeries()}
+            title={isAdmin ? "Click to set/change this item's series" : undefined}
+            style={{ cursor: isAdmin ? "pointer" : "default" }}
+          >
+            <ListIcon />
+            {subItem.seriesName
+              ? `${subItem.seriesName}${subItem.seriesPosition != null ? ` #${subItem.seriesPosition}` : ""}`
+              : isAdmin
+                ? "Not part of a series — click to set one"
+                : "-"}
+          </span>
+        )}
+        {subItem.parent?.type === "audiobook" && (subItem.narrator || isAdmin) && (
+          <span
+            className="pill"
+            onClick={() => isAdmin && editNarrator()}
+            title={isAdmin ? "Click to set/change this audiobook's narrator" : undefined}
+            style={{ cursor: isAdmin ? "pointer" : "default" }}
+          >
+            <UserIcon />
+            {subItem.narrator ?? (isAdmin ? "Not set — click to add" : "-")}
+          </span>
+        )}
+      </div>
 
       {subItem.series.length > 0 && (
         <>
@@ -511,39 +564,6 @@ export default function SubItemDetail() {
         </>
       )}
 
-      {isAdmin && (
-        <div className="toolbar" style={{ marginTop: 16 }}>
-          <MonitorToggle monitored={!!subItem.monitored} onToggle={toggleMonitored} />
-          {isYoutubeVideo ? (
-            <button type="button" className="icon-button" onClick={downloadVideo} title="Download" aria-label="Download">
-              <DownloadIcon />
-            </button>
-          ) : (
-            <button type="button" className="icon-button" onClick={runSearch} disabled={searching} title={searching ? "Searching..." : "Search"} aria-label="Search">
-              <SearchIcon />
-            </button>
-          )}
-          {subItem.parent?.type === "author" && !!subItem.hasFile && (
-            <button type="button" className="icon-button" onClick={scanIsbn} disabled={scanningIsbn} title={scanningIsbn ? "Scanning..." : "Scan for ISBN — scans the file's first and last 15 pages (PDF) or its EPUB metadata for an ISBN, then matches it via Open Library"} aria-label="Scan for ISBN">
-              <CpuIcon />
-            </button>
-          )}
-          {!!subItem.hasFile && subItem.parent?.type !== "audiobook" && (
-            <button type="button" className="icon-button" onClick={sendToKindle} disabled={sendingToKindle} title={sendingToKindle ? "Sending..." : "Send to Kindle — emails this file to your Kindle's Send to Kindle address (set in Settings → General)"} aria-label="Send to Kindle">
-              <ShareIcon />
-            </button>
-          )}
-          {!!subItem.hasFile && (
-            <button type="button" className="icon-button danger" onClick={markAsMissing} title="Mark as missing — removed the file yourself? This resets AoNarr's record so it searches for it again." aria-label="Mark as missing">
-              <AlertTriangleIcon />
-            </button>
-          )}
-          <button type="button" className="icon-button" onClick={() => navigate(-1)} title={`Back to ${subItem.parent?.title ?? "parent"}`} aria-label={`Back to ${subItem.parent?.title ?? "parent"}`}>
-            <ArrowLeftIcon />
-          </button>
-        </div>
-      )}
-
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
 
       {results && (
@@ -591,14 +611,12 @@ export default function SubItemDetail() {
 
       {typeInfo?.multiFilePerChild && (
         <>
-          <p style={{ color: "var(--muted)", marginTop: 16 }}>
-            {tracks && (
-              <>
-                <span className="badge ok">{trackHave} have</span>{" "}
-                <span className="badge">{tracks.length} total</span>{" "}
-              </>
-            )}
-          </p>
+          {tracks && (
+            <div className="detail-pills" style={{ marginTop: 16 }}>
+              <span className="badge ok">{trackHave} have</span>
+              <span className="badge">{tracks.length} total</span>
+            </div>
+          )}
           <h2>Tracks</h2>
           {isAdmin && subItem.parent?.type === "audiobook" && trackHave >= 2 && (
             <button className="secondary" onClick={convertToM4b} disabled={convertingM4b} style={{ marginBottom: 8 }}>

@@ -4,6 +4,7 @@ import { api } from "../api/client.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { SearchIcon } from "../components/NavIcons.js";
 import { ArrowRightIcon } from "../components/ActionIcons.js";
+import { ToolbarButton } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
 
 interface MissingRow {
@@ -53,12 +54,12 @@ function Section({
     <>
       <h2>
         {title} <span style={{ color: "var(--muted)", fontWeight: 400 }}>({rows.length})</span>
-        {rows.length > 0 && (
-          <button type="button" className="icon-button" style={{ marginLeft: 10, width: 26, height: 26 }} onClick={() => onSearchMany(rows)} title="Search all" aria-label="Search all">
-            <SearchIcon />
-          </button>
-        )}
       </h2>
+      {rows.length > 0 && (
+        <div className="toolbar" style={{ marginBottom: 10 }}>
+          <ToolbarButton icon={<SearchIcon />} label="Search All" onClick={() => onSearchMany(rows)} title="Search all" />
+        </div>
+      )}
       {rows.length === 0 && <p className="empty">Nothing missing.</p>}
       {rows.length > 0 && (
         <table>
@@ -132,12 +133,12 @@ function EpisodesBySeries({
     <>
       <h2>
         Episodes <span style={{ color: "var(--muted)", fontWeight: 400 }}>({rows.length})</span>
-        {rows.length > 0 && (
-          <button type="button" className="icon-button" style={{ marginLeft: 10, width: 26, height: 26 }} onClick={() => onSearchMany(rows)} title="Search all" aria-label="Search all">
-            <SearchIcon />
-          </button>
-        )}
       </h2>
+      {rows.length > 0 && (
+        <div className="toolbar" style={{ marginBottom: 10 }}>
+          <ToolbarButton icon={<SearchIcon />} label="Search All" onClick={() => onSearchMany(rows)} title="Search all" />
+        </div>
+      )}
       {rows.length === 0 && <p className="empty">Nothing missing.</p>}
       {Object.entries(bySeries).map(([id, group]) => {
         const seriesId = Number(id);

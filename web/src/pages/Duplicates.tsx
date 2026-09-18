@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import MonitorToggle from "../components/MonitorToggle.js";
+import { PageToolbar } from "../components/PageToolbar.js";
 import type { DuplicateGroup, DuplicateGroupItem } from "../types.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
@@ -111,20 +112,24 @@ export default function Duplicates() {
         themselves, though a kept-vs-deleted file choice below still goes through the Recycle Bin.
       </p>
 
-      <div className="toolbar" style={{ marginBottom: 16 }}>
-        <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
-          <option value="">All library types</option>
-          {mediaTypes.map((t) => (
-            <option key={t.key} value={t.key}>
-              {t.label}
-            </option>
-          ))}
-        </select>
-        <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <input type="checkbox" checked={deleteFiles} onChange={(e) => setDeleteFiles(e.target.checked)} />
-          Recycle files that aren't kept
-        </label>
-      </div>
+      <PageToolbar
+        right={
+          <>
+            <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+              <option value="">All library types</option>
+              {mediaTypes.map((t) => (
+                <option key={t.key} value={t.key}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+            <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <input type="checkbox" checked={deleteFiles} onChange={(e) => setDeleteFiles(e.target.checked)} />
+              Recycle files that aren't kept
+            </label>
+          </>
+        }
+      />
 
       {groups === null && <p className="empty">Loading...</p>}
       {groups !== null && groups.length === 0 && <p className="empty">No duplicates found.</p>}

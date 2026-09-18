@@ -4,6 +4,7 @@ import { api } from "../api/client.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { SearchIcon } from "../components/NavIcons.js";
 import { ArrowRightIcon } from "../components/ActionIcons.js";
+import { ToolbarButton } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
 
 interface CutoffUnmetRow {
@@ -110,11 +111,15 @@ export default function CutoffUnmet() {
       {rows.length > 0 && (
         <>
           {rows.length > 1 && (
-            <p>
-              <button type="button" className="icon-button" onClick={() => searchRows(rows)} disabled={searching} title={searching ? "Searching..." : "Search all"} aria-label="Search all">
-                <SearchIcon />
-              </button>
-            </p>
+            <div className="toolbar" style={{ marginBottom: 10 }}>
+              <ToolbarButton
+                icon={<SearchIcon />}
+                label={searching ? "Searching..." : "Search All"}
+                onClick={() => searchRows(rows)}
+                disabled={searching}
+                title="Search all"
+              />
+            </div>
           )}
           <table>
             <thead>

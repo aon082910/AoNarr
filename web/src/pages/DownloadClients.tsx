@@ -5,8 +5,9 @@ import type { DownloadClient } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 import { notify } from "../utils/notify.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
-import { ZapIcon } from "../components/NavIcons.js";
+import { PlusCircleIcon, ZapIcon } from "../components/NavIcons.js";
 import { TrashIcon } from "../components/ActionIcons.js";
+import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 
 type ClientType = "qbittorrent" | "sabnzbd" | "http" | "ytdlp" | "realdebrid" | "alldebrid" | "torbox" | "blackhole" | "slskd";
 
@@ -207,16 +208,24 @@ export default function DownloadClients() {
         of each you need without a host/port. Click a tile to edit it.
       </p>
 
-      {clients.length > 0 && (
-        <button type="button" className="icon-button" onClick={testAll} disabled={testingAll} style={{ marginBottom: 12 }} title={testingAll ? "Testing..." : "Test all"} aria-label="Test all">
-          <ZapIcon />
-        </button>
-      )}
+      <PageToolbar
+        left={
+          <>
+            <ToolbarButton icon={<PlusCircleIcon />} label="Add" onClick={openAdd} title="Add download client" />
+            {clients.length > 0 && (
+              <ToolbarButton
+                icon={<ZapIcon />}
+                label={testingAll ? "Testing..." : "Test All"}
+                onClick={testAll}
+                disabled={testingAll}
+                title="Test all download clients"
+              />
+            )}
+          </>
+        }
+      />
 
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", marginBottom: 16 }}>
-        <div className="card" onClick={openAdd} style={{ padding: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ fontWeight: 600 }}>+ Add download client</div>
-        </div>
         {clients.map((c) => (
           <div key={c.id} className="card" onClick={() => openEdit(c)} style={{ padding: 16 }}>
             <div style={{ fontWeight: 600 }}>{c.name}</div>

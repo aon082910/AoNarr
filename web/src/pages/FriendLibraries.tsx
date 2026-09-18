@@ -4,6 +4,7 @@ import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { PlusCircleIcon } from "../components/NavIcons.js";
+import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 
 interface FriendLibrary {
   id: number;
@@ -110,10 +111,9 @@ export default function FriendLibraries() {
         straight from the result. Click a tile to edit that library.
       </p>
 
+      <PageToolbar left={<ToolbarButton icon={<PlusCircleIcon />} label="Add" onClick={openAdd} title="Add friend library" />} />
+
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", marginBottom: 16 }}>
-        <div className="card" onClick={openAdd} style={{ padding: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ fontWeight: 600 }}>+ Add friend library</div>
-        </div>
         {libraries.map((l) => (
           <div key={l.id} className="card" style={{ padding: 16 }}>
             <div onClick={() => openEdit(l)}>

@@ -7,6 +7,7 @@ import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
 import type { LibraryGroup, MediaItem, MediaType, MetadataSearchResult, QualityProfile, RootFolder } from "../types.js";
 import { formatBytes } from "../utils/format.js";
+import { CalendarIcon, ClockIcon, StarIcon, BriefcaseIcon } from "../components/NavIcons.js";
 
 type MonitorStrategy = "all" | "future" | "missing" | "existing" | "recent" | "firstSeason" | "latestSeason" | "pilot" | "none";
 
@@ -184,16 +185,33 @@ export default function AddPreview() {
             )}
           </div>
           <div style={{ flex: 1, minWidth: 240 }}>
-            <h1 style={{ marginBottom: 4 }}>
-              {title || "Untitled"} {year ? <span style={{ color: "var(--muted)", fontWeight: 400 }}>({year})</span> : null}
-            </h1>
-            <p>
-              <span className="badge">{activeTypeInfo?.label ?? type}</span>{" "}
-              {typeof result.runtimeMinutes === "number" && <span className="badge">{result.runtimeMinutes}m</span>}{" "}
-              {typeof result.rating === "number" && <span className="badge ok">★ {result.rating.toFixed(1)}</span>}{" "}
-              {result.studio && <span style={{ color: "var(--muted)" }}>{result.studio}</span>}
-            </p>
+            <h1 style={{ marginBottom: 4 }}>{title || "Untitled"}</h1>
             {overview && <p style={{ maxWidth: 720 }}>{overview}</p>}
+            {/* Same detail-pills treatment as the real MediaDetail hero, for visual consistency —
+                read-only facts about the match, not the config form further down. */}
+            <div className="detail-pills">
+              {year && (
+                <span className="pill" title="Year">
+                  <CalendarIcon /> {year}
+                </span>
+              )}
+              <span className="pill" title="Type">{activeTypeInfo?.label ?? type}</span>
+              {typeof result.runtimeMinutes === "number" && (
+                <span className="pill" title="Runtime">
+                  <ClockIcon /> {result.runtimeMinutes} min
+                </span>
+              )}
+              {typeof result.rating === "number" && (
+                <span className="pill" title="Rating">
+                  <StarIcon /> {result.rating.toFixed(1)}
+                </span>
+              )}
+              {result.studio && (
+                <span className="pill" title="Studio">
+                  <BriefcaseIcon /> {result.studio}
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </div>

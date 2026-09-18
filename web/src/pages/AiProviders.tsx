@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
+import { PlusCircleIcon } from "../components/NavIcons.js";
+import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 
 interface AiProvider {
   id: number;
@@ -112,10 +114,9 @@ export default function AiProviders() {
         and a cloud provider and pick whichever a given feature should use. Click a tile to edit it.
       </p>
 
+      <PageToolbar left={<ToolbarButton icon={<PlusCircleIcon />} label="Add" onClick={openAdd} title="Add AI provider" />} />
+
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", marginBottom: 16 }}>
-        <div className="card" onClick={openAdd} style={{ padding: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ fontWeight: 600 }}>+ Add AI provider</div>
-        </div>
         {providers.map((p) => (
           <div key={p.id} className="card" onClick={() => openEdit(p)} style={{ padding: 16 }}>
             <div style={{ fontWeight: 600 }}>{p.name}</div>

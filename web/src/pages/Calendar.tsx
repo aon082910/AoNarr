@@ -4,6 +4,7 @@ import { api } from "../api/client.js";
 import { describeCalendarEntry } from "../utils/calendarDescriptions.js";
 import { PlusCircleIcon, ShareIcon, CalendarIcon } from "../components/NavIcons.js";
 import { TrashIcon, ChevronLeftIcon, ChevronRightIcon, ArrowRightIcon } from "../components/ActionIcons.js";
+import { PageToolbar, ToolbarButton, ToolbarSeparator } from "../components/PageToolbar.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
 
 interface CalendarEntry {
@@ -143,41 +144,46 @@ export default function Calendar() {
   return (
     <div>
       <h1>Calendar</h1>
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
-        <select value={mode} onChange={(e) => setMode(e.target.value as "month" | "agenda")} style={{ maxWidth: 120 }}>
-          <option value="month">Month</option>
-          <option value="agenda">Agenda</option>
-        </select>
-        {mode === "month" ? (
+      <PageToolbar
+        left={
           <>
-            <button type="button" className="icon-button" onClick={() => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))} title="Previous month" aria-label="Previous month">
-              <ChevronLeftIcon />
-            </button>
-            <strong style={{ minWidth: 140, textAlign: "center" }}>{monthLabel}</strong>
-            <button type="button" className="icon-button" onClick={() => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))} title="Next month" aria-label="Next month">
-              <ChevronRightIcon />
-            </button>
-            <button type="button" className="icon-button" onClick={() => setViewMonth(startOfMonth(new Date()))} title="Today" aria-label="Jump to today">
-              <CalendarIcon />
-            </button>
+            {mode === "month" ? (
+              <>
+                <ToolbarButton
+                  icon={<ChevronLeftIcon />}
+                  label="Previous"
+                  onClick={() => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))}
+                  title="Previous month"
+                />
+                <strong style={{ minWidth: 140, textAlign: "center" }}>{monthLabel}</strong>
+                <ToolbarButton
+                  icon={<ChevronRightIcon />}
+                  label="Next"
+                  onClick={() => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))}
+                  title="Next month"
+                />
+                <ToolbarButton icon={<CalendarIcon />} label="Today" onClick={() => setViewMonth(startOfMonth(new Date()))} title="Jump to today" />
+              </>
+            ) : (
+              <>
+                <ToolbarButton icon={<ChevronLeftIcon />} label="Earlier" onClick={() => setDaysBack((d) => d + 7)} title="Show earlier" />
+                <ToolbarButton icon={<ChevronRightIcon />} label="Later" onClick={() => setDaysForward((d) => d + 14)} title="Show later" />
+              </>
+            )}
+            <ToolbarSeparator />
+            <ToolbarButton icon={<PlusCircleIcon />} label="Add custom date" onClick={() => setShowAddEvent((v) => !v)} title="Add custom date" />
           </>
-        ) : (
+        }
+        right={
           <>
-            <button type="button" className="icon-button" onClick={() => setDaysBack((d) => d + 7)} title="Show earlier" aria-label="Show earlier">
-              <ChevronLeftIcon />
-            </button>
-            <button type="button" className="icon-button" onClick={() => setDaysForward((d) => d + 14)} title="Show later" aria-label="Show later">
-              <ChevronRightIcon />
-            </button>
+            <select value={mode} onChange={(e) => setMode(e.target.value as "month" | "agenda")} style={{ maxWidth: 120 }}>
+              <option value="month">Month</option>
+              <option value="agenda">Agenda</option>
+            </select>
+            <ToolbarButton icon={<ShareIcon />} label="Subscribe" onClick={showSubscribeUrl} title="Subscribe from calendar app..." />
           </>
-        )}
-        <button type="button" className="icon-button" onClick={() => setShowAddEvent((v) => !v)} title="Add custom date" aria-label="Add custom date">
-          <PlusCircleIcon />
-        </button>
-        <button type="button" className="icon-button" onClick={showSubscribeUrl} title="Subscribe from calendar app..." aria-label="Subscribe from calendar app">
-          <ShareIcon />
-        </button>
-      </div>
+        }
+      />
 
       {showAddEvent && (
         <form className="form-panel" onSubmit={addCustomEvent} style={{ marginBottom: 16 }}>

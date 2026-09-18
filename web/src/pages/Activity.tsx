@@ -4,6 +4,7 @@ import Modal from "../components/Modal.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { RotateCcwIcon, SlashIcon, InboxIcon, ArrowUpCircleIcon, AlertTriangleIcon, ClockIcon, DownloadIcon } from "../components/NavIcons.js";
 import { TrashIcon, CheckIcon } from "../components/ActionIcons.js";
+import { ToolbarButton } from "../components/PageToolbar.js";
 import type { QueueItem, Quality, Indexer, DownloadClient } from "../types.js";
 import { notify } from "../utils/notify.js";
 
@@ -307,19 +308,15 @@ export default function Activity() {
             </option>
           ))}
         </select>
-        <button type="button" className="icon-button" onClick={load} title="Refresh" aria-label="Refresh queue">
-          <RotateCcwIcon />
-        </button>
-        <button
-          type="button"
-          className={selectMode ? "" : "secondary"}
+        <ToolbarButton icon={<RotateCcwIcon />} label="Refresh" onClick={load} title="Refresh queue" />
+        <ToolbarButton
+          icon={<CheckIcon />}
+          label={selectMode ? "Done selecting" : "Select"}
           onClick={() => {
             setSelectMode((v) => !v);
             setSelected(new Set());
           }}
-        >
-          {selectMode ? "Done selecting" : "Select"}
-        </button>
+        />
         {selectMode && (
           <>
             <button type="button" className="secondary" onClick={() => setSelected(new Set(visibleQueue.map((q) => q.id)))} title="Selects items matching the current filters only">

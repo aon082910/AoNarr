@@ -5,6 +5,8 @@ import Modal from "../components/Modal.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { FolderIcon } from "../components/ActionIcons.js";
+import { PlusCircleIcon } from "../components/NavIcons.js";
+import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
 import type { MediaType } from "../types.js";
 
@@ -151,9 +153,7 @@ export default function WatchlistImport() {
         library, are skipped and reported rather than guessed at.
       </p>
 
-      <button type="button" onClick={openAdd} style={{ marginBottom: 16 }}>
-        + Add title(s)
-      </button>
+      <PageToolbar left={<ToolbarButton icon={<PlusCircleIcon />} label="Add Title(s)" onClick={openAdd} title="Add to watchlist" />} />
 
       {showAdd && (
         <Modal title="Add to Watchlist" onClose={() => setShowAdd(false)}>

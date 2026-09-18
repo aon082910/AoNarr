@@ -539,6 +539,101 @@ button.icon-button.danger:hover { background: rgba(224,92,92,0.15); }
   to { opacity: 1; transform: translateX(0); }
 }
 
+/* Sonarr/Radarr-style page toolbar — a full-content-width bar directly under a page's <h1>,
+   split into a left (page actions) and right (view/sort/filter/search) group. Bleeds to the
+   edges of .content the same way .media-backdrop does, so it automatically respects the
+   centered/full-width layout preference instead of needing its own special-casing. */
+.page-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: stretch;
+  flex-wrap: wrap;
+  row-gap: 4px;
+  margin: 0 -36px 20px;
+  padding: 4px 36px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+@media (max-width: 640px) {
+  .page-toolbar { margin: 0 -16px 20px; padding: 4px 16px; }
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+/* Icon-over-label toolbar button — the Starr page-toolbar convention, distinct from
+   button.icon-button (icon-only + tooltip, used for row/in-context actions). */
+.toolbar-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 10px;
+  margin-top: 0;
+  min-width: 60px;
+  font-size: 0.68rem;
+  font-weight: 500;
+  line-height: 1.1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.toolbar-button:hover { background: rgba(255,255,255,0.06); }
+.toolbar-button:disabled { color: var(--muted); opacity: 0.5; cursor: default; }
+.toolbar-button:disabled:hover { background: transparent; }
+/* Overrides the generic button.danger { background: var(--danger) } rule (styles.css above) —
+   that selector matches on the class alone, so it would otherwise paint this icon-over-label
+   button as a solid red block instead of the transparent-until-hover toolbar-button treatment. */
+.toolbar-button.danger { background: transparent; color: var(--danger); }
+.toolbar-button.danger:hover { background: rgba(224,92,92,0.12); }
+.toolbar-button-label { max-width: 96px; overflow: hidden; text-overflow: ellipsis; }
+
+.toolbar-separator {
+  align-self: center;
+  width: 1px;
+  height: 26px;
+  background: var(--border);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+/* Spin utility for an in-progress toolbar/icon-button action (refresh, scan, etc.). */
+.spin { display: inline-flex; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Sonarr/Radarr-style detail-page "pill" badges — a horizontal row of icon+text facts (quality
+   profile, monitored state, size on disk, network, tags, ...) below a detail page's title.
+   Reuses --border as a neutral chip fill rather than introducing a new color. */
+.detail-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: var(--border);
+  font-size: 0.8rem;
+  color: var(--text);
+  white-space: nowrap;
+}
+.pill.danger { color: var(--danger); }
+.pill svg { flex-shrink: 0; }
+
 .empty { color: var(--muted); padding: 24px 0; }
 .gate { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
 .gate code { background: var(--input-bg); padding: 1px 5px; border-radius: 4px; }

@@ -6,6 +6,7 @@ import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { HdrFormat, MediaInfo } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
 import { ZapIcon } from "../components/NavIcons.js";
+import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
 
 interface CompatibilityNote {
@@ -198,19 +199,27 @@ export default function MediaAnalyzer() {
         hardware/software gotchas. Nothing here modifies or moves any file.
       </p>
 
-      <div className="toolbar" style={{ marginBottom: 16 }}>
-        <select value={type} onChange={(e) => setType(e.target.value)} style={{ maxWidth: 200 }}>
-          <option value="">All libraries</option>
-          {mediaTypes.map((t) => (
-            <option key={t.key} value={t.key}>
-              {t.label}
-            </option>
-          ))}
-        </select>
-        <button type="button" className="icon-button" onClick={runAnalysis} disabled={running} title={running ? "Analyzing..." : "Analyze now"} aria-label="Analyze now">
-          <ZapIcon />
-        </button>
-      </div>
+      <PageToolbar
+        left={
+          <ToolbarButton
+            icon={<ZapIcon />}
+            label={running ? "Analyzing..." : "Analyze Now"}
+            onClick={runAnalysis}
+            disabled={running}
+            title={running ? "Analyzing..." : "Analyze now"}
+          />
+        }
+        right={
+          <select value={type} onChange={(e) => setType(e.target.value)} style={{ maxWidth: 200 }}>
+            <option value="">All libraries</option>
+            {mediaTypes.map((t) => (
+              <option key={t.key} value={t.key}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        }
+      />
 
       {loadError && <p style={{ color: "var(--danger)" }}>{loadError}</p>}
 

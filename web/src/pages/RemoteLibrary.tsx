@@ -2,6 +2,8 @@ import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import { FolderIcon } from "../components/ActionIcons.js";
+import { PlusCircleIcon } from "../components/NavIcons.js";
+import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 
 interface RemoteInstance {
   id: number;
@@ -121,10 +123,42 @@ export default function RemoteLibrary() {
         a window into the remote instance's own library. Click a tile to edit that instance.
       </p>
 
+      <PageToolbar
+        left={<ToolbarButton icon={<PlusCircleIcon />} label="Add" onClick={openAdd} title="Add remote instance" />}
+        right={
+          instances.length > 0 ? (
+            <>
+              <select value={selectedId} onChange={(e) => setSelectedId(e.target.value ? Number(e.target.value) : "")}>
+                <option value="">Select an instance...</option>
+                {instances.map((i) => (
+                  <option key={i.id} value={i.id}>
+                    {i.name}
+                  </option>
+                ))}
+              </select>
+              {selectedId !== "" && (
+                <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+                  <option value="all">All types</option>
+                  {remoteTypes.map((t) => (
+                    <option key={t.key} value={t.key}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <ToolbarButton
+                icon={<FolderIcon />}
+                label={loading ? "Loading..." : "Browse"}
+                onClick={browse}
+                disabled={selectedId === "" || loading}
+                title="Browse"
+              />
+            </>
+          ) : undefined
+        }
+      />
+
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", marginBottom: 20 }}>
-        <div className="card" onClick={openAdd} style={{ padding: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ fontWeight: 600 }}>+ Add remote instance</div>
-        </div>
         {instances.map((i) => (
           <div key={i.id} className="card" onClick={() => openEdit(i)} style={{ padding: 16 }}>
             <div style={{ fontWeight: 600 }}>{i.name}</div>
@@ -153,32 +187,6 @@ export default function RemoteLibrary() {
             </div>
           </form>
         </Modal>
-      )}
-
-      {instances.length > 0 && (
-        <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
-          <select value={selectedId} onChange={(e) => setSelectedId(e.target.value ? Number(e.target.value) : "")}>
-            <option value="">Select an instance...</option>
-            {instances.map((i) => (
-              <option key={i.id} value={i.id}>
-                {i.name}
-              </option>
-            ))}
-          </select>
-          {selectedId !== "" && (
-            <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
-              <option value="all">All types</option>
-              {remoteTypes.map((t) => (
-                <option key={t.key} value={t.key}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
-          )}
-          <button type="button" className="icon-button" onClick={browse} disabled={selectedId === "" || loading} title={loading ? "Loading..." : "Browse"} aria-label="Browse">
-            <FolderIcon />
-          </button>
-        </div>
       )}
 
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}

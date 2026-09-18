@@ -3,6 +3,7 @@ import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import { PlusCircleIcon } from "../components/NavIcons.js";
 import { XIcon, ArrowUpIcon, ArrowDownIcon, TrashIcon } from "../components/ActionIcons.js";
+import { PageToolbar, ToolbarButton, ToolbarSeparator } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
 
@@ -292,11 +293,18 @@ export default function IptvPlaylists() {
         unset and it falls back to a guess that may be missing your port behind a reverse proxy.
       </p>
 
+      <PageToolbar
+        left={
+          <>
+            <ToolbarButton icon={<PlusCircleIcon />} label="Add Playlist" onClick={openAdd} title="Add playlist" />
+            <ToolbarSeparator />
+            <ToolbarButton icon={<PlusCircleIcon />} label="Add Filler Clip" onClick={openAddClip} title="Add filler clip" />
+          </>
+        }
+      />
+
       <h2>Playlists</h2>
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", marginBottom: 16 }}>
-        <div className="card" onClick={openAdd} style={{ padding: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ fontWeight: 600 }}>+ Add playlist</div>
-        </div>
         {playlists.map((p) => (
           <div key={p.id} className="card" onClick={() => openEdit(p)} style={{ padding: 16 }}>
             <div style={{ fontWeight: 600 }}>{p.name}</div>
@@ -317,9 +325,6 @@ export default function IptvPlaylists() {
         it'll rotate through them at each insertion point instead of always using the same one.
       </p>
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", marginBottom: 16 }}>
-        <div className="card" onClick={openAddClip} style={{ padding: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ fontWeight: 600 }}>+ Add filler clip</div>
-        </div>
         {fillerClips.map((c) => (
           <div key={c.id} className="card" onClick={() => openEditClip(c)} style={{ padding: 16 }}>
             <div style={{ fontWeight: 600 }}>{c.name}</div>

@@ -3,6 +3,8 @@ import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { CustomColumn, MediaType } from "../types.js";
 import Modal from "../components/Modal.js";
+import { PlusCircleIcon } from "../components/NavIcons.js";
+import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 
 /** Human-friendly options for the fields most people actually want as a column — picking one fills
  * in the dot-path for you. "Custom (advanced)" drops back to typing a raw path by hand, for
@@ -106,10 +108,9 @@ export default function CustomColumns() {
         type that has matching data.
       </p>
 
+      <PageToolbar left={<ToolbarButton icon={<PlusCircleIcon />} label="Add" onClick={openAdd} title="Add custom column" />} />
+
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", marginBottom: 16 }}>
-        <div className="card" onClick={openAdd} style={{ padding: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ fontWeight: 600 }}>+ Add custom column</div>
-        </div>
         {columns.map((c) => (
           <div key={c.id} className="card" onClick={() => openEdit(c)} style={{ padding: 16 }}>
             <div style={{ fontWeight: 600 }}>{c.label}</div>

@@ -9,8 +9,9 @@ import DropdownMenu from "../components/DropdownMenu.js";
 import Modal from "../components/Modal.js";
 import MonitorToggle from "../components/MonitorToggle.js";
 import RenamePreviewModal from "../components/RenamePreviewModal.js";
-import { PlusCircleIcon, CheckSquareIcon, SlashIcon, ZapIcon, RotateCcwIcon, SearchIcon } from "../components/NavIcons.js";
-import { PencilIcon, XIcon, CheckIcon, TrashIcon, FolderIcon, ChevronLeftIcon, ChevronRightIcon } from "../components/ActionIcons.js";
+import { PlusCircleIcon, CheckSquareIcon, SlashIcon, ZapIcon, RotateCcwIcon, SearchIcon, DownloadIcon } from "../components/NavIcons.js";
+import { PencilIcon, XIcon, CheckIcon, TrashIcon, FolderIcon, ChevronLeftIcon, ChevronRightIcon, GridIcon, RowsIcon, TableIcon } from "../components/ActionIcons.js";
+import { PageToolbar, ToolbarButton, ToolbarSeparator } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
 import { promptDialog } from "../utils/promptDialog.js";
@@ -311,16 +312,16 @@ export default function LibraryType() {
         )}
 
         {auth.isAdmin && (
-          <button
-            type="button"
-            className="icon-button"
-            style={{ marginBottom: 16 }}
-            onClick={addGroup}
-            title={`Add ${KIND_LABEL[(groupId ? groupDetail?.nextKind : groupLevels[0]) ?? ""] ?? "group"}`}
-            aria-label={`Add ${KIND_LABEL[(groupId ? groupDetail?.nextKind : groupLevels[0]) ?? ""] ?? "group"}`}
-          >
-            <PlusCircleIcon />
-          </button>
+          <PageToolbar
+            left={
+              <ToolbarButton
+                icon={<PlusCircleIcon />}
+                label="Add"
+                onClick={addGroup}
+                title={`Add ${KIND_LABEL[(groupId ? groupDetail?.nextKind : groupLevels[0]) ?? ""] ?? "group"}`}
+              />
+            }
+          />
         )}
 
         <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))" }}>
@@ -1039,262 +1040,265 @@ export function LibraryItemGrid({
           ))}
         </p>
       )}
-      <div className="toolbar" style={{ marginBottom: 10 }}>
-        <input
-          type="search"
-          value={searchInput}
-          onChange={(e) => setSearchInput(e.target.value)}
-          placeholder={`Search ${typeLabel.toLowerCase()}...`}
-          style={{ maxWidth: 220 }}
-        />
-        <select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)} style={{ maxWidth: 210 }}>
-          <option value="added">Sort: Recently added</option>
-          <option value="title">Sort: Title</option>
-          <option value="year">Sort: Year</option>
-          <option value="status">Sort: Status</option>
-          <option value="monitored">Sort: Monitored</option>
-          <option value="quality">Sort: Quality</option>
-          <option value="contentRating">Sort: Content rating</option>
-          <option value="releaseDate">Sort: Release date</option>
-          <option value="path">Sort: Path</option>
-          <option value="sizeOnDisk">Sort: Size on disk</option>
-        </select>
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as StatusFilter)} style={{ maxWidth: 160 }}>
-          <option value="all">All statuses</option>
-          <option value="monitored">Monitored</option>
-          <option value="unmonitored">Unmonitored</option>
-          <option value="downloaded">Downloaded</option>
-          <option value="missing">Missing</option>
-          <option value="cutoffUnmet">Cutoff unmet</option>
-          <option value="unmatched">Unmatched (no metadata match)</option>
-          <option value="filenameMismatch">Filename doesn't match title</option>
-        </select>
-        {tags.length > 0 && (
-          <select
-            value={tagFilter}
-            onChange={(e) => setTagFilter(e.target.value === "all" ? "all" : Number(e.target.value))}
-            style={{ maxWidth: 160 }}
-          >
-            <option value="all">All tags</option>
-            {tags.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        )}
-        {stats.contentRatings.length > 0 && (
-          <select value={contentRatingFilter} onChange={(e) => setContentRatingFilter(e.target.value)} style={{ maxWidth: 160 }}>
-            <option value="all">All content ratings</option>
-            {stats.contentRatings.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
-        )}
-        {viewMode === "poster" && (
-          <select value={posterSize} onChange={(e) => setPosterSize(e.target.value as PosterSize)} style={{ maxWidth: 190 }}>
-            <option value="xsmall">X-small posters</option>
-            <option value="small">Small posters</option>
-            <option value="medium">Medium posters</option>
-            <option value="large">Large posters</option>
-            <option value="xlarge">X-large posters</option>
-          </select>
-        )}
-        {savedViews.length > 0 && (
-          <select
-            value={activeViewId}
-            onChange={(e) => {
-              const view = savedViews.find((v) => v.id === Number(e.target.value));
-              if (view) applyView(view);
-              else setActiveViewId("");
-            }}
-            style={{ maxWidth: 180 }}
-            title="Saved combinations of sort/filter/columns for this library"
-          >
-            <option value="">Views...</option>
-            {savedViews.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.name}
-              </option>
-            ))}
-          </select>
-        )}
-        {auth.isAdmin && (
-          <button type="button" className="icon-button" onClick={saveCurrentAsView} title="Save the current sort/filter/columns as a reusable named view" aria-label="Save view">
-            <CheckIcon />
-          </button>
-        )}
-        {auth.isAdmin && activeViewId !== "" && (
-          <button type="button" className="icon-button danger" onClick={deleteActiveView} title="Delete this saved view" aria-label="Delete view">
-            <TrashIcon />
-          </button>
-        )}
-        {viewMode !== "list" ? (
-          <DropdownMenu label={viewMode === "poster" ? "Poster info" : "Overview info"}>
-            {allFieldKeys.map((field) => (
-              <label
-                key={field}
-                style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", cursor: "pointer" }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <input type="checkbox" checked={posterFields.has(field)} onChange={() => togglePosterField(field)} style={{ width: "auto" }} />
-                {fieldLabel(field)}
-              </label>
-            ))}
-          </DropdownMenu>
-        ) : (
-          <DropdownMenu label="Columns">
-            {allFieldKeys.map((field) => (
-              <label
-                key={field}
-                style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", cursor: "pointer" }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <input type="checkbox" checked={listColumns.has(field)} onChange={() => toggleListColumn(field)} style={{ width: "auto" }} />
-                {fieldLabel(field)}
-              </label>
-            ))}
-          </DropdownMenu>
-        )}
-      </div>
-
-      <div className="toolbar" style={{ marginBottom: 16 }}>
-        <DropdownMenu
-          label={`View: ${viewMode === "poster" ? "Posters" : viewMode === "overview" ? "Overview" : "Table"}`}
-        >
-          <button type="button" onClick={() => setViewMode("poster")}>
-            {viewMode === "poster" ? "✓ " : ""}Posters
-          </button>
-          <button type="button" onClick={() => setViewMode("overview")}>
-            {viewMode === "overview" ? "✓ " : ""}Overview
-          </button>
-          <button type="button" onClick={() => setViewMode("list")}>
-            {viewMode === "list" ? "✓ " : ""}Table
-          </button>
-        </DropdownMenu>
-
-        {auth.isAdmin && groupId && (
-          <button type="button" className="icon-button" onClick={quickAdd} title={`Add ${typeLabel.replace(/ — Ungrouped$/, "")}`} aria-label={`Add ${typeLabel.replace(/ — Ungrouped$/, "")}`}>
-            <PlusCircleIcon />
-          </button>
-        )}
-
-        {auth.isAdmin && (
-          <DropdownMenu label="Export & Bulk">
-            <button type="button" onClick={exportCsv}>
-              Export CSV
-            </button>
-            <button type="button" onClick={() => exportMetadata("nfo")}>
-              Export metadata (.nfo)
-            </button>
-            <button type="button" onClick={() => exportMetadata("json")}>
-              Export metadata (JSON)
-            </button>
-            {["movie", "series", "anime", "sports", "ppv"].includes(type) && (
-              <button
-                type="button"
-                onClick={() => exportMetadata("plexmatch")}
-                title="A .plexmatch file per item's own folder — Plex's own match-override format, since Plex doesn't read .nfo sidecars"
-              >
-                Export for Plex (.plexmatch)
-              </button>
-            )}
-            {["author", "audiobook", "comic", "manga"].includes(type) && (
-              <button type="button" onClick={exportCalibre}>
-                Export for Calibre
-              </button>
-            )}
-            <div className="dropdown-divider" />
-            <button type="button" onClick={() => csvInputRef.current?.click()} disabled={importingCsv}>
-              {importingCsv ? "Importing..." : "Bulk edit via CSV..."}
-            </button>
-          </DropdownMenu>
-        )}
-        <input
-          ref={csvInputRef}
-          type="file"
-          accept=".csv"
-          style={{ display: "none" }}
-          onChange={(e) => e.target.files?.[0] && importCsv(e.target.files[0])}
-        />
-
-        {auth.isAdmin && (
-          <button
-            type="button"
-            className="icon-button"
-            onClick={scanAndImport}
-            disabled={scanning}
-            title={scanning ? "Scanning..." : "Scan & Import — scan this library's root folder(s) for media already on disk and import it"}
-            aria-label="Scan & Import"
-          >
-            <ZapIcon />
-          </button>
-        )}
-        {auth.isAdmin && (
-          <button
-            type="button"
-            className="icon-button"
-            onClick={refreshLibrary}
-            disabled={refreshing}
-            title={refreshing ? "Refreshing..." : "Refresh — re-pull overview/poster/year for every item in this library"}
-            aria-label="Refresh"
-          >
-            <RotateCcwIcon />
-          </button>
-        )}
-        {auth.isAdmin && (
-          <button
-            type="button"
-            className="icon-button"
-            onClick={organizeLibrary}
-            title="Organize & Rename — move/rename every already-imported file in this library to match the current naming template (Settings → Media Management → Naming)"
-            aria-label="Organize & Rename"
-          >
-            <FolderIcon />
-          </button>
-        )}
-        {auth.isAdmin && mediaServerConfigured && (
-          <button
-            className="select-like"
-            onClick={openMediaServerImport}
-            title={`Import an already-organized ${typeLabel.toLowerCase()} library straight from your configured Plex/Jellyfin/Emby server, with its real title/year/poster/external-id metadata`}
-          >
-            Import from Media Server
-          </button>
-        )}
-        {auth.isAdmin && starrImportable && (
-          <button
-            className="select-like"
-            onClick={openStarrImport}
-            title={`Migrate an existing ${starrAppName} library straight into AoNarr — real title/year/poster/external-id metadata, matched against anything already here first`}
-          >
-            Import from {starrAppName}
-          </button>
-        )}
-        {auth.isAdmin && (
-          <button
-            className={selectMode ? "" : "secondary"}
-            onClick={() => {
-              setSelectMode((v) => !v);
-              setSelected(new Set());
-            }}
-          >
-            {selectMode ? "Done selecting" : "Select"}
-          </button>
-        )}
-        {auth.isAdmin && selectMode && (
+      <PageToolbar
+        left={
           <>
-            <button className="secondary" onClick={() => setSelected(new Set(items.map((i) => i.id)))} title="Selects items on this page only">
-              Select all on page
-            </button>
-            <button className="secondary" onClick={() => setSelected(new Set())}>
-              Select none
-            </button>
+            {auth.isAdmin && groupId && (
+              <ToolbarButton
+                icon={<PlusCircleIcon />}
+                label="Add"
+                onClick={quickAdd}
+                title={`Add ${typeLabel.replace(/ — Ungrouped$/, "")}`}
+              />
+            )}
+            {auth.isAdmin && (
+              <ToolbarButton
+                icon={<ZapIcon />}
+                label={scanning ? "Scanning..." : "Scan & Import"}
+                onClick={scanAndImport}
+                disabled={scanning}
+                title="Scan & Import — scan this library's root folder(s) for media already on disk and import it"
+              />
+            )}
+            {auth.isAdmin && (
+              <ToolbarButton
+                icon={<RotateCcwIcon />}
+                label={refreshing ? "Refreshing..." : "Refresh"}
+                onClick={refreshLibrary}
+                disabled={refreshing}
+                title="Refresh — re-pull overview/poster/year for every item in this library"
+              />
+            )}
+            {auth.isAdmin && (
+              <ToolbarButton
+                icon={<FolderIcon />}
+                label="Organize & Rename"
+                onClick={organizeLibrary}
+                title="Organize & Rename — move/rename every already-imported file in this library to match the current naming template (Settings → Media Management → Naming)"
+              />
+            )}
+            {auth.isAdmin && (mediaServerConfigured || starrImportable) && <ToolbarSeparator />}
+            {auth.isAdmin && mediaServerConfigured && (
+              <ToolbarButton
+                icon={<DownloadIcon />}
+                label="Import from Media Server"
+                onClick={openMediaServerImport}
+                title={`Import an already-organized ${typeLabel.toLowerCase()} library straight from your configured Plex/Jellyfin/Emby server, with its real title/year/poster/external-id metadata`}
+              />
+            )}
+            {auth.isAdmin && starrImportable && (
+              <ToolbarButton
+                icon={<DownloadIcon />}
+                label={`Import from ${starrAppName}`}
+                onClick={openStarrImport}
+                title={`Migrate an existing ${starrAppName} library straight into AoNarr — real title/year/poster/external-id metadata, matched against anything already here first`}
+              />
+            )}
+            {auth.isAdmin && <ToolbarSeparator />}
+            {auth.isAdmin && (
+              <ToolbarButton
+                icon={<CheckSquareIcon />}
+                label={selectMode ? "Done selecting" : "Select"}
+                onClick={() => {
+                  setSelectMode((v) => !v);
+                  setSelected(new Set());
+                }}
+              />
+            )}
+            {auth.isAdmin && selectMode && (
+              <div className="toolbar">
+                <button className="secondary" onClick={() => setSelected(new Set(items.map((i) => i.id)))} title="Selects items on this page only">
+                  Select all on page
+                </button>
+                <button className="secondary" onClick={() => setSelected(new Set())}>
+                  Select none
+                </button>
+              </div>
+            )}
+            {auth.isAdmin && <ToolbarSeparator />}
+            {auth.isAdmin && (
+              <div className="toolbar">
+                <DropdownMenu label="Export & Bulk">
+                  <button type="button" onClick={exportCsv}>
+                    Export CSV
+                  </button>
+                  <button type="button" onClick={() => exportMetadata("nfo")}>
+                    Export metadata (.nfo)
+                  </button>
+                  <button type="button" onClick={() => exportMetadata("json")}>
+                    Export metadata (JSON)
+                  </button>
+                  {["movie", "series", "anime", "sports", "ppv"].includes(type) && (
+                    <button
+                      type="button"
+                      onClick={() => exportMetadata("plexmatch")}
+                      title="A .plexmatch file per item's own folder — Plex's own match-override format, since Plex doesn't read .nfo sidecars"
+                    >
+                      Export for Plex (.plexmatch)
+                    </button>
+                  )}
+                  {["author", "audiobook", "comic", "manga"].includes(type) && (
+                    <button type="button" onClick={exportCalibre}>
+                      Export for Calibre
+                    </button>
+                  )}
+                  <div className="dropdown-divider" />
+                  <button type="button" onClick={() => csvInputRef.current?.click()} disabled={importingCsv}>
+                    {importingCsv ? "Importing..." : "Bulk edit via CSV..."}
+                  </button>
+                </DropdownMenu>
+              </div>
+            )}
+            <input
+              ref={csvInputRef}
+              type="file"
+              accept=".csv"
+              style={{ display: "none" }}
+              onChange={(e) => e.target.files?.[0] && importCsv(e.target.files[0])}
+            />
           </>
-        )}
-      </div>
+        }
+        right={
+          <>
+            <input
+              type="search"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder={`Search ${typeLabel.toLowerCase()}...`}
+              style={{ maxWidth: 220 }}
+            />
+            <DropdownMenu
+              label={
+                <>
+                  {viewMode === "poster" ? <GridIcon /> : viewMode === "overview" ? <RowsIcon /> : <TableIcon />}{" "}
+                  View: {viewMode === "poster" ? "Posters" : viewMode === "overview" ? "Overview" : "Table"}
+                </>
+              }
+            >
+              <button type="button" onClick={() => setViewMode("poster")}>
+                {viewMode === "poster" ? "✓ " : ""}Posters
+              </button>
+              <button type="button" onClick={() => setViewMode("overview")}>
+                {viewMode === "overview" ? "✓ " : ""}Overview
+              </button>
+              <button type="button" onClick={() => setViewMode("list")}>
+                {viewMode === "list" ? "✓ " : ""}Table
+              </button>
+            </DropdownMenu>
+            <select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)} style={{ maxWidth: 210 }}>
+              <option value="added">Sort: Recently added</option>
+              <option value="title">Sort: Title</option>
+              <option value="year">Sort: Year</option>
+              <option value="status">Sort: Status</option>
+              <option value="monitored">Sort: Monitored</option>
+              <option value="quality">Sort: Quality</option>
+              <option value="contentRating">Sort: Content rating</option>
+              <option value="releaseDate">Sort: Release date</option>
+              <option value="path">Sort: Path</option>
+              <option value="sizeOnDisk">Sort: Size on disk</option>
+            </select>
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as StatusFilter)} style={{ maxWidth: 160 }}>
+              <option value="all">All statuses</option>
+              <option value="monitored">Monitored</option>
+              <option value="unmonitored">Unmonitored</option>
+              <option value="downloaded">Downloaded</option>
+              <option value="missing">Missing</option>
+              <option value="cutoffUnmet">Cutoff unmet</option>
+              <option value="unmatched">Unmatched (no metadata match)</option>
+              <option value="filenameMismatch">Filename doesn't match title</option>
+            </select>
+            {tags.length > 0 && (
+              <select
+                value={tagFilter}
+                onChange={(e) => setTagFilter(e.target.value === "all" ? "all" : Number(e.target.value))}
+                style={{ maxWidth: 160 }}
+              >
+                <option value="all">All tags</option>
+                {tags.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            )}
+            {stats.contentRatings.length > 0 && (
+              <select value={contentRatingFilter} onChange={(e) => setContentRatingFilter(e.target.value)} style={{ maxWidth: 160 }}>
+                <option value="all">All content ratings</option>
+                {stats.contentRatings.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+            )}
+            {viewMode === "poster" && (
+              <select value={posterSize} onChange={(e) => setPosterSize(e.target.value as PosterSize)} style={{ maxWidth: 190 }}>
+                <option value="xsmall">X-small posters</option>
+                <option value="small">Small posters</option>
+                <option value="medium">Medium posters</option>
+                <option value="large">Large posters</option>
+                <option value="xlarge">X-large posters</option>
+              </select>
+            )}
+            {viewMode !== "list" ? (
+              <DropdownMenu label={viewMode === "poster" ? "Poster info" : "Overview info"}>
+                {allFieldKeys.map((field) => (
+                  <label
+                    key={field}
+                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", cursor: "pointer" }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input type="checkbox" checked={posterFields.has(field)} onChange={() => togglePosterField(field)} style={{ width: "auto" }} />
+                    {fieldLabel(field)}
+                  </label>
+                ))}
+              </DropdownMenu>
+            ) : (
+              <DropdownMenu label="Columns">
+                {allFieldKeys.map((field) => (
+                  <label
+                    key={field}
+                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", cursor: "pointer" }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input type="checkbox" checked={listColumns.has(field)} onChange={() => toggleListColumn(field)} style={{ width: "auto" }} />
+                    {fieldLabel(field)}
+                  </label>
+                ))}
+              </DropdownMenu>
+            )}
+            {savedViews.length > 0 && (
+              <select
+                value={activeViewId}
+                onChange={(e) => {
+                  const view = savedViews.find((v) => v.id === Number(e.target.value));
+                  if (view) applyView(view);
+                  else setActiveViewId("");
+                }}
+                style={{ maxWidth: 180 }}
+                title="Saved combinations of sort/filter/columns for this library"
+              >
+                <option value="">Views...</option>
+                {savedViews.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name}
+                  </option>
+                ))}
+              </select>
+            )}
+            {auth.isAdmin && (
+              <button type="button" className="icon-button" onClick={saveCurrentAsView} title="Save the current sort/filter/columns as a reusable named view" aria-label="Save view">
+                <CheckIcon />
+              </button>
+            )}
+            {auth.isAdmin && activeViewId !== "" && (
+              <button type="button" className="icon-button danger" onClick={deleteActiveView} title="Delete this saved view" aria-label="Delete view">
+                <TrashIcon />
+              </button>
+            )}
+          </>
+        }
+      />
 
       {auth.isAdmin && selectMode && selected.size > 0 && (
         <div className="form-panel toolbar">

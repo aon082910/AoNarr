@@ -7,8 +7,9 @@ import { useAuth } from "../context/AuthContext.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { MediaInfo, SearchResult } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
-import { SearchIcon, InboxIcon, AlertTriangleIcon, DownloadIcon, CpuIcon } from "../components/NavIcons.js";
+import { SearchIcon, InboxIcon, AlertTriangleIcon, DownloadIcon, CpuIcon, CalendarIcon, LayersIcon, HardDriveIcon } from "../components/NavIcons.js";
 import { ArrowLeftIcon, ArrowUpIcon, FolderIcon } from "../components/ActionIcons.js";
+import { PageToolbar, ToolbarButton, ToolbarSeparator } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
 
@@ -224,70 +225,72 @@ export default function EpisodeDetail() {
         {label} {episode.title ?? <span style={{ color: "var(--muted)", fontStyle: "italic" }}>Episode {episode.episodeNumber}</span>}
       </h1>
 
-      <table style={{ maxWidth: 640 }}>
-        <tbody>
-          <tr>
-            <th>Air date</th>
-            <td>{episode.airDate ?? "-"}</td>
-          </tr>
-          <tr>
-            <th>Status</th>
-            <td>
-              <span className={`badge ${episode.hasFile ? "ok" : ""}`}>{episode.hasFile ? "Downloaded" : "Missing"}</span>
-            </td>
-          </tr>
-          <tr>
-            <th>Monitored</th>
-            <td>
-              <MonitorToggle monitored={!!episode.monitored} onToggle={toggleMonitored} />
-            </td>
-          </tr>
-          {episode.quality && (
-            <tr>
-              <th>Quality</th>
-              <td>{episode.quality}</td>
-            </tr>
-          )}
-          {formatMediaInfo(episode.mediaInfo) && (
-            <tr>
-              <th>File info</th>
-              <td>{formatMediaInfo(episode.mediaInfo)}</td>
-            </tr>
-          )}
-          {episode.filePath && (
-            <tr>
-              <th>Path</th>
-              <td style={{ wordBreak: "break-all" }}>{episode.filePath}</td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+      {isAdmin && (
+        <PageToolbar
+          left={
+            <>
+              <ToolbarButton
+                icon={<SearchIcon />}
+                label={searching ? "Searching..." : "Search"}
+                onClick={runSearch}
+                disabled={searching}
+                title={searching ? "Searching..." : "Search"}
+              />
+              <ToolbarButton icon={<InboxIcon />} label="Manual Import" onClick={toggleImport} title="Manual Import" />
+              {!!episode.hasFile && (
+                <>
+                  <ToolbarSeparator />
+                  <ToolbarButton
+                    icon={<AlertTriangleIcon />}
+                    label="Mark as Missing"
+                    onClick={markAsMissing}
+                    danger
+                    title="Mark as missing — removed the file yourself? This resets AoNarr's record so it searches for it again."
+                  />
+                </>
+              )}
+              <ToolbarSeparator />
+              <ToolbarButton icon={<ArrowLeftIcon />} label="Back" onClick={() => navigate(-1)} title="Back to show" />
+            </>
+          }
+        />
+      )}
+
+      <div className="detail-pills">
+        <span className="pill">
+          <MonitorToggle monitored={!!episode.monitored} onToggle={toggleMonitored} />
+          {episode.monitored ? "Monitored" : "Unmonitored"}
+        </span>
+        <span className="pill">
+          <CalendarIcon />
+          {episode.airDate ?? "Unknown air date"}
+        </span>
+        <span className={`badge ${episode.hasFile ? "ok" : ""}`}>{episode.hasFile ? "Downloaded" : "Missing"}</span>
+        {episode.quality && (
+          <span className="pill">
+            <LayersIcon />
+            {episode.quality}
+          </span>
+        )}
+        {formatMediaInfo(episode.mediaInfo) && (
+          <span className="pill">
+            <HardDriveIcon />
+            {formatMediaInfo(episode.mediaInfo)}
+          </span>
+        )}
+        {episode.filePath && (
+          <span className="pill" style={{ whiteSpace: "normal", wordBreak: "break-all" }}>
+            <FolderIcon />
+            {episode.filePath}
+          </span>
+        )}
+      </div>
 
       {episode.overview && (
         <>
           <h2>Overview</h2>
           <p>{episode.overview}</p>
         </>
-      )}
-
-      {isAdmin && (
-        <div className="toolbar" style={{ marginTop: 16 }}>
-          <MonitorToggle monitored={!!episode.monitored} onToggle={toggleMonitored} />
-          <button type="button" className="icon-button" onClick={runSearch} disabled={searching} title={searching ? "Searching..." : "Search"} aria-label="Search">
-            <SearchIcon />
-          </button>
-          <button type="button" className="icon-button" onClick={toggleImport} title="Manual Import" aria-label="Manual Import">
-            <InboxIcon />
-          </button>
-          {!!episode.hasFile && (
-            <button type="button" className="icon-button danger" onClick={markAsMissing} title="Mark as missing — removed the file yourself? This resets AoNarr's record so it searches for it again." aria-label="Mark as missing">
-              <AlertTriangleIcon />
-            </button>
-          )}
-          <button type="button" className="icon-button" onClick={() => navigate(-1)} title="Back to show" aria-label="Back to show">
-            <ArrowLeftIcon />
-          </button>
-        </div>
       )}
 
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}

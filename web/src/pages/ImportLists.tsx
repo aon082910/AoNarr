@@ -1,10 +1,12 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
+import Modal from "../components/Modal.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { QualityProfile } from "../types.js";
-import { RotateCcwIcon } from "../components/NavIcons.js";
+import { PlusCircleIcon, RotateCcwIcon } from "../components/NavIcons.js";
 import { TrashIcon } from "../components/ActionIcons.js";
+import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 
 interface ImportList {
   id: number;
@@ -49,6 +51,7 @@ const URL_PLACEHOLDERS: Record<ImportList["type"], string> = {
 
 export default function ImportLists() {
   const [lists, setLists] = useState<ImportList[]>([]);
+  const [showAdd, setShowAdd] = useState(false);
   const { sortRows: sortLists, sortableHeader: listHeader } = useSortableTable<ImportList, "name" | "type" | "enabled" | "lastSynced">("name");
   const [profiles, setProfiles] = useState<QualityProfile[]>([]);
   const [name, setName] = useState("");
@@ -95,6 +98,7 @@ export default function ImportLists() {
     setMinRating("");
     setMinVotes("");
     setExcludeGenres("");
+    setShowAdd(false);
     load();
   }
 
@@ -143,63 +147,69 @@ export default function ImportLists() {
         user-playlist concept of its own, so top artists is the closest equivalent).
       </p>
 
-      <form className="form-panel" onSubmit={addList}>
-        <label htmlFor="importlists-name-1">Name</label>
-        <input id="importlists-name-1" value={name} onChange={(e) => setName(e.target.value)} placeholder="My watchlist" required />
-        <label htmlFor="importlists-type-2">Type</label>
-        <select id="importlists-type-2" value={type} onChange={(e) => setType(e.target.value as ImportList["type"])}>
-          <option value="trakt">Trakt</option>
-          <option value="imdb">IMDb</option>
-          <option value="lastfm">Last.fm</option>
-          <option value="tmdb">TMDB</option>
-        </select>
-        <label htmlFor="importlists-url-3">URL</label>
-        <input id="importlists-url-3" value={url} onChange={(e) => setUrl(e.target.value)} placeholder={URL_PLACEHOLDERS[type]} required />
-        {profiles.length > 0 && (
-          <>
-            <label htmlFor="importlists-quality-profile-4">Quality profile</label>
-            <select id="importlists-quality-profile-4" value={qualityProfileId} onChange={(e) => setQualityProfileId(e.target.value ? Number(e.target.value) : "")}>
-              {profiles.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
+      <PageToolbar left={<ToolbarButton icon={<PlusCircleIcon />} label="Add" onClick={() => setShowAdd(true)} title="Add import list" />} />
+
+      {showAdd && (
+        <Modal title="Add Import List" onClose={() => setShowAdd(false)}>
+          <form className="form-panel" onSubmit={addList} style={{ padding: 0 }}>
+            <label htmlFor="importlists-name-1">Name</label>
+            <input id="importlists-name-1" value={name} onChange={(e) => setName(e.target.value)} placeholder="My watchlist" required />
+            <label htmlFor="importlists-type-2">Type</label>
+            <select id="importlists-type-2" value={type} onChange={(e) => setType(e.target.value as ImportList["type"])}>
+              <option value="trakt">Trakt</option>
+              <option value="imdb">IMDb</option>
+              <option value="lastfm">Last.fm</option>
+              <option value="tmdb">TMDB</option>
             </select>
-          </>
-        )}
-        {listSupportsFilters(type) && (
-          <>
-            <label htmlFor="importlists-minimum-rating-0-10-optional-5">Minimum rating (0-10, optional)</label>
-            <input id="importlists-minimum-rating-0-10-optional-5"
-              type="number"
-              min="0"
-              max="10"
-              step="0.1"
-              value={minRating}
-              onChange={(e) => setMinRating(e.target.value)}
-              placeholder="No minimum"
-            />
-            <label htmlFor="importlists-minimum-vote-count-optional-6">Minimum vote count (optional)</label>
-            <input id="importlists-minimum-vote-count-optional-6" type="number" min="0" value={minVotes} onChange={(e) => setMinVotes(e.target.value)} placeholder="No minimum" />
-            <label htmlFor="importlists-exclude-genres-comma-separated-optional-7">Exclude genres (comma-separated, optional)</label>
-            <input id="importlists-exclude-genres-comma-separated-optional-7" value={excludeGenres} onChange={(e) => setExcludeGenres(e.target.value)} placeholder="e.g. Horror, Documentary" />
+            <label htmlFor="importlists-url-3">URL</label>
+            <input id="importlists-url-3" value={url} onChange={(e) => setUrl(e.target.value)} placeholder={URL_PLACEHOLDERS[type]} required />
+            {profiles.length > 0 && (
+              <>
+                <label htmlFor="importlists-quality-profile-4">Quality profile</label>
+                <select id="importlists-quality-profile-4" value={qualityProfileId} onChange={(e) => setQualityProfileId(e.target.value ? Number(e.target.value) : "")}>
+                  {profiles.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+            {listSupportsFilters(type) && (
+              <>
+                <label htmlFor="importlists-minimum-rating-0-10-optional-5">Minimum rating (0-10, optional)</label>
+                <input id="importlists-minimum-rating-0-10-optional-5"
+                  type="number"
+                  min="0"
+                  max="10"
+                  step="0.1"
+                  value={minRating}
+                  onChange={(e) => setMinRating(e.target.value)}
+                  placeholder="No minimum"
+                />
+                <label htmlFor="importlists-minimum-vote-count-optional-6">Minimum vote count (optional)</label>
+                <input id="importlists-minimum-vote-count-optional-6" type="number" min="0" value={minVotes} onChange={(e) => setMinVotes(e.target.value)} placeholder="No minimum" />
+                <label htmlFor="importlists-exclude-genres-comma-separated-optional-7">Exclude genres (comma-separated, optional)</label>
+                <input id="importlists-exclude-genres-comma-separated-optional-7" value={excludeGenres} onChange={(e) => setExcludeGenres(e.target.value)} placeholder="e.g. Horror, Documentary" />
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  A list still adds everything it has by default — these narrow it down. Skipped for an
+                  item whose rating/votes/genres aren't known, rather than excluding it over missing
+                  data.
+                </p>
+              </>
+            )}
+            <label className="toolbar" style={{ gap: 8 }}>
+              <input type="checkbox" checked={requireReview} onChange={(e) => setRequireReview(e.target.checked)} style={{ width: "auto" }} />
+              Require review before adding
+            </label>
             <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
-              A list still adds everything it has by default — these narrow it down. Skipped for an
-              item whose rating/votes/genres aren't known, rather than excluding it over missing
-              data.
+              When on, a match found on this list is queued on the Import Review page instead of being
+              added to your library automatically — approve or dismiss each one by hand.
             </p>
-          </>
-        )}
-        <label className="toolbar" style={{ gap: 8 }}>
-          <input type="checkbox" checked={requireReview} onChange={(e) => setRequireReview(e.target.checked)} style={{ width: "auto" }} />
-          Require review before adding
-        </label>
-        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
-          When on, a match found on this list is queued on the Import Review page instead of being
-          added to your library automatically — approve or dismiss each one by hand.
-        </p>
-        <button type="submit">Add import list</button>
-      </form>
+            <button type="submit">Add import list</button>
+          </form>
+        </Modal>
+      )}
 
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
 

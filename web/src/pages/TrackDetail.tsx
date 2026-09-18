@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client.js";
-import { ArrowLeftIcon } from "../components/ActionIcons.js";
+import { ArrowLeftIcon, FolderIcon } from "../components/ActionIcons.js";
+import { ClockIcon } from "../components/NavIcons.js";
+import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 
 interface TrackDetailResponse {
   id: number;
@@ -41,31 +43,22 @@ export default function TrackDetail() {
         {track.trackNumber}. {track.title}
       </h1>
 
-      <table style={{ maxWidth: 640 }}>
-        <tbody>
-          <tr>
-            <th>Duration</th>
-            <td>{duration}</td>
-          </tr>
-          <tr>
-            <th>Status</th>
-            <td>
-              <span className={`badge ${track.hasFile ? "ok" : ""}`}>{track.hasFile ? "Downloaded" : "Missing"}</span>
-            </td>
-          </tr>
-          {track.filePath && (
-            <tr>
-              <th>Path</th>
-              <td style={{ wordBreak: "break-all" }}>{track.filePath}</td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+      <PageToolbar
+        left={<ToolbarButton icon={<ArrowLeftIcon />} label="Back" onClick={() => navigate(-1)} title={`Back to ${track.subItem?.title ?? "album"}`} />}
+      />
 
-      <div className="toolbar" style={{ marginTop: 16 }}>
-        <button type="button" className="icon-button" onClick={() => navigate(-1)} title={`Back to ${track.subItem?.title ?? "album"}`} aria-label={`Back to ${track.subItem?.title ?? "album"}`}>
-          <ArrowLeftIcon />
-        </button>
+      <div className="detail-pills">
+        <span className="pill">
+          <ClockIcon />
+          {duration}
+        </span>
+        <span className={`badge ${track.hasFile ? "ok" : ""}`}>{track.hasFile ? "Downloaded" : "Missing"}</span>
+        {track.filePath && (
+          <span className="pill" style={{ whiteSpace: "normal", wordBreak: "break-all" }}>
+            <FolderIcon />
+            {track.filePath}
+          </span>
+        )}
       </div>
     </div>
   );

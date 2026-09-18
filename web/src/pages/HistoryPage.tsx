@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
+import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
+import { XIcon } from "../components/ActionIcons.js";
 
 interface HistoryRow {
   id: number;
@@ -60,38 +62,40 @@ export default function HistoryPage() {
     <div>
       <h1>History</h1>
       <p style={{ color: "var(--muted)" }}>Every grab, import, and failure across the whole library, newest first.</p>
-      <div className="toolbar" style={{ marginBottom: 16 }}>
-        <select value={eventType} onChange={(e) => setEventType(e.target.value)} style={{ maxWidth: 200 }}>
-          <option value="all">All events</option>
-          {Object.entries(EVENT_TYPE_LABELS).map(([key, label]) => (
-            <option key={key} value={key}>
-              {label}
-            </option>
-          ))}
-        </select>
-        <select value={mediaType} onChange={(e) => setMediaType(e.target.value)} style={{ maxWidth: 200 }}>
-          <option value="all">All libraries</option>
-          {mediaTypes.map((t) => (
-            <option key={t.key} value={t.key}>
-              {t.label}
-            </option>
-          ))}
-        </select>
-        <input type="date" value={since} onChange={(e) => setSince(e.target.value)} title="Only show events on or after this date" />
-        {(eventType !== "all" || mediaType !== "all" || since) && (
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => {
-              setEventType("all");
-              setMediaType("all");
-              setSince("");
-            }}
-          >
-            Clear filters
-          </button>
-        )}
-      </div>
+      <PageToolbar
+        right={
+          <>
+            <select value={eventType} onChange={(e) => setEventType(e.target.value)} style={{ maxWidth: 200 }}>
+              <option value="all">All events</option>
+              {Object.entries(EVENT_TYPE_LABELS).map(([key, label]) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            <select value={mediaType} onChange={(e) => setMediaType(e.target.value)} style={{ maxWidth: 200 }}>
+              <option value="all">All libraries</option>
+              {mediaTypes.map((t) => (
+                <option key={t.key} value={t.key}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+            <input type="date" value={since} onChange={(e) => setSince(e.target.value)} title="Only show events on or after this date" />
+            {(eventType !== "all" || mediaType !== "all" || since) && (
+              <ToolbarButton
+                icon={<XIcon />}
+                label="Clear Filters"
+                onClick={() => {
+                  setEventType("all");
+                  setMediaType("all");
+                  setSince("");
+                }}
+              />
+            )}
+          </>
+        }
+      />
 
       {!rows && <p className="empty">Loading...</p>}
       {rows && rows.length === 0 && <p className="empty">Nothing here yet.</p>}

@@ -5,6 +5,7 @@ import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { Indexer } from "../types.js";
 import { PlusCircleIcon, ZapIcon } from "../components/NavIcons.js";
 import { TrashIcon } from "../components/ActionIcons.js";
+import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
 
 type Protocol = "torznab" | "newznab" | "rss" | "ddl";
@@ -149,20 +150,34 @@ export default function Indexers() {
         the response; AoNarr never scrapes a site itself, only reads JSON the API returns.
       </p>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        <button type="button" className="icon-button" onClick={() => setShowAdd(true)} title="Add indexer" aria-label="Add indexer">
-          <PlusCircleIcon />
-        </button>
-        <button type="button" className="secondary" onClick={syncProwlarr} disabled={syncingProwlarr}>
-          {syncingProwlarr ? "Syncing..." : "Sync from Prowlarr"}
-        </button>
-        <button type="button" className="secondary" onClick={syncJackett} disabled={syncingJackett}>
-          {syncingJackett ? "Syncing..." : "Sync from Jackett"}
-        </button>
-        <button type="button" className="icon-button" onClick={testAll} disabled={testingAll || indexers.length === 0} title={testingAll ? "Testing..." : "Test all"} aria-label="Test all">
-          <ZapIcon />
-        </button>
-      </div>
+      <PageToolbar
+        left={
+          <>
+            <ToolbarButton icon={<PlusCircleIcon />} label="Add" onClick={() => setShowAdd(true)} title="Add indexer" />
+            <ToolbarButton
+              icon={<ZapIcon />}
+              label={syncingProwlarr ? "Syncing..." : "Sync Prowlarr"}
+              onClick={syncProwlarr}
+              disabled={syncingProwlarr}
+              title="Sync from Prowlarr"
+            />
+            <ToolbarButton
+              icon={<ZapIcon />}
+              label={syncingJackett ? "Syncing..." : "Sync Jackett"}
+              onClick={syncJackett}
+              disabled={syncingJackett}
+              title="Sync from Jackett"
+            />
+            <ToolbarButton
+              icon={<ZapIcon />}
+              label={testingAll ? "Testing..." : "Test All"}
+              onClick={testAll}
+              disabled={testingAll || indexers.length === 0}
+              title="Test all indexers"
+            />
+          </>
+        }
+      />
 
       {showAdd && (
         <Modal title="Add Indexer" onClose={() => setShowAdd(false)} maxWidth={560}>

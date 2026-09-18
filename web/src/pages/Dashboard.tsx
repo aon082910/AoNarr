@@ -8,6 +8,7 @@ import type { MediaItem } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 import { SlidersIcon } from "../components/NavIcons.js";
 import { ArrowUpIcon, ArrowDownIcon, ArrowRightIcon } from "../components/ActionIcons.js";
+import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 
 interface RecentlyWatchedEntry {
   mediaItemId: number;
@@ -304,12 +305,17 @@ export default function Dashboard() {
 
   return (
     <div>
-      <div className="toolbar" style={{ justifyContent: "space-between", marginBottom: 8 }}>
-        <h1 style={{ margin: 0 }}>Dashboard</h1>
-        <button type="button" className="icon-button" onClick={() => setCustomizing((v) => !v)} title={customizing ? "Done" : "Customize layout"} aria-label={customizing ? "Done customizing" : "Customize layout"}>
-          <SlidersIcon />
-        </button>
-      </div>
+      <h1>Dashboard</h1>
+      <PageToolbar
+        left={
+          <ToolbarButton
+            icon={<SlidersIcon />}
+            label={customizing ? "Done" : "Customize"}
+            onClick={() => setCustomizing((v) => !v)}
+            title={customizing ? "Done customizing" : "Customize layout"}
+          />
+        }
+      />
 
       {customizing && (
         <div className="form-panel" style={{ maxWidth: 480, marginBottom: 20 }}>

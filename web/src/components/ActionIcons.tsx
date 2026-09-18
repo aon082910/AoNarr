@@ -125,3 +125,64 @@ export function GridIcon() {
     </Icon>
   );
 }
+
+/** Horizontal rows with a leading thumbnail block — the "Overview" library view-mode option
+ * (a row per item with a small poster), distinct from GridIcon's poster wall and TableIcon's
+ * plain grid. */
+export function RowsIcon() {
+  return (
+    <Icon>
+      <rect x="3" y="4" width="4" height="4" />
+      <line x1="10" y1="6" x2="21" y2="6" />
+      <rect x="3" y="10" width="4" height="4" />
+      <line x1="10" y1="12" x2="21" y2="12" />
+      <rect x="3" y="16" width="4" height="4" />
+      <line x1="10" y1="18" x2="21" y2="18" />
+    </Icon>
+  );
+}
+
+/** Grid with a header row — the "Table" library view-mode option. */
+export function TableIcon() {
+  return (
+    <Icon>
+      <rect x="3" y="4" width="18" height="16" rx="1" />
+      <line x1="3" y1="9" x2="21" y2="9" />
+      <line x1="9" y1="9" x2="9" y2="20" />
+      <line x1="15" y1="9" x2="15" y2="20" />
+    </Icon>
+  );
+}
+
+/** Funnel — the Starr "Filters" toolbar/menu button. */
+export function FilterIcon() {
+  return (
+    <Icon>
+      <polygon points="4 4 20 4 14 12 14 19 10 21 10 12 4 4" />
+    </Icon>
+  );
+}
+
+/** Up/down paired arrows — the Starr "Sort" toolbar/menu button. */
+export function SortIcon() {
+  return (
+    <Icon>
+      <line x1="6" y1="20" x2="6" y2="4" />
+      <polyline points="3 7 6 4 9 7" />
+      <line x1="18" y1="4" x2="18" y2="20" />
+      <polyline points="15 17 18 20 21 17" />
+    </Icon>
+  );
+}
+
+/** Circular refresh arrows — distinct from RotateCcwIcon's single undo arrow (NavIcons.tsx),
+ * for a Starr-style "Refresh & Scan" toolbar button. */
+export function RefreshIcon() {
+  return (
+    <Icon>
+      <polyline points="23 4 23 10 17 10" />
+      <polyline points="1 20 1 14 7 14" />
+      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+    </Icon>
+  );
+}

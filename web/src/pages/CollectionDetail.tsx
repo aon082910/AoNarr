@@ -4,7 +4,9 @@ import { api, downloadFile } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { Collection, MediaItem } from "../types.js";
-import { ArrowUpIcon, ArrowDownIcon, TrashIcon } from "../components/ActionIcons.js";
+import { ArrowUpIcon, ArrowDownIcon, TrashIcon, FilterIcon } from "../components/ActionIcons.js";
+import { DownloadIcon } from "../components/NavIcons.js";
+import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
 
 type CollectionDetailResponse = Collection & { items: MediaItem[] };
@@ -64,15 +66,17 @@ export default function CollectionDetail() {
 
   return (
     <div>
-      <h1>
-        {collection.name}
-        {collection.smartFilter && (
-          <span className="badge" style={{ marginLeft: 10, fontSize: "0.6em", verticalAlign: "middle" }}>
+      <h1>{collection.name}</h1>
+      {collection.description && <p style={{ color: "var(--muted)" }}>{collection.description}</p>}
+
+      {collection.smartFilter && (
+        <div className="detail-pills">
+          <span className="pill">
+            <FilterIcon />
             Smart
           </span>
-        )}
-      </h1>
-      {collection.description && <p style={{ color: "var(--muted)" }}>{collection.description}</p>}
+        </div>
+      )}
       {collection.smartFilter && (
         <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
           Membership is computed live from a saved filter — items can't be manually added, removed,
@@ -109,14 +113,14 @@ export default function CollectionDetail() {
       )}
 
       {collection.items.length > 0 && (
-        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-          <button className="secondary" onClick={() => exportList("m3u")}>
-            Export as M3U playlist
-          </button>
-          <button className="secondary" onClick={() => exportList("json")}>
-            Export as watch-order list
-          </button>
-        </div>
+        <PageToolbar
+          left={
+            <>
+              <ToolbarButton icon={<DownloadIcon />} label="Export M3U" onClick={() => exportList("m3u")} title="Export as M3U playlist" />
+              <ToolbarButton icon={<DownloadIcon />} label="Export List" onClick={() => exportList("json")} title="Export as watch-order list" />
+            </>
+          }
+        />
       )}
 
       {collection.items.length === 0 && (
