@@ -3,6 +3,40 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 270 — more test coverage (import lists: Trakt/IMDb/Last.fm/TMDB)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/importLists.test.ts` — `passesListFilters`'s rating/votes/genre gates (never rejecting on
+  unknown data, case-insensitive genre exclusion, tolerating malformed `exclude_genres` JSON) and
+  `insertTracksForAlbum`'s never-throws contract; then, for all four list sources dispatched by
+  `syncImportList` — Trakt (list vs. watchlist URL routing, adding a new movie/series with the
+  series' episodes fetched, per-hour dedup by tmdb id, exclusion, filter rejection, `require_review`
+  queuing, and one malformed entry not aborting the rest of the batch), IMDb (its public per-list CSV
+  export — including a quoted, comma-containing field, the exact scenario `splitCsvLine`'s own doc
+  comment calls out — duplicate-in-library skip, no-metadata-match queuing for review, and a
+  successful match's fields coming from the search result rather than the raw CSV row), Last.fm
+  (bare-username vs. full-profile-URL parsing, and the single-artist-object-instead-of-an-array
+  response shape its top-artists endpoint can return), and TMDB (bare-id vs. full-URL parsing,
+  `media_type` vs. the `first_air_date` fallback heuristic for movie/TV detection, and its own
+  genre-id-to-name mapping feeding into the shared filter) — each source's config-missing and non-OK-
+  response error paths, plus `syncImportList`'s own persistence of `last_synced_at`/`last_added_count`/
+  `last_error` on both success and failure, and `runAllImportLists`' enabled-only filtering and a
+  genuine mid-loop `AbortSignal` stop (proven by aborting from inside the first list's own mocked
+  fetch call, not just before the run starts). `metadata.js`'s four network-calling exports are
+  mocked (closure-indirection, same pattern as Round 246); `importExclusions.js`/`duplicateCheck.js`/
+  `importReview.js` all run for real against the test DB, being cheap DB-only siblings.
+
+  Three bugs caught and fixed before or via the first Docker run: a missing `beforeEach` import
+  (caught immediately by the run); a CSV test-fixture helper that didn't quote fields containing
+  commas, which would have silently misaligned every column after "Num Votes"/"Genres"; and the
+  `runAllImportLists` tests originally reading the *entire*, unscoped `import_lists` table built up
+  by 15+ earlier tests in the same file — fixed with a local `beforeEach` that wipes the table first,
+  the same shared-state lesson as `subtitleRescan.test.ts` and others before it.
+
+Test count: 787 → 822 (82 → 83 files).
+
+Verified: `tsc --noEmit` clean, all 822 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 269 — more test coverage (indexer search client)
 No behavior changes. Continues the test-coverage push. First of the genuinely large remaining
 service files (443 lines) — the rest (`downloadClient`, `importLists`, `importer`, `libraryScan`,
