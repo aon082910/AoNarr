@@ -2,9 +2,38 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { setupTestDb } from "./helpers/testDb.js";
 import { buildMediaQuery, toFts5Query, clampLimit, clampOffset } from "../src/services/mediaQuery.js";
 
+let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
+
 beforeAll(async () => {
-  await setupTestDb();
+  ({ db } = await setupTestDb());
 });
+
+async function insertItem(overrides: Record<string, unknown> = {}): Promise<number> {
+  const row = {
+    title: "Item",
+    path: null as string | null,
+    has_file: 0,
+    quality: null as string | null,
+    quality_profile_id: null as number | null,
+    content_rating: null as string | null,
+    external_ids: null as string | null,
+    ...overrides,
+  };
+  const result = await db
+    .prepare(
+      `INSERT INTO media_items (type, title, sort_title, path, has_file, quality, quality_profile_id, content_rating, external_ids, monitored, status)
+       VALUES ('movie', ?, ?, ?, ?, ?, ?, ?, ?, 1, 'unknown')`
+    )
+    .run(row.title, String(row.title).toLowerCase(), row.path, row.has_file, row.quality, row.quality_profile_id, row.content_rating, row.external_ids);
+  return Number(result.lastInsertRowid);
+}
+
+async function runQueryFor(id: number, filters: Parameters<typeof buildMediaQuery>[0]): Promise<boolean> {
+  const q = await buildMediaQuery(filters);
+  if (q.where === null) return false;
+  const row = await db.prepare(`SELECT m.id FROM ${q.fromClause} WHERE ${q.where} AND m.id = ?`).get(...q.params, id);
+  return !!row;
+}
 
 describe("toFts5Query", () => {
   it("phrase-quotes each token and suffixes it for prefix matching", () => {
@@ -96,5 +125,89 @@ describe("buildMediaQuery", () => {
     expect((await buildMediaQuery({ status: "unmonitored", allowedTypes: null })).where).toBe("m.monitored = 0");
     expect((await buildMediaQuery({ status: "missing", allowedTypes: null })).where).toBe("m.has_file = 0");
     expect((await buildMediaQuery({ status: "downloaded", allowedTypes: null })).where).toBe("m.has_file = 1");
+  });
+
+  it("status:unmatched includes an item with null, empty, or bare-'{}' external_ids, but not a real match", async () => {
+    const nullIds = await insertItem({ title: "Unmatched Null", external_ids: null });
+    const emptyIds = await insertItem({ title: "Unmatched Empty", external_ids: "" });
+    const emptyObjectIds = await insertItem({ title: "Unmatched Object", external_ids: "{}" });
+    const matchedIds = await insertItem({ title: "Matched", external_ids: '{"tmdb":"1"}' });
+
+    const filters = { status: "unmatched", allowedTypes: null } as const;
+    expect(await runQueryFor(nullIds, filters)).toBe(true);
+    expect(await runQueryFor(emptyIds, filters)).toBe(true);
+    expect(await runQueryFor(emptyObjectIds, filters)).toBe(true);
+    expect(await runQueryFor(matchedIds, filters)).toBe(false);
+  });
+
+  it("contentRating filters to exactly one rating, and 'all' applies no restriction", async () => {
+    const pgId = await insertItem({ title: "PG Item", content_rating: "PG" });
+    const rId = await insertItem({ title: "R Item", content_rating: "R" });
+
+    expect(await runQueryFor(pgId, { contentRating: "PG", allowedTypes: null })).toBe(true);
+    expect(await runQueryFor(rId, { contentRating: "PG", allowedTypes: null })).toBe(false);
+    expect(await runQueryFor(rId, { contentRating: "all", allowedTypes: null })).toBe(true);
+  });
+
+  // findCutoffUnmetIds/findFilenameMismatchIds (below) scan literally every media_items row with
+  // no type filter at all -- allowedTypes only ever applies to the SEPARATE m.type IN (...)
+  // condition, never to whether either ids list comes back empty. Each test below is fully
+  // self-contained (an explicit cleanup of the exact criterion each helper filters on, first)
+  // rather than depending on running before any sibling test that might otherwise leave a
+  // qualifying row behind -- this file has no cleanup between tests by its own established
+  // convention, and relying on declaration order alone proved fragile under a full-suite run.
+  it("status:cutoffUnmet: where:null when nothing qualifies, then includes/excludes items relative to the cutoff", async () => {
+    await db.prepare("DELETE FROM media_items WHERE quality IS NOT NULL").run();
+    await db.prepare("DELETE FROM quality_profiles WHERE name = 'Cutoff Test Profile'").run();
+    expect((await buildMediaQuery({ status: "cutoffUnmet", allowedTypes: null })).where).toBeNull();
+
+    const profileId = Number(
+      (await db.prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff) VALUES ('Cutoff Test Profile', '[]', 'Bluray-1080p')").run())
+        .lastInsertRowid
+    );
+    const belowId = await insertItem({ title: "Below Cutoff", has_file: 1, quality: "SD", quality_profile_id: profileId });
+    const atId = await insertItem({ title: "At Cutoff", has_file: 1, quality: "Bluray-1080p", quality_profile_id: profileId });
+    const aboveId = await insertItem({ title: "Above Cutoff", has_file: 1, quality: "Remux-2160p", quality_profile_id: profileId });
+
+    const filters = { status: "cutoffUnmet", allowedTypes: null } as const;
+    expect(await runQueryFor(belowId, filters)).toBe(true);
+    expect(await runQueryFor(atId, filters)).toBe(false);
+    expect(await runQueryFor(aboveId, filters)).toBe(false);
+  });
+
+  it("status:filenameMismatch: where:null when nothing qualifies, then flags a mismatched file but not a well-matched one", async () => {
+    await db.prepare("DELETE FROM media_items WHERE path IS NOT NULL").run();
+    expect((await buildMediaQuery({ status: "filenameMismatch", allowedTypes: null })).where).toBeNull();
+
+    const mismatchedId = await insertItem({ title: "The Matrix", has_file: 1, path: "/movies/Completely.Different.Release.Name.2160p.mkv" });
+    const matchedId = await insertItem({ title: "The Matrix", has_file: 1, path: "/movies/The.Matrix.1999.1080p.mkv" });
+
+    const filters = { status: "filenameMismatch", allowedTypes: null } as const;
+    expect(await runQueryFor(mismatchedId, filters)).toBe(true);
+    expect(await runQueryFor(matchedId, filters)).toBe(false);
+  });
+
+  it("wires a free-text search into the SQLite FTS5 subquery with the toFts5Query-transformed term", async () => {
+    const result = await buildMediaQuery({ q: "the matrix", allowedTypes: null });
+    expect(result.where).toContain("library_search_fts MATCH ?");
+    expect(result.params).toContain(toFts5Query("the matrix"));
+  });
+
+  it("a blank/whitespace-only search term adds no condition at all", async () => {
+    const result = await buildMediaQuery({ q: "   ", allowedTypes: null });
+    expect(result.where).toBe("1=1");
+  });
+
+  it("tagId combined with an explicit type adds both conditions and still joins media_item_tags", async () => {
+    const result = await buildMediaQuery({ tagId: "5", type: "movie", allowedTypes: ["movie"] });
+    expect(result.where).toBe("mit.tag_id = ? AND m.type = ?");
+    expect(result.params).toEqual(["5", "movie"]);
+    expect(result.fromClause).toContain("JOIN media_item_tags");
+  });
+
+  it("a plain (non-'none') groupId filters to that group alone", async () => {
+    const result = await buildMediaQuery({ groupId: "12", allowedTypes: null });
+    expect(result.where).toBe("m.group_id = ?");
+    expect(result.params).toEqual(["12"]);
   });
 });

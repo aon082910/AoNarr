@@ -3,6 +3,42 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 288 — mediaQuery.ts: 3 of 8 status filters, and their underlying heuristics, untested
+Last candidate from the original ratio-scan list (0.47, 213 lines). `buildMediaQuery`'s existing 15
+tests covered most of its filter surface, but three of its eight `status` values —
+`cutoffUnmet`, `filenameMismatch`, and `unmatched` — were never exercised, including the two real
+algorithmic heuristics behind the first two (`findCutoffUnmetIds`'s quality-vs-profile-cutoff
+comparison, `filenameLooksMismatched`'s significant-word-overlap check) — the same kind of "the
+public function's own real logic was untested" gap found repeatedly this phase, just scoped to a
+few branches of an otherwise well-tested function rather than the whole file. No source changes;
+every branch worked correctly once exercised.
+
+- `tests/mediaQuery.test.ts` — 15 → 23 tests. `status:unmatched` (null/empty/`{}` `external_ids`);
+  a specific (non-`"all"`) `contentRating` filter; `status:cutoffUnmet` (an item below its quality
+  profile's cutoff included, one at or above it excluded, and the `where:null` short-circuit when
+  nothing qualifies); `status:filenameMismatch` (a file whose name shares too few significant words
+  with its title flagged, a well-matched one not, and its own `where:null` short-circuit); the
+  free-text search actually wiring `toFts5Query`'s output into the SQLite FTS5 subquery (the
+  transform itself was already unit-tested, but not that `buildMediaQuery` actually uses it
+  correctly) and a blank search term adding no condition at all; `tagId` combined with an explicit
+  `type` (both conditions present, tags still joined); and a plain (non-`"none"`) `groupId`.
+
+  A genuinely puzzling test-only issue surfaced on the first full-suite Docker run (isolated to
+  this file, and not reproducible when running it alone): the `cutoffUnmet`/`filenameMismatch`
+  short-circuit tests found non-empty results, and a fixture's `INSERT` into `quality_profiles` hit
+  a `UNIQUE` constraint on a name only that one `it` block ever inserts — both symptoms consistent
+  with those specific tests somehow executing more than once against the same database under a
+  full-suite run, despite `vitest.config.ts`'s `fileParallelism: false`. The exact mechanism wasn't
+  fully pinned down, but the fix is correct regardless of cause: `findCutoffUnmetIds`/
+  `findFilenameMismatchIds` scan every `media_items` row with no type filter at all (`allowedTypes`
+  only affects a separate, later-joined condition), so their own tests can't assume a clean
+  precondition just from being declared "first" — each now does its own explicit cleanup of the
+  exact criterion it depends on before asserting anything, making both self-contained and
+  idempotent against re-execution regardless of order or repetition. Verified stable across two
+  consecutive full-suite runs after the fix.
+
+Test count: 1327 → 1335 (89 files, no new files this round).
+
 ## Round 287 — starrImport.ts: 3 of 6 exported functions had zero coverage
 Last candidate from the Round 284 ratio scan. `starrImport.ts` (468 lines) migrates an existing
 Radarr/Sonarr/Lidarr/Readarr library into AoNarr — 6 exported functions, one pair per *Starr app.
