@@ -58,6 +58,24 @@ async function insertMovie(title: string, tmdbId: string): Promise<number> {
   );
 }
 
+async function insertSeries(title: string, tmdbId: string): Promise<number> {
+  return Number(
+    (
+      await db
+        .prepare(
+          `INSERT INTO media_items (type, title, sort_title, monitored, has_file, status, external_ids) VALUES ('series', ?, ?, 1, 0, 'unknown', ?)`
+        )
+        .run(title, title.toLowerCase(), JSON.stringify({ tmdb: tmdbId }))
+    ).lastInsertRowid
+  );
+}
+
+async function insertWatchedEpisode(mediaItemId: number, filePath: string): Promise<void> {
+  await db
+    .prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, has_file, file_path) VALUES (?, 1, 1, 1, ?)`)
+    .run(mediaItemId, filePath);
+}
+
 describe("getRecommendations", () => {
   it("returns everything empty when neither TMDB nor Last.fm keys are configured", async () => {
     const fetchSpy = vi.fn();
@@ -149,6 +167,40 @@ describe("getRecommendations", () => {
 
     expect(result.artists.some((a) => a.title.toLowerCase() === "owned artist")).toBe(false);
   });
+
+  it("recommends similar series from TMDB using the TV-shaped field names (name/first_air_date), sourced from watch history", async () => {
+    // recommendSeries has its own field mapping (name/first_air_date, not title/release_date like
+    // recommendMovies) and, until now, had zero coverage of its own — every prior "similar" test in
+    // this file exercised recommendMovies only. Also exercises recentlyWatchedLibraryItems's SERIES
+    // branch (joining episodes to media_items), likewise previously untested.
+    setSetting("tmdbApiKey", "tmdb-key");
+    getMediaServerConfig.mockReturnValue({ type: "plex", url: "http://plex", token: "t" });
+    const seriesId = await insertSeries("Source Series", "800");
+    await insertWatchedEpisode(seriesId, "/media/series/Source Series/S01E01.mkv");
+    fetchWatchedFiles.mockResolvedValue([{ path: "/mnt/aonarr/series/Source Series/S01E01.mkv", lastPlayedAt: new Date() }]);
+    mockFetchByUrlSubstring([
+      ["/tv/800/recommendations", { results: [{ id: 801, name: "Suggested Series", first_air_date: "2021-05-01", poster_path: "/s.jpg" }] }],
+    ]);
+
+    const result = await getRecommendations();
+
+    const suggestion = result.series.find((s) => s.title === "Suggested Series");
+    expect(suggestion).toBeDefined();
+    expect(suggestion!.year).toBe(2021);
+    expect(suggestion!.posterUrl).toBe("https://image.tmdb.org/t/p/w342/s.jpg");
+    expect(suggestion!.sourceTitle).toBe("Source Series");
+    expect(suggestion!.basis).toBe("watched");
+  });
+
+  it("tmdbSimilar returns no results, rather than throwing, when the TMDB request itself fails", async () => {
+    setSetting("tmdbApiKey", "tmdb-key");
+    await insertMovie("Failed Fetch Source", "950");
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) }) as any));
+
+    const result = await getRecommendations();
+
+    expect(result.movies).toEqual([]);
+  });
 });
 
 describe("runAutoRequestFromWatchHistory", () => {
@@ -203,5 +255,58 @@ describe("runAutoRequestFromWatchHistory", () => {
 
     const after = (await db.prepare("SELECT COUNT(*) AS c FROM media_items WHERE title = 'Already Owned Recommended Movie'").get()) as { c: number };
     expect(Number(after.c)).toBe(Number(before.c));
+  });
+
+  it("dedupes a recommendation that independently appears twice in the same run, from two different source items", async () => {
+    // getRecommendations() computes "added" and "watched" (and, within "watched", each source
+    // item) independently, each against its own fresh seen-in-library set -- nothing dedupes
+    // ACROSS those results before runAutoRequestFromWatchHistory sees them. This is exactly the
+    // scenario insertedThisRun (recommendations.ts) exists to guard against, per its own comment --
+    // but nothing previously proved that guard still works.
+    setSetting("autoRequestFromWatchHistoryEnabled", "1");
+    setSetting("autoRequestFromWatchHistoryLimit", "5");
+    setSetting("tmdbApiKey", "tmdb-key");
+    getMediaServerConfig.mockReturnValue({ type: "plex", url: "http://plex", token: "t" });
+    await insertMovie("Dedup Source A", "900");
+    await insertMovie("Dedup Source B", "901");
+    await db.prepare("UPDATE media_items SET path = ? WHERE title = 'Dedup Source A'").run("/media/movies/Dedup Source A/movie.mkv");
+    await db.prepare("UPDATE media_items SET path = ? WHERE title = 'Dedup Source B'").run("/media/movies/Dedup Source B/movie.mkv");
+    fetchWatchedFiles.mockResolvedValue([
+      { path: "/mnt/aonarr/movies/Dedup Source A/movie.mkv", lastPlayedAt: new Date() },
+      { path: "/mnt/aonarr/movies/Dedup Source B/movie.mkv", lastPlayedAt: new Date() },
+    ]);
+    // Both sources happen to recommend the exact same TMDB movie.
+    mockFetchByUrlSubstring([
+      ["/movie/900/recommendations", { results: [{ id: 999, title: "Duplicate Suggestion", release_date: "2020-01-01" }] }],
+      ["/movie/901/recommendations", { results: [{ id: 999, title: "Duplicate Suggestion", release_date: "2020-01-01" }] }],
+    ]);
+
+    await runAutoRequestFromWatchHistory();
+
+    const rows = (await db.prepare("SELECT COUNT(*) AS c FROM media_items WHERE title = 'Duplicate Suggestion'").get()) as { c: number };
+    expect(Number(rows.c)).toBe(1);
+  });
+
+  it("auto-adds a watched-basis series recommendation and populates its episodes", async () => {
+    setSetting("autoRequestFromWatchHistoryEnabled", "1");
+    setSetting("tmdbApiKey", "tmdb-key");
+    getMediaServerConfig.mockReturnValue({ type: "plex", url: "http://plex", token: "t" });
+    const seriesId = await insertSeries("Episode Source Series", "850");
+    await insertWatchedEpisode(seriesId, "/media/series/Episode Source Series/S01E01.mkv");
+    fetchWatchedFiles.mockResolvedValue([{ path: "/mnt/aonarr/series/Episode Source Series/S01E01.mkv", lastPlayedAt: new Date() }]);
+    mockFetchByUrlSubstring([["/tv/850/recommendations", { results: [{ id: 851, name: "Suggested Series With Episodes", first_air_date: "2020-01-01" }] }]]);
+    fetchSeriesEpisodesFor.mockResolvedValue([
+      { seasonNumber: 1, episodeNumber: 1, title: "Pilot", airDate: "2020-01-01", overview: "The first episode." },
+      { seasonNumber: 1, episodeNumber: 2, title: "Second", airDate: "2020-01-08", overview: "The second episode." },
+    ]);
+
+    await runAutoRequestFromWatchHistory();
+
+    const row = (await db.prepare("SELECT * FROM media_items WHERE title = 'Suggested Series With Episodes'").get()) as any;
+    expect(row).toBeDefined();
+    const episodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ? ORDER BY episode_number").all(row.id)) as any[];
+    expect(episodes).toHaveLength(2);
+    expect(episodes[0].title).toBe("Pilot");
+    expect(episodes[1].episode_number).toBe(2);
   });
 });

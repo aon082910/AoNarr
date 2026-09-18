@@ -3,6 +3,25 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 292 — recommendations.ts: the series pipeline and a documented-but-unproven dedup guard
+Continued down the fresh ratio-scan list. `recommendations.ts` (0.67, 309 lines) had reasonable
+movie-recommendation coverage, but `recommendSeries` — TMDB's TV-shaped sibling of the well-tested
+`recommendMovies`, reading different field names (`name`/`first_air_date` instead of
+`title`/`release_date`) — had never been exercised by a single test, and neither had
+`recentlyWatchedLibraryItems`'s series branch (joining `episodes` to `media_items` to find the
+most-recently-watched episode per show) or `runAutoRequestFromWatchHistory`'s series-episode
+insertion path. Added one end-to-end test covering all three at once: a watched series correctly
+produces a TMDB TV-shaped recommendation. Also added the DB-level proof for
+`runAutoRequestFromWatchHistory`'s `insertedThisRun` guard — its own comment explains it exists
+because `getRecommendations()` computes "added" and "watched" (and each individual source item)
+independently, so the exact same TMDB id can legitimately appear twice in one batch from two
+different source items, but nothing previously proved the guard still prevents a double-insert. Two
+source movies engineered to both recommend the same target confirmed exactly one row (and one log
+line) resulted, not two. Rounded out with `tmdbSimilar`'s `!res.ok` branch (a failed TMDB request
+degrades to no results, not a throw). No source bug — every branch already worked correctly,
+including the duplicate-prevention guard its own comment specifically calls out. Full suite: 1358 →
+1362 tests, 89 files.
+
 ## Round 291 — releaseParser.ts: source-detection branches masked by an untested title, plus dedup/fallback edges
 Continued down the fresh ratio-scan list. `releaseParser.ts` (0.62, 261 lines) was already well
 tested overall, but re-reading `detectSource`'s if-chain (Remux checked before Bluray before
