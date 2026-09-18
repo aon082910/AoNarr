@@ -3,6 +3,31 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 271 — more test coverage (Plex/Jellyfin/Emby media server client)
+No behavior changes. Continues the test-coverage push.
+
+- `tests/mediaServer.test.ts` — `getMediaServerConfig`'s missing-field guard and trailing-slash
+  normalization; `fetchWatchedFiles`/`fetchAllLibraryFiles` for both Plex (movie/show section
+  filtering, the watched-state gate, a failed section's items request being skipped rather than
+  fatal) and Jellyfin/Emby (collapsing the same shared-household file across multiple users to the
+  most-recently-played entry, the `/emby` base path); `parsePlexExternalIds`'s new-agent `Guid`-array
+  vs. legacy `guid`-string parsing and their precedence; `fetchMediaServerMovies`/
+  `fetchMediaServerSeries` for both platforms, including a behavior easy to miss reading either
+  function in isolation — Plex silently skips a section whose items request fails, but Jellyfin/Emby
+  *throws* on the equivalent failure, a real, deliberate asymmetry now pinned down by a test; Plex's
+  shows-then-episodes two-pass fetch linking episodes to their show via `grandparentRatingKey`; and
+  Jellyfin/Emby's own only-the-first-user behavior; `refreshMediaServerLibrary`'s per-path targeted
+  Plex refresh vs. `triggerFullMediaServerScan`'s whole-section refresh (no `path` param), both
+  platforms' best-effort never-throws contract even when the request itself throws;
+  `resolvePlexFilePath`'s metadata-lookup unwrapping; and `pushWatchState`'s Plex scrobble/unscrobble
+  and Jellyfin/Emby PlayedItems POST/DELETE, both matched by `pathTail` across genuinely different
+  mount-point prefixes with identical trailing segments — the precise pitfall flagged in this
+  project's own testing conventions memory, deliberately exercised rather than accidentally dodged.
+
+Test count: 822 → 856 (83 → 84 files).
+
+Verified: `tsc --noEmit` clean, all 856 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 270 — more test coverage (import lists: Trakt/IMDb/Last.fm/TMDB)
 No behavior changes. Continues the test-coverage push.
 
