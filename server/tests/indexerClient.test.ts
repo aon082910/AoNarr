@@ -136,6 +136,104 @@ describe("checkIndexerHealth", () => {
   });
 });
 
+describe("network retry — transient failures get one retry, real HTTP responses never do", () => {
+  it("retries once after a transient error (message-matched 'fetch failed') and succeeds", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("fetch failed"))
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => "" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(checkIndexerHealth(makeIndexer())).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries once after a transient error identified by err.code, including when nested under err.cause.code", async () => {
+    const codeErr = Object.assign(new Error("connection reset"), { code: "ECONNRESET" });
+    let fetchMock = vi.fn().mockRejectedValueOnce(codeErr).mockResolvedValueOnce({ ok: true, status: 200, text: async () => "" });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(checkIndexerHealth(makeIndexer())).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const causeErr = Object.assign(new Error("fetch failed"), { cause: { code: "ETIMEDOUT" } });
+    fetchMock = vi.fn().mockRejectedValueOnce(causeErr).mockResolvedValueOnce({ ok: true, status: 200, text: async () => "" });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(checkIndexerHealth(makeIndexer())).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a non-transient error, and only retries once (not in a loop) for a repeatedly-failing transient one", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("totally unrelated failure"));
+    vi.stubGlobal("fetch", fetchMock);
+    const health = await checkIndexerHealth(makeIndexer());
+    expect(health).toEqual({ ok: false, error: "totally unrelated failure" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const flakyMock = vi.fn().mockRejectedValue(Object.assign(new Error("still down"), { code: "ECONNREFUSED" }));
+    vi.stubGlobal("fetch", flakyMock);
+    const stillFailing = await checkIndexerHealth(makeIndexer());
+    expect(stillFailing.ok).toBe(false);
+    expect(flakyMock).toHaveBeenCalledTimes(2); // exactly one retry attempted, then gives up
+  });
+
+  it("the retry also applies to a real search, so a transient blip doesn't fail an otherwise-healthy indexer's search", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error("dns blip"), { code: "ENOTFOUND" }))
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => torznabXml(torznabItem({ title: "Recovered", downloadUrl: "https://idx.example.com/dl/retry" })) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const results = await searchIndexer(makeIndexer({ protocol: "torznab", categories: "2000" }), "q", "movie");
+    expect(results[0].title).toBe("Recovered");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("FlareSolverr proxying", () => {
+  it("POSTs through FlareSolverr's /v1 endpoint only for an indexer that opted in, stripping a trailing slash from the configured URL", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: "ok", solution: { status: 200, response: torznabXml("") } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    setSetting("flaresolverrUrl", "http://fs.local/");
+
+    await searchIndexer(makeIndexer({ protocol: "torznab", categories: "2000", useFlareSolverr: 1 }), "q", "movie");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("http://fs.local/v1"); // not a double slash
+    const init = fetchMock.mock.calls[0][1] as any;
+    expect(init.method).toBe("POST");
+    const body = JSON.parse(init.body);
+    expect(body.cmd).toBe("request.get");
+    expect(body.url).toContain("idx.example.com");
+  });
+
+  it("an indexer that hasn't opted in never uses FlareSolverr even when it's configured instance-wide", async () => {
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    setSetting("flaresolverrUrl", "http://fs.local");
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => torznabXml("") });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await searchIndexer(makeIndexer({ protocol: "torznab", categories: "2000", useFlareSolverr: 0 }), "q", "movie");
+
+    expect(fetchMock.mock.calls[0][0]).toContain("idx.example.com"); // hit the indexer directly, not fs.local
+  });
+
+  it("throws using FlareSolverr's own message when it reports it couldn't resolve the page, and surfaces its own HTTP failure", async () => {
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    setSetting("flaresolverrUrl", "http://fs.local");
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: "error", message: "Cloudflare challenge failed" }) }));
+    await expect(checkIndexerHealth(makeIndexer({ useFlareSolverr: 1 }))).resolves.toEqual({ ok: false, error: 'FlareSolverr could not resolve "https://idx.example.com/api?t=caps&apikey=test-api-key": Cloudflare challenge failed' });
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 502 }));
+    await expect(checkIndexerHealth(makeIndexer({ useFlareSolverr: 1 }))).resolves.toEqual({ ok: false, error: "FlareSolverr request failed: HTTP 502" });
+
+    setSetting("flaresolverrUrl", "");
+  });
+});
+
 describe("searchIndexer — torznab/newznab", () => {
   it("builds the search URL with t=search, q, cat, and apikey", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => torznabXml("") });
@@ -393,6 +491,26 @@ describe("searchIndexer — per-hour query limit", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(5);
   });
+
+  it("the limit is a rolling 1-hour window: a request older than an hour no longer counts against it", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => torznabXml("") });
+    vi.stubGlobal("fetch", fetchMock);
+    const indexer = makeIndexer({ protocol: "torznab", queryLimitPerHour: 1 });
+
+    vi.useFakeTimers();
+    try {
+      await searchIndexer(indexer, "q1", "movie");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await expect(searchIndexer(indexer, "q2", "movie")).rejects.toThrow("hit its configured query limit");
+      expect(fetchMock).toHaveBeenCalledTimes(1); // still just the first, blocked before any request
+
+      vi.setSystemTime(Date.now() + 61 * 60 * 1000); // just past the 1-hour window
+      await searchIndexer(indexer, "q3", "movie");
+      expect(fetchMock).toHaveBeenCalledTimes(2); // the aged-out first request no longer counts
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("searchAllIndexers", () => {
@@ -454,6 +572,40 @@ describe("searchAllIndexers", () => {
     const queriesTried = fetchMock.mock.calls.map((c) => new URL(c[0] as string).searchParams.get("q"));
     expect(queriesTried[0]).toBe("Mr. & Mrs. Smith"); // literal query tried first
     expect(queriesTried).toContain("Mr and Mrs Smith"); // the variant that eventually worked
+  });
+
+  it("also tries the and->&, drop-leading-article, and space->dot variants (each in isolation)", async () => {
+    async function tryVariant(query: string, matchingVariant: string, expectedResultTitle: string) {
+      const fetchMock = vi.fn(async (url: string) => {
+        const q = new URL(url).searchParams.get("q") ?? "";
+        if (q === matchingVariant) {
+          return { ok: true, status: 200, text: async () => torznabXml(torznabItem({ title: expectedResultTitle, downloadUrl: `https://idx.example.com/dl/${encodeURIComponent(matchingVariant)}` })) };
+        }
+        return { ok: true, status: 200, text: async () => torznabXml("") };
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const indexer = makeIndexer({ protocol: "torznab", mediaTypes: "movie", categories: "2000" });
+      const results = await searchAllIndexers([indexer], query, "movie");
+      expect(results.map((r) => r.title)).toEqual([expectedResultTitle]);
+    }
+
+    await tryVariant("Fast and Furious", "Fast & Furious", "Fast.And.Furious.2001"); // "and" -> "&"
+    await tryVariant("The Office", "Office", "The.Office.US"); // drop leading "The "
+    await tryVariant("Random Words Here", "Random.Words.Here", "Random.Words.Here.2020"); // spaces -> dots
+  });
+
+  it("returns [] without error when every scene variant also comes back empty, and tries nothing extra when the query has no applicable variant at all", async () => {
+    const emptyMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => torznabXml("") });
+    vi.stubGlobal("fetch", emptyMock);
+    const indexer = makeIndexer({ protocol: "torznab", mediaTypes: "movie", categories: "2000" });
+
+    await expect(searchAllIndexers([indexer], "Random Words Here", "movie")).resolves.toEqual([]);
+
+    // "Inception": no punctuation, no "&"/"and", no leading article, and a single word (so the
+    // space->dot transform is a no-op too) -- every generateSceneVariants() branch is a no-op.
+    emptyMock.mockClear();
+    await expect(searchAllIndexers([indexer], "Inception", "movie")).resolves.toEqual([]);
+    expect(emptyMock).toHaveBeenCalledTimes(1); // only the literal query -- no variants existed to try
   });
 
   it("never tries scene variants when the literal query already returns results", async () => {

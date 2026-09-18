@@ -3,6 +3,36 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 279 — deepen test coverage: indexerClient.ts network retry, FlareSolverr, scene variants
+`metadata.ts` (Rounds 276-278) has reached diminishing returns for further deepening, so this round
+moves to a different file with the same "several provider/protocol adapters of varying depth"
+shape: `indexerClient.ts` (Round 269, Torznab/Newznab/RSS/DDL). No source changes — purely
+additional test coverage; no Docker image rebuild needed.
+
+- `tests/indexerClient.test.ts` — 34 → 44 tests. The biggest gap: `withNetworkRetry`/
+  `isTransientNetworkError`'s actual retry-then-succeed behavior had **never** been proven — every
+  existing rejection test used `mockRejectedValue` (rejects every call identically), which can't
+  distinguish "retried and recovered" from "never retried at all." New tests use
+  `mockRejectedValueOnce` + `mockResolvedValueOnce` to prove a transient failure (message-matched
+  `"fetch failed"`, an `err.code` like `ECONNRESET`, and the nested `err.cause.code` shape some
+  runtimes wrap errors in) gets exactly one real retry and recovers — both through
+  `checkIndexerHealth` directly and through a full `searchIndexer` torznab search, confirming the
+  retried request's data actually flows through to a parsed result. Also proved a non-transient
+  error is never retried, and that a *repeatedly*-failing transient error still only gets the one
+  retry (not a loop) before giving up. Two other completely untested areas: the FlareSolverr
+  proxying path (`fetchIndexerText`'s alternate branch for indexers behind Cloudflare) — POSTs to
+  `{url}/v1` with the right request body, strips a trailing slash from the configured URL, only
+  applies to an indexer that opted in via `useFlareSolverr` even when the instance-wide URL is
+  configured, and surfaces both FlareSolverr's own "could not resolve" message and a non-OK HTTP
+  response from FlareSolverr itself; and the query-limit's rolling 1-hour window, which was only
+  ever proven to *block* once hit, never proven to actually *reset* once the blocking request ages
+  past an hour (via `vi.useFakeTimers()`/`vi.setSystemTime()`). Rounded out
+  `generateSceneVariants`'s coverage from 1 of its 4 transform branches to all 4 (and→&,
+  drop-leading-article, space→dot, on top of the already-tested &→and), plus the "every variant
+  also comes back empty" and "the query has no applicable variant at all" cases.
+
+Test count: 1199 → 1209 (89 files, no new files this round).
+
 ## Round 278 — deepen test coverage: metadata.ts token expiry, episode aggregation, tie-breaks
 Continues Round 277's "deepen already-tested files" phase, working through the specific gap list
 sketched at the end of that round: IGDB token expiry, TVDB/Trakt/AniList episode edge cases, and
