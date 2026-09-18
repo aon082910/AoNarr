@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { XIcon } from "./ActionIcons.js";
 
 // Open modals, oldest first. Only the topmost one reacts to Escape — a FolderPicker opened from
 // inside an "Add Root Folder" modal would otherwise close both on a single keypress. Exported so
@@ -124,8 +125,8 @@ export default function Modal({
           <h2 id={titleId} style={{ margin: 0 }}>
             {title}
           </h2>
-          <button type="button" className="secondary" onClick={onClose} aria-label="Close dialog" style={{ padding: "2px 10px" }}>
-            ✕
+          <button type="button" className="icon-button" onClick={onClose} title="Close dialog" aria-label="Close dialog">
+            <XIcon />
           </button>
         </div>
         <div ref={contentRef}>{children}</div>

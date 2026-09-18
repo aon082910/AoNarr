@@ -3,6 +3,39 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 305 — the last 9 components: icon-button rollout is complete
+Closes out the icon-button effort that started at Round 294. `Modal.tsx`'s "✕" close button —
+used by literally every modal in the app — is now a real `XIcon`, the last raw-glyph-as-button-
+child holdout (`DropdownMenu.tsx`'s "▾"/"▸" disclosure suffix is a small state indicator glued onto
+caller-controlled text, not a standalone button, so it stays as-is, same call already made for the
+identical pattern in `RecycleBin.tsx`/`LibraryType.tsx`). `FolderPicker.tsx`'s "Create" (paired
+1:1 with its own "New folder name" input, a genuine mini-toolbar) converts to `PlusCircleIcon`;
+its "Select this folder"/Cancel footer stays text — that pairing is this modal's actual primary
+confirm/cancel action, the same shape every modal-footer pair in this rollout has kept as text.
+
+The other 7 needed zero changes, each a shape an earlier round already named: `ApiKeyGate.tsx` (9
+buttons — Continue/Back TOTP pairs, a lone primary "Create admin account", and the account-mode
+selector the original plan explicitly called out as a stays-text tab strip) and
+`SearchMatchModal.tsx` (4 — the by-title/by-ID toggle, ditto, plus two lone primary form submits)
+needed nothing beyond what Round 294's plan already decided for them by name.
+`NamingSetupModal.tsx` (4) is a modal-footer Save/Reset-to-default/Cancel trio (extends the
+established 2-button-footer-stays-text rule to 3) plus a row of token-insert buttons whose LABEL
+*is* the token being inserted (`{title}`, `{season:00}`) — can't be iconified, the text is the
+payload, same reasoning as LibraryType's letter-index strip. `RenamePreviewModal.tsx` (2) is a
+count-bearing "Rename N file(s)"/Cancel footer. `SettingsProviderTiles.tsx` (1, "Send test
+notification") is the tile-click-to-Modal shape with one lone action at the bottom — stays text
+regardless of ZapIcon being established elsewhere, per Round 299's rule that the shape decides,
+not icon availability.
+
+**All 49 `web/src/pages/*.tsx` files (Round 294-304) and all 16 `web/src/components/*.tsx` files
+(this round) are now fully resolved.** The Servarr-style icon-button rollout that began at Round
+294 is complete.
+
+Verified live: reopened the real `Scheduled Backups` → `Browse for a folder` nested-modal flow
+(System.tsx → FolderPicker.tsx) against the running dev server — both dialogs' close buttons and
+the "Create folder" icon button all render and label correctly, confirmed via the accessibility
+tree; closed both without changing any real setting.
+
 ## Round 304 — 13 smaller pages converted to icon buttons, 6 needed zero changes
 `TrackDetail.tsx` (Back), `CalendarDay.tsx` (Back, Open/Remove), `Blocklist.tsx` (row Remove —
 deliberately not `.danger`, since un-blocklisting is reversible and the original used `secondary`

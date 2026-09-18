@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
 import Modal from "./Modal.js";
+import { PlusCircleIcon } from "./NavIcons.js";
 
 interface BrowseResponse {
   path: string;
@@ -93,8 +94,8 @@ export default function FolderPicker({
               onKeyDown={(e) => e.key === "Enter" && createFolder()}
               style={{ flex: 1 }}
             />
-            <button type="button" className="secondary" disabled={creating || !newFolderName.trim()} onClick={createFolder}>
-              Create
+            <button type="button" className="icon-button" disabled={creating || !newFolderName.trim()} onClick={createFolder} title={creating ? "Creating..." : "Create folder"} aria-label="Create folder">
+              <PlusCircleIcon />
             </button>
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
