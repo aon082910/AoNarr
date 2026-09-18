@@ -368,6 +368,31 @@ button.select-like {
 }
 button.select-like:hover { background: rgba(255,255,255,0.04); opacity: 1; }
 
+/* Sonarr/Radarr-style icon-only action button (row/toolbar actions — Delete, Edit, Search,
+   Refresh, etc.) — formalizes the ad hoc inline styles MonitorToggle.tsx used before this class
+   existed. Always pair with a `title` (tooltip) and `aria-label`, since there's no visible text. */
+button.icon-button {
+  background: transparent;
+  color: var(--text);
+  border: none;
+  border-radius: 6px;
+  padding: 6px;
+  margin-top: 0;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+button.icon-button:hover { background: rgba(255,255,255,0.08); opacity: 1; }
+button.icon-button:disabled { opacity: 0.4; cursor: default; }
+button.icon-button:disabled:hover { background: transparent; }
+/* Destructive icon actions (row-level Delete/Remove) tint the icon instead of filling a solid red
+   box — button.danger's solid fill stays reserved for primary textual CTAs. */
+button.icon-button.danger { color: var(--danger); }
+button.icon-button.danger:hover { background: rgba(224,92,92,0.15); }
+
 /* A horizontal row of controls (selects/inputs/buttons/dropdowns) meant to sit flush on one
    baseline — button's own margin-top: 16px (meant for a button following a stacked label+input)
    otherwise pushes buttons down out of line with their row-mates. Heights are pinned explicitly

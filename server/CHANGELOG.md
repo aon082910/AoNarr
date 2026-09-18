@@ -3,6 +3,39 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 294 — Servarr-style icon buttons + Activity page overhaul (Phase 1)
+First round of a visual pass matching Sonarr/Radarr/Lidarr/Readarr/Whisparr conventions more
+closely: icon-only action buttons instead of text-labeled ones, and a fully reworked Activity
+page. Added `web/src/components/ActionIcons.tsx` (Trash/X/Check/Pencil/ArrowLeft/ChevronLeft/
+ChevronRight/ArrowUp/ArrowDown/Folder — the same 18px stroke-SVG style as the existing
+`NavIcons.tsx`, reusing several of its icons too: Search/Download/RotateCcw/PlusCircle/Zap/Slash/
+Inbox/etc.) and a new `button.icon-button`/`button.icon-button.danger` CSS class formalizing the
+ad hoc inline styles `MonitorToggle.tsx` used before this class existed. Convention going forward:
+row/toolbar action buttons (Delete, Edit, Search, Refresh, Sync, Retry, Prioritize...) go
+icon-only with a tooltip; primary form-submit CTAs and tab strips stay text, matching what real
+Sonarr/Radarr actually do; view-mode switchers go icon-only.
+
+The Activity page (`web/src/pages/Activity.tsx`) got the deeper rework: every Queue action button
+is now icon-only, and the Queue table gained Season/Indexer/Protocol/Download Client columns and a
+per-status icon alongside the existing text badge — all from data the backend was already
+returning (`indexerId`/`downloadClientId`/`episodeId`/`seasonNumber` were already present in
+`queueItemFromRow` but untyped/unrendered on the frontend) plus a client-side join against the
+already-existing `/indexers` and `/download-clients` endpoints — no backend changes needed. Added
+a Protocol filter alongside the existing Status filter, and Sonarr-style bulk selection (mirroring
+`LibraryType.tsx`'s established `selectMode`/`selected: Set`/bulk-action-bar pattern): a checkbox
+column, select-all-visible/clear-selection, and a bulk action bar for Remove/Remove & Blocklist/
+Retry import across every selected item at once. Both the Queue and History sections were migrated
+off their own hand-rolled sort state onto the shared `useSortableTable` hook (already used by
+`HistoryPage.tsx`), extending the sortable columns to cover everything new. Verified live against
+the running `aonarr-server` container (temporary queue fixture rows inserted directly, removed
+after) via the dev-server preview: all new columns render correctly (including real download-client
+name resolution), bulk-select and the bulk action bar work, sorting works across every column, and
+both light and dark theme render the new icon buttons cleanly.
+
+This is Phase 1 of a larger effort — the remaining ~46 page/component files still have
+text-labeled buttons and will be converted in priority-ordered batches in future rounds, each
+verified the same way before moving to the next.
+
 ## Round 293 — encryption.ts: proving key persistence on disk, not just in-process round-trips
 Continued down the fresh ratio-scan list. `encryption.ts` (0.72, 93 lines) already had solid
 round-trip/mismatch/reload coverage, but every existing test only proved behavior WITHIN one

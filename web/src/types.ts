@@ -248,13 +248,19 @@ export interface ReleaseProfile {
 export interface QueueItem {
   id: number;
   mediaItemId: number;
+  episodeId: number | null;
+  subItemId: number | null;
+  seasonNumber: number | null;
   title: string;
   status: string;
   progress: number;
   size: number | null;
   quality: string | null;
   addedAt: string;
+  updatedAt: string;
   retryCount: number;
+  indexerId: number | null;
+  downloadClientId: number | null;
 }
 
 export interface User {

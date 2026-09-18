@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
  * their look (simple, ~18px, currentColor stroke) without pulling in an icon library dependency
  * for what's ultimately a few dozen small glyphs used only here and in App.tsx's nav renderers.
  */
-function Icon({ children }: { children: ReactNode }) {
+export function Icon({ children }: { children: ReactNode }) {
   return (
     <svg
       width="18"
