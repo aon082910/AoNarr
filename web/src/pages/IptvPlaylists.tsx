@@ -3,6 +3,8 @@ import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import { PlusCircleIcon } from "../components/NavIcons.js";
 import { XIcon, ArrowUpIcon, ArrowDownIcon, TrashIcon } from "../components/ActionIcons.js";
+import { notify } from "../utils/notify.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
 
 interface Playlist {
   id: number;
@@ -131,7 +133,7 @@ export default function IptvPlaylists() {
       }
       load();
     } catch (err) {
-      alert((err as Error).message);
+      notify.error((err as Error).message);
     }
   }
 
@@ -141,17 +143,24 @@ export default function IptvPlaylists() {
       setMode(null);
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
   async function regenerateToken() {
-    if (!confirm("Regenerate the playlist token? Every feed URL already pasted into a media server will stop working until updated.")) return;
+    if (
+      !(await confirmDialog({
+        title: "Regenerate playlist token",
+        message: "Regenerate the playlist token? Every feed URL already pasted into a media server will stop working until updated.",
+        danger: true,
+      }))
+    )
+      return;
     try {
       const result = await api.post<{ token: string }>("/iptv/token/regenerate", {});
       setToken(result.token);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
@@ -169,7 +178,7 @@ export default function IptvPlaylists() {
       loadItems(mode);
       load();
     } catch (err) {
-      alert((err as Error).message);
+      notify.error((err as Error).message);
     }
   }
 
@@ -179,7 +188,7 @@ export default function IptvPlaylists() {
       const updated = await api.post<PlaylistItem[]>(`/iptv/playlists/${mode}/items/${itemId}/move`, { direction });
       setItems(updated);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
@@ -190,7 +199,7 @@ export default function IptvPlaylists() {
       loadItems(mode);
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
@@ -201,7 +210,7 @@ export default function IptvPlaylists() {
       setFillerToAttach("");
       loadFillers(mode);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
@@ -211,7 +220,7 @@ export default function IptvPlaylists() {
       await api.del(`/iptv/playlists/${mode}/fillers/${attachmentId}`);
       loadFillers(mode);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
@@ -246,7 +255,7 @@ export default function IptvPlaylists() {
       setClipMode(null);
       load();
     } catch (err) {
-      alert((err as Error).message);
+      notify.error((err as Error).message);
     }
   }
 
@@ -256,7 +265,7 @@ export default function IptvPlaylists() {
       setClipMode(null);
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 

@@ -5,6 +5,7 @@ import { useSortableTable } from "../hooks/useSortableTable.js";
 import { RotateCcwIcon, SlashIcon, InboxIcon, ArrowUpCircleIcon, AlertTriangleIcon, ClockIcon, DownloadIcon } from "../components/NavIcons.js";
 import { TrashIcon, CheckIcon } from "../components/ActionIcons.js";
 import type { QueueItem, Quality, Indexer, DownloadClient } from "../types.js";
+import { notify } from "../utils/notify.js";
 
 interface ImportCandidate {
   path: string;
@@ -166,7 +167,7 @@ export default function Activity() {
       await api.post(`/activity/queue/${id}/priority`, { priority });
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
@@ -176,7 +177,7 @@ export default function Activity() {
       await api.post(`/activity/queue/${id}/retry-import`, {});
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setRetrying(null);
     }
@@ -188,7 +189,7 @@ export default function Activity() {
     const failed = results.filter((r) => r.status === "rejected").length;
     setSelected(new Set());
     load();
-    if (failed > 0) alert(`${failed} of ${ids.length} item(s) could not be removed.`);
+    if (failed > 0) notify.error(`${failed} of ${ids.length} item(s) could not be removed.`);
   }
 
   async function bulkRetryImport() {
@@ -197,7 +198,7 @@ export default function Activity() {
     const failed = results.filter((r) => r.status === "rejected").length;
     setSelected(new Set());
     load();
-    if (failed > 0) alert(`${failed} of ${ids.length} item(s) failed to retry-import.`);
+    if (failed > 0) notify.error(`${failed} of ${ids.length} item(s) failed to retry-import.`);
   }
 
   function toggleSelected(id: number) {
@@ -238,7 +239,7 @@ export default function Activity() {
       setManualImportFor(null);
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setImporting(null);
     }

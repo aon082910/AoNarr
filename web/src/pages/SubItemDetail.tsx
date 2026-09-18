@@ -10,6 +10,8 @@ import type { MediaInfo, SearchResult, Track } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
 import { SearchIcon, DownloadIcon, CpuIcon, AlertTriangleIcon, ShareIcon, RotateCcwIcon } from "../components/NavIcons.js";
 import { ArrowLeftIcon } from "../components/ActionIcons.js";
+import { notify } from "../utils/notify.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
 
 interface SeriesSibling {
   id: number;
@@ -110,7 +112,7 @@ export default function SubItemDetail() {
       const rows = await api.post<Track[]>(`/media/subitems/${subItemId}/tracks/fetch`);
       setTracks(rows);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setLoadingTracks(false);
     }
@@ -127,9 +129,10 @@ export default function SubItemDetail() {
   async function markAsMissing() {
     if (!subItem) return;
     if (
-      !confirm(
-        "Mark as missing? Only do this if you already removed the file from disk yourself — this just resets AoNarr's own record so it gets searched for again; it doesn't touch any file."
-      )
+      !(await confirmDialog({
+        title: "Mark as missing",
+        message: "Mark as missing? Only do this if you already removed the file from disk yourself — this just resets AoNarr's own record so it gets searched for again; it doesn't touch any file.",
+      }))
     )
       return;
     const updated = await api.patch<SubItemDetailResponse>(`/media/${mediaId}/subitems/${subItemId}`, {
@@ -168,10 +171,10 @@ export default function SubItemDetail() {
         protocol: result.protocol,
         subItemId: Number(subItemId),
       });
-      alert(`Sent "${result.title}" to download client.`);
+      notify.success(`Sent "${result.title}" to download client.`);
       load();
     } catch (e) {
-      alert(`Grab failed: ${(e as Error).message}`);
+      notify.error(`Grab failed: ${(e as Error).message}`);
     }
   }
 
@@ -179,10 +182,10 @@ export default function SubItemDetail() {
     if (!subItem) return;
     try {
       await api.post(`/media/subitems/${subItem.id}/download`, {});
-      alert(`Sent "${subItem.title}" to yt-dlp.`);
+      notify.success(`Sent "${subItem.title}" to yt-dlp.`);
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
@@ -195,18 +198,18 @@ export default function SubItemDetail() {
         {}
       );
       if (!result.found) {
-        alert("No ISBN found in this file's first/last 15 pages (or its EPUB metadata).");
+        notify.info("No ISBN found in this file's first/last 15 pages (or its EPUB metadata).");
       } else if (!result.matched) {
-        alert(`Found ISBN ${result.isbn}, but couldn't find a matching book on Open Library.`);
+        notify.info(`Found ISBN ${result.isbn}, but couldn't find a matching book on Open Library.`);
       } else {
-        alert(`Found ISBN ${result.isbn} — matched and updated from Open Library.`);
+        notify.success(`Found ISBN ${result.isbn} — matched and updated from Open Library.`);
         // The scan-isbn response is a bare sub_items row (no `parent`) — merge onto the existing
         // state rather than replacing it wholesale, or the breadcrumb and this very button (which
         // depends on subItem.parent.type) would disappear the instant a scan succeeds.
         if (result.subItem) setSubItem({ ...subItem, ...result.subItem, parent: subItem.parent, series: subItem.series });
       }
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setScanningIsbn(false);
     }
@@ -217,9 +220,9 @@ export default function SubItemDetail() {
     setSendingToKindle(true);
     try {
       await api.post(`/media/${mediaId}/subitems/${subItemId}/send-to-kindle`, {});
-      alert(`Sent "${subItem.title}" to your Kindle.`);
+      notify.success(`Sent "${subItem.title}" to your Kindle.`);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setSendingToKindle(false);
     }
@@ -227,16 +230,23 @@ export default function SubItemDetail() {
 
   async function convertToM4b() {
     if (!subItem) return;
-    if (!confirm("Merge every downloaded track into one chapterized M4B? The original per-track files will be deleted once the merge succeeds. This can take a while for a long book.")) return;
+    if (
+      !(await confirmDialog({
+        title: "Convert to M4B",
+        message: "Merge every downloaded track into one chapterized M4B? The original per-track files will be deleted once the merge succeeds. This can take a while for a long book.",
+        danger: true,
+      }))
+    )
+      return;
     setConvertingM4b(true);
     try {
       await api.post(`/media/${mediaId}/subitems/${subItemId}/convert-to-m4b`, {});
-      alert("Merged into one M4B.");
+      notify.success("Merged into one M4B.");
       load();
       const rows = await api.get<Track[]>(`/media/subitems/${subItemId}/tracks`);
       setTracks(rows);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setConvertingM4b(false);
     }
@@ -252,7 +262,7 @@ export default function SubItemDetail() {
       });
       setSubItem({ ...subItem, posterUrl: updated.posterUrl });
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
@@ -272,7 +282,7 @@ export default function SubItemDetail() {
       await api.patch(`/media/${mediaId}/subitems/${subItemId}`, { seriesName: name.trim() || null, seriesPosition: position });
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
@@ -284,7 +294,7 @@ export default function SubItemDetail() {
       await api.patch(`/media/${mediaId}/subitems/${subItemId}`, { narrator: name.trim() || null });
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 

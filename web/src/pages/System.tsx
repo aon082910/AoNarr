@@ -8,6 +8,8 @@ import { useSortableTable } from "../hooks/useSortableTable.js";
 import { formatBytes } from "../utils/format.js";
 import { RotateCcwIcon, DownloadIcon, InboxIcon } from "../components/NavIcons.js";
 import { TrashIcon, FolderIcon, ArrowRightIcon } from "../components/ActionIcons.js";
+import { notify } from "../utils/notify.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
 
 interface DiskSpaceEntry {
   path: string;
@@ -355,7 +357,7 @@ export default function System() {
     setArchiving(true);
     try {
       await api.post("/system/archival/run", {});
-      alert("Archival run complete — check the media items that had files for changes.");
+      notify.success("Archival run complete — check the media items that had files for changes.");
       if (upcomingArchivals) loadUpcomingArchivals();
     } finally {
       setArchiving(false);
@@ -366,8 +368,8 @@ export default function System() {
     setSyncingTrakt(true);
     try {
       const result = await api.post<{ added: number; error?: string }>("/system/trakt-sync/run", {});
-      if (result.error) alert(`Trakt sync failed: ${result.error}`);
-      else alert(`Trakt sync added ${result.added} new item(s).`);
+      if (result.error) notify.error(`Trakt sync failed: ${result.error}`);
+      else notify.success(`Trakt sync added ${result.added} new item(s).`);
     } finally {
       setSyncingTrakt(false);
     }
@@ -377,8 +379,8 @@ export default function System() {
     setSyncingPlexWatchlist(true);
     try {
       const result = await api.post<{ added: number; error?: string }>("/system/plex-watchlist-sync/run", {});
-      if (result.error) alert(`Plex watchlist sync failed: ${result.error}`);
-      else alert(`Plex watchlist sync added ${result.added} new item(s).`);
+      if (result.error) notify.error(`Plex watchlist sync failed: ${result.error}`);
+      else notify.success(`Plex watchlist sync added ${result.added} new item(s).`);
     } finally {
       setSyncingPlexWatchlist(false);
     }
@@ -386,9 +388,11 @@ export default function System() {
 
   async function runRenameFiles() {
     if (
-      !confirm(
-        "Rename every already-imported file whose current path no longer matches its naming template? Files are moved on disk, not just relabeled in the database."
-      )
+      !(await confirmDialog({
+        title: "Rename files",
+        message: "Rename every already-imported file whose current path no longer matches its naming template? Files are moved on disk, not just relabeled in the database.",
+        danger: true,
+      }))
     )
       return;
     setRenaming(true);
@@ -423,7 +427,14 @@ export default function System() {
 
   async function deleteAllUnmonitoredNoFile() {
     if (!unmonitoredNoFile || unmonitoredNoFile.length === 0) return;
-    if (!confirm(`Delete all ${unmonitoredNoFile.length} unmonitored, fileless item(s)? This cannot be undone.`)) return;
+    if (
+      !(await confirmDialog({
+        title: "Delete items",
+        message: `Delete all ${unmonitoredNoFile.length} unmonitored, fileless item(s)? This cannot be undone.`,
+        danger: true,
+      }))
+    )
+      return;
     setDeletingAllUnmonitored(true);
     // Removed from state as each delete actually succeeds, and one failure doesn't abort the rest
     // — the old unconditional `for` loop threw on the first error and never reached
@@ -439,7 +450,7 @@ export default function System() {
       }
     }
     setDeletingAllUnmonitored(false);
-    if (failures.length > 0) alert(`${failures.length} item(s) failed to delete:\n${failures.join("\n")}`);
+    if (failures.length > 0) notify.error(`${failures.length} item(s) failed to delete:\n${failures.join("\n")}`);
   }
 
   async function loadDuplicateFiles() {
@@ -456,8 +467,9 @@ export default function System() {
     setScanningLibrary(true);
     try {
       await api.post("/jobs/libraryScan/run", {});
-      alert(
-        "Library scan started in the background — check the Jobs page or your library after a minute for anything newly matched/imported."
+      notify.info(
+        "Library scan started in the background — check the Jobs page or your library after a minute for anything newly matched/imported.",
+        7000
       );
     } finally {
       setScanningLibrary(false);
@@ -488,9 +500,11 @@ export default function System() {
 
   async function restoreBackup(file: File) {
     if (
-      !confirm(
-        `Restore from "${file.name}"? This replaces the entire database (a copy of the current one is kept as a safety net) and restarts the app.`
-      )
+      !(await confirmDialog({
+        title: "Restore backup",
+        message: `Restore from "${file.name}"? This replaces the entire database (a copy of the current one is kept as a safety net) and restarts the app.`,
+        danger: true,
+      }))
     ) {
       if (restoreInputRef.current) restoreInputRef.current.value = "";
       return;
@@ -499,9 +513,9 @@ export default function System() {
     try {
       const bytes = await file.arrayBuffer();
       await uploadRaw("/system/backup/restore", bytes);
-      alert("Restore in progress — the app is restarting. Reload this page in a few seconds.");
+      notify.info("Restore in progress — the app is restarting. Reload this page in a few seconds.", 8000);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setRestoring(false);
       if (restoreInputRef.current) restoreInputRef.current.value = "";

@@ -3,6 +3,28 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 307 — popup rollout continues: Activity, IptvPlaylists, System, SubItemDetail
+Continues Round 306's `alert()`/`confirm()` → `notify`/`confirmDialog` conversion. All four files
+are now fully converted (44 combined call sites: `Activity.tsx` 5, `IptvPlaylists.tsx` 10+1,
+`System.tsx` 9+3, `SubItemDetail.tsx` 16+2) — all straightforward error/success/info toasts and
+plain yes/no confirms, no new multi-checkbox chains found (`System.tsx`'s restore-backup and
+rename-files confirms were each already a single question, not a chain, despite being high-stakes
+enough to double-check for one).
+
+Fixed a real gap the conversion surfaced: `.toast-message` had no `white-space: pre-line`, so a
+multi-line message (e.g. `System.tsx`'s "N item(s) failed to delete:\n<list>") would have silently
+collapsed onto one line instead of showing each failure separately — `ConfirmModal.tsx`'s message
+paragraph already had this, the toast just hadn't needed it until this batch.
+
+Verified live: `System.tsx`'s Trakt sync produced a real `.toast.success` ("Trakt sync added 0 new
+item(s)."), confirmed via the DOM (a fast robot click checks the DOM before React's batched state
+update flushes — a ~1s wait was needed to see it, worth remembering for future toast checks so a
+timing artifact doesn't get mistaken for a real bug). `SubItemDetail.tsx`'s "Mark as missing"
+confirm dialog rendered correctly against a temporary sub-item fixture (has_file flipped to 1 and
+back after). Remaining large files (`LibraryType`, `MediaDetail`, `Settings` — each has real
+alert/confirm sites beyond the checkbox-chain function already converted in Round 306) continue
+next.
+
 ## Round 306 — Servarr-style popups (toast + confirm dialog) + Add Media redesign
 Two related pieces of new infrastructure, plus a first rollout batch of each.
 
