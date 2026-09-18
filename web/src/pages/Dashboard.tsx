@@ -6,6 +6,8 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useCustomizableLayout } from "../hooks/useCustomizableLayout.js";
 import type { MediaItem } from "../types.js";
 import { formatBytes } from "../utils/format.js";
+import { SlidersIcon } from "../components/NavIcons.js";
+import { ArrowUpIcon, ArrowDownIcon, ArrowRightIcon } from "../components/ActionIcons.js";
 
 interface RecentlyWatchedEntry {
   mediaItemId: number;
@@ -304,8 +306,8 @@ export default function Dashboard() {
     <div>
       <div className="toolbar" style={{ justifyContent: "space-between", marginBottom: 8 }}>
         <h1 style={{ margin: 0 }}>Dashboard</h1>
-        <button type="button" className="secondary" onClick={() => setCustomizing((v) => !v)}>
-          {customizing ? "Done" : "Customize layout"}
+        <button type="button" className="icon-button" onClick={() => setCustomizing((v) => !v)} title={customizing ? "Done" : "Customize layout"} aria-label={customizing ? "Done customizing" : "Customize layout"}>
+          <SlidersIcon />
         </button>
       </div>
 
@@ -332,23 +334,23 @@ export default function Dashboard() {
                 </select>
                 <button
                   type="button"
-                  className="secondary"
+                  className="icon-button"
                   onClick={() => moveUp(item.key)}
                   disabled={idx === 0}
+                  title="Move up"
                   aria-label={`Move ${item.label} up`}
-                  style={{ padding: "4px 10px" }}
                 >
-                  ↑
+                  <ArrowUpIcon />
                 </button>
                 <button
                   type="button"
-                  className="secondary"
+                  className="icon-button"
                   onClick={() => moveDown(item.key)}
                   disabled={idx === orderedItems.length - 1}
+                  title="Move down"
                   aria-label={`Move ${item.label} down`}
-                  style={{ padding: "4px 10px" }}
                 >
-                  ↓
+                  <ArrowDownIcon />
                 </button>
               </div>
             </div>
@@ -373,8 +375,8 @@ export default function Dashboard() {
               </li>
             ))}
           </ul>
-          <button type="button" className="secondary" style={{ marginTop: 8 }} onClick={() => navigate("/system")}>
-            View System
+          <button type="button" className="icon-button" style={{ marginTop: 8 }} onClick={() => navigate("/system")} title="View System" aria-label="View System">
+            <ArrowRightIcon />
           </button>
         </div>
       )}

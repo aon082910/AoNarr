@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client.js";
 import { describeCalendarEntry } from "../utils/calendarDescriptions.js";
+import { PlusCircleIcon, ShareIcon, CalendarIcon } from "../components/NavIcons.js";
+import { TrashIcon, ChevronLeftIcon, ChevronRightIcon, ArrowRightIcon } from "../components/ActionIcons.js";
 
 interface CalendarEntry {
   mediaItemId: number;
@@ -140,32 +142,32 @@ export default function Calendar() {
         </select>
         {mode === "month" ? (
           <>
-            <button className="secondary" onClick={() => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))}>
-              ◂ Prev
+            <button type="button" className="icon-button" onClick={() => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))} title="Previous month" aria-label="Previous month">
+              <ChevronLeftIcon />
             </button>
             <strong style={{ minWidth: 140, textAlign: "center" }}>{monthLabel}</strong>
-            <button className="secondary" onClick={() => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))}>
-              Next ▸
+            <button type="button" className="icon-button" onClick={() => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))} title="Next month" aria-label="Next month">
+              <ChevronRightIcon />
             </button>
-            <button className="secondary" onClick={() => setViewMonth(startOfMonth(new Date()))}>
-              Today
+            <button type="button" className="icon-button" onClick={() => setViewMonth(startOfMonth(new Date()))} title="Today" aria-label="Jump to today">
+              <CalendarIcon />
             </button>
           </>
         ) : (
           <>
-            <button className="secondary" onClick={() => setDaysBack((d) => d + 7)}>
-              Show earlier
+            <button type="button" className="icon-button" onClick={() => setDaysBack((d) => d + 7)} title="Show earlier" aria-label="Show earlier">
+              <ChevronLeftIcon />
             </button>
-            <button className="secondary" onClick={() => setDaysForward((d) => d + 14)}>
-              Show later
+            <button type="button" className="icon-button" onClick={() => setDaysForward((d) => d + 14)} title="Show later" aria-label="Show later">
+              <ChevronRightIcon />
             </button>
           </>
         )}
-        <button className="secondary" onClick={() => setShowAddEvent((v) => !v)}>
-          + Add custom date
+        <button type="button" className="icon-button" onClick={() => setShowAddEvent((v) => !v)} title="Add custom date" aria-label="Add custom date">
+          <PlusCircleIcon />
         </button>
-        <button className="secondary" onClick={showSubscribeUrl}>
-          Subscribe from calendar app...
+        <button type="button" className="icon-button" onClick={showSubscribeUrl} title="Subscribe from calendar app..." aria-label="Subscribe from calendar app">
+          <ShareIcon />
         </button>
       </div>
 
@@ -267,8 +269,8 @@ export default function Calendar() {
             <div className="form-panel" style={{ marginTop: 16 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <h2 style={{ marginTop: 0 }}>{selectedDay}</h2>
-                <button className="secondary" onClick={() => navigate(`/calendar/${selectedDay}`)}>
-                  Open day page
+                <button type="button" className="icon-button" onClick={() => navigate(`/calendar/${selectedDay}`)} title="Open day page" aria-label="Open day page">
+                  <ArrowRightIcon />
                 </button>
               </div>
               {(grouped.get(selectedDay) ?? []).length === 0 && <p className="empty">Nothing scheduled.</p>}
@@ -295,12 +297,12 @@ export default function Calendar() {
                       </td>
                       <td>
                         {entry.kind === "media" ? (
-                          <button className="secondary" onClick={() => navigate(`/media/${entry.mediaItemId}`)}>
-                            Open
+                          <button type="button" className="icon-button" onClick={() => navigate(`/media/${entry.mediaItemId}`)} title="Open" aria-label="Open">
+                            <ArrowRightIcon />
                           </button>
                         ) : (
-                          <button className="danger" onClick={() => deleteCustomEvent(entry.mediaItemId)}>
-                            Remove
+                          <button type="button" className="icon-button danger" onClick={() => deleteCustomEvent(entry.mediaItemId)} title="Remove" aria-label="Remove">
+                            <TrashIcon />
                           </button>
                         )}
                       </td>

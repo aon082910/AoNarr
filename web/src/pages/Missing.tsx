@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
+import { SearchIcon } from "../components/NavIcons.js";
+import { ArrowRightIcon } from "../components/ActionIcons.js";
 
 interface MissingRow {
   mediaItemId: number;
@@ -51,8 +53,8 @@ function Section({
       <h2>
         {title} <span style={{ color: "var(--muted)", fontWeight: 400 }}>({rows.length})</span>
         {rows.length > 0 && (
-          <button className="secondary" style={{ marginLeft: 10, fontSize: "0.8rem" }} onClick={() => onSearchMany(rows)}>
-            Search all
+          <button type="button" className="icon-button" style={{ marginLeft: 10, width: 26, height: 26 }} onClick={() => onSearchMany(rows)} title="Search all" aria-label="Search all">
+            <SearchIcon />
           </button>
         )}
       </h2>
@@ -76,11 +78,13 @@ function Section({
                 <td>{r.mediaTitle}</td>
                 <td>{r.label}</td>
                 <td style={{ display: "flex", gap: 6 }}>
-                  <button className="secondary" onClick={() => onSearchOne(r)}>
-                    Search
+                  <button type="button" className="icon-button" onClick={() => onSearchOne(r)} title="Search" aria-label="Search">
+                    <SearchIcon />
                   </button>
                   <Link to={`/media/${r.mediaItemId}`}>
-                    <button className="secondary">Open</button>
+                    <button type="button" className="icon-button" title="Open" aria-label="Open">
+                      <ArrowRightIcon />
+                    </button>
                   </Link>
                 </td>
               </tr>
@@ -128,8 +132,8 @@ function EpisodesBySeries({
       <h2>
         Episodes <span style={{ color: "var(--muted)", fontWeight: 400 }}>({rows.length})</span>
         {rows.length > 0 && (
-          <button className="secondary" style={{ marginLeft: 10, fontSize: "0.8rem" }} onClick={() => onSearchMany(rows)}>
-            Search all
+          <button type="button" className="icon-button" style={{ marginLeft: 10, width: 26, height: 26 }} onClick={() => onSearchMany(rows)} title="Search all" aria-label="Search all">
+            <SearchIcon />
           </button>
         )}
       </h2>
@@ -151,14 +155,16 @@ function EpisodesBySeries({
                 </strong>
               </button>
               <button
-                className="secondary"
-                style={{ fontSize: "0.8rem" }}
+                type="button"
+                className="icon-button"
+                title="Search all missing in this series"
+                aria-label="Search all missing in this series"
                 onClick={(e) => {
                   e.stopPropagation();
                   onSearchMany(group.rows);
                 }}
               >
-                Search all missing in this series
+                <SearchIcon />
               </button>
             </div>
             {isOpen && <SeriesEpisodeTable rows={group.rows} selected={selected} onToggle={onToggle} onSearchOne={onSearchOne} />}
@@ -199,11 +205,13 @@ function SeriesEpisodeTable({
             </td>
             <td>{r.label}</td>
             <td style={{ display: "flex", gap: 6 }}>
-              <button className="secondary" onClick={() => onSearchOne(r)}>
-                Search
+              <button type="button" className="icon-button" onClick={() => onSearchOne(r)} title="Search" aria-label="Search">
+                <SearchIcon />
               </button>
               <Link to={`/media/${r.mediaItemId}`}>
-                <button className="secondary">Open</button>
+                <button type="button" className="icon-button" title="Open" aria-label="Open">
+                  <ArrowRightIcon />
+                </button>
               </Link>
             </td>
           </tr>
@@ -270,10 +278,10 @@ export default function Missing() {
       {selected.size > 0 && (
         <div className="form-panel" style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <strong>{selected.size} selected</strong>
-          <button className="secondary" onClick={bulkSearch} disabled={searching}>
-            {searching ? "Searching..." : "Search selected"}
+          <button type="button" className="icon-button" onClick={bulkSearch} disabled={searching} title={searching ? "Searching..." : "Search selected"} aria-label="Search selected">
+            <SearchIcon />
           </button>
-          <button className="secondary" onClick={() => setSelected(new Set())}>
+          <button type="button" className="secondary" onClick={() => setSelected(new Set())}>
             Clear selection
           </button>
         </div>

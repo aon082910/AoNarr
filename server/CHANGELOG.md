@@ -3,6 +3,28 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 301 — Missing.tsx, CutoffUnmet.tsx, Calendar.tsx, Dashboard.tsx converted to icon buttons
+Four smaller, clean-shaped pages in one round — all genuinely toolbar/table-shaped throughout (no
+`SettingsSectionTiles`-style lone-panel buttons to filter out this time). `Missing.tsx` and
+`CutoffUnmet.tsx` share the same layout (a bulk-select bar, a per-section "Search all", and
+per-row Search/Open) and got identical treatment: SearchIcon for every search action (including
+the per-series "Search all missing in this series" in Missing's episode grouping), and the new
+`ArrowRightIcon` (added in Round 300) for every "Open" row action. `Calendar.tsx` got chevrons for
+month/agenda navigation, `CalendarIcon` for "Today" (jump to the current date on the calendar
+you're already looking at), `PlusCircleIcon` for "Add custom date", `ShareIcon` for "Subscribe from
+calendar app..." (generating an external feed URL is the same "give this to something else"
+concept as `MediaDetail.tsx`'s Share button), and `TrashIcon`/`ArrowRightIcon` for the day-detail
+table's Remove/Open row actions — "Regenerate URL" for the ICS token stayed text, matching the
+established "consequential, standalone security-token action" exception. `Dashboard.tsx` got a new
+`SlidersIcon` for "Customize layout" (established here as this rollout's "adjust settings/layout"
+convention) and upgraded its two reorder buttons from raw ↑/↓ text glyphs to real `ArrowUpIcon`/
+`ArrowDownIcon` SVG components, matching the same upgrade already done for `LibraryType.tsx`'s
+group-delete glyph in Round 297.
+
+Verified live: Missing's bulk-select bar and per-section search icons work against real data,
+Calendar's month navigation and day-detail panel render correctly, Dashboard's customize-layout
+panel shows correctly disabled up/down arrows at the first/last row. No regressions.
+
 ## Round 300 — System.tsx: icon buttons, refined by a "does this icon read on its own" test
 `System.tsx` (27 buttons) mixes both shapes seen so far — some tabs (Backups) use
 `SettingsSectionTiles`, others (Overview/Health/Maintenance/Insights/Logs) use plain tables and

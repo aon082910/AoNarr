@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
+import { SearchIcon } from "../components/NavIcons.js";
+import { ArrowRightIcon } from "../components/ActionIcons.js";
 
 interface CutoffUnmetRow {
   mediaItemId: number;
@@ -95,10 +97,10 @@ export default function CutoffUnmet() {
       {selected.size > 0 && (
         <div className="form-panel" style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <strong>{selected.size} selected</strong>
-          <button className="secondary" onClick={bulkSearch} disabled={searching}>
-            {searching ? "Searching..." : "Search selected"}
+          <button type="button" className="icon-button" onClick={bulkSearch} disabled={searching} title={searching ? "Searching..." : "Search selected"} aria-label="Search selected">
+            <SearchIcon />
           </button>
-          <button className="secondary" onClick={() => setSelected(new Set())}>
+          <button type="button" className="secondary" onClick={() => setSelected(new Set())}>
             Clear selection
           </button>
         </div>
@@ -108,8 +110,8 @@ export default function CutoffUnmet() {
         <>
           {rows.length > 1 && (
             <p>
-              <button className="secondary" onClick={() => searchRows(rows)} disabled={searching}>
-                {searching ? "Searching..." : "Search all"}
+              <button type="button" className="icon-button" onClick={() => searchRows(rows)} disabled={searching} title={searching ? "Searching..." : "Search all"} aria-label="Search all">
+                <SearchIcon />
               </button>
             </p>
           )}
@@ -139,11 +141,13 @@ export default function CutoffUnmet() {
                   <td>{r.cutoff}</td>
                   <td>{r.profileName}</td>
                   <td style={{ display: "flex", gap: 6 }}>
-                    <button className="secondary" onClick={() => searchRows([r])} disabled={searching}>
-                      Search
+                    <button type="button" className="icon-button" onClick={() => searchRows([r])} disabled={searching} title="Search" aria-label="Search">
+                      <SearchIcon />
                     </button>
                     <Link to={`/media/${r.mediaItemId}`}>
-                      <button className="secondary">Open</button>
+                      <button type="button" className="icon-button" title="Open" aria-label="Open">
+                        <ArrowRightIcon />
+                      </button>
                     </Link>
                   </td>
                 </tr>
