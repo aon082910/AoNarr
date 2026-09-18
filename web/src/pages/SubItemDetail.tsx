@@ -499,12 +499,12 @@ export default function SubItemDetail() {
               {searching ? "Searching..." : "Search"}
             </button>
           )}
-          {subItem.parent?.type === "author" && subItem.hasFile && (
+          {subItem.parent?.type === "author" && !!subItem.hasFile && (
             <button className="secondary" onClick={scanIsbn} disabled={scanningIsbn} title="Scans the file's first and last 15 pages (PDF) or its EPUB metadata for an ISBN, then matches it via Open Library">
               {scanningIsbn ? "Scanning..." : "Scan for ISBN"}
             </button>
           )}
-          {subItem.hasFile && subItem.parent?.type !== "audiobook" && (
+          {!!subItem.hasFile && subItem.parent?.type !== "audiobook" && (
             <button className="secondary" onClick={sendToKindle} disabled={sendingToKindle} title="Emails this file to your Kindle's Send to Kindle address (set in Settings → General)">
               {sendingToKindle ? "Sending..." : "Send to Kindle"}
             </button>

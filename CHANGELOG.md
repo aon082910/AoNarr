@@ -3,6 +3,21 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 298 — audit web/ for the stray-"0" JSX conditional bug
+Follow-up to the bug found in Round 296: any `0 | 1`-typed field (not `boolean`) used bare in a
+JSX `&&` chain — `{subItem.hasFile && (...)}` — renders the literal number `0` as a visible text
+node when the field is 0, since `&&` returns the first falsy operand rather than coercing to
+`false`. Enumerated every `0 | 1`-typed field across `web/src/types.ts` and every page/component
+file with its own locally-defined interface (`monitored`, `hasFile`, `protected`, `enabled`,
+`useFlareSolverr`, `useSsl`, `audioOnly`, `pauseGrabsAtQuota`, `autoApprove`, `isDefault`,
+`require_review`, `insertAfterEachItem`), then grepped every `web/src/pages/*.tsx` and
+`web/src/components/*.tsx` file for bare usage. Found two more genuine instances in
+`SubItemDetail.tsx` (the "Scan for ISBN" and "Send to Kindle" button conditionals, both keyed off
+`subItem.hasFile`) and fixed both with `!!subItem.hasFile`. Confirmed every other match already
+used a safe form (`!!field`, or `!field` — logical NOT always produces a real boolean regardless of
+operand type, so that pattern was never actually at risk). Verified live against a real sub-item
+with `hasFile: 0` — no stray "0" renders, and the file-gated buttons correctly stay hidden.
+
 ## Round 297 — LibraryType.tsx converted to icon buttons
 Continued the Phase 2 rollout — `LibraryType.tsx` (39 buttons in the original survey) is now fully
 converted: the group-browse level (Edit/Add description, Add group, and upgrading the existing
