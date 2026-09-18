@@ -10,6 +10,23 @@ import type { LibraryGroup } from "../types.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
+import {
+  ShareIcon,
+  SearchIcon,
+  InboxIcon,
+  ZapIcon,
+  RotateCcwIcon,
+  ClockIcon,
+  AlertTriangleIcon,
+  DownloadIcon,
+  LayersIcon,
+  ColumnsIcon,
+  FilmIcon,
+  ListIcon,
+  ShieldIcon,
+  PlusCircleIcon,
+} from "../components/NavIcons.js";
+import { TrashIcon, XIcon, PencilIcon, FolderIcon, EyeIcon } from "../components/ActionIcons.js";
 import type { Collection, HistoryEvent, MediaInfo, MediaItem, QualityProfile, RootFolder, SearchResult, Tag } from "../types.js";
 import { formatBytes, formatMediaInfo } from "../utils/format.js";
 import { useContentRatings } from "../hooks/useContentRatings.js";
@@ -1284,8 +1301,10 @@ export default function MediaDetail() {
               {isAdmin && (
               <button
                 type="button"
-                className="secondary"
-                style={{ marginLeft: 10, fontSize: "0.8rem" }}
+                className="icon-button"
+                style={{ marginLeft: 10, width: 24, height: 24 }}
+                title="Share"
+                aria-label="Share"
                 onClick={async () => {
                   const result = await api.post<{ token: string }>(`/media/${item.id}/share`, {});
                   const url = `${externalUrl || window.location.origin}/share/${result.token}`;
@@ -1297,7 +1316,7 @@ export default function MediaDetail() {
                   }
                 }}
               >
-                Share
+                <ShareIcon />
               </button>
             )}
           </p>
@@ -1310,15 +1329,17 @@ export default function MediaDetail() {
               )}
             </p>
           )}
-          {shape === "single" && item.hasFile && item.mediaInfo && (
+          {shape === "single" && !!item.hasFile && item.mediaInfo && (
             <>
               <button
                 type="button"
-                className="secondary"
-                style={{ fontSize: "0.8rem", marginBottom: 6 }}
+                className="icon-button"
+                style={{ marginBottom: 6, width: 26, height: 26 }}
+                title={showFileDetails ? "Hide file details" : "File details"}
+                aria-label={showFileDetails ? "Hide file details" : "Show file details"}
                 onClick={() => setShowFileDetails((v) => !v)}
               >
-                {showFileDetails ? "Hide file details" : "File details"}
+                <ListIcon />
               </button>
               {showFileDetails && <FileDetailsPanel mediaInfo={item.mediaInfo} path={item.path} />}
             </>
@@ -1510,12 +1531,15 @@ export default function MediaDetail() {
                     </span>
                   ) : (
                     <button
-                      className="secondary"
+                      type="button"
+                      className="icon-button"
                       style={{ marginTop: 4 }}
                       disabled={addingCollectionPart === p.tmdbId}
+                      title={addingCollectionPart === p.tmdbId ? "Adding..." : "Add to library"}
+                      aria-label="Add to library"
                       onClick={() => addCollectionPart(p)}
                     >
-                      {addingCollectionPart === p.tmdbId ? "Adding..." : "Add"}
+                      <PlusCircleIcon />
                     </button>
                   ))}
               </div>
@@ -1552,8 +1576,8 @@ export default function MediaDetail() {
                   </option>
                 ))}
             </select>
-            <button type="button" className="secondary" onClick={addTagToItem} disabled={!tagToAdd}>
-              Add
+            <button type="button" className="icon-button" onClick={addTagToItem} disabled={!tagToAdd} title="Add tag" aria-label="Add tag">
+              <PlusCircleIcon />
             </button>
           </>
         )}
@@ -1593,103 +1617,130 @@ export default function MediaDetail() {
               </option>
             ))}
           </select>
-          <button type="button" className="secondary" onClick={addToCollection} disabled={!collectionToAdd}>
-            Add
+          <button type="button" className="icon-button" onClick={addToCollection} disabled={!collectionToAdd} title="Add to collection" aria-label="Add to collection">
+            <PlusCircleIcon />
           </button>
         </div>
       )}
 
       {isAdmin && (
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={toggleMonitored} className="secondary">
-            {item.monitored ? "Unmonitor" : "Monitor"}
-          </button>
-          <button onClick={toggleProtected} className="secondary" title="Protected items are skipped by watch-status auto-archival">
-            {item.protected ? "Unprotect" : "Protect from archival"}
+        <div className="toolbar">
+          <MonitorToggle monitored={!!item.monitored} onToggle={toggleMonitored} />
+          <button
+            type="button"
+            onClick={toggleProtected}
+            className="icon-button"
+            style={item.protected ? { color: "var(--accent)" } : undefined}
+            title={item.protected ? "Protected from watch-status auto-archival — click to unprotect" : "Protect from watch-status auto-archival"}
+            aria-label={item.protected ? "Unprotect" : "Protect from archival"}
+          >
+            <ShieldIcon />
           </button>
           <button
+            type="button"
             onClick={toggleWatched}
-            className="secondary"
-            title="Also pushed to your configured media server, if it recognizes this file"
+            className="icon-button"
+            style={watched ? { color: "var(--accent)" } : undefined}
+            title={
+              watched
+                ? "Mark unwatched"
+                : "Mark watched — also pushed to your configured media server, if it recognizes this file"
+            }
+            aria-label={watched ? "Mark unwatched" : "Mark watched"}
           >
-            {watched ? "Mark unwatched" : "Mark watched"}
+            <EyeIcon />
           </button>
           {shape === "single" && (
-            <button onClick={() => runSearch(null)} disabled={searching}>
-              {searching && !target ? "Searching..." : "Search now"}
+            <button type="button" className="icon-button" onClick={() => runSearch(null)} disabled={searching} title={searching && !target ? "Searching..." : "Search now"} aria-label="Search now">
+              <SearchIcon />
             </button>
           )}
-          <button onClick={() => toggleImport()} className="secondary">
-            Manual Import
+          <button type="button" onClick={() => toggleImport()} className="icon-button" title="Manual Import" aria-label="Manual Import">
+            <InboxIcon />
           </button>
           <button
-            className="secondary"
+            type="button"
+            className="icon-button"
             onClick={scanImportItem}
             disabled={scanningItem}
-            title="Scan this item's root folder for a file matching just this title, same as the library-wide Scan & Import but scoped to this one item"
+            title={scanningItem ? "Scanning..." : "Scan this item's root folder for a file matching just this title, same as the library-wide Scan & Import but scoped to this one item"}
+            aria-label="Scan & Import"
           >
-            {scanningItem ? "Scanning..." : "Scan & Import"}
+            <ZapIcon />
           </button>
           <button
-            className="secondary"
+            type="button"
+            className="icon-button"
             onClick={refreshItem}
             disabled={refreshingItem}
-            title="Re-pull this item's own metadata and any missing episodes/children from its metadata provider"
+            title={refreshingItem ? "Refreshing..." : "Refresh — re-pull this item's own metadata and any missing episodes/children from its metadata provider"}
+            aria-label="Refresh"
           >
-            {refreshingItem ? "Refreshing..." : "Refresh"}
+            <RotateCcwIcon />
           </button>
-          <button onClick={toggleEditMetadata} className="secondary">
-            {showEditMetadata ? "Cancel edit" : "Edit metadata"}
+          <button type="button" onClick={toggleEditMetadata} className="icon-button" title={showEditMetadata ? "Cancel edit" : "Edit metadata"} aria-label={showEditMetadata ? "Cancel edit" : "Edit metadata"}>
+            {showEditMetadata ? <XIcon /> : <PencilIcon />}
           </button>
-          <button onClick={toggleHistory} className="secondary">
-            {showHistory ? "Hide history" : "History"}
+          <button type="button" onClick={toggleHistory} className="icon-button" title={showHistory ? "Hide history" : "History"} aria-label={showHistory ? "Hide history" : "Show history"}>
+            <ClockIcon />
           </button>
           <button
-            className="secondary"
+            type="button"
+            className="icon-button"
             onClick={organizeItem}
-            title="Move/rename this item's own file(s) to match the current naming template, same as System → Rename Files but scoped to just this item"
+            title="Organize & Rename — move/rename this item's own file(s) to match the current naming template, same as System → Rename Files but scoped to just this item"
+            aria-label="Organize & Rename"
           >
-            Organize & Rename
+            <FolderIcon />
           </button>
-          {shape === "single" && item.hasFile && (
-            <button className="secondary" onClick={checkCorrupt}>
-              Check for corruption
+          {shape === "single" && !!item.hasFile && (
+            <button type="button" className="icon-button" onClick={checkCorrupt} title="Check for corruption" aria-label="Check for corruption">
+              <AlertTriangleIcon />
             </button>
           )}
           <button
-            className="secondary"
+            type="button"
+            className="icon-button"
             onClick={() => downloadFile(`/media/${item.id}/export?format=nfo`, `${item.title}.nfo`)}
+            title="Export .nfo"
+            aria-label="Export .nfo"
           >
-            Export .nfo
+            <DownloadIcon />
           </button>
           {(metadataProviders[item.type]?.length ?? 0) > 0 && (
             <button
-              className="secondary"
+              type="button"
+              className="icon-button"
               onClick={() => setShowSearchMatch(true)}
-              title="Search with a custom query and pick a different metadata match — for when the current title is wrong or garbled"
+              title="Search for a different match — search with a custom query and pick a different metadata match, for when the current title is wrong or garbled"
+              aria-label="Search for a different match"
             >
-              Search for a different match...
+              <SearchIcon />
             </button>
           )}
           <button
-            className="secondary"
+            type="button"
+            className="icon-button"
             onClick={() => downloadFile(`/media/${item.id}/export?format=plexmatch`, `.plexmatch`)}
-            title="Rename this file to exactly .plexmatch and place it in this item's own folder for Plex to pick it up. Only useful if this item's own folder is inside a library Plex is scanning as a Movie or TV Show section — Plex has no native library type for the other AoNarr libraries."
+            title="Export for Plex — renames this file to exactly .plexmatch and places it in this item's own folder for Plex to pick it up. Only useful if this item's own folder is inside a library Plex is scanning as a Movie or TV Show section."
+            aria-label="Export for Plex"
           >
-            Export for Plex
+            <DownloadIcon />
           </button>
           {typeInfo && typeInfo.groupLevels.length > 0 && (
-            <button onClick={() => setShowMove((v) => !v)} className="secondary">
-              {showMove ? "Cancel move" : "Move to group..."}
+            <button type="button" onClick={() => setShowMove((v) => !v)} className="icon-button" title={showMove ? "Cancel move" : "Move to group..."} aria-label={showMove ? "Cancel move" : "Move to group"}>
+              {showMove ? <XIcon /> : <LayersIcon />}
             </button>
           )}
           {shape === "episodic" && (
             <button
-              className="secondary"
+              type="button"
+              className="icon-button"
               onClick={() => setShowSplit((v) => !v)}
-              title="Move episodes that were incorrectly matched into this show (from a different folder) out into a brand new show"
+              title={showSplit ? "Cancel split" : "Split — move episodes that were incorrectly matched into this show (from a different folder) out into a brand new show"}
+              aria-label={showSplit ? "Cancel split" : "Split"}
             >
-              {showSplit ? "Cancel split" : "Split..."}
+              {showSplit ? <XIcon /> : <ColumnsIcon />}
             </button>
           )}
           {/* Movie/series/artist go through Fanart.tv; rom/manga/comic/video/adult each pull extra
@@ -1697,12 +1748,12 @@ export default function MediaDetail() {
               Author/audiobook/course have no artwork source at all — Open Library/Google Books/
               manual-only don't expose a second image to fetch, so there's nothing to offer. */}
           {["movie", "series", "sports", "ppv", "artist", "rom", "manga", "comic", "video", "adult"].includes(item.type) && (
-            <button onClick={toggleArtwork} className="secondary">
-              {showArtwork ? "Hide artwork" : "Artwork"}
+            <button type="button" onClick={toggleArtwork} className="icon-button" title={showArtwork ? "Hide artwork" : "Artwork"} aria-label={showArtwork ? "Hide artwork" : "Show artwork"}>
+              <FilmIcon />
             </button>
           )}
-          <button onClick={remove} className="danger">
-            Remove
+          <button type="button" onClick={remove} className="icon-button danger" title="Remove" aria-label="Remove">
+            <TrashIcon />
           </button>
         </div>
       )}

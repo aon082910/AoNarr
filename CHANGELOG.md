@@ -3,6 +3,34 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 295 — MediaDetail.tsx: main header toolbar converted to icon buttons
+Continued the Phase 2 icon-button rollout — `MediaDetail.tsx` is the largest file in the survey
+(53 buttons), so this round scopes to its highest-visibility section: the header (Share, File
+details toggle, the 3 small "Add" buttons next to collection/tag/TMDB-collection-part pickers) and
+the full main action toolbar (Monitor, Protect, Mark watched, Search now, Manual Import, Scan &
+Import, Refresh, Edit metadata, History, Organize & Rename, Check for corruption, Export .nfo,
+Search for a different match, Export for Plex, Move to group, Split, Artwork, Remove — 18 buttons
+total). The plain-text Monitor/Unmonitor button was replaced with the existing `MonitorToggle`
+component (already icon-only, already used elsewhere, just not here) rather than reinventing it.
+Toggle-state buttons reflect state the same way `MonitorToggle` already does — an accent-colored
+icon when active (Protect, Mark watched) — and panel-open/close buttons (Edit metadata, Move,
+Split) swap between their action icon and an X when open, matching their "Cancel X" text before.
+Added a new `EyeIcon` to `ActionIcons.tsx` for the watched toggle.
+
+Found and fixed a genuine pre-existing bug while verifying live: two conditionals used
+`item.hasFile` (typed `0 | 1`, not `boolean`) bare in a JSX `&&` chain — `{item.hasFile && (...)}`
+— which renders the literal number `0` as a stray text node when `hasFile` is 0, since JS's `&&`
+returns the first falsy operand rather than coercing to `false`. Confirmed visually (a stray "0"
+appeared on the page for a missing/no-file item) before fixing both with `!!item.hasFile`. The same
+pattern likely recurs elsewhere in the frontend (any `0 | 1`-typed field used bare in `&&`) —
+flagged as a follow-up task rather than chased site-wide in this round.
+
+Verified live against the running `aonarr-server` container in both themes: icon-swap on
+open/close, accent-color on toggle-state buttons, and the stray-"0" fix all confirmed working.
+Remaining in this file for future rounds: the season/episode table's own row actions, the
+search-results table, the manual-import browse panel, the artwork picker, and the metadata-merge
+table.
+
 ## Round 294 — Servarr-style icon buttons + Activity page overhaul (Phase 1)
 First round of a visual pass matching Sonarr/Radarr/Lidarr/Readarr/Whisparr conventions more
 closely: icon-only action buttons instead of text-labeled ones, and a fully reworked Activity
