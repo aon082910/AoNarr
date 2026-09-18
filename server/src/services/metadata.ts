@@ -2119,7 +2119,10 @@ export function parseProviderUrl(url: string): { provider: string; id: string } 
     if (idParam) return { provider: "tvdb", id: idParam };
   }
   if (host === "anilist.co" && (m = path.match(/\/(?:anime|manga)\/(\d+)/))) return { provider: "anilist", id: m[1] };
-  if ((host === "isbnsearch.org" || host === "openlibrary.org") && (m = url.match(/(\d{9}[\dXx]|\d{13})/))) {
+  // \d{13} must come first: JS regex alternation takes the first branch that matches at a given
+  // position rather than the longest one, so a real 13-digit ISBN-13 would otherwise always be
+  // truncated to its first 10 digits by the \d{9}[\dXx] branch matching first.
+  if ((host === "isbnsearch.org" || host === "openlibrary.org") && (m = url.match(/(\d{13}|\d{9}[\dXx])/))) {
     return { provider: "isbn", id: m[1] };
   }
   return null;

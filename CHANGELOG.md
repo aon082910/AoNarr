@@ -3,6 +3,49 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 276 — test coverage complete: metadata.ts, the last untested file
+Every service file in the codebase now has a test file. `metadata.ts` (2551 lines, the single
+largest file in the codebase by a wide margin) is a huge but structurally flat collection of
+~50 private per-provider fetch functions (TMDB, OMDb, Trakt, TVDB, TVMaze, AniList, MusicBrainz,
+Deezer, Discogs, Last.fm, Open Library, Google Books, iTunes, Hardcover, Goodreads, AudNexus,
+Audible, Comic Vine, RAWG, IGDB, ScreenScraper, TheGamesDB, YouTube, Vimeo, ThePornDB, MangaDex,
+Fanart.tv) reachable only through ~20 exported dispatcher functions — none of it touches the
+database at all, just `fetch()` and the settings cache. A deliberate, disclosed scoping decision
+given the sheer breadth: **full branch coverage on every exported dispatcher** (every provider-id
+routing branch, every error path) **and on every function with genuine logic** (year-based
+re-ranking and the MusicBrainz→Deezer poster backfill in `searchMetadata`, `pickBestRelease`'s
+official/country/date sort and the multi-disc continuous track numbering in
+`fetchAlbumTracksFor`, TVDB/IGDB token caching including a forced 401 re-login, YouTube/Vimeo
+pagination and their 500-item safety caps, Goodreads' HTML scraping, AudNexus's exact-match sort
+with partial-failure resilience, the TMDB collection/person-credits dedup+sort); **one solid
+happy-path test per "fetch JSON, map fields" provider function** otherwise, since most of the ~50
+share that same trivial shape and differ only in field names.
+
+- `tests/metadata.test.ts` — 119 tests covering `parseProviderUrl`, `searchMetadata` (every media
+  type's provider routing including both real `TYPE_SPECIFIC_SEARCH_FNS` overrides — AniList
+  manga vs. anime, iTunes podcast vs. author search — plus dispatch-error paths, year re-ranking,
+  and the Deezer poster backfill), `fetchByExternalId` (all 9 provider branches), `fetchSeriesEpisodesFor`/
+  `fetchSeriesSeasonsFor`/`fetchArtistAlbumsFor`/`fetchAlbumTracksFor`/`fetchCollectionChildrenFor`/
+  `fetchArtworkFor`/`fetchRomDetailsFor` (every routing branch + priority order + the empty-id
+  fallback), `fetchCastFor`/`fetchAlternateTitlesFor`/`fetchTmdbCollectionFor`/`fetchPersonDetails`/
+  `fetchTrailerFor`/`fetchOmdbRatings`/`fetchTrendingMovies`/`fetchTrendingSeries`/
+  `fetchMovieByTmdbId`/`fetchSeriesByTmdbId`. Only `settingsStore.js` (via a real `setupTestDb()` —
+  this file has no other DB dependency) and `global.fetch` are involved; `cheerio` and `xml2js` run
+  for real against fixture HTML/RSS, matching this project's existing scraping-test convention.
+
+  One genuine source bug surfaced: `parseProviderUrl`'s ISBN regex was `/(\d{9}[\dXx]|\d{13})/` —
+  since JS regex alternation takes the first branch that matches at a position rather than the
+  longest one, a real 13-digit ISBN-13 pasted into a URL always matched the shorter `\d{9}[\dXx]`
+  branch first and got silently truncated to its first 10 digits (an invalid id, sent straight to
+  Open Library's API). Fixed by trying `\d{13}` first. Two other apparent failures on the first
+  Docker run turned out to be my own fixture mistakes, not source bugs: Goodreads' `authorId` is
+  the *entire* `/author/show/<id>` path segment including the slugified name (matching real
+  Goodreads URLs like `/author/show/153394.Chuck_Palahniuk`), not just its leading digits; and
+  MangaDex's cover URL convention appends `.256.jpg` after a cover filename that already ends in
+  `.jpg` (a genuine, intentional double extension in their CDN's own URL scheme).
+
+Test count: 1070 → 1189 (88 → 89 files).
+
 ## Round 275 — more test coverage (scheduler & auto-search/grab pipeline)
 No behavior changes (the exports below add no new logic — see "How to apply" in this project's own
 test-writing conventions). The central orchestrator tying together nearly every other service in the
