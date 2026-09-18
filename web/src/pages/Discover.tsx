@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
 import type { MediaItem, QualityProfile } from "../types.js";
+import { PlusCircleIcon } from "../components/NavIcons.js";
 
 interface DiscoverItem {
   title: string;
@@ -118,16 +119,16 @@ export default function Discover() {
                       In library
                     </span>
                   ) : auth.isAdmin ? (
-                    <button className="secondary" style={{ marginTop: 6 }} disabled={busy === key} onClick={() => addDirectly(item)}>
-                      {busy === key ? "Adding..." : "Add"}
+                    <button type="button" className="icon-button" style={{ marginTop: 6 }} disabled={busy === key} onClick={() => addDirectly(item)} title={busy === key ? "Adding..." : "Add"} aria-label="Add to library">
+                      <PlusCircleIcon />
                     </button>
                   ) : alreadyRequested ? (
                     <span className="badge ok" style={{ marginTop: 6, display: "inline-block" }}>
                       Requested
                     </span>
                   ) : (
-                    <button className="secondary" style={{ marginTop: 6 }} disabled={busy === key} onClick={() => requestItem(item)}>
-                      {busy === key ? "Requesting..." : "Request"}
+                    <button type="button" className="icon-button" style={{ marginTop: 6 }} disabled={busy === key} onClick={() => requestItem(item)} title={busy === key ? "Requesting..." : "Request"} aria-label="Request">
+                      <PlusCircleIcon />
                     </button>
                   )}
                 </div>

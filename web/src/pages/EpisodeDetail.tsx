@@ -7,6 +7,8 @@ import { useAuth } from "../context/AuthContext.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { MediaInfo, SearchResult } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
+import { SearchIcon, InboxIcon, AlertTriangleIcon, DownloadIcon, CpuIcon } from "../components/NavIcons.js";
+import { ArrowLeftIcon, ArrowUpIcon, FolderIcon } from "../components/ActionIcons.js";
 
 interface EpisodeDetailResponse {
   id: number;
@@ -267,22 +269,20 @@ export default function EpisodeDetail() {
 
       {isAdmin && (
         <div className="toolbar" style={{ marginTop: 16 }}>
-          <button className="secondary" onClick={toggleMonitored}>
-            {episode.monitored ? "Unmonitor" : "Monitor"}
+          <MonitorToggle monitored={!!episode.monitored} onToggle={toggleMonitored} />
+          <button type="button" className="icon-button" onClick={runSearch} disabled={searching} title={searching ? "Searching..." : "Search"} aria-label="Search">
+            <SearchIcon />
           </button>
-          <button onClick={runSearch} disabled={searching}>
-            {searching ? "Searching..." : "Search"}
-          </button>
-          <button className="secondary" onClick={toggleImport}>
-            Manual Import
+          <button type="button" className="icon-button" onClick={toggleImport} title="Manual Import" aria-label="Manual Import">
+            <InboxIcon />
           </button>
           {!!episode.hasFile && (
-            <button className="danger" onClick={markAsMissing} title="Removed the file yourself? This resets AoNarr's record so it searches for it again.">
-              Mark as missing
+            <button type="button" className="icon-button danger" onClick={markAsMissing} title="Mark as missing — removed the file yourself? This resets AoNarr's record so it searches for it again." aria-label="Mark as missing">
+              <AlertTriangleIcon />
             </button>
           )}
-          <button className="secondary" onClick={() => navigate(-1)}>
-            Back to show
+          <button type="button" className="icon-button" onClick={() => navigate(-1)} title="Back to show" aria-label="Back to show">
+            <ArrowLeftIcon />
           </button>
         </div>
       )}
@@ -296,8 +296,8 @@ export default function EpisodeDetail() {
           </p>
           <div className="toolbar" style={{ marginBottom: 8, gap: 8 }}>
             {browseAnyFolder ? (
-              <button type="button" className="secondary" onClick={backToDownloads}>
-                Back to downloads folder
+              <button type="button" className="icon-button" onClick={backToDownloads} title="Back to downloads folder" aria-label="Back to downloads folder">
+                <ArrowLeftIcon />
               </button>
             ) : (
               <>
@@ -307,18 +307,20 @@ export default function EpisodeDetail() {
                   placeholder="/path/to/any/folder"
                   style={{ flex: 1, minWidth: 200 }}
                 />
-                <button type="button" className="secondary" onClick={goToCustomFolder} disabled={!customFolderInput.trim()}>
-                  Browse this folder
+                <button type="button" className="icon-button" onClick={goToCustomFolder} disabled={!customFolderInput.trim()} title="Browse this folder" aria-label="Browse this folder">
+                  <FolderIcon />
                 </button>
               </>
             )}
             {(browseAnyFolder ? browseParent != null : !!browsePath) && (
               <button
                 type="button"
-                className="secondary"
+                className="icon-button"
                 onClick={() => (browseAnyFolder ? browse(browseParent ?? "/", true) : browse(browsePath.split("/").slice(0, -1).join("/")))}
+                title="Up one folder"
+                aria-label="Up one folder"
               >
-                Up
+                <ArrowUpIcon />
               </button>
             )}
           </div>
@@ -341,12 +343,13 @@ export default function EpisodeDetail() {
                       <>
                         <button
                           type="button"
-                          className="secondary"
+                          className="icon-button"
                           disabled={aiIdentifying === e.path}
                           onClick={() => aiIdentifyFile(e)}
-                          title="Grab a frame (video) or read embedded tags (audio) and ask the configured AI provider what this is"
+                          title={aiIdentifying === e.path ? "Asking..." : "AI Identify — grab a frame (video) or read embedded tags (audio) and ask the configured AI provider what this is"}
+                          aria-label="AI Identify"
                         >
-                          {aiIdentifying === e.path ? "Asking..." : "🤖 Identify"}
+                          <CpuIcon />
                         </button>
                         {aiGuesses[e.path] && (
                           <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: 4, wordBreak: "break-word" }}>
@@ -358,13 +361,13 @@ export default function EpisodeDetail() {
                   </td>
                   <td>
                     {e.isDirectory && (
-                      <button type="button" className="secondary" onClick={() => browse(e.path, browseAnyFolder)}>
-                        Open
+                      <button type="button" className="icon-button" onClick={() => browse(e.path, browseAnyFolder)} title="Open" aria-label="Open folder">
+                        <FolderIcon />
                       </button>
                     )}
                     {e.isMediaFile && (
-                      <button onClick={() => manualImport(e)} disabled={importingPath === e.path}>
-                        {importingPath === e.path ? "Importing..." : "Import"}
+                      <button type="button" className="icon-button" onClick={() => manualImport(e)} disabled={importingPath === e.path} title={importingPath === e.path ? "Importing..." : "Import"} aria-label="Import">
+                        <InboxIcon />
                       </button>
                     )}
                   </td>
@@ -414,8 +417,8 @@ export default function EpisodeDetail() {
                   <td>{r.seeders ?? "-"}</td>
                   <td>{r.parsedQuality ?? "-"}</td>
                   <td>
-                    <button className="secondary" onClick={() => grab(r)}>
-                      Grab
+                    <button type="button" className="icon-button" onClick={() => grab(r)} title="Grab" aria-label="Grab">
+                      <DownloadIcon />
                     </button>
                   </td>
                 </tr>

@@ -4,6 +4,7 @@ import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { MediaRequest } from "../types.js";
+import { CheckIcon, XIcon } from "../components/ActionIcons.js";
 
 export default function Requests() {
   const { auth } = useAuth();
@@ -175,17 +176,17 @@ function RequestsTable({
               <td>
                 {isAdmin && r.status === "pending" && (
                   <>
-                    <button onClick={() => onApprove(r.id)} style={{ marginRight: 6 }}>
-                      Approve
+                    <button type="button" className="icon-button" onClick={() => onApprove(r.id)} title="Approve" aria-label="Approve">
+                      <CheckIcon />
                     </button>
-                    <button className="danger" onClick={() => onReject(r.id)}>
-                      Reject
+                    <button type="button" className="icon-button danger" onClick={() => onReject(r.id)} title="Reject" aria-label="Reject">
+                      <XIcon />
                     </button>
                   </>
                 )}
                 {!isAdmin && r.status === "pending" && (
-                  <button className="danger" onClick={() => onCancel(r.id)}>
-                    Cancel
+                  <button type="button" className="icon-button danger" onClick={() => onCancel(r.id)} title="Cancel" aria-label="Cancel">
+                    <XIcon />
                   </button>
                 )}
               </td>

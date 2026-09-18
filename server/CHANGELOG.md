@@ -3,6 +3,30 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 302 — ImportReview, Discover, Requests, GlobalSearch, EpisodeDetail converted to icon buttons
+Five more pages, continuing the icon-button rollout beyond the original priority list.
+`ImportReview.tsx` (Match.../Dismiss row actions) and `Requests.tsx` (Approve/Reject/Cancel row
+actions, a new `CheckIcon` use for Approve) were both clean, small tables — straightforward
+conversions. `Discover.tsx`'s poster-grid Add/Request buttons (one per card, same shape as
+`MediaDetail.tsx`'s TMDB-collection-part Add button from Round 295) both use `PlusCircleIcon` —
+they're mutually exclusive per card (admin sees Add, everyone else sees Request) so reusing one
+icon for both creates no ambiguity. `GlobalSearch.tsx` needed no changes at all — its only button is
+the primary search-submit (stays text) and "Clear" (next to Recent searches) turned out to already
+be a styled `<span>` link, not a `<button>`, so it was never in scope.
+
+`EpisodeDetail.tsx` — flagged during Round 296's live-testing as missing from the original survey —
+turned out to closely mirror `MediaDetail.tsx`'s own manual-import/search-results panels, so every
+icon choice reused directly: the main toolbar (Search/Manual-Import/Mark-as-missing/Back-to-show),
+and found the SAME "component already imported but not used for the main toggle" pattern Round 295
+fixed in MediaDetail — `MonitorToggle` was already imported and used inline elsewhere on the page,
+but the main toolbar had its own separate plain-text Monitor/Unmonitor button doing the identical
+toggle; replaced it with the existing component instead of converting it to a new icon button.
+
+Verified live: ImportReview and Requests confirmed against temporary fixture rows (inserted and
+removed after), EpisodeDetail confirmed against a temporary test episode showing every toolbar icon
+including the file-gated "Mark as missing". Discover couldn't be verified against real data (no
+TMDB key configured in this instance) but uses an already-proven pattern. No regressions.
+
 ## Round 301 — Missing.tsx, CutoffUnmet.tsx, Calendar.tsx, Dashboard.tsx converted to icon buttons
 Four smaller, clean-shaped pages in one round — all genuinely toolbar/table-shaped throughout (no
 `SettingsSectionTiles`-style lone-panel buttons to filter out this time). `Missing.tsx` and

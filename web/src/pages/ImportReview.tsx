@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
 import SearchMatchModal, { type MetadataSearchResult } from "../components/SearchMatchModal.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
+import { SearchIcon } from "../components/NavIcons.js";
+import { XIcon } from "../components/ActionIcons.js";
 
 interface ReviewItem {
   id: number;
@@ -109,11 +111,11 @@ export default function ImportReview() {
                 <td>{item.source === "watchlist" ? "Watchlist Import" : item.source}</td>
                 <td>{item.createdAt}</td>
                 <td style={{ display: "flex", gap: 6 }}>
-                  <button className="secondary" onClick={() => setMatching(item)}>
-                    Match...
+                  <button type="button" className="icon-button" onClick={() => setMatching(item)} title="Match..." aria-label="Match">
+                    <SearchIcon />
                   </button>
-                  <button className="danger" onClick={() => dismiss(item)}>
-                    Dismiss
+                  <button type="button" className="icon-button danger" onClick={() => dismiss(item)} title="Dismiss" aria-label="Dismiss">
+                    <XIcon />
                   </button>
                 </td>
               </tr>
