@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
+import { PlusCircleIcon } from "../components/NavIcons.js";
+import { XIcon, ArrowUpIcon, ArrowDownIcon, TrashIcon } from "../components/ActionIcons.js";
 
 interface Playlist {
   id: number;
@@ -389,8 +391,8 @@ export default function IptvPlaylists() {
                     </option>
                   ))}
                 </select>
-                <button type="button" className="secondary" disabled={!fillerToAttach} onClick={attachFiller}>
-                  Attach
+                <button type="button" className="icon-button" disabled={!fillerToAttach} onClick={attachFiller} title="Attach" aria-label="Attach">
+                  <PlusCircleIcon />
                 </button>
               </div>
               {(attachedFillers ?? []).length === 0 && (
@@ -411,8 +413,8 @@ export default function IptvPlaylists() {
                         <td>{idx + 1}</td>
                         <td>{f.name}</td>
                         <td>
-                          <button className="danger" onClick={() => detachFiller(f.attachmentId)}>
-                            Detach
+                          <button type="button" className="icon-button danger" onClick={() => detachFiller(f.attachmentId)} title="Detach" aria-label="Detach">
+                            <XIcon />
                           </button>
                         </td>
                       </tr>
@@ -478,14 +480,14 @@ export default function IptvPlaylists() {
                           : `Episode #${it.episodeId}`}
                       </td>
                       <td className="toolbar">
-                        <button className="secondary" disabled={idx === 0} onClick={() => moveItem(it.id, "up")}>
-                          Up
+                        <button type="button" className="icon-button" disabled={idx === 0} onClick={() => moveItem(it.id, "up")} title="Move up" aria-label="Move up">
+                          <ArrowUpIcon />
                         </button>
-                        <button className="secondary" disabled={idx === (items?.length ?? 0) - 1} onClick={() => moveItem(it.id, "down")}>
-                          Down
+                        <button type="button" className="icon-button" disabled={idx === (items?.length ?? 0) - 1} onClick={() => moveItem(it.id, "down")} title="Move down" aria-label="Move down">
+                          <ArrowDownIcon />
                         </button>
-                        <button className="danger" onClick={() => removeItem(it.id)}>
-                          Remove
+                        <button type="button" className="icon-button danger" onClick={() => removeItem(it.id)} title="Remove" aria-label="Remove">
+                          <TrashIcon />
                         </button>
                       </td>
                     </tr>

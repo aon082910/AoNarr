@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { QualityProfile } from "../types.js";
+import { RotateCcwIcon } from "../components/NavIcons.js";
+import { TrashIcon } from "../components/ActionIcons.js";
 
 interface ImportList {
   id: number;
@@ -289,11 +291,11 @@ export default function ImportLists() {
                   )}
                 </td>
                 <td style={{ display: "flex", gap: 6 }}>
-                  <button className="secondary" onClick={() => syncNow(l.id)} disabled={syncingId === l.id}>
-                    {syncingId === l.id ? "Syncing..." : "Sync now"}
+                  <button type="button" className="icon-button" onClick={() => syncNow(l.id)} disabled={syncingId === l.id} title={syncingId === l.id ? "Syncing..." : "Sync now"} aria-label="Sync now">
+                    <RotateCcwIcon />
                   </button>
-                  <button className="danger" onClick={() => removeList(l.id)}>
-                    Delete
+                  <button type="button" className="icon-button danger" onClick={() => removeList(l.id)} title="Delete" aria-label="Delete">
+                    <TrashIcon />
                   </button>
                 </td>
               </tr>

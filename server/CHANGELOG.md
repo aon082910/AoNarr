@@ -3,6 +3,34 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 303 — AddMedia (no changes) + 8 Configuration-adjacent pages converted to icon buttons
+`AddMedia.tsx` (616 lines) needed zero changes — every one of its 8 buttons is either a segmented
+mode toggle (Search by title/Match by ID, Add manually/Search metadata instead) or a primary form
+submit (Search, Match, Load NFO, Fetch course info, Add to library), and its search results render
+as clickable cards, not buttons. `AiProviders.tsx` and `IrcFeeds.tsx` also needed zero changes —
+both use a "click a tile, edit in a Modal" pattern structurally identical to `Settings.tsx`'s
+tile-panels (just Modal-based instead of inline), so the same "lone panel action stays text"
+reasoning applies directly: Test connection, Save/Add, and Delete are all exactly the shape Round
+299 established as text.
+
+The other six DID have real toolbar/table shapes to convert: `Indexers.tsx` (Add indexer + Test
+all in the top toolbar, row-level Test/Delete — "Sync from Prowlarr"/"Sync from Jackett" stayed
+text, same distinguishing-label reasoning as Round 299's "Sync Radarr/Sonarr formats"),
+`DownloadClients.tsx` (a standalone "Test all" converted since ZapIcon=Test is now established
+from Indexers.tsx moments earlier in this same round; the paired "Test connection"/"Check health"
+inside the edit modal stayed text since forcing only one of a two-button row to convert would look
+worse than either extreme, and "Check health" has no established icon), `ImportLists.tsx` (Sync
+now/Delete row pairing), `IptvPlaylists.tsx` (Attach paired with its picker select, Detach,
+Up/Down/Remove in the items table), `RemoteLibrary.tsx` (Browse, paired with its instance/type
+selects), and `Users.tsx` (a standalone "Dismiss" now converts too, since XIcon=Dismiss was
+established by `ImportReview.tsx` in Round 302; Revoke row actions in both the Invites and Active
+Sessions tables).
+
+Verified live against real fixtures (a temporary indexer, inserted and removed) and real data
+already in the instance (existing download clients, real active sessions) — confirmed the
+Indexers row Test/Delete icons, the paired-text Test-connection/Check-health modal, and both
+Revoke icons in Users.tsx's session/invite tables. No regressions.
+
 ## Round 302 — ImportReview, Discover, Requests, GlobalSearch, EpisodeDetail converted to icon buttons
 Five more pages, continuing the icon-button rollout beyond the original priority list.
 `ImportReview.tsx` (Match.../Dismiss row actions) and `Requests.tsx` (Approve/Reject/Cancel row

@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
+import { FolderIcon } from "../components/ActionIcons.js";
 
 interface RemoteInstance {
   id: number;
@@ -174,8 +175,8 @@ export default function RemoteLibrary() {
               ))}
             </select>
           )}
-          <button className="secondary" onClick={browse} disabled={selectedId === "" || loading}>
-            {loading ? "Loading..." : "Browse"}
+          <button type="button" className="icon-button" onClick={browse} disabled={selectedId === "" || loading} title={loading ? "Loading..." : "Browse"} aria-label="Browse">
+            <FolderIcon />
           </button>
         </div>
       )}

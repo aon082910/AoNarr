@@ -7,6 +7,7 @@ import { useContentRatings } from "../hooks/useContentRatings.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { Invite, RequestStats, Session, User } from "../types.js";
 import { formatBytes } from "../utils/format.js";
+import { XIcon, TrashIcon } from "../components/ActionIcons.js";
 
 export default function Users() {
   const mediaTypes = useMediaTypes();
@@ -162,8 +163,8 @@ export default function Users() {
           <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
             One-time use — it stops working the moment they finish creating their account.
           </p>
-          <button type="button" className="secondary" onClick={() => setNewInviteUrl(null)}>
-            Dismiss
+          <button type="button" className="icon-button" onClick={() => setNewInviteUrl(null)} title="Dismiss" aria-label="Dismiss">
+            <XIcon />
           </button>
         </div>
       )}
@@ -360,8 +361,8 @@ function InvitesTable({ invites, onRevoke }: { invites: Invite[]; onRevoke: (id:
             </td>
             <td>
               {!i.usedAt && (
-                <button className="danger" onClick={() => onRevoke(i.id)}>
-                  Revoke
+                <button type="button" className="icon-button danger" onClick={() => onRevoke(i.id)} title="Revoke" aria-label="Revoke">
+                  <TrashIcon />
                 </button>
               )}
             </td>
@@ -399,8 +400,8 @@ function SessionsTable({ sessions, onRevoke }: { sessions: Session[]; onRevoke: 
             <td>{new Date(s.createdAt).toLocaleString()}</td>
             <td style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.userAgent ?? "unknown"}</td>
             <td>
-              <button className="danger" onClick={() => onRevoke(s.token)}>
-                Revoke
+              <button type="button" className="icon-button danger" onClick={() => onRevoke(s.token)} title="Revoke" aria-label="Revoke">
+                <TrashIcon />
               </button>
             </td>
           </tr>

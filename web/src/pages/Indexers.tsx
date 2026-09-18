@@ -3,6 +3,8 @@ import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { Indexer } from "../types.js";
+import { PlusCircleIcon, ZapIcon } from "../components/NavIcons.js";
+import { TrashIcon } from "../components/ActionIcons.js";
 
 type Protocol = "torznab" | "newznab" | "rss" | "ddl";
 
@@ -147,8 +149,8 @@ export default function Indexers() {
       </p>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        <button type="button" onClick={() => setShowAdd(true)}>
-          + Add indexer
+        <button type="button" className="icon-button" onClick={() => setShowAdd(true)} title="Add indexer" aria-label="Add indexer">
+          <PlusCircleIcon />
         </button>
         <button type="button" className="secondary" onClick={syncProwlarr} disabled={syncingProwlarr}>
           {syncingProwlarr ? "Syncing..." : "Sync from Prowlarr"}
@@ -156,8 +158,8 @@ export default function Indexers() {
         <button type="button" className="secondary" onClick={syncJackett} disabled={syncingJackett}>
           {syncingJackett ? "Syncing..." : "Sync from Jackett"}
         </button>
-        <button type="button" className="secondary" onClick={testAll} disabled={testingAll || indexers.length === 0}>
-          {testingAll ? "Testing..." : "Test all"}
+        <button type="button" className="icon-button" onClick={testAll} disabled={testingAll || indexers.length === 0} title={testingAll ? "Testing..." : "Test all"} aria-label="Test all">
+          <ZapIcon />
         </button>
       </div>
 
@@ -323,11 +325,11 @@ function IndexersTable({
                 <span className={`badge ${health.className}`}>{health.text}</span>
               </td>
               <td style={{ display: "flex", gap: 8 }}>
-                <button className="secondary" onClick={() => onTest(i.id)}>
-                  Test
+                <button type="button" className="icon-button" onClick={() => onTest(i.id)} title="Test" aria-label="Test">
+                  <ZapIcon />
                 </button>
-                <button className="danger" onClick={() => onRemove(i.id)}>
-                  Delete
+                <button type="button" className="icon-button danger" onClick={() => onRemove(i.id)} title="Delete" aria-label="Delete">
+                  <TrashIcon />
                 </button>
                 {testResults[i.id] && <span style={{ alignSelf: "center", fontSize: "0.8rem" }}>{testResults[i.id]}</span>}
               </td>

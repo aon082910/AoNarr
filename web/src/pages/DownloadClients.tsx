@@ -4,6 +4,8 @@ import Modal from "../components/Modal.js";
 import type { DownloadClient } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
+import { ZapIcon } from "../components/NavIcons.js";
+import { TrashIcon } from "../components/ActionIcons.js";
 
 type ClientType = "qbittorrent" | "sabnzbd" | "http" | "ytdlp" | "realdebrid" | "alldebrid" | "torbox" | "blackhole" | "slskd";
 
@@ -205,8 +207,8 @@ export default function DownloadClients() {
       </p>
 
       {clients.length > 0 && (
-        <button type="button" className="secondary" onClick={testAll} disabled={testingAll} style={{ marginBottom: 12 }}>
-          {testingAll ? "Testing..." : "Test all"}
+        <button type="button" className="icon-button" onClick={testAll} disabled={testingAll} style={{ marginBottom: 12 }} title={testingAll ? "Testing..." : "Test all"} aria-label="Test all">
+          <ZapIcon />
         </button>
       )}
 
@@ -275,8 +277,8 @@ export default function DownloadClients() {
                     <td style={{ fontFamily: "monospace", fontSize: "0.85rem" }}>{m.remotePath}</td>
                     <td style={{ fontFamily: "monospace", fontSize: "0.85rem" }}>{m.localPath}</td>
                     <td>
-                      <button type="button" className="danger" onClick={() => removeMapping(m.id)}>
-                        Delete
+                      <button type="button" className="icon-button danger" onClick={() => removeMapping(m.id)} title="Delete" aria-label="Delete">
+                        <TrashIcon />
                       </button>
                     </td>
                   </tr>
