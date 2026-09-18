@@ -3,6 +3,38 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 286 — duplicateCheck.ts: mergeMediaItems's less-common branches, and the scheduled job
+Next candidate from the Round 284 ratio scan. Unlike the last three rounds, `duplicateCheck.ts`'s
+existing 8 tests already covered real orchestrator logic (not just pure helpers) — `findDuplicateGroups`,
+`mergeMediaItems`'s single/episodic-shape happy paths, `dismissDuplicateGroup`. The gap here was
+narrower but still real: several of `mergeMediaItems`'s less-common branches, and
+`runScheduledDuplicateCheck` (the scheduled counterpart to the on-demand Duplicates-page sweep),
+had zero coverage. No source changes; every branch worked correctly once exercised.
+
+- `tests/duplicateCheck.test.ts` — 8 → 23 tests. `mergeMediaItems` gaps closed: the "collection"
+  shape (sub_items, e.g. Music/Books) had never been exercised at all, unlike its single/episodic
+  siblings; `deleteFiles: true`'s actual `recycleFile` dispatch was never proven for any shape
+  (single-item both-have-files, episodic collision, or collection collision) — every existing test
+  only ever passed `false`; tag and collection-membership reassignment (dedup via `INSERT OR
+  IGNORE`) was untested; the `REASSIGN_TABLES` loop was only ever proven for `history`, never for
+  `blocklist`/`queue`; and the guard branches (empty/keeper-only `loserIds`, a missing keeper
+  throwing, a missing or wrong-type loser silently skipped) plus a genuine multi-loser merge in one
+  call. `runScheduledDuplicateCheck` gets its first coverage at all: no groups found; a newly-found
+  group recorded and notified with its year-formatted title; a group already recorded from an
+  earlier run correctly *not* re-notified (needed its own scoped `beforeEach` table wipe — this
+  function scans literally every `media_items` row with no filter, and every other describe block
+  in this file deliberately accumulates state across tests, so without the wipe a duplicate pair
+  from the very first test in the file was still sitting there polluting a "zero groups" assertion —
+  the identical `runAllImportLists` shared-table issue from Round 270, recurring in a new file);
+  the notified title list capped at 5 while the true count is still reported accurately; and a
+  notification failure swallowed rather than thrown. Also added direct tests for
+  `findPossibleDuplicates` (previously only exercised indirectly via importLists.test.ts),
+  including its deliberately looser year-matching than its `mediaServerImport.ts` cousin
+  `titleAndYearMatch`: either side missing a year still allows a title-only match here, where the
+  cousin function requires an exact title when either year is unknown.
+
+Test count: 1304 → 1320 (89 files, no new files this round).
+
 ## Round 285 — archival.ts: the file-moving/deleting logic itself was completely untested
 A third instance of the Round 283/284 pattern, and the most consequential one: `archival.ts`'s
 existing 8 tests only covered its small pure/DB-read helpers (`pathTail`, `findWatchedMatch`,

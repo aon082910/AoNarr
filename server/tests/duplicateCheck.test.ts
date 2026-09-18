@@ -1,6 +1,20 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { setupTestDb } from "./helpers/testDb.js";
 import { nowExpr } from "../src/db/asyncDb.js";
+
+// recycleBin.ts and notifications.ts each have their own dedicated test file covering their real
+// internals -- mocked here (closure-indirection) so duplicateCheck.ts's own dispatch to them is
+// what's under test.
+const recycleFile = vi.fn().mockResolvedValue(undefined);
+vi.mock("../src/services/recycleBin.js", () => ({ recycleFile: (...args: unknown[]) => recycleFile(...args) }));
+const notifyDuplicatesFound = vi.fn().mockResolvedValue(undefined);
+vi.mock("../src/services/notifications.js", () => ({ notifyDuplicatesFound: (...args: unknown[]) => notifyDuplicatesFound(...args) }));
+
+afterEach(() => {
+  vi.clearAllMocks();
+  recycleFile.mockResolvedValue(undefined);
+  notifyDuplicatesFound.mockResolvedValue(undefined);
+});
 
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 
@@ -154,5 +168,251 @@ describe("duplicateCheck", () => {
 
     await dismissDuplicateGroup(group.key);
     await expect(dismissDuplicateGroup(group.key)).resolves.not.toThrow();
+  });
+
+  it("findPossibleDuplicates matches by normalized title, requiring agreement only when both sides have a year", async () => {
+    const { findPossibleDuplicates } = await import("../src/services/duplicateCheck.js");
+
+    const sameYearId = await insertMovie("Pre-Add Check", 2020, 0);
+    await insertMovie("Pre-Add Check", 2021, 0); // different known year -> excluded
+    const noYearId = await insertMovie("No Year Movie", null, 0);
+
+    const withYear = await findPossibleDuplicates("movie", "pre add check", 2020);
+    expect(withYear.map((d) => d.id)).toEqual([sameYearId]);
+
+    // Neither side needs a year to agree when at least one is unknown -- looser than
+    // mediaServerImport.ts's titleAndYearMatch, which requires an EXACT match in that case.
+    const eitherUnknown = await findPossibleDuplicates("movie", "No Year Movie", 2020);
+    expect(eitherUnknown.map((d) => d.id)).toEqual([noYearId]);
+
+    expect(await findPossibleDuplicates("movie", "", 2020)).toEqual([]);
+    expect(await findPossibleDuplicates("series", "Pre-Add Check", 2020)).toEqual([]); // scoped to type
+  });
+});
+
+describe("mergeMediaItems: guard branches", () => {
+  it("returns {merged:0} without touching the DB when loserIds is empty or only contains the keeper itself", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertMovie("Guard Test", 2020, 1);
+
+    expect(await mergeMediaItems(keeperId, [], false)).toEqual({ merged: 0 });
+    expect(await mergeMediaItems(keeperId, [keeperId, keeperId], false)).toEqual({ merged: 0 });
+  });
+
+  it("throws when the keeper doesn't exist", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    await expect(mergeMediaItems(999999, [1], false)).rejects.toThrow("Keeper item not found");
+  });
+
+  it("silently skips a loser id that doesn't exist, or whose type doesn't match the keeper's", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertMovie("Type Guard Keeper", 2020, 1);
+    const wrongTypeId = (
+      await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('series', 'Wrong Type', 'wrong type', 1, 0, 'unknown')`).run()
+    ).lastInsertRowid as number;
+
+    const result = await mergeMediaItems(keeperId, [999999, wrongTypeId], false);
+
+    expect(result).toEqual({ merged: 0 });
+    expect(await db.prepare("SELECT id FROM media_items WHERE id = ?").get(wrongTypeId)).toBeDefined(); // untouched, not deleted
+  });
+
+  it("merges more than one loser into the same keeper in a single call", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertMovie("Multi Merge", 2020, 0);
+    const loser1 = await insertMovie("Multi Merge", 2020, 0, { overview: "from loser 1" });
+    const loser2 = await insertMovie("Multi Merge", 2020, 0, { overview: "from loser 2" });
+
+    const result = await mergeMediaItems(keeperId, [loser1, loser2], false);
+
+    expect(result).toEqual({ merged: 2 });
+    expect(await db.prepare("SELECT id FROM media_items WHERE id = ?").get(loser1)).toBeUndefined();
+    expect(await db.prepare("SELECT id FROM media_items WHERE id = ?").get(loser2)).toBeUndefined();
+  });
+});
+
+describe("mergeMediaItems: collection shape (sub_items)", () => {
+  async function insertArtist(): Promise<number> {
+    return Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('artist', 'Band', 'band', 1, 0, 'unknown')`).run())
+        .lastInsertRowid
+    );
+  }
+
+  it("moves a non-colliding sub-item to the keeper, and rolls up has_file once it has a file'd child", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertArtist();
+    const loserId = await insertArtist();
+    const subId = Number((await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file) VALUES (?, 'Album One', 1)").run(loserId)).lastInsertRowid);
+
+    await mergeMediaItems(keeperId, [loserId], false);
+
+    const moved = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subId)) as any;
+    expect(moved.media_item_id).toBe(keeperId);
+    expect(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(keeperId)) as any).has_file).toBe(1);
+  });
+
+  it("leaves a title-colliding sub-item's file alone (deleteFiles=false) or recycles it (deleteFiles=true), and it's gone once the loser is deleted", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    let keeperId = await insertArtist();
+    let loserId = await insertArtist();
+    await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file) VALUES (?, 'Same Album', 1)").run(keeperId);
+    let loserSubId = Number(
+      (await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file, file_path) VALUES (?, 'Same Album', 1, '/music/dupe.mp3')").run(loserId)).lastInsertRowid
+    );
+
+    await mergeMediaItems(keeperId, [loserId], false);
+    expect(recycleFile).not.toHaveBeenCalled();
+    expect(await db.prepare("SELECT id FROM sub_items WHERE id = ?").get(loserSubId)).toBeUndefined(); // gone via cascade with the loser row
+
+    keeperId = await insertArtist();
+    loserId = await insertArtist();
+    await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file) VALUES (?, 'Same Album', 1)").run(keeperId);
+    await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file, file_path) VALUES (?, 'Same Album', 1, '/music/dupe2.mp3')").run(loserId);
+
+    await mergeMediaItems(keeperId, [loserId], true);
+    expect(recycleFile).toHaveBeenCalledWith("/music/dupe2.mp3", "artist", expect.stringContaining("Same Album"), loserId);
+  });
+});
+
+describe("mergeMediaItems: file recycling (single-shape) and episode-collision recycling", () => {
+  it("single-shape: both keeper and loser have different files -- abandons the loser's file when deleteFiles=false, recycles it when true", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    let keeperId = await insertMovie("Both Have Files", 2020, 1);
+    await db.prepare("UPDATE media_items SET path = '/movies/keeper.mkv' WHERE id = ?").run(keeperId);
+    let loserId = await insertMovie("Both Have Files", 2020, 1);
+    await db.prepare("UPDATE media_items SET path = '/movies/loser.mkv' WHERE id = ?").run(loserId);
+
+    await mergeMediaItems(keeperId, [loserId], false);
+    expect(recycleFile).not.toHaveBeenCalled();
+
+    keeperId = await insertMovie("Both Have Files 2", 2020, 1);
+    await db.prepare("UPDATE media_items SET path = '/movies/keeper2.mkv' WHERE id = ?").run(keeperId);
+    loserId = await insertMovie("Both Have Files 2", 2020, 1);
+    await db.prepare("UPDATE media_items SET path = '/movies/loser2.mkv' WHERE id = ?").run(loserId);
+
+    await mergeMediaItems(keeperId, [loserId], true);
+    expect(recycleFile).toHaveBeenCalledWith("/movies/loser2.mkv", "movie", "Both Have Files 2", loserId);
+    // The keeper's own file is untouched by the merge.
+    expect(((await db.prepare("SELECT path FROM media_items WHERE id = ?").get(keeperId)) as any).path).toBe("/movies/keeper2.mkv");
+  });
+
+  it("episodic: a colliding episode's file is left alone (deleteFiles=false) or recycled (deleteFiles=true)", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = (
+      await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('series', 'Collision Show', 'collision show', 1, 1, 'unknown')`).run()
+    ).lastInsertRowid as number;
+    const loserId = (
+      await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('series', 'Collision Show', 'collision show', 1, 1, 'unknown')`).run()
+    ).lastInsertRowid as number;
+    await db.prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, has_file) VALUES (?, 1, 1, 1)").run(keeperId);
+    await db.prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, has_file, file_path) VALUES (?, 1, 1, 1, '/tv/dupe.mkv')").run(loserId);
+
+    await mergeMediaItems(keeperId, [loserId], true);
+
+    expect(recycleFile).toHaveBeenCalledWith("/tv/dupe.mkv", "series", expect.stringContaining("Collision Show"), loserId);
+  });
+});
+
+describe("mergeMediaItems: tag/collection membership and other REASSIGN_TABLES", () => {
+  it("copies the loser's tags and collection membership to the keeper, without duplicating one it already has", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertMovie("Tag Merge Keeper", 2020, 1);
+    const loserId = await insertMovie("Tag Merge Loser", 2020, 0);
+    const sharedTagId = Number((await db.prepare("INSERT INTO tags (name) VALUES ('Shared')").run()).lastInsertRowid);
+    const loserOnlyTagId = Number((await db.prepare("INSERT INTO tags (name) VALUES ('LoserOnly')").run()).lastInsertRowid);
+    await db.prepare("INSERT INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?)").run(keeperId, sharedTagId);
+    await db.prepare("INSERT INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?)").run(loserId, sharedTagId);
+    await db.prepare("INSERT INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?)").run(loserId, loserOnlyTagId);
+    const collectionId = Number((await db.prepare("INSERT INTO collections (name) VALUES ('A Collection')").run()).lastInsertRowid);
+    await db.prepare("INSERT INTO collection_items (collection_id, media_item_id, position) VALUES (?, ?, 1)").run(collectionId, loserId);
+
+    await mergeMediaItems(keeperId, [loserId], false);
+
+    const keeperTags = ((await db.prepare("SELECT tag_id FROM media_item_tags WHERE media_item_id = ?").all(keeperId)) as any[]).map((r) => r.tag_id).sort();
+    expect(keeperTags).toEqual([sharedTagId, loserOnlyTagId].sort()); // shared tag not duplicated, loser-only tag adopted
+    expect(await db.prepare("SELECT * FROM collection_items WHERE collection_id = ? AND media_item_id = ?").get(collectionId, keeperId)).toBeDefined();
+  });
+
+  it("reassigns blocklist and queue rows from the loser to the keeper", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertMovie("Reassign Keeper", 2020, 1);
+    const loserId = await insertMovie("Reassign Loser", 2020, 0);
+    await db.prepare("INSERT INTO blocklist (media_item_id, release_title) VALUES (?, 'Bad Release')").run(loserId);
+    await db.prepare("INSERT INTO queue (media_item_id, title) VALUES (?, 'Queued Release')").run(loserId);
+
+    await mergeMediaItems(keeperId, [loserId], false);
+
+    expect((await db.prepare("SELECT * FROM blocklist WHERE media_item_id = ?").get(keeperId)) as any).toMatchObject({ release_title: "Bad Release" });
+    expect((await db.prepare("SELECT * FROM queue WHERE media_item_id = ?").get(keeperId)) as any).toMatchObject({ title: "Queued Release" });
+  });
+});
+
+describe("runScheduledDuplicateCheck", () => {
+  // runScheduledDuplicateCheck calls findDuplicateGroups() with no type/title filter at all -- it
+  // scans literally every media_items row. Every other describe block in this file deliberately
+  // accumulates state across tests (a later test re-finds an earlier one's group), so by the time
+  // this block runs there are real, undismissed duplicate pairs (e.g. the Dune one from the very
+  // first test) still sitting in the shared DB. Wipe just for this block, the same fix
+  // runAllImportLists's own tests needed for the identical "scans the whole table" reason.
+  beforeEach(async () => {
+    await db.prepare("DELETE FROM media_items").run();
+    await db.prepare("DELETE FROM duplicate_group_seen").run();
+  });
+
+  it("returns {newGroups:0} and never notifies when there are no duplicate groups", async () => {
+    const { runScheduledDuplicateCheck } = await import("../src/services/duplicateCheck.js");
+    await expect(runScheduledDuplicateCheck()).resolves.toEqual({ newGroups: 0 });
+    expect(notifyDuplicatesFound).not.toHaveBeenCalled();
+  });
+
+  it("records and notifies about a newly-found group, formatting the title with its year", async () => {
+    const { runScheduledDuplicateCheck } = await import("../src/services/duplicateCheck.js");
+    await insertMovie("Scheduled Find", 2022, 0);
+    await insertMovie("Scheduled Find", 2022, 1);
+
+    const result = await runScheduledDuplicateCheck();
+
+    expect(result).toEqual({ newGroups: 1 });
+    expect(notifyDuplicatesFound).toHaveBeenCalledWith(1, ["Scheduled Find (2022)"]);
+    expect(await db.prepare("SELECT * FROM duplicate_group_seen WHERE type = 'movie' AND normalized_key LIKE '%scheduled find%'").get()).toBeDefined();
+  });
+
+  it("does not re-notify about a group already recorded from an earlier run", async () => {
+    const { findDuplicateGroups, runScheduledDuplicateCheck } = await import("../src/services/duplicateCheck.js");
+    await insertMovie("Already Seen Group", 2019, 0);
+    await insertMovie("Already Seen Group", 2019, 1);
+    const [group] = (await findDuplicateGroups("movie")).filter((g) => g.title === "Already Seen Group");
+    await db.prepare("INSERT INTO duplicate_group_seen (type, normalized_key) VALUES (?, ?)").run(group.type, group.key);
+
+    const result = await runScheduledDuplicateCheck();
+
+    expect(result.newGroups).toBe(0);
+    expect(notifyDuplicatesFound).not.toHaveBeenCalled();
+  });
+
+  it("caps the notified title list at 5 while still reporting the true total new-group count", async () => {
+    const { runScheduledDuplicateCheck } = await import("../src/services/duplicateCheck.js");
+    for (let i = 0; i < 6; i++) {
+      await insertMovie(`Bulk Group ${i}`, 2020, 0);
+      await insertMovie(`Bulk Group ${i}`, 2020, 1);
+    }
+
+    const result = await runScheduledDuplicateCheck();
+
+    expect(result.newGroups).toBe(6);
+    expect(notifyDuplicatesFound).toHaveBeenCalledTimes(1);
+    const [count, titles] = notifyDuplicatesFound.mock.calls[0];
+    expect(count).toBe(6);
+    expect(titles).toHaveLength(5);
+  });
+
+  it("swallows a notification failure rather than throwing, after the groups are still recorded", async () => {
+    const { runScheduledDuplicateCheck } = await import("../src/services/duplicateCheck.js");
+    notifyDuplicatesFound.mockRejectedValue(new Error("webhook down"));
+    await insertMovie("Notify Fails", 2020, 0);
+    await insertMovie("Notify Fails", 2020, 1);
+
+    await expect(runScheduledDuplicateCheck()).resolves.toEqual({ newGroups: 1 });
   });
 });
