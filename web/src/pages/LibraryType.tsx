@@ -9,6 +9,8 @@ import DropdownMenu from "../components/DropdownMenu.js";
 import Modal from "../components/Modal.js";
 import MonitorToggle from "../components/MonitorToggle.js";
 import RenamePreviewModal from "../components/RenamePreviewModal.js";
+import { PlusCircleIcon, CheckSquareIcon, SlashIcon, ZapIcon, RotateCcwIcon, SearchIcon } from "../components/NavIcons.js";
+import { PencilIcon, XIcon, CheckIcon, TrashIcon, FolderIcon, ChevronLeftIcon, ChevronRightIcon } from "../components/ActionIcons.js";
 
 type SortKey = "title" | "year" | "added" | "status" | "monitored" | "quality" | "contentRating" | "releaseDate" | "path" | "sizeOnDisk";
 type ViewMode = "poster" | "overview" | "list";
@@ -257,14 +259,16 @@ export default function LibraryType() {
             {auth.isAdmin && (
               <button
                 type="button"
-                className="secondary"
+                className="icon-button"
+                title={groupDetail.group.overview ? "Edit description" : "Add description"}
+                aria-label={groupDetail.group.overview ? "Edit description" : "Add description"}
                 onClick={() => {
                   setOverviewDraft(groupDetail.group.overview ?? "");
                   setLogoUrlDraft(groupDetail.group.logoUrl ?? "");
                   setEditingOverview(true);
                 }}
               >
-                {groupDetail.group.overview ? "Edit description" : "Add description"}
+                <PencilIcon />
               </button>
             )}
           </div>
@@ -297,8 +301,15 @@ export default function LibraryType() {
         )}
 
         {auth.isAdmin && (
-          <button type="button" onClick={addGroup} style={{ marginBottom: 16 }}>
-            + Add {KIND_LABEL[(groupId ? groupDetail?.nextKind : groupLevels[0]) ?? ""] ?? "group"}
+          <button
+            type="button"
+            className="icon-button"
+            style={{ marginBottom: 16 }}
+            onClick={addGroup}
+            title={`Add ${KIND_LABEL[(groupId ? groupDetail?.nextKind : groupLevels[0]) ?? ""] ?? "group"}`}
+            aria-label={`Add ${KIND_LABEL[(groupId ? groupDetail?.nextKind : groupLevels[0]) ?? ""] ?? "group"}`}
+          >
+            <PlusCircleIcon />
           </button>
         )}
 
@@ -327,12 +338,13 @@ export default function LibraryType() {
               {auth.isAdmin && (
                 <button
                   type="button"
-                  className="danger"
+                  className="icon-button danger"
                   aria-label={`Delete ${g.name}`}
-                  style={{ position: "absolute", top: 4, right: 4, padding: "1px 6px", fontSize: "0.7rem" }}
+                  title={`Delete ${g.name}`}
+                  style={{ position: "absolute", top: 4, right: 4, width: 22, height: 22 }}
                   onClick={(e) => deleteGroup(g, e)}
                 >
-                  ✕
+                  <XIcon />
                 </button>
               )}
             </div>
@@ -1095,13 +1107,13 @@ export function LibraryItemGrid({
           </select>
         )}
         {auth.isAdmin && (
-          <button type="button" className="secondary" onClick={saveCurrentAsView} title="Save the current sort/filter/columns as a reusable named view">
-            Save view...
+          <button type="button" className="icon-button" onClick={saveCurrentAsView} title="Save the current sort/filter/columns as a reusable named view" aria-label="Save view">
+            <CheckIcon />
           </button>
         )}
         {auth.isAdmin && activeViewId !== "" && (
-          <button type="button" className="secondary" onClick={deleteActiveView} title="Delete this saved view">
-            Delete view
+          <button type="button" className="icon-button danger" onClick={deleteActiveView} title="Delete this saved view" aria-label="Delete view">
+            <TrashIcon />
           </button>
         )}
         {viewMode !== "list" ? (
@@ -1149,8 +1161,8 @@ export function LibraryItemGrid({
         </DropdownMenu>
 
         {auth.isAdmin && groupId && (
-          <button type="button" onClick={quickAdd}>
-            + Add {typeLabel.replace(/ — Ungrouped$/, "")}
+          <button type="button" className="icon-button" onClick={quickAdd} title={`Add ${typeLabel.replace(/ — Ungrouped$/, "")}`} aria-label={`Add ${typeLabel.replace(/ — Ungrouped$/, "")}`}>
+            <PlusCircleIcon />
           </button>
         )}
 
@@ -1195,26 +1207,37 @@ export function LibraryItemGrid({
 
         {auth.isAdmin && (
           <button
-            className="select-like"
+            type="button"
+            className="icon-button"
             onClick={scanAndImport}
             disabled={scanning}
-            title="Scan this library's root folder(s) for media already on disk and import it"
+            title={scanning ? "Scanning..." : "Scan & Import — scan this library's root folder(s) for media already on disk and import it"}
+            aria-label="Scan & Import"
           >
-            {scanning ? "Scanning..." : "Scan & Import"}
-          </button>
-        )}
-        {auth.isAdmin && (
-          <button className="select-like" onClick={refreshLibrary} disabled={refreshing} title="Re-pull overview/poster/year for every item in this library">
-            {refreshing ? "Refreshing..." : "Refresh"}
+            <ZapIcon />
           </button>
         )}
         {auth.isAdmin && (
           <button
-            className="select-like"
-            onClick={organizeLibrary}
-            title="Move/rename every already-imported file in this library to match the current naming template (Settings → Media Management → Naming)"
+            type="button"
+            className="icon-button"
+            onClick={refreshLibrary}
+            disabled={refreshing}
+            title={refreshing ? "Refreshing..." : "Refresh — re-pull overview/poster/year for every item in this library"}
+            aria-label="Refresh"
           >
-            Organize & Rename
+            <RotateCcwIcon />
+          </button>
+        )}
+        {auth.isAdmin && (
+          <button
+            type="button"
+            className="icon-button"
+            onClick={organizeLibrary}
+            title="Organize & Rename — move/rename every already-imported file in this library to match the current naming template (Settings → Media Management → Naming)"
+            aria-label="Organize & Rename"
+          >
+            <FolderIcon />
           </button>
         )}
         {auth.isAdmin && mediaServerConfigured && (
@@ -1261,17 +1284,17 @@ export function LibraryItemGrid({
       {auth.isAdmin && selectMode && selected.size > 0 && (
         <div className="form-panel toolbar">
           <strong>{selected.size} selected</strong>
-          <button className="secondary" onClick={() => bulkMonitor(true)}>
-            Monitor
+          <button type="button" className="icon-button" onClick={() => bulkMonitor(true)} title="Monitor" aria-label="Monitor selected">
+            <CheckSquareIcon />
           </button>
-          <button className="secondary" onClick={() => bulkMonitor(false)}>
-            Unmonitor
+          <button type="button" className="icon-button" onClick={() => bulkMonitor(false)} title="Unmonitor" aria-label="Unmonitor selected">
+            <SlashIcon />
           </button>
-          <button className="secondary" onClick={bulkSearch}>
-            Search selected
+          <button type="button" className="icon-button" onClick={bulkSearch} title="Search selected" aria-label="Search selected">
+            <SearchIcon />
           </button>
-          <button className="danger" onClick={bulkDelete}>
-            Remove
+          <button type="button" className="icon-button danger" onClick={bulkDelete} title="Remove" aria-label="Remove selected">
+            <TrashIcon />
           </button>
           <select
             value={bulkEditQualityProfileId}
@@ -1292,8 +1315,8 @@ export function LibraryItemGrid({
               </option>
             ))}
           </select>
-          <button className="secondary" onClick={bulkEdit} disabled={!bulkEditQualityProfileId && !bulkEditRootFolderId}>
-            Apply
+          <button type="button" className="icon-button" onClick={bulkEdit} disabled={!bulkEditQualityProfileId && !bulkEditRootFolderId} title="Apply" aria-label="Apply quality profile / root folder to selected">
+            <CheckIcon />
           </button>
           {tags.length > 0 && (
             <>
@@ -1305,8 +1328,8 @@ export function LibraryItemGrid({
                   </option>
                 ))}
               </select>
-              <button className="secondary" onClick={bulkTag} disabled={!tagToApply}>
-                Apply tag
+              <button type="button" className="icon-button" onClick={bulkTag} disabled={!tagToApply} title="Apply tag" aria-label="Apply tag to selected">
+                <PlusCircleIcon />
               </button>
             </>
           )}
@@ -1495,19 +1518,21 @@ export function LibraryItemGrid({
         <div className="toolbar" style={{ justifyContent: "center", marginTop: 20 }}>
           {filteredTotal > pageSize && (
             <>
-              <button type="button" className="secondary" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}>
-                ← Previous
+              <button type="button" className="icon-button" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0} title="Previous page" aria-label="Previous page">
+                <ChevronLeftIcon />
               </button>
               <span className="sub">
                 Page {page + 1} of {totalPages} ({filteredTotal} total)
               </span>
               <button
                 type="button"
-                className="secondary"
+                className="icon-button"
                 onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
                 disabled={page >= totalPages - 1}
+                title="Next page"
+                aria-label="Next page"
               >
-                Next →
+                <ChevronRightIcon />
               </button>
             </>
           )}

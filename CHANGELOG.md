@@ -3,6 +3,29 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 297 — LibraryType.tsx converted to icon buttons
+Continued the Phase 2 rollout — `LibraryType.tsx` (39 buttons in the original survey) is now fully
+converted: the group-browse level (Edit/Add description, Add group, and upgrading the existing
+raw "✕" glyph delete button to a real `XIcon` for visual consistency with the rest of the icon
+set), Save/Delete view, the quick-add button, Scan & Import/Refresh/Organize & Rename, pagination
+(Previous/Next → chevrons), and the whole bulk-action bar (Monitor/Unmonitor/Search selected/
+Remove/Apply/Apply tag).
+
+Left as text, deliberately, extending the established exceptions: `DropdownMenu`'s own menu items
+(View: Posters/Overview/Table, Export CSV/.nfo/JSON/.plexmatch/Calibre, Bulk edit via CSV) stay
+text — a vertical menu list needs readable labels the way any app's dropdown does, unlike a row of
+standalone icon buttons; converting only the dropdown *trigger* to icon-only while keeping menu
+items textual would also lose the trigger's "shows the current selection" affordance (e.g. "View:
+Table") that a bare icon can't convey. "Import from Media Server" and "Import from {StarrApp}" stay
+text since which external system is being imported from is essential, not decorative, information
+— same reasoning as `MediaDetail.tsx`'s "Fetch from {provider}". "Select"/"Done selecting"/"Select
+all on page"/"Select none"/"Clear selection" all stay text, matching the precedent already set by
+`Activity.tsx`'s own selection-composition controls in Round 294.
+
+Verified live: main toolbar renders correctly, the bulk-action bar's icons and Apply/Apply-tag
+flow work, and the group-browse level's "Add System" (ROMs, a grouped type) renders with the
+correct dynamic label. No regressions.
+
 ## Round 296 — MediaDetail.tsx: the rest of the file converted to icon buttons
 Finished what Round 295 started — every remaining row/toolbar action button in `MediaDetail.tsx`
 is now icon-only: the season toolbar (Sync scene numbering, List/Tiles view toggle — a new
