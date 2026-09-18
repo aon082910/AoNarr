@@ -3,6 +3,29 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 308 — popup rollout complete: LibraryType, MediaDetail, Settings
+Finishes the `alert()`/`confirm()` → `notify`/`confirmDialog` conversion started in Round 306 —
+**every native browser popup in the app is now gone**, across all three of the largest remaining
+files (`LibraryType.tsx`, `MediaDetail.tsx` — the biggest file in the app, `Settings.tsx`), on top
+of their checkbox-chain functions already converted in Round 306. ~45 more call sites, all the
+same established patterns: error/success/info toasts, and plain yes/no confirms for token/API-key/
+webhook-URL regeneration, group/saved-view deletion, root-folder moves, and a blocklist release.
+One post-action navigation choice (`MediaDetail.tsx`'s split-item "go to the new show now?") uses
+`confirmDialog` with custom `confirmLabel`/`cancelLabel` ("Go to new show"/"Stay here") instead of
+generic Confirm/Cancel, since it isn't a safety gate — the split already happened, this is just
+picking where to go next.
+
+`window.prompt()` (a handful of free-text inputs — `SubItemDetail.tsx`/`MediaDetail.tsx`'s cover-
+art/series/narrator editors, `GroupPicker.tsx`'s "+ New" group creation, `MediaDetail.tsx`'s Share-
+link clipboard-copy fallback) is deliberately left alone — a different native-popup category
+(text input, not alert/confirm) that would need its own new modal component, not built as part of
+this effort.
+
+Verified live: `Settings.tsx`'s "Regenerate API key" confirm dialog rendered and cancelled cleanly;
+`LibraryType.tsx` and `MediaDetail.tsx` both load without any new console errors after their edits.
+A final app-wide grep (`grep -rn "alert(\|confirm(" web/src/pages web/src/components`) turned up
+only doc-comment mentions of the old behavior — no real call sites left.
+
 ## Round 307 — popup rollout continues: Activity, IptvPlaylists, System, SubItemDetail
 Continues Round 306's `alert()`/`confirm()` → `notify`/`confirmDialog` conversion. All four files
 are now fully converted (44 combined call sites: `Activity.tsx` 5, `IptvPlaylists.tsx` 10+1,

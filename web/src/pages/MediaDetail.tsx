@@ -455,7 +455,7 @@ export default function MediaDetail() {
     if (!item || !collectionToAdd) return;
     await api.post(`/collections/${collectionToAdd}/items`, { mediaItemId: item.id });
     setCollectionToAdd("");
-    alert("Added to collection.");
+    notify.success("Added to collection.");
   }
 
   async function addCollectionPart(part: TmdbCollectionPart) {
@@ -475,7 +475,7 @@ export default function MediaDetail() {
       });
       navigate(`/media/${created.id}`);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setAddingCollectionPart(null);
     }
@@ -652,9 +652,9 @@ export default function MediaDetail() {
   function onRenameDone(result: { renamed: { title: string; from: string; to: string }[]; errors: { title: string; error: string }[] }) {
     setShowRenamePreview(false);
     if (result.errors.length > 0) {
-      alert(`Rename failed: ${result.errors.map((e) => e.error).join(", ")}`);
+      notify.error(`Rename failed: ${result.errors.map((e) => e.error).join(", ")}`);
     } else {
-      alert(`Renamed/organized ${result.renamed.length} file(s) to match the current naming template.`);
+      notify.success(`Renamed/organized ${result.renamed.length} file(s) to match the current naming template.`);
     }
     load();
   }
@@ -703,7 +703,14 @@ export default function MediaDetail() {
       setShowSplit(false);
       setSplitSelected(new Set());
       setSplitTitle("");
-      if (confirm(`Created "${created.title}" with ${splitSelected.size} episode(s). Go to the new show now?`)) {
+      if (
+        await confirmDialog({
+          title: "Split complete",
+          message: `Created "${created.title}" with ${splitSelected.size} episode(s).`,
+          confirmLabel: "Go to new show",
+          cancelLabel: "Stay here",
+        })
+      ) {
         navigate(`/media/${created.id}`);
       } else {
         load();
@@ -720,7 +727,7 @@ export default function MediaDetail() {
     setScanningItem(true);
     try {
       const result = await api.post<ScanImportResult>(`/media/${item.id}/scan-import`, {});
-      alert(scanImportSummary(result));
+      notify.success(scanImportSummary(result));
       load();
     } catch (err) {
       setError((err as Error).message);
@@ -734,11 +741,8 @@ export default function MediaDetail() {
     setRefreshingItem(true);
     try {
       const result = await api.post<{ ok: boolean; childrenAdded: number }>(`/media/${item.id}/refresh`, {});
-      alert(
-        result.ok
-          ? `Refreshed — ${result.childrenAdded} episode(s)/child(ren) added.`
-          : "Couldn't find this item on its metadata provider — nothing was refreshed."
-      );
+      if (result.ok) notify.success(`Refreshed — ${result.childrenAdded} episode(s)/child(ren) added.`);
+      else notify.error("Couldn't find this item on its metadata provider — nothing was refreshed.");
       load();
     } catch (err) {
       setError((err as Error).message);
@@ -752,7 +756,7 @@ export default function MediaDetail() {
     setSeasonActionBusy({ seasonNumber, action: "scan" });
     try {
       const result = await api.post<ScanImportResult>(`/media/${item.id}/season/${seasonNumber}/scan-import`, {});
-      alert(`Season ${seasonNumber} — ${scanImportSummary(result)}`);
+      notify.success(`Season ${seasonNumber} — ${scanImportSummary(result)}`);
       load();
     } catch (err) {
       setError((err as Error).message);
@@ -770,15 +774,15 @@ export default function MediaDetail() {
         {}
       );
       if (result.errors.length > 0) {
-        alert(`Rename failed: ${result.errors.map((e) => e.error).join(", ")}`);
+        notify.error(`Rename failed: ${result.errors.map((e) => e.error).join(", ")}`);
       } else if (result.renamed.length === 0) {
-        alert(`Season ${seasonNumber} already organized — nothing needed to move.`);
+        notify.info(`Season ${seasonNumber} already organized — nothing needed to move.`);
       } else {
-        alert(`Renamed/organized ${result.renamed.length} file(s) in Season ${seasonNumber}.`);
+        notify.success(`Renamed/organized ${result.renamed.length} file(s) in Season ${seasonNumber}.`);
       }
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setSeasonActionBusy(null);
     }
@@ -789,11 +793,8 @@ export default function MediaDetail() {
     setSeasonActionBusy({ seasonNumber, action: "refresh" });
     try {
       const result = await api.post<{ ok: boolean; childrenAdded: number }>(`/media/${item.id}/season/${seasonNumber}/refresh`, {});
-      alert(
-        result.ok
-          ? `Refreshed Season ${seasonNumber} — ${result.childrenAdded} episode(s) added.`
-          : "Couldn't find this show on its metadata provider — nothing was refreshed."
-      );
+      if (result.ok) notify.success(`Refreshed Season ${seasonNumber} — ${result.childrenAdded} episode(s) added.`);
+      else notify.error("Couldn't find this show on its metadata provider — nothing was refreshed.");
       load();
     } catch (err) {
       setError((err as Error).message);
@@ -947,10 +948,11 @@ export default function MediaDetail() {
     setSyncingSceneNumbering(true);
     try {
       const result = await api.post<{ updated: number }>(`/media/${item.id}/sync-scene-numbering`, {});
-      alert(result.updated > 0 ? `Mapped scene numbering for ${result.updated} episode(s).` : "No scene-numbering mapping found for this series on TheXEM.");
+      if (result.updated > 0) notify.success(`Mapped scene numbering for ${result.updated} episode(s).`);
+      else notify.info("No scene-numbering mapping found for this series on TheXEM.");
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setSyncingSceneNumbering(false);
     }
@@ -998,20 +1000,20 @@ export default function MediaDetail() {
         subItemId: target?.subItemId ?? null,
         seasonNumber: target?.episodeId ? null : target?.seasonNumber ?? null,
       });
-      alert(`Sent "${result.title}" to download client.`);
+      notify.success(`Sent "${result.title}" to download client.`);
       load();
     } catch (e) {
-      alert(`Grab failed: ${(e as Error).message}`);
+      notify.error(`Grab failed: ${(e as Error).message}`);
     }
   }
 
   async function downloadVideo(sub: SubItem) {
     try {
       await api.post(`/media/subitems/${sub.id}/download`, {});
-      alert(`Sent "${sub.title}" to yt-dlp.`);
+      notify.success(`Sent "${sub.title}" to yt-dlp.`);
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
@@ -1023,13 +1025,20 @@ export default function MediaDetail() {
       await api.patch(`/media/${item.id}/subitems/${sub.id}`, { posterUrl: url.trim() || null });
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
   async function blocklistResult(result: SearchResult) {
     if (!item) return;
-    if (!confirm(`Blocklist "${result.title}"? It will never be auto-grabbed or shown as grabbable again for this item.`)) return;
+    if (
+      !(await confirmDialog({
+        title: "Blocklist release",
+        message: `Blocklist "${result.title}"? It will never be auto-grabbed or shown as grabbable again for this item.`,
+        danger: true,
+      }))
+    )
+      return;
     await api.post("/blocklist", { mediaItemId: item.id, releaseTitle: result.title, indexerId: result.indexerId });
     setResults((prev) => prev && prev.map((r) => (r.title === result.title ? { ...r, blocklisted: true } : r)));
   }
@@ -1160,7 +1169,7 @@ export default function MediaDetail() {
       setImportSubItemId(created.id);
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setAddingChild(false);
     }
@@ -1218,17 +1227,17 @@ export default function MediaDetail() {
       }>("/import/manual-batch", { mediaItemId: item.id, files });
       const failed = results.filter((r) => !r.ok);
       if (failed.length === 0) {
-        alert(`Imported ${results.length} file(s).`);
+        notify.success(`Imported ${results.length} file(s).`);
         setShowImport(false);
       } else {
-        alert(
+        notify.error(
           `Imported ${results.length - failed.length} of ${results.length} file(s). Failed:\n` +
             failed.map((f) => `${f.sourcePath}: ${f.error}`).join("\n")
         );
       }
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setImportingBatch(false);
     }
@@ -1317,7 +1326,7 @@ export default function MediaDetail() {
                   const url = `${externalUrl || window.location.origin}/share/${result.token}`;
                   try {
                     await navigator.clipboard.writeText(url);
-                    alert(`Share link copied to clipboard:\n${url}`);
+                    notify.success(`Share link copied to clipboard:\n${url}`);
                   } catch {
                     prompt("Share link (copy manually):", url);
                   }

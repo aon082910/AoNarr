@@ -213,7 +213,14 @@ export default function LibraryType() {
 
   async function deleteGroup(g: LibraryGroup, e: MouseEvent) {
     e.stopPropagation();
-    if (!confirm(`Delete "${g.name}"? Items directly inside will become ungrouped, not deleted.`)) return;
+    if (
+      !(await confirmDialog({
+        title: "Delete group",
+        message: `Delete "${g.name}"? Items directly inside will become ungrouped, not deleted.`,
+        danger: true,
+      }))
+    )
+      return;
     await api.del(`/library-groups/${g.id}`);
     setChildGroups((prev) => prev.filter((c) => c.id !== g.id));
   }
@@ -685,14 +692,14 @@ export function LibraryItemGrid({
       setSavedViews((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
       setActiveViewId(created.id);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
   async function deleteActiveView() {
     if (!activeViewId) return;
     const view = savedViews.find((v) => v.id === activeViewId);
-    if (!view || !confirm(`Delete the saved view "${view.name}"?`)) return;
+    if (!view || !(await confirmDialog({ title: "Delete saved view", message: `Delete the saved view "${view.name}"?`, danger: true }))) return;
     await api.del(`/library-views/${activeViewId}`);
     setSavedViews((prev) => prev.filter((v) => v.id !== activeViewId));
     setActiveViewId("");
@@ -726,12 +733,13 @@ export function LibraryItemGrid({
       } else {
         await api.post("/media-server-import/series", { rootFolderId: mediaServerImportFolderId, type });
       }
-      alert(
-        "Import started in the background — this can take a while for a large library. Check the Logs page for the result, or come back to this list shortly."
+      notify.info(
+        "Import started in the background — this can take a while for a large library. Check the Logs page for the result, or come back to this list shortly.",
+        7000
       );
       setShowMediaServerImport(false);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setMediaServerImporting(false);
     }
@@ -766,14 +774,15 @@ export function LibraryItemGrid({
           type,
         });
       }
-      alert(
-        "Import started in the background — this can take a while for a large library. Check the Logs page for the result, or come back to this list shortly."
+      notify.info(
+        "Import started in the background — this can take a while for a large library. Check the Logs page for the result, or come back to this list shortly.",
+        7000
       );
       setShowStarrImport(false);
       setStarrUrl("");
       setStarrApiKey("");
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setStarrImporting(false);
     }
@@ -922,10 +931,10 @@ export function LibraryItemGrid({
     setImportingCsv(true);
     try {
       const result = await uploadFormFile<{ updated: number; skipped: number }>("/media/bulk-import.csv", file);
-      alert(`Updated ${result.updated} item(s), skipped ${result.skipped} unrecognized row(s).`);
+      notify.success(`Updated ${result.updated} item(s), skipped ${result.skipped} unrecognized row(s).`);
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setImportingCsv(false);
       if (csvInputRef.current) csvInputRef.current.value = "";
@@ -936,7 +945,7 @@ export function LibraryItemGrid({
     const targets = Array.from(selected).map((mediaItemId) => ({ mediaItemId }));
     const results = await api.post<{ grabbed: boolean; error?: string }[]>("/search/bulk", { targets });
     const grabbedCount = results.filter((r) => r.grabbed).length;
-    alert(`Grabbed ${grabbedCount} of ${results.length} selected item(s).`);
+    notify.success(`Grabbed ${grabbedCount} of ${results.length} selected item(s).`);
     load();
   }
 
@@ -948,9 +957,9 @@ export function LibraryItemGrid({
     setScanning(true);
     try {
       await api.post(`/media/scan-import?type=${type}`, {});
-      alert("Scan & import started in the background — this can take a while for a large library. Check the Logs page for the result, or come back to this list shortly.");
+      notify.info("Scan & import started in the background — this can take a while for a large library. Check the Logs page for the result, or come back to this list shortly.", 7000);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setTimeout(() => setScanning(false), 5000);
     }
@@ -960,9 +969,9 @@ export function LibraryItemGrid({
     setRefreshing(true);
     try {
       await api.post(`/media/refresh?type=${type}`, {});
-      alert("Refresh started in the background — check the Logs page for the result, or come back to this list shortly.");
+      notify.info("Refresh started in the background — check the Logs page for the result, or come back to this list shortly.", 6000);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setTimeout(() => setRefreshing(false), 5000);
     }
@@ -980,9 +989,9 @@ export function LibraryItemGrid({
   function onRenameDone(result: { renamed: { title: string; from: string; to: string }[]; errors: { title: string; error: string }[] }) {
     setShowRenamePreview(false);
     if (result.errors.length > 0) {
-      alert(`Renamed ${result.renamed.length}, but ${result.errors.length} failed: ${result.errors.map((e) => e.error).join(", ")}`);
+      notify.error(`Renamed ${result.renamed.length}, but ${result.errors.length} failed: ${result.errors.map((e) => e.error).join(", ")}`);
     } else {
-      alert(`Renamed/organized ${result.renamed.length} file(s) to match the current naming template.`);
+      notify.success(`Renamed/organized ${result.renamed.length} file(s) to match the current naming template.`);
     }
   }
 

@@ -775,7 +775,7 @@ export default function Settings() {
       });
       setTrashJson("");
       if (result.skipped.length > 0) {
-        alert(`Imported "${result.format.name}" — skipped unsupported condition type(s): ${result.skipped.join(", ")}`);
+        notify.info(`Imported "${result.format.name}" — skipped unsupported condition type(s): ${result.skipped.join(", ")}`);
       }
       load();
     } catch (e) {
@@ -787,11 +787,12 @@ export default function Settings() {
     setTrashSyncing(app);
     try {
       await api.post("/custom-formats/trash-sync", { app });
-      alert(
-        `Syncing ${app === "radarr" ? "Radarr" : "Sonarr"} formats from TRaSH-Guides in the background — this can take a minute for 100+ formats. Check the Logs page for the result, or refresh this list shortly.`
+      notify.info(
+        `Syncing ${app === "radarr" ? "Radarr" : "Sonarr"} formats from TRaSH-Guides in the background — this can take a minute for 100+ formats. Check the Logs page for the result, or refresh this list shortly.`,
+        7000
       );
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setTrashSyncing(null);
     }
@@ -811,7 +812,7 @@ export default function Settings() {
       );
       setTestResult(result);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setTestingFormat(false);
     }
@@ -823,7 +824,7 @@ export default function Settings() {
   }
 
   async function clearBlocklist() {
-    if (!confirm("Clear the entire blocklist? This can't be undone.")) return;
+    if (!(await confirmDialog({ title: "Clear blocklist", message: "Clear the entire blocklist? This can't be undone.", danger: true }))) return;
     await api.del("/blocklist");
     load();
   }
@@ -839,7 +840,14 @@ export default function Settings() {
   }
 
   async function regenerateWebhookToken() {
-    if (!confirm("Regenerate the webhook URL? Your media server's webhook config will need updating with the new URL.")) return;
+    if (
+      !(await confirmDialog({
+        title: "Regenerate webhook URL",
+        message: "Regenerate the webhook URL? Your media server's webhook config will need updating with the new URL.",
+        danger: true,
+      }))
+    )
+      return;
     const result = await api.post<{ token: string }>("/settings/media-server-webhook-token/regenerate", {});
     setWebhookUrl(`${window.location.origin}/api/webhooks/media-server?token=${result.token}`);
   }
@@ -850,7 +858,14 @@ export default function Settings() {
   }
 
   async function regenerateOverseerrWebhookToken() {
-    if (!confirm("Regenerate the Overseerr/Jellyseerr webhook URL? Its webhook config will need updating with the new URL.")) return;
+    if (
+      !(await confirmDialog({
+        title: "Regenerate webhook URL",
+        message: "Regenerate the Overseerr/Jellyseerr webhook URL? Its webhook config will need updating with the new URL.",
+        danger: true,
+      }))
+    )
+      return;
     const result = await api.post<{ token: string }>("/settings/overseerr-webhook-token/regenerate", {});
     setOverseerrWebhookUrl(`${window.location.origin}/api/webhooks/overseerr?token=${result.token}`);
   }
@@ -892,7 +907,7 @@ export default function Settings() {
       };
       setTimeout(poll, 2000);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setPlexSigningIn(false);
     }
@@ -902,9 +917,9 @@ export default function Settings() {
     setRegisteringDiscordCommand(true);
     try {
       const result = await api.post<{ registered: boolean; scope: "guild" | "global" }>("/settings/discord-command/register", {});
-      alert(`/request registered (${result.scope} scope)${result.scope === "global" ? " — can take up to an hour to show up." : ""}`);
+      notify.success(`/request registered (${result.scope} scope)${result.scope === "global" ? " — can take up to an hour to show up." : ""}`);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setRegisteringDiscordCommand(false);
     }
@@ -947,7 +962,14 @@ export default function Settings() {
   }
 
   async function regenerateApiKey() {
-    if (!confirm("Regenerate the API key? Anything else using the old key will stop working.")) return;
+    if (
+      !(await confirmDialog({
+        title: "Regenerate API key",
+        message: "Regenerate the API key? Anything else using the old key will stop working.",
+        danger: true,
+      }))
+    )
+      return;
     const result = await api.post<{ key: string; value: string }>("/settings/api-key/regenerate");
     setApiKey(result.value);
     setSettings((prev) => ({ ...prev, apiKey: result.value }));
@@ -959,7 +981,14 @@ export default function Settings() {
   }
 
   async function regenerateOpdsToken() {
-    if (!confirm("Regenerate the OPDS catalog URL? Any e-reader app already connected will stop working until you reconnect with the new URL.")) return;
+    if (
+      !(await confirmDialog({
+        title: "Regenerate OPDS URL",
+        message: "Regenerate the OPDS catalog URL? Any e-reader app already connected will stop working until you reconnect with the new URL.",
+        danger: true,
+      }))
+    )
+      return;
     const result = await api.post<{ token: string }>("/settings/opds-token/regenerate", {});
     setOpdsUrl(`${window.location.origin}/api/opds?token=${result.token}`);
   }
@@ -973,23 +1002,23 @@ export default function Settings() {
   async function confirmTotpSetup() {
     try {
       await api.post("/settings/totp/verify", { code: totpCode });
-      alert("Two-factor authentication enabled.");
+      notify.success("Two-factor authentication enabled.");
       setTotpSetup(null);
       setTotpCode("");
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
   async function disableTotp() {
     try {
       await api.post("/settings/totp/disable", { code: totpDisableCode });
-      alert("Two-factor authentication disabled.");
+      notify.success("Two-factor authentication disabled.");
       setTotpDisableCode("");
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
@@ -1008,13 +1037,13 @@ export default function Settings() {
         scoresImported: number;
         namingImported: number;
       }>("/settings/template/import", parsed);
-      alert(
+      notify.success(
         `Imported: ${result.qualitiesImported} qualities, ${result.profilesImported} profiles, ` +
           `${result.formatsImported} custom formats, ${result.scoresImported} format scores, ${result.namingImported} naming templates.`
       );
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       if (templateInputRef.current) templateInputRef.current.value = "";
     }
@@ -1060,13 +1089,17 @@ export default function Settings() {
 
   async function moveRootFolder(sourceId: number, destinationId: number) {
     if (!destinationId) return;
-    if (!confirm("Move every media item in this folder to the destination folder? This physically relocates their files on disk.")) return;
+    if (
+      !(await confirmDialog({
+        title: "Move root folder",
+        message: "Move every media item in this folder to the destination folder? This physically relocates their files on disk.",
+        danger: true,
+      }))
+    )
+      return;
     const result = await api.post<{ started: boolean; itemCount: number }>(`/root-folders/${sourceId}/move-to/${destinationId}`, {});
-    alert(
-      result.itemCount === 0
-        ? "Nothing to move — this folder has no media items."
-        : `Moving ${result.itemCount} item(s) in the background — check back in a bit, or watch the Audit Log.`
-    );
+    if (result.itemCount === 0) notify.info("Nothing to move — this folder has no media items.");
+    else notify.info(`Moving ${result.itemCount} item(s) in the background — check back in a bit, or watch the Audit Log.`, 6000);
   }
 
   async function updateFolderQuota(id: number, field: "name" | "quotaPercent" | "pauseGrabsAtQuota" | "minFreeSpaceGb", value: number | boolean | string | null) {
