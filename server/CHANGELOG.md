@@ -3,6 +3,54 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 283 — notifications.ts: the whole notification pipeline had essentially no coverage
+While looking for the next file to deepen, `tests/notifications.test.ts` turned out to be only 3
+tests covering one small helper (`isEventEnabledFor`) — a narrow Round-229 regression test for one
+specific bug fix, not a real test suite. Checking the CHANGELOG confirmed this: `notifications.js`
+has been *mocked* as a dependency in dozens of other files' tests across the whole 282-round
+history (scheduler.test.ts and others), but never given its own comprehensive coverage — a genuine
+gap the file-level "every file has a test file" milestone didn't actually catch, since the file
+technically already had one. `notifications.ts` (446 lines) is the entire outbound notification
+pipeline: 10 provider sinks (Discord, Slack, a generic webhook, Telegram, Pushover, Matrix, Twilio
+SMS, SMTP email, web push, and an admin-configured custom script), 8 event-trigger functions, a
+per-provider "Test" dispatcher, and {token}-based template rendering — none of which had ever been
+exercised directly. No source changes; every branch behaved correctly once actually exercised, but
+in a genuinely close call, see below.
+
+- `tests/notifications.test.ts` — 3 → 40 tests. `push.js`/`smtp.js`/`mediaServer.js` are mocked
+  (each already has its own dedicated test file covering its real internals); `node:child_process`'s
+  `execFile` is mocked at the raw callback level so `runCustomScript`'s `promisify(execFile)`
+  wrapper (built once at module-load time) picks it up correctly. Covers: every sink's request
+  shape (URL, headers, body) when configured, and that it's skipped entirely when it isn't; that
+  each sink's own `<providerKey>Events` gate is actually wired into `fanOut` (not just that the
+  `isEventEnabledFor` helper works in isolation); that one sink failing doesn't stop the others
+  (`Promise.allSettled`) and never rejects the calling `notify*` function; `renderTemplate`'s
+  settings-override and unknown-`{token}`-passthrough behavior; all 8 `notify*` functions' title/
+  color/payload/template, including `notifyImported`/`notifyUpgraded`'s opt-in media-server-refresh
+  side effect (and that a refresh failure is caught, not surfaced); `sendTestNotification`'s all 10
+  provider branches (throws a specific message when unconfigured, sends when configured, and
+  genuinely ignores the event-filter setting — proven by explicitly silencing a provider's events
+  and confirming a test-send still goes through); and `runCustomScript`'s env-var construction
+  (`AONARR_`-prefixed, camelCase→SNAKE_CASE) plus its two different failure-propagation shapes
+  (`fanOut` swallows and logs; `sendTestNotification` lets it throw straight through).
+
+  Two self-inflicted test bugs caught on the first Docker run, both worth remembering: (1) the
+  `beforeEach` settings-reset initially used `setSetting(key, "")` for every `<providerKey>Events`
+  key too — but `isEventEnabledFor` treats a *truly-unset* setting as "every event enabled" and an
+  *explicitly-saved empty string* as "every event disabled" (that distinction is the entire point of
+  the Round-227 bug this file's original 3 tests already guard), so the reset was silently
+  disabling every provider before each test even started, exactly the `defaultProviderFor`/`??`
+  class of mistake from Round 276, recurring in a new file — fixed with `deleteSetting` for those
+  keys specifically, `setSetting(key, "")` for everything else. (2) A Matrix test asserted on
+  `fetchMock`'s recorded call arguments, which are captured regardless of whether the mocked
+  response ever actually matched — the route's own matcher used `%21room%3Aexample` for the room id
+  `!room:example`, but `encodeURIComponent` leaves `!` unescaped (it's in the unreserved set), so
+  the real URL never matched and the "successful" response was never actually returned; the
+  assertions on call *arguments* still happened to pass since those are recorded independent of the
+  mock's outcome, silently masking that the "success" path wasn't actually proven end-to-end.
+
+Test count: 1230 → 1267 (89 files, no new files this round).
+
 ## Round 282 — deepen test coverage: mediaServer.ts's resilience-branch divergences
 Continues the deepening phase, moving to `mediaServer.ts` (its own original round found "the real
 Plex-skips-vs-Jellyfin-throws asymmetry on section-fetch failure" — a strong signal this file has
