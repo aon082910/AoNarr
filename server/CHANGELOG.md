@@ -3,6 +3,25 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 291 — releaseParser.ts: source-detection branches masked by an untested title, plus dedup/fallback edges
+Continued down the fresh ratio-scan list. `releaseParser.ts` (0.62, 261 lines) was already well
+tested overall, but re-reading `detectSource`'s if-chain (Remux checked before Bluray before
+WEBDL/WEBRip/HDTV/DVD) against the existing fixtures turned up a real blind spot: the only
+BluRay-tagged title in the suite also contains "REMUX" in the same string, so Remux (checked first)
+always wins there — that existing test could pass whether or not Bluray-alone detection actually
+worked, since nothing exercised a BluRay title without a Remux tag alongside it. Added a
+Bluray-only title, its "bdrip" spelling, a WEBRip title (previously zero coverage; every existing
+WEB-flavored fixture happened to use WEBDL), and a DVD-only title (proving `detectQuality`'s
+special-cased bare `"DVD"` return, since a DVD release has no resolution tag to combine with a
+source). Also added the documented-but-never-asserted "resolution present, no recognized source at
+all → assume WEB-DL" fallback, a language-dedup test proving two different literal tokens
+("TrueFrench" and "French") that map to the same canonical tag collapse to one result instead of
+two, a null-release-group case, leading-zero stripping in the `1x01`-style fallback notation, and
+`releaseMatchesEpisode`'s scene-numbering guard requiring BOTH `sceneSeasonNumber` AND
+`sceneEpisodeNumber` together (supplying only one must be ignored, not partially applied). No
+source bug — every branch, including the ones masked by a previously-untested title shape, already
+worked correctly. Full suite: 1349 → 1358 tests, 89 files.
+
 ## Round 290 — quality.ts: the fire-and-forget cache invalidator and two boundary shapes
 Continued down the fresh ratio-scan list from Round 289. `quality.ts` (0.57, 139 lines) was already
 solidly tested overall, but `invalidateQualityRankCache` — the one exported function with zero

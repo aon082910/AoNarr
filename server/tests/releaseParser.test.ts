@@ -106,6 +106,62 @@ describe("parseReleaseTitle", () => {
     const p = parseReleaseTitle("Some.Random.File.Name");
     expect(p.quality).toBe("Unknown");
   });
+
+  it("assumes WEB-DL when a resolution is present but no source tag is recognized at all", () => {
+    // Documented fallback in detectQuality() — a resolution with no Remux/Bluray/WEBRip/HDTV/DVD
+    // keyword anywhere in the title defaults to WEB-DL, the most common unlabeled case. Every
+    // other quality-asserting test above happens to include an explicit source tag, so this exact
+    // branch was previously only ever exercised incidentally (never asserted on).
+    const p = parseReleaseTitle("Show.Name.S01E01.1080p.x264-GROUP");
+    expect(p.source).toBeNull();
+    expect(p.quality).toBe("WEBDL-1080p");
+  });
+
+  it("detects Bluray as its own source, distinct from — and not masked by — Remux", () => {
+    // The only prior BluRay-tagged fixture in this file also contains "REMUX" in the same title,
+    // so Remux (checked first in detectSource's if-chain) always wins there — that test can pass
+    // whether or not Bluray-alone detection actually works. This title has no Remux tag at all.
+    const p = parseReleaseTitle("Movie.Name.2023.1080p.BluRay.x264-GROUP");
+    expect(p.source).toBe("Bluray");
+    expect(p.quality).toBe("Bluray-1080p");
+  });
+
+  it("detects the bdrip spelling as a Bluray source too", () => {
+    const p = parseReleaseTitle("Movie.Name.2023.720p.BDRip.x264-GROUP");
+    expect(p.source).toBe("Bluray");
+    expect(p.quality).toBe("Bluray-720p");
+  });
+
+  it("detects WEBRip as its own source, distinct from WEBDL", () => {
+    const p = parseReleaseTitle("Show.Name.S01E01.720p.WEBRip.x264-GROUP");
+    expect(p.source).toBe("WEBRip");
+    expect(p.quality).toBe("WEBRip-720p");
+  });
+
+  it("detects a DVD release as its own bare 'DVD' quality when no resolution tag is present", () => {
+    const p = parseReleaseTitle("Movie.Name.2023.DVDRip.XviD-GROUP");
+    expect(p.resolution).toBeNull();
+    expect(p.source).toBe("DVD");
+    expect(p.quality).toBe("DVD");
+  });
+
+  it("dedupes languages by their canonical mapped tag, even when two different literal tokens both map to it", () => {
+    // TrueFrench and French are different matched substrings but share the same canonical "french"
+    // output value — the Set dedupes on that mapped value, not the raw regex match.
+    const p = parseReleaseTitle("Movie.2023.TrueFrench.French.1080p-GROUP");
+    expect(p.languages).toEqual(["french"]);
+  });
+
+  it("returns a null release group when the title has no trailing hyphenated tag", () => {
+    const p = parseReleaseTitle("Movie.Name.2023.1080p.WEBDL");
+    expect(p.releaseGroup).toBeNull();
+  });
+
+  it("strips leading zeros on both sides of the 1x01 scene notation", () => {
+    const p = parseReleaseTitle("Show Name 02x007 Some Title 720p");
+    expect(p.seasonNumber).toBe(2);
+    expect(p.episodeNumbers).toEqual([7]);
+  });
 });
 
 describe("releaseMatchesEpisode", () => {
@@ -145,6 +201,12 @@ describe("releaseMatchesEpisode", () => {
   it("prefers a real season/episode match over needing the absolute fallback", () => {
     const p = parseReleaseTitle("Show.Name.S02E05.1080p-GROUP");
     expect(releaseMatchesEpisode(p, 2, 5, null, null, 999)).toBe(true);
+  });
+
+  it("ignores scene numbering entirely when only one of season/episode is supplied, rather than partially matching", () => {
+    const p = parseReleaseTitle("Show.Name.S05E01.1080p-GROUP");
+    expect(releaseMatchesEpisode(p, 1, 5, 5, null)).toBe(false);
+    expect(releaseMatchesEpisode(p, 1, 5, null, 1)).toBe(false);
   });
 });
 
