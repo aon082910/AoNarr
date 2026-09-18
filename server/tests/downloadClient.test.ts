@@ -655,6 +655,98 @@ describe("RealDebridAdapter", () => {
       expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("failed");
     });
   });
+
+  it("uploads raw .torrent bytes via PUT /torrents/addTorrent when the resolved source isn't a magnet", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u === "https://indexer/get", response: ok({}) }, // resolveDownloadSource: 200, not a redirect -> torrent bytes
+        {
+          test: (u, init) => u.includes("/torrents/addTorrent"),
+          response: (u: string, init: any) => {
+            expect(init.method).toBe("PUT");
+            return ok({ id: "rd-bytes" });
+          },
+        },
+        { test: (u) => u.includes("/torrents/selectFiles"), response: ok({}) },
+        { test: (u) => u.includes("/torrents/info/rd-bytes"), response: ok({ status: "downloaded", links: [] }) },
+      ])
+    );
+    const client = await insertClient({ type: "realdebrid", api_key: "key" });
+
+    const { downloadId } = await adapter().addDownload(client, "https://indexer/get", null);
+    await vi.waitFor(async () => {
+      expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("failed"); // "reported no files" -- proves addTorrent's id was accepted and reached the poll
+    });
+  });
+
+  it("treats selectFiles's 202 (already selected) as success rather than an error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u.includes("/torrents/addMagnet"), response: ok({ id: "rd202" }) },
+        { test: (u) => u.includes("/torrents/selectFiles"), response: notOk(202) },
+        { test: (u) => u.includes("/torrents/info/rd202"), response: ok({ status: "downloaded", links: ["https://rd/link"] }) },
+        { test: (u) => u.includes("/unrestrict/link"), response: ok({ download: "https://rd/direct", filename: "Movie.mkv" }) },
+        { test: (u) => u === "https://rd/direct", response: fileResponse("bytes") },
+      ])
+    );
+    const client = await insertClient({ type: "realdebrid", api_key: "key" });
+
+    const { downloadId } = await adapter().addDownload(client, "magnet:?xt=x", null);
+    await vi.waitFor(async () => {
+      expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("completed");
+    });
+  });
+
+  it("reports failed when selectFiles or unrestrict/link return a real (non-202) error status", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u.includes("/torrents/addMagnet"), response: ok({ id: "rd-sf-fail" }) },
+        { test: (u) => u.includes("/torrents/selectFiles"), response: notOk(500) },
+      ])
+    );
+    let client = await insertClient({ type: "realdebrid", api_key: "key" });
+    let { downloadId } = await adapter().addDownload(client, "magnet:?xt=x", null);
+    await vi.waitFor(async () => expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("failed"));
+
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u.includes("/torrents/addMagnet"), response: ok({ id: "rd-unr-fail" }) },
+        { test: (u) => u.includes("/torrents/selectFiles"), response: ok({}) },
+        { test: (u) => u.includes("/torrents/info/rd-unr-fail"), response: ok({ status: "downloaded", links: ["https://rd/link"] }) },
+        { test: (u) => u.includes("/unrestrict/link"), response: notOk(500) },
+      ])
+    );
+    client = await insertClient({ type: "realdebrid", api_key: "key" });
+    ({ downloadId } = await adapter().addDownload(client, "magnet:?xt=x", null));
+    await vi.waitFor(async () => expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("failed"));
+  });
+
+  it("reports progress while polling, and fails once the 6-hour polling window elapses", async () => {
+    vi.useFakeTimers();
+    const fetchMock = routedFetch([
+      { test: (u) => u.includes("/torrents/addMagnet"), response: ok({ id: "rd-poll" }) },
+      { test: (u) => u.includes("/torrents/selectFiles"), response: ok({}) },
+      { test: (u) => u.includes("/torrents/info/rd-poll"), response: ok({ status: "downloading", progress: 55 }) },
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = await insertClient({ type: "realdebrid", api_key: "key" });
+
+    const { downloadId } = await adapter().addDownload(client, "magnet:?xt=x", null);
+    await vi.advanceTimersByTimeAsync(1); // let the first (in-progress) poll land
+    expect((await adapter().getStatus(client, [downloadId]))[0].progress).toBeCloseTo(0.55);
+
+    await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000 + 10_000); // past DEBRID_POLL_TIMEOUT_MS
+    await vi.waitFor(
+      async () => {
+        expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("failed");
+      },
+      { timeout: 2000 }
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -703,6 +795,70 @@ describe("TorBoxAdapter", () => {
     await vi.waitFor(async () => {
       expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("failed");
     });
+  });
+
+  it("uploads raw .torrent bytes as multipart form-data when the resolved source isn't a magnet", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u === "https://indexer/get", response: ok({}) }, // resolveDownloadSource: 200, not a redirect -> torrent bytes
+        { test: (u) => u.includes("/torrents/createtorrent"), response: ok({ data: { torrent_id: "tb-bytes" } }) },
+        { test: (u) => u.includes("/torrents/mylist"), response: ok({ data: { download_finished: true, files: [] } }) },
+      ])
+    );
+    const client = await insertClient({ type: "torbox", api_key: "key" });
+
+    const { downloadId } = await adapter().addDownload(client, "https://indexer/get", null);
+    await vi.waitFor(async () => {
+      expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("failed"); // "reported no files" -- proves createtorrent's id was accepted
+    });
+  });
+
+  it("handles body.data coming back as an array (not just a bare object) when polling mylist", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u.includes("/torrents/createtorrent"), response: ok({ data: { torrent_id: "tb-arr" } }) },
+        { test: (u) => u.includes("/torrents/mylist"), response: ok({ data: [{ download_present: true, files: [{ id: 1, name: "f.mkv" }] }] }) },
+        { test: (u) => u.includes("/torrents/requestdl"), response: ok({ data: "https://tb/direct-arr" }) },
+        { test: (u) => u === "https://tb/direct-arr", response: fileResponse("bytes") },
+      ])
+    );
+    const client = await insertClient({ type: "torbox", api_key: "key" });
+
+    const { downloadId } = await adapter().addDownload(client, "magnet:?xt=x", null);
+    await vi.waitFor(async () => {
+      expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("completed");
+    });
+  });
+
+  it("reports failed on a bad download_state, no files, a rejected createtorrent, and a missing torrent id", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u.includes("/torrents/createtorrent"), response: ok({ data: { torrent_id: "tb-state" } }) },
+        { test: (u) => u.includes("/torrents/mylist"), response: ok({ data: { download_state: "error", download_finished: false } }) },
+      ])
+    );
+    let client = await insertClient({ type: "torbox", api_key: "key" });
+    let { downloadId } = await adapter().addDownload(client, "magnet:?xt=x", null);
+    await vi.waitFor(async () => expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("failed"));
+
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u.includes("/torrents/createtorrent"), response: ok({ data: { torrent_id: "tb-nofiles" } }) },
+        { test: (u) => u.includes("/torrents/mylist"), response: ok({ data: { download_finished: true, files: [] } }) },
+      ])
+    );
+    client = await insertClient({ type: "torbox", api_key: "key" });
+    ({ downloadId } = await adapter().addDownload(client, "magnet:?xt=x", null));
+    await vi.waitFor(async () => expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("failed"));
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ok({ data: {} }))); // createtorrent: success, but no torrent_id/id anywhere
+    client = await insertClient({ type: "torbox", api_key: "key" });
+    ({ downloadId } = await adapter().addDownload(client, "magnet:?xt=x", null));
+    await vi.waitFor(async () => expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("failed"));
   });
 });
 
@@ -793,6 +949,46 @@ describe("AllDebridAdapter", () => {
     });
 
     expect(fs.existsSync(path.join(config.downloadsDir, "movie.mkv"))).toBe(true); // hardcoded write target, see the http adapter test's comment
+  });
+
+  it("surfaces AllDebrid's own status:error responses (the generic call() helper's error branch)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ok({ status: "error", error: { message: "Invalid API key", code: "AUTH_BAD_APIKEY" } })));
+    const client = await insertClient({ type: "alldebrid", api_key: "bad-key" });
+
+    const { downloadId } = await adapter().addDownload(client, "magnet:?xt=x", null);
+    await vi.waitFor(async () => {
+      expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("failed");
+    });
+  });
+
+  it("uses the rejected magnet's own error message when present, and a generic one when it isn't", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ok({ status: "success", data: { magnets: [{ error: { message: "MAGNET_INVALID_URI" } }] } })));
+    let client = await insertClient({ type: "alldebrid", api_key: "key" });
+    let { downloadId } = await adapter().addDownload(client, "magnet:?xt=x", null);
+    await vi.waitFor(async () => expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("failed"));
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ok({ status: "success", data: { magnets: [{}] } }))); // no id, no error
+    client = await insertClient({ type: "alldebrid", api_key: "key" });
+    ({ downloadId } = await adapter().addDownload(client, "magnet:?xt=x", null));
+    await vi.waitFor(async () => expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("failed"));
+  });
+
+  it("reports failed when link/unlock returns no direct link", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u.includes("/magnet/upload"), response: ok({ status: "success", data: { magnets: [{ id: "ad-unlock" }] } }) },
+        { test: (u) => u.includes("magnet/status"), response: ok({ status: "success", data: { magnets: [{ statusCode: 4 }] } }) },
+        { test: (u) => u.includes("/magnet/files"), response: ok({ status: "success", data: { magnets: [{ files: [{ n: "movie.mkv", l: "https://ad/dl/1" }] }] } }) },
+        { test: (u) => u.includes("/link/unlock"), response: ok({ status: "success", data: {} }) }, // no `link` field
+      ])
+    );
+    const client = await insertClient({ type: "alldebrid", api_key: "key" });
+
+    const { downloadId } = await adapter().addDownload(client, "magnet:?xt=x", null);
+    await vi.waitFor(async () => {
+      expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("failed");
+    });
   });
 });
 

@@ -3,6 +3,38 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 280 — deepen test coverage: downloadClient.ts's three debrid adapters
+Continues the deepening phase, moving to `downloadClient.ts` (Round 274, already yielded one real
+shipped bug — the NULL-byte one — so a second, more careful look felt warranted). Focused on the
+three structurally-similar "debrid" adapters (Real-Debrid, TorBox, AllDebrid), reading all three
+side by side the same way the Last.fm bug was found in Round 277: AllDebrid's own source comments
+document two *previous* real bugs in its polling loop (a v4.1 API field removal, and `data.magnets`
+sometimes coming back as a bare object instead of an array) — a strong signal this general area of
+the file (JSON-shape assumptions in these three providers' polling/upload code) was worth a closer
+pass. No source changes this round — every gap found was a real branch that behaved correctly, just
+completely unexercised; no Docker image rebuild needed.
+
+- `tests/downloadClient.test.ts` — 54 → 64 tests. The clearest gap, present in *both* Real-Debrid
+  and TorBox: every existing test only ever fed the adapter a literal `magnet:` URI or a URL that
+  redirects to one — the raw-.torrent-bytes upload branch (`PUT /torrents/addTorrent` for RD, a
+  multipart `file` field for TorBox) had **zero** coverage in either adapter, despite being a real,
+  regularly-hit code path (an indexer's proxy "get" endpoint that serves torrent bytes directly
+  rather than redirecting). Also added: Real-Debrid's documented-but-unverified `selectFiles`
+  202-already-selected special case (and its real-error sibling), its 6-hour polling deadline
+  actually firing (proven cheaply via `vi.setSystemTime`+`vi.advanceTimersByTimeAsync` rather than
+  waiting out thousands of real 5-second poll intervals), and its in-progress percentage reporting
+  (previously proven for TorBox's polling loop but never for Real-Debrid's near-identical one);
+  TorBox's `body.data` coming back as an array rather than a bare object during polling (mirroring
+  the exact defensive-but-unverified pattern already fixed once for AllDebrid); TorBox's
+  `download_state` failure match, empty-files case, and a `createtorrent` response with no
+  torrent id anywhere; and AllDebrid's generic `call()` helper's `status:"error"` branch (used by
+  4 different endpoints in the adapter, and — despite AllDebrid's polling-loop-specific
+  `statusCode`-based failures being well tested — never itself exercised), its rejected-magnet
+  error-message extraction (both the specific and generic-fallback cases), and `link/unlock`
+  returning no direct link.
+
+Test count: 1209 → 1219 (89 files, no new files this round).
+
 ## Round 279 — deepen test coverage: indexerClient.ts network retry, FlareSolverr, scene variants
 `metadata.ts` (Rounds 276-278) has reached diminishing returns for further deepening, so this round
 moves to a different file with the same "several provider/protocol adapters of varying depth"
