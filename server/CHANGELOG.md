@@ -3,6 +3,32 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 269 — more test coverage (indexer search client)
+No behavior changes. Continues the test-coverage push. First of the genuinely large remaining
+service files (443 lines) — the rest (`downloadClient`, `importLists`, `importer`, `libraryScan`,
+`mediaServer`, `metadata`, `scheduler`) are all substantially bigger still.
+
+- `tests/indexerClient.test.ts` — `checkIndexerHealth`'s caps-endpoint vs. direct-URL check per
+  protocol, its three outcome shapes (ok, HTTP-status failure, thrown-error failure), and backing off
+  entirely once a real 429 has been recorded; `searchIndexer`'s three protocol adapters — Torznab/
+  Newznab XML parsing (category fallback to the media type's default, the full torznab:attr
+  extraction including deriving `leechers` from `peers - seeders` only when no explicit leechers attr
+  is present, the enclosure-vs-`<link>` download-URL fallback, protocol-to-torrent/usenet mapping),
+  plain RSS (client-side case-insensitive title filtering, skipping an item with no resolvable URL),
+  and the generic DDL JSON adapter (config validation, `{query}` substitution, dot-path field mapping,
+  skipping an item missing its title/URL) — plus the 429 backoff and proactive per-hour query-limit
+  gates (the latter counting failed attempts against the cap, same as a successful one); and
+  `searchAllIndexers`'s orchestration: filtering to enabled indexers whose `mediaTypes` match, sorting
+  combined results by seeders descending, one indexer's failure never blocking another's results, and
+  the scene-name-variant fallback (tried only when the literal query returns nothing, stopping at the
+  first variant that works) — this last one caught a case-sensitivity bug in the test's own fixture
+  before it ever ran: `generateSceneVariants`'s `&`→"and" swap is a literal lowercase substitution
+  ("Mr and Mrs Smith"), not the capitalized guess the first draft assumed.
+
+Test count: 753 → 787 (81 → 82 files).
+
+Verified: `tsc --noEmit` clean, all 787 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 268 — more test coverage (subtitle search/download clients)
 No behavior changes. Continues the test-coverage push.
 
