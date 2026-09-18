@@ -1,16 +1,22 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, vi } from "vitest";
 import { setupTestDb } from "./helpers/testDb.js";
 import type { MediaInfo, AudioStreamInfo, SubtitleStreamInfo } from "../src/services/ffprobe.js";
+
+const probeMediaInfo = vi.fn();
+vi.mock("../src/services/ffprobe.js", () => ({
+  probeMediaInfo: (...args: unknown[]) => probeMediaInfo(...args),
+}));
 
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 // mediaAnalysis.ts imports db/index.js transitively, so — like every DB-touching module in this
 // suite — it must be loaded dynamically, after setupTestDb() has set the env vars db/index.js
 // reads at first import, never as a static top-level import.
 let analyzeCompatibility: (typeof import("../src/services/mediaAnalysis.js"))["analyzeCompatibility"];
+let runLibraryAnalysis: (typeof import("../src/services/mediaAnalysis.js"))["runLibraryAnalysis"];
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
-  ({ analyzeCompatibility } = await import("../src/services/mediaAnalysis.js"));
+  ({ analyzeCompatibility, runLibraryAnalysis } = await import("../src/services/mediaAnalysis.js"));
 });
 
 function audio(overrides: Partial<AudioStreamInfo> = {}): AudioStreamInfo {
@@ -175,5 +181,162 @@ describe("getLibraryAnalysis", () => {
     const { items } = await getLibraryAnalysis("movie");
     expect(items.some((i) => i.title === "Type Scoped Movie")).toBe(true);
     expect(items.some((i) => i.title === "Type Scoped PPV")).toBe(false);
+  });
+});
+
+describe("runLibraryAnalysis", () => {
+  // Every call re-probes literally every has_file/path row of the given type across three tables,
+  // with no per-test isolation in this file otherwise — give each test its own never-reused type
+  // string so results can never pick up another test's leftover rows, same technique as
+  // jobRegistry.test.ts's per-test job keys.
+  let typeCounter = 0;
+  function uniqueType(): string {
+    return `analysis-test-${++typeCounter}`;
+  }
+
+  async function insertMediaItem(type: string, title: string, filePath: string | null, hasFile = 1): Promise<number> {
+    const result = await db
+      .prepare(
+        `INSERT INTO media_items (type, title, sort_title, monitored, has_file, status, path)
+         VALUES (?, ?, ?, 1, ?, 'unknown', ?)`
+      )
+      .run(type, title, title.toLowerCase(), hasFile, filePath);
+    return Number(result.lastInsertRowid);
+  }
+
+  async function insertEpisode(mediaItemId: number, filePath: string | null): Promise<number> {
+    const result = await db
+      .prepare(
+        `INSERT INTO episodes (media_item_id, season_number, episode_number, has_file, file_path)
+         VALUES (?, 1, 1, 1, ?)`
+      )
+      .run(mediaItemId, filePath);
+    return Number(result.lastInsertRowid);
+  }
+
+  async function insertSubItem(mediaItemId: number, title: string, filePath: string | null): Promise<number> {
+    const result = await db
+      .prepare(`INSERT INTO sub_items (media_item_id, title, has_file, file_path) VALUES (?, ?, 1, ?)`)
+      .run(mediaItemId, title, filePath);
+    return Number(result.lastInsertRowid);
+  }
+
+  beforeEach(() => {
+    probeMediaInfo.mockReset();
+  });
+
+  it("probes a media_items file with a probeable extension, stores the result, and counts it as probed", async () => {
+    const type = uniqueType();
+    const id = await insertMediaItem(type, "Probeable Movie", "/fake/movie.mkv");
+    probeMediaInfo.mockResolvedValue(mediaInfo({ videoCodec: "hevc" }));
+
+    const result = await runLibraryAnalysis(type);
+    expect(result).toEqual({ probed: 1, failed: 0 });
+
+    const row = (await db.prepare("SELECT media_info FROM media_items WHERE id = ?").get(id)) as { media_info: string };
+    expect(JSON.parse(row.media_info).videoCodec).toBe("hevc");
+  });
+
+  it("skips a file whose extension isn't probeable, without calling probeMediaInfo or touching media_info", async () => {
+    const type = uniqueType();
+    const id = await insertMediaItem(type, "Poster Only", "/fake/poster.jpg");
+    probeMediaInfo.mockResolvedValue(mediaInfo());
+
+    const result = await runLibraryAnalysis(type);
+    expect(result).toEqual({ probed: 0, failed: 0 });
+    expect(probeMediaInfo).not.toHaveBeenCalled();
+
+    const row = (await db.prepare("SELECT media_info FROM media_items WHERE id = ?").get(id)) as { media_info: string | null };
+    expect(row.media_info).toBeNull();
+  });
+
+  it("counts a failed probe (null result) as failed rather than probed, and leaves media_info untouched", async () => {
+    const type = uniqueType();
+    const id = await insertMediaItem(type, "Broken File", "/fake/broken.mkv");
+    probeMediaInfo.mockResolvedValue(null);
+
+    const result = await runLibraryAnalysis(type);
+    expect(result).toEqual({ probed: 0, failed: 1 });
+
+    const row = (await db.prepare("SELECT media_info FROM media_items WHERE id = ?").get(id)) as { media_info: string | null };
+    expect(row.media_info).toBeNull();
+  });
+
+  it("re-probes an episode's own file and updates the episodes table, not its parent media_items row", async () => {
+    const type = uniqueType();
+    const parentId = await insertMediaItem(type, "Some Series", null, 0);
+    const epId = await insertEpisode(parentId, "/fake/s01e01.mkv");
+    probeMediaInfo.mockResolvedValue(mediaInfo({ videoCodec: "av1" }));
+
+    const result = await runLibraryAnalysis(type);
+    expect(result).toEqual({ probed: 1, failed: 0 });
+
+    const epRow = (await db.prepare("SELECT media_info FROM episodes WHERE id = ?").get(epId)) as { media_info: string };
+    expect(JSON.parse(epRow.media_info).videoCodec).toBe("av1");
+    const parentRow = (await db.prepare("SELECT media_info FROM media_items WHERE id = ?").get(parentId)) as { media_info: string | null };
+    expect(parentRow.media_info).toBeNull();
+  });
+
+  it("re-probes a sub_item's own file (e.g. an audiobook) and updates the sub_items table", async () => {
+    const type = uniqueType();
+    const parentId = await insertMediaItem(type, "Some Author", null, 0);
+    const subId = await insertSubItem(parentId, "Some Book", "/fake/book.m4b");
+    probeMediaInfo.mockResolvedValue(mediaInfo({ audioCodec: "aac" }));
+
+    const result = await runLibraryAnalysis(type);
+    expect(result).toEqual({ probed: 1, failed: 0 });
+
+    const subRow = (await db.prepare("SELECT media_info FROM sub_items WHERE id = ?").get(subId)) as { media_info: string };
+    expect(JSON.parse(subRow.media_info).audioCodec).toBe("aac");
+  });
+
+  it("aggregates probed/failed counts across media_items, episodes, and sub_items in a single call", async () => {
+    const type = uniqueType();
+    await insertMediaItem(type, "Movie Half", "/fake/movie.mkv");
+    const seriesId = await insertMediaItem(type, "Series Half", null, 0);
+    await insertEpisode(seriesId, "/fake/ep.mkv");
+    const authorId = await insertMediaItem(type, "Author Half", null, 0);
+    await insertSubItem(authorId, "Book Half", "/fake/book.m4b");
+
+    probeMediaInfo.mockImplementation(async (filePath: string) => (filePath.includes("book") ? null : mediaInfo()));
+
+    const result = await runLibraryAnalysis(type);
+    expect(result).toEqual({ probed: 2, failed: 1 });
+  });
+
+  it("returns immediately without probing anything when the signal is already aborted", async () => {
+    const type = uniqueType();
+    const parentId = await insertMediaItem(type, "Never Probed", "/fake/movie.mkv");
+    await insertEpisode(parentId, "/fake/ep.mkv");
+    const controller = new AbortController();
+    controller.abort();
+    probeMediaInfo.mockResolvedValue(mediaInfo());
+
+    const result = await runLibraryAnalysis(type, controller.signal);
+    expect(result).toEqual({ probed: 0, failed: 0 });
+    expect(probeMediaInfo).not.toHaveBeenCalled();
+
+    const row = (await db.prepare("SELECT media_info FROM media_items WHERE id = ?").get(parentId)) as { media_info: string | null };
+    expect(row.media_info).toBeNull();
+  });
+
+  it("stops mid-scan once the signal aborts between rows, leaving the remaining row unprobed", async () => {
+    const type = uniqueType();
+    const firstId = await insertMediaItem(type, "Probed Before Abort", "/fake/first.mkv");
+    const secondId = await insertMediaItem(type, "Never Reached", "/fake/second.mkv");
+    const controller = new AbortController();
+    probeMediaInfo.mockImplementationOnce(async () => {
+      controller.abort();
+      return mediaInfo();
+    });
+
+    const result = await runLibraryAnalysis(type, controller.signal);
+    expect(result).toEqual({ probed: 1, failed: 0 });
+    expect(probeMediaInfo).toHaveBeenCalledTimes(1);
+
+    const firstRow = (await db.prepare("SELECT media_info FROM media_items WHERE id = ?").get(firstId)) as { media_info: string | null };
+    expect(firstRow.media_info).not.toBeNull();
+    const secondRow = (await db.prepare("SELECT media_info FROM media_items WHERE id = ?").get(secondId)) as { media_info: string | null };
+    expect(secondRow.media_info).toBeNull();
   });
 });

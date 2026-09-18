@@ -3,6 +3,26 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 289 — mediaAnalysis.ts: `runLibraryAnalysis`, the only file-mutating function, had zero coverage
+Re-ran the ratio-scan against the current codebase now that the original candidate list (Rounds
+283-288) is closed. `mediaAnalysis.ts` (0.54, 334 lines) turned out to be another instance of the
+"only the pure/read-only surface is tested" pattern: `analyzeCompatibility` (10 tests) and
+`getLibraryAnalysis` (6 tests) were both already well covered, but `runLibraryAnalysis` — the
+function that actually re-probes files with ffprobe and writes the result back into
+`media_items`/`episodes`/`sub_items` — had never been called by a single test. Added 8 tests
+mocking `ffprobe.js`'s `probeMediaInfo` via the established closure-indirection pattern: a
+successful probe updates the right row's `media_info`, a non-probeable extension is skipped without
+calling the probe at all, a null probe result counts as `failed` without touching the row, episodes
+and sub_items are each updated in their own table (not their parent's), a single call's
+`probed`/`failed` counts aggregate correctly across all three tables, and — the two branches most
+worth proving given this function does real, repeated DB writes — an already-aborted `AbortSignal`
+returns immediately without probing anything, and a signal that aborts mid-scan stops before the
+next row rather than finishing the batch. Every test used its own never-reused synthetic `type`
+value (this file's tests otherwise share one un-cleaned DB) so none of the eight could pick up
+another test's leftover rows. No source bug — every branch, including cancellation, already worked
+correctly. Full suite: 1335 → 1343 tests, 89 files, stable across the run (no recurrence of Round
+288's full-suite-only flakiness).
+
 ## Round 288 — mediaQuery.ts: 3 of 8 status filters, and their underlying heuristics, untested
 Last candidate from the original ratio-scan list (0.47, 213 lines). `buildMediaQuery`'s existing 15
 tests covered most of its filter surface, but three of its eight `status` values —
