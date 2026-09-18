@@ -3,6 +3,26 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 296 — MediaDetail.tsx: the rest of the file converted to icon buttons
+Finished what Round 295 started — every remaining row/toolbar action button in `MediaDetail.tsx`
+is now icon-only: the season toolbar (Sync scene numbering, List/Tiles view toggle — a new
+`GridIcon` added to `ActionIcons.tsx` for "tiles"), each season's own action row (Search season,
+Scan & Import, Manual Import, Organize & Rename, Refresh), episode row actions (Search, Manual
+Import), collection-shape sub-item row actions (Download, Search, Manual Import), the search-
+results modal's Grab/Blocklist buttons, and the manual-import browse panel's navigation (Back to
+downloads, Browse this folder, Up, AI Identify, per-row folder Open). Left as text, deliberately:
+primary form-submit CTAs (Save metadata, Save location, Split N episodes, Apply merged metadata,
+Import N checked files) and the per-provider "Fetch from {provider}"/"Set as backdrop"/"Set as
+poster" buttons, where the label itself carries essential information an icon can't — matching the
+conventions from Round 294.
+
+`MediaDetail.tsx` (53 buttons in the original survey) is now fully converted. Verified live against
+three different item shapes — single (a movie), episodic (a temporary test series with 2 seasons/3
+episodes, inserted and removed after), and collection (an existing audiobook with a sub-item) — via
+the accessibility tree, confirming every button's `aria-label` and every shape-conditional
+(Move to group/Split/Check for corruption/Artwork only showing where they always did) survived the
+conversion unchanged. No regressions found this round.
+
 ## Round 295 — MediaDetail.tsx: main header toolbar converted to icon buttons
 Continued the Phase 2 icon-button rollout — `MediaDetail.tsx` is the largest file in the survey
 (53 buttons), so this round scopes to its highest-visibility section: the header (Share, File

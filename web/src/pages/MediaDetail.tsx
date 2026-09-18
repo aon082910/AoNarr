@@ -25,8 +25,10 @@ import {
   ListIcon,
   ShieldIcon,
   PlusCircleIcon,
+  SlashIcon,
+  CpuIcon,
 } from "../components/NavIcons.js";
-import { TrashIcon, XIcon, PencilIcon, FolderIcon, EyeIcon } from "../components/ActionIcons.js";
+import { TrashIcon, XIcon, PencilIcon, FolderIcon, EyeIcon, ArrowLeftIcon, ArrowUpIcon, GridIcon } from "../components/ActionIcons.js";
 import type { Collection, HistoryEvent, MediaInfo, MediaItem, QualityProfile, RootFolder, SearchResult, Tag } from "../types.js";
 import { formatBytes, formatMediaInfo } from "../utils/format.js";
 import { useContentRatings } from "../hooks/useContentRatings.js";
@@ -2073,8 +2075,8 @@ export default function MediaDetail() {
                     placeholder={`New ${childLabel.toLowerCase()} title`}
                     style={{ flex: 1 }}
                   />
-                  <button type="submit" className="secondary" disabled={addingChild || !newChildTitle.trim()}>
-                    {addingChild ? "Adding..." : `+ Add ${childLabel.toLowerCase()}`}
+                  <button type="submit" className="icon-button" disabled={addingChild || !newChildTitle.trim()} title={addingChild ? "Adding..." : `Add ${childLabel.toLowerCase()}`} aria-label={`Add ${childLabel.toLowerCase()}`}>
+                    <PlusCircleIcon />
                   </button>
                 </form>
                 <label htmlFor="mediadetail-default-target-childlabel-tolowercase-ap-4">Default target {childLabel.toLowerCase()} (applies to files below with no target picked)</label>
@@ -2097,8 +2099,8 @@ export default function MediaDetail() {
             </p>
             <div className="toolbar" style={{ marginBottom: 8, gap: 8 }}>
               {browseAnyFolder ? (
-                <button type="button" className="secondary" onClick={backToDownloads}>
-                  Back to downloads folder
+                <button type="button" className="icon-button" onClick={backToDownloads} title="Back to downloads folder" aria-label="Back to downloads folder">
+                  <ArrowLeftIcon />
                 </button>
               ) : (
                 <>
@@ -2108,18 +2110,20 @@ export default function MediaDetail() {
                     placeholder="/path/to/any/folder"
                     style={{ flex: 1, minWidth: 200 }}
                   />
-                  <button type="button" className="secondary" onClick={goToCustomFolder} disabled={!customFolderInput.trim()}>
-                    Browse this folder
+                  <button type="button" className="icon-button" onClick={goToCustomFolder} disabled={!customFolderInput.trim()} title="Browse this folder" aria-label="Browse this folder">
+                    <FolderIcon />
                   </button>
                 </>
               )}
               {(browseAnyFolder ? browseParent != null : !!browsePath) && (
                 <button
                   type="button"
-                  className="secondary"
+                  className="icon-button"
                   onClick={() => (browseAnyFolder ? browse(browseParent ?? "/", { anyFolder: true }) : browse(browsePath.split("/").slice(0, -1).join("/")))}
+                  title="Up one folder"
+                  aria-label="Up one folder"
                 >
-                  Up
+                  <ArrowUpIcon />
                 </button>
               )}
             </div>
@@ -2184,12 +2188,13 @@ export default function MediaDetail() {
                         <>
                           <button
                             type="button"
-                            className="secondary"
+                            className="icon-button"
                             disabled={aiIdentifying === e.path}
                             onClick={() => aiIdentifyFile(e)}
-                            title="Grab a frame (video) or read embedded tags (audio) and ask the configured AI provider what this is"
+                            title={aiIdentifying === e.path ? "Asking..." : "AI Identify — grab a frame (video) or read embedded tags (audio) and ask the configured AI provider what this is"}
+                            aria-label="AI Identify"
                           >
-                            {aiIdentifying === e.path ? "Asking..." : "🤖 Identify"}
+                            <CpuIcon />
                           </button>
                           {aiGuesses[e.path] && (
                             <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: 4, wordBreak: "break-word" }}>
@@ -2201,8 +2206,8 @@ export default function MediaDetail() {
                     </td>
                     <td>
                       {e.isDirectory && (
-                        <button type="button" className="secondary" onClick={() => browse(e.path, { anyFolder: browseAnyFolder })}>
-                          Open
+                        <button type="button" className="icon-button" onClick={() => browse(e.path, { anyFolder: browseAnyFolder })} title="Open" aria-label="Open folder">
+                          <FolderIcon />
                         </button>
                       )}
                     </td>
@@ -2302,12 +2307,12 @@ export default function MediaDetail() {
                     </td>
                     <td>{r.seeders ?? "-"}</td>
                     <td style={{ display: "flex", gap: 6 }}>
-                      <button onClick={() => grab(r)} disabled={r.blocklisted}>
-                        Grab
+                      <button type="button" className="icon-button" onClick={() => grab(r)} disabled={r.blocklisted} title="Grab" aria-label="Grab">
+                        <DownloadIcon />
                       </button>
                       {!r.blocklisted && (
-                        <button className="danger" onClick={() => blocklistResult(r)}>
-                          Blocklist
+                        <button type="button" className="icon-button danger" onClick={() => blocklistResult(r)} title="Blocklist" aria-label="Blocklist">
+                          <SlashIcon />
                         </button>
                       )}
                     </td>
@@ -2342,19 +2347,21 @@ export default function MediaDetail() {
             <div className="toolbar" style={{ marginBottom: 0 }}>
               {isAdmin && (
                 <button
-                  className="secondary"
+                  type="button"
+                  className="icon-button"
                   disabled={syncingSceneNumbering}
                   onClick={syncSceneNumbering}
-                  title="Re-fetch TheXEM scene-numbering mapping for this series"
+                  title={syncingSceneNumbering ? "Syncing..." : "Sync scene numbering — re-fetch TheXEM scene-numbering mapping for this series"}
+                  aria-label="Sync scene numbering"
                 >
-                  {syncingSceneNumbering ? "Syncing..." : "Sync scene numbering"}
+                  <RotateCcwIcon />
                 </button>
               )}
-              <button className="secondary" onClick={() => setSeasonView("list")} disabled={seasonView === "list"}>
-                List
+              <button type="button" className="icon-button" onClick={() => setSeasonView("list")} disabled={seasonView === "list"} title="List view" aria-label="List view">
+                <ListIcon />
               </button>
-              <button className="secondary" onClick={() => setSeasonView("tile")} disabled={seasonView === "tile"}>
-                Tiles
+              <button type="button" className="icon-button" onClick={() => setSeasonView("tile")} disabled={seasonView === "tile"} title="Tile view" aria-label="Tile view">
+                <GridIcon />
               </button>
             </div>
           </div>
@@ -2453,38 +2460,59 @@ export default function MediaDetail() {
                           title={seasonAllMonitored ? "Season monitored — click to unmonitor all episodes" : "Click to monitor all episodes in this season"}
                         />
                         <button
-                          className="secondary"
+                          type="button"
+                          className="icon-button"
                           disabled={searching}
                           onClick={() => runSearch({ seasonNumber, label: `Season ${seasonNumber}` })}
+                          title="Search season"
+                          aria-label="Search season"
                         >
-                          Search season
+                          <SearchIcon />
                         </button>
                         <button
-                          className="secondary"
+                          type="button"
+                          className="icon-button"
                           disabled={seasonActionBusy?.seasonNumber === seasonNumber && seasonActionBusy.action === "scan"}
                           onClick={() => scanImportSeason(seasonNumber)}
-                          title="Scan this show's root folder for files matching just this season"
+                          title={
+                            seasonActionBusy?.seasonNumber === seasonNumber && seasonActionBusy.action === "scan"
+                              ? "Scanning..."
+                              : "Scan & Import — scan this show's root folder for files matching just this season"
+                          }
+                          aria-label="Scan & Import"
                         >
-                          {seasonActionBusy?.seasonNumber === seasonNumber && seasonActionBusy.action === "scan" ? "Scanning..." : "Scan & Import"}
+                          <ZapIcon />
                         </button>
-                        <button className="secondary" onClick={() => openImportForSeason(seasonNumber)}>
-                          Manual Import
+                        <button type="button" className="icon-button" onClick={() => openImportForSeason(seasonNumber)} title="Manual Import" aria-label="Manual Import">
+                          <InboxIcon />
                         </button>
                         <button
-                          className="secondary"
+                          type="button"
+                          className="icon-button"
                           disabled={seasonActionBusy?.seasonNumber === seasonNumber && seasonActionBusy.action === "organize"}
                           onClick={() => organizeSeason(seasonNumber)}
-                          title="Move/rename this season's file(s) to match the current naming template"
+                          title={
+                            seasonActionBusy?.seasonNumber === seasonNumber && seasonActionBusy.action === "organize"
+                              ? "Organizing..."
+                              : "Organize & Rename — move/rename this season's file(s) to match the current naming template"
+                          }
+                          aria-label="Organize & Rename"
                         >
-                          {seasonActionBusy?.seasonNumber === seasonNumber && seasonActionBusy.action === "organize" ? "Organizing..." : "Organize & Rename"}
+                          <FolderIcon />
                         </button>
                         <button
-                          className="secondary"
+                          type="button"
+                          className="icon-button"
                           disabled={seasonActionBusy?.seasonNumber === seasonNumber && seasonActionBusy.action === "refresh"}
                           onClick={() => refreshSeason(seasonNumber)}
-                          title="Re-pull this season's episode titles/air dates/artwork from the metadata provider"
+                          title={
+                            seasonActionBusy?.seasonNumber === seasonNumber && seasonActionBusy.action === "refresh"
+                              ? "Refreshing..."
+                              : "Refresh — re-pull this season's episode titles/air dates/artwork from the metadata provider"
+                          }
+                          aria-label="Refresh"
                         >
-                          {seasonActionBusy?.seasonNumber === seasonNumber && seasonActionBusy.action === "refresh" ? "Refreshing..." : "Refresh"}
+                          <RotateCcwIcon />
                         </button>
                       </div>
                     )}
@@ -2523,7 +2551,8 @@ export default function MediaDetail() {
                             <td onClick={(e) => e.stopPropagation()}>
                               {isAdmin && (
                                 <button
-                                  className="secondary"
+                                  type="button"
+                                  className="icon-button"
                                   disabled={searching}
                                   onClick={() =>
                                     runSearch({
@@ -2531,13 +2560,15 @@ export default function MediaDetail() {
                                       label: `S${String(ep.seasonNumber).padStart(2, "0")}E${String(ep.episodeNumber).padStart(2, "0")}`,
                                     })
                                   }
+                                  title="Search"
+                                  aria-label="Search"
                                 >
-                                  Search
+                                  <SearchIcon />
                                 </button>
                               )}
                               {isAdmin && (
-                                <button className="secondary" onClick={() => toggleImport(ep.id)}>
-                                  Manual Import
+                                <button type="button" className="icon-button" onClick={() => toggleImport(ep.id)} title="Manual Import" aria-label="Manual Import">
+                                  <InboxIcon />
                                 </button>
                               )}
                             </td>
@@ -2624,22 +2655,25 @@ export default function MediaDetail() {
                   </td>
                   <td onClick={(e) => e.stopPropagation()}>
                     {isAdmin && item.type === "video" && si.externalProvider === "youtube" && (
-                      <button className="secondary" onClick={() => downloadVideo(si)}>
-                        Download
+                      <button type="button" className="icon-button" onClick={() => downloadVideo(si)} title="Download" aria-label="Download">
+                        <DownloadIcon />
                       </button>
                     )}
                     {isAdmin && !(item.type === "video" && si.externalProvider === "youtube") && (
                       <button
-                        className="secondary"
+                        type="button"
+                        className="icon-button"
                         disabled={searching}
                         onClick={() => runSearch({ subItemId: si.id, label: si.title })}
+                        title="Search"
+                        aria-label="Search"
                       >
-                        Search
+                        <SearchIcon />
                       </button>
                     )}
                     {isAdmin && (
-                      <button className="secondary" onClick={() => openImportForSubItem(si.id)}>
-                        Manual Import
+                      <button type="button" className="icon-button" onClick={() => openImportForSubItem(si.id)} title="Manual Import" aria-label="Manual Import">
+                        <InboxIcon />
                       </button>
                     )}
                   </td>
