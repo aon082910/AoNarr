@@ -3,6 +3,38 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 285 — archival.ts: the file-moving/deleting logic itself was completely untested
+A third instance of the Round 283/284 pattern, and the most consequential one: `archival.ts`'s
+existing 8 tests only covered its small pure/DB-read helpers (`pathTail`, `findWatchedMatch`,
+`effectiveRetentionDays`) — `getUpcomingArchivals` (the "Leaving Soon" preview) and, more
+importantly, `runAutoArchival` itself — the function that actually **moves or permanently deletes
+real media files** off disk once they're watched and past their retention window — had never been
+exercised at all. No source changes; every branch, including the cross-filesystem `EXDEV` fallback
+and the destructive delete path, worked correctly once actually tested against real files.
+
+- `tests/archival.test.ts` — 8 → 26 tests (pre-existing pure-helper tests untouched). Real
+  temp-directory files are used throughout (not mocked fs) so the actual move/delete/copy behavior
+  is genuinely verified end to end; only `mediaServer.js`'s `fetchWatchedFiles` (kept real:
+  `getMediaServerConfig`, already covered by mediaServer.test.ts) and `recycleBin.js`'s
+  `recycleFile` (has its own dedicated test file) are mocked. `getUpcomingArchivals`: no-op without
+  a configured media server or on a fetch failure; a watched item's `scheduledFor` computed
+  correctly from its real last-played time plus the effective retention window; a never-archive
+  override excludes an item; episode/sub-item candidates get their own composed labels; sort order.
+  `runAutoArchival`: every no-op gate (not enabled, no media server, no archive folder *and* no
+  permanent-delete opt-in); a watched+aged file actually gets moved to the real archive folder on
+  disk, the DB row's `has_file`/`path`/`quality` are cleared, and a `history` row is logged; a
+  watched-but-not-yet-aged file is left alone; a never-archive override is respected; permanent
+  delete routes to `recycleFile` instead of a real move; **one item's archive failure (a real
+  `ENOENT` from a file that no longer exists on disk) is caught and logged without aborting the
+  rest of the run** — proven with a second, healthy item in the same batch that still gets
+  archived correctly; the same shape for episodes and sub-items; the roll-up `UPDATE` that flips a
+  show's own `has_file` back to 0 only once *every* one of its episodes has been archived, not
+  before; and the `EXDEV` (cross-filesystem) fallback to copy+delete, forced via `vi.spyOn(fsp,
+  "rename").mockRejectedValueOnce(...)` since a same-filesystem temp dir can't produce a genuine
+  cross-device error naturally.
+
+Test count: 1288 → 1304 (89 files, no new files this round).
+
 ## Round 284 — mediaServerImport.ts: the real import logic had the same gap as notifications.ts
 A systematic check for more files with this shape (source-to-test line ratio) surfaced
 `mediaServerImport.ts` as the next real match: 332 source lines, but its existing tests only ever
