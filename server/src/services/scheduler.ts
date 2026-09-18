@@ -26,7 +26,7 @@ import { checkForDeletedFiles } from "./deletedFileCheck.js";
  * that supports it (qBittorrent) once it's met a configured ratio and/or seed-time goal. Both
  * settings default unset (feature off); a goal of "0" is treated as unset too, since a ratio/time
  * goal of literally zero would remove a torrent the instant it finished, which nobody wants. */
-async function runSeedGoalCleanup(): Promise<void> {
+export async function runSeedGoalCleanup(): Promise<void> {
   const ratioGoal = parseFloat(getSetting("torrentSeedRatioGoal") ?? "") || null;
   const seedTimeGoalHours = parseFloat(getSetting("torrentSeedTimeGoalHours") ?? "") || null;
   if (ratioGoal === null && seedTimeGoalHours === null) return;
@@ -98,7 +98,7 @@ async function rowsToIndexers(): Promise<Indexer[]> {
  * dates the way Radarr's own four-tier version does. An item with no releaseDate at all is never
  * gated — there's nothing to wait on, so it behaves like "announced".
  */
-function isReleaseAvailableForSearch(item: MediaItem): boolean {
+export function isReleaseAvailableForSearch(item: MediaItem): boolean {
   const availability = item.minimumAvailability;
   if (!availability || availability === "announced") return true;
   if (!item.releaseDate) return true;
@@ -343,7 +343,7 @@ export function pickClientForProtocol(clients: DownloadClient[], protocol: Searc
  * inside [start, end) — handles the common overnight case (e.g. 22:00–06:00) by treating
  * start > end as wrapping past midnight. Returns null (caller decides the fallback) if the window
  * is unparseable or zero-width. */
-function isWithinTimeWindow(start: string, end: string): boolean | null {
+export function isWithinTimeWindow(start: string, end: string): boolean | null {
   const toMinutes = (hhmm: string): number | null => {
     const m = hhmm.match(/^(\d{1,2}):(\d{2})$/);
     if (!m) return null;
@@ -382,7 +382,7 @@ function isOutsideSearchWindow(): boolean {
 }
 
 /** For each monitored, fileless target (movie / episode / album / book), search and grab the best release. */
-async function runAutoSearch(signal?: AbortSignal) {
+export async function runAutoSearch(signal?: AbortSignal) {
   if (isWithinQuietHours()) {
     log.info("[scheduler] skipping auto-search: within configured quiet hours");
     return;
@@ -700,7 +700,7 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
  * of just being a "surface it in a report" affordance. Off by default (`autoUpgradeEnabled`
  * setting) since it consumes indexer/download-client capacity same as any other search.
  */
-async function runAutoUpgrade(): Promise<void> {
+export async function runAutoUpgrade(): Promise<void> {
   if (getSetting("autoUpgradeEnabled") !== "1") return;
   const candidates = await findUpgradeCandidates();
   if (candidates.length === 0) return;
@@ -732,7 +732,7 @@ async function runAutoUpgrade(): Promise<void> {
  * way the manual per-video "Download" button does. Un-monitoring a channel (the same flag used
  * everywhere else in the app) is how an admin opts a channel out of this.
  */
-async function checkVideoChannels(): Promise<void> {
+export async function checkVideoChannels(): Promise<void> {
   const channels = (await db.prepare("SELECT * FROM media_items WHERE type = 'video' AND monitored = 1").all()) as any[];
   if (channels.length === 0) return;
 
@@ -809,7 +809,7 @@ async function checkVideoChannels(): Promise<void> {
  * immediately via that enclosure's URL directly (no yt-dlp-style resolution step needed, since an
  * RSS enclosure is already a direct file URL). Un-monitoring a podcast opts it out.
  */
-async function checkPodcastFeeds(): Promise<void> {
+export async function checkPodcastFeeds(): Promise<void> {
   const podcasts = (await db.prepare("SELECT * FROM media_items WHERE type = 'podcast' AND monitored = 1").all()) as any[];
   if (podcasts.length === 0) return;
 
@@ -894,7 +894,7 @@ function maxAutoRetries(): number {
  * single bad release (fake, corrupt, wrong language) shouldn't need a person to notice and
  * manually re-search.
  */
-async function retryFailedGrab(match: QueueItem, reason: string): Promise<void> {
+export async function retryFailedGrab(match: QueueItem, reason: string): Promise<void> {
   const mediaRow = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(match.mediaItemId)) as any;
   const mediaTitle = mediaRow?.title ?? match.title;
 
@@ -985,7 +985,7 @@ async function retryFailedGrab(match: QueueItem, reason: string): Promise<void> 
 }
 
 /** Poll download clients for progress on active queue items, and import completed ones. */
-async function pollQueue() {
+export async function pollQueue() {
   const clients = await rowsToDownloadClients();
   const active = (
     (await db.prepare("SELECT * FROM queue WHERE status IN ('queued','downloading')").all()) as any[]
@@ -1073,7 +1073,7 @@ async function pollQueue() {
  * threshold — a download stuck at the client (dead peers, a paused torrent, a stalled usenet
  * connection) would otherwise sit in the queue forever since pollQueue only acts on status
  * changes the client itself reports. */
-async function cleanupStalledDownloads(): Promise<void> {
+export async function cleanupStalledDownloads(): Promise<void> {
   const thresholdHours = Math.max(1, parseInt(getSetting("stalledDownloadHours") ?? "6", 10) || 6);
   const stalled = (
     (await db
@@ -1104,7 +1104,7 @@ async function cleanupStalledDownloads(): Promise<void> {
  * forever, right back to the same "queue never clears out" problem this whole cleanup pass exists
  * to fix. Prunes any 'failed' row untouched for over a week; its own 'failed' history entry (see
  * retryFailedGrab) already recorded the permanent record, so nothing is lost by dropping the row. */
-async function pruneOldFailedQueueItems(): Promise<void> {
+export async function pruneOldFailedQueueItems(): Promise<void> {
   const stale = (await db
     .prepare(`SELECT id FROM queue WHERE status = 'failed' AND updated_at <= ${nowOffsetHoursExpr(db, -24 * 7)}`)
     .all()) as { id: number }[];
@@ -1123,7 +1123,7 @@ async function pruneOldFailedQueueItems(): Promise<void> {
  * in the `lastHealthIssueSummary` setting) so a still-broken indexer doesn't re-notify every run —
  * only a *change* in what's wrong (new issue, resolved issue, or recovery) fires again.
  */
-async function checkHealthAndNotify(): Promise<void> {
+export async function checkHealthAndNotify(): Promise<void> {
   const issues: string[] = [];
 
   const indexers = ((await db.prepare("SELECT * FROM indexers WHERE enabled = 1").all()) as any[]).map(indexerFromRow);

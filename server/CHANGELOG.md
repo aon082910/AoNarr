@@ -3,6 +3,64 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 275 — more test coverage (scheduler & auto-search/grab pipeline)
+No behavior changes (the exports below add no new logic — see "How to apply" in this project's own
+test-writing conventions). The central orchestrator tying together nearly every other service in the
+codebase (1474 lines) — the auto-search/grab pipeline is the app's core value proposition, and until
+this round none of it had any test coverage at all.
+
+- Exported twelve previously-private functions purely for direct testability (an established,
+  low-risk pattern already used elsewhere in this codebase — no logic changed): `isWithinTimeWindow`,
+  `isReleaseAvailableForSearch`, `runAutoSearch`, `runAutoUpgrade`, `checkVideoChannels`,
+  `checkPodcastFeeds`, `retryFailedGrab`, `pollQueue`, `cleanupStalledDownloads`,
+  `pruneOldFailedQueueItems`, `checkHealthAndNotify`, `runSeedGoalCleanup`.
+- `tests/scheduler.test.ts` — `isAlreadyQueued`, `pickClientForProtocol`, and `grab` directly; then
+  `searchAndGrabTargets` (exercising `chooseBestResult`'s real ranking algorithm indirectly: the
+  blocklist gate, the quality-upgrade gate, missing-client/no-results errors, a seeders tie-break
+  between two otherwise-identical releases, and one target's exception not aborting the batch);
+  `runAutoSearch` across all three shapes (movie/series/collection) plus every one of its skip gates
+  — quiet hours, the search window, no enabled clients, a root folder over its configured disk quota,
+  already-has-a-file-or-queued, minimum availability — the YouTube/podcast direct-grab special cases
+  that bypass indexer search entirely, a future-dated daily-series episode never being searched, and
+  a genuine mid-loop `AbortSignal` stop; `runAutoUpgrade`'s enabled-gate and already-queued skip;
+  `checkVideoChannels`/`checkPodcastFeeds`'s new-item detection and conditional auto-grab;
+  `pollQueue`'s full state machine (progress/remote-path-mapping updates, completed → import,
+  `ImportSkippedError` → manual-interaction notification with no retry, a real import failure →
+  retry, a client-level failure → remove + retry); `cleanupStalledDownloads` and
+  `pruneOldFailedQueueItems`'s threshold-based cleanup; `retryFailedGrab`'s blocklist-then-retry
+  chain (respecting `blocklistOnly` and the configured retry cap); `checkHealthAndNotify`'s dedup-
+  against-the-last-notified-summary behavior; `runSeedGoalCleanup`; and `startScheduler`'s job-
+  registration wiring (30+ unique job keys, started exactly once). `indexerClient.js`,
+  `downloadClient.js`, `notifications.js`, `metadata.js`, `upgradeCandidates.js`, and `jobRegistry.js`
+  are mocked (the last one specifically to prevent `startScheduler()`'s test from starting real cron
+  timers); `importer.js` is partially mocked via `importOriginal` to keep the real `ImportSkippedError`
+  class for `instanceof` checks; everything else (quality scoring, release parsing, blocklist,
+  release-group stats, root-folder-quota checking) runs for real.
+
+  Six distinct bugs surfaced via the first Docker run, all in the test's own fixtures, none in the
+  source: a hardcoded `indexerId: 1` on the shared fake-result fixture violated `queue.indexer_id`'s
+  real FK (nothing in these tests needed a real indexer row, so it's `null` now); three assertions
+  expected a download-client's `category` field as `undefined` where the real DB-mapped client
+  actually has `null` (and `expect.anything()` explicitly excludes `null`, so it silently masked the
+  same mismatch rather than catching it); the root-folder-quota test assumed `isRootFolderOverQuota`
+  reads the `disk_usage_samples` table, when it actually calls `fs.statfsSync` on the folder's real
+  path directly and additionally requires `pause_grabs_at_quota` to be set — an entirely different
+  mechanism from `checkHealthAndNotify`'s own (real) low-disk-space check, which does read that
+  table; a stalled-download fixture compared a JS `toISOString()` timestamp against SQLite's own
+  `datetime()`-formatted column, two different string formats that don't reliably compare
+  lexicographically; a `mockRejectedValueOnce`/`mockResolvedValueOnce` pair assumed call order would
+  match the input array's order, but the array's first target (a nonexistent media item) never
+  reaches the mock at all — the same ordering pitfall this project's own memory already flagged from
+  Round 243, now hit a second time and fixed by branching the mock on the actual query content
+  instead of call order; and a test asserting `sizeWithinQualityBounds` rejects an implausibly small
+  "1080p" release turned out to test a scenario that can't happen with no size bounds configured for
+  that quality (a settings-driven cache) — rewritten to assert the real, opposite default instead.
+
+Test count: 1011 → 1070 (87 → 88 files).
+
+Verified: `tsc --noEmit` clean, all 1070 server tests passing. No Docker rebuild — test-only change
+(the new `export` keywords add no behavior).
+
 ## Round 274 — more test coverage (download clients) + a real Soulseek bug fix
 The third-largest file tackled this session (1203 lines, 9 distinct download-client backends
 behind one shared interface) — and this round did find a real, shipped bug, not just add tests.
