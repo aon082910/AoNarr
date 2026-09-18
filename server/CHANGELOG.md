@@ -3,6 +3,59 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 273 — more test coverage (file placement & import engine)
+No behavior changes. Continues the test-coverage push. The second-largest file tackled this
+session (1194 lines) — the engine that actually moves a downloaded file into the library, names it,
+and updates the database, shared by the automatic post-download path and every manual-import route.
+
+- `tests/importer.test.ts` — `removeEmptyParents` (walks upward removing now-empty directories,
+  stopping at the root folder); `createLibraryFolderSkeleton`'s never-throws contract;
+  `findDownloadedFile`'s full matching engine (plain token-overlap scoring and its 0.4 confidence
+  floor, narrowing to a specific season/episode or air date in a season-pack download, falling back
+  to plain overlap when nothing parses to the exact target, and `searchRoot` — a single file used
+  directly, a directory scoped and scored on its own, and falling through to the full downloads
+  directory when a stale mapping no longer exists) and `listDownloadedFileCandidates`'s newest-first
+  listing; `placeFile` across all three shapes it handles (single, episodic — including the
+  absolute-episode-number count that deliberately excludes season 0 specials — and single-file
+  collection), its guards (no root folder, the free-space check), imported-vs-upgraded notification
+  choice, conditional NFO sidecar writing, comic image conversion, and video-only subtitle
+  downloading (proven for both directions — a provider IS queried for a video file, and never for a
+  non-video one, rather than only checking the negative case, which a provider-less first draft would
+  have left vacuously true either way); `placeAlbumFiles` (leading-number track matching, an
+  unmatched file keeping its original name, the CD1/CD2 multi-disc collapse into one album with a
+  continuous cross-disc track-number offset, and conditional audio-tag writing); `placeSeasonPackFiles`
+  (importing every file it can match to a known episode, leaving an unmatched one in place rather
+  than guessing, and throwing when nothing in the pack matches at all); `importQueueItem`'s dispatch
+  to the right placement function by shape, its manual-source-file path-containment validation, and
+  its conditional download-client removal / source-folder cleanup (never touching the source for a
+  hardlink/symlink strategy); and `renameLibraryFiles`/`renameOneMediaItem` (a real rename when the
+  computed destination differs, a no-op when it's already correct, `dryRun` touching neither the
+  filesystem nor the database, skipping items with no file, counting-but-not-renaming Music, and one
+  item's rename failure not aborting the batch). `notifications.js`, `metadataExport.js`,
+  `audioTagWriter.js`, `archiveExtract.js`, `downloadClient.js`, `subtitleSync.js`,
+  `comicImageConvert.js`, and `ffprobe.js` are mocked; `subtitleClient.js` is partially mocked
+  (keeping the real, already-tested `pickBestSubtitleForLanguage`); everything else (naming,
+  mediaTypes, settingsStore, releaseParser, `libraryScan.js`'s `detectSeasonEpisode`,
+  `releaseGroupStats.js`) runs for real.
+
+  The most consequential discovery this round wasn't in the source: `config.downloadsDir` is a
+  `const` resolved once at `config.ts`'s module-load time from `AONARR_DOWNLOADS_DIR` — reassigning
+  that env var per test after the module has already loaded (as the first draft did) has no effect
+  at all, so every `findDownloadedFile`-family test silently searched the wrong directory and found
+  nothing. Worse, `setupTestDb()` points `AONARR_CONFIG_DIR` and `AONARR_DOWNLOADS_DIR` at the exact
+  same temp directory, so a naive "clear everything in the downloads dir between tests" fix deleted
+  the app's own `logs/` folder and crashed the logger mid-suite. The real fix: read the actual
+  resolved `config.downloadsDir` once in `beforeAll` and use a dedicated subfolder under it for every
+  test's fixtures — but even that subfolder isn't safe to merely *clear*, since
+  `cleanupDownloadSourceFolder`'s own `removeEmptyParents` call walks upward from a just-removed
+  release folder toward the real `config.downloadsDir` and will happily remove that subfolder too, as
+  a legitimate "now-empty parent" — so each test recreates it outright (`rmSync` + `mkdirSync`) rather
+  than assuming it still exists.
+
+Test count: 910 → 957 (85 → 86 files).
+
+Verified: `tsc --noEmit` clean, all 957 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 272 — more test coverage (library scan & import engine)
 No behavior changes. Continues the test-coverage push. The single largest and most historically
 bug-dense file tackled this session (963 lines) — the core Scan & Import engine behind every media
