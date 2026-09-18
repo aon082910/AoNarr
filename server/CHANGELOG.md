@@ -3,6 +3,45 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 277 — deepen test coverage: metadata.ts edge cases
+With the untested-file backlog cleared (Round 276), this round shifts to deepening coverage in
+already-tested files rather than starting new ones. `metadata.ts` was the freshest and most
+clearly under-tested-by-design target: Round 276 deliberately gave ~25 "secondary" providers only
+one happy-path test each. This round went back through that list and added the missing-field
+fallback branches (a provider's own JSON commonly omits a field entirely, not just sets it to a
+falsy value) each of those functions actually has.
+
+- `tests/metadata.test.ts` — 119 → 124 tests (several existing tests also gained extra assertions
+  without adding a new `it`). New coverage: Trakt search omitting the `imdb` key entirely (not
+  just `undefined`) when Trakt has none; TVMaze with no image/summary/premiered date; Open
+  Library/ComicVine/RAWG/ThePornDB search with every optional field absent; Deezer's
+  `cover_medium` → `cover` poster fallback; Goodreads skipping a row with an empty title or no
+  author link, and leaving `releaseDate` null when there's no "published YYYY" text; Audible's
+  missing `product_images`/`release_date`; RAWG's and IGDB's maker resolution falling back to
+  publisher when there's no developer entry; ScreenScraper's region/language helper falling back
+  to the first entry when the preferred one is absent; TheGamesDB's `base_url` fallback chains
+  (search: medium → original; artwork: large → original → medium); `fetchPlaylistByIdYoutube`
+  throwing for a playlist that doesn't exist; confirming `searchMangaAnilist` never sets
+  `runtimeMinutes` (unlike the anime/series AniList search, which does); Fanart.tv's `movielogo`
+  fallback when `hdmovielogo` is absent; the podcast RSS parser's 500-episode safety cap (proven
+  end-to-end with a 501-item generated feed, not just asserted from reading the source); and
+  iTunes podcast search falling back to `trackName`/null when `collectionName`/`artistName`/
+  artwork are absent.
+
+  One more genuine source bug surfaced — this time caught by inspection before even writing the
+  test, while comparing `fetchArtistAlbumsLastfm` against `searchArtistsLastfm` right above it in
+  the file: `searchArtistsLastfm` unwraps Last.fm's `artistmatches.artist` field with
+  `Array.isArray(matches) ? matches : [matches]`, because Last.fm's API (translated from XML) is
+  well known to collapse a single-item list field down to a bare object instead of a 1-element
+  array. `fetchArtistAlbumsLastfm`, immediately below it, read `topalbums.album` the exact same
+  way but had no such guard — meaning any artist with exactly one top album would crash the whole
+  album fetch with `albums.map is not a function`. Fixed with the identical one-line guard already
+  used a few lines above it, and reproduced first with a failing test before the fix (rather than
+  fixing blind) to confirm the bug was real. Docker `server`/`combined` images rebuilt and pushed
+  (`web` untouched, no frontend changes).
+
+Test count: 1189 → 1194 (89 files, no new files this round).
+
 ## Round 276 — test coverage complete: metadata.ts, the last untested file
 Every service file in the codebase now has a test file. `metadata.ts` (2551 lines, the single
 largest file in the codebase by a wide margin) is a huge but structurally flat collection of

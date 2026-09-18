@@ -244,11 +244,16 @@ describe("searchMetadata: movies", () => {
     await expect(metadata.searchMetadata("movie", "nothing", "omdb")).resolves.toEqual([]);
   });
 
-  it("Trakt: maps search results with null posterUrl and optional imdb id", async () => {
+  it("Trakt: maps search results with null posterUrl, and omits the imdb key entirely when Trakt has none", async () => {
     setSetting("traktClientId", "cid");
     stub([{ test: (u) => u.includes("api.trakt.tv/search/movie"), response: ok([{ movie: { title: "Batman", year: 1989, overview: "ov", ids: { trakt: 1, imdb: "tt1" } } }]) }]);
     const results = await metadata.searchMetadata("movie", "batman", "trakt");
     expect(results).toEqual([{ title: "Batman", year: 1989, overview: "ov", posterUrl: null, externalIds: { trakt: "1", imdb: "tt1" } }]);
+
+    stub([{ test: (u) => u.includes("api.trakt.tv/search/movie"), response: ok([{ movie: { title: "No IMDb", year: 2000, ids: { trakt: 2 } } }]) }]);
+    const withoutImdb = await metadata.searchMetadata("movie", "x", "trakt");
+    expect(withoutImdb[0].externalIds).toEqual({ trakt: "2" });
+    expect("imdb" in withoutImdb[0].externalIds).toBe(false);
   });
 });
 
@@ -270,10 +275,14 @@ describe("searchMetadata: series/anime/sports/ppv", () => {
     expect(results[0]).toEqual({ title: "X", year: 2010, overview: null, posterUrl: "http://thumb", externalIds: { tvdb: "7" } });
   });
 
-  it("TVMaze search strips HTML from the summary", async () => {
+  it("TVMaze search strips HTML from the summary, and handles a missing image/summary/premiered date", async () => {
     stub([{ test: (u) => u.includes("api.tvmaze.com/search/shows"), response: ok([{ show: { id: 1, name: "X", premiered: "2010-05-01", summary: "<p>ov</p>", image: { medium: "http://img" } } }]) }]);
     const results = await metadata.searchMetadata("series", "x", "tvmaze");
     expect(results[0]).toEqual({ title: "X", year: 2010, overview: "ov", posterUrl: "http://img", externalIds: { tvmaze: "1" } });
+
+    stub([{ test: (u) => u.includes("api.tvmaze.com/search/shows"), response: ok([{ show: { id: 2, name: "Bare" } }]) }]);
+    const bare = await metadata.searchMetadata("series", "x", "tvmaze");
+    expect(bare[0]).toEqual({ title: "Bare", year: null, overview: null, posterUrl: null, externalIds: { tvmaze: "2" } });
   });
 
   it("Trakt series search maps fields", async () => {
@@ -321,11 +330,12 @@ describe("searchMetadata: artists", () => {
     expect(results[0]).toEqual({ title: "Artist", year: null, overview: null, posterUrl: "http://pic", externalIds: { deezer: "5" } });
   });
 
-  it("Discogs search maps fields", async () => {
+  it("Discogs search maps fields, and leaves posterUrl null when thumb is absent", async () => {
     setSetting("discogsToken", "tok");
-    const fetchMock = stub([{ test: (u) => u.includes("api.discogs.com/database/search"), response: ok({ results: [{ title: "Artist", id: 7, thumb: "http://t" }] }) }]);
+    const fetchMock = stub([{ test: (u) => u.includes("api.discogs.com/database/search"), response: ok({ results: [{ title: "Artist", id: 7, thumb: "http://t" }, { title: "NoThumb", id: 8 }] }) }]);
     const results = await metadata.searchMetadata("artist", "x", "discogs");
     expect(results[0]).toEqual({ title: "Artist", year: null, overview: null, posterUrl: "http://t", externalIds: { discogs: "7" } });
+    expect(results[1].posterUrl).toBeNull();
     expect(String(fetchMock.mock.calls[0][0])).toContain("token=tok");
   });
 
@@ -364,10 +374,14 @@ describe("searchMetadata: artists", () => {
 });
 
 describe("searchMetadata: authors/audiobooks", () => {
-  it("Open Library author search maps fields", async () => {
+  it("Open Library author search maps fields, and handles a missing birth_date/top_work/key", async () => {
     stub([{ test: (u) => u.includes("openlibrary.org/search/authors.json"), response: ok({ docs: [{ name: "Author", birth_date: "1950", top_work: "Book1", key: "OL1A" }] }) }]);
     const results = await metadata.searchMetadata("author", "x", "openlibrary");
     expect(results[0]).toEqual({ title: "Author", year: 1950, overview: "Known for: Book1", posterUrl: "https://covers.openlibrary.org/a/olid/OL1A-M.jpg", externalIds: { openlibrary: "OL1A" } });
+
+    stub([{ test: (u) => u.includes("openlibrary.org/search/authors.json"), response: ok({ docs: [{ name: "Bare Author" }] }) }]);
+    const bare = await metadata.searchMetadata("author", "x", "openlibrary");
+    expect(bare[0]).toEqual({ title: "Bare Author", year: null, overview: null, posterUrl: null, externalIds: { openlibrary: undefined } });
   });
 
   it("Google Books author search dedupes authors across multiple items", async () => {
@@ -435,25 +449,39 @@ describe("searchMetadata: authors/audiobooks", () => {
     expect(results).toEqual([{ title: "Exact Match", year: null, overview: "bio", posterUrl: "http://img", externalIds: { audnexus: "A1" } }]);
   });
 
-  it("Audible author search dedupes by author name", async () => {
+  it("Audible author search dedupes by author name, and handles missing product_images", async () => {
     stub([{ test: (u) => u.includes("api.audible.com"), response: ok({ products: [{ authors: [{ name: "Author1" }], title: "Book1", product_images: { "500": "http://500" } }, { authors: [{ name: "Author1" }], title: "Book2" }] }) }]);
     const results = await metadata.searchMetadata("audiobook", "x", "audible");
     expect(results).toEqual([{ title: "Author1", year: null, overview: "Known for: Book1", posterUrl: "http://500", externalIds: { audible: "Author1" } }]);
+
+    stub([{ test: (u) => u.includes("api.audible.com"), response: ok({ products: [{ authors: [{ name: "Author2" }], title: "Book3" }] }) }]);
+    const noImage = await metadata.searchMetadata("audiobook", "x", "audible");
+    expect(noImage[0].posterUrl).toBeNull();
+  });
+
+  it("Audible books fall back to a null releaseDate when release_date is absent", async () => {
+    stub([{ test: (u) => u.includes("api.audible.com"), response: ok({ products: [{ authors: [{ name: "Author1" }], title: "Book1" }] }) }]);
+    expect(await metadata.fetchCollectionChildrenFor({ audible: "Author1" })).toEqual({ provider: "audible", children: [{ title: "Book1", releaseDate: null }] });
   });
 });
 
 describe("searchMetadata: comics/manga/roms/video/podcast/adult", () => {
-  it("ComicVine search strips HTML from the description", async () => {
+  it("ComicVine search strips HTML from the description, and handles a missing start_year/image/description", async () => {
     setSetting("comicVineApiKey", "k");
     stub([{ test: (u) => u.includes("comicvine.gamespot.com/api/search"), response: ok({ results: [{ name: "Comic1", start_year: "2000", description: "<p>ov</p>", image: { medium_url: "http://m" }, id: 1 }] }) }]);
     const results = await metadata.searchMetadata("comic", "x", "comicvine");
     expect(results[0]).toEqual({ title: "Comic1", year: 2000, overview: "ov", posterUrl: "http://m", externalIds: { comicvine: "1" } });
+
+    stub([{ test: (u) => u.includes("comicvine.gamespot.com/api/search"), response: ok({ results: [{ name: "Bare Comic", id: 2 }] }) }]);
+    const bare = await metadata.searchMetadata("comic", "x", "comicvine");
+    expect(bare[0]).toEqual({ title: "Bare Comic", year: null, overview: null, posterUrl: null, externalIds: { comicvine: "2" } });
   });
 
-  it("manga: AniList's TYPE_SPECIFIC override sends a MANGA-typed GraphQL query, not the anime one", async () => {
-    const fetchMock = stub([{ test: (u) => u.includes("graphql.anilist.co"), response: ok({ data: { Page: { media: [{ id: 1, title: { romaji: "R", english: "E" }, coverImage: {} }] } } }) }]);
-    await metadata.searchMetadata("manga", "x", "anilist");
+  it("manga: AniList's TYPE_SPECIFIC override sends a MANGA-typed GraphQL query, not the anime one, and never sets runtimeMinutes", async () => {
+    const fetchMock = stub([{ test: (u) => u.includes("graphql.anilist.co"), response: ok({ data: { Page: { media: [{ id: 1, title: { romaji: "R", english: "E" }, coverImage: {}, duration: 24 }] } } }) }]);
+    const results = await metadata.searchMetadata("manga", "x", "anilist");
     expect(JSON.parse((fetchMock.mock.calls[0][1] as any).body).query).toContain("type: MANGA");
+    expect("runtimeMinutes" in results[0]).toBe(false); // unlike searchSeriesAnilist, the manga search never populates this field
   });
 
   it("MangaDex search falls back through title locales and builds the cover URL", async () => {
@@ -482,6 +510,11 @@ describe("searchMetadata: comics/manga/roms/video/podcast/adult", () => {
     stub([{ test: (u) => u.includes("api.rawg.io/api/games?"), response: ok({ results: [{ name: "Game1", released: "2000-01-01", background_image: "http://bg", id: 1, metacritic: 85, short_screenshots: [{ image: "http://ss0" }, { image: "http://ss1" }] }] }) }]);
     const results = await metadata.searchMetadata("rom", "x", "rawg");
     expect(results[0]).toEqual({ title: "Game1", year: 2000, overview: null, posterUrl: "http://bg", externalIds: { rawg: "1" }, rating: 8.5, backdropUrl: "http://ss1" });
+
+    stub([{ test: (u) => u.includes("api.rawg.io/api/games?"), response: ok({ results: [{ name: "NoMetacritic", id: 2 }] }) }]);
+    const noMetacritic = await metadata.searchMetadata("rom", "x", "rawg");
+    expect(noMetacritic[0].rating).toBeNull();
+    expect(noMetacritic[0].backdropUrl).toBeNull();
   });
 
   it("IGDB rom search converts a unix-seconds release date and rewrites cover/screenshot image sizes", async () => {
@@ -509,7 +542,7 @@ describe("searchMetadata: comics/manga/roms/video/podcast/adult", () => {
     expect(results[1].title).toBe("Fallback Name");
   });
 
-  it("TheGamesDB rom search resolves boxart via the base_url + per-game image list", async () => {
+  it("TheGamesDB rom search resolves boxart via the base_url + per-game image list, falling back to base_url.original when .medium is absent", async () => {
     setSetting("theGamesDbApiKey", "k");
     stub([
       {
@@ -519,6 +552,15 @@ describe("searchMetadata: comics/manga/roms/video/podcast/adult", () => {
     ]);
     const results = await metadata.searchMetadata("rom", "x", "thegamesdb");
     expect(results[0]).toEqual({ title: "Game1", year: 2000, overview: "ov", posterUrl: "http://base/a.jpg", externalIds: { thegamesdb: "1" } });
+
+    stub([
+      {
+        test: (u) => u.includes("api.thegamesdb.net/v1/Games/ByGameName"),
+        response: ok({ data: { games: [{ id: 2, game_title: "Game2" }] }, include: { boxart: { base_url: { original: "http://orig/" }, data: { "2": [{ side: "front", filename: "b.jpg" }] } } } }),
+      },
+    ]);
+    const fallback = await metadata.searchMetadata("rom", "x", "thegamesdb");
+    expect(fallback[0].posterUrl).toBe("http://orig/b.jpg");
   });
 
   it("YouTube video search falls back to id.channelId when snippet.channelId is absent", async () => {
@@ -542,11 +584,23 @@ describe("searchMetadata: comics/manga/roms/video/podcast/adult", () => {
     expect(String(fetchMock.mock.calls[0][0])).toContain("media=podcast");
   });
 
+  it("podcast: falls back to a null overview and posterUrl when artistName/artwork are absent, and to trackName when there's no collectionName", async () => {
+    stub([{ test: (u) => u.includes("itunes.apple.com/search"), response: ok({ results: [{ trackName: "Show2", feedUrl: "http://feed2.xml" }] }) }]);
+    const results = await metadata.searchMetadata("podcast", "x", "itunes");
+    expect(results[0]).toEqual({ title: "Show2", year: null, overview: null, posterUrl: null, externalIds: { podcastFeed: "http://feed2.xml" } });
+  });
+
   it("ThePornDB adult search maps performers, falling back to parent.name and dropping nameless entries", async () => {
     setSetting("thePornDbApiKey", "k");
     stub([{ test: (u) => u.includes("api.metadataapi.net/scenes?"), response: ok({ data: [{ title: "Scene1", date: "2020-01-01", description: "d", image: "http://img", id: 1, site: { name: "Studio1" }, performers: [{ name: "P1" }, { parent: { name: "P2" } }, {}] }] }) }]);
     const results = await metadata.searchMetadata("adult", "x", "theporndb");
     expect(results[0]).toEqual({ title: "Scene1", year: 2020, overview: "d", posterUrl: "http://img", externalIds: { theporndb: "1" }, studio: "Studio1", performers: ["P1", "P2"] });
+
+    stub([{ test: (u) => u.includes("api.metadataapi.net/scenes?"), response: ok({ data: [{ title: "No Studio Or Date", id: 2 }] }) }]);
+    const bare = await metadata.searchMetadata("adult", "x", "theporndb");
+    expect(bare[0].year).toBeNull();
+    expect(bare[0].studio).toBeNull();
+    expect(bare[0].performers).toBeUndefined();
   });
 });
 
@@ -668,11 +722,14 @@ describe("fetchByExternalId", () => {
     await expect(metadata.fetchByExternalId("author", "isbn", "0000000000")).rejects.toThrow('No Open Library record found for ISBN "0000000000"');
   });
 
-  it("youtubePlaylist: delegates to the playlist-by-id lookup", async () => {
+  it("youtubePlaylist: delegates to the playlist-by-id lookup, and throws when the playlist doesn't exist", async () => {
     setSetting("youtubeApiKey", "k");
     stub([{ test: (u) => u.includes("youtube/v3/playlists"), response: ok({ items: [{ snippet: { title: "My Playlist", description: "d", thumbnails: { medium: { url: "http://t" } } } }] }) }]);
     const result = await metadata.fetchByExternalId("video", "youtubePlaylist", "PL1");
     expect(result.title).toBe("My Playlist");
+
+    stub([{ test: (u) => u.includes("youtube/v3/playlists"), response: ok({ items: [] }) }]);
+    await expect(metadata.fetchByExternalId("video", "youtubePlaylist", "PL999")).rejects.toThrow('No YouTube playlist found for id "PL999"');
   });
 
   it("throws for an unsupported provider", async () => {
@@ -837,9 +894,13 @@ describe("fetchArtistAlbumsFor", () => {
     expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.getAll("type")).toEqual(["album"]);
   });
 
-  it("Deezer albums map fields", async () => {
+  it("Deezer albums map fields, falling back to the plain cover url when cover_medium is absent", async () => {
     stub([{ test: (u) => u.includes("api.deezer.com/artist/9/albums"), response: ok({ data: [{ title: "Album1", release_date: "2000-01-01", id: 9, cover_medium: "http://c" }] }) }]);
     expect(await metadata.fetchArtistAlbumsFor({ deezer: "9" })).toEqual({ provider: "deezer", albums: [{ title: "Album1", releaseDate: "2000-01-01", externalId: "9", posterUrl: "http://c" }] });
+
+    stub([{ test: (u) => u.includes("api.deezer.com/artist/10/albums"), response: ok({ data: [{ title: "Album2", id: 10, cover: "http://plain-cover" }] }) }]);
+    const fallback = await metadata.fetchArtistAlbumsFor({ deezer: "10" });
+    expect(fallback?.albums[0].posterUrl).toBe("http://plain-cover");
   });
 
   it("Discogs albums filter to role:Main and dedupe by title", async () => {
@@ -857,6 +918,15 @@ describe("fetchArtistAlbumsFor", () => {
     fetchMock.mockClear();
     await metadata.fetchArtistAlbumsFor({ lastfm: "12345678-1234-1234-1234-123456789012" });
     expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get("mbid")).toBe("12345678-1234-1234-1234-123456789012");
+  });
+
+  it("Last.fm: an artist with exactly one top album unwraps Last.fm's bare-object response instead of crashing", async () => {
+    // Same XML->JSON quirk as the search endpoint (already handled above): a single-item list
+    // collapses to a bare object rather than a 1-element array.
+    setSetting("lastfmApiKey", "k");
+    stub([{ test: (u) => u.includes("artist.gettopalbums"), response: ok({ topalbums: { album: { name: "OnlyAlbum", mbid: "" } } }) }]);
+    const result = await metadata.fetchArtistAlbumsFor({ lastfm: "Solo Artist" });
+    expect(result).toEqual({ provider: "lastfm", albums: [{ title: "OnlyAlbum", releaseDate: null, externalId: "OnlyAlbum", posterUrl: null }] });
   });
 
   it("returns null when no known artist id is present", async () => {
@@ -926,13 +996,43 @@ describe("fetchCollectionChildrenFor", () => {
     expect(await metadata.fetchCollectionChildrenFor({ hardcover: "5" })).toEqual({ provider: "hardcover", children: [{ title: "Book1", releaseDate: "2000" }] });
   });
 
-  it("goodreads: scrapes an author's book list page", async () => {
-    const html = `<table><tr itemtype="http://schema.org/Book"><td>
-      <a class="bookTitle"><span itemprop="name">Book1</span></a>
-      <span class="greyText smallText uitext">published 2015</span>
-    </td></tr></table>`;
+  it("goodreads: scrapes an author's book list page, leaving releaseDate null when no 'published YYYY' text is present", async () => {
+    const html = `<table>
+      <tr itemtype="http://schema.org/Book"><td>
+        <a class="bookTitle"><span itemprop="name">Book1</span></a>
+        <span class="greyText smallText uitext">published 2015</span>
+      </td></tr>
+      <tr itemtype="http://schema.org/Book"><td>
+        <a class="bookTitle"><span itemprop="name">Book2</span></a>
+      </td></tr>
+    </table>`;
     stub([{ test: (u) => u.includes("goodreads.com/author/list/123"), response: okText(html) }]);
-    expect(await metadata.fetchCollectionChildrenFor({ goodreads: "123" })).toEqual({ provider: "goodreads", children: [{ title: "Book1", releaseDate: "2015-01-01" }] });
+    expect(await metadata.fetchCollectionChildrenFor({ goodreads: "123" })).toEqual({
+      provider: "goodreads",
+      children: [
+        { title: "Book1", releaseDate: "2015-01-01" },
+        { title: "Book2", releaseDate: null },
+      ],
+    });
+  });
+
+  it("goodreads: search skips a row with no title or no author link", async () => {
+    const html = `<table>
+      <tr itemtype="http://schema.org/Book"><td>
+        <a class="bookTitle"><span itemprop="name"></span></a>
+        <a class="authorName" href="/author/show/1.Nobody"><span itemprop="name">Nobody</span></a>
+      </td></tr>
+      <tr itemtype="http://schema.org/Book"><td>
+        <a class="bookTitle"><span itemprop="name">No Author Link</span></a>
+      </td></tr>
+      <tr itemtype="http://schema.org/Book"><td>
+        <a class="bookTitle"><span itemprop="name">Real Book</span></a>
+        <a class="authorName" href="/author/show/2.Real_Author"><span itemprop="name">Real Author</span></a>
+      </td></tr>
+    </table>`;
+    stub([{ test: (u) => u.includes("goodreads.com/search"), response: okText(html) }]);
+    const results = await metadata.searchMetadata("author", "x", "goodreads");
+    expect(results.map((r) => r.title)).toEqual(["Real Author"]);
   });
 
   it("audible: maps works filtered to an exact author match", async () => {
@@ -1004,6 +1104,14 @@ describe("fetchCollectionChildrenFor", () => {
     });
   });
 
+  it("podcastFeed: caps parsed episodes at 500 even when the feed has more items", async () => {
+    const items = Array.from({ length: 501 }, (_, i) => `<item><title>Ep${i}</title><enclosure url="http://a.example/${i}.mp3"/></item>`).join("");
+    const rss = `<rss><channel>${items}</channel></rss>`;
+    stub([{ test: (u) => u === "http://feed.example/big.xml", response: okText(rss) }]);
+    const { children } = await metadata.fetchCollectionChildrenFor({ podcastFeed: "http://feed.example/big.xml" });
+    expect(children).toHaveLength(500);
+  });
+
   it("returns {provider:null, children:[]} when no known id is present (e.g. Courses)", async () => {
     await expect(metadata.fetchCollectionChildrenFor({})).resolves.toEqual({ provider: null, children: [] });
   });
@@ -1021,6 +1129,10 @@ describe("fetchRomDetailsFor", () => {
     const withoutIgdb = await metadata.fetchRomDetailsFor({ rawg: "1" });
     expect(withoutIgdb).toEqual({ overview: "desc", system: "PC", maker: "Dev1", systemLogoUrl: null });
     expect(fetchMock.mock.calls).toHaveLength(1); // no platforms lookup attempted
+
+    stub([{ test: (u) => u.includes("api.rawg.io/api/games/2?"), response: ok({ platforms: [{ platform: { name: "PC" } }], publishers: [{ name: "Pub1" }] }) }]);
+    const publisherOnly = await metadata.fetchRomDetailsFor({ rawg: "2" });
+    expect(publisherOnly.maker).toBe("Pub1"); // falls back to publisher when there's no developer
 
     setSetting("igdbClientId", "cid");
     setSetting("igdbClientSecret", "csecret");
@@ -1041,13 +1153,29 @@ describe("fetchRomDetailsFor", () => {
       { test: (u) => u.includes("api.igdb.com/v4/games"), response: ok([{ summary: "sum", platforms: [{ name: "PC", platform_logo: { url: "//img/t_thumb/logo.jpg" } }], involved_companies: [{ developer: true, company: { name: "Dev1" } }, { publisher: true, company: { name: "Pub1" } }] }]) },
     ]);
     expect(await metadata.fetchRomDetailsFor({ igdb: "1" })).toEqual({ overview: "sum", system: "PC", maker: "Dev1", systemLogoUrl: "https://img/t_logo_med/logo.jpg" });
+
+    stub([
+      { test: (u) => u.includes("id.twitch.tv"), response: ok({ access_token: "tok", expires_in: 3600 }) },
+      { test: (u) => u.includes("api.igdb.com/v4/games"), response: ok([{ involved_companies: [{ publisher: true, company: { name: "Pub1" } }] }]) },
+    ]);
+    expect((await metadata.fetchRomDetailsFor({ igdb: "2" })).maker).toBe("Pub1"); // no developer entry at all
+
+    stub([
+      { test: (u) => u.includes("id.twitch.tv"), response: ok({ access_token: "tok", expires_in: 3600 }) },
+      { test: (u) => u.includes("api.igdb.com/v4/games"), response: ok([]) },
+    ]);
+    expect(await metadata.fetchRomDetailsFor({ igdb: "999" })).toEqual({ overview: null, system: null, maker: null, systemLogoUrl: null });
   });
 
-  it("ScreenScraper: maps system/overview/maker and prefers a wheel image over an IGDB fallback", async () => {
+  it("ScreenScraper: maps system/overview/maker, prefers a wheel image over an IGDB fallback, and falls back to the first entry when the preferred region/language is absent", async () => {
     setSetting("screenscraperDevId", "d");
     setSetting("screenscraperDevPassword", "p");
     stub([{ test: (u) => u.includes("jeuInfos.php"), response: ok({ response: { jeu: { systeme: { text: "NES" }, synopsis: [{ langue: "en", text: "Syn" }], developpeur: { text: "Dev1" }, medias: [{ type: "wheel", url: "http://wheel" }] } } }) }]);
     expect(await metadata.fetchRomDetailsFor({ screenscraper: "1" })).toEqual({ overview: "Syn", system: "NES", maker: "Dev1", systemLogoUrl: "http://wheel" });
+
+    stub([{ test: (u) => u.includes("jeuInfos.php"), response: ok({ response: { jeu: { systeme: { text: "SNES" }, synopsis: [{ langue: "fr", text: "Synopsis francaise" }] } } }) }]);
+    const noEnglishSynopsis = await metadata.fetchRomDetailsFor({ screenscraper: "2" });
+    expect(noEnglishSynopsis.overview).toBe("Synopsis francaise"); // falls back to entries[0] when no "en" entry exists
   });
 
   it("TheGamesDB: resolves platform/developer/publisher through the include lookup tables", async () => {
@@ -1075,6 +1203,10 @@ describe("fetchArtworkFor", () => {
     setSetting("fanartApiKey", "k");
     stub([{ test: (u) => u.includes("webservice.fanart.tv/v3/movies/1"), response: ok({ movieposter: [{ url: "http://p1" }], moviebackground: [{ url: "http://b1" }], hdmovielogo: [{ url: "http://l1" }], movielogo: [{ url: "http://ignored" }] }) }]);
     expect(await metadata.fetchArtworkFor("movie", { tmdb: "1" })).toEqual({ posters: ["http://p1"], backgrounds: ["http://b1"], logos: ["http://l1"] });
+
+    stub([{ test: (u) => u.includes("webservice.fanart.tv/v3/movies/2"), response: ok({ movielogo: [{ url: "http://sd-logo" }] }) }]);
+    const sdLogoOnly = await metadata.fetchArtworkFor("movie", { tmdb: "2" });
+    expect(sdLogoOnly.logos).toEqual(["http://sd-logo"]); // falls back to movielogo when hdmovielogo is absent
 
     stub([{ test: (u) => u.includes("webservice.fanart.tv/v3/tv/9"), response: notOk(404) }]);
     expect(await metadata.fetchArtworkFor("series", { tvdb: "9" })).toEqual({ posters: [], backgrounds: [], logos: [] });
@@ -1111,10 +1243,14 @@ describe("fetchArtworkFor", () => {
     expect(await metadata.fetchArtworkFor("rom", { screenscraper: "1" })).toEqual({ posters: ["http://box"], backgrounds: ["http://fa"], logos: [] });
   });
 
-  it("rom via thegamesdb: resolves the images list against the base_url", async () => {
+  it("rom via thegamesdb: resolves the images list against the base_url, falling back through original then medium when large is absent", async () => {
     setSetting("theGamesDbApiKey", "k");
     stub([{ test: (u) => u.includes("Games/Images"), response: ok({ data: { base_url: { large: "http://base/" }, images: { "1": [{ type: "boxart", filename: "a.jpg" }, { type: "screenshot", filename: "b.jpg" }] } } }) }]);
     expect(await metadata.fetchArtworkFor("rom", { thegamesdb: "1" })).toEqual({ posters: ["http://base/a.jpg"], backgrounds: ["http://base/b.jpg"], logos: [] });
+
+    stub([{ test: (u) => u.includes("Games/Images"), response: ok({ data: { base_url: { medium: "http://med/" }, images: { "2": [{ type: "boxart", filename: "c.jpg" }] } } }) }]);
+    const viaMedium = await metadata.fetchArtworkFor("rom", { thegamesdb: "2" });
+    expect(viaMedium.posters).toEqual(["http://med/c.jpg"]);
   });
 
   it("manga: combines MangaDex covers with AniList's cover/banner", async () => {

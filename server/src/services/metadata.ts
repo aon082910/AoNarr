@@ -765,7 +765,10 @@ async function fetchArtistAlbumsLastfm(idOrName: string): Promise<MetadataSubIte
   const res = await fetch(url.toString());
   if (!res.ok) throw new Error(`Last.fm album lookup failed: HTTP ${res.status}`);
   const body: any = await res.json();
-  const albums = body?.topalbums?.album ?? [];
+  const rawAlbums = body?.topalbums?.album ?? [];
+  // Same XML-to-JSON quirk as searchArtistsLastfm above: an artist with exactly one top album
+  // gets a bare object here instead of a 1-element array, which would otherwise crash `.map`.
+  const albums = Array.isArray(rawAlbums) ? rawAlbums : [rawAlbums];
 
   return albums.map((al: any) => ({
     title: al.name,
