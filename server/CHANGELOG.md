@@ -3,6 +3,36 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 284 — mediaServerImport.ts: the real import logic had the same gap as notifications.ts
+A systematic check for more files with this shape (source-to-test line ratio) surfaced
+`mediaServerImport.ts` as the next real match: 332 source lines, but its existing tests only ever
+exercised the small pure matching helpers (`titlesMatch`, `exactTitlesMatch`, `titleAndYearMatch`,
+`externalIdsOverlap`) — the actual `importMovieItems`/`importSeriesData` orchestrators, which do
+every bit of the real database matching/creation/update work for importing an existing Plex/
+Jellyfin/Emby library into AoNarr, had zero coverage. No source changes; every branch worked
+correctly once exercised.
+
+- `tests/mediaServerImport.test.ts` — 12 → 35 tests (the pre-existing pure-helper tests are
+  untouched). `importMovieItems`: creates a new row with every field populated correctly
+  (`has_file` driven by path presence); skips a title-less item and one whose path-tail is already
+  known; matches an existing row by external-id overlap or by title+year, filling in only
+  currently-null fields via `COALESCE` — proving a match's title is never renamed and its metadata
+  is never overwritten; a match reached via a path-less (Starr-sourced) item never downgrades an
+  already-downloaded row's `has_file`/`path`; matching runs against *every* movie, not just
+  not-yet-downloaded ones (a documented past-fix, now regression-proof); two media-server items for
+  the same new movie in one batch — the second matches the first instead of creating a duplicate
+  (also a documented past-fix); a genuine mid-loop `AbortSignal` stop; and a malformed
+  `external_ids` JSON on an existing row doesn't crash the match loop. `importSeriesData` gets the
+  equivalent coverage one level deeper — the same match/create/`COALESCE`-update shape for shows,
+  plus per-episode matching by season+episode under the resolved show, the show-id memoization that
+  keeps a multi-episode show from being resolved (or created) more than once, and the roll-up
+  `UPDATE` that flips a show's own `has_file` once any of its episodes has one. The two thin
+  `import*FromMediaServer` wrapper functions get one delegation-proof test each, with
+  `mediaServer.js`'s fetch functions mocked (inert for every other test in the file, since the core
+  functions take already-fetched items directly).
+
+Test count: 1267 → 1288 (89 files, no new files this round).
+
 ## Round 283 — notifications.ts: the whole notification pipeline had essentially no coverage
 While looking for the next file to deepen, `tests/notifications.test.ts` turned out to be only 3
 tests covering one small helper (`isEventEnabledFor`) — a narrow Round-229 regression test for one
