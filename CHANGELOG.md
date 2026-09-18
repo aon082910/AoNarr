@@ -3,6 +3,25 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 290 — quality.ts: the fire-and-forget cache invalidator and two boundary shapes
+Continued down the fresh ratio-scan list from Round 289. `quality.ts` (0.57, 139 lines) was already
+solidly tested overall, but `invalidateQualityRankCache` — the one exported function with zero
+coverage — is the file's fire-and-forget cache-refresh entry point (its own doc comment names it as
+one of exactly three call sites in the whole codebase): it fires `loadQualityCaches()` and attaches
+`.catch()` without awaiting it. Added a success-path test (a newly inserted quality becomes visible
+to `qualityRank` shortly after calling it, without the caller awaiting anything) and a failure-path
+test proving the `.catch()` genuinely swallows a rejection rather than leaking an unhandled
+rejection — forced a real DB read failure by renaming the `qualities` table out from under it for
+the duration of one call (restored immediately after), then listened for `process`'s
+`unhandledRejection` event, the same technique validated on `ircFeedManager.ts`'s announce-handler
+wiring. Also closed two narrower gaps: `sizeWithinQualityBounds`'s min-only and max-only bound
+configurations were previously only ever tested together (both set on the same row), never proving
+the two `!= null` guards are actually independent; and `pickBestAllowedQuality` never had a test
+proving a candidate sitting exactly *at* the cutoff (not just strictly below it) is included, nor
+that its below-cutoff fallback correctly ranks among *multiple* eligible candidates rather than just
+returning whichever one happened to be present. No source bug — every branch already worked
+correctly, including the cache-invalidation failure path. Full suite: 1343 → 1349 tests, 89 files.
+
 ## Round 289 — mediaAnalysis.ts: `runLibraryAnalysis`, the only file-mutating function, had zero coverage
 Re-ran the ratio-scan against the current codebase now that the original candidate list (Rounds
 283-288) is closed. `mediaAnalysis.ts` (0.54, 334 lines) turned out to be another instance of the
