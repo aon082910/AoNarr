@@ -3,6 +3,53 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 274 — more test coverage (download clients) + a real Soulseek bug fix
+The third-largest file tackled this session (1203 lines, 9 distinct download-client backends
+behind one shared interface) — and this round did find a real, shipped bug, not just add tests.
+
+- **Fixed**: `SlskdAdapter`'s `downloadId` (in both `addDownload` and `getStatus`) joined the
+  Soulseek username and filename with a literal embedded NULL byte (`\x00`) instead of a space —
+  confirmed via a hex dump of the actual source file, not a guess (`grep` had been silently
+  reporting `downloadClient.ts` as a "binary file" for several rounds now, which was the real tell
+  in hindsight). Both sides of the adapter's own internal comparison used the same corrupted
+  template, so it likely went unnoticed in casual use — but a `TEXT` column bound with an embedded
+  NULL byte is exactly the kind of value some SQLite drivers silently truncate at the C-string
+  boundary, which would have desynced a stored `queue.download_id` from what `getStatus` computes
+  on every poll, breaking progress/completion tracking for Soulseek downloads specifically. Caught
+  only because this round's test asserted the exact string rather than a looser shape.
+- `tests/downloadClient.test.ts` — `applyRemotePathMapping` (longest-prefix-wins, case-insensitive
+  and mixed-slash-tolerant matching, unmapped passthrough); `testDownloadClientConnection`'s per-
+  type checks; `removeQueueItemDownload`'s best-effort contract; and, for each of the 9 adapters
+  behind `getDownloadClientAdapter`: qBittorrent (session-cookie caching and its drop-and-retry-once
+  on a 403, `content_path`/`save_path` fallback, health-stats ratio math, and `removeSeededTorrents`'
+  state+goal filtering), SABnzbd (its whole reason for existing — a 100%-in-queue job reported as
+  "downloading", never "completed", until it actually reaches history — and trying both the queue
+  and history locations to remove a job), the in-process Http and yt-dlp adapters (background
+  download/spawn, stdout progress parsing, exit-code and spawn-error handling, and yt-dlp's opt-in
+  flags), the three debrid adapters — Real-Debrid, TorBox (including its 0–100-vs-0–1 progress-
+  normalization quirk), and AllDebrid, which got the most attention given its rich documented bug
+  history: reading an accepted upload's id from `magnets[]` for a magnet vs. `files[]` for a
+  `.torrent`-bytes upload, `data.magnets` coming back as a bare object instead of an array on the
+  v4.1 status endpoint, and the dedicated `/magnet/files` recursive file-tree walk (a real file
+  nested one folder deep, alongside a malformed sibling entry with neither a link nor children,
+  proving both the recursion and the "just skip it" tolerance) — Blackhole's magnet/NZB/torrent
+  content-sniffing, and Slskd's transfer-matching (the bug above, plus state-string mapping).
+  `node:child_process` is partially mocked (`importOriginal`, overriding only `spawn` — a full
+  replacement broke `ffprobe.ts`'s unrelated `execFile` import, loaded transitively via the full
+  app); everything else runs for real. Several of this round's own test-fixture bugs surfaced via
+  the first Docker run too: a `remote_path_mappings` FK violation from literal (nonexistent) client
+  ids, a fake file response missing `.headers` that `HttpDownloadAdapter` reads for content-length,
+  output-file assertions checking the wrong directory (Real-Debrid/AllDebrid/Http all write to the
+  real `config.downloadsDir` directly, never the `test-fixtures` subfolder used for input fixtures),
+  a multi-file AllDebrid fixture reusing one mocked `Response`'s already-consumed stream for a
+  second download, and an AllDebrid `/link/unlock` mock not wrapped in the `{status, data}` envelope
+  `this.call()` actually unwraps.
+
+Test count: 957 → 1011 (86 → 87 files).
+
+Verified: `tsc --noEmit` clean, all 1011 server tests passing. Docker images rebuilt and pushed
+(`server` and `combined` — the fix is server-only; `web` is unaffected).
+
 ## Round 273 — more test coverage (file placement & import engine)
 No behavior changes. Continues the test-coverage push. The second-largest file tackled this
 session (1194 lines) — the engine that actually moves a downloaded file into the library, names it,

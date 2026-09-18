@@ -1093,7 +1093,7 @@ class SlskdAdapter implements DownloadClientAdapter {
     if (!res.ok) throw new Error(`slskd enqueue failed: HTTP ${res.status}`);
     // slskd tracks transfers by (username, filename), not a generated id — encode both into the
     // downloadId so getStatus can look this specific transfer back up later.
-    return { downloadId: `${username} ${filename}` };
+    return { downloadId: `${username} ${filename}` };
   }
 
   async getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
@@ -1106,7 +1106,7 @@ class SlskdAdapter implements DownloadClientAdapter {
     for (const u of users) {
       for (const dir of u.directories ?? []) {
         for (const f of dir.files ?? []) {
-          const downloadId = `${u.username} ${f.filename}`;
+          const downloadId = `${u.username} ${f.filename}`;
           if (!wanted.has(downloadId)) continue;
           const state = String(f.state ?? "");
           const status = state.includes("Succeeded") ? "completed" : state.includes("Errored") || state.includes("Cancelled") ? "failed" : "downloading";
