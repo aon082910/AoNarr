@@ -3,6 +3,49 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 272 — more test coverage (library scan & import engine)
+No behavior changes. Continues the test-coverage push. The single largest and most historically
+bug-dense file tackled this session (963 lines) — the core Scan & Import engine behind every media
+shape (movie, series, author/book, audiobook).
+
+- `tests/libraryScan.test.ts` — the pure helpers (`titlesMatch`'s exact-only matching, specifically
+  re-proving the documented "Extraction"/"Extraction 2" and "The Office"/"The Office UK" regression
+  it exists to prevent; `guessTitleFromText`'s cut-pattern precedence; `detectSeasonEpisode`'s
+  filename-first/season-folder-fallback chain), then `scanAndImportLibrary` across all three shapes:
+  movie (create, match-and-fill an existing missing item, and — the exact historical "duplicate
+  movies" bug the source comments describe — never duplicating or overwriting an already-downloaded
+  movie when a second file guesses the same title), series (new-show creation with best-effort
+  metadata enrichment, matching an existing show instead of duplicating it, the Season-folder+bare-
+  E-marker fallback, not overwriting an episode that already has a different file, and — another
+  named historical bug — the has_file rollup that flips a parent series from "Missing" to correct
+  even on a run that finds zero new files), author/book (parent+child creation, the "sits directly in
+  root with no parent folder" skip), and audiobook (per-file track upserting, a flat Artist/track.mp3
+  layout falling back to a self-titled album, and the multi-disc "Album [2CD]/CD1,CD2" layout being
+  recognized as ONE album with continuous track numbering — proving the exact disc-restart-collision
+  logic `upsertTrackFromFile`'s own comment describes); the `onlyTitle`/`onlySeasonNumber`/
+  `onlyMediaItemId` per-item scoping (including the documented "The Office" vs "The Office (US)"
+  loose-vs-strict-match scenario); the overlapping-whole-library-scan guard (and its deliberate
+  exemption for a scoped per-item scan); a genuine mid-scan `AbortSignal` stop; and one file's
+  exception not aborting the rest of the batch. Then `refreshLibraryMetadata`/`refreshOneMediaItem`
+  (the already-matched-vs-never-matched title-overwrite gate, episode/child backfilling, placeholder-
+  episode-title replacement, a movie's studio backfill, and `onlySeasonNumber` leaving the show's own
+  fields untouched) and the two startup data-fix backfills. `metadata.js`'s six network-calling
+  exports and `ffprobe.js`'s `probeMediaInfo` are mocked; everything else runs for real against a
+  real temp-directory filesystem tree and a real DB, wiped between tests since this file's every
+  function re-scans the whole table for its type.
+
+  Four bugs caught via the first Docker run, none in the source: three tests used a fictional
+  `'book'` media type key — the real registered key is `'author'` (Books shape, per
+  `mediaTypes.ts`) — the exact same mistake this project's own memory already flagged from an
+  earlier round, now recorded more prominently since it recurred independently; and one test's raw
+  SQL `INSERT` had its column list and `VALUES` list out of alignment (`overview`'s value landed in
+  the `has_file` column), caught by an assertion receiving `"1"` where a string overview was
+  expected.
+
+Test count: 856 → 910 (84 → 85 files).
+
+Verified: `tsc --noEmit` clean, all 910 server tests passing. No Docker rebuild — test-only change.
+
 ## Round 271 — more test coverage (Plex/Jellyfin/Emby media server client)
 No behavior changes. Continues the test-coverage push.
 
