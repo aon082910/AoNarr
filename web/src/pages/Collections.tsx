@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { LayersIcon } from "../components/NavIcons.js";
+import { TrashIcon } from "../components/ActionIcons.js";
 import type { Collection } from "../types.js";
 
 export default function Collections() {
@@ -157,14 +158,16 @@ export default function Collections() {
             </div>
             <button
               type="button"
-              className="danger"
+              className="icon-button danger"
               onClick={(e) => {
                 e.stopPropagation();
                 removeCollection(c.id);
               }}
               style={{ margin: "0 12px 12px" }}
+              title="Delete"
+              aria-label="Delete"
             >
-              Delete
+              <TrashIcon />
             </button>
           </div>
         ))}

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
+import { PlusCircleIcon } from "../components/NavIcons.js";
 
 interface FriendLibrary {
   id: number;
@@ -207,8 +208,8 @@ function MissingTable({ missing }: { missing: FriendLibraryItem[] }) {
             <td>{item.type === "movie" ? "Movie" : "Series"}</td>
             <td>
               <Link to={`/add?q=${encodeURIComponent(item.title)}&type=${item.type}`}>
-                <button type="button" className="secondary">
-                  Add
+                <button type="button" className="icon-button" title="Add" aria-label="Add">
+                  <PlusCircleIcon />
                 </button>
               </Link>
             </td>

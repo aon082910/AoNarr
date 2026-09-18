@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
+import { ChevronLeftIcon, ChevronRightIcon } from "../components/ActionIcons.js";
 
 interface AuditEntry {
   id: number;
@@ -112,14 +113,14 @@ export default function AuditLog() {
             </tbody>
           </table>
           <div className="toolbar" style={{ marginTop: 12, alignItems: "center" }}>
-            <button className="secondary" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-              Previous
+            <button type="button" className="icon-button" disabled={page <= 1} onClick={() => setPage((p) => p - 1)} title="Previous page" aria-label="Previous page">
+              <ChevronLeftIcon />
             </button>
             <span style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
               Page {data.page} of {data.totalPages}
             </span>
-            <button className="secondary" disabled={page >= data.totalPages} onClick={() => setPage((p) => p + 1)}>
-              Next
+            <button type="button" className="icon-button" disabled={page >= data.totalPages} onClick={() => setPage((p) => p + 1)} title="Next page" aria-label="Next page">
+              <ChevronRightIcon />
             </button>
           </div>
         </>

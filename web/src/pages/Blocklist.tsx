@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { BlocklistEntry } from "../types.js";
+import { TrashIcon } from "../components/ActionIcons.js";
 
 /** Radarr/Sonarr-style Blocklist page — every release AoNarr has been told never to grab again
  * (via the "Blocklist" button on a search result, or an automatic retry-after-failure), with a
@@ -84,8 +85,8 @@ export default function Blocklist() {
                 <td>{e.reason ?? "—"}</td>
                 <td>{new Date(e.createdAt).toLocaleString()}</td>
                 <td>
-                  <button className="secondary" onClick={() => remove(e.id)}>
-                    Remove
+                  <button type="button" className="icon-button" onClick={() => remove(e.id)} title="Remove" aria-label="Remove">
+                    <TrashIcon />
                   </button>
                 </td>
               </tr>

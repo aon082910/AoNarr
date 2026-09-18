@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client.js";
 import type { MediaItem, MediaType, QualityProfile } from "../types.js";
+import { PlusCircleIcon } from "../components/NavIcons.js";
+import { XIcon } from "../components/ActionIcons.js";
 
 interface Recommendation {
   title: string;
@@ -92,14 +94,18 @@ export default function Recommendations() {
                   {r.year ?? ""} · because you {r.basis === "watched" ? "watched" : "added"} {r.sourceTitle}
                 </div>
                 <button
+                  type="button"
+                  className="icon-button"
                   style={{ marginTop: 8, width: "100%" }}
                   disabled={adding === `${r.type}-${r.title}`}
                   onClick={() => add(r)}
+                  title={adding === `${r.type}-${r.title}` ? "Adding..." : "Add"}
+                  aria-label="Add"
                 >
-                  {adding === `${r.type}-${r.title}` ? "Adding..." : "Add"}
+                  <PlusCircleIcon />
                 </button>
-                <button className="secondary" style={{ marginTop: 6, width: "100%" }} onClick={() => notInterested(r)}>
-                  Not interested
+                <button type="button" className="icon-button" style={{ marginTop: 6, width: "100%" }} onClick={() => notInterested(r)} title="Not interested" aria-label="Not interested">
+                  <XIcon />
                 </button>
               </div>
             </div>

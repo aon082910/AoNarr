@@ -5,6 +5,7 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { HdrFormat, MediaInfo } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
+import { ZapIcon } from "../components/NavIcons.js";
 
 interface CompatibilityNote {
   level: "ok" | "caution" | "incompatible";
@@ -204,8 +205,8 @@ export default function MediaAnalyzer() {
             </option>
           ))}
         </select>
-        <button onClick={runAnalysis} disabled={running}>
-          {running ? "Analyzing..." : "Analyze now"}
+        <button type="button" className="icon-button" onClick={runAnalysis} disabled={running} title={running ? "Analyzing..." : "Analyze now"} aria-label="Analyze now">
+          <ZapIcon />
         </button>
       </div>
 

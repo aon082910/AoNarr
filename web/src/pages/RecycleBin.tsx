@@ -4,6 +4,8 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { CorruptMediaReviewEntry, RecycleBinEntry } from "../types.js";
 import { formatBytes } from "../utils/format.js";
+import { RotateCcwIcon } from "../components/NavIcons.js";
+import { TrashIcon, XIcon } from "../components/ActionIcons.js";
 
 /** Grouped by library type so browsing it mirrors the actual library folder structure — same
  * grouping the server's recycle_bin.media_type + physical recycle-bin/{type}/ layout use. */
@@ -108,11 +110,11 @@ export default function RecycleBin() {
                   <td style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.filePath}</td>
                   <td>{new Date(r.detectedAt).toLocaleString()}</td>
                   <td style={{ display: "flex", gap: 6 }}>
-                    <button className="danger" onClick={() => recycleReviewItem(r.id, r.title)}>
-                      Recycle
+                    <button type="button" className="icon-button danger" onClick={() => recycleReviewItem(r.id, r.title)} title="Recycle" aria-label="Recycle">
+                      <TrashIcon />
                     </button>
-                    <button className="secondary" onClick={() => dismissReviewItem(r.id)}>
-                      Dismiss
+                    <button type="button" className="icon-button" onClick={() => dismissReviewItem(r.id)} title="Dismiss" aria-label="Dismiss">
+                      <XIcon />
                     </button>
                   </td>
                 </tr>
@@ -185,11 +187,11 @@ function RecycledFilesTable({
             <td>{formatBytes(e.sizeBytes)}</td>
             <td>{new Date(e.deletedAt).toLocaleString()}</td>
             <td style={{ display: "flex", gap: 6 }}>
-              <button className="secondary" onClick={() => onRestore(e.id)} disabled={e.restoring}>
-                {e.restoring ? "Restoring..." : e.restoreError ? "Retry restore" : "Restore"}
+              <button type="button" className="icon-button" onClick={() => onRestore(e.id)} disabled={e.restoring} title={e.restoring ? "Restoring..." : e.restoreError ? "Retry restore" : "Restore"} aria-label="Restore">
+                <RotateCcwIcon />
               </button>
-              <button className="danger" onClick={() => onPurge(e.id, e.title)} disabled={e.restoring}>
-                Delete forever
+              <button type="button" className="icon-button danger" onClick={() => onPurge(e.id, e.title)} disabled={e.restoring} title="Delete forever" aria-label="Delete forever">
+                <TrashIcon />
               </button>
             </td>
           </tr>

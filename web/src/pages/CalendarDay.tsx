@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { describeCalendarEntry } from "../utils/calendarDescriptions.js";
+import { ArrowLeftIcon, ArrowRightIcon, TrashIcon } from "../components/ActionIcons.js";
 
 interface CalendarEntry {
   mediaItemId: number;
@@ -49,8 +50,8 @@ export default function CalendarDay() {
   return (
     <div>
       <p>
-        <button className="secondary" onClick={() => navigate("/calendar")}>
-          ← Back to calendar
+        <button type="button" className="icon-button" onClick={() => navigate("/calendar")} title="Back to calendar" aria-label="Back to calendar">
+          <ArrowLeftIcon />
         </button>
       </p>
       <h1>{formatted}</h1>
@@ -76,10 +77,12 @@ export default function CalendarDay() {
                 )}
               </div>
               {entry.kind === "media" ? (
-                <button onClick={() => navigate(`/media/${entry.mediaItemId}`)}>Open</button>
+                <button type="button" className="icon-button" onClick={() => navigate(`/media/${entry.mediaItemId}`)} title="Open" aria-label="Open">
+                  <ArrowRightIcon />
+                </button>
               ) : (
-                <button className="danger" onClick={() => deleteCustomEvent(entry.mediaItemId)}>
-                  Remove
+                <button type="button" className="icon-button danger" onClick={() => deleteCustomEvent(entry.mediaItemId)} title="Remove" aria-label="Remove">
+                  <TrashIcon />
                 </button>
               )}
             </div>

@@ -4,6 +4,7 @@ import { api, downloadFile } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { Collection, MediaItem } from "../types.js";
+import { ArrowUpIcon, ArrowDownIcon, TrashIcon } from "../components/ActionIcons.js";
 
 type CollectionDetailResponse = Collection & { items: MediaItem[] };
 
@@ -143,20 +144,23 @@ export default function CollectionDetail() {
               {!collection.smartFilter && (
                 <>
                   <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-                    <button className="secondary" disabled={index === 0} onClick={() => move(index, -1)} style={{ flex: 1 }}>
-                      Up
+                    <button type="button" className="icon-button" disabled={index === 0} onClick={() => move(index, -1)} style={{ flex: 1 }} title="Move up" aria-label="Move up">
+                      <ArrowUpIcon />
                     </button>
                     <button
-                      className="secondary"
+                      type="button"
+                      className="icon-button"
                       disabled={index === collection.items.length - 1}
                       onClick={() => move(index, 1)}
                       style={{ flex: 1 }}
+                      title="Move down"
+                      aria-label="Move down"
                     >
-                      Down
+                      <ArrowDownIcon />
                     </button>
                   </div>
-                  <button className="danger" style={{ marginTop: 6, width: "100%" }} onClick={() => removeItem(item.id)}>
-                    Remove
+                  <button type="button" className="icon-button danger" style={{ marginTop: 6, width: "100%" }} onClick={() => removeItem(item.id)} title="Remove" aria-label="Remove">
+                    <TrashIcon />
                   </button>
                 </>
               )}

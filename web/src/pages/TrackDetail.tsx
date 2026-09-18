@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client.js";
+import { ArrowLeftIcon } from "../components/ActionIcons.js";
 
 interface TrackDetailResponse {
   id: number;
@@ -62,8 +63,8 @@ export default function TrackDetail() {
       </table>
 
       <div className="toolbar" style={{ marginTop: 16 }}>
-        <button className="secondary" onClick={() => navigate(-1)}>
-          Back to {track.subItem?.title ?? "album"}
+        <button type="button" className="icon-button" onClick={() => navigate(-1)} title={`Back to ${track.subItem?.title ?? "album"}`} aria-label={`Back to ${track.subItem?.title ?? "album"}`}>
+          <ArrowLeftIcon />
         </button>
       </div>
     </div>

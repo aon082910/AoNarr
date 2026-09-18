@@ -4,6 +4,7 @@ import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
+import { FolderIcon } from "../components/ActionIcons.js";
 import type { MediaType } from "../types.js";
 
 interface ParsedRow {
@@ -193,8 +194,8 @@ export default function WatchlistImport() {
 
           {addMode === "csv" && (
             <div className="form-panel" style={{ padding: 0 }}>
-              <button type="button" onClick={() => fileInputRef.current?.click()}>
-                Choose CSV file...
+              <button type="button" className="icon-button" onClick={() => fileInputRef.current?.click()} title="Choose CSV file..." aria-label="Choose CSV file">
+                <FolderIcon />
               </button>
               <input
                 ref={fileInputRef}

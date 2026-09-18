@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { JobStatus } from "../types.js";
+import { ZapIcon } from "../components/NavIcons.js";
+import { CheckIcon, XIcon } from "../components/ActionIcons.js";
 
 function formatDuration(ms: number | null): string {
   if (ms === null) return "-";
@@ -122,8 +124,8 @@ function JobsTable({
                   placeholder={j.scheduleType === "interval" ? "seconds" : "cron expression"}
                 />
                 {editing[j.key] !== undefined && editing[j.key] !== j.schedule && (
-                  <button type="button" className="secondary" style={{ marginLeft: 4 }} onClick={() => onSave(j.key)}>
-                    Save
+                  <button type="button" className="icon-button" style={{ marginLeft: 4 }} onClick={() => onSave(j.key)} title="Save" aria-label="Save schedule">
+                    <CheckIcon />
                   </button>
                 )}
               </td>
@@ -144,11 +146,11 @@ function JobsTable({
                 )}
               </td>
               <td style={{ display: "flex", gap: 6 }}>
-                <button className="secondary" onClick={() => onRunNow(j.key)} disabled={j.running}>
-                  Run now
+                <button type="button" className="icon-button" onClick={() => onRunNow(j.key)} disabled={j.running} title="Run now" aria-label="Run now">
+                  <ZapIcon />
                 </button>
-                <button className="danger" onClick={() => onCancel(j.key)} disabled={!j.running}>
-                  Cancel
+                <button type="button" className="icon-button danger" onClick={() => onCancel(j.key)} disabled={!j.running} title="Cancel" aria-label="Cancel">
+                  <XIcon />
                 </button>
               </td>
             </tr>

@@ -8,6 +8,8 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { MediaInfo, SearchResult, Track } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
+import { SearchIcon, DownloadIcon, CpuIcon, AlertTriangleIcon, ShareIcon, RotateCcwIcon } from "../components/NavIcons.js";
+import { ArrowLeftIcon } from "../components/ActionIcons.js";
 
 interface SeriesSibling {
   id: number;
@@ -489,33 +491,33 @@ export default function SubItemDetail() {
 
       {isAdmin && (
         <div className="toolbar" style={{ marginTop: 16 }}>
-          <button className="secondary" onClick={toggleMonitored}>
-            {subItem.monitored ? "Unmonitor" : "Monitor"}
-          </button>
+          <MonitorToggle monitored={!!subItem.monitored} onToggle={toggleMonitored} />
           {isYoutubeVideo ? (
-            <button onClick={downloadVideo}>Download</button>
+            <button type="button" className="icon-button" onClick={downloadVideo} title="Download" aria-label="Download">
+              <DownloadIcon />
+            </button>
           ) : (
-            <button onClick={runSearch} disabled={searching}>
-              {searching ? "Searching..." : "Search"}
+            <button type="button" className="icon-button" onClick={runSearch} disabled={searching} title={searching ? "Searching..." : "Search"} aria-label="Search">
+              <SearchIcon />
             </button>
           )}
           {subItem.parent?.type === "author" && !!subItem.hasFile && (
-            <button className="secondary" onClick={scanIsbn} disabled={scanningIsbn} title="Scans the file's first and last 15 pages (PDF) or its EPUB metadata for an ISBN, then matches it via Open Library">
-              {scanningIsbn ? "Scanning..." : "Scan for ISBN"}
+            <button type="button" className="icon-button" onClick={scanIsbn} disabled={scanningIsbn} title={scanningIsbn ? "Scanning..." : "Scan for ISBN — scans the file's first and last 15 pages (PDF) or its EPUB metadata for an ISBN, then matches it via Open Library"} aria-label="Scan for ISBN">
+              <CpuIcon />
             </button>
           )}
           {!!subItem.hasFile && subItem.parent?.type !== "audiobook" && (
-            <button className="secondary" onClick={sendToKindle} disabled={sendingToKindle} title="Emails this file to your Kindle's Send to Kindle address (set in Settings → General)">
-              {sendingToKindle ? "Sending..." : "Send to Kindle"}
+            <button type="button" className="icon-button" onClick={sendToKindle} disabled={sendingToKindle} title={sendingToKindle ? "Sending..." : "Send to Kindle — emails this file to your Kindle's Send to Kindle address (set in Settings → General)"} aria-label="Send to Kindle">
+              <ShareIcon />
             </button>
           )}
           {!!subItem.hasFile && (
-            <button className="danger" onClick={markAsMissing} title="Removed the file yourself? This resets AoNarr's record so it searches for it again.">
-              Mark as missing
+            <button type="button" className="icon-button danger" onClick={markAsMissing} title="Mark as missing — removed the file yourself? This resets AoNarr's record so it searches for it again." aria-label="Mark as missing">
+              <AlertTriangleIcon />
             </button>
           )}
-          <button className="secondary" onClick={() => navigate(-1)}>
-            Back to {subItem.parent?.title ?? "parent"}
+          <button type="button" className="icon-button" onClick={() => navigate(-1)} title={`Back to ${subItem.parent?.title ?? "parent"}`} aria-label={`Back to ${subItem.parent?.title ?? "parent"}`}>
+            <ArrowLeftIcon />
           </button>
         </div>
       )}
@@ -554,8 +556,8 @@ export default function SubItemDetail() {
                   <td>{r.seeders ?? "-"}</td>
                   <td>{r.parsedQuality ?? "-"}</td>
                   <td>
-                    <button className="secondary" onClick={() => grab(r)}>
-                      Grab
+                    <button type="button" className="icon-button" onClick={() => grab(r)} title="Grab" aria-label="Grab">
+                      <DownloadIcon />
                     </button>
                   </td>
                 </tr>
@@ -586,8 +588,8 @@ export default function SubItemDetail() {
             <>
               <p className="empty">No track data available.</p>
               {isAdmin && subItem.externalId && (
-                <button className="secondary" onClick={fetchTracks}>
-                  Fetch tracks
+                <button type="button" className="icon-button" onClick={fetchTracks} title="Fetch tracks" aria-label="Fetch tracks">
+                  <RotateCcwIcon />
                 </button>
               )}
             </>

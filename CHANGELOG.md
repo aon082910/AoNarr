@@ -3,6 +3,44 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 304 — 13 smaller pages converted to icon buttons, 6 needed zero changes
+`TrackDetail.tsx` (Back), `CalendarDay.tsx` (Back, Open/Remove), `Blocklist.tsx` (row Remove —
+deliberately not `.danger`, since un-blocklisting is reversible and the original used `secondary`
+not `danger`), `AuditLog.tsx` (Previous/Next pagination), `Recommendations.tsx` (Add, Not
+interested), `Jobs.tsx` (inline schedule Save, Run now, Cancel), `Collections.tsx` (card Delete),
+`CollectionDetail.tsx` (Up/Down reorder, Remove), and `RecycleBin.tsx` (Recycle/Dismiss on the
+corrupt-media review table, Restore/Delete forever on the recycled-files table) all converted
+cleanly using icons already established in earlier rounds.
+
+`FriendLibraries.tsx`, `WatchlistImport.tsx`, and `MediaAnalyzer.tsx` needed one conversion each
+once a closer look turned up a fitting established icon: the missing-items table's "Add" (now
+PlusCircleIcon, matching Recommendations.tsx), "Choose CSV file..." (now FolderIcon, matching
+every other folder-browse trigger in the app), and "Analyze now" (now ZapIcon, the same
+trigger-a-background-job icon `Jobs.tsx`'s "Run now" uses) respectively — everything else on those
+three pages stayed text: mode choosers, modal-footer Save/Delete pairs, and count-or-loading-label
+buttons ("Merge N into the kept item", "Import N title(s)") where the label itself carries
+information an icon would drop. `Duplicates.tsx`, `InviteAcceptPage.tsx`, `Onboarding.tsx`,
+`Account.tsx`, and `CustomColumns.tsx` needed zero changes, each matching a shape an earlier round
+already decided stays text (count-bearing Merge, primary-CTA-only, first-run welcome screen,
+Settings.tsx's 2FA section mirror, and AiProviders.tsx's tile-and-modal pattern).
+
+`SubItemDetail.tsx` got the full toolbar treatment (Search, Download for YouTube items, Mark as
+missing, Back, Grab in the search-results modal, Fetch tracks) plus two new icon choices: CpuIcon
+for "Scan for ISBN" (reading a file's own contents to identify it, the same idea as MediaDetail's
+AI Identify) and ShareIcon for "Send to Kindle" (sending the file to an external destination, same
+idea as Calendar's calendar-app subscribe). Its toolbar's plain-text "Monitor"/"Unmonitor" button
+was also replaced with the actual `MonitorToggle` component already used for the same field two
+rows up in this same page's own details table — `EpisodeDetail.tsx`'s toolbar already does this
+rather than duplicating the action as a second, differently-styled control. "Convert to
+chapterized M4B" stayed text: standalone (not in the toolbar row), no established icon fits, and
+its loading label doubles as an important warning ("this can take a while").
+
+Verified live against the running dev server: real data for Duplicates/Jobs, a temporary
+friend-library fixture, and temporary media-item/sub-item fixtures (an audiobook chapter and a
+standalone book, inserted and removed via direct DB access) for SubItemDetail's fuller
+has-file/parent-type conditional toolbar, including one under an "author" parent to reach Scan for
+ISBN and Send to Kindle. No regressions; light theme spot-checked on Jobs.tsx.
+
 ## Round 303 — AddMedia (no changes) + 8 Configuration-adjacent pages converted to icon buttons
 `AddMedia.tsx` (616 lines) needed zero changes — every one of its 8 buttons is either a segmented
 mode toggle (Search by title/Match by ID, Add manually/Search metadata instead) or a primary form
