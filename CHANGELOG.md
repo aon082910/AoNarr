@@ -3,6 +3,28 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 282 — deepen test coverage: mediaServer.ts's resilience-branch divergences
+Continues the deepening phase, moving to `mediaServer.ts` (its own original round found "the real
+Plex-skips-vs-Jellyfin-throws asymmetry on section-fetch failure" — a strong signal this file has
+more than one such divergence worth surfacing). No source changes this round — every branch found
+was real and already behaved sensibly, just unexercised and, in one case, un-*documented*; no
+Docker image rebuild needed.
+
+- `tests/mediaServer.test.ts` — 33 → 38 tests. The clearest find: `fetchMediaServerSeries` (both
+  Plex and Jellyfin) silently continues with a partial result when its shows or episodes
+  sub-request fails, unlike `fetchMediaServerMovies`'s Jellyfin path, which explicitly throws on
+  the same kind of failure — a real, previously-untested (and previously undocumented in a comment)
+  divergence between the two "fetch full library details" functions, now pinned down by a test for
+  each provider rather than left to be rediscovered by surprise later. Also added: `fetchPlexItems`
+  (used by `pushWatchState` to resolve which Plex item to scrobble) skipping a section whose own
+  items request fails rather than aborting the whole match attempt; and `refreshMediaServerLibrary`/
+  `triggerFullMediaServerScan`'s per-section `.catch(() => {})` on each individual Plex refresh
+  call — previously only proven for a rejection at the *sections* list fetch (caught by the
+  function's outer try/catch before ever reaching the per-section loop), never for one specific
+  section's own refresh call rejecting while its siblings still succeed.
+
+Test count: 1226 → 1230 (89 files, no new files this round).
+
 ## Round 281 — deepen test coverage: importLists.ts's four sync-provider parity gaps
 Continues the deepening phase, moving to `importLists.ts` (Round 270, Trakt/IMDb/Last.fm/TMDB
 list-sync). Applied the same "sibling functions should share the same tested behavior" lens that

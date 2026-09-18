@@ -394,6 +394,46 @@ describe("fetchMediaServerSeries", () => {
     expect(library.shows.get("400")).toMatchObject({ title: "JF Show", externalIds: { tvdb: "77" } });
     expect(library.episodes).toEqual([{ showId: "400", path: "/tv/jf-e1.mkv", seasonNumber: 1, episodeNumber: 1, title: "Ep One", overview: "O1" }]);
   });
+
+  it("Plex: a failed shows or episodes sub-request for a section yields a partial result rather than throwing", async () => {
+    // Unlike fetchMediaServerMovies (which throws on a failed items request for Jellyfin/Emby),
+    // the shows/episodes fetches here only check .ok and silently skip on failure -- proving that
+    // actual (previously undocumented/untested) behavior, not asserting it "should" be one way.
+    configurePlex();
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u.includes("/library/sections?"), response: ok({ MediaContainer: { Directory: [{ key: "5", type: "show" }] } }) },
+        { test: (u) => u.includes("/library/sections/5/all?type=2"), response: notOk(500) }, // shows request fails
+        {
+          test: (u) => u.includes("/library/sections/5/all?type=4"),
+          response: ok({ MediaContainer: { Metadata: [{ grandparentRatingKey: "300", parentIndex: 1, index: 1, title: "Pilot", Media: [{ Part: [{ file: "/tv/s01e01.mkv" }] }] }] } }),
+        },
+      ])
+    );
+
+    const library = await fetchMediaServerSeries();
+
+    expect(library.shows.size).toBe(0); // shows map empty -- that request failed
+    expect(library.episodes).toHaveLength(1); // episodes fetched independently, unaffected
+  });
+
+  it("Jellyfin: a failed shows or episodes sub-request yields a partial result rather than throwing", async () => {
+    configureJellyfin();
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u.endsWith("/Users"), response: ok([{ Id: "u1" }]) },
+        { test: (u) => u.includes("IncludeItemTypes=Series"), response: notOk(500) },
+        { test: (u) => u.includes("IncludeItemTypes=Episode"), response: ok({ Items: [{ SeriesId: "400", Path: "/tv/jf-e1.mkv", ParentIndexNumber: 1, IndexNumber: 1, Name: "Ep One" }] }) },
+      ])
+    );
+
+    const library = await fetchMediaServerSeries();
+
+    expect(library.shows.size).toBe(0);
+    expect(library.episodes).toHaveLength(1);
+  });
 });
 
 describe("refreshMediaServerLibrary / triggerFullMediaServerScan", () => {
@@ -442,6 +482,29 @@ describe("refreshMediaServerLibrary / triggerFullMediaServerScan", () => {
 
     await expect(refreshMediaServerLibrary("/x.mkv")).resolves.toBeUndefined();
     await expect(triggerFullMediaServerScan()).resolves.toBeUndefined();
+  });
+
+  it("Plex: still refreshes every other section even when one section's own refresh call rejects", async () => {
+    configurePlex();
+    let refreshCalls = 0;
+    const fetchMock = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes("/library/sections?")) return ok({ MediaContainer: { Directory: [{ key: "1", type: "movie" }, { key: "2", type: "show" }] } });
+      if (u.includes("/refresh")) {
+        refreshCalls++;
+        if (u.includes("sections/1/")) throw new Error("network blip");
+        return ok({});
+      }
+      throw new Error(`unmocked: ${u}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await refreshMediaServerLibrary("/x.mkv");
+    expect(refreshCalls).toBe(2); // both sections' refresh endpoints were attempted despite section 1 rejecting
+
+    refreshCalls = 0;
+    await triggerFullMediaServerScan();
+    expect(refreshCalls).toBe(2); // same per-section resilience for the full-scan path
   });
 });
 
@@ -506,6 +569,22 @@ describe("pushWatchState", () => {
     const scrobbleCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("/:/scrobble"));
     expect(scrobbleCall).toBeTruthy();
     expect(String(scrobbleCall![0])).toContain("key=42");
+  });
+
+  it("Plex: a failed per-section items request while resolving the match is skipped, not fatal", async () => {
+    configurePlex();
+    const fetchMock = routedFetch([
+      { test: (u) => u.includes("/library/sections?"), response: ok({ MediaContainer: { Directory: [{ key: "1", type: "movie" }, { key: "2", type: "show" }] } }) },
+      { test: (u) => u.includes("/library/sections/1/all"), response: notOk(500) },
+      { test: (u) => u.includes("/library/sections/2/all"), response: ok({ MediaContainer: { Metadata: [{ ratingKey: "9", Media: [{ Part: [{ file: "/tv/found.mkv" }] }] }] } }) },
+      { test: (u) => u.includes("/:/scrobble"), response: ok({}) },
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await pushWatchState("/tv/found.mkv", true);
+
+    const scrobbleCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("/:/scrobble"));
+    expect(String(scrobbleCall![0])).toContain("key=9");
   });
 
   it("Plex: unscrobbles when watched=false, and throws when no matching item is found", async () => {
