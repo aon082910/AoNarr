@@ -34,6 +34,7 @@ import { formatBytes, formatMediaInfo } from "../utils/format.js";
 import { useContentRatings } from "../hooks/useContentRatings.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
+import { promptDialog } from "../utils/promptDialog.js";
 
 /** Maps a recognized external-id provider key to a link builder — unrecognized providers still
  * show as plain text, this is just a convenience for the common ones. */
@@ -1019,7 +1020,12 @@ export default function MediaDetail() {
 
   async function editSubItemCover(sub: SubItem) {
     if (!item) return;
-    const url = prompt(`Cover art URL for "${sub.title}" (leave blank to remove):`, sub.posterUrl ?? "");
+    const url = await promptDialog({
+      title: "Cover art",
+      label: `Cover art URL for "${sub.title}"`,
+      defaultValue: sub.posterUrl ?? "",
+      placeholder: "Leave blank to remove",
+    });
     if (url === null) return;
     try {
       await api.patch(`/media/${item.id}/subitems/${sub.id}`, { posterUrl: url.trim() || null });
@@ -1328,7 +1334,7 @@ export default function MediaDetail() {
                     await navigator.clipboard.writeText(url);
                     notify.success(`Share link copied to clipboard:\n${url}`);
                   } catch {
-                    prompt("Share link (copy manually):", url);
+                    await promptDialog({ title: "Share link", label: "Copy this link manually:", defaultValue: url, confirmLabel: "Done" });
                   }
                 }}
               >

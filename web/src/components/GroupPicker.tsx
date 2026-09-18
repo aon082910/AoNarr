@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
 import type { LibraryGroup } from "../types.js";
+import { promptDialog } from "../utils/promptDialog.js";
 
 export const GROUP_KIND_LABEL: Record<string, string> = {
   system: "System",
@@ -59,19 +60,29 @@ export default function GroupPicker({
   async function selectAt(levelIdx: number, value: string) {
     if (value === NEW_VALUE) {
       const kind = groupLevels[levelIdx];
-      const name = prompt(`New ${GROUP_KIND_LABEL[kind] ?? kind}:`);
-      if (!name?.trim()) return;
+      const isSite = kind === "site";
       // A "site" group's tile shows a logo — asking for the site's own URL here lets the server
       // fetch its favicon (the icon the site itself exposes for external identification, same as
       // a browser tab) rather than leaving the tile with no artwork until someone sets it by hand.
-      const website = kind === "site" ? prompt(`${name.trim()}'s website (optional, used to fetch a logo):`) : null;
+      const result = await promptDialog({
+        title: `New ${GROUP_KIND_LABEL[kind] ?? kind}`,
+        fields: isSite
+          ? [
+              { key: "name", label: "Name" },
+              { key: "website", label: "Website (optional, used to fetch a logo)" },
+            ]
+          : [{ key: "name", label: "Name" }],
+        confirmLabel: "Create",
+      });
+      if (!result?.name?.trim()) return;
+      const name = result.name;
       const parentGroupId = levelIdx === 0 ? null : chain[levelIdx - 1];
       const created = await api.post<LibraryGroup>("/library-groups", {
         mediaType: type,
         kind,
         name: name.trim(),
         parentGroupId,
-        website: website?.trim() || undefined,
+        website: isSite ? result.website?.trim() || undefined : undefined,
       });
       setOptionsAtLevel((prev) => {
         const next = [...prev];

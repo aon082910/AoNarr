@@ -3,6 +3,34 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 309 — the last native popup: window.prompt() replaced too
+Closes the one gap Round 308 deliberately left open. New `web/src/utils/promptDialog.ts` +
+`web/src/components/PromptModal.tsx` (same architecture as `confirmDialog`/`ConfirmModal`: a
+promise-based singleton, mounted once in `App.tsx`, built on the shared `Modal.tsx` shell) replace
+every `window.prompt()` in the app — `promptDialog({title, label, defaultValue?}): Promise<string |
+null>` for a single field (same null-vs-string contract `prompt()` itself has), or pass `fields:
+[...]` for more than one, resolving `Record<string, string> | null` instead.
+
+Two sites used to chain two `prompt()` calls to fake a multi-field form — both now show a single
+dialog with both fields together instead: `SubItemDetail.tsx`'s series editor (name + position,
+position only meaningful when name is set) and `GroupPicker.tsx`'s "+ New" group creation (name,
+plus a website field shown only for a "site"-kind group). The other 7 sites (`LibraryType.tsx` ×3,
+`MediaDetail.tsx` ×2 — including the Share-link clipboard-copy fallback, which was never really
+collecting new input, just using `prompt()` as a copy-paste field — and `SubItemDetail.tsx` ×2)
+convert 1:1.
+
+Verified live: the single-field case (`LibraryType.tsx`'s "Save view", including cleanup via the
+also-newly-converted "Delete view" confirm), the two-field case (`SubItemDetail.tsx`'s series
+editor, against the same sub-item fixture used in earlier rounds — reverted after), and the
+conditional-field case (`GroupPicker.tsx`'s "+ New Site" showing both Name and Website, versus a
+plain kind showing just Name). One finding worth remembering, not a real bug: a synthetic Enter
+keypress from browser automation didn't trigger the form's implicit submission even though focus
+and the DOM were verified correct — calling `form.requestSubmit()` directly confirmed the wiring
+was right all along; this is an automation-layer quirk, not an app bug, and real keyboard input in
+a real browser is unaffected.
+
+Every native browser popup (`alert`, `confirm`, `prompt`) is now gone from the app.
+
 ## Round 308 — popup rollout complete: LibraryType, MediaDetail, Settings
 Finishes the `alert()`/`confirm()` → `notify`/`confirmDialog` conversion started in Round 306 —
 **every native browser popup in the app is now gone**, across all three of the largest remaining

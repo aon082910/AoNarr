@@ -13,6 +13,7 @@ import { PlusCircleIcon, CheckSquareIcon, SlashIcon, ZapIcon, RotateCcwIcon, Sea
 import { PencilIcon, XIcon, CheckIcon, TrashIcon, FolderIcon, ChevronLeftIcon, ChevronRightIcon } from "../components/ActionIcons.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
+import { promptDialog } from "../utils/promptDialog.js";
 
 type SortKey = "title" | "year" | "added" | "status" | "monitored" | "quality" | "contentRating" | "releaseDate" | "path" | "sizeOnDisk";
 type ViewMode = "poster" | "overview" | "list";
@@ -201,7 +202,7 @@ export default function LibraryType() {
 
   async function addGroup() {
     const kind = groupId ? groupDetail?.nextKind ?? groupLevels[0] : groupLevels[0];
-    const name = prompt(`New ${KIND_LABEL[kind ?? ""] ?? kind}:`);
+    const name = await promptDialog({ title: "New group", label: `New ${KIND_LABEL[kind ?? ""] ?? kind}:`, confirmLabel: "Create" });
     if (!name?.trim()) return;
     await api.post("/library-groups", { mediaType: type, kind, name: name.trim(), parentGroupId: groupId ?? null });
     if (groupId) {
@@ -672,7 +673,7 @@ export function LibraryItemGrid({
   }
 
   async function saveCurrentAsView() {
-    const name = prompt("Name this view:");
+    const name = await promptDialog({ title: "Save view", label: "Name this view:", confirmLabel: "Save" });
     if (!name?.trim()) return;
     try {
       const created = await api.post<SavedLibraryView>("/library-views", {
@@ -996,7 +997,7 @@ export function LibraryItemGrid({
   }
 
   async function quickAdd() {
-    const title = prompt(`Title for the new ${typeLabel.replace(/ — Ungrouped$/, "")} item:`);
+    const title = await promptDialog({ title: "Add item", label: `Title for the new ${typeLabel.replace(/ — Ungrouped$/, "")} item:`, confirmLabel: "Add" });
     if (!title?.trim()) return;
     await api.post("/media", {
       type,

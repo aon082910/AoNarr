@@ -10,6 +10,7 @@ import LayoutWidthToggle from "./components/LayoutWidthToggle.js";
 import CommandPalette from "./components/CommandPalette.js";
 import Toaster from "./components/Toaster.js";
 import ConfirmModal from "./components/ConfirmModal.js";
+import PromptModal from "./components/PromptModal.js";
 import DropdownMenu from "./components/DropdownMenu.js";
 import { useMediaTypes } from "./hooks/useMediaTypes.js";
 import { useCustomizableLayout } from "./hooks/useCustomizableLayout.js";
@@ -374,6 +375,7 @@ export default function App() {
       <CommandPalette />
       <Toaster />
       <ConfirmModal />
+      <PromptModal />
 
       {navPosition === "side" && (
         <>

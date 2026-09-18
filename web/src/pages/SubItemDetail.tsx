@@ -12,6 +12,7 @@ import { SearchIcon, DownloadIcon, CpuIcon, AlertTriangleIcon, ShareIcon, Rotate
 import { ArrowLeftIcon } from "../components/ActionIcons.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
+import { promptDialog } from "../utils/promptDialog.js";
 
 interface SeriesSibling {
   id: number;
@@ -254,7 +255,12 @@ export default function SubItemDetail() {
 
   async function editCover() {
     if (!subItem) return;
-    const url = prompt("Cover art URL (leave blank to remove):", subItem.posterUrl ?? "");
+    const url = await promptDialog({
+      title: "Cover art",
+      label: "Cover art URL",
+      defaultValue: subItem.posterUrl ?? "",
+      placeholder: "Leave blank to remove",
+    });
     if (url === null) return;
     try {
       const updated = await api.patch<SubItemDetailResponse>(`/media/${mediaId}/subitems/${subItemId}`, {
@@ -268,16 +274,22 @@ export default function SubItemDetail() {
 
   async function editSeries() {
     if (!subItem) return;
-    const name = prompt("Series name (leave blank to remove from a series):", subItem.seriesName ?? "");
-    if (name === null) return;
-    let position: number | null = subItem.seriesPosition;
-    if (name.trim()) {
-      const posInput = prompt('Position in series (e.g. "1", "2.5" for an interstitial — leave blank for none):', subItem.seriesPosition != null ? String(subItem.seriesPosition) : "");
-      if (posInput === null) return;
-      position = posInput.trim() ? Number(posInput.trim()) : null;
-    } else {
-      position = null;
-    }
+    const result = await promptDialog({
+      title: "Series",
+      fields: [
+        { key: "name", label: "Series name", defaultValue: subItem.seriesName ?? "", placeholder: "Leave blank to remove from a series" },
+        {
+          key: "position",
+          label: "Position in series",
+          defaultValue: subItem.seriesPosition != null ? String(subItem.seriesPosition) : "",
+          placeholder: 'e.g. "1", "2.5" for an interstitial — leave blank for none',
+        },
+      ],
+      confirmLabel: "Save",
+    });
+    if (!result) return;
+    const name = result.name;
+    const position: number | null = name.trim() ? (result.position.trim() ? Number(result.position.trim()) : null) : null;
     try {
       await api.patch(`/media/${mediaId}/subitems/${subItemId}`, { seriesName: name.trim() || null, seriesPosition: position });
       load();
@@ -288,7 +300,7 @@ export default function SubItemDetail() {
 
   async function editNarrator() {
     if (!subItem) return;
-    const name = prompt("Narrator (leave blank to clear):", subItem.narrator ?? "");
+    const name = await promptDialog({ title: "Narrator", label: "Narrator", defaultValue: subItem.narrator ?? "", placeholder: "Leave blank to clear" });
     if (name === null) return;
     try {
       await api.patch(`/media/${mediaId}/subitems/${subItemId}`, { narrator: name.trim() || null });
