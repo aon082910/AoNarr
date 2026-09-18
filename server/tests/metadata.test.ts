@@ -154,6 +154,42 @@ describe("IGDB token caching", () => {
     await expect(metadata.searchMetadata("rom", "q", "igdb")).rejects.toThrow("IGDB Client ID is not configured");
   });
 
+  // This MUST run before any test below that successfully authenticates: igdbToken is a
+  // module-level cache that survives for the rest of the file, and a long-lived real token from a
+  // later test would still read as unexpired here (only milliseconds of real wall-clock time pass
+  // between tests), silently preventing this test's own auth stub from ever being hit.
+  it("re-authenticates once the cached token's expiry has passed", async () => {
+    setSetting("igdbClientId", "cid");
+    setSetting("igdbClientSecret", "csecret");
+    let authCalls = 0;
+    stub([
+      {
+        test: (u) => u.includes("id.twitch.tv/oauth2/token"),
+        response: () => {
+          authCalls++;
+          // expiresAt = now + (expires_in - 60) * 1000. The first response's 61s expires_in
+          // expires 1s from "now" (forced past below); the second's expires_in:0 leaves the
+          // *resulting* cached token already 60s in the past relative to real time as soon as
+          // vi.useRealTimers() resumes below — so it can never be mistaken for a warm cache by
+          // whichever IGDB test runs next, no matter how little real time elapses between them.
+          return ok({ access_token: `tok-${authCalls}`, expires_in: authCalls === 1 ? 61 : 0 });
+        },
+      },
+      { test: (u) => u.includes("api.igdb.com/v4/games"), response: ok([{ id: 1, name: "Game" }]) },
+    ]);
+
+    vi.useFakeTimers();
+    try {
+      await metadata.searchMetadata("rom", "q", "igdb");
+      expect(authCalls).toBe(1);
+      vi.setSystemTime(Date.now() + 5000); // past the 1s-from-now expiry
+      await metadata.searchMetadata("rom", "q2", "igdb");
+      expect(authCalls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("authenticates once and reuses the cached token across calls", async () => {
     setSetting("igdbClientId", "cid");
     setSetting("igdbClientSecret", "csecret");
@@ -265,7 +301,7 @@ describe("searchMetadata: series/anime/sports/ppv", () => {
     expect(results[0]).toMatchObject({ title: "Breaking Bad", year: 2008, externalIds: { tmdb: "9" }, rating: 9.1 });
   });
 
-  it("TVDB series search maps id fallback and image fallback", async () => {
+  it("TVDB series search maps id fallback and image fallback, and defaults year/overview/posterUrl to null when absent", async () => {
     setSetting("tvdbApiKey", "k");
     stub([
       { test: (u) => u.includes("/v4/login"), response: ok({ data: { token: "t" } }) },
@@ -273,6 +309,13 @@ describe("searchMetadata: series/anime/sports/ppv", () => {
     ]);
     const results = await metadata.searchMetadata("series", "x", "tvdb");
     expect(results[0]).toEqual({ title: "X", year: 2010, overview: null, posterUrl: "http://thumb", externalIds: { tvdb: "7" } });
+
+    stub([
+      { test: (u) => u.includes("/v4/login"), response: ok({ data: { token: "t" } }) },
+      { test: (u) => u.includes("/v4/search"), response: ok({ data: [{ name: "Bare", id: 8 }] }) },
+    ]);
+    const bare = await metadata.searchMetadata("series", "x", "tvdb");
+    expect(bare[0]).toEqual({ title: "Bare", year: null, overview: null, posterUrl: null, externalIds: { tvdb: "8" } });
   });
 
   it("TVMaze search strips HTML from the summary, and handles a missing image/summary/premiered date", async () => {
@@ -858,6 +901,42 @@ describe("fetchSeriesEpisodesFor", () => {
   it("returns [] when no known id is present", async () => {
     await expect(metadata.fetchSeriesEpisodesFor({})).resolves.toEqual([]);
   });
+
+  it("TVDB: defaults title/airDate/overview to null when absent from an episode", async () => {
+    setSetting("tvdbApiKey", "k");
+    stub([
+      { test: (u) => u.includes("/v4/login"), response: ok({ data: { token: "t" } }) },
+      { test: (u) => u.includes("/v4/series/9/episodes/default"), response: ok({ data: { episodes: [{ seasonNumber: 1, number: 1 }] } }) },
+    ]);
+    expect(await metadata.fetchSeriesEpisodesFor({ tvdb: "9" })).toEqual([{ seasonNumber: 1, episodeNumber: 1, title: null, airDate: null, overview: null }]);
+  });
+
+  it("Trakt: aggregates episodes across multiple real seasons, and defaults title/overview to null when absent", async () => {
+    setSetting("traktClientId", "cid");
+    stub([
+      {
+        test: (u) => u.includes("api.trakt.tv/shows/7/seasons"),
+        response: ok([
+          { number: 0, episodes: [{ number: 1, title: "Special" }] },
+          { number: 1, episodes: [{ number: 1, title: "Pilot", first_aired: "2010-01-01T00:00:00Z", overview: "ov" }, { number: 2 }] },
+          { number: 2, episodes: [{ number: 1, first_aired: "2011-01-01T00:00:00Z" }] },
+        ]),
+      },
+    ]);
+    expect(await metadata.fetchSeriesEpisodesFor({ trakt: "7" })).toEqual([
+      { seasonNumber: 1, episodeNumber: 1, title: "Pilot", airDate: "2010-01-01", overview: "ov" },
+      { seasonNumber: 1, episodeNumber: 2, title: null, airDate: null, overview: null },
+      { seasonNumber: 2, episodeNumber: 1, title: null, airDate: "2011-01-01", overview: null },
+    ]);
+  });
+
+  it("AniList: a null/zero episode count returns [] rather than an empty placeholder list", async () => {
+    stub([{ test: (u) => u.includes("graphql.anilist.co"), response: ok({ data: { Media: { episodes: null } } }) }]);
+    await expect(metadata.fetchSeriesEpisodesFor({ anilist: "3" })).resolves.toEqual([]);
+
+    stub([{ test: (u) => u.includes("graphql.anilist.co"), response: ok({ data: { Media: { episodes: 0 } } }) }]);
+    await expect(metadata.fetchSeriesEpisodesFor({ anilist: "4" })).resolves.toEqual([]);
+  });
 });
 
 describe("fetchSeriesSeasonsFor", () => {
@@ -952,6 +1031,34 @@ describe("fetchAlbumTracksFor", () => {
       { trackNumber: 2, title: "T2 (no number)", durationSeconds: 180 },
       { trackNumber: 3, title: "T3", durationSeconds: 220 },
     ]);
+  });
+
+  it("MusicBrainz: pickBestRelease ranks Official > preferred country > earliest date, in that tier order", async () => {
+    // Each sub-case registers a fetch route ONLY for the release it expects to win — if the wrong
+    // release were picked, the test fails on "unmocked fetch call" rather than silently passing.
+    stub([
+      { test: (u) => u.includes("/release-group/rg-tie1"), response: ok({ releases: [{ id: "non-pref", status: "Bootleg", country: "XX", date: "1990-01-01" }, { id: "pref", status: "Bootleg", country: "US", date: "2000-01-01" }] }) },
+      { test: (u) => u.includes("/release/pref"), response: ok({ media: [{ tracks: [{ number: "1", title: "WonOnCountry" }] }] }) },
+    ]);
+    expect((await metadata.fetchAlbumTracksFor("musicbrainz", "rg-tie1"))[0].title).toBe("WonOnCountry");
+
+    stub([
+      { test: (u) => u.includes("/release-group/rg-tie2"), response: ok({ releases: [{ id: "later-nonpref", status: "Official", country: "DE", date: "2000-01-01" }, { id: "earlier-pref", status: "Official", country: "GB", date: "1990-01-01" }] }) },
+      { test: (u) => u.includes("/release/earlier-pref"), response: ok({ media: [{ tracks: [{ number: "1", title: "CountryBeatsDate" }] }] }) },
+    ]);
+    expect((await metadata.fetchAlbumTracksFor("musicbrainz", "rg-tie2"))[0].title).toBe("CountryBeatsDate");
+
+    stub([
+      { test: (u) => u.includes("/release-group/rg-tie3"), response: ok({ releases: [{ id: "later", status: "Official", country: "US", date: "2005-01-01" }, { id: "earlier", status: "Official", country: "US", date: "2001-01-01" }] }) },
+      { test: (u) => u.includes("/release/earlier"), response: ok({ media: [{ tracks: [{ number: "1", title: "EarliestWins" }] }] }) },
+    ]);
+    expect((await metadata.fetchAlbumTracksFor("musicbrainz", "rg-tie3"))[0].title).toBe("EarliestWins");
+
+    stub([
+      { test: (u) => u.includes("/release-group/rg-tie4"), response: ok({ releases: [{ id: "no-date", status: "Official", country: "US" }, { id: "has-date", status: "Official", country: "US", date: "1980-01-01" }] }) },
+      { test: (u) => u.includes("/release/has-date"), response: ok({ media: [{ tracks: [{ number: "1", title: "DatedBeatsUndated" }] }] }) },
+    ]);
+    expect((await metadata.fetchAlbumTracksFor("musicbrainz", "rg-tie4"))[0].title).toBe("DatedBeatsUndated");
   });
 
   it("MusicBrainz: returns [] without a second fetch when the release-group has no releases", async () => {

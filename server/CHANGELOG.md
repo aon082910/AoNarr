@@ -3,6 +3,38 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 278 — deepen test coverage: metadata.ts token expiry, episode aggregation, tie-breaks
+Continues Round 277's "deepen already-tested files" phase, working through the specific gap list
+sketched at the end of that round: IGDB token expiry, TVDB/Trakt/AniList episode edge cases, and
+MusicBrainz's `pickBestRelease` tie-break logic. No source changes this round — purely additional
+test coverage; no Docker image rebuild needed.
+
+- `tests/metadata.test.ts` — 124 → 129 tests. New coverage: IGDB's cached-token *expiry* actually
+  triggering a re-authentication (Round 276/277 only ever proved caching, never that an expired
+  token gets refreshed) using `vi.useFakeTimers()`/`vi.setSystemTime()` to jump past a short-lived
+  token's expiry without needing to fake any real timers; TVDB search/episode results defaulting
+  every optional field to null when absent; Trakt's episode fetch aggregating across multiple real
+  seasons (previously only ever exercised with one) and defaulting title/overview to null;
+  AniList's episode-count lookup returning `[]` for a null or zero count rather than throwing or
+  generating a placeholder list; and `pickBestRelease`'s full three-tier sort — Official status,
+  then preferred-country, then earliest date — proven as a genuine *tier* ordering (a later date in
+  a preferred country beats an earlier date in a non-preferred one; a missing date always loses to
+  a real one) rather than just the single-tier case Round 276 covered, using releases where only
+  the intended winner's own `/release/{id}` endpoint is stubbed at all — the wrong pick would fail
+  on "unmocked fetch call," not silently return wrong data.
+
+  One test-authoring bug self-caught on the first Docker run, itself an instance of a pattern this
+  project's memory already flags: the new IGDB-expiry test initially ran *after* the existing
+  "authenticates once and reuses the cached token" test in the same `describe` block, so the
+  already-warm, still-real-time-valid `igdbToken` module cache from that earlier test meant the new
+  test's own auth stub was never even reached (`authCalls` stayed 0). Reordering to run first
+  wasn't enough on its own — the fix under fake timers also had to leave its *own* leftover cached
+  token in an unambiguously-expired state (a `expires_in: 0` second response) so it couldn't go on
+  to poison whichever IGDB test runs after it, regardless of how little real wall-clock time
+  elapses between tests.
+
+Test count: 1194 → 1199 (89 files, no new files this round).
+
 ## Round 277 — deepen test coverage: metadata.ts edge cases
 With the untested-file backlog cleared (Round 276), this round shifts to deepening coverage in
 already-tested files rather than starting new ones. `metadata.ts` was the freshest and most
