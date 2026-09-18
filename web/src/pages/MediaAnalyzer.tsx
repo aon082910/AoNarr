@@ -6,6 +6,7 @@ import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { HdrFormat, MediaInfo } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
 import { ZapIcon } from "../components/NavIcons.js";
+import { notify } from "../utils/notify.js";
 
 interface CompatibilityNote {
   level: "ok" | "caution" | "incompatible";
@@ -168,8 +169,9 @@ export default function MediaAnalyzer() {
     try {
       const qs = type ? `?type=${type}` : "";
       await api.post(`/media-analysis/run${qs}`, {});
-      alert(
-        "Analysis started in the background — this re-probes every file and can take a while for a large library. Check the Logs page for the result, or come back to this page shortly."
+      notify.info(
+        "Analysis started in the background — this re-probes every file and can take a while for a large library. Check the Logs page for the result, or come back to this page shortly.",
+        8000
       );
     } finally {
       setTimeout(() => setRunning(false), 5000);

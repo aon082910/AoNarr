@@ -4,6 +4,7 @@ import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { JobStatus } from "../types.js";
 import { ZapIcon } from "../components/NavIcons.js";
 import { CheckIcon, XIcon } from "../components/ActionIcons.js";
+import { notify } from "../utils/notify.js";
 
 function formatDuration(ms: number | null): string {
   if (ms === null) return "-";
@@ -31,7 +32,7 @@ export default function Jobs() {
       await api.post(`/jobs/${key}/run`, {});
       setTimeout(load, 500);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
@@ -40,7 +41,7 @@ export default function Jobs() {
       await api.post(`/jobs/${key}/cancel`, {});
       setTimeout(load, 500);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 

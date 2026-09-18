@@ -4,6 +4,8 @@ import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import MonitorToggle from "../components/MonitorToggle.js";
 import type { DuplicateGroup, DuplicateGroupItem } from "../types.js";
+import { notify } from "../utils/notify.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
 
 /** One duplicate group's row-level state: which item is currently selected to keep. Kept outside
  * the fetched data so re-rendering (or a merge elsewhere on the page) doesn't reset a choice the
@@ -51,19 +53,24 @@ export default function Duplicates() {
           })) ?? null
       );
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
   async function dismiss(g: DuplicateGroup) {
-    if (!confirm(`Mark "${g.title}"${g.year ? ` (${g.year})` : ""} as not a duplicate? Both items stay in your library untouched, and this group won't be flagged again.`)) {
+    if (
+      !(await confirmDialog({
+        title: "Not a duplicate",
+        message: `Mark "${g.title}"${g.year ? ` (${g.year})` : ""} as not a duplicate? Both items stay in your library untouched, and this group won't be flagged again.`,
+      }))
+    ) {
       return;
     }
     try {
       await api.post("/duplicates/dismiss", { key: g.key });
       setGroups((prev) => prev?.filter((group) => group.key !== g.key) ?? null);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
@@ -72,11 +79,12 @@ export default function Duplicates() {
     const keeperId = keeperByGroup[key];
     const loserIds = g.items.filter((i) => i.id !== keeperId).map((i) => i.id);
     if (
-      !confirm(
-        `Merge ${loserIds.length} duplicate(s) of "${g.title}" into the selected item?${
+      !(await confirmDialog({
+        title: "Merge duplicates",
+        message: `Merge ${loserIds.length} duplicate(s) of "${g.title}" into the selected item?${
           deleteFiles ? " Any file(s) not kept will be moved to the Recycle Bin." : " Any file(s) not kept are left on disk, untracked."
-        }`
-      )
+        }`,
+      }))
     ) {
       return;
     }
@@ -85,7 +93,7 @@ export default function Duplicates() {
       await api.post("/duplicates/merge", { keeperId, loserIds, deleteFiles });
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setMerging(null);
     }

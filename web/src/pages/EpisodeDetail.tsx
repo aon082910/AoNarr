@@ -9,6 +9,8 @@ import type { MediaInfo, SearchResult } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
 import { SearchIcon, InboxIcon, AlertTriangleIcon, DownloadIcon, CpuIcon } from "../components/NavIcons.js";
 import { ArrowLeftIcon, ArrowUpIcon, FolderIcon } from "../components/ActionIcons.js";
+import { notify } from "../utils/notify.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
 
 interface EpisodeDetailResponse {
   id: number;
@@ -103,9 +105,10 @@ export default function EpisodeDetail() {
   async function markAsMissing() {
     if (!episode) return;
     if (
-      !confirm(
-        "Mark this episode as missing? Only do this if you already removed the file from disk yourself — this just resets AoNarr's own record so it gets searched for again; it doesn't touch any file."
-      )
+      !(await confirmDialog({
+        title: "Mark as missing",
+        message: "Mark this episode as missing? Only do this if you already removed the file from disk yourself — this just resets AoNarr's own record so it gets searched for again; it doesn't touch any file.",
+      }))
     )
       return;
     const updated = await api.patch<EpisodeDetailResponse>(`/media/${mediaId}/episodes/${episodeId}`, {
@@ -147,11 +150,11 @@ export default function EpisodeDetail() {
     setImportingPath(entry.path);
     try {
       await api.post("/import/manual", { mediaItemId: episode?.mediaItemId, episodeId: Number(episodeId), sourcePath: entry.path });
-      alert(`Imported ${entry.name}`);
+      notify.success(`Imported ${entry.name}`);
       setShowImport(false);
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setImportingPath(null);
     }
@@ -199,10 +202,10 @@ export default function EpisodeDetail() {
         protocol: result.protocol,
         episodeId: Number(episodeId),
       });
-      alert(`Sent "${result.title}" to download client.`);
+      notify.success(`Sent "${result.title}" to download client.`);
       load();
     } catch (e) {
-      alert(`Grab failed: ${(e as Error).message}`);
+      notify.error(`Grab failed: ${(e as Error).message}`);
     }
   }
 

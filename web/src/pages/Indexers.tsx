@@ -5,6 +5,7 @@ import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { Indexer } from "../types.js";
 import { PlusCircleIcon, ZapIcon } from "../components/NavIcons.js";
 import { TrashIcon } from "../components/ActionIcons.js";
+import { notify } from "../utils/notify.js";
 
 type Protocol = "torznab" | "newznab" | "rss" | "ddl";
 
@@ -82,10 +83,10 @@ export default function Indexers() {
     setSyncingProwlarr(true);
     try {
       const result = await api.post<{ synced: number }>("/indexers/prowlarr-sync", {});
-      alert(`Synced ${result.synced} indexer(s) from Prowlarr.`);
+      notify.success(`Synced ${result.synced} indexer(s) from Prowlarr.`);
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setSyncingProwlarr(false);
     }
@@ -95,10 +96,10 @@ export default function Indexers() {
     setSyncingJackett(true);
     try {
       const result = await api.post<{ synced: number }>("/indexers/jackett-sync", {});
-      alert(`Synced ${result.synced} indexer(s) from Jackett.`);
+      notify.success(`Synced ${result.synced} indexer(s) from Jackett.`);
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setSyncingJackett(false);
     }

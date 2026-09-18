@@ -3,6 +3,71 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 306 — Servarr-style popups (toast + confirm dialog) + Add Media redesign
+Two related pieces of new infrastructure, plus a first rollout batch of each.
+
+**Toast notifications and a confirmation dialog, replacing the browser's native `alert()`/
+`confirm()`.** New `web/src/utils/notify.ts` (`notify.success/error/info(message)`, a tiny
+pub-sub any file can call directly) + `web/src/components/Toaster.tsx` (stacked, auto-dismissing,
+top-right, new slide-in `@keyframes` in `styles.css` — the first animation in the app). New
+`web/src/utils/confirmDialog.ts` (`confirmDialog({title, message, danger?}): Promise<boolean>`,
+or pass `options: [{key, label}]` for a richer Sonarr/Radarr-style checkbox dialog, resolving
+`{confirmed, values} | null` instead) + `web/src/components/ConfirmModal.tsx`, a thin wrapper
+around the existing `Modal.tsx` shell (reuses its focus trap/Escape/stacking for free). Both are
+mounted once in `App.tsx`, next to the existing `CommandPalette`.
+
+Three multi-`confirm()`-chain call sites — each used to simulate a 2-3-way choice by stacking
+native confirms, since a single native dialog can't have checkboxes — now use one `confirmDialog`
+call with `options` instead, matching how Sonarr/Radarr's own delete dialogs actually look:
+`LibraryType.tsx`'s bulk delete (delete files? add exclusion?), `MediaDetail.tsx`'s remove-item
+(same two questions — previously an awkward "Cancel this dialog, then OK the next one" dance to
+fake a third option, now just an unchecked checkbox), and `Settings.tsx`'s root-folder delete
+(remove media too? delete their files too?). The duplicate-add retry shape (`if (confirm(x)) {
+retry(true) }`, found in `AddMedia`→now `AddPreview`, `Discover.tsx`, `Requests.tsx` ×2) uses the
+plain boolean form.
+
+Every `alert()`/`confirm()` in `Blocklist`, `Calendar`, `CalendarDay`, `CollectionDetail`,
+`Collections`, `CutoffUnmet`, `DownloadClients`, `GlobalSearch`, `Indexers`, `IrcFeeds`, `Jobs`,
+`MediaAnalyzer`, `Missing`, `Recommendations`, `RecycleBin`, `Users`, `WatchlistImport`,
+`Discover`, `Requests`, `ImportReview`, `Duplicates`, `EpisodeDetail`, and the components
+`NamingSetupModal`/`NotificationsToggle` is now converted (~24 files). The remaining large files
+(`Activity`, `IptvPlaylists`, `System`, and the rest of `LibraryType`/`MediaDetail`/`Settings`/
+`SubItemDetail` beyond the checkbox chains already done) continue in follow-up rounds, same
+incremental rhythm as the icon-button rollout. `window.prompt()` (a few free-text inputs in
+`SubItemDetail.tsx`/`GroupPicker.tsx`) is a separate, smaller residual native-popup category not
+covered by this round.
+
+**Add Media now previews like a real detail page before creating anything**, matching Sonarr/
+Radarr's "Add New Series/Movie" convention. New `web/src/pages/AddPreview.tsx` (routed at
+`/add/preview`) renders a `MediaDetail.tsx`-style hero (same `.media-backdrop` CSS, poster, title,
+overview — deliberately reimplemented rather than extracted from `MediaDetail.tsx`, since a
+pre-add item has no numeric id yet for the real page's cast/ratings/trailer/file-status sections
+to key off, and extracting a shared component would mean threading "is this real or a preview"
+conditionals through the largest file in the app for ~100 lines saved) below which the actual
+root-folder/quality-profile/monitor-strategy/group-picker configuration and "Add to library"
+button live. It's reached via React Router navigation state — no new backend endpoint, since every
+caller already has the full search-result payload in hand client-side.
+
+`AddMedia.tsx` (616 → ~330 lines) keeps everything with no equivalent elsewhere — type/provider
+picker, title search, ID/URL match, .nfo import, course-URL scrape — but every path now hands its
+result to `AddPreview.tsx` instead of expanding an inline form; it has no more knowledge of root
+folders, quality profiles, or monitor strategy at all. `GlobalSearch.tsx`'s "Add new" results
+already fetched the same rich `/metadata/search` payload but were discarding it and making
+`AddMedia.tsx` redo the search from scratch (`/add?type=X&q=title`) — now it navigates straight to
+`AddPreview.tsx` with the result already in hand, both fixing the redundant re-search and getting
+the same detail-page-styled preview. `FriendLibraries.tsx`'s "Add" link (title/type hint only, no
+full result) still goes through `AddMedia.tsx`'s own search first, same as before. The
+`MetadataSearchResult` shape all of these share is now one exported interface in `web/src/types.ts`
+instead of three near-duplicate local ones.
+
+Verified live against the running dev server: a temporary movie fixture confirmed the new
+checkbox-based remove dialog; a real manual-entry add (no external metadata dependency, since this
+sandbox's outbound network access can't reach TMDB/Open Library) round-tripped through
+`AddPreview.tsx` into a real library item, and adding the same title again correctly triggered the
+duplicate-confirm dialog and completed on retry; the toast system confirmed rendering a real
+in-app notification (`MediaAnalyzer.tsx`'s "Analysis started" message). Both test items and the
+movie fixture were deleted after verification.
+
 ## Round 305 — the last 9 components: icon-button rollout is complete
 Closes out the icon-button effort that started at Round 294. `Modal.tsx`'s "✕" close button —
 used by literally every modal in the app — is now a real `XIcon`, the last raw-glyph-as-button-

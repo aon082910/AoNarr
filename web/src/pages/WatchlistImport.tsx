@@ -5,6 +5,7 @@ import Modal from "../components/Modal.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { FolderIcon } from "../components/ActionIcons.js";
+import { notify } from "../utils/notify.js";
 import type { MediaType } from "../types.js";
 
 interface ParsedRow {
@@ -120,7 +121,7 @@ export default function WatchlistImport() {
       setShowAdd(false);
       return true;
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
       return false;
     } finally {
       setImporting(false);

@@ -4,6 +4,8 @@ import { api, ApiError } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
 import type { MediaItem, QualityProfile } from "../types.js";
 import { PlusCircleIcon } from "../components/NavIcons.js";
+import { notify } from "../utils/notify.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
 
 interface DiscoverItem {
   title: string;
@@ -62,7 +64,7 @@ export default function Discover() {
       });
       navigate(`/media/${created.id}`);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setBusy(null);
     }
@@ -85,12 +87,17 @@ export default function Discover() {
     } catch (e) {
       if (e instanceof ApiError && e.status === 409 && e.body?.duplicate) {
         const d = e.body.duplicate;
-        if (confirm(`"${d.title}${d.year ? ` (${d.year})` : ""}" was already requested by ${d.username}. Submit another request for it anyway?`)) {
+        if (
+          await confirmDialog({
+            title: "Already requested",
+            message: `"${d.title}${d.year ? ` (${d.year})` : ""}" was already requested by ${d.username}. Submit another request for it anyway?`,
+          })
+        ) {
           await requestItem(item, true);
           return;
         }
       } else {
-        alert((e as Error).message);
+        notify.error((e as Error).message);
       }
     } finally {
       setBusy(null);

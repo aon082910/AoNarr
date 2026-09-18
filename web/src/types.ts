@@ -24,6 +24,24 @@ export interface LibraryGroup {
   missingCount?: number;
 }
 
+/** One /metadata/search or /metadata/match hit — shared by every "find something to add" entry
+ * point (AddMedia's own search, GlobalSearch's "Add new" results, an .nfo/course-URL scrape) so
+ * they all hand the same shape to AddPreview.tsx. */
+export interface MetadataSearchResult {
+  title: string;
+  year: number | null;
+  overview: string | null;
+  posterUrl: string | null;
+  externalIds: Record<string, string>;
+  excluded?: boolean;
+  releaseDate?: string | null;
+  backdropUrl?: string | null;
+  rating?: number | null;
+  runtimeMinutes?: number | null;
+  studio?: string | null;
+  performers?: string[];
+}
+
 export interface AudioStreamInfo {
   codec: string | null;
   channels: number | null;

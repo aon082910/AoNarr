@@ -4,6 +4,8 @@ import SearchMatchModal, { type MetadataSearchResult } from "../components/Searc
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { SearchIcon } from "../components/NavIcons.js";
 import { XIcon } from "../components/ActionIcons.js";
+import { notify } from "../utils/notify.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
 
 interface ReviewItem {
   id: number;
@@ -46,7 +48,7 @@ export default function ImportReview() {
         externalIds: result.externalIds,
       });
     } catch (e) {
-      alert(`Import failed: ${(e as Error).message}`);
+      notify.error(`Import failed: ${(e as Error).message}`);
       return;
     }
     setMatching(null);
@@ -56,13 +58,19 @@ export default function ImportReview() {
       // The library item above was already created successfully — only marking this review row
       // resolved failed. Surfacing that distinction matters: retrying the match here would create
       // a duplicate library item, since the import itself already went through.
-      alert(`"${item.title}" was imported, but marking it resolved failed: ${(e as Error).message}. Don't match it again — reload this page instead.`);
+      notify.error(`"${item.title}" was imported, but marking it resolved failed: ${(e as Error).message}. Don't match it again — reload this page instead.`);
     }
     load();
   }
 
   async function dismiss(item: ReviewItem) {
-    if (!confirm(`Dismiss "${item.title}"? It won't be re-queued unless it's removed from its source list and re-added later.`)) return;
+    if (
+      !(await confirmDialog({
+        title: "Dismiss item",
+        message: `Dismiss "${item.title}"? It won't be re-queued unless it's removed from its source list and re-added later.`,
+      }))
+    )
+      return;
     await api.post(`/import-review/${item.id}/dismiss`, {});
     load();
   }

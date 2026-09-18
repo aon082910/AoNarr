@@ -4,6 +4,7 @@ import { api } from "../api/client.js";
 import type { MediaItem, MediaType, QualityProfile } from "../types.js";
 import { PlusCircleIcon } from "../components/NavIcons.js";
 import { XIcon } from "../components/ActionIcons.js";
+import { notify } from "../utils/notify.js";
 
 interface Recommendation {
   title: string;
@@ -52,7 +53,7 @@ export default function Recommendations() {
       });
       navigate(`/media/${created.id}`);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setAdding(null);
     }

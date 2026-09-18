@@ -4,6 +4,8 @@ import { api } from "../api/client.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { BlocklistEntry } from "../types.js";
 import { TrashIcon } from "../components/ActionIcons.js";
+import { notify } from "../utils/notify.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
 
 /** Radarr/Sonarr-style Blocklist page — every release AoNarr has been told never to grab again
  * (via the "Blocklist" button on a search result, or an automatic retry-after-failure), with a
@@ -22,18 +24,19 @@ export default function Blocklist() {
       await api.del(`/blocklist/${id}`);
       setEntries((prev) => prev?.filter((e) => e.id !== id) ?? null);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
   async function clearAll() {
     if (!entries || entries.length === 0) return;
-    if (!confirm(`Remove all ${entries.length} blocklist entries? This lets every one of them be grabbed again.`)) return;
+    if (!(await confirmDialog({ title: "Clear blocklist", message: `Remove all ${entries.length} blocklist entries? This lets every one of them be grabbed again.` })))
+      return;
     try {
       await api.del("/blocklist");
       setEntries([]);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 

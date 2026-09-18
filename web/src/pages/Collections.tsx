@@ -5,6 +5,8 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { LayersIcon } from "../components/NavIcons.js";
 import { TrashIcon } from "../components/ActionIcons.js";
 import type { Collection } from "../types.js";
+import { notify } from "../utils/notify.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
 
 export default function Collections() {
   const navigate = useNavigate();
@@ -50,17 +52,18 @@ export default function Collections() {
       setFilterAddedAfterDays("");
       navigate(`/collections/${created.id}`);
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
   async function removeCollection(id: number) {
-    if (!confirm("Delete this collection? Media items themselves are not affected.")) return;
+    if (!(await confirmDialog({ title: "Delete collection", message: "Delete this collection? Media items themselves are not affected.", danger: true })))
+      return;
     try {
       await api.del(`/collections/${id}`);
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 

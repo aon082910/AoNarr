@@ -8,6 +8,8 @@ import NotificationsToggle from "./components/NotificationsToggle.js";
 import ThemeToggle from "./components/ThemeToggle.js";
 import LayoutWidthToggle from "./components/LayoutWidthToggle.js";
 import CommandPalette from "./components/CommandPalette.js";
+import Toaster from "./components/Toaster.js";
+import ConfirmModal from "./components/ConfirmModal.js";
 import DropdownMenu from "./components/DropdownMenu.js";
 import { useMediaTypes } from "./hooks/useMediaTypes.js";
 import { useCustomizableLayout } from "./hooks/useCustomizableLayout.js";
@@ -63,6 +65,7 @@ const EpisodeDetail = lazy(() => import("./pages/EpisodeDetail.js"));
 const SubItemDetail = lazy(() => import("./pages/SubItemDetail.js"));
 const TrackDetail = lazy(() => import("./pages/TrackDetail.js"));
 const AddMedia = lazy(() => import("./pages/AddMedia.js"));
+const AddPreview = lazy(() => import("./pages/AddPreview.js"));
 const Calendar = lazy(() => import("./pages/Calendar.js"));
 const CalendarDay = lazy(() => import("./pages/CalendarDay.js"));
 const Missing = lazy(() => import("./pages/Missing.js"));
@@ -369,6 +372,8 @@ export default function App() {
       </a>
       <ScrollToTop />
       <CommandPalette />
+      <Toaster />
+      <ConfirmModal />
 
       {navPosition === "side" && (
         <>
@@ -540,6 +545,7 @@ export default function App() {
           <Route path="/changelog" element={<Changelog />} />
           <Route path="/account" element={<Account />} />
           {isAdmin && <Route path="/add" element={<AddMedia />} />}
+          {isAdmin && <Route path="/add/preview" element={<AddPreview />} />}
           {isAdmin && <Route path="/recommendations" element={<Recommendations />} />}
           {isAdmin && <Route path="/watchlist-import" element={<WatchlistImport />} />}
           {isAdmin && <Route path="/import-review" element={<ImportReview />} />}

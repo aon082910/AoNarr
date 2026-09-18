@@ -4,6 +4,9 @@ import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { addRecentSearch, clearRecentSearches, getRecentSearches } from "../utils/recentSearches.js";
 import { useAuth } from "../context/AuthContext.js";
+import { notify } from "../utils/notify.js";
+import type { MetadataSearchResult } from "../types.js";
+import type { AddPreviewState } from "./AddPreview.js";
 
 interface LibrarySearchResult {
   mediaItemId: number;
@@ -13,14 +16,6 @@ interface LibrarySearchResult {
   posterUrl: string | null;
   matchedOn: "title" | "episode" | "child";
   matchDetail: string | null;
-}
-
-interface MetadataSearchResult {
-  title: string;
-  year: number | null;
-  overview: string | null;
-  posterUrl: string | null;
-  externalIds: Record<string, string>;
 }
 
 interface AddResultGroup {
@@ -72,7 +67,7 @@ export default function GlobalSearch() {
       .catch((e: Error) => {
         // Surface the failure and let the "Add new" metadata results still render instead of
         // letting a rejected promise abort the whole search silently.
-        alert(`Library search failed: ${e.message}`);
+        notify.error(`Library search failed: ${e.message}`);
         if (searchRequestRef.current === requestId) setResults([]);
         return [] as LibrarySearchResult[];
       })
@@ -144,8 +139,9 @@ export default function GlobalSearch() {
     setRecent([]);
   }
 
-  function goAdd(type: string, title: string) {
-    navigate(`/add?type=${encodeURIComponent(type)}&q=${encodeURIComponent(title)}`);
+  function goAdd(type: string, result: MetadataSearchResult) {
+    const state: AddPreviewState = { type, result, manual: false };
+    navigate("/add/preview", { state });
   }
 
   return (
@@ -220,7 +216,7 @@ export default function GlobalSearch() {
               <h3 style={{ marginBottom: 8 }}>{labelFor(group.type)}</h3>
               <div className="grid">
                 {group.results.map((r, idx) => (
-                  <div key={idx} className="card" onClick={() => goAdd(group.type, r.title)}>
+                  <div key={idx} className="card" onClick={() => goAdd(group.type, r)}>
                     <div className="poster" style={r.posterUrl ? { backgroundImage: `url(${r.posterUrl})` } : undefined}>
                       {!r.posterUrl && "No poster"}
                     </div>

@@ -8,6 +8,7 @@ import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { Invite, RequestStats, Session, User } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 import { XIcon, TrashIcon } from "../components/ActionIcons.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
 
 export default function Users() {
   const mediaTypes = useMediaTypes();
@@ -118,7 +119,7 @@ export default function Users() {
   }
 
   async function removeUser(id: number) {
-    if (!confirm("Delete this user account? This cannot be undone.")) return;
+    if (!(await confirmDialog({ title: "Delete user", message: "Delete this user account? This cannot be undone.", danger: true }))) return;
     await api.del(`/users/${id}`);
     setMode(null);
     load();

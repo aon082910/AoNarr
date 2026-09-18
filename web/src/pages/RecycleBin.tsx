@@ -6,6 +6,7 @@ import type { CorruptMediaReviewEntry, RecycleBinEntry } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 import { RotateCcwIcon } from "../components/NavIcons.js";
 import { TrashIcon, XIcon } from "../components/ActionIcons.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
 
 /** Grouped by library type so browsing it mirrors the actual library folder structure — same
  * grouping the server's recycle_bin.media_type + physical recycle-bin/{type}/ layout use. */
@@ -22,7 +23,7 @@ export default function RecycleBin() {
   useEffect(load, []);
 
   async function recycleReviewItem(id: number, title: string) {
-    if (!confirm(`Move "${title}" to the recycle bin and mark it missing?`)) return;
+    if (!(await confirmDialog({ title: "Recycle item", message: `Move "${title}" to the recycle bin and mark it missing?` }))) return;
     await api.post(`/corrupt-media-review/${id}/recycle`, {});
     load();
   }
@@ -53,7 +54,7 @@ export default function RecycleBin() {
   }
 
   async function purge(id: number, title: string) {
-    if (!confirm(`Permanently delete "${title}"? This cannot be undone.`)) return;
+    if (!(await confirmDialog({ title: "Delete forever", message: `Permanently delete "${title}"? This cannot be undone.`, danger: true }))) return;
     await api.del(`/recycle-bin/${id}`);
     load();
   }

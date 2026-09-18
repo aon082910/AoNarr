@@ -3,6 +3,7 @@ import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import type { DownloadClient } from "../types.js";
 import { formatBytes } from "../utils/format.js";
+import { notify } from "../utils/notify.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { ZapIcon } from "../components/NavIcons.js";
 import { TrashIcon } from "../components/ActionIcons.js";
@@ -146,7 +147,7 @@ export default function DownloadClients() {
       setMode(null);
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 
@@ -156,7 +157,7 @@ export default function DownloadClients() {
       setMode(null);
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 

@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
+import { notify } from "../utils/notify.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
 
 interface IrcFeed {
   id: number;
@@ -96,18 +98,19 @@ export default function IrcFeeds() {
       setMode(null);
       load();
     } catch (err) {
-      alert((err as Error).message);
+      notify.error((err as Error).message);
     }
   }
 
   async function removeFeed(id: number) {
-    if (!confirm("Remove this IRC announce feed? It'll disconnect immediately.")) return;
+    if (!(await confirmDialog({ title: "Remove IRC feed", message: "Remove this IRC announce feed? It'll disconnect immediately.", danger: true })))
+      return;
     try {
       await api.del(`/irc-feeds/${id}`);
       setMode(null);
       load();
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 

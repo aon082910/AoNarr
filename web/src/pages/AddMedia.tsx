@@ -1,39 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { api, ApiError } from "../api/client.js";
-import GroupPicker from "../components/GroupPicker.js";
+import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
-import type { LibraryGroup, MediaItem, MediaType, QualityProfile, RootFolder } from "../types.js";
-import { formatBytes } from "../utils/format.js";
-
-type MonitorStrategy = "all" | "future" | "missing" | "existing" | "recent" | "firstSeason" | "latestSeason" | "pilot" | "none";
-
-const MONITOR_STRATEGY_LABELS: Record<MonitorStrategy, string> = {
-  all: "All Episodes",
-  future: "Future Episodes",
-  missing: "Missing Episodes",
-  existing: "Existing Episodes",
-  recent: "Recent Episodes (last season)",
-  firstSeason: "First Season",
-  latestSeason: "Latest Season",
-  pilot: "Pilot Episode Only",
-  none: "None",
-};
-
-interface MetadataSearchResult {
-  title: string;
-  year: number | null;
-  overview: string | null;
-  posterUrl: string | null;
-  externalIds: Record<string, string>;
-  excluded?: boolean;
-  releaseDate?: string | null;
-  backdropUrl?: string | null;
-  rating?: number | null;
-  runtimeMinutes?: number | null;
-  studio?: string | null;
-  performers?: string[];
-}
+import type { LibraryGroup, MediaType, MetadataSearchResult } from "../types.js";
+import type { AddPreviewState } from "./AddPreview.js";
 
 /** Hostname → the "Site" group name to file a scraped course under, so the group picker doesn't
  * make the user re-type "Coursera"/"Udemy"/"edX" for every course from the same platform. */
@@ -83,6 +53,12 @@ const PROVIDER_LABELS: Record<string, string> = {
   theporndb: "ThePornDB",
 };
 
+/** Find something to add — every lookup method (title search, ID/URL match, .nfo file, a scraped
+ * course URL, or a plain no-metadata manual entry) converges on the same next step: navigate to
+ * AddPreview.tsx with whatever candidate was found, which looks like the real MediaDetail.tsx page
+ * and is where root folder/quality/monitoring actually get configured and the item actually gets
+ * created — matching how Sonarr/Radarr's own "Add New" flow works. This page's only job is finding
+ * the candidate, not configuring or creating it. */
 export default function AddMedia() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -94,44 +70,22 @@ export default function AddMedia() {
   const [provider, setProvider] = useState("");
   const [query, setQuery] = useState(prefillQuery);
   /** Narrows/re-ranks search results toward this year (see searchMetadata's year-assisted
-   * matching) — distinct from `year` below, which is the year of the item actually being added. */
+   * matching). */
   const [searchYear, setSearchYear] = useState("");
   const [searchMode, setSearchMode] = useState<"title" | "id">("title");
   const [idInput, setIdInput] = useState("");
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<MetadataSearchResult[] | null>(null);
-  const [selected, setSelected] = useState<MetadataSearchResult | null>(null);
-  const [manual, setManual] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const [title, setTitle] = useState("");
-  const [year, setYear] = useState("");
-  const [overview, setOverview] = useState("");
-  const [rootFolders, setRootFolders] = useState<RootFolder[]>([]);
-  const [profiles, setProfiles] = useState<QualityProfile[]>([]);
-  const [rootFolderId, setRootFolderId] = useState<number | "">("");
-  const [qualityProfileId, setQualityProfileId] = useState<number | "">("");
-  const [submitting, setSubmitting] = useState(false);
 
   const [nfoPath, setNfoPath] = useState("");
   const [nfoLoading, setNfoLoading] = useState(false);
-  const [nfoResult, setNfoResult] = useState<MetadataSearchResult | null>(null);
   const [courseUrl, setCourseUrl] = useState("");
   const [courseLoading, setCourseLoading] = useState(false);
-  const [courseSiteGroupId, setCourseSiteGroupId] = useState<number | null>(null);
-  const [groupId, setGroupId] = useState<number | null>(null);
-  const [monitorStrategy, setMonitorStrategy] = useState<MonitorStrategy>("all");
-  const [romGroupChain, setRomGroupChain] = useState<(number | null)[] | null>(null);
-  const [romDetailsLoading, setRomDetailsLoading] = useState(false);
 
   const activeTypeInfo = mediaTypes.find((t) => t.key === type);
 
   useEffect(() => {
-    api.get<RootFolder[]>("/root-folders").then(setRootFolders);
-    api.get<QualityProfile[]>("/quality-profiles").then((p) => {
-      setProfiles(p);
-      if (p.length > 0) setQualityProfileId(p[0].id);
-    });
     api.get<Record<MediaType, string[]>>("/metadata/providers").then(setProviders);
   }, []);
 
@@ -144,12 +98,7 @@ export default function AddMedia() {
 
   useEffect(() => {
     setProvider(providers[type]?.[0] ?? "");
-    // A type with no metadata provider (e.g. Courses) can only be added manually; one that does
-    // support search resets back to it — this used to only ever force manual on, never back off,
-    // so switching from a no-search type to a search-capable one left the manual entry form
-    // showing with no obvious reason why the search box had disappeared.
-    setManual(!!activeTypeInfo && !activeTypeInfo.hasMetadataSearch);
-  }, [type, providers]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [type, providers]);
 
   // Deep-linked from another page (e.g. Friend Libraries "Add") with a query/type already chosen
   // — auto-run the search once the provider for that type has loaded, instead of making the user
@@ -165,7 +114,14 @@ export default function AddMedia() {
       .finally(() => setSearching(false));
   }, [prefillQuery, provider]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const foldersForType = rootFolders.filter((f) => f.mediaType === type);
+  function goToPreview(result: MetadataSearchResult, manual: boolean, initialGroupChain?: (number | null)[]) {
+    const state: AddPreviewState = { type, result, manual, initialGroupChain };
+    navigate("/add/preview", { state });
+  }
+
+  function goManual() {
+    goToPreview({ title: "", year: null, overview: null, posterUrl: null, externalIds: {} }, true);
+  }
 
   async function runSearch(e: FormEvent) {
     e.preventDefault();
@@ -173,7 +129,6 @@ export default function AddMedia() {
     setSearching(true);
     setError(null);
     setResults(null);
-    setSelected(null);
     try {
       const res = await api.get<MetadataSearchResult[]>(
         `/metadata/search?type=${type}&query=${encodeURIComponent(query.trim())}&provider=${provider}${
@@ -194,7 +149,6 @@ export default function AddMedia() {
     setSearching(true);
     setError(null);
     setResults(null);
-    setSelected(null);
     try {
       const res = await api.get<MetadataSearchResult[]>(
         `/metadata/match?type=${type}&input=${encodeURIComponent(idInput.trim())}&provider=${provider}`
@@ -207,116 +161,6 @@ export default function AddMedia() {
     }
   }
 
-  async function findOrCreateGroup(
-    mediaType: MediaType,
-    kind: string,
-    name: string,
-    parentGroupId: number | null,
-    logoUrl?: string | null
-  ): Promise<number> {
-    const groups = await api.get<LibraryGroup[]>(
-      `/library-groups?mediaType=${mediaType}${parentGroupId ? `&parentId=${parentGroupId}` : ""}`
-    );
-    const existing = groups.find((g) => g.name.toLowerCase() === name.toLowerCase());
-    if (existing) return existing.id;
-    const created = await api.post<LibraryGroup>("/library-groups", { mediaType, kind, name, parentGroupId, logoUrl });
-    return created.id;
-  }
-
-  function selectResult(result: MetadataSearchResult) {
-    setSelected(result);
-    setTitle(result.title);
-    setYear(result.year ? String(result.year) : "");
-    setOverview(result.overview ?? "");
-    setRomGroupChain(null);
-
-    // RAWG/IGDB's search results don't carry overview/platform/developer — only their per-game
-    // detail lookup does, so this is a follow-up call rather than something selectResult already
-    // has. Auto-fills the overview (search results always sent it as null) and resolves/creates
-    // the System → Maker group chain, same as detectCourseSite does for a single-level Site group.
-    if (type === "rom" && result.externalIds) {
-      const [provider, externalId] = Object.entries(result.externalIds)[0] ?? [];
-      if (provider && externalId) {
-        setRomDetailsLoading(true);
-        api
-          .get<{ overview: string | null; system: string | null; maker: string | null; systemLogoUrl: string | null }>(
-            `/metadata/rom-details?provider=${provider}&externalId=${encodeURIComponent(externalId)}`
-          )
-          .then(async (details) => {
-            if (details.overview) setOverview(details.overview);
-            if (details.system) {
-              const systemId = await findOrCreateGroup("rom", "system", details.system, null, details.systemLogoUrl);
-              const makerId = details.maker ? await findOrCreateGroup("rom", "maker", details.maker, systemId) : null;
-              setRomGroupChain([systemId, makerId]);
-            }
-          })
-          .catch(() => {
-            // Best-effort enrichment — a failed lookup (rate limit, missing key, network hiccup)
-            // just leaves overview/group exactly where selectResult's basic fields already put
-            // them, same as if this follow-up fetch had never run.
-          })
-          .finally(() => setRomDetailsLoading(false));
-      }
-    }
-  }
-
-  async function doImport(confirmDuplicate = false) {
-    if (!title.trim()) return;
-    setSubmitting(true);
-    setError(null);
-    try {
-      const payload = manual
-        ? {
-            type,
-            title: title.trim(),
-            year: year ? Number(year) : null,
-            overview: overview || null,
-            posterUrl: nfoResult?.posterUrl ?? null,
-            externalIds: nfoResult?.externalIds ?? {},
-            rootFolderId: rootFolderId || null,
-            qualityProfileId: qualityProfileId || null,
-            monitored: 1,
-            confirmDuplicate,
-            groupId,
-            monitorStrategy: activeTypeInfo?.shape === "episodic" ? monitorStrategy : undefined,
-          }
-        : {
-            type,
-            title: title.trim(),
-            year: year ? Number(year) : null,
-            overview: overview || null,
-            posterUrl: selected?.posterUrl ?? null,
-            externalIds: selected?.externalIds ?? {},
-            rootFolderId: rootFolderId || null,
-            qualityProfileId: qualityProfileId || null,
-            monitored: 1,
-            confirmDuplicate,
-            groupId,
-            releaseDate: selected?.releaseDate ?? null,
-            backdropUrl: selected?.backdropUrl ?? null,
-            rating: selected?.rating ?? null,
-            runtimeMinutes: selected?.runtimeMinutes ?? null,
-            studio: selected?.studio ?? null,
-            performers: selected?.performers ?? undefined,
-            monitorStrategy: activeTypeInfo?.shape === "episodic" ? monitorStrategy : undefined,
-          };
-      const created = await api.post<MediaItem>(manual ? "/media" : "/metadata/import", payload);
-      navigate(`/media/${created.id}`);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 409 && Array.isArray(err.body?.duplicates)) {
-        const names = err.body.duplicates.map((d: any) => `${d.title}${d.year ? ` (${d.year})` : ""}`).join(", ");
-        if (confirm(`This looks like it might already be in your library: ${names}. Add it anyway?`)) {
-          await doImport(true);
-          return;
-        }
-      } else {
-        setError((err as Error).message);
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
   async function loadNfo(e: FormEvent) {
     e.preventDefault();
     if (!nfoPath.trim()) return;
@@ -324,12 +168,7 @@ export default function AddMedia() {
     setError(null);
     try {
       const parsed = await api.get<MetadataSearchResult>(`/import/nfo?path=${encodeURIComponent(nfoPath.trim())}`);
-      setNfoResult(parsed);
-      setManual(true);
-      setSelected(null);
-      setTitle(parsed.title ?? "");
-      setYear(parsed.year ? String(parsed.year) : "");
-      setOverview(parsed.overview ?? "");
+      goToPreview(parsed, true);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -344,12 +183,7 @@ export default function AddMedia() {
     setError(null);
     try {
       const parsed = await api.post<MetadataSearchResult>("/import/course-url", { url: courseUrl.trim() });
-      setNfoResult(parsed);
-      setManual(true);
-      setSelected(null);
-      setTitle(parsed.title ?? "");
-      setOverview(parsed.overview ?? "");
-
+      let initialGroupChain: (number | null)[] | undefined;
       const site = detectCourseSite(courseUrl.trim());
       if (site) {
         const groups = await api.get<LibraryGroup[]>("/library-groups?mediaType=course");
@@ -366,18 +200,14 @@ export default function AddMedia() {
                 name: site.name,
                 website: site.domain,
               }));
-        setCourseSiteGroupId(group.id);
+        initialGroupChain = [group.id, ...(activeTypeInfo?.groupLevels.slice(1).map(() => null) ?? [])];
       }
+      goToPreview(parsed, true, initialGroupChain);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setCourseLoading(false);
     }
-  }
-
-  function confirmImport(e: FormEvent) {
-    e.preventDefault();
-    doImport(false);
   }
 
   return (
@@ -386,18 +216,7 @@ export default function AddMedia() {
 
       <div className="form-panel">
         <label htmlFor="addmedia-type-1">Type</label>
-        <select id="addmedia-type-1"
-          value={type}
-          onChange={(e) => {
-            setType(e.target.value as MediaType);
-            setResults(null);
-            setSelected(null);
-            // A group belongs to one library type — a SNES group picked under ROMs must not ride
-            // along into a movie added after switching types.
-            setGroupId(null);
-            setRomGroupChain(null);
-          }}
-        >
+        <select id="addmedia-type-1" value={type} onChange={(e) => { setType(e.target.value as MediaType); setResults(null); }}>
           {mediaTypes.map((t) => (
             <option key={t.key} value={t.key}>
               {t.label}
@@ -405,7 +224,7 @@ export default function AddMedia() {
           ))}
         </select>
 
-        {!manual && (
+        {activeTypeInfo?.hasMetadataSearch && (
           <>
             <label htmlFor="addmedia-metadata-provider-2">Metadata provider</label>
             <select id="addmedia-metadata-provider-2" value={provider} onChange={(e) => setProvider(e.target.value)} style={{ marginBottom: 10 }}>
@@ -466,13 +285,18 @@ export default function AddMedia() {
         )}
 
         {activeTypeInfo?.hasMetadataSearch ? (
-          <button type="button" className="secondary" onClick={() => setManual((m) => !m)}>
-            {manual ? "Search metadata instead" : "Add manually (no metadata)"}
+          <button type="button" className="secondary" onClick={goManual}>
+            Add manually (no metadata)
           </button>
         ) : (
-          <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
-            {activeTypeInfo?.label} has no metadata search provider — add it manually below.
-          </p>
+          <>
+            <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+              {activeTypeInfo?.label} has no metadata search provider — add it manually below.
+            </p>
+            <button type="button" onClick={goManual}>
+              Add manually
+            </button>
+          </>
         )}
 
         <details style={{ marginTop: 12 }}>
@@ -489,7 +313,6 @@ export default function AddMedia() {
             <button type="submit" disabled={nfoLoading}>
               {nfoLoading ? "Reading..." : "Load NFO"}
             </button>
-            {nfoResult && <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>Loaded — review the fields below before adding.</p>}
           </form>
         </details>
 
@@ -520,11 +343,11 @@ export default function AddMedia() {
 
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
 
-      {!manual && results && !selected && (
+      {results && (
         <div className="grid">
           {results.length === 0 && <p className="empty">No results found.</p>}
           {results.map((r, idx) => (
-            <div key={idx} className="card" onClick={() => selectResult(r)} style={r.excluded ? { opacity: 0.5 } : undefined}>
+            <div key={idx} className="card" onClick={() => goToPreview(r, false)} style={r.excluded ? { opacity: 0.5 } : undefined}>
               <div className="poster" style={r.posterUrl ? { backgroundImage: `url(${r.posterUrl})` } : undefined}>
                 {!r.posterUrl && "No poster"}
               </div>
@@ -538,78 +361,6 @@ export default function AddMedia() {
             </div>
           ))}
         </div>
-      )}
-
-      {(manual || selected) && (
-        <form className="form-panel" onSubmit={confirmImport}>
-          <label htmlFor="addmedia-title-6">Title</label>
-          <input id="addmedia-title-6" value={title} onChange={(e) => setTitle(e.target.value)} required />
-
-          <label htmlFor="addmedia-year-7">Year</label>
-          <input id="addmedia-year-7" value={year} onChange={(e) => setYear(e.target.value)} type="number" />
-
-          <label htmlFor="addmedia-overview-8">Overview</label>
-          <textarea id="addmedia-overview-8" value={overview} onChange={(e) => setOverview(e.target.value)} rows={3} />
-
-          {type === "rom" && romDetailsLoading && (
-            <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>Looking up system/maker...</p>
-          )}
-          {activeTypeInfo && activeTypeInfo.groupLevels.length > 0 && (
-            <GroupPicker
-              key={type === "course" ? courseSiteGroupId ?? "unset" : type === "rom" ? romGroupChain?.join(",") ?? "unset" : "default"}
-              type={type}
-              groupLevels={activeTypeInfo.groupLevels}
-              initialChain={
-                type === "course" && courseSiteGroupId
-                  ? [courseSiteGroupId, ...activeTypeInfo.groupLevels.slice(1).map(() => null)]
-                  : type === "rom" && romGroupChain
-                    ? romGroupChain
-                    : undefined
-              }
-              onChange={setGroupId}
-            />
-          )}
-
-          <label htmlFor="addmedia-root-folder-9">Root folder</label>
-          <select id="addmedia-root-folder-9" value={rootFolderId} onChange={(e) => setRootFolderId(e.target.value ? Number(e.target.value) : "")}>
-            <option value="">Auto (most free space)</option>
-            {foldersForType.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.path}
-                {typeof f.freeBytes === "number" ? ` — ${formatBytes(f.freeBytes)} free` : ""}
-              </option>
-            ))}
-          </select>
-
-          <label htmlFor="addmedia-quality-profile-10">Quality profile</label>
-          <select id="addmedia-quality-profile-10"
-            value={qualityProfileId}
-            onChange={(e) => setQualityProfileId(e.target.value ? Number(e.target.value) : "")}
-          >
-            {profiles.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-
-          {activeTypeInfo?.shape === "episodic" && (
-            <>
-              <label htmlFor="addmedia-monitor-11">Monitor</label>
-              <select id="addmedia-monitor-11" value={monitorStrategy} onChange={(e) => setMonitorStrategy(e.target.value as MonitorStrategy)}>
-                {Object.entries(MONITOR_STRATEGY_LABELS).map(([key, label]) => (
-                  <option key={key} value={key}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </>
-          )}
-
-          <button type="submit" disabled={submitting}>
-            {submitting ? "Adding..." : "Add to library"}
-          </button>
-        </form>
       )}
     </div>
   );

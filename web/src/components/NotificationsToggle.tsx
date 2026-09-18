@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { isPushSubscribed, subscribeToPush, unsubscribeFromPush } from "../utils/push.js";
+import { notify } from "../utils/notify.js";
 
 export default function NotificationsToggle() {
   const [subscribed, setSubscribed] = useState(false);
@@ -25,7 +26,7 @@ export default function NotificationsToggle() {
         setSubscribed(true);
       }
     } catch (e) {
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     } finally {
       setBusy(false);
     }

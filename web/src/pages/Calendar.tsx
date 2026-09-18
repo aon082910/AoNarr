@@ -4,6 +4,7 @@ import { api } from "../api/client.js";
 import { describeCalendarEntry } from "../utils/calendarDescriptions.js";
 import { PlusCircleIcon, ShareIcon, CalendarIcon } from "../components/NavIcons.js";
 import { TrashIcon, ChevronLeftIcon, ChevronRightIcon, ArrowRightIcon } from "../components/ActionIcons.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
 
 interface CalendarEntry {
   mediaItemId: number;
@@ -90,7 +91,14 @@ export default function Calendar() {
   }
 
   async function regenerateIcsToken() {
-    if (!confirm("Regenerate the calendar feed URL? Any calendar app already subscribed will stop updating until you re-subscribe with the new URL.")) return;
+    if (
+      !(await confirmDialog({
+        title: "Regenerate calendar feed URL",
+        message: "Regenerate the calendar feed URL? Any calendar app already subscribed will stop updating until you re-subscribe with the new URL.",
+        danger: true,
+      }))
+    )
+      return;
     const result = await api.post<{ token: string }>("/settings/calendar-token/regenerate", {});
     setIcsUrl(`${window.location.origin}/api/calendar.ics?token=${result.token}`);
   }
@@ -107,7 +115,7 @@ export default function Calendar() {
   }
 
   async function deleteCustomEvent(id: number) {
-    if (!confirm("Remove this custom date?")) return;
+    if (!(await confirmDialog({ title: "Remove custom date", message: "Remove this custom date?" }))) return;
     await api.del(`/calendar-events/${id}`);
     load();
   }

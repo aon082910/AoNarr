@@ -4,6 +4,7 @@ import { api } from "../api/client.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { SearchIcon } from "../components/NavIcons.js";
 import { ArrowRightIcon } from "../components/ActionIcons.js";
+import { notify } from "../utils/notify.js";
 
 interface CutoffUnmetRow {
   mediaItemId: number;
@@ -59,7 +60,7 @@ export default function CutoffUnmet() {
         targets: targets.map(toTarget),
       });
       const grabbedCount = results.filter((r) => r.grabbed).length;
-      alert(`Grabbed ${grabbedCount} of ${results.length} item(s).`);
+      notify.success(`Grabbed ${grabbedCount} of ${results.length} item(s).`);
       load();
     } finally {
       setSearching(false);

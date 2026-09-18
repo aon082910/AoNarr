@@ -4,6 +4,7 @@ import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { describeCalendarEntry } from "../utils/calendarDescriptions.js";
 import { ArrowLeftIcon, ArrowRightIcon, TrashIcon } from "../components/ActionIcons.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
 
 interface CalendarEntry {
   mediaItemId: number;
@@ -42,7 +43,7 @@ export default function CalendarDay() {
   }
 
   async function deleteCustomEvent(id: number) {
-    if (!confirm("Remove this custom date?")) return;
+    if (!(await confirmDialog({ title: "Remove custom date", message: "Remove this custom date?" }))) return;
     await api.del(`/calendar-events/${id}`);
     setEntries((prev) => prev?.filter((e) => !(e.kind === "event" && e.mediaItemId === id)) ?? null);
   }

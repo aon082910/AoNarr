@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import Modal from "./Modal.js";
+import { notify } from "../utils/notify.js";
 
 type MediaShape = "single" | "episodic" | "collection";
 
@@ -101,7 +102,7 @@ export default function NamingSetupModal({
       await onSave(template, enabled);
       onClose();
     } catch (err) {
-      alert((err as Error).message);
+      notify.error((err as Error).message);
     } finally {
       setSaving(false);
     }

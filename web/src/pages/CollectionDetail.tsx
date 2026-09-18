@@ -5,6 +5,7 @@ import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { Collection, MediaItem } from "../types.js";
 import { ArrowUpIcon, ArrowDownIcon, TrashIcon } from "../components/ActionIcons.js";
+import { notify } from "../utils/notify.js";
 
 type CollectionDetailResponse = Collection & { items: MediaItem[] };
 
@@ -46,7 +47,7 @@ export default function CollectionDetail() {
       // Revert the optimistic reorder — without this, a failed save left the UI showing the new
       // order indefinitely with no error, silently diverging from the server until a full reload.
       setCollection((prev) => (prev ? { ...prev, items: previous } : prev));
-      alert((e as Error).message);
+      notify.error((e as Error).message);
     }
   }
 

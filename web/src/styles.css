@@ -503,6 +503,42 @@ button.icon-button.danger:hover { background: rgba(224,92,92,0.15); }
   .dashboard-widget-half { grid-column: 1 / -1; }
 }
 
+/* Sonarr/Radarr-style toast stack, replacing this app's former use of the browser's native
+   alert(). Sits above Modal's overlay (z-index: 1000, set inline in Modal.tsx) so an error toast
+   from an action taken inside a modal still surfaces, but below .skip-link (2000). */
+.toast-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 1500;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 360px;
+}
+.toast {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+  padding: 10px 8px 10px 14px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  font-size: 0.88rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  animation: toast-in 0.2s ease;
+}
+.toast.success { border-left-color: var(--ok); }
+.toast.error { border-left-color: var(--danger); }
+.toast-message { flex: 1; word-break: break-word; padding-top: 6px; }
+.toast .icon-button { flex-shrink: 0; }
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(24px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
 .empty { color: var(--muted); padding: 24px 0; }
 .gate { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
 .gate code { background: var(--input-bg); padding: 1px 5px; border-radius: 4px; }

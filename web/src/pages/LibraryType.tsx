@@ -11,6 +11,8 @@ import MonitorToggle from "../components/MonitorToggle.js";
 import RenamePreviewModal from "../components/RenamePreviewModal.js";
 import { PlusCircleIcon, CheckSquareIcon, SlashIcon, ZapIcon, RotateCcwIcon, SearchIcon } from "../components/NavIcons.js";
 import { PencilIcon, XIcon, CheckIcon, TrashIcon, FolderIcon, ChevronLeftIcon, ChevronRightIcon } from "../components/ActionIcons.js";
+import { notify } from "../utils/notify.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
 
 type SortKey = "title" | "year" | "added" | "status" | "monitored" | "quality" | "contentRating" | "releaseDate" | "path" | "sizeOnDisk";
 type ViewMode = "poster" | "overview" | "list";
@@ -872,31 +874,34 @@ export function LibraryItemGrid({
     setBulkEditQualityProfileId("");
     setBulkEditRootFolderId("");
     load();
-    alert(`Updated ${selected.size} item(s).`);
+    notify.success(`Updated ${selected.size} item(s).`);
   }
 
   async function bulkTag() {
     if (!tagToApply) return;
     await api.post("/media/bulk/tag", { mediaItemIds: Array.from(selected), tagId: tagToApply });
     setTagToApply("");
-    alert(`Tagged ${selected.size} item(s).`);
+    notify.success(`Tagged ${selected.size} item(s).`);
   }
 
   async function bulkDelete() {
-    if (!confirm(`Remove ${selected.size} item(s) from AoNarr?`)) return;
-    const deleteFiles = confirm(
-      `Also delete their files? (moved to the Recycle Bin, not permanently gone)\n\nOK = delete files too\nCancel = just untrack, leave files on disk`
-    );
-    const addExclusion = confirm(
-      `Also add these to Import Exclusions?\n\nPrevents an active import list from just re-adding them on its next sync. Cancel to skip this.`
-    );
+    const confirmed = await confirmDialog({
+      title: "Remove items",
+      message: `Remove ${selected.size} item(s) from AoNarr?`,
+      danger: true,
+      options: [
+        { key: "deleteFiles", label: "Also delete their files (moved to the Recycle Bin, not permanently gone)" },
+        { key: "addExclusion", label: "Add to Import Exclusions (so an active import list won't just re-add them)" },
+      ],
+    });
+    if (!confirmed) return;
     const result = await api.post<{ deleted: number; skipped: number }>("/media/bulk/delete", {
       mediaItemIds: Array.from(selected),
-      deleteFiles,
-      addExclusion,
+      deleteFiles: confirmed.values.deleteFiles,
+      addExclusion: confirmed.values.addExclusion,
     });
     setSelected(new Set());
-    alert(`Removed ${result.deleted} item(s)${result.skipped > 0 ? `, ${result.skipped} already gone` : ""}.`);
+    notify.success(`Removed ${result.deleted} item(s)${result.skipped > 0 ? `, ${result.skipped} already gone` : ""}.`);
     load();
     loadStats();
   }

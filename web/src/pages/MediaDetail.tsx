@@ -32,6 +32,8 @@ import { TrashIcon, XIcon, PencilIcon, FolderIcon, EyeIcon, ArrowLeftIcon, Arrow
 import type { Collection, HistoryEvent, MediaInfo, MediaItem, QualityProfile, RootFolder, SearchResult, Tag } from "../types.js";
 import { formatBytes, formatMediaInfo } from "../utils/format.js";
 import { useContentRatings } from "../hooks/useContentRatings.js";
+import { notify } from "../utils/notify.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
 
 /** Maps a recognized external-id provider key to a link builder — unrecognized providers still
  * show as plain text, this is just a convenience for the common ones. */
@@ -804,25 +806,28 @@ export default function MediaDetail() {
     if (!item) return;
     const result = await api.post<{ corrupt: boolean; checked: boolean; reason?: string }>(`/media/${item.id}/check-corrupt`, {});
     if (!result.checked) {
-      alert(result.reason ?? "Nothing to check.");
+      notify.info(result.reason ?? "Nothing to check.");
     } else if (result.corrupt) {
-      alert("This file failed validation and was moved to the Recycle Bin. Marked missing — it'll be picked up by auto-search again.");
+      notify.error("This file failed validation and was moved to the Recycle Bin. Marked missing — it'll be picked up by auto-search again.");
       load();
     } else {
-      alert("File looks fine.");
+      notify.success("File looks fine.");
     }
   }
 
   async function remove() {
     if (!item) return;
-    const deleteFiles = confirm(
-      `Remove "${item.title}" from AoNarr AND move its file(s) to the Recycle Bin?\n\nCancel, then OK on the next prompt, to untrack only and leave files on disk.`
-    );
-    if (!deleteFiles && !confirm(`Remove "${item.title}" from AoNarr? This leaves files on disk untouched.`)) return;
-    const addExclusion = confirm(
-      `Also add "${item.title}" to Import Exclusions?\n\nPrevents an active import list from just re-adding it on its next sync. Cancel to skip this.`
-    );
-    const params = [deleteFiles && "deleteFiles=1", addExclusion && "addExclusion=1"].filter(Boolean).join("&");
+    const confirmed = await confirmDialog({
+      title: "Remove from library",
+      message: `Remove "${item.title}" from AoNarr?`,
+      danger: true,
+      options: [
+        { key: "deleteFiles", label: "Also delete the file(s) (moved to the Recycle Bin, not permanently gone)" },
+        { key: "addExclusion", label: "Add to Import Exclusions (so an active import list won't just re-add it)" },
+      ],
+    });
+    if (!confirmed) return;
+    const params = [confirmed.values.deleteFiles && "deleteFiles=1", confirmed.values.addExclusion && "addExclusion=1"].filter(Boolean).join("&");
     await api.del(`/media/${item.id}${params ? `?${params}` : ""}`);
     navigate("/");
   }

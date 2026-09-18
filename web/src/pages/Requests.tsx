@@ -5,6 +5,8 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { MediaRequest } from "../types.js";
 import { CheckIcon, XIcon } from "../components/ActionIcons.js";
+import { notify } from "../utils/notify.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
 
 export default function Requests() {
   const { auth } = useAuth();
@@ -42,14 +44,15 @@ export default function Requests() {
       if (err instanceof ApiError && err.status === 409 && err.body?.duplicate) {
         const d = err.body.duplicate;
         if (
-          confirm(
-            `"${d.title}${d.year ? ` (${d.year})` : ""}" was already requested by ${d.username}. Submit another request for it anyway?`
-          )
+          await confirmDialog({
+            title: "Already requested",
+            message: `"${d.title}${d.year ? ` (${d.year})` : ""}" was already requested by ${d.username}. Submit another request for it anyway?`,
+          })
         ) {
           await submitRequest(e, true);
         }
       } else {
-        alert((err as Error).message);
+        notify.error((err as Error).message);
       }
     }
   }
@@ -61,11 +64,11 @@ export default function Requests() {
     } catch (err) {
       if (err instanceof ApiError && err.status === 409 && err.body?.duplicates?.length) {
         const names = err.body.duplicates.map((d: { title: string; year: number | null }) => `${d.title}${d.year ? ` (${d.year})` : ""}`).join(", ");
-        if (confirm(`Already in the library as: ${names}. Approve anyway and create a separate entry?`)) {
+        if (await confirmDialog({ title: "Already in library", message: `Already in the library as: ${names}. Approve anyway and create a separate entry?` })) {
           await approve(id, true);
         }
       } else {
-        alert((err as Error).message);
+        notify.error((err as Error).message);
       }
     }
   }
@@ -75,7 +78,7 @@ export default function Requests() {
       await api.post(`/requests/${id}/reject`, {});
       load();
     } catch (err) {
-      alert((err as Error).message);
+      notify.error((err as Error).message);
     }
   }
 
@@ -84,7 +87,7 @@ export default function Requests() {
       await api.del(`/requests/${id}`);
       load();
     } catch (err) {
-      alert((err as Error).message);
+      notify.error((err as Error).message);
     }
   }
 

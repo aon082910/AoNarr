@@ -9,6 +9,8 @@ import type { BlocklistEntry, CustomFormat, DelayProfile, ImportExclusion, Media
 import { formatBytes } from "../utils/format.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { TrashIcon, FolderIcon, ArrowUpIcon, ArrowDownIcon } from "../components/ActionIcons.js";
+import { notify } from "../utils/notify.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
 
 interface FormatScore extends CustomFormat {
   score: number;
@@ -1037,14 +1039,20 @@ export default function Settings() {
   }
 
   async function removeFolder(id: number) {
-    if (!confirm("Delete this root folder?")) return;
-    const deleteMedia = confirm(
-      "Also remove every media item that's in this folder from your library? Choose Cancel to just remove the folder itself — those items stay in your library, just no longer tied to any folder."
-    );
-    let deleteFiles = false;
-    if (deleteMedia) {
-      deleteFiles = confirm("Also delete their files from disk (moved to Recycle Bin)? Choose Cancel to remove them from the library but leave the files alone.");
-    }
+    const confirmed = await confirmDialog({
+      title: "Delete root folder",
+      message: "Delete this root folder?",
+      danger: true,
+      options: [
+        {
+          key: "deleteMedia",
+          label: "Also remove every media item in this folder from the library (otherwise they stay, just untied from any folder)",
+        },
+        { key: "deleteFiles", label: "Also delete their files from disk, moved to Recycle Bin (only applies with the option above)" },
+      ],
+    });
+    if (!confirmed) return;
+    const { deleteMedia, deleteFiles } = confirmed.values;
     const qs = deleteMedia ? `?deleteMedia=1${deleteFiles ? "&deleteFiles=1" : ""}` : "";
     await api.del(`/root-folders/${id}${qs}`);
     load();
