@@ -3,6 +3,30 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 281 — deepen test coverage: importLists.ts's four sync-provider parity gaps
+Continues the deepening phase, moving to `importLists.ts` (Round 270, Trakt/IMDb/Last.fm/TMDB
+list-sync). Applied the same "sibling functions should share the same tested behavior" lens that
+found real gaps in Rounds 279-280: the four `sync*List` functions all share the identical
+try/catch-per-entry resilience shape, an in-library dedup check, an exclusions check, and (where
+applicable) genre filtering — but each function's *own* test coverage of these shared behaviors had
+grown unevenly across the 11 prior rounds this file has passed through. No source changes this
+round — every gap was a real branch that already behaved correctly; no Docker image rebuild needed.
+
+- `tests/importLists.test.ts` — 35 → 42 tests. Genre filtering had only ever been proven
+  end-to-end for TMDB lists (and only via `TMDB_MOVIE_GENRES`, never `TMDB_TV_GENRES` — a TV-only
+  genre id like "Kids" has no entry at all in the movie map, so excluding it only proves something
+  if the *TV* map is what's actually being read); added the equivalent end-to-end proof for Trakt's
+  `entry.genres` and IMDb's CSV `Genres` column, plus a TMDB test that specifically excludes a
+  TV-only genre. The in-library dedup check (`existingTmdbIds`, by TMDB id) was proven for Trakt but
+  never for TMDB despite sharing the identical mechanism, and its own malformed-JSON tolerance (a
+  pre-existing row with corrupt `external_ids`) was untested for either. Last.fm shares IMDb's
+  `findPossibleDuplicates` dedup and the standard `isExclude`-based exclusions check, but had never
+  had either path exercised — only its happy-path adds. Also added a negative-assertion test proving
+  `insertArtistAlbums` never calls `fetchAlbumTracksFor` for an album the provider returned with no
+  `externalId` (the field that gates whether a track fetch is even attempted).
+
+Test count: 1219 → 1226 (89 files, no new files this round).
+
 ## Round 280 — deepen test coverage: downloadClient.ts's three debrid adapters
 Continues the deepening phase, moving to `downloadClient.ts` (Round 274, already yielded one real
 shipped bug — the NULL-byte one — so a second, more careful look felt warranted). Focused on the

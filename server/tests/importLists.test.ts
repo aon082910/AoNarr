@@ -251,6 +251,19 @@ describe("syncImportList — trakt", () => {
     expect(result).toEqual({ added: 0 });
   });
 
+  it("wires entry.genres through to exclude_genres end-to-end (not just passesListFilters in isolation)", async () => {
+    setSetting("traktClientId", "client-1");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [{ movie: { title: "Horror Movie", year: 2024, ids: { tmdb: 9101, trakt: 9 }, genres: ["horror"] } }],
+    }));
+    const list = await insertImportList({ type: "trakt", url: "https://trakt.tv/users/tester/lists/genre-test", exclude_genres: JSON.stringify(["horror"]) });
+
+    const result = await syncImportList(list);
+
+    expect(result).toEqual({ added: 0 });
+  });
+
   it("continues past one malformed entry and still adds the rest", async () => {
     setSetting("traktClientId", "client-1");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
@@ -339,6 +352,17 @@ describe("syncImportList — imdb", () => {
     expect((await db.prepare("SELECT * FROM import_review_items WHERE title = 'Totally Obscure Title'").get())).toBeTruthy();
   });
 
+  it("wires the CSV Genres column through to exclude_genres end-to-end, filtering before ever calling searchMetadata", async () => {
+    const csv = [csvHeader, csvRow({ Title: "Scary Movie", "Title Type": "Movie", Year: "2024", Genres: "Horror" })].join("\n");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, text: async () => csv }));
+    const list = await insertImportList({ type: "imdb", url: "https://www.imdb.com/list/ls000000005/", exclude_genres: JSON.stringify(["horror"]) });
+
+    const result = await syncImportList(list);
+
+    expect(result).toEqual({ added: 0 });
+    expect(searchMetadata).not.toHaveBeenCalled();
+  });
+
   it("skips a row whose title already has a possible duplicate in the library", async () => {
     await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, status) VALUES ('movie','Dune','dune',2021,1,'unknown')`).run();
     const csv = [csvHeader, csvRow({ Title: "Dune", "Title Type": "Movie", Year: "2021" })].join("\n");
@@ -397,6 +421,32 @@ describe("syncImportList — lastfm", () => {
     expect(albums).toHaveLength(1);
     expect(albums[0].title).toBe("Album One");
   });
+
+  it("skips an artist with a possible duplicate already in the library, and a separately-excluded one", async () => {
+    setSetting("lastfmApiKey", "key-1");
+    await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, status) VALUES ('artist','Duplicate Band','duplicate band',1,'unknown')`).run();
+    await db
+      .prepare("INSERT INTO import_exclusions (type, title, year, external_id, external_provider) VALUES ('artist', 'Excluded Band', NULL, 'mbid-excl', 'lastfm')")
+      .run();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ topartists: { artist: [{ name: "Duplicate Band", mbid: "mbid-dup" }, { name: "Excluded Band", mbid: "mbid-excl" }] } }),
+    }));
+
+    const result = await syncImportList(await insertImportList({ type: "lastfm", url: "last.fm/user/tester" }));
+
+    expect(result).toEqual({ added: 0 });
+  });
+
+  it("never fetches tracks for an album the provider returned with no externalId", async () => {
+    setSetting("lastfmApiKey", "key-1");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ topartists: { artist: [{ name: "No Id Band", mbid: "mbid-noid" }] } }) }));
+    fetchArtistAlbumsFor.mockResolvedValue({ provider: "lastfm", albums: [{ title: "No Id Album", releaseDate: null }] });
+
+    await syncImportList(await insertImportList({ type: "lastfm", url: "last.fm/user/tester" }));
+
+    expect(fetchAlbumTracksFor).not.toHaveBeenCalled();
+  });
 });
 
 describe("syncImportList — tmdb", () => {
@@ -451,6 +501,52 @@ describe("syncImportList — tmdb", () => {
 
     const row = (await db.prepare("SELECT * FROM media_items WHERE title = 'Heuristic Show'").get()) as any;
     expect(row.type).toBe("series");
+  });
+
+  it("skips a movie and a series already in the library, matched by tmdb id via existingTmdbIds", async () => {
+    setSetting("tmdbApiKey", "key-1");
+    await db.prepare(`INSERT INTO media_items (type, title, sort_title, external_ids, monitored, status) VALUES ('movie','Old TMDB Movie','old', ?, 1, 'unknown')`).run(JSON.stringify({ tmdb: "9001" }));
+    await db.prepare(`INSERT INTO media_items (type, title, sort_title, external_ids, monitored, status) VALUES ('series','Old TMDB Show','old', ?, 1, 'unknown')`).run(JSON.stringify({ tmdb: "9002" }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        items: [
+          { media_type: "movie", id: 9001, title: "Old TMDB Movie", release_date: "2020-01-01" },
+          { media_type: "tv", id: 9002, name: "Old TMDB Show", first_air_date: "2020-01-01" },
+        ],
+      }),
+    }));
+
+    const result = await syncImportList(await insertImportList({ type: "tmdb", url: "https://www.themoviedb.org/list/3" }));
+
+    expect(result).toEqual({ added: 0 });
+  });
+
+  it("excludes a TV-only genre via TMDB_TV_GENRES, not just the movie genre map", async () => {
+    setSetting("tmdbApiKey", "key-1");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      // 10762 = "Kids" -- a TV-only genre id with no equivalent entry in TMDB_MOVIE_GENRES.
+      json: async () => ({ items: [{ media_type: "tv", id: 9201, name: "Kids Show", first_air_date: "2020-01-01", genre_ids: [10762] }] }),
+    }));
+    const list = await insertImportList({ type: "tmdb", url: "https://www.themoviedb.org/list/4", exclude_genres: JSON.stringify(["kids"]) });
+
+    const result = await syncImportList(list);
+
+    expect(result).toEqual({ added: 0 });
+  });
+
+  it("skips a row with malformed external_ids JSON in the dedup check rather than crashing the sync", async () => {
+    setSetting("tmdbApiKey", "key-1");
+    await db.prepare(`INSERT INTO media_items (type, title, sort_title, external_ids, monitored, status) VALUES ('movie','Malformed','malformed','{not json',1,'unknown')`).run();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [{ media_type: "movie", id: 9301, title: "New After Malformed", release_date: "2024-01-01" }] }),
+    }));
+
+    const result = await syncImportList(await insertImportList({ type: "tmdb", url: "https://www.themoviedb.org/list/5" }));
+
+    expect(result).toEqual({ added: 1 });
   });
 });
 
