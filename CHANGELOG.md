@@ -3,6 +3,22 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 293 — encryption.ts: proving key persistence on disk, not just in-process round-trips
+Continued down the fresh ratio-scan list. `encryption.ts` (0.72, 93 lines) already had solid
+round-trip/mismatch/reload coverage, but every existing test only proved behavior WITHIN one
+process — `cachedKey` masks whatever actually landed on disk, so nothing previously confirmed the
+generated key FILE itself is valid, which is what actually matters for surviving a restart or a
+database restore onto a different config volume (the exact scenario this file's own module comment
+is written around). Added a test that deletes the key file, triggers creation via `encryptValue`,
+and reads the file back directly to confirm it holds a genuine 64-hex-character key rather than
+just something that happens to round-trip in memory. Also added the corrupted-key-file branch — a
+key file that EXISTS but fails the hex-format check takes a different code path (falls through
+normally, no exception) than a missing file (caught via `try`/`catch`) though both end up
+regenerating a fresh key; and `decryptValue`'s behavior on a truncated/malformed encrypted value
+(not just a wrong-key one) — a genuinely different real-world failure mode, e.g. settings-table
+corruption, still throws rather than producing something undefined. No source bug — every branch
+already worked correctly. Full suite: 1362 → 1365 tests, 89 files.
+
 ## Round 292 — recommendations.ts: the series pipeline and a documented-but-unproven dedup guard
 Continued down the fresh ratio-scan list. `recommendations.ts` (0.67, 309 lines) had reasonable
 movie-recommendation coverage, but `recommendSeries` — TMDB's TV-shaped sibling of the well-tested

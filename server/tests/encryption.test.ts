@@ -64,4 +64,44 @@ describe("encryption", () => {
     const encrypted = encryptValue("under-the-new-key");
     expect(decryptValue(encrypted)).toBe("under-the-new-key");
   });
+
+  it("creates a valid, persisted 64-hex-character key file on first use, not just an in-memory value", async () => {
+    // Every prior test only proves encrypt/decrypt round-trips WITHIN the same process, where
+    // cachedKey masks whatever actually landed on disk. A real restart re-reads the file, so the
+    // file's own content is what actually matters for persistence across restarts/backups.
+    const { encryptValue, reloadEncryptionKey } = await import("../src/services/encryption.js");
+    const keyPath = path.join(configDir, "encryption.key");
+    fs.rmSync(keyPath, { force: true });
+    reloadEncryptionKey();
+
+    encryptValue("triggers key creation");
+
+    const written = fs.readFileSync(keyPath, "utf-8").trim();
+    expect(written).toMatch(/^[0-9a-f]{64}$/i);
+  });
+
+  it("regenerates the key when the on-disk file is corrupted/malformed, rather than crashing", async () => {
+    // Distinct code path from "no file at all" (which goes through the catch block below) --
+    // readFileSync succeeds here, the regex just fails, so it falls through to the same
+    // key-generation logic without ever throwing.
+    const { encryptValue, decryptValue, reloadEncryptionKey } = await import("../src/services/encryption.js");
+    const keyPath = path.join(configDir, "encryption.key");
+    fs.writeFileSync(keyPath, "not-a-valid-hex-key", { mode: 0o600 });
+    reloadEncryptionKey();
+
+    const encrypted = encryptValue("survives a corrupted key file");
+    expect(decryptValue(encrypted)).toBe("survives a corrupted key file");
+
+    const regenerated = fs.readFileSync(keyPath, "utf-8").trim();
+    expect(regenerated).toMatch(/^[0-9a-f]{64}$/i);
+    expect(regenerated).not.toBe("not-a-valid-hex-key");
+  });
+
+  it("decryptValue throws on a truncated/malformed encrypted value, not just a wrong-key one", async () => {
+    const { decryptValue } = await import("../src/services/encryption.js");
+    // base64 for "tooshort" -- far too little data to contain a real 12-byte iv + 16-byte auth
+    // tag + ciphertext, exercising a genuinely different failure mode than the key-mismatch test
+    // above (a corrupted settings-table value, not a lost/rotated key).
+    expect(() => decryptValue("enc1:dG9vc2hvcnQ=")).toThrow();
+  });
 });
