@@ -52,6 +52,17 @@ export function ArrowLeftIcon() {
   );
 }
 
+/** "Open"/"go to" a row's own detail page — the forward-navigation pairing for ArrowLeftIcon's
+ * "back". */
+export function ArrowRightIcon() {
+  return (
+    <Icon>
+      <line x1="5" y1="12" x2="19" y2="12" />
+      <polyline points="12 5 19 12 12 19" />
+    </Icon>
+  );
+}
+
 export function ChevronLeftIcon() {
   return (
     <Icon>

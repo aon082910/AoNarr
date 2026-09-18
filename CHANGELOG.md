@@ -3,6 +3,37 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 300 — System.tsx: icon buttons, refined by a "does this icon read on its own" test
+`System.tsx` (27 buttons) mixes both shapes seen so far — some tabs (Backups) use
+`SettingsSectionTiles`, others (Overview/Health/Maintenance/Insights/Logs) use plain tables and
+toolbar rows closer to `LibraryType.tsx`'s shape. Converting it surfaced a sharper version of the
+rule Round 299 established: a button converts when it's either (a) part of a genuine multi-button
+row/pairing, or (b) a LONE button whose icon is already an established, unambiguous convention
+elsewhere in this rollout (Refresh/Download/Delete) — since users have already learned that icon's
+meaning. A lone button with a RARE, specific action and no established icon (Check for updates, Run
+archival now, Load reputation stats, Run validation) stays text even when nothing else is nearby,
+since forcing an icon there would just mean "guess, or hover for the tooltip every time."
+
+Converted: Health's lone "Refresh" (established icon, safe alone), Backups' "Download backup"/
+"Restore from backup..." pairing (Download/Inbox icons — Inbox since restoring is literally
+uploading a backup file, matching the existing Manual-Import convention) and its "Browse..."
+button, two "Open" row-actions in result tables (a new `ArrowRightIcon` added to `ActionIcons.tsx`,
+pairing with the existing `ArrowLeftIcon`), Cleanup Suggestions' row-level "Delete", and the Logs
+tab's "Load logs"/"Refresh"-toggling button + "Download .log" (a real toolbar row, select+input+
+buttons together) plus Log Files' own lone "Refresh" and row-level "Download".
+
+Stayed text: the Maintenance tab's 6-button cluster (Run archival now / Scan library for existing
+files / Scan for orphaned files / Full orphaned-file scan / Run Trakt sync now / Run Plex watchlist
+sync now) — six mutually-confusable, rare, high-consequence actions bunched together with no clean
+1:1 icon mapping, the same "label carries essential distinguishing info" reasoning applied
+repeatedly this rollout, just at a larger cluster size than before. "Find unmonitored + no file"/
+"Find duplicate files" (both would need the same Search icon, indistinguishable from each other).
+"Delete all {N}" (the count in the label is meaningful safety information an icon would discard).
+
+Verified live against the real running server: backup/restore icons render with correct danger
+styling, the Logs tab's button correctly toggles its aria-label between "Load logs" and "Refresh
+logs" as state changes, real log data loads and displays correctly. No regressions.
+
 ## Round 299 — Settings.tsx: icon buttons where they actually fit
 Continued the Phase 2 rollout, but `Settings.tsx` (41 buttons in the original survey) turned out to
 need a genuinely different treatment than `Activity.tsx`/`MediaDetail.tsx`/`LibraryType.tsx`. Those

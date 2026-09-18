@@ -6,6 +6,8 @@ import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { formatBytes } from "../utils/format.js";
+import { RotateCcwIcon, DownloadIcon, InboxIcon } from "../components/NavIcons.js";
+import { TrashIcon, FolderIcon, ArrowRightIcon } from "../components/ActionIcons.js";
 
 interface DiskSpaceEntry {
   path: string;
@@ -740,8 +742,8 @@ export default function System() {
           <p style={{ marginTop: 12 }}>
             <strong>{health.stuckQueue.length}</strong> queue item(s) stuck longer than{" "}
             {health.stuckQueueThresholdHours}h · <strong>{health.pendingRequests}</strong> pending request(s)
-            <button className="secondary" style={{ marginLeft: 10 }} onClick={loadHealth}>
-              Refresh
+            <button type="button" className="icon-button" style={{ marginLeft: 10, width: 26, height: 26 }} onClick={loadHealth} title="Refresh" aria-label="Refresh">
+              <RotateCcwIcon />
             </button>
           </p>
           {health.stuckQueue.length > 0 && (
@@ -831,8 +833,8 @@ export default function System() {
                         {u.cutoff} <span style={{ color: "var(--muted)" }}>({u.profileName})</span>
                       </td>
                       <td>
-                        <button className="secondary" onClick={() => navigate(`/media/${u.mediaItemId}`)}>
-                          Open
+                        <button type="button" className="icon-button" onClick={() => navigate(`/media/${u.mediaItemId}`)} title="Open" aria-label="Open">
+                          <ArrowRightIcon />
                         </button>
                       </td>
                     </tr>
@@ -866,15 +868,18 @@ export default function System() {
                   need re-entering.
                 </p>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={downloadBackup} disabled={backingUp} className="secondary">
-                    {backingUp ? "Preparing..." : "Download backup"}
+                  <button type="button" className="icon-button" onClick={downloadBackup} disabled={backingUp} title={backingUp ? "Preparing..." : "Download backup"} aria-label="Download backup">
+                    <DownloadIcon />
                   </button>
                   <button
+                    type="button"
+                    className="icon-button danger"
                     onClick={() => restoreInputRef.current?.click()}
                     disabled={restoring}
-                    className="danger"
+                    title={restoring ? "Restoring..." : "Restore from backup..."}
+                    aria-label="Restore from backup"
                   >
-                    {restoring ? "Restoring..." : "Restore from backup..."}
+                    <InboxIcon />
                   </button>
                   <input
                     ref={restoreInputRef}
@@ -919,8 +924,8 @@ export default function System() {
                     onBlur={(e) => saveSetting("backupDir", e.target.value)}
                     style={{ flex: 1 }}
                   />
-                  <button type="button" className="secondary" onClick={() => setShowBackupDirPicker(true)}>
-                    Browse...
+                  <button type="button" className="icon-button" onClick={() => setShowBackupDirPicker(true)} title="Browse..." aria-label="Browse for a folder">
+                    <FolderIcon />
                   </button>
                 </div>
                 {showBackupDirPicker && (
@@ -1241,8 +1246,8 @@ export default function System() {
                         <td>{i.type}</td>
                         <td>{i.addedAt}</td>
                         <td>
-                          <button className="danger" onClick={() => deleteUnmonitoredNoFile(i.id)}>
-                            Delete
+                          <button type="button" className="icon-button danger" onClick={() => deleteUnmonitoredNoFile(i.id)} title="Delete" aria-label="Delete">
+                            <TrashIcon />
                           </button>
                         </td>
                       </tr>
@@ -1365,8 +1370,8 @@ export default function System() {
                     <td>{m.label}</td>
                     <td>{m.path}</td>
                     <td>
-                      <button className="secondary" onClick={() => navigate(`/media/${m.mediaItemId}`)}>
-                        Open
+                      <button type="button" className="icon-button" onClick={() => navigate(`/media/${m.mediaItemId}`)} title="Open" aria-label="Open">
+                        <ArrowRightIcon />
                       </button>
                     </td>
                   </tr>
@@ -1458,12 +1463,12 @@ export default function System() {
             onKeyDown={(e) => e.key === "Enter" && loadLogs()}
             style={{ width: 220 }}
           />
-          <button className="secondary" onClick={loadLogs} disabled={logsLoading}>
-            {logsLoading ? "Loading..." : logs ? "Refresh" : "Load logs"}
+          <button type="button" className="icon-button" onClick={loadLogs} disabled={logsLoading} title={logsLoading ? "Loading..." : logs ? "Refresh" : "Load logs"} aria-label={logs ? "Refresh logs" : "Load logs"}>
+            <RotateCcwIcon />
           </button>
           {logs && (
-            <button className="secondary" onClick={downloadLogs}>
-              Download .log
+            <button type="button" className="icon-button" onClick={downloadLogs} title="Download .log" aria-label="Download .log">
+              <DownloadIcon />
             </button>
           )}
         </div>
@@ -1503,8 +1508,8 @@ export default function System() {
           Persistent daily log files on disk, kept for 7 days — unlike the in-memory view above,
           these survive a container restart.
         </p>
-        <button className="secondary" onClick={loadLogFiles}>
-          Refresh
+        <button type="button" className="icon-button" onClick={loadLogFiles} title="Refresh" aria-label="Refresh">
+          <RotateCcwIcon />
         </button>
         {logFiles && logFiles.length === 0 && <p className="empty">No log files yet.</p>}
         {logFiles && logFiles.length > 0 && (
@@ -1528,8 +1533,8 @@ export default function System() {
                   <td>{formatBytes(f.sizeBytes)}</td>
                   <td>{new Date(f.modifiedAt).toLocaleString()}</td>
                   <td>
-                    <button className="secondary" onClick={() => downloadFile(`/system/log-files/${f.name}`, f.name)}>
-                      Download
+                    <button type="button" className="icon-button" onClick={() => downloadFile(`/system/log-files/${f.name}`, f.name)} title="Download" aria-label="Download">
+                      <DownloadIcon />
                     </button>
                   </td>
                 </tr>
