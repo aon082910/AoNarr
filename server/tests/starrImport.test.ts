@@ -3,16 +3,25 @@ import { setupTestDb } from "./helpers/testDb.js";
 
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let fetchRadarrMovies: (typeof import("../src/services/starrImport.js"))["fetchRadarrMovies"];
+let importMoviesFromRadarr: (typeof import("../src/services/starrImport.js"))["importMoviesFromRadarr"];
+let fetchSonarrSeries: (typeof import("../src/services/starrImport.js"))["fetchSonarrSeries"];
+let importSeriesFromSonarr: (typeof import("../src/services/starrImport.js"))["importSeriesFromSonarr"];
 let importArtistsFromLidarr: (typeof import("../src/services/starrImport.js"))["importArtistsFromLidarr"];
+let importAuthorsFromReadarr: (typeof import("../src/services/starrImport.js"))["importAuthorsFromReadarr"];
 let rootFolderId: number;
+let bookRootFolderId: number;
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
-  ({ fetchRadarrMovies, importArtistsFromLidarr } = await import("../src/services/starrImport.js"));
+  ({ fetchRadarrMovies, importMoviesFromRadarr, fetchSonarrSeries, importSeriesFromSonarr, importArtistsFromLidarr, importAuthorsFromReadarr } =
+    await import("../src/services/starrImport.js"));
   // root_folder_id is a real FK (ON DELETE SET NULL) — a literal like 1 only works if a root
   // folder with that id actually exists.
   rootFolderId = Number(
     (await db.prepare("INSERT INTO root_folders (path, media_type) VALUES ('/music', 'artist')").run()).lastInsertRowid
+  );
+  bookRootFolderId = Number(
+    (await db.prepare("INSERT INTO root_folders (path, media_type) VALUES ('/books', 'author')").run()).lastInsertRowid
   );
 });
 
@@ -217,5 +226,128 @@ describe("importArtistsFromLidarr", () => {
     const album = (await db.prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND title = 'Downloaded Album'").get(artistId)) as any;
     expect(album.has_file).toBe(1);
     expect(album.file_path).toBe("/music/Never Reset Artist/Downloaded Album/01.flac");
+  });
+
+  it("uses the FIRST track file's directory as an album's folder path when Lidarr reports more than one", async () => {
+    mockLidarr({
+      artists: [{ id: 7, artistName: "Multi File Artist" }],
+      albumsByArtist: { 7: [{ id: 70, artistId: 7, title: "Multi File Album" }] },
+      trackFilesByArtist: {
+        7: [
+          { id: 700, albumId: 70, path: "/music/Multi File Artist/Multi File Album/01.flac" },
+          { id: 701, albumId: 70, path: "/music/Multi File Artist/Multi File Album/02.flac" },
+        ],
+      },
+    });
+
+    await importArtistsFromLidarr("http://lidarr:8686", "key", rootFolderId);
+
+    const album = (await db.prepare("SELECT * FROM sub_items WHERE title = 'Multi File Album'").get()) as any;
+    expect(album.file_path).toBe("/music/Multi File Artist/Multi File Album"); // derived from the first file only
+  });
+});
+
+describe("importMoviesFromRadarr", () => {
+  it("fetches from Radarr then delegates to the same match-or-create logic proven for media-server imports", async () => {
+    mockStarrApi({ "/api/v3/movie": [{ title: "Radarr Movie", tmdbId: 500, hasFile: true, movieFile: { path: "/data/movies/Radarr Movie/movie.mkv" } }] });
+
+    const result = await importMoviesFromRadarr("http://radarr:7878", "key", rootFolderId);
+
+    expect(result).toEqual({ matched: 0, created: 1, skipped: 0 });
+    const row = (await db.prepare("SELECT * FROM media_items WHERE title = 'Radarr Movie'").get()) as any;
+    expect(row).toMatchObject({ path: "/data/movies/Radarr Movie/movie.mkv", has_file: 1 });
+  });
+});
+
+describe("fetchSonarrSeries", () => {
+  it("maps a series and its per-series episodes/files, resolving a real path only for a downloaded episode", async () => {
+    mockStarrApi({
+      "/api/v3/series": [{ id: 1, title: "Sonarr Show", year: 2020, overview: "A show", tvdbId: 900 }],
+      "episode?seriesId=1": [
+        { seriesId: 1, seasonNumber: 1, episodeNumber: 1, title: "Pilot", hasFile: true, episodeFileId: 10 },
+        { seriesId: 1, seasonNumber: 1, episodeNumber: 2, title: "Ep 2", hasFile: false },
+      ],
+      "episodefile?seriesId=1": [{ id: 10, path: "/tv/Sonarr Show/S01E01.mkv" }],
+    });
+
+    const { shows, episodes } = await fetchSonarrSeries("http://sonarr:8989", "key");
+
+    expect(shows.get("1")).toEqual({ title: "Sonarr Show", year: 2020, overview: "A show", posterUrl: null, externalIds: { tvdb: "900" } });
+    expect(episodes).toEqual([
+      { showId: "1", path: "/tv/Sonarr Show/S01E01.mkv", seasonNumber: 1, episodeNumber: 1, title: "Pilot", overview: null },
+      { showId: "1", path: null, seasonNumber: 1, episodeNumber: 2, title: "Ep 2", overview: null },
+    ]);
+  });
+
+  it("fetches every series independently (the N+1 per-series pattern) and skips a title-less one", async () => {
+    mockStarrApi({
+      "/api/v3/series": [{ id: 1, title: "Show One" }, { id: 2, title: "" }, { id: 3, title: "Show Three" }],
+      "episode?seriesId=1": [{ seriesId: 1, seasonNumber: 1, episodeNumber: 1 }],
+      "episodefile?seriesId=1": [],
+      "episode?seriesId=3": [{ seriesId: 3, seasonNumber: 1, episodeNumber: 1 }],
+      "episodefile?seriesId=3": [],
+    });
+
+    const { shows, episodes } = await fetchSonarrSeries("http://sonarr:8989", "key");
+
+    expect(Array.from(shows.keys()).sort()).toEqual(["1", "3"]); // series 2 (no title) skipped entirely
+    expect(episodes.map((e) => e.showId)).toEqual(["1", "3"]);
+  });
+});
+
+describe("importSeriesFromSonarr", () => {
+  it("fetches from Sonarr then delegates to the same match-or-create logic proven for media-server imports", async () => {
+    mockStarrApi({
+      "/api/v3/series": [{ id: 11, title: "Sonarr Import Show" }],
+      "episode?seriesId=11": [{ seriesId: 11, seasonNumber: 1, episodeNumber: 1, hasFile: true, episodeFileId: 110 }],
+      "episodefile?seriesId=11": [{ id: 110, path: "/tv/Sonarr Import Show/S01E01.mkv" }],
+    });
+
+    const result = await importSeriesFromSonarr("http://sonarr:8989", "key", "series", rootFolderId);
+
+    expect(result).toEqual({ showsMatched: 0, showsCreated: 1, episodesMatched: 0, episodesCreated: 1, episodesSkipped: 0 });
+  });
+});
+
+describe("importAuthorsFromReadarr", () => {
+  it("creates a new author and book when nothing matches, using goodreads as the external provider", async () => {
+    mockStarrApi({
+      "/api/v1/author": [{ id: 1, authorName: "New Author", foreignAuthorId: "gr-1" }],
+      "book?authorId=1": [{ id: 10, authorId: 1, title: "New Book", foreignBookId: "gr-book-1" }],
+      "bookfile?authorId=1": [{ id: 100, bookId: 10, path: "/books/New Author/New Book.epub" }],
+    });
+
+    const result = await importAuthorsFromReadarr("http://readarr:8787", "key", bookRootFolderId);
+
+    expect(result).toEqual({ parentsMatched: 0, parentsCreated: 1, childrenMatched: 0, childrenCreated: 1, childrenSkipped: 0 });
+    const author = (await db.prepare("SELECT * FROM media_items WHERE title = 'New Author'").get()) as any;
+    expect(author.type).toBe("author");
+    expect(JSON.parse(author.external_ids)).toEqual({ goodreads: "gr-1" });
+    const book = (await db.prepare("SELECT * FROM sub_items WHERE media_item_id = ?").get(author.id)) as any;
+    expect(book).toMatchObject({ title: "New Book", external_provider: "goodreads", external_id: "gr-book-1", file_path: "/books/New Author/New Book.epub", has_file: 1 });
+  });
+
+  it("matches an existing author by external id even when the name differs (the same resolveParent logic Lidarr already proves)", async () => {
+    const existingId = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, monitored, has_file, status, external_ids) VALUES ('author', 'Old Author Name', 'x', 1, 0, 'unknown', ?)`
+          )
+          .run(JSON.stringify({ goodreads: "gr-existing" }))
+      ).lastInsertRowid
+    );
+    mockStarrApi({
+      "/api/v1/author": [{ id: 2, authorName: "Renamed Author", foreignAuthorId: "gr-existing" }],
+      "book?authorId=2": [{ id: 20, authorId: 2, title: "Some Book" }], // needed for resolveParent to run at all
+      "bookfile?authorId=2": [],
+    });
+
+    const result = await importAuthorsFromReadarr("http://readarr:8787", "key", bookRootFolderId);
+
+    expect(result.parentsMatched).toBe(1);
+    expect(result.parentsCreated).toBe(0);
+    const row = (await db.prepare("SELECT title FROM media_items WHERE id = ?").get(existingId)) as any;
+    expect(row.title).toBe("Old Author Name"); // matching never renames the existing row
   });
 });

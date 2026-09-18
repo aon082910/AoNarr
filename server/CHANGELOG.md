@@ -3,6 +3,33 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 287 — starrImport.ts: 3 of 6 exported functions had zero coverage
+Last candidate from the Round 284 ratio scan. `starrImport.ts` (468 lines) migrates an existing
+Radarr/Sonarr/Lidarr/Readarr library into AoNarr — 6 exported functions, one pair per *Starr app.
+Only `fetchRadarrMovies` (partially) and `importArtistsFromLidarr` (thoroughly, from an earlier
+round) had tests; `importMoviesFromRadarr`, `fetchSonarrSeries`, `importSeriesFromSonarr`, and
+`importAuthorsFromReadarr` — more than half the file's public surface — had never been exercised
+at all. No source changes; every branch worked correctly once exercised.
+
+- `tests/starrImport.test.ts` — 7 → 17 tests. `fetchSonarrSeries` gets direct coverage of its own
+  real logic (previously completely untested): mapping a series plus its per-series episodes/files
+  (Sonarr's v3 API has no bulk endpoint, so this is an N+1-per-series fetch — proven with two
+  independent series in one call), resolving a real file path only for an episode Sonarr reports as
+  downloaded, and skipping a title-less series entirely. `importMoviesFromRadarr`/
+  `importSeriesFromSonarr` each get one delegation-proof test — the shared match-or-create logic
+  they call into (`importMovieItems`/`importSeriesData`) is already thoroughly proven by
+  mediaServerImport.test.ts, so these just confirm the fetch-then-delegate wiring itself works.
+  `importAuthorsFromReadarr` — the single most under-tested app in the file — gets parity with
+  Lidarr's own treatment: a new author+book creation test (confirming the `goodreads` external-
+  provider wiring specifically, Readarr's own detail) and an existing-author-matched-by-external-id
+  test; `importCollectionData`'s deeper branches (skip-by-known-path-tail, COALESCE metadata fill,
+  never-downgrading a downloaded child) are shared code already exhaustively proven via Lidarr, so
+  they aren't re-proven a second time for Readarr specifically. Also added one more edge case to
+  the existing `importArtistsFromLidarr` coverage: when Lidarr reports more than one track file for
+  an album, only the *first* one's directory is used as the album's folder path.
+
+Test count: 1320 → 1327 (89 files, no new files this round).
+
 ## Round 286 — duplicateCheck.ts: mergeMediaItems's less-common branches, and the scheduled job
 Next candidate from the Round 284 ratio scan. Unlike the last three rounds, `duplicateCheck.ts`'s
 existing 8 tests already covered real orchestrator logic (not just pure helpers) — `findDuplicateGroups`,
