@@ -3,6 +3,47 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 322 — six more bugs from a solo deep-dive on the next-largest pages
+
+Rounds 319-321 bundled `LibraryType.tsx` (1765 lines) and `System.tsx` (1628 lines) with 7-8 other
+files per review agent — the same under-coverage risk that made `Settings.tsx`/`MediaDetail.tsx`
+worth a dedicated pass in Round 321. Gave these two the same solo treatment, checking the full set
+of bug classes found this session (dead toggle options, raw/duplicate values, inconsistent
+clickability, positional references, grammar), plus a bundled check on three mid-size pages. Six
+more confirmed:
+
+- `LibraryType.tsx`'s Poster info/Overview info/Columns menu offered "Studio" on every library type,
+  but `media_items.studio` is only ever populated for movies (TMDB) and adult (ThePornDB) —
+  `libraryScan.ts`'s refresh path gates the studio-fetch on `type === "movie"` specifically, and no
+  other type's search/refresh path ever writes it. Same class of bug as Round 317's Quality/Path/
+  Size-on-disk fix; added a `STUDIO_FIELD_TYPES` allow-list (movie/adult, plus PPV since it can pick
+  one up via a rare manual TMDB-id paste even though normal search never sets one).
+- `LibraryType.tsx`'s Poster/Overview views duplicated the monitored state: the MonitorToggle icon
+  already overlaid on every poster/thumbnail shows monitored/unmonitored regardless of the Poster
+  info toggle, but the "Monitored" field's suppression only blanked itself for *monitored* items —
+  an unmonitored item still printed a redundant plain-text "unmonitored" right next to the icon (and,
+  when also missing, next to the "Unmonitored" banner too). "Status" already got full suppression for
+  the identical reason (Round 318) — extended the same treatment to "monitored", and removed the now
+  provably-dead `fieldValue()` branches for both fields (every caller special-cases them to a badge/
+  icon before ever reaching that function).
+- `System.tsx` had three tables (Disk Space, Cleanup Suggestions' "unmonitored + no file" list, and
+  the "Leaving Soon" upcoming-archivals list) printing the raw internal media-type key ("series",
+  "artist", "rom", ...) in their Type column instead of the friendly label ("TV Shows", "Music",
+  "ROMs") — the component already loads the key→label mapping via `useMediaTypes()` for a filter
+  dropdown elsewhere in the same file, just never applied it to these three tables.
+- `Activity.tsx`'s Queue table printed the raw lowercase status enum ("downloading", "completed", ...)
+  next to its status icon, while the same file already does the correct thing for the History
+  table's event types (`TIMELINE_LABELS`) and protocol column (`PROTOCOL_LABELS`) a few lines away —
+  added the equivalent `QUEUE_STATUS_LABELS` map.
+
+Verified: `npx tsc --noEmit` clean. Live-verified every fix against the real, rebuilt server: the
+Studio option confirmed present on Movies and absent on TV Shows; toggling a real movie unmonitored
+via the API confirmed the poster sub-line no longer duplicates "unmonitored" next to the banner;
+the same movie, made unmonitored-with-no-file, showed "Movies" (not "movie") in Cleanup Suggestions;
+a fixture queue row with `status='completed'` showed "Completed" (not "completed") in the Activity
+Queue table. All test fixtures (monitored-state changes, the queue row) were reverted/deleted
+afterward.
+
 ## Round 321 — copy sweep, part 2: more dangling cross-tab/cross-modal references
 
 Follow-up to Round 320: pulled every remaining "above"/"below" occurrence in the two largest, most

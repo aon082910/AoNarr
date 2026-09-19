@@ -1150,7 +1150,7 @@ export default function System() {
                   }).map((c) => (
                     <tr key={`${c.mediaItemId}-${c.filePath}`}>
                       <td>{c.title}</td>
-                      <td>{c.type}</td>
+                      <td>{mediaTypes.find((t) => t.key === c.type)?.label ?? c.type}</td>
                       <td>{new Date(c.scheduledFor).toLocaleDateString()}</td>
                     </tr>
                   ))}
@@ -1314,7 +1314,7 @@ export default function System() {
                           {i.title}
                           {i.year ? ` (${i.year})` : ""}
                         </td>
-                        <td>{i.type}</td>
+                        <td>{mediaTypes.find((t) => t.key === i.type)?.label ?? i.type}</td>
                         <td>{i.addedAt}</td>
                         <td>
                           <button type="button" className="icon-button danger" onClick={() => deleteUnmonitoredNoFile(i.id)} title="Delete" aria-label="Delete">
@@ -1480,7 +1480,7 @@ export default function System() {
             }).map((d, idx) => (
               <tr key={idx}>
                 <td>{d.path}</td>
-                <td>{d.mediaType}</td>
+                <td>{mediaTypes.find((t) => t.key === d.mediaType)?.label ?? d.mediaType}</td>
                 <td>{formatBytes(d.freeBytes)}</td>
                 <td>{formatBytes(d.totalBytes)}</td>
                 <td>

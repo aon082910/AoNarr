@@ -71,6 +71,18 @@ const DEFAULT_POSTER_FIELDS: ExtraField[] = ["year", "status", "monitored"];
  * nothing, since fieldValue() always returns "" for them there. */
 const SINGLE_SHAPE_ONLY_FIELDS = new Set(["quality", "path", "sizeOnDisk"]);
 
+/** `media_items.studio` is only ever populated for movies (TMDB's first-listed production company)
+ * and adult (ThePornDB's site name) — server/src/services/libraryScan.ts's refresh path gates its
+ * studio-fetch on `type === "movie"` specifically, and no other type's search/refresh path ever
+ * writes it (ppv can pick one up via a manual TMDB-id paste, but never through normal search or the
+ * refresh button, so it's excluded here too — same "never reliably populated" bar as the others).
+ * Same class of bug as SINGLE_SHAPE_ONLY_FIELDS above: offering "Studio" as a toggle on every other
+ * type looked like a real option but always rendered empty. PPV is included too — it can pick up a
+ * studio via a manual TMDB-id paste even though normal search/refresh never sets one, so hiding the
+ * option there would bury real data on the rare item that has it, worse than an occasionally-empty
+ * toggle. */
+const STUDIO_FIELD_TYPES = new Set(["movie", "adult", "ppv"]);
+
 /** item.releaseDate is a date-only string ("2026-09-20") — new Date(str) parses that as UTC
  * midnight, which shifts the Unreleased/Missing boundary by the viewer's UTC offset (the same
  * class of bug already fixed in Calendar.tsx/Dashboard.tsx). Compares local calendar days instead. */
@@ -126,10 +138,12 @@ function getByPath(obj: any, path: string): unknown {
   return path.split(".").reduce((acc: any, key) => (acc == null ? undefined : acc[key]), obj);
 }
 
+// "status" and "monitored" are never passed here — every caller (Poster/Overview's field list,
+// Table's column renderer) special-cases both to a styled badge/MonitorToggle before reaching this
+// function, since a plain-text rendering of either would just duplicate what that badge/icon
+// already shows.
 function fieldValue(item: MediaItem, field: ExtraField, customColumns: CustomColumn[]): string {
   if (field === "year") return item.year ? String(item.year) : "";
-  if (field === "status") return posterBanner(item).cls;
-  if (field === "monitored") return item.monitored ? "monitored" : "unmonitored";
   if (field === "quality") return item.quality ?? "";
   if (field === "contentRating") return item.contentRating ?? "";
   if (field === "added") return new Date(item.addedAt).toLocaleDateString();
@@ -676,7 +690,11 @@ export function LibraryItemGrid({
 
   const customColumnsForType = customColumns.filter((c) => !c.mediaType || c.mediaType === type);
   const allFieldKeys: ExtraField[] = [
-    ...Object.keys(EXTRA_FIELD_LABELS).filter((f) => typeInfo?.shape === "single" || !SINGLE_SHAPE_ONLY_FIELDS.has(f)),
+    ...Object.keys(EXTRA_FIELD_LABELS).filter((f) => {
+      if (SINGLE_SHAPE_ONLY_FIELDS.has(f) && typeInfo?.shape !== "single") return false;
+      if (f === "studio" && !STUDIO_FIELD_TYPES.has(type)) return false;
+      return true;
+    }),
     ...customColumnsForType.map((c) => `custom:${c.id}`),
   ];
   function fieldLabel(field: ExtraField): string {
@@ -1429,12 +1447,17 @@ export function LibraryItemGrid({
                 <div className="title">{item.title}</div>
                 <div className="sub">
                   {allFieldKeys
-                    // "status" is deliberately excluded here even when selected in Poster info — the
-                    // colored poster-banner above already shows Downloaded/Missing/etc. at a glance;
-                    // repeating it as plain text underneath was pure duplication. Overview view's own
-                    // badge (below) needs the identical exclusion for the identical reason.
-                    .filter((f) => posterFields.has(f) && f !== "status")
-                    .map((f) => (f === "monitored" && item.monitored ? "" : fieldValue(item, f, customColumnsForType)))
+                    // "status" and "monitored" are deliberately excluded here even when selected in
+                    // Poster info — the colored poster-banner already shows Downloaded/Missing/etc.
+                    // at a glance, and the MonitorToggle icon overlaid on the poster already shows
+                    // monitored/unmonitored regardless of this field list; repeating either as plain
+                    // text underneath was pure duplication (previously only "status" got this
+                    // treatment — "monitored" only blanked itself for monitored items, so an
+                    // unmonitored item's plain-text "unmonitored" duplicated the same banner's
+                    // "Unmonitored" label). Overview view's own badge+icon (below) need the identical
+                    // exclusion for the identical reason.
+                    .filter((f) => posterFields.has(f) && f !== "status" && f !== "monitored")
+                    .map((f) => fieldValue(item, f, customColumnsForType))
                     .filter(Boolean)
                     .join(" · ")}
                 </div>
@@ -1475,10 +1498,11 @@ export function LibraryItemGrid({
                       {banner.label}
                     </span>
                     {allFieldKeys
-                      // Same "status" exclusion as Poster view above — this row already has its own
-                      // badge (just above) showing Downloaded/Missing/etc.
-                      .filter((f) => posterFields.has(f) && f !== "status")
-                      .map((f) => (f === "monitored" && item.monitored ? "" : fieldValue(item, f, customColumnsForType)))
+                      // Same "status"/"monitored" exclusion as Poster view above — this row already
+                      // has its own badge (just above) and MonitorToggle icon showing Downloaded/
+                      // Missing/monitored state at a glance.
+                      .filter((f) => posterFields.has(f) && f !== "status" && f !== "monitored")
+                      .map((f) => fieldValue(item, f, customColumnsForType))
                       .filter(Boolean)
                       .map((v, i) => (
                         <span key={i}>{v}</span>

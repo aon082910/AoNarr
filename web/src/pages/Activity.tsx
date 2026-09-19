@@ -63,6 +63,18 @@ const QUEUE_PROTOCOL_OPTIONS: { value: QueueProtocolFilter; label: string }[] = 
 
 const QUEUE_STATUS_RANK: Record<string, number> = { downloading: 0, importing: 1, queued: 2, failed: 3, completed: 4, imported: 5 };
 
+/** The Queue table's own status badge printed q.status raw ("downloading", "completed", ...)
+ * instead of a proper label, unlike TIMELINE_LABELS/PROTOCOL_LABELS above for the same kind of
+ * fact elsewhere on this page. */
+const QUEUE_STATUS_LABELS: Record<string, string> = {
+  queued: "Queued",
+  downloading: "Downloading",
+  importing: "Importing",
+  completed: "Completed",
+  imported: "Imported",
+  failed: "Failed",
+};
+
 function StatusIcon({ status }: { status: string }) {
   if (status === "downloading") return <DownloadIcon />;
   if (status === "queued") return <ClockIcon />;
@@ -466,7 +478,7 @@ export default function Activity() {
                       style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
                     >
                       <StatusIcon status={q.status} />
-                      {q.status}
+                      {QUEUE_STATUS_LABELS[q.status] ?? q.status}
                     </span>
                   </td>
                   <td>
