@@ -32,6 +32,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   tvdb: "TVDB",
   tvmaze: "TVmaze",
   anilist: "AniList",
+  mangadex: "MangaDex",
   musicbrainz: "MusicBrainz",
   deezer: "Deezer",
   discogs: "Discogs",
@@ -67,6 +68,7 @@ export default function AddMedia() {
   const mediaTypes = useMediaTypes();
   const [type, setType] = useState<MediaType>("");
   const [providers, setProviders] = useState<Record<MediaType, string[]>>({});
+  const [defaultProviders, setDefaultProviders] = useState<Record<MediaType, string | null>>({});
   const [provider, setProvider] = useState("");
   const [query, setQuery] = useState(prefillQuery);
   /** Narrows/re-ranks search results toward this year (see searchMetadata's year-assisted
@@ -87,6 +89,7 @@ export default function AddMedia() {
 
   useEffect(() => {
     api.get<Record<MediaType, string[]>>("/metadata/providers").then(setProviders);
+    api.get<Record<MediaType, string | null>>("/metadata/default-providers").then(setDefaultProviders);
   }, []);
 
   useEffect(() => {
@@ -97,8 +100,10 @@ export default function AddMedia() {
   }, [mediaTypes, type, prefillType]);
 
   useEffect(() => {
-    setProvider(providers[type]?.[0] ?? "");
-  }, [type, providers]);
+    // Prefer the server's real default (e.g. Manga's is "mangadex", not "anilist" — AniList has no
+    // per-chapter listing) over just guessing index 0 of the provider list.
+    setProvider(defaultProviders[type] ?? providers[type]?.[0] ?? "");
+  }, [type, providers, defaultProviders]);
 
   // Deep-linked from another page (e.g. Friend Libraries "Add") with a query/type already chosen
   // — auto-run the search once the provider for that type has loaded, instead of making the user

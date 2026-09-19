@@ -3,6 +3,58 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 323 — seven more bugs from the next tier of pages, plus a caught false positive
+
+Continued the deep-dive audit into the next tier of pages by size (`IptvPlaylists.tsx`,
+`DownloadClients.tsx`, `Users.tsx`, `EpisodeDetail.tsx`, `Dashboard.tsx`, `Calendar.tsx`,
+`AddMedia.tsx`) — 2-3 files per reviewer instead of the original 8-9-file bundles. Seven confirmed
+and fixed:
+
+- `DownloadClients.tsx` showed a "Category" field for Soulseek (slskd) download clients, but
+  `SlskdAdapter.addDownload()` doesn't even take a category parameter — Soulseek has no
+  categorization concept at all, so a value entered there silently did nothing. Split the field's
+  visibility into its own `supportsCategory` check (qBittorrent/SABnzbd only), separate from
+  `needsHost` (which still legitimately includes slskd for the host/port fields).
+- `Users.tsx`'s Invite Links table showed the raw role value ("admin"/"user") instead of the same
+  "Admin"/"Household user" wording the invite-creation form on the same page already uses.
+- `Dashboard.tsx`'s Upcoming widget mixed real media items with admin-added custom calendar events
+  from the same `/wanted/calendar` endpoint, but — unlike `Calendar.tsx`, which already guards this
+  identical case — never checked which was which: clicking a custom event within the next 14 days
+  navigated to `/media/<event's own id>`, a nonexistent or unrelated item, and its Type column
+  printed the raw pseudo-type "custom" instead of a proper label. Added the same `kind` check and
+  "Custom date" label `Calendar.tsx` already uses.
+- `Dashboard.tsx`'s Recently Changed widget had no label for `event_type = 'failed'` history rows
+  (written on every automatic-retry blocklist), showing raw "failed" while three sibling pages
+  (Activity, History, MediaDetail) already map it to "Failed".
+- `AddMedia.tsx`'s Metadata provider dropdown had no label for "mangadex", the second of Manga's two
+  providers — picking Manga showed "AniList" and a raw unlabeled "mangadex". Separately, and more
+  significantly: the dropdown's *initial* selection just always picked `metadataProviders[0]`, which
+  for Manga is "anilist" — but the server's own `defaultProvider` for Manga is "mangadex", with a
+  comment explaining AniList has no per-chapter listing, so a manga matched through it silently sits
+  at "0 total" chapters forever. Every other type's provider list happens to start with its real
+  default, which is what let this go unnoticed. Added a new `GET /api/metadata/default-providers`
+  endpoint (kept separate from the existing `/metadata/providers`, which four other pages already
+  consume in its simpler shape) and had `AddMedia.tsx` prefer it over guessing index 0.
+
+**One flagged finding turned out to be a false positive, caught before touching any code**: the
+audit reported `server/src/routes/dashboard.ts`'s library-size cache-key parsing as broken (writing
+`${type}${contentRating}` with no separator, then reading it back with `key.split("")` — which in
+JS explodes a string into every individual character, not into two parts). Both the reviewing agent
+and its independent adversarial verifier confirmed this as a real bug. Direct byte-level inspection
+(`cat -A`, and a Node script printing the lines as JSON) showed the actual file already joins and
+splits on a literal `` control character on both sides — correct, working code. The control
+character is invisible in normal file-reading output, which is exactly what fooled both agents into
+"seeing" a missing separator that was actually there. No change was made to `dashboard.ts`.
+
+Verified: `npx tsc --noEmit` clean in both projects (also caught and fixed a real type mismatch of
+my own — `defaultProvider` is `string | null` server-side, not `string | undefined` — before it
+reached the Docker build). Live-verified every fix against the real, rebuilt server: Manga's
+provider dropdown now shows "MangaDex" as a label and pre-selects it by default (not AniList); a
+fixture admin invite showed "Admin" instead of raw "admin"; the slskd client-type modal no longer
+shows a Category field; a fixture custom calendar event 3 days out showed "Custom date" in the
+Upcoming widget and clicking it stayed on the Dashboard instead of navigating anywhere. All fixtures
+(the invite, the calendar event) were deleted afterward via the API.
+
 ## Round 322 — six more bugs from a solo deep-dive on the next-largest pages
 
 Rounds 319-321 bundled `LibraryType.tsx` (1765 lines) and `System.tsx` (1628 lines) with 7-8 other

@@ -350,7 +350,7 @@ function InvitesTable({ invites, onRevoke }: { invites: Invite[]; onRevoke: (id:
         {sorted.map((i) => (
           <tr key={i.id}>
             <td>{i.allowedTypes.length === 0 ? "no library access" : `${i.allowedTypes.length} librar${i.allowedTypes.length === 1 ? "y" : "ies"}`}</td>
-            <td>{i.role}</td>
+            <td>{i.role === "admin" ? "Admin" : "Household user"}</td>
             <td>{new Date(i.createdAt).toLocaleString()}</td>
             <td>
               {i.usedAt ? (

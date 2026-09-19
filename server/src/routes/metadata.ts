@@ -9,6 +9,7 @@ import {
   fetchCollectionChildrenFor,
   fetchRomDetailsFor,
   fetchSeriesEpisodesFor,
+  METADATA_DEFAULT_PROVIDERS,
   METADATA_PROVIDERS,
   parseProviderUrl,
   searchMetadata,
@@ -70,6 +71,16 @@ metadataRouter.get(
   "/providers",
   asyncHandler(async (_req, res) => {
     res.json(METADATA_PROVIDERS);
+  })
+);
+
+/** Each type's preferred provider (see METADATA_DEFAULT_PROVIDERS) — a separate endpoint rather
+ * than folding into /providers above, since that response's plain `Record<type, string[]>` shape
+ * already has four existing client consumers that don't need this. */
+metadataRouter.get(
+  "/default-providers",
+  asyncHandler(async (_req, res) => {
+    res.json(METADATA_DEFAULT_PROVIDERS);
   })
 );
 

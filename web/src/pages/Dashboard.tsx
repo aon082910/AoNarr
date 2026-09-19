@@ -29,14 +29,19 @@ interface RecentlyChangedEntry {
 const RECENT_EVENT_LABELS: Record<string, string> = {
   grabbed: "Grabbed",
   imported: "Imported",
+  failed: "Failed",
   auto_archived: "Auto-archived",
   subtitleDownloaded: "Subtitle downloaded",
 };
 
 interface UpcomingEntry {
+  // For a "kind: event" row, mediaItemId is actually the custom_calendar_events row's own id, not
+  // a real media item — see server/src/routes/wanted.ts's customEvents query. Never navigate to
+  // /media/:id using it without checking kind first.
   mediaItemId: number;
   mediaTitle: string;
   type: string;
+  kind?: "media" | "event";
   label: string;
   date: string;
   hasFile: 0 | 1;
@@ -276,12 +281,16 @@ export default function Dashboard() {
                     </thead>
                     <tbody>
                       {upcoming.map((entry, idx) => (
-                        <tr key={idx} onClick={() => navigate(`/media/${entry.mediaItemId}`)} style={{ cursor: "pointer" }}>
+                        <tr
+                          key={idx}
+                          onClick={() => entry.kind !== "event" && navigate(`/media/${entry.mediaItemId}`)}
+                          style={{ cursor: entry.kind === "event" ? "default" : "pointer" }}
+                        >
                           <td>{entry.date}</td>
                           <td>
                             {entry.mediaTitle} — {entry.label}
                           </td>
-                          <td>{labelFor(entry.type)}</td>
+                          <td>{entry.kind === "event" ? "Custom date" : labelFor(entry.type)}</td>
                           <td>
                             <span className={`badge ${entry.hasFile ? "ok" : ""}`}>{entry.hasFile ? "Downloaded" : "Missing"}</span>
                           </td>

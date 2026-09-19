@@ -1847,6 +1847,15 @@ export const METADATA_PROVIDERS: Record<MediaType, string[]> = Object.fromEntrie
   Object.values(MEDIA_TYPES).map((t) => [t.key, t.metadataProviders])
 );
 
+/** Each type's preferred provider — usually metadataProviders[0], but not always (Manga's is
+ * "mangadex" even though "anilist" is listed first, since AniList has no per-chapter listing and a
+ * manga matched through it would sit at "0 total" chapters forever; see MEDIA_TYPES). Exposed
+ * separately from METADATA_PROVIDERS (below) so the client's initial-provider-selection logic can
+ * use the real default instead of just guessing index 0. */
+export const METADATA_DEFAULT_PROVIDERS: Record<MediaType, string | null> = Object.fromEntries(
+  Object.values(MEDIA_TYPES).map((t) => [t.key, t.defaultProvider])
+);
+
 const SEARCH_FNS: Record<string, (query: string) => Promise<MetadataSearchResult[]>> = {
   omdb: searchMoviesOmdb,
   tvdb: searchSeriesTvdb,

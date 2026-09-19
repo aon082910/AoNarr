@@ -66,6 +66,9 @@ export default function DownloadClients() {
 
   const needsHost = type === "qbittorrent" || type === "sabnzbd" || type === "slskd";
   const needsWatchFolder = type === "blackhole";
+  // Soulseek has no categorization concept at all — SlskdAdapter.addDownload() doesn't even take a
+  // category parameter, so a value entered here would silently do nothing.
+  const supportsCategory = type === "qbittorrent" || type === "sabnzbd";
 
   function load() {
     api.get<DownloadClient[]>("/download-clients").then(setClients);
@@ -453,7 +456,7 @@ export default function DownloadClients() {
               </>
             )}
 
-            {needsHost && (
+            {supportsCategory && (
               <>
                 <label htmlFor="downloadclients-category-13">Category</label>
                 <input id="downloadclients-category-13" value={category} onChange={(e) => setCategory(e.target.value)} />
