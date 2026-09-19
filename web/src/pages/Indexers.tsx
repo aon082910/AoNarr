@@ -10,6 +10,16 @@ import { notify } from "../utils/notify.js";
 
 type Protocol = "torznab" | "newznab" | "rss" | "ddl";
 
+// Same labels Activity.tsx's own PROTOCOL_LABELS uses for this identical field on the Queue page —
+// the Add-Indexer <select> below already spells these out in its option text, but the table (which
+// reads straight off the Indexer object, not the select) was printing the raw enum value.
+const PROTOCOL_LABELS: Record<Protocol, string> = {
+  torznab: "Torrent",
+  rss: "Torrent (RSS)",
+  newznab: "Usenet",
+  ddl: "DDL",
+};
+
 export default function Indexers() {
   const [indexers, setIndexers] = useState<Indexer[]>([]);
   const [showAdd, setShowAdd] = useState(false);
@@ -306,7 +316,7 @@ function IndexersTable({
           return (
             <tr key={i.id}>
               <td>{i.name}</td>
-              <td>{i.protocol}</td>
+              <td>{PROTOCOL_LABELS[i.protocol]}</td>
               <td>{i.url}</td>
               <td>
                 <span className={`badge ${i.enabled ? "ok" : "danger"}`} onClick={() => onToggle(i)} style={{ cursor: "pointer" }}>

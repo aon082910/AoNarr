@@ -3,6 +3,44 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 324 — six more raw-value/dead-option bugs from the next tier of pages
+
+Continued the deep-dive audit (3-4 files per reviewer, up from the original 8-9-file bundles) across
+`Indexers.tsx`, `ImportLists.tsx`, `Missing.tsx`, `WatchlistImport.tsx`, `AddPreview.tsx`,
+`Requests.tsx`, `GlobalSearch.tsx`, `Duplicates.tsx`, `Discover.tsx`, and `FriendLibraries.tsx`. Six
+confirmed and fixed — all but one the same raw-value-leak/dead-option classes found in every prior
+round of this sweep:
+
+- `Indexers.tsx`'s table showed the raw protocol enum ("torznab", "newznab") instead of a label,
+  even though this exact field already has a proper label map (`PROTOCOL_LABELS`) in `Activity.tsx`
+  for the identical value.
+- `Requests.tsx`'s Status column showed raw lowercase "pending"/"approved"/"rejected" as plain text
+  — every comparable status field elsewhere in the app (Activity's queue, WatchlistImport's results,
+  Duplicates, HistoryPage) renders through a labeled, color-coded badge; Requests never got the same
+  treatment.
+- `Duplicates.tsx`'s "Matched to" column showed raw provider ids ("tmdb", "mangadex") instead of the
+  labels `AddMedia.tsx`'s own `PROVIDER_LABELS` already defines for the identical values.
+- `AddPreview.tsx`'s Monitor dropdown offered all nine Sonarr-style strategies on the add-a-new-show
+  screen, but the server's `episodesToMonitor()` — which only ever runs against a brand-new add,
+  nothing downloaded yet — treats "Existing Episodes" identically to "None" (nothing exists yet) and
+  "Missing Episodes" identically to "All Episodes" (everything fetched is "missing"), by its own
+  explicit doc comment. Two of nine options could never behave differently from two others already
+  in the same list. Narrowed this add-only dropdown to the seven options that are actually distinct.
+- `Missing.tsx`'s Movies section showed the same title twice, once in "Media" and once in "Item" —
+  the server's `/wanted/missing` query aliases both `mediaTitle` and `label` to the same `title`
+  column for single-shape items (there's no separate "item" below a movie itself, unlike an episode's
+  "S01E02" or an album's own title). The shared `Section` component now hides the redundant "Item"
+  column whenever every row's label matches its media title, which only ever happens for this bucket.
+- `ImportLists.tsx` had a subject-verb agreement error: "1 need review" instead of "1 needs review".
+
+Verified: `npx tsc --noEmit` clean. Live-verified every fix against the real, rebuilt server: a
+fixture Usenet indexer showed "Usenet" not "newznab"; the existing Approved request fixture rendered
+as a proper green badge; the Monitor dropdown on a fresh TV-show add showed exactly seven options;
+the Missing page's Movies section dropped its duplicate Item column while Albums & Books (genuinely
+different label per row) kept both columns; a fixture external-id set on a duplicate movie showed
+"TMDB, MangaDex" instead of raw provider keys. Fixtures (an indexer, an external-id patch) were
+removed/reverted afterward.
+
 ## Round 323 — seven more bugs from the next tier of pages, plus a caught false positive
 
 Continued the deep-dive audit into the next tier of pages by size (`IptvPlaylists.tsx`,

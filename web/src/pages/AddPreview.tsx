@@ -23,6 +23,15 @@ const MONITOR_STRATEGY_LABELS: Record<MonitorStrategy, string> = {
   none: "None",
 };
 
+// This page only ever runs the fresh-add code path (server's episodesToMonitor(), called only from
+// POST /metadata/import's brand-new-item branch) — nothing is downloaded and no episode "exists"
+// yet, so "Missing Episodes" always monitors the exact same set as "All Episodes" there, and
+// "Existing Episodes" always monitors nothing, same as "None". Offering all nine options here would
+// mean two of them can never behave differently from two others already in the same list, with
+// nothing telling the user that. The full set stays meaningful for a possible future "change
+// monitoring" control on an already-added series, where existing/missing episode state is real.
+const ADD_MONITOR_STRATEGIES: MonitorStrategy[] = ["all", "future", "recent", "firstSeason", "latestSeason", "pilot", "none"];
+
 /** What AddMedia.tsx (or GlobalSearch.tsx's "Add new" results) hands off via router navigation
  * state once a candidate has been found — `manual` marks best-effort/user-supplied data (a plain
  * manual entry, an .nfo file, a scraped course page) as opposed to a confirmed metadata-provider
@@ -263,9 +272,9 @@ export default function AddPreview() {
           <>
             <label htmlFor="addpreview-monitor">Monitor</label>
             <select id="addpreview-monitor" value={monitorStrategy} onChange={(e) => setMonitorStrategy(e.target.value as MonitorStrategy)}>
-              {Object.entries(MONITOR_STRATEGY_LABELS).map(([key, label]) => (
+              {ADD_MONITOR_STRATEGIES.map((key) => (
                 <option key={key} value={key}>
-                  {label}
+                  {MONITOR_STRATEGY_LABELS[key]}
                 </option>
               ))}
             </select>

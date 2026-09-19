@@ -295,7 +295,7 @@ export default function ImportLists() {
                     <>
                       {" "}
                       <Link to="/import-review" className="badge" title="Titles that couldn't be confidently matched — review them manually">
-                        {reviewCounts[l.id]} need review
+                        {reviewCounts[l.id]} {reviewCounts[l.id] === 1 ? "needs" : "need"} review
                       </Link>
                     </>
                   )}

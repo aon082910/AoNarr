@@ -17,6 +17,12 @@ interface RequestsResponse {
   total: number;
 }
 
+const STATUS_LABELS: Record<MediaRequest["status"], string> = {
+  pending: "Pending",
+  approved: "Approved",
+  rejected: "Rejected",
+};
+
 export default function Requests() {
   const { auth } = useAuth();
   const mediaTypes = useMediaTypes();
@@ -225,7 +231,11 @@ function RequestsTable({
                 {r.title} {r.year ? `(${r.year})` : ""}
               </td>
               <td>{labelFor(r.type)}</td>
-              <td>{r.status}</td>
+              <td>
+                <span className={`badge ${r.status === "approved" ? "ok" : r.status === "rejected" ? "danger" : ""}`}>
+                  {STATUS_LABELS[r.status]}
+                </span>
+              </td>
               <td>{r.note ?? "-"}</td>
               <td>
                 {isAdmin && r.status === "pending" && (

@@ -8,6 +8,38 @@ import type { DuplicateGroup, DuplicateGroupItem } from "../types.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
 
+// Same provider labels AddMedia.tsx's own PROVIDER_LABELS uses — matchedProviders here is the raw
+// externalIds key set (Object.keys(JSON.parse(external_ids))), e.g. "tmdb"/"mangadex", not
+// something meant to be shown to a user verbatim.
+const PROVIDER_LABELS: Record<string, string> = {
+  tmdb: "TMDB",
+  omdb: "OMDb",
+  trakt: "Trakt",
+  tvdb: "TVDB",
+  tvmaze: "TVmaze",
+  anilist: "AniList",
+  mangadex: "MangaDex",
+  musicbrainz: "MusicBrainz",
+  deezer: "Deezer",
+  discogs: "Discogs",
+  lastfm: "Last.fm",
+  openlibrary: "Open Library",
+  googlebooks: "Google Books",
+  itunes: "iTunes",
+  hardcover: "Hardcover",
+  goodreads: "Goodreads",
+  audible: "Audible",
+  audnexus: "AudNexus",
+  comicvine: "Comic Vine",
+  rawg: "RAWG",
+  igdb: "IGDB",
+  screenscraper: "ScreenScraper",
+  thegamesdb: "TheGamesDB",
+  youtube: "YouTube",
+  vimeo: "Vimeo",
+  theporndb: "ThePornDB",
+};
+
 /** One duplicate group's row-level state: which item is currently selected to keep. Kept outside
  * the fetched data so re-rendering (or a merge elsewhere on the page) doesn't reset a choice the
  * admin already made in a still-open group. */
@@ -200,7 +232,7 @@ export default function Duplicates() {
                     {showQuality && <td>{item.quality ?? "-"}</td>}
                     <td>
                       {item.matchedProviders.length > 0 ? (
-                        item.matchedProviders.join(", ")
+                        item.matchedProviders.map((p) => PROVIDER_LABELS[p] ?? p).join(", ")
                       ) : (
                         <span className="badge danger">Unmatched</span>
                       )}

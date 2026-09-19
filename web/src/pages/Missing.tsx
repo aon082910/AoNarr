@@ -50,6 +50,11 @@ function Section({
   const sorted = sortRows(rows, (a, b, key) =>
     key === "media" ? a.mediaTitle.localeCompare(b.mediaTitle) : a.label.localeCompare(b.label)
   );
+  // Movies (single-shape items) have no distinct "item" below the media itself, so the server
+  // sends label === mediaTitle for them — showing an "Item" column here would just repeat the
+  // Media column verbatim on every row. Episodes ("S01E02") and albums/books (their own title)
+  // always differ, so this only ever hides the column for a single-shape bucket like Movies.
+  const showItemColumn = rows.some((r) => r.label !== r.mediaTitle);
   return (
     <>
       <h2>
@@ -67,7 +72,7 @@ function Section({
             <tr>
               <th></th>
               {sortableHeader("media", "Media")}
-              {sortableHeader("item", "Item")}
+              {showItemColumn && sortableHeader("item", "Item")}
               <th></th>
             </tr>
           </thead>
@@ -78,7 +83,7 @@ function Section({
                   <input type="checkbox" checked={selected.has(rowKey(r))} onChange={() => onToggle(r)} />
                 </td>
                 <td>{r.mediaTitle}</td>
-                <td>{r.label}</td>
+                {showItemColumn && <td>{r.label}</td>}
                 <td style={{ display: "flex", gap: 6 }}>
                   <button type="button" className="icon-button" onClick={() => onSearchOne(r)} title="Search" aria-label="Search">
                     <SearchIcon />
