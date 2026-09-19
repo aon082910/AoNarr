@@ -378,7 +378,7 @@ const METADATA_PROVIDERS: SettingsProviderDef[] = [
   {
     key: "fanart",
     label: "Fanart.tv",
-    description: "Artwork — not a search provider, see Artwork below",
+    description: "Artwork — not a search provider, powers a media item's own \"Artwork\" picker for extra posters/backgrounds",
     fields: [{ key: "fanartApiKey", label: "API key", placeholder: "fanart.tv/get-an-api-key" }],
     isConfigured: (s) => !!s.fanartApiKey,
   },
@@ -1369,7 +1369,7 @@ export default function Settings() {
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
           Lets you email a book/comic/audiobook file to a Kindle "Send to Kindle" address (found in
           your Amazon account's Content &amp; Devices settings) straight from its detail page.
-          Reuses the Email (SMTP) notification settings above — set your Kindle address as an
+          Reuses the Email (SMTP) notification settings under Notifications — set your Kindle address as an
           approved sender on Amazon's side first, since Amazon only accepts mail from addresses you
           allow.
         </p>
@@ -1663,7 +1663,7 @@ export default function Settings() {
                   <option value="1">Enabled — add anything new in this account's Plex watchlist every 12 hours</option>
                 </select>
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
-                  Only available with Plex (uses the same server token above, which belongs to a
+                  Only available with Plex (uses the same server token set below, which belongs to a
                   specific Plex account) — adds anything new in that account's watchlist as a
                   monitored library item, the same "auto-add, never remove" pattern as Trakt List
                   Sync under Library Sync. Can also be triggered on demand from System.

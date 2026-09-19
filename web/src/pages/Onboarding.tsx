@@ -36,7 +36,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
     {
       done: counts.rootFolders > 0,
       title: "Add a root folder",
-      body: "Tell AoNarr where your media library lives on disk — this is where new files get organized to.",
+      body: "Tell AoNarr where your media library lives on disk — this is where new files get organized.",
       to: "/settings",
       cta: "Go to Settings",
     },

@@ -3,6 +3,42 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 320 — copy sweep: dangling "above"/"below" references and grammar fixes
+
+User-reported: Media Analyzer's truncation notice said "summary above still covers everything" right
+next to the truncation badge, but the actual stat-summary panels render in a later block — i.e.
+below that text, not above. Fixed that one directly, then ran a multi-agent proofreading pass over
+every user-facing string in all 50 pages plus the 20 shared components that carry text, checking
+specifically for (1) grammar/spelling errors and (2) positional references ("above"/"below"/"here"/
+"left"/"right") that don't match where the referenced element actually renders — every reviewer
+finding was independently re-verified by tracing the real JSX before being treated as confirmed.
+
+Six more confirmed and fixed:
+- `Settings.tsx`'s Fanart.tv provider description said "see Artwork below" — no "Artwork" section
+  exists anywhere on the page (it's a dangling reference, not just misplaced); reworded to actually
+  say what Fanart.tv does (powers a media item's own "Artwork" picker for extra posters/backgrounds).
+- `Settings.tsx`'s Plex watchlist sync text said it "uses the same server token above" — the token
+  field is defined later in the same modal, not earlier. Now says "below."
+- `Settings.tsx`'s Send to Kindle text said it "reuses the Email (SMTP) notification settings above"
+  — SMTP fields live on the separate Notifications tab, never visible at the same time as the
+  General tab this text is on. Now names the tab directly, matching how this file already does it
+  elsewhere (e.g. "the Trakt Client ID set above under Metadata Providers").
+- `System.tsx`'s Media Server Library Validation panel said "Needs a media server configured above"
+  — media server setup lives entirely on the separate Settings page, not anywhere on System. Now
+  says "in Settings."
+- `System.tsx`'s log-verbosity note ("Controls what's kept... — always still goes to the container's
+  own stdout/stderr...") had a dangling verb phrase with no subject. Restored the missing subject
+  ("everything still always goes to...").
+- `LibraryType.tsx`'s Starr-import description had a comma splice joining two independent clauses;
+  split with an em dash to match the rest of the file's punctuation style.
+- `Onboarding.tsx` said "this is where new files get organized to" — "organize" doesn't take a
+  locative "to" (unlike "moved to"); dropped the stray preposition.
+
+Verified: `npx tsc --noEmit` clean. Live-verified the Settings (Fanart.tv, Send to Kindle) and System
+(Media Server Library Validation, log verbosity) corrections directly against the running dev
+server; the LibraryType.tsx and Onboarding.tsx wording fixes were confirmed correct by direct
+source reading (pure text changes, no logic or layout risk).
+
 ## Round 319 — similar-bugs sweep: 14 confirmed defects across 12 pages
 
 Following up on Round 317/318's Poster-info/Overview-view bugs, ran a multi-agent audit (6 reviewers

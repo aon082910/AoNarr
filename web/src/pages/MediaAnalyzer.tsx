@@ -409,7 +409,7 @@ export default function MediaAnalyzer() {
             )}
             {data.truncated && (
               <span className="badge danger" style={{ marginLeft: 6 }}>
-                showing first 2000 items — summary above still covers everything
+                showing first 2000 items — summary below still covers everything
               </span>
             )}
           </p>

@@ -1413,7 +1413,7 @@ export default function System() {
           Compares AoNarr's own movie/episode library against what the configured media server
           (Plex/Jellyfin/Emby) actually reports having — flags anything AoNarr thinks exists but
           the media server doesn't see (a stale path, a permissions issue, a file moved or deleted
-          outside AoNarr). Needs a media server configured above.
+          outside AoNarr). Needs a media server configured in Settings.
         </p>
         <button className="secondary" onClick={runLibraryValidation} disabled={libraryValidationLoading}>
           {libraryValidationLoading ? "Checking..." : "Run validation"}
@@ -1516,8 +1516,8 @@ export default function System() {
           <option value="error">Error — only errors</option>
         </select>
         <p style={{ color: "var(--muted)", fontSize: "0.78rem", marginTop: -6 }}>
-          Controls what's kept in this log view and the daily log files — always still goes to the
-          container's own stdout/stderr regardless of this setting.
+          Controls what's kept in this log view and the daily log files — everything still always
+          goes to the container's own stdout/stderr regardless of this setting.
         </p>
         <div className="toolbar">
           <select value={logLevelFilter} onChange={(e) => setLogLevelFilter(e.target.value)} style={{ width: "auto" }}>
