@@ -5,6 +5,7 @@ import type { MediaItem, MediaType, QualityProfile } from "../types.js";
 import { PlusCircleIcon } from "../components/NavIcons.js";
 import { XIcon } from "../components/ActionIcons.js";
 import { notify } from "../utils/notify.js";
+import type { AddPreviewState } from "./AddPreview.js";
 
 interface Recommendation {
   title: string;
@@ -38,6 +39,17 @@ export default function Recommendations() {
       .then(setData)
       .finally(() => setLoading(false));
   }, []);
+
+  /** Card click — recommendations are never already in the library (filtered server-side), so this
+   * always goes to the same add-preview page AddMedia.tsx/GlobalSearch.tsx use for a fresh match. */
+  function openPreview(r: Recommendation) {
+    const state: AddPreviewState = {
+      type: r.type,
+      result: { title: r.title, year: r.year, overview: null, posterUrl: r.posterUrl, externalIds: r.externalIds },
+      manual: false,
+    };
+    navigate("/add/preview", { state });
+  }
 
   async function add(r: Recommendation) {
     setAdding(`${r.type}-${r.title}`);
@@ -85,7 +97,7 @@ export default function Recommendations() {
         <h2>{title}</h2>
         <div className="grid">
           {visible.map((r, idx) => (
-            <div key={idx} className="card">
+            <div key={idx} className="card" onClick={() => openPreview(r)}>
               <div className="poster" style={r.posterUrl ? { backgroundImage: `url(${r.posterUrl})` } : undefined}>
                 {!r.posterUrl && "No poster"}
               </div>
@@ -99,13 +111,26 @@ export default function Recommendations() {
                   className="icon-button"
                   style={{ marginTop: 8, width: "100%" }}
                   disabled={adding === `${r.type}-${r.title}`}
-                  onClick={() => add(r)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    add(r);
+                  }}
                   title={adding === `${r.type}-${r.title}` ? "Adding..." : "Add"}
                   aria-label="Add"
                 >
                   <PlusCircleIcon />
                 </button>
-                <button type="button" className="icon-button" style={{ marginTop: 6, width: "100%" }} onClick={() => notInterested(r)} title="Not interested" aria-label="Not interested">
+                <button
+                  type="button"
+                  className="icon-button"
+                  style={{ marginTop: 6, width: "100%" }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    notInterested(r);
+                  }}
+                  title="Not interested"
+                  aria-label="Not interested"
+                >
                   <XIcon />
                 </button>
               </div>

@@ -3,6 +3,39 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 314 — Discover/Recommendations cards open a real preview, plus a "View more" per section on Discover
+
+**Clicking a Discover or Recommendations card now opens a preview** instead of doing nothing (the
+card previously had no click handler at all — only the small Add/Request icon-button worked).
+Mirrors exactly how `GlobalSearch.tsx`'s "Add new" results already behave: a result already in the
+library navigates straight to its real `/media/:id` detail page, and anything else navigates to
+`/add/preview` (the same Radarr/Sonarr-style "Add New" page reached from Add Media/Global Search)
+pre-filled with the title/year/overview/poster/external ids already in hand — so you can review
+root folder, quality profile, and monitoring before committing, rather than the old one-click
+direct-add/request. The existing Add/Request/"Not interested" icon-buttons inside each card now
+`stopPropagation()` so clicking them still does its own immediate action without also firing the
+card's navigation.
+
+To make the "already in library" branch possible, `GET /discover` now resolves each trending
+result against the library by its real `media_items.id` (previously it only tracked a boolean
+membership flag, discarding the id) and returns it as `mediaItemId`.
+
+**"View more" per section on Discover**, matching the pattern `Recommendations.tsx` already used —
+each of "Trending Movies"/"Trending TV" now shows its first 12 results with a "View more (N more)"
+button revealing the rest of that already-fetched batch, instead of dumping the whole list (or,
+previously, having no way to see past whatever fit on screen at once).
+
+Verified: `npx tsc --noEmit` clean in both projects. Live-verified against the real server —
+patched `window.fetch` in the running dev server to serve fixture Discover/Recommendations
+responses (real network calls need a configured TMDB/Last.fm key this test instance doesn't have),
+then drove real clicks: an "in library" card landed on the real `/media/:id` page, a new card
+landed on `/add/preview` with the right title/year carried over, the Add/Request icon-button's
+`stopPropagation` was confirmed by watching the final URL land on the newly-created item's own
+detail page rather than getting diverted to `/add/preview`, "Not interested" stayed on
+`/recommendations` and correctly removed only that card, and "View more" on both pages correctly
+revealed the remaining items with the right "(N more)" count. Test fixtures created along the way
+(a temporary media item, an import exclusion) were deleted afterward via the API.
+
 ## Round 313 — toolbar button labels were getting clipped mid-word
 
 **Icon-over-label toolbar buttons (`PageToolbar.tsx`'s `ToolbarButton`, rolled out in Round 310)

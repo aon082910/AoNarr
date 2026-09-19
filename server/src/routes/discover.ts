@@ -34,18 +34,24 @@ discoverRouter.get(
         wantSeries ? fetchTrendingSeries() : Promise.resolve([]),
       ]);
 
-      const libraryRows = (await db.prepare("SELECT type, external_ids FROM media_items WHERE type IN ('movie','series')").all()) as {
+      const libraryRows = (await db.prepare("SELECT id, type, external_ids FROM media_items WHERE type IN ('movie','series')").all()) as {
+        id: number;
         type: string;
         external_ids: string | null;
       }[];
-      const inLibrary = new Set<string>();
+      // Maps to the item's real id (not just a membership flag) so the client can link a result
+      // that's already in the library straight to its detail page instead of just labeling it.
+      const idByExternalId = new Map<string, number>();
       for (const r of libraryRows) {
         const ids = r.external_ids ? JSON.parse(r.external_ids) : {};
-        if (ids.tmdb) inLibrary.add(`${r.type}:${ids.tmdb}`);
+        if (ids.tmdb) idByExternalId.set(`${r.type}:${ids.tmdb}`, r.id);
       }
 
       const annotate = (type: "movie" | "series", results: typeof movies) =>
-        results.map((r) => ({ ...r, type, inLibrary: inLibrary.has(`${type}:${r.externalIds.tmdb}`) }));
+        results.map((r) => {
+          const mediaItemId = idByExternalId.get(`${type}:${r.externalIds.tmdb}`) ?? null;
+          return { ...r, type, inLibrary: mediaItemId !== null, mediaItemId };
+        });
 
       res.json({ movies: annotate("movie", movies), series: annotate("series", series) });
     } catch (err) {

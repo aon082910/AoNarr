@@ -6,6 +6,7 @@ import type { MediaItem, QualityProfile } from "../types.js";
 import { PlusCircleIcon } from "../components/NavIcons.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
+import type { AddPreviewState } from "./AddPreview.js";
 
 interface DiscoverItem {
   title: string;
@@ -15,12 +16,15 @@ interface DiscoverItem {
   externalIds: Record<string, string>;
   type: "movie" | "series";
   inLibrary: boolean;
+  mediaItemId: number | null;
 }
 
 interface DiscoverResponse {
   movies: DiscoverItem[];
   series: DiscoverItem[];
 }
+
+const INITIAL_VISIBLE_COUNT = 12;
 
 export default function Discover() {
   const { auth } = useAuth();
@@ -31,6 +35,7 @@ export default function Discover() {
   const [profiles, setProfiles] = useState<QualityProfile[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [requested, setRequested] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (auth.isAdmin) api.get<QualityProfile[]>("/quality-profiles").then(setProfiles);
@@ -46,6 +51,27 @@ export default function Discover() {
     // provider id when there is one so "Request" on one doesn't mark the other as requested too.
     const id = item.externalIds?.tmdb ?? item.externalIds?.tvdb ?? item.externalIds?.imdb ?? `${item.title}-${item.year ?? ""}`;
     return `${item.type}-${id}`;
+  }
+
+  /** Card click — mirrors GlobalSearch.tsx's own "in library -> detail page, otherwise -> add
+   * preview" split, so browsing Discover feels the same as browsing search results. */
+  function openPreview(item: DiscoverItem) {
+    if (item.inLibrary && item.mediaItemId) {
+      navigate(`/media/${item.mediaItemId}`);
+      return;
+    }
+    const state: AddPreviewState = {
+      type: item.type,
+      result: {
+        title: item.title,
+        year: item.year,
+        overview: item.overview,
+        posterUrl: item.posterUrl,
+        externalIds: item.externalIds,
+      },
+      manual: false,
+    };
+    navigate("/add/preview", { state });
   }
 
   async function addDirectly(item: DiscoverItem) {
@@ -104,17 +130,19 @@ export default function Discover() {
     }
   }
 
-  function renderSection(title: string, items: DiscoverItem[]) {
+  function renderSection(sectionKey: string, title: string, items: DiscoverItem[]) {
     if (items.length === 0) return null;
+    const isExpanded = expanded.has(sectionKey);
+    const visible = isExpanded ? items : items.slice(0, INITIAL_VISIBLE_COUNT);
     return (
       <>
         <h2>{title}</h2>
         <div className="grid">
-          {items.map((item) => {
+          {visible.map((item) => {
             const key = keyFor(item);
             const alreadyRequested = requested.has(key);
             return (
-              <div key={key} className="card" style={{ cursor: "default" }}>
+              <div key={key} className="card" onClick={() => openPreview(item)}>
                 <div className="poster" style={item.posterUrl ? { backgroundImage: `url(${item.posterUrl})` } : undefined}>
                   {!item.posterUrl && "No poster"}
                 </div>
@@ -126,7 +154,18 @@ export default function Discover() {
                       In library
                     </span>
                   ) : auth.isAdmin ? (
-                    <button type="button" className="icon-button" style={{ marginTop: 6 }} disabled={busy === key} onClick={() => addDirectly(item)} title={busy === key ? "Adding..." : "Add"} aria-label="Add to library">
+                    <button
+                      type="button"
+                      className="icon-button"
+                      style={{ marginTop: 6 }}
+                      disabled={busy === key}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        addDirectly(item);
+                      }}
+                      title={busy === key ? "Adding..." : "Add"}
+                      aria-label="Add to library"
+                    >
                       <PlusCircleIcon />
                     </button>
                   ) : alreadyRequested ? (
@@ -134,7 +173,18 @@ export default function Discover() {
                       Requested
                     </span>
                   ) : (
-                    <button type="button" className="icon-button" style={{ marginTop: 6 }} disabled={busy === key} onClick={() => requestItem(item)} title={busy === key ? "Requesting..." : "Request"} aria-label="Request">
+                    <button
+                      type="button"
+                      className="icon-button"
+                      style={{ marginTop: 6 }}
+                      disabled={busy === key}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        requestItem(item);
+                      }}
+                      title={busy === key ? "Requesting..." : "Request"}
+                      aria-label="Request"
+                    >
                       <PlusCircleIcon />
                     </button>
                   )}
@@ -143,6 +193,11 @@ export default function Discover() {
             );
           })}
         </div>
+        {!isExpanded && items.length > INITIAL_VISIBLE_COUNT && (
+          <button type="button" className="secondary" onClick={() => setExpanded((prev) => new Set(prev).add(sectionKey))}>
+            View more ({items.length - INITIAL_VISIBLE_COUNT} more)
+          </button>
+        )}
       </>
     );
   }
@@ -156,8 +211,8 @@ export default function Discover() {
       </p>
       {loading && <p className="empty">Loading...</p>}
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
-      {data && renderSection("Trending Movies", data.movies)}
-      {data && renderSection("Trending TV", data.series)}
+      {data && renderSection("movies", "Trending Movies", data.movies)}
+      {data && renderSection("series", "Trending TV", data.series)}
       {data && data.movies.length === 0 && data.series.length === 0 && !error && (
         <p className="empty">Nothing to show — check that a TMDB API key is configured and you have access to Movies or TV Shows.</p>
       )}
