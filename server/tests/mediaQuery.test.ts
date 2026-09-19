@@ -120,11 +120,54 @@ describe("buildMediaQuery", () => {
     expect(result.where).toBe("m.type = ? AND m.group_id IS NULL");
   });
 
-  it("maps each status filter to its own condition", async () => {
+  it("maps monitored/unmonitored to a plain condition", async () => {
     expect((await buildMediaQuery({ status: "monitored", allowedTypes: null })).where).toBe("m.monitored = 1");
     expect((await buildMediaQuery({ status: "unmonitored", allowedTypes: null })).where).toBe("m.monitored = 0");
-    expect((await buildMediaQuery({ status: "missing", allowedTypes: null })).where).toBe("m.has_file = 0");
-    expect((await buildMediaQuery({ status: "downloaded", allowedTypes: null })).where).toBe("m.has_file = 1");
+  });
+
+  it("status downloaded/missing on a single-shape item (movie) still just checks has_file", async () => {
+    const downloadedId = await insertItem({ title: "Downloaded Movie", has_file: 1 });
+    const missingId = await insertItem({ title: "Missing Movie", has_file: 0 });
+
+    expect(await runQueryFor(downloadedId, { status: "downloaded", allowedTypes: null })).toBe(true);
+    expect(await runQueryFor(downloadedId, { status: "missing", allowedTypes: null })).toBe(false);
+    expect(await runQueryFor(missingId, { status: "downloaded", allowedTypes: null })).toBe(false);
+    expect(await runQueryFor(missingId, { status: "missing", allowedTypes: null })).toBe(true);
+  });
+
+  // Regression test: a series' own has_file only means "at least one episode has a file" (see
+  // services/childCounts.ts) — status=downloaded/missing used to check that flag directly, so a
+  // series with 1 of 5 episodes downloaded showed up as "Downloaded" and never as "Missing".
+  it("status downloaded/missing on an episodic item (series) is based on ALL episodes, not has_file", async () => {
+    async function insertSeriesWithEpisodes(hasFileFlags: number[]): Promise<number> {
+      const result = await db
+        .prepare(
+          `INSERT INTO media_items (type, title, sort_title, has_file, monitored, status) VALUES ('series', ?, ?, ?, 1, 'unknown')`
+        )
+        .run("Fixture Series", "fixture series", hasFileFlags.some(Boolean) ? 1 : 0);
+      const mediaItemId = Number(result.lastInsertRowid);
+      for (const [i, hasFile] of hasFileFlags.entries()) {
+        await db
+          .prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,?,?,1,?)`)
+          .run(mediaItemId, i + 1, `Ep${i + 1}`, hasFile);
+      }
+      return mediaItemId;
+    }
+
+    const fullyDownloaded = await insertSeriesWithEpisodes([1, 1]);
+    const partiallyDownloaded = await insertSeriesWithEpisodes([1, 0, 0]); // has_file=1 on the parent row (the old, misleading flag)
+    const fullyMissing = await insertSeriesWithEpisodes([0, 0]);
+
+    expect(await runQueryFor(fullyDownloaded, { status: "downloaded", allowedTypes: null })).toBe(true);
+    expect(await runQueryFor(fullyDownloaded, { status: "missing", allowedTypes: null })).toBe(false);
+
+    // The old bug: this used to satisfy status=downloaded (has_file=1) and never satisfy
+    // status=missing, even with 2 of 3 episodes missing.
+    expect(await runQueryFor(partiallyDownloaded, { status: "downloaded", allowedTypes: null })).toBe(false);
+    expect(await runQueryFor(partiallyDownloaded, { status: "missing", allowedTypes: null })).toBe(true);
+
+    expect(await runQueryFor(fullyMissing, { status: "downloaded", allowedTypes: null })).toBe(false);
+    expect(await runQueryFor(fullyMissing, { status: "missing", allowedTypes: null })).toBe(true);
   });
 
   it("status:unmatched includes an item with null, empty, or bare-'{}' external_ids, but not a real match", async () => {

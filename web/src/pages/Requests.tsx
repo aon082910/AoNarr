@@ -10,11 +10,20 @@ import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 import Modal from "../components/Modal.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
+import Pagination, { DEFAULT_PAGE_SIZE_OPTIONS } from "../components/Pagination.js";
+
+interface RequestsResponse {
+  items: MediaRequest[];
+  total: number;
+}
 
 export default function Requests() {
   const { auth } = useAuth();
   const mediaTypes = useMediaTypes();
   const [requests, setRequests] = useState<MediaRequest[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(() => Number(localStorage.getItem("aonarr_requests_page_size")) || 100);
   const [showForm, setShowForm] = useState(false);
   const [type, setType] = useState("");
   const [title, setTitle] = useState("");
@@ -25,9 +34,19 @@ export default function Requests() {
   const labelFor = (key: string) => mediaTypes.find((t) => t.key === key)?.label ?? key;
 
   function load() {
-    api.get<MediaRequest[]>("/requests").then(setRequests);
+    const offset = (page - 1) * pageSize;
+    api.get<RequestsResponse>(`/requests?limit=${pageSize}&offset=${offset}`).then((data) => {
+      setRequests(data.items);
+      setTotal(data.total);
+    });
   }
-  useEffect(load, []);
+  useEffect(load, [page, pageSize]);
+
+  useEffect(() => {
+    localStorage.setItem("aonarr_requests_page_size", String(pageSize));
+  }, [pageSize]);
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   async function submitRequest(e: FormEvent, confirmDuplicate = false) {
     e.preventDefault();
@@ -145,6 +164,23 @@ export default function Requests() {
 
       {requests.length === 0 && <p className="empty">No requests yet.</p>}
       <RequestsTable requests={requests} labelFor={labelFor} isAdmin={auth.isAdmin} onApprove={approve} onReject={reject} onCancel={cancel} />
+      {requests.length > 0 && (
+        <Pagination
+          page={page}
+          totalPages={totalPages}
+          total={total}
+          pageSize={pageSize}
+          hasPrev={page > 1}
+          hasNext={page < totalPages}
+          onPrev={() => setPage((p) => p - 1)}
+          onNext={() => setPage((p) => p + 1)}
+          onPageSizeChange={(n) => {
+            setPageSize(n);
+            setPage(1);
+          }}
+          pageSizeOptions={DEFAULT_PAGE_SIZE_OPTIONS}
+        />
+      )}
     </div>
   );
 }

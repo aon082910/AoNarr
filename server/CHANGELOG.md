@@ -3,6 +3,71 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 311 — toolbar alignment fix, a real "Downloaded" status bug, and pagination for six more pages
+Three separate fixes/additions from user-reported issues.
+
+**Toolbar alignment.** `.toolbar-group` (the new `PageToolbar`'s left/right containers from Round
+310) never got the height-normalization rules `.toolbar` has always had for its own button/select/
+input/dropdown children — so a `DropdownMenu` trigger (View mode, Columns, ...) sitting in a
+`PageToolbar`'s right-hand group rendered ~15-20px taller than the plain `<select>`s next to it,
+inheriting the base `button` rule's `margin-top: 16px`/`padding: 8px 16px` unreset. Fixed by adding
+the same `.toolbar-group > select/input { height: 38px }` and `.toolbar-group > .dropdown > button
+{ height: 38px }` reset `.toolbar` already had — a pure CSS fix, affects every page using
+`PageToolbar` at once.
+
+**"Downloaded" status was wrong for partially-downloaded TV shows and Music.** For episodic
+(series/anime/sports) and collection (music/books/comics/...) shapes, a media item's own `has_file`
+only ever meant "at least one episode/track has a file" (see `services/childCounts.ts`) — but
+`LibraryType.tsx`'s status badge/poster-banner and the server's `status=downloaded`/`status=missing`
+library filter (`services/mediaQuery.ts`) both checked that flag directly, so a series with 1 of 10
+episodes downloaded showed "Downloaded" and could never match a "Missing" filter. Fixed on both
+sides: `posterBanner()` now uses the already-fetched `childCount`/`childHaveCount` to show
+"Downloaded" (all children present), a new neutral "Partial" state (some present — new
+`.poster-banner.partial`/`.pill.partial`, reusing `var(--muted)`, no new colors), or "Missing" (none)
+for those two shapes; the server's status filter now requires ALL episodes/tracks present for
+`downloaded` and treats anything short of that as `missing`, via new `typeKeysByShape()` (derived
+from `MEDIA_TYPES`, not hardcoded) and a `downloadStatusCondition()` helper in `mediaQuery.ts`.
+Single-file shapes (movies, ROMs, ...) are unaffected — this only changes behavior for shapes with
+children. Added a real regression test (`mediaQuery.test.ts`) covering fully/partially/never
+downloaded series, replacing an old test that asserted the exact literal SQL string.
+
+**Pagination for six more list pages**, matching the page-size dropdown (30/60/100/250) + "Page X
+of Y (N total)" + Prev/Next pattern `LibraryType.tsx` and `AuditLog.tsx` already used — extracted
+into a new shared `web/src/components/Pagination.tsx` component (both of those now use it too,
+replacing their own hand-rolled copies) and reusing `mediaQuery.ts`'s existing `clampLimit`/
+`clampOffset` helpers server-side. Added real server-side `limit`/`offset` (previously: no limit at
+all, or a hardcoded window with no way to page further) to: `Activity.tsx`'s Queue and History
+sections and the standalone `HistoryPage.tsx` (all three backed by `routes/activity.ts` — the
+History section's old fixed top-200 merge-and-slice and `HistoryPage`'s hard 500-row cap are both
+gone, replaced by real paging), `Blocklist.tsx`, `CutoffUnmet.tsx` (paginated over the resolved
+candidate-id array, since `findUpgradeCandidates()` has no SQL WHERE to attach a COUNT to), and
+`ImportReview.tsx` and `Requests.tsx`. Every affected endpoint's response shape changed from a bare
+array to `{ items, total }` (or `{ rows, total, page, pageSize, totalPages }` for `cutoff-unmet`,
+matching `audit-log`'s existing shape) — updated the one other caller this broke
+(`server/src/mcp/server.ts`'s `get_queue` tool, now requests `?limit=500` and unwraps `items` to
+keep returning a plain array) and a second one missed by the first pass (`Settings.tsx`'s Blocklist
+tile, which fetched `/blocklist` independently of the dedicated page and needed the same unwrap).
+A "select all visible"/bulk-selection feature on a paginated list now naturally scopes to the
+current page's loaded rows, matching how `LibraryType.tsx`'s own bulk-select already worked — not a
+regression, the expected behavior once paging exists.
+
+Deliberately NOT paginated, each for a specific reason (flagging so these aren't mistaken for
+oversights): `Missing.tsx`'s episode section and `RecycleBin.tsx` group their rows into collapsible
+per-series/per-type sections — naive row-level pagination would break that UX, and doing it right
+needs group-aware pagination on the server, a bigger, separate change. `Duplicates.tsx` computes
+its (typically small) result via a full in-memory scan/group rather than a single filtered SQL
+query, so `LIMIT`/`OFFSET` doesn't attach cleanly. `Collections.tsx` is admin-curated and stays
+small in practice, not library-scaled. `WatchlistImport.tsx` renders the one-shot result of a
+single POST (already capped at 500 rows), not a persisted, growable list with a GET endpoint to
+paginate.
+
+Verified: `npx tsc --noEmit` clean in both `web/` and `server/`; the full server test suite (89
+files, 1367 tests, run in a disposable Linux container per this repo's usual native-binary-on-
+Windows workaround) passes, including the new regression test. Live-verified against the real
+`aonarr-server`/`aonarr-web-dev` stack with temporary DB fixtures (inserted, checked, deleted) for
+every one of the six newly-paginated pages/sections plus the two fixed status-badge/toolbar issues
+and both broken callers' fixes — no console errors on any of them.
+
 ## Round 310 — Starr-style page toolbars, detail-page pills, and popup-ified forms across the app
 Layout-and-placement pass matching how Sonarr/Radarr/Lidarr/Readarr/Whisparr actually organize a
 page — verified against Sonarr's own frontend source (GitHub), not guessed. Colors are completely

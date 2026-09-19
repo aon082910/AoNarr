@@ -2,22 +2,32 @@ import { Router } from "express";
 import { db } from "../db/index.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
+import { clampLimit, clampOffset } from "../services/mediaQuery.js";
 
 export const blocklistRouter = Router();
 blocklistRouter.use(requireAdmin);
 
+/** Returns `{ items, total }` (matching GET /api/media's shape) rather than a bare array so the
+ * page can show real server-side pagination instead of fetching the whole blocklist at once. */
 blocklistRouter.get(
   "/",
-  asyncHandler(async (_req, res) => {
-    const rows = await db
+  asyncHandler(async (req, res) => {
+    const limit = clampLimit(req.query.limit);
+    const offset = clampOffset(req.query.offset);
+
+    const countRow = (await db
+      .prepare(`SELECT COUNT(*) AS total FROM blocklist b JOIN media_items m ON m.id = b.media_item_id`)
+      .get()) as { total: number | string };
+
+    const items = await db
       .prepare(
         `SELECT b.id, b.media_item_id AS "mediaItemId", b.release_title AS "releaseTitle", b.reason,
                 b.created_at AS "createdAt", m.title AS "mediaTitle"
          FROM blocklist b JOIN media_items m ON m.id = b.media_item_id
-         ORDER BY b.created_at DESC`
+         ORDER BY b.created_at DESC LIMIT ? OFFSET ?`
       )
-      .all();
-    res.json(rows);
+      .all(limit, offset);
+    res.json({ items, total: Number(countRow.total) });
   })
 );
 

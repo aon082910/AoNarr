@@ -241,6 +241,10 @@ h2 { font-size: 1.2rem; margin: 24px 0 12px; }
 .poster-banner.missing { background: var(--danger); }
 .poster-banner.unmonitored { background: rgba(0,0,0,0.45); }
 .poster-banner.unreleased { background: var(--accent); }
+/* Some, but not all, episodes/tracks downloaded (episodic/collection shapes only) — deliberately
+   neutral (same as .poster-banner's own default) rather than ok/danger, since "some progress" is
+   neither a clean success nor a problem state the way fully-downloaded/fully-missing are. */
+.poster-banner.partial { background: var(--muted); }
 
 .card .meta { padding: 8px 10px; }
 .card .meta .title { font-weight: 600; font-size: 0.9rem; }
@@ -564,6 +568,23 @@ button.icon-button.danger:hover { background: rgba(224,92,92,0.15); }
   align-items: center;
   flex-wrap: wrap;
   gap: 2px;
+}
+/* Same height-alignment fix .toolbar already applies to its own button/select/input/dropdown
+   children (see the comment above .toolbar below) — a PageToolbar's right-hand group commonly
+   mixes ToolbarButtons with plain selects/inputs/DropdownMenus (search box, Sort/Filter selects,
+   a View-mode DropdownMenu), and without this reset a DropdownMenu's trigger <button> inherits
+   the base button rule's margin-top:16px/padding:8px 16px and renders ~15-20px taller than the
+   select/input sitting right next to it. */
+.toolbar-group > select,
+.toolbar-group > input {
+  margin-top: 0;
+  height: 38px;
+  flex-shrink: 0;
+}
+.toolbar-group > .dropdown { flex-shrink: 0; }
+.toolbar-group > .dropdown > button {
+  margin-top: 0;
+  height: 38px;
 }
 
 /* Icon-over-label toolbar button — the Starr page-toolbar convention, distinct from

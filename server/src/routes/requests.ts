@@ -10,6 +10,7 @@ import { logAuditEvent } from "../services/audit.js";
 import { sendPush } from "../services/push.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
+import { clampLimit, clampOffset } from "../services/mediaQuery.js";
 
 export const requestsRouter = Router();
 
@@ -139,12 +140,23 @@ requestsRouter.get(
 requestsRouter.get(
   "/",
   asyncHandler(async (req, res) => {
-    const rows = req.auth?.isAdmin
-      ? ((await db.prepare("SELECT * FROM requests ORDER BY created_at DESC").all()) as any[])
+    const limit = clampLimit(req.query.limit, 100);
+    const offset = clampOffset(req.query.offset);
+    const isAdmin = !!req.auth?.isAdmin;
+
+    const countRow = isAdmin
+      ? ((await db.prepare("SELECT COUNT(*) AS c FROM requests").get()) as { c: number | string })
+      : ((await db.prepare("SELECT COUNT(*) AS c FROM requests WHERE user_id = ?").get(req.auth?.user?.id)) as {
+          c: number | string;
+        });
+    const rows = isAdmin
+      ? ((await db
+          .prepare("SELECT * FROM requests ORDER BY created_at DESC LIMIT ? OFFSET ?")
+          .all(limit, offset)) as any[])
       : ((await db
-          .prepare("SELECT * FROM requests WHERE user_id = ? ORDER BY created_at DESC")
-          .all(req.auth?.user?.id)) as any[]);
-    res.json(rows.map(requestFromRow));
+          .prepare("SELECT * FROM requests WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?")
+          .all(req.auth?.user?.id, limit, offset)) as any[]);
+    res.json({ items: rows.map(requestFromRow), total: Number(countRow.c) });
   })
 );
 

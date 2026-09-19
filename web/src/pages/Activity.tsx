@@ -5,6 +5,7 @@ import { useSortableTable } from "../hooks/useSortableTable.js";
 import { RotateCcwIcon, SlashIcon, InboxIcon, ArrowUpCircleIcon, AlertTriangleIcon, ClockIcon, DownloadIcon } from "../components/NavIcons.js";
 import { TrashIcon, CheckIcon } from "../components/ActionIcons.js";
 import { ToolbarButton } from "../components/PageToolbar.js";
+import Pagination, { DEFAULT_PAGE_SIZE_OPTIONS } from "../components/Pagination.js";
 import type { QueueItem, Quality, Indexer, DownloadClient } from "../types.js";
 import { notify } from "../utils/notify.js";
 
@@ -92,6 +93,20 @@ export default function Activity() {
   );
   const { sortRows: sortQueueRows, sortableHeader: queueSortableHeader } = useSortableTable<QueueItem, QueueSortKey>("status", "asc");
 
+  // Queue and History are independent, server-paginated lists on this one page — each gets its own
+  // page/pageSize/total, matching how AuditLog.tsx/LibraryType.tsx paginate a single list.
+  const [queuePage, setQueuePage] = useState(1);
+  const [queuePageSize, setQueuePageSize] = useState<number>(
+    () => Number(localStorage.getItem("aonarr_activity_queue_page_size")) || 60
+  );
+  const [queueTotal, setQueueTotal] = useState(0);
+
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyPageSize, setHistoryPageSize] = useState<number>(
+    () => Number(localStorage.getItem("aonarr_activity_history_page_size")) || 60
+  );
+  const [historyTotal, setHistoryTotal] = useState(0);
+
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
 
@@ -113,19 +128,67 @@ export default function Activity() {
     localStorage.setItem("aonarr_activity_history_type", historyTypeFilter);
   }, [historyTypeFilter]);
 
-  function load() {
-    api.get<QueueItem[]>("/activity/queue").then(setQueue);
-    api.get<TimelineEntry[]>("/activity/timeline").then(setTimeline);
-  }
+  useEffect(() => {
+    localStorage.setItem("aonarr_activity_queue_page_size", String(queuePageSize));
+  }, [queuePageSize]);
 
   useEffect(() => {
-    load();
+    localStorage.setItem("aonarr_activity_history_page_size", String(historyPageSize));
+  }, [historyPageSize]);
+
+  // Both status/protocol (Queue) and type/search (History) filter client-side over whatever page is
+  // currently loaded (unchanged — see below), so sitting on page 4 when a filter changes would show
+  // a confusing, possibly-empty page of the new filter's results. Reset to page 1 instead.
+  useEffect(() => {
+    setQueuePage(1);
+  }, [queueStatusFilter, queueProtocolFilter]);
+
+  useEffect(() => {
+    setHistoryPage(1);
+  }, [historyTypeFilter, historySearch]);
+
+  function loadQueue() {
+    const params = new URLSearchParams();
+    params.set("limit", String(queuePageSize));
+    params.set("offset", String((queuePage - 1) * queuePageSize));
+    api.get<{ items: QueueItem[]; total: number }>(`/activity/queue?${params.toString()}`).then((data) => {
+      setQueue(data.items);
+      setQueueTotal(data.total);
+    });
+  }
+
+  function loadHistory() {
+    const params = new URLSearchParams();
+    params.set("limit", String(historyPageSize));
+    params.set("offset", String((historyPage - 1) * historyPageSize));
+    api.get<{ items: TimelineEntry[]; total: number }>(`/activity/timeline?${params.toString()}`).then((data) => {
+      setTimeline(data.items);
+      setHistoryTotal(data.total);
+    });
+  }
+
+  function load() {
+    loadQueue();
+    loadHistory();
+  }
+
+  // The 30s poll and the SSE "queue" listener below are set up once, on mount — without this ref
+  // they'd keep calling the `load` closure captured at that moment (queuePage/historyPage === 1
+  // forever), silently snapping the view back to page 1's data every time they fired instead of
+  // refreshing whichever page is actually on screen.
+  const loadRef = useRef(load);
+  loadRef.current = load;
+
+  useEffect(loadQueue, [queuePage, queuePageSize]);
+  useEffect(loadHistory, [historyPage, historyPageSize]);
+
+  useEffect(() => {
     api.get<Indexer[]>("/indexers").then(setIndexers);
     api.get<DownloadClient[]>("/download-clients").then(setDownloadClients);
     // 30s fallback poll — a safety net in case the SSE connection below never opens (e.g. a proxy
     // in front of AoNarr that buffers/blocks text/event-stream) or drops without EventSource's own
     // auto-reconnect kicking in for some reason. Real-time updates come from the "queue" event.
-    const interval = setInterval(load, 30000);
+    const interval = setInterval(() => loadRef.current(), 30000);
 
     // /activity/stream is admin-only (same as every /activity route) and EventSource can't set the
     // X-Api-Key/X-Session-Token headers, so whichever credential this session actually has travels
@@ -136,7 +199,7 @@ export default function Activity() {
     const authParam = apiKey ? `apikey=${encodeURIComponent(apiKey)}` : sessionToken ? `sessionToken=${encodeURIComponent(sessionToken)}` : null;
     if (authParam) {
       stream = new EventSource(`/api/activity/stream?${authParam}`);
-      stream.addEventListener("queue", load);
+      stream.addEventListener("queue", () => loadRef.current());
     }
 
     return () => {
@@ -288,6 +351,9 @@ export default function Activity() {
     });
   }, [timeline, historyTypeFilter, historySearch, sortHistoryRows]);
 
+  const queueTotalPages = Math.max(1, Math.ceil(queueTotal / queuePageSize));
+  const historyTotalPages = Math.max(1, Math.ceil(historyTotal / historyPageSize));
+
   return (
     <div>
       <h1>Activity</h1>
@@ -328,7 +394,7 @@ export default function Activity() {
           </>
         )}
         <span style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
-          {visibleQueue.length} of {queue.length}
+          {visibleQueue.length} of {queue.length} on this page ({queueTotal} total)
         </span>
       </div>
 
@@ -446,6 +512,23 @@ export default function Activity() {
           </tbody>
         </table>
       )}
+      {queue.length > 0 && (
+        <Pagination
+          page={queuePage}
+          totalPages={queueTotalPages}
+          total={queueTotal}
+          pageSize={queuePageSize}
+          hasPrev={queuePage > 1}
+          hasNext={queuePage < queueTotalPages}
+          onPrev={() => setQueuePage((p) => p - 1)}
+          onNext={() => setQueuePage((p) => p + 1)}
+          onPageSizeChange={(n) => {
+            setQueuePageSize(n);
+            setQueuePage(1);
+          }}
+          pageSizeOptions={DEFAULT_PAGE_SIZE_OPTIONS}
+        />
+      )}
 
       <h2 style={{ marginBottom: 4, marginTop: 32 }}>History</h2>
       <p style={{ color: "var(--muted)", marginTop: 0 }}>
@@ -468,7 +551,7 @@ export default function Activity() {
           style={{ maxWidth: 260 }}
         />
         <span style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
-          {visibleHistory.length} of {timeline.length}
+          {visibleHistory.length} of {timeline.length} on this page ({historyTotal} total)
         </span>
       </div>
       {timeline.length === 0 && <p className="empty">Nothing has happened yet.</p>}
@@ -506,6 +589,23 @@ export default function Activity() {
             ))}
           </tbody>
         </table>
+      )}
+      {timeline.length > 0 && (
+        <Pagination
+          page={historyPage}
+          totalPages={historyTotalPages}
+          total={historyTotal}
+          pageSize={historyPageSize}
+          hasPrev={historyPage > 1}
+          hasNext={historyPage < historyTotalPages}
+          onPrev={() => setHistoryPage((p) => p - 1)}
+          onNext={() => setHistoryPage((p) => p + 1)}
+          onPageSizeChange={(n) => {
+            setHistoryPageSize(n);
+            setHistoryPage(1);
+          }}
+          pageSizeOptions={DEFAULT_PAGE_SIZE_OPTIONS}
+        />
       )}
 
       {manualImportFor && (

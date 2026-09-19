@@ -1,6 +1,7 @@
 import { db } from "../db/index.js";
 import { CONTENT_RATING_ORDER, contentRatingRank } from "./contentRatings.js";
 import { qualityRank } from "./quality.js";
+import { typeKeysByShape } from "./mediaTypes.js";
 
 /** Shared WHERE-clause builder for GET /api/media and GET /api/media/stats — both need the exact
  * same row-selection scope (type/tagId/groupId/status/contentRating/household restrictions), just
@@ -103,6 +104,40 @@ async function findCutoffUnmetIds(): Promise<number[]> {
   return rows.filter((r) => qualityRank(r.quality) < qualityRank(r.cutoff)).map((r) => r.id);
 }
 
+/** For episodic (series/anime/sports) and collection (music/books/comics/...) shapes, a media
+ * item's own `has_file` only means "at least one episode/track has a file" (see
+ * services/childCounts.ts) — filtering "downloaded"/"missing" on that flag alone showed a series
+ * with 1 of 10 episodes under "Downloaded" and hid it from "Missing". This instead treats
+ * "downloaded" as fully complete (every episode/track present) and "missing" as its exact
+ * complement (nothing, or only some, present) for those two shapes, while single-file shapes
+ * (movies, ROMs, ...) keep the plain has_file check they always had. */
+function downloadStatusCondition(kind: "downloaded" | "missing"): { sql: string; params: unknown[] } {
+  const episodicTypes = typeKeysByShape("episodic");
+  const collectionTypes = typeKeysByShape("collection");
+  const params: unknown[] = [];
+
+  function inList(keys: string[]): string {
+    params.push(...keys);
+    return keys.map(() => "?").join(",");
+  }
+
+  const singleClause = `m.type NOT IN (${inList([...episodicTypes, ...collectionTypes])}) AND m.has_file = ${kind === "downloaded" ? 1 : 0}`;
+
+  const episodicComplete = `NOT EXISTS (SELECT 1 FROM episodes e WHERE e.media_item_id = m.id AND e.has_file = 0) AND EXISTS (SELECT 1 FROM episodes e2 WHERE e2.media_item_id = m.id)`;
+  const episodicClause =
+    episodicTypes.length === 0
+      ? "1=0"
+      : `m.type IN (${inList(episodicTypes)}) AND ${kind === "downloaded" ? episodicComplete : `NOT (${episodicComplete})`}`;
+
+  const collectionComplete = `NOT EXISTS (SELECT 1 FROM sub_items s WHERE s.media_item_id = m.id AND s.has_file = 0) AND EXISTS (SELECT 1 FROM sub_items s2 WHERE s2.media_item_id = m.id)`;
+  const collectionClause =
+    collectionTypes.length === 0
+      ? "1=0"
+      : `m.type IN (${inList(collectionTypes)}) AND ${kind === "downloaded" ? collectionComplete : `NOT (${collectionComplete})`}`;
+
+  return { sql: `((${singleClause}) OR (${episodicClause}) OR (${collectionClause}))`, params };
+}
+
 export async function buildMediaQuery(filters: MediaQueryFilters): Promise<MediaQuery> {
   const conditions: string[] = [];
   const params: unknown[] = [];
@@ -138,9 +173,11 @@ export async function buildMediaQuery(filters: MediaQueryFilters): Promise<Media
 
   if (filters.status === "monitored") conditions.push("m.monitored = 1");
   else if (filters.status === "unmonitored") conditions.push("m.monitored = 0");
-  else if (filters.status === "missing") conditions.push("m.has_file = 0");
-  else if (filters.status === "downloaded") conditions.push("m.has_file = 1");
-  else if (filters.status === "unmatched") {
+  else if (filters.status === "missing" || filters.status === "downloaded") {
+    const { sql, params: statusParams } = downloadStatusCondition(filters.status);
+    conditions.push(sql);
+    params.push(...statusParams);
+  } else if (filters.status === "unmatched") {
     conditions.push("(m.external_ids IS NULL OR m.external_ids = '' OR m.external_ids = '{}')");
   } else if (filters.status === "cutoffUnmet") {
     const ids = await findCutoffUnmetIds();

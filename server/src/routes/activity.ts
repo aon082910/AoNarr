@@ -5,6 +5,7 @@ import { downloadClientFromRow, mediaItemFromRow, queueItemFromRow } from "../db
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { importQueueItem, listDownloadedFileCandidates } from "../services/importer.js";
+import { clampLimit, clampOffset } from "../services/mediaQuery.js";
 import { notifyQueueChanged, registerQueueStreamClient, unregisterQueueStreamClient } from "../services/realtime.js";
 
 export const activityRouter = Router();
@@ -12,9 +13,12 @@ activityRouter.use(requireAdmin);
 
 activityRouter.get(
   "/queue",
-  asyncHandler(async (_req, res) => {
-    const rows = await db.prepare("SELECT * FROM queue ORDER BY added_at DESC").all();
-    res.json(rows.map(queueItemFromRow));
+  asyncHandler(async (req, res) => {
+    const limit = clampLimit(req.query.limit, 60, 500);
+    const offset = clampOffset(req.query.offset);
+    const total = ((await db.prepare("SELECT COUNT(*) AS c FROM queue").get()) as { c: number }).c;
+    const rows = await db.prepare("SELECT * FROM queue ORDER BY added_at DESC LIMIT ? OFFSET ?").all(limit, offset);
+    res.json({ items: rows.map(queueItemFromRow), total: Number(total) });
   })
 );
 
@@ -177,16 +181,28 @@ activityRouter.get(
       params.push(since);
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const limit = clampLimit(req.query.limit, 60, 500);
+    const offset = clampOffset(req.query.offset);
+
+    // Same filter conditions as the main query below — a plain COUNT(*) of the unfiltered table
+    // would always report the whole history size regardless of eventType/mediaType/since, so the
+    // Pagination control's "Page X of Y (N total)" would be wrong the moment any filter is active.
+    const total = (
+      (await db
+        .prepare(`SELECT COUNT(*) AS c FROM history h JOIN media_items m ON m.id = h.media_item_id ${where}`)
+        .get(...params)) as { c: number }
+    ).c;
+
     const rows = (await db
       .prepare(
         `SELECT h.id, h.media_item_id AS "mediaItemId", h.event_type AS "eventType", h.data, h.created_at AS "createdAt",
                 m.title AS "mediaTitle", m.type AS "mediaType"
          FROM history h JOIN media_items m ON m.id = h.media_item_id
          ${where}
-         ORDER BY h.created_at DESC LIMIT 500`
+         ORDER BY h.created_at DESC LIMIT ? OFFSET ?`
       )
-      .all(...params)) as any[];
-    res.json(rows);
+      .all(...params, limit, offset)) as any[];
+    res.json({ items: rows, total: Number(total) });
   })
 );
 
@@ -201,17 +217,29 @@ interface TimelineEntry {
  * One merged, chronological feed across everything that happens in the library — grabs,
  * imports, failures, auto-archival, and request submissions/approvals/rejections — instead of
  * checking Activity, Requests, and System separately to piece together "what happened recently."
+ *
+ * `history` and `requests` are two different tables with no shared sort key, so real offset
+ * pagination over their merge fetches the top `offset + limit` rows from EACH source (each already
+ * sorted DESC by its own timestamp — that's enough to guarantee the true top `offset + limit` of the
+ * merged set), merges + re-sorts just that window, then slices out the requested page. `total` is a
+ * simple sum of both tables' raw row counts rather than the true merged-entry count (a resolved
+ * request contributes two entries — "requested" and "approved"/"rejected" — for one row), which is
+ * an accepted approximation rather than a precise count.
  */
 activityRouter.get(
   "/timeline",
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
+    const limit = clampLimit(req.query.limit, 60, 500);
+    const offset = clampOffset(req.query.offset);
+    const fetchCount = offset + limit;
+
     const historyRows = (await db
       .prepare(
         `SELECT h.event_type AS "eventType", h.data, h.created_at AS "createdAt", m.title AS "mediaTitle"
          FROM history h JOIN media_items m ON m.id = h.media_item_id
-         ORDER BY h.created_at DESC LIMIT 150`
+         ORDER BY h.created_at DESC LIMIT ?`
       )
-      .all()) as { eventType: string; data: string | null; createdAt: string; mediaTitle: string }[];
+      .all(fetchCount)) as { eventType: string; data: string | null; createdAt: string; mediaTitle: string }[];
 
     const entries: TimelineEntry[] = historyRows.map((row) => {
       let detail: string | null = null;
@@ -224,7 +252,7 @@ activityRouter.get(
       return { timestamp: row.createdAt, type: row.eventType, title: row.mediaTitle, detail };
     });
 
-    const requestRows = (await db.prepare(`SELECT * FROM requests ORDER BY created_at DESC LIMIT 150`).all()) as any[];
+    const requestRows = (await db.prepare(`SELECT * FROM requests ORDER BY created_at DESC LIMIT ?`).all(fetchCount)) as any[];
     for (const r of requestRows) {
       entries.push({ timestamp: r.created_at, type: "requested", title: r.title, detail: null });
       if (r.resolved_at && r.status !== "pending") {
@@ -238,6 +266,11 @@ activityRouter.get(
     }
 
     entries.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
-    res.json(entries.slice(0, 200));
+
+    const historyTotal = ((await db.prepare("SELECT COUNT(*) AS c FROM history").get()) as { c: number }).c;
+    const requestsTotal = ((await db.prepare("SELECT COUNT(*) AS c FROM requests").get()) as { c: number }).c;
+    const total = Number(historyTotal) + Number(requestsTotal);
+
+    res.json({ items: entries.slice(offset, offset + limit), total });
   })
 );

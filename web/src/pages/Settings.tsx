@@ -556,7 +556,11 @@ export default function Settings() {
     api.get<SubtitleProvider[]>("/subtitles/providers").then(setProviders);
     api.get<Tag[]>("/tags").then(setTags);
     api.get<CustomFormat[]>("/custom-formats").then(setCustomFormats);
-    api.get<BlocklistEntry[]>("/blocklist").then(setBlocklist);
+    // /blocklist now returns a paginated { items, total } page instead of a bare array (see
+    // Blocklist.tsx's own dedicated, paginated page) — this Settings tile just wants "the whole
+    // list" for its summary badge/table, so ask for the max page size rather than adding a second
+    // pagination UI here too.
+    api.get<{ items: BlocklistEntry[]; total: number }>("/blocklist?limit=500").then((r) => setBlocklist(r.items));
     api.get<ImportExclusion[]>("/import-exclusions").then(setExclusions);
     api.get<Quality[]>("/qualities").then((q) => {
       setQualities(q);

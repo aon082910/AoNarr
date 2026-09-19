@@ -254,7 +254,11 @@ export function createAoNarrMcpServer(): McpServer {
     },
     async () => {
       try {
-        return textResult(await callApi("GET", "/api/activity/queue"));
+        // /api/activity/queue is now paginated (limit defaults to 60) — this tool's contract is
+        // "everything currently queued", so request the max page size rather than silently
+        // truncating, and unwrap `items` to keep returning a plain array as before.
+        const { items } = (await callApi("GET", "/api/activity/queue?limit=500")) as { items: unknown[] };
+        return textResult(items);
       } catch (err) {
         return errorResult(err);
       }

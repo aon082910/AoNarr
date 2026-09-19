@@ -257,3 +257,12 @@ export function getMediaTypeConfig(type: string): MediaTypeConfig {
   if (!config) throw new Error(`Unknown media type "${type}"`);
   return config;
 }
+
+/** Every type key sharing one shape — e.g. for building a `has_file`-aware SQL condition that
+ * needs to treat all episodic types (or all collection types) the same way. Derived from
+ * MEDIA_TYPES rather than hardcoded, so it can't drift out of sync when a new type is added. */
+export function typeKeysByShape(shape: MediaShape): string[] {
+  return Object.values(MEDIA_TYPES)
+    .filter((t) => t.shape === shape)
+    .map((t) => t.key);
+}

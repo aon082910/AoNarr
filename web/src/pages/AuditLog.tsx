@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
-import { ChevronLeftIcon, ChevronRightIcon } from "../components/ActionIcons.js";
+import Pagination, { DEFAULT_PAGE_SIZE_OPTIONS } from "../components/Pagination.js";
 
 interface AuditEntry {
   id: number;
@@ -52,6 +52,7 @@ const EVENT_LABELS: Record<string, string> = {
 export default function AuditLog() {
   const [data, setData] = useState<AuditLogResponse | null>(null);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(() => Number(localStorage.getItem("aonarr_auditlog_page_size")) || 100);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -59,11 +60,15 @@ export default function AuditLog() {
     setLoading(true);
     setError(null);
     api
-      .get<AuditLogResponse>(`/audit-log?page=${page}&pageSize=100`)
+      .get<AuditLogResponse>(`/audit-log?page=${page}&pageSize=${pageSize}`)
       .then(setData)
       .catch((err) => setError((err as Error).message))
       .finally(() => setLoading(false));
-  }, [page]);
+  }, [page, pageSize]);
+
+  useEffect(() => {
+    localStorage.setItem("aonarr_auditlog_page_size", String(pageSize));
+  }, [pageSize]);
 
   const { sortRows, sortableHeader } = useSortableTable<AuditEntry, "when" | "user" | "event" | "detail">("when", "desc");
   const sorted = data
@@ -112,17 +117,21 @@ export default function AuditLog() {
               ))}
             </tbody>
           </table>
-          <div className="toolbar" style={{ marginTop: 12, alignItems: "center" }}>
-            <button type="button" className="icon-button" disabled={page <= 1} onClick={() => setPage((p) => p - 1)} title="Previous page" aria-label="Previous page">
-              <ChevronLeftIcon />
-            </button>
-            <span style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
-              Page {data.page} of {data.totalPages}
-            </span>
-            <button type="button" className="icon-button" disabled={page >= data.totalPages} onClick={() => setPage((p) => p + 1)} title="Next page" aria-label="Next page">
-              <ChevronRightIcon />
-            </button>
-          </div>
+          <Pagination
+            page={data.page}
+            totalPages={data.totalPages}
+            total={data.total}
+            pageSize={pageSize}
+            hasPrev={page > 1}
+            hasNext={page < data.totalPages}
+            onPrev={() => setPage((p) => p - 1)}
+            onNext={() => setPage((p) => p + 1)}
+            onPageSizeChange={(n) => {
+              setPageSize(n);
+              setPage(1);
+            }}
+            pageSizeOptions={DEFAULT_PAGE_SIZE_OPTIONS}
+          />
         </>
       )}
     </div>

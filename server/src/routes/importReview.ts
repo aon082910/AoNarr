@@ -4,6 +4,7 @@ import { db } from "../db/index.js";
 import { nowExpr } from "../db/asyncDb.js";
 import { importReviewItemFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
+import { clampLimit, clampOffset } from "../services/mediaQuery.js";
 
 export const importReviewRouter = Router();
 importReviewRouter.use(requireAdmin);
@@ -21,12 +22,24 @@ importReviewRouter.get(
   asyncHandler(async (req, res) => {
     const status = (req.query.status as string) || "pending";
     const importListId = req.query.importListId as string | undefined;
-    const rows = importListId
-      ? await db
-          .prepare("SELECT * FROM import_review_items WHERE status = ? AND import_list_id = ? ORDER BY created_at DESC")
-          .all(status, importListId)
-      : await db.prepare("SELECT * FROM import_review_items WHERE status = ? ORDER BY created_at DESC").all(status);
-    res.json((rows as any[]).map(importReviewItemFromRow));
+    const limit = clampLimit(req.query.limit);
+    const offset = clampOffset(req.query.offset);
+
+    const conditions = ["status = ?"];
+    const params: unknown[] = [status];
+    if (importListId) {
+      conditions.push("import_list_id = ?");
+      params.push(importListId);
+    }
+    const where = conditions.join(" AND ");
+
+    const countRow = (await db.prepare(`SELECT COUNT(*) AS total FROM import_review_items WHERE ${where}`).get(...params)) as {
+      total: number | string;
+    };
+    const rows = await db
+      .prepare(`SELECT * FROM import_review_items WHERE ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+      .all(...params, limit, offset);
+    res.json({ items: (rows as any[]).map(importReviewItemFromRow), total: Number(countRow.total) });
   })
 );
 

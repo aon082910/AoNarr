@@ -4,6 +4,7 @@ import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { MEDIA_TYPES } from "../services/mediaTypes.js";
 import { findUpgradeCandidates } from "../services/upgradeCandidates.js";
+import { clampLimit, clampOffset } from "../services/mediaQuery.js";
 
 export const wantedRouter = Router();
 wantedRouter.use(requireAdmin);
@@ -115,24 +116,36 @@ wantedRouter.get(
  * below its own quality profile's cutoff, so it's still eligible for an automatic upgrade search.
  * Same underlying comparison as the Library page's "Cutoff unmet" status filter
  * (services/mediaQuery.ts), just presented as its own page here with per-row/bulk re-search,
- * mirroring how /missing is presented for items with no file at all. */
+ * mirroring how /missing is presented for items with no file at all.
+ *
+ * findUpgradeCandidates() has no server-side filter/sort of its own to push a LIMIT/OFFSET into,
+ * so pagination is applied to the resolved candidate array in JS: the full array's length is the
+ * total count, and only the current page's slice of ids gets resolved against media_items. */
 wantedRouter.get(
   "/cutoff-unmet",
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
+    const pageSize = clampLimit(req.query.pageSize, 60, 500);
+    const page = Math.max(1, parseInt(String(req.query.page ?? 1), 10) || 1);
+    const offset = clampOffset((page - 1) * pageSize);
+
     const candidates = await findUpgradeCandidates();
-    if (candidates.length === 0) {
-      res.json([]);
+    const total = candidates.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const pageCandidates = candidates.slice(offset, offset + pageSize);
+
+    if (pageCandidates.length === 0) {
+      res.json({ rows: [], total, page, pageSize, totalPages });
       return;
     }
-    const mediaItemIds = Array.from(new Set(candidates.map((c) => c.mediaItemId)));
+    const mediaItemIds = Array.from(new Set(pageCandidates.map((c) => c.mediaItemId)));
     const placeholders = mediaItemIds.map(() => "?").join(",");
     const rows = (await db
       .prepare(`SELECT id, title, type FROM media_items WHERE id IN (${placeholders})`)
       .all(...mediaItemIds)) as { id: number; title: string; type: string }[];
     const byId = new Map(rows.map((r) => [r.id, r]));
 
-    res.json(
-      candidates.map((c) => ({
+    res.json({
+      rows: pageCandidates.map((c) => ({
         mediaItemId: c.mediaItemId,
         mediaTitle: byId.get(c.mediaItemId)?.title ?? c.target,
         type: byId.get(c.mediaItemId)?.type ?? null,
@@ -142,7 +155,11 @@ wantedRouter.get(
         currentQuality: c.currentQuality,
         cutoff: c.cutoff,
         profileName: c.profileName,
-      }))
-    );
+      })),
+      total,
+      page,
+      pageSize,
+      totalPages,
+    });
   })
 );

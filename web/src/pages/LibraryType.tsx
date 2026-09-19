@@ -74,9 +74,22 @@ function isAfterToday(dateOnly: string): boolean {
 
 /** Radarr-style bottom-of-poster status strip — computed client-side from fields already on the
  * item (no extra API call), same signal the "Status" field/badge already shows, just presented as
- * a colored banner instead of text so it reads at a glance across a dense poster grid. */
+ * a colored banner instead of text so it reads at a glance across a dense poster grid.
+ *
+ * For episodic (TV/anime/sports) and collection (music/books/comics/...) shapes, `item.hasFile`
+ * only means "at least one episode/track has a file" (see server/src/services/childCounts.ts) —
+ * checking it alone showed "Downloaded" for a series with 1 of 10 episodes. Uses the already-
+ * fetched `childCount`/`childHaveCount` instead when present, so a partially-downloaded item shows
+ * "Partial" (matching the childHaveCount/childCount progress bar rendered right below it) instead
+ * of contradicting it. */
 function posterBanner(item: MediaItem): { label: string; cls: string } {
-  if (item.hasFile) return { label: "Downloaded", cls: "downloaded" };
+  if (typeof item.childCount === "number" && item.childCount > 0) {
+    const have = item.childHaveCount ?? 0;
+    if (have >= item.childCount) return { label: "Downloaded", cls: "downloaded" };
+    if (have > 0) return { label: "Partial", cls: "partial" };
+  } else if (item.hasFile) {
+    return { label: "Downloaded", cls: "downloaded" };
+  }
   if (!item.monitored) return { label: "Unmonitored", cls: "unmonitored" };
   if (item.releaseDate && isAfterToday(item.releaseDate)) {
     return { label: "Unreleased", cls: "unreleased" };
@@ -105,7 +118,7 @@ function getByPath(obj: any, path: string): unknown {
 
 function fieldValue(item: MediaItem, field: ExtraField, customColumns: CustomColumn[]): string {
   if (field === "year") return item.year ? String(item.year) : "";
-  if (field === "status") return item.hasFile ? "downloaded" : "missing";
+  if (field === "status") return posterBanner(item).cls;
   if (field === "monitored") return item.monitored ? "monitored" : "unmonitored";
   if (field === "quality") return item.quality ?? "";
   if (field === "contentRating") return item.contentRating ?? "";
@@ -1517,7 +1530,14 @@ export function LibraryItemGrid({
                   .map((f) =>
                     f === "status" ? (
                       <td key={f}>
-                        <span className={`badge ${item.hasFile ? "ok" : ""}`}>{item.hasFile ? "Downloaded" : "Missing"}</span>
+                        {(() => {
+                          const banner = posterBanner(item);
+                          return (
+                            <span className={`badge ${banner.cls === "downloaded" ? "ok" : banner.cls === "missing" ? "danger" : ""}`}>
+                              {banner.label}
+                            </span>
+                          );
+                        })()}
                       </td>
                     ) : f === "monitored" ? (
                       <td key={f}>

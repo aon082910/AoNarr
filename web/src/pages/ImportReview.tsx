@@ -6,6 +6,7 @@ import { SearchIcon } from "../components/NavIcons.js";
 import { XIcon } from "../components/ActionIcons.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
+import Pagination, { DEFAULT_PAGE_SIZE_OPTIONS } from "../components/Pagination.js";
 
 interface ReviewItem {
   id: number;
@@ -18,6 +19,11 @@ interface ReviewItem {
   createdAt: string;
 }
 
+interface ReviewListResponse {
+  items: ReviewItem[];
+  total: number;
+}
+
 /**
  * Titles Watchlist Import or a recurring Import List's sync couldn't confidently match to a
  * metadata provider result — previously discarded silently, now queued here so an admin can pick
@@ -25,14 +31,24 @@ interface ReviewItem {
  */
 export default function ImportReview() {
   const [items, setItems] = useState<ReviewItem[] | null>(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(() => Number(localStorage.getItem("aonarr_importreview_page_size")) || 60);
   const [metadataProviders, setMetadataProviders] = useState<Record<string, string[]>>({});
   const [matching, setMatching] = useState<ReviewItem | null>(null);
 
   function load() {
-    api.get<ReviewItem[]>("/import-review?status=pending").then(setItems);
+    const offset = (page - 1) * pageSize;
+    api.get<ReviewListResponse>(`/import-review?status=pending&limit=${pageSize}&offset=${offset}`).then((data) => {
+      setItems(data.items);
+      setTotal(data.total);
+    });
   }
 
-  useEffect(load, []);
+  useEffect(load, [page, pageSize]);
+  useEffect(() => {
+    localStorage.setItem("aonarr_importreview_page_size", String(pageSize));
+  }, [pageSize]);
   useEffect(() => {
     api.get<Record<string, string[]>>("/metadata/providers").then(setMetadataProviders);
   }, []);
@@ -86,6 +102,8 @@ export default function ImportReview() {
       })
     : [];
 
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
   if (!items) return <p className="empty">Loading...</p>;
 
   return (
@@ -99,37 +117,54 @@ export default function ImportReview() {
 
       {items.length === 0 && <p className="empty">Nothing needs review right now.</p>}
       {items.length > 0 && (
-        <table>
-          <thead>
-            <tr>
-              {sortableHeader("title", "Title")}
-              {sortableHeader("year", "Year")}
-              {sortableHeader("type", "Type")}
-              {sortableHeader("source", "Source")}
-              {sortableHeader("queued", "Queued")}
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map((item) => (
-              <tr key={item.id}>
-                <td>{item.title}</td>
-                <td>{item.year ?? "-"}</td>
-                <td>{item.type}</td>
-                <td>{item.source === "watchlist" ? "Watchlist Import" : item.source}</td>
-                <td>{item.createdAt}</td>
-                <td style={{ display: "flex", gap: 6 }}>
-                  <button type="button" className="icon-button" onClick={() => setMatching(item)} title="Match..." aria-label="Match">
-                    <SearchIcon />
-                  </button>
-                  <button type="button" className="icon-button danger" onClick={() => dismiss(item)} title="Dismiss" aria-label="Dismiss">
-                    <XIcon />
-                  </button>
-                </td>
+        <>
+          <table>
+            <thead>
+              <tr>
+                {sortableHeader("title", "Title")}
+                {sortableHeader("year", "Year")}
+                {sortableHeader("type", "Type")}
+                {sortableHeader("source", "Source")}
+                {sortableHeader("queued", "Queued")}
+                <th></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {sorted.map((item) => (
+                <tr key={item.id}>
+                  <td>{item.title}</td>
+                  <td>{item.year ?? "-"}</td>
+                  <td>{item.type}</td>
+                  <td>{item.source === "watchlist" ? "Watchlist Import" : item.source}</td>
+                  <td>{item.createdAt}</td>
+                  <td style={{ display: "flex", gap: 6 }}>
+                    <button type="button" className="icon-button" onClick={() => setMatching(item)} title="Match..." aria-label="Match">
+                      <SearchIcon />
+                    </button>
+                    <button type="button" className="icon-button danger" onClick={() => dismiss(item)} title="Dismiss" aria-label="Dismiss">
+                      <XIcon />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <Pagination
+            page={page}
+            totalPages={totalPages}
+            total={total}
+            pageSize={pageSize}
+            hasPrev={page > 1}
+            hasNext={page < totalPages}
+            onPrev={() => setPage((p) => p - 1)}
+            onNext={() => setPage((p) => p + 1)}
+            onPageSizeChange={(n) => {
+              setPageSize(n);
+              setPage(1);
+            }}
+            pageSizeOptions={DEFAULT_PAGE_SIZE_OPTIONS}
+          />
+        </>
       )}
 
       {matching && (

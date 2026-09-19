@@ -6,6 +6,7 @@ import { SearchIcon } from "../components/NavIcons.js";
 import { ArrowRightIcon } from "../components/ActionIcons.js";
 import { ToolbarButton } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
+import Pagination, { DEFAULT_PAGE_SIZE_OPTIONS } from "../components/Pagination.js";
 
 interface CutoffUnmetRow {
   mediaItemId: number;
@@ -17,6 +18,14 @@ interface CutoffUnmetRow {
   currentQuality: string;
   cutoff: string;
   profileName: string;
+}
+
+interface CutoffUnmetResponse {
+  rows: CutoffUnmetRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
 }
 
 function rowKey(r: CutoffUnmetRow): string {
@@ -31,18 +40,24 @@ function toTarget(r: CutoffUnmetRow) {
  * still ranks below its own quality profile's cutoff, with the same per-row/bulk re-search flow
  * Missing.tsx uses for items with no file at all. */
 export default function CutoffUnmet() {
-  const [rows, setRows] = useState<CutoffUnmetRow[] | null>(null);
+  const [data, setData] = useState<CutoffUnmetResponse | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(() => Number(localStorage.getItem("aonarr_cutoffunmet_page_size")) || 60);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [searching, setSearching] = useState(false);
 
   function load() {
-    api.get<CutoffUnmetRow[]>("/wanted/cutoff-unmet").then((data) => {
-      setRows(data);
+    api.get<CutoffUnmetResponse>(`/wanted/cutoff-unmet?page=${page}&pageSize=${pageSize}`).then((res) => {
+      setData(res);
       setSelected(new Set());
     });
   }
 
-  useEffect(load, []);
+  useEffect(load, [page, pageSize]);
+
+  useEffect(() => {
+    localStorage.setItem("aonarr_cutoffunmet_page_size", String(pageSize));
+  }, [pageSize]);
 
   function toggle(r: CutoffUnmetRow) {
     setSelected((prev) => {
@@ -69,14 +84,14 @@ export default function CutoffUnmet() {
   }
 
   async function bulkSearch() {
-    if (!rows) return;
-    const targets = rows.filter((r) => selected.has(rowKey(r)));
+    if (!data) return;
+    const targets = data.rows.filter((r) => selected.has(rowKey(r)));
     await searchRows(targets);
   }
 
   const { sortRows, sortableHeader } = useSortableTable<CutoffUnmetRow, "media" | "item" | "current" | "cutoff" | "profile">("media");
-  const sorted = rows
-    ? sortRows(rows, (a, b, key) => {
+  const sorted = data
+    ? sortRows(data.rows, (a, b, key) => {
         if (key === "media") return a.mediaTitle.localeCompare(b.mediaTitle);
         if (key === "item") return a.label.localeCompare(b.label);
         if (key === "current") return a.currentQuality.localeCompare(b.currentQuality);
@@ -85,7 +100,7 @@ export default function CutoffUnmet() {
       })
     : [];
 
-  if (!rows) return <p className="empty">Loading...</p>;
+  if (!data) return <p className="empty">Loading...</p>;
 
   return (
     <div>
@@ -107,15 +122,15 @@ export default function CutoffUnmet() {
           </button>
         </div>
       )}
-      {rows.length === 0 && <p className="empty">Nothing here — everything downloaded already meets its profile's cutoff.</p>}
-      {rows.length > 0 && (
+      {data.rows.length === 0 && <p className="empty">Nothing here — everything downloaded already meets its profile's cutoff.</p>}
+      {data.rows.length > 0 && (
         <>
-          {rows.length > 1 && (
+          {data.rows.length > 1 && (
             <div className="toolbar" style={{ marginBottom: 10 }}>
               <ToolbarButton
                 icon={<SearchIcon />}
                 label={searching ? "Searching..." : "Search All"}
-                onClick={() => searchRows(rows)}
+                onClick={() => searchRows(data.rows)}
                 disabled={searching}
                 title="Search all"
               />
@@ -160,6 +175,21 @@ export default function CutoffUnmet() {
               ))}
             </tbody>
           </table>
+          <Pagination
+            page={data.page}
+            totalPages={data.totalPages}
+            total={data.total}
+            pageSize={pageSize}
+            hasPrev={page > 1}
+            hasNext={page < data.totalPages}
+            onPrev={() => setPage((p) => p - 1)}
+            onNext={() => setPage((p) => p + 1)}
+            onPageSizeChange={(n) => {
+              setPageSize(n);
+              setPage(1);
+            }}
+            pageSizeOptions={DEFAULT_PAGE_SIZE_OPTIONS}
+          />
         </>
       )}
     </div>

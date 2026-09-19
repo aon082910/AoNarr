@@ -5,6 +5,7 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 import { XIcon } from "../components/ActionIcons.js";
+import Pagination, { DEFAULT_PAGE_SIZE_OPTIONS } from "../components/Pagination.js";
 
 interface HistoryRow {
   id: number;
@@ -14,6 +15,11 @@ interface HistoryRow {
   createdAt: string;
   mediaTitle: string;
   mediaType: string;
+}
+
+interface HistoryResponse {
+  items: HistoryRow[];
+  total: number;
 }
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
@@ -37,26 +43,36 @@ function eventDetail(row: HistoryRow): string {
  * (MediaDetail.tsx) or the unfiltered dashboard Timeline widget (Activity.tsx). */
 export default function HistoryPage() {
   const mediaTypes = useMediaTypes();
-  const [rows, setRows] = useState<HistoryRow[] | null>(null);
+  const [data, setData] = useState<HistoryResponse | null>(null);
   // Remembered across visits (Radarr keeps its own list filters sticky per-page too) — otherwise
   // every trip back to History resets to "All events/All libraries" even right after narrowing
   // down to track one specific failure.
   const [eventType, setEventType] = useState(() => localStorage.getItem("aonarr_history_eventType") ?? "all");
   const [mediaType, setMediaType] = useState(() => localStorage.getItem("aonarr_history_mediaType") ?? "all");
   const [since, setSince] = useState(() => localStorage.getItem("aonarr_history_since") ?? "");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(() => Number(localStorage.getItem("aonarr_history_page_size")) || 100);
 
   function load() {
     const params = new URLSearchParams();
     if (eventType !== "all") params.set("eventType", eventType);
     if (mediaType !== "all") params.set("mediaType", mediaType);
     if (since) params.set("since", since);
-    api.get<HistoryRow[]>(`/activity/history?${params.toString()}`).then(setRows);
+    params.set("limit", String(pageSize));
+    params.set("offset", String((page - 1) * pageSize));
+    api.get<HistoryResponse>(`/activity/history?${params.toString()}`).then(setData);
   }
 
-  useEffect(load, [eventType, mediaType, since]);
+  useEffect(load, [eventType, mediaType, since, page, pageSize]);
   useEffect(() => localStorage.setItem("aonarr_history_eventType", eventType), [eventType]);
   useEffect(() => localStorage.setItem("aonarr_history_mediaType", mediaType), [mediaType]);
   useEffect(() => localStorage.setItem("aonarr_history_since", since), [since]);
+  useEffect(() => localStorage.setItem("aonarr_history_page_size", String(pageSize)), [pageSize]);
+  // A changed filter narrows/changes the result set entirely — staying on page 4 of the old results
+  // would otherwise show a confusing empty or wrong page (matches LibraryType.tsx's own convention).
+  useEffect(() => setPage(1), [eventType, mediaType, since]);
+
+  const totalPages = Math.max(1, Math.ceil((data?.total ?? 0) / pageSize));
 
   return (
     <div>
@@ -97,11 +113,27 @@ export default function HistoryPage() {
         }
       />
 
-      {!rows && <p className="empty">Loading...</p>}
-      {rows && rows.length === 0 && <p className="empty">Nothing here yet.</p>}
-      {rows && rows.length > 0 && <HistoryTable rows={rows} />}
-      {rows && rows.length === 500 && (
-        <p className="empty">Showing the 500 most recent matching events — narrow the filters above to see further back.</p>
+      {!data && <p className="empty">Loading...</p>}
+      {data && data.items.length === 0 && <p className="empty">Nothing here yet.</p>}
+      {data && data.items.length > 0 && (
+        <>
+          <HistoryTable rows={data.items} />
+          <Pagination
+            page={page}
+            totalPages={totalPages}
+            total={data.total}
+            pageSize={pageSize}
+            hasPrev={page > 1}
+            hasNext={page < totalPages}
+            onPrev={() => setPage((p) => p - 1)}
+            onNext={() => setPage((p) => p + 1)}
+            onPageSizeChange={(n) => {
+              setPageSize(n);
+              setPage(1);
+            }}
+            pageSizeOptions={DEFAULT_PAGE_SIZE_OPTIONS}
+          />
+        </>
       )}
     </div>
   );
