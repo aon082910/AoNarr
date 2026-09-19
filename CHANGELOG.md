@@ -3,6 +3,35 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 316 — live-tailing System → Logs, Radarr/Sonarr-style
+
+**System → Logs now live-tails**, matching how the other Starr apps' own Logs page behaves, instead
+of only ever showing a snapshot from whenever you last clicked "Load logs"/"Refresh". A new SSE
+channel (`GET /api/system/logs/stream`, `services/logger.ts`'s `push()` now broadcasts every entry
+the moment it's logged to any open connection) pushes new lines to the page as they happen; the page
+now also auto-loads the first batch the moment you open the Logs tab instead of starting empty. A
+"● Live"/"Pause" control lets you freeze the view mid-read without losing the connection — pausing
+just drops incoming lines rather than queuing them, so resuming picks up from "now," not from where
+you paused. A live entry is filtered against whatever level/search filter is currently set, same as
+the existing "Load logs" fetch, so switching to "Error only" mid-session stops new warn/info lines
+from appearing without needing a manual refresh to take effect.
+
+This did **not** need any change to get log lines into `docker compose logs` — `logger.ts`'s
+`log.info/warn/error` already unconditionally call `console.log/warn/error` before anything else
+(persisting to the in-memory buffer/daily log file is the only thing the configurable "Log
+verbosity" setting gates), so every line the new live view streams was already going to the
+container's own stdout/stderr regardless. Confirmed this explicitly during verification rather than
+assuming it, since it's exactly the kind of invariant a change like this could accidentally break.
+
+Verified: `npx tsc --noEmit` clean in both projects. Live-verified against the real, rebuilt
+server — opened the Logs tab and confirmed it auto-loaded and connected ("● Live"); the container's
+own periodic IRC-reconnect warning (fires every 30s) appeared in the UI within a second of each
+firing, with no manual refresh; clicking "Pause" and waiting through two more 30s cycles confirmed
+nothing new appeared, then "Resume" picked the next one up immediately; setting the level filter to
+"Error" and waiting through two more cycles confirmed the live warn-level lines were correctly
+withheld from the view while `docker logs aonarr-server` kept receiving them the whole time,
+unaffected.
+
 ## Round 315 — trending/recommended items were missing their backdrop image in the new preview
 
 Round 314 sent Discover/Recommendations cards to the same `/add/preview` hero page Add Media and

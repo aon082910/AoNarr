@@ -30,7 +30,7 @@ import { findRepeatedImports } from "../services/duplicates.js";
 import { findUpgradeCandidates } from "../services/upgradeCandidates.js";
 import { getStorageForecast, recordDiskUsageSamples } from "../services/storageForecast.js";
 import { getMediaTypeConfig } from "../services/mediaTypes.js";
-import { getRecentLogs, listLogFiles, log, resolveLogFilePath } from "../services/logger.js";
+import { getRecentLogs, listLogFiles, log, registerLogStreamClient, resolveLogFilePath, unregisterLogStreamClient } from "../services/logger.js";
 import { checkForUpdate } from "../services/updateCheck.js";
 import { findDuplicateFiles, findUnmonitoredNoFile } from "../services/cleanupSuggestions.js";
 import { listReleaseGroupStats } from "../services/releaseGroupStats.js";
@@ -167,6 +167,38 @@ systemRouter.get(
     res.json(getRecentLogs({ level, search, since }));
   })
 );
+
+/**
+ * Server-Sent Events channel for a live-tailing System → Logs page (Radarr/Sonarr-style), pushing
+ * every new entry the moment it's logged instead of the page's old load-once/manual-refresh view.
+ * Same pattern as activity.ts's own /stream route (see services/realtime.ts) — an EventSource can't
+ * set the X-Api-Key/X-Session-Token headers, so requireAuth's `?apikey=`/`?sessionToken=` query
+ * fallback carries the credential instead.
+ */
+systemRouter.get("/logs/stream", (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.write(": connected\n\n");
+  registerLogStreamClient(res);
+
+  // Keeps the connection from being silently dropped by an idle-timeout proxy between the browser
+  // and this server (nginx in the :web/:combined images, or a reverse proxy on Unraid).
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(": ping\n\n");
+    } catch {
+      clearInterval(heartbeat);
+    }
+  }, 30_000);
+
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    unregisterLogStreamClient(res);
+  });
+});
 
 /** Radarr-style System → Log Files — persistent daily log files on disk (see logger.ts), distinct
  * from the in-memory "recent logs" above which resets on every restart. */

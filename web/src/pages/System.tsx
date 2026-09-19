@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, downloadFile, uploadRaw } from "../api/client.js";
+import { api, downloadFile, getApiKey, getSessionToken, uploadRaw } from "../api/client.js";
 import FolderPicker from "../components/FolderPicker.js";
 import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
@@ -230,6 +230,12 @@ export default function System() {
   const [logsLoading, setLogsLoading] = useState(false);
   const [logLevelFilter, setLogLevelFilter] = useState("");
   const [logSearch, setLogSearch] = useState("");
+  const [logsLive, setLogsLive] = useState(true);
+  const [logsStreamConnected, setLogsStreamConnected] = useState(false);
+  const logsLiveRef = useRef(logsLive);
+  logsLiveRef.current = logsLive;
+  const logFilterRef = useRef({ level: logLevelFilter, search: logSearch });
+  logFilterRef.current = { level: logLevelFilter, search: logSearch };
   const [logFiles, setLogFiles] = useState<LogFile[] | null>(null);
   const { sortRows: sortLogFiles, sortableHeader: logFilesHeader } = useSortableTable<LogFile, "file" | "size" | "modified">("modified", "desc");
   const [updateCheck, setUpdateCheck] = useState<UpdateCheckResult | null>(null);
@@ -312,6 +318,49 @@ export default function System() {
     a.click();
     URL.revokeObjectURL(url);
   }
+
+  // Auto-loads the first batch the moment the Logs tab is opened, same as Radarr/Sonarr's own
+  // Logs page — previously this stayed empty until "Load logs" was clicked by hand.
+  useEffect(() => {
+    if (tab === "logs" && logs === null) loadLogs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  /** Radarr/Sonarr-style live tail: an SSE connection (see routes/system.ts's GET /logs/stream)
+   * pushes every new entry as it's logged, prepended onto the already-loaded batch (this view sorts
+   * newest first). Only open while the Logs tab is actually showing — System.tsx keeps every tab's
+   * markup mounted at once (just hidden via CSS), so without this the connection would stay open
+   * for as long as the System page itself is, even while looking at an unrelated tab. Filtering a
+   * live entry against the current level/search filter goes through a ref (logFilterRef) rather
+   * than closing over the state directly, since this effect only re-runs when `tab` changes, not on
+   * every filter keystroke. */
+  useEffect(() => {
+    if (tab !== "logs") {
+      setLogsStreamConnected(false);
+      return;
+    }
+    const apiKey = getApiKey();
+    const sessionToken = getSessionToken();
+    const authParam = apiKey ? `apikey=${encodeURIComponent(apiKey)}` : sessionToken ? `sessionToken=${encodeURIComponent(sessionToken)}` : null;
+    if (!authParam) return;
+
+    const stream = new EventSource(`/api/system/logs/stream?${authParam}`);
+    stream.onopen = () => setLogsStreamConnected(true);
+    stream.onerror = () => setLogsStreamConnected(false);
+    stream.addEventListener("log", (e: MessageEvent) => {
+      if (!logsLiveRef.current) return;
+      const entry = JSON.parse(e.data) as LogEntry;
+      const { level, search } = logFilterRef.current;
+      if (level && entry.level !== level) return;
+      if (search.trim() && !entry.message.toLowerCase().includes(search.trim().toLowerCase())) return;
+      setLogs((prev) => [entry, ...(prev ?? [])].slice(0, 2000));
+    });
+
+    return () => {
+      stream.close();
+      setLogsStreamConnected(false);
+    };
+  }, [tab]);
 
   function loadLogFiles() {
     api.get<LogFile[]>("/system/log-files").then(setLogFiles);
@@ -1444,8 +1493,8 @@ export default function System() {
       <h2>Logs</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
-          The last 2000 log lines, newest first — the same output as{" "}
-          <code>docker compose logs aonarr-server</code> without needing shell access.
+          The last 2000 log lines, newest first, live-updating as new lines are logged — the same
+          output as <code>docker compose logs aonarr-server</code> without needing shell access.
         </p>
         <label htmlFor="system-log-verbosity-11">Log verbosity</label>
         <select id="system-log-verbosity-11"
@@ -1484,6 +1533,14 @@ export default function System() {
             <button type="button" className="icon-button" onClick={downloadLogs} title="Download .log" aria-label="Download .log">
               <DownloadIcon />
             </button>
+          )}
+          <button type="button" className="secondary" onClick={() => setLogsLive((v) => !v)} style={{ marginTop: 0 }}>
+            {logsLive ? "Pause" : "Resume"}
+          </button>
+          {logsLive && (
+            <span className={logsStreamConnected ? "badge ok" : "badge"} title={logsStreamConnected ? "Receiving new log lines live" : "Connecting..."}>
+              {logsStreamConnected ? "● Live" : "Connecting..."}
+            </span>
           )}
         </div>
         {logs && (

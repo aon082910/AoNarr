@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { Response } from "express";
 import { config } from "../config.js";
 import { getSetting } from "./settingsStore.js";
 import { currentRequestId } from "./requestContext.js";
@@ -108,13 +109,41 @@ function isPersisted(level: LogLevel): boolean {
   return LEVEL_RANK[level] >= threshold;
 }
 
+/** Radarr/Sonarr-style live-tailing System → Logs page (see routes/system.ts's GET /logs/stream) —
+ * a Set of open SSE connections that get every new entry pushed to them as it's logged, the same
+ * "register on connect, write until the client disconnects" pattern services/realtime.ts already
+ * uses for the Activity queue. Kept here rather than in realtime.ts since it's tightly coupled to
+ * this module's own buffer/push() — realtime.ts stays queue-specific. */
+const streamClients = new Set<Response>();
+
+export function registerLogStreamClient(res: Response): void {
+  streamClients.add(res);
+}
+
+export function unregisterLogStreamClient(res: Response): void {
+  streamClients.delete(res);
+}
+
+function broadcast(entry: LogEntry): void {
+  if (streamClients.size === 0) return;
+  const payload = `event: log\ndata: ${JSON.stringify(entry)}\n\n`;
+  for (const res of streamClients) {
+    try {
+      res.write(payload);
+    } catch {
+      // a write to a half-closed connection — the client's own "close" handler unregisters it
+    }
+  }
+}
+
 function push(level: LogLevel, args: unknown[]): void {
   if (!isPersisted(level)) return;
   const message = args
     .map((a) => (a instanceof Error ? a.stack ?? a.message : typeof a === "string" ? a : JSON.stringify(a)))
     .join(" ");
   const timestamp = new Date().toISOString();
-  buffer.push({ level, message, timestamp });
+  const entry: LogEntry = { level, message, timestamp };
+  buffer.push(entry);
   if (buffer.length > MAX_ENTRIES) buffer.shift();
   try {
     currentStream().write(`[${timestamp}] ${level.toUpperCase()} ${message}\n`);
@@ -122,6 +151,7 @@ function push(level: LogLevel, args: unknown[]): void {
     // disk full / permissions issue writing the log file shouldn't break the app — the in-memory
     // buffer and stdout/stderr below still carry the message either way
   }
+  broadcast(entry);
 }
 
 /** Prepends `[reqId]` to a log call's args when made while handling a request (see
