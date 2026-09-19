@@ -1428,8 +1428,8 @@ export function LibraryItemGrid({
                   {allFieldKeys
                     // "status" is deliberately excluded here even when selected in Poster info — the
                     // colored poster-banner above already shows Downloaded/Missing/etc. at a glance;
-                    // repeating it as plain text underneath was pure duplication. Still shown in
-                    // Overview view (see below), which has no banner of its own.
+                    // repeating it as plain text underneath was pure duplication. Overview view's own
+                    // badge (below) needs the identical exclusion for the identical reason.
                     .filter((f) => posterFields.has(f) && f !== "status")
                     .map((f) => (f === "monitored" && item.monitored ? "" : fieldValue(item, f, customColumnsForType)))
                     .filter(Boolean)
@@ -1472,7 +1472,9 @@ export function LibraryItemGrid({
                       {banner.label}
                     </span>
                     {allFieldKeys
-                      .filter((f) => posterFields.has(f))
+                      // Same "status" exclusion as Poster view above — this row already has its own
+                      // badge (just above) showing Downloaded/Missing/etc.
+                      .filter((f) => posterFields.has(f) && f !== "status")
                       .map((f) => (f === "monitored" && item.monitored ? "" : fieldValue(item, f, customColumnsForType)))
                       .filter(Boolean)
                       .map((v, i) => (

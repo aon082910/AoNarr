@@ -3,6 +3,27 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 318 — Overview view mode duplicated the Status field as raw text next to its own badge
+
+Checking "Status" in Poster info (on by default) and switching to **Overview** view mode showed
+each item's status twice: the colored "Missing"/"Downloaded"/etc. badge Overview already renders
+for every row, immediately followed by the same status again as plain lowercase text (`missing`,
+`downloaded`, `unmonitored`, ...) — literally the CSS class name (`fieldValue()`'s `"status"` case
+returns `posterBanner(item).cls`, not a human label). Poster view already excludes "status" from its
+extra-fields line for exactly this reason (its own poster-banner strip shows it), but that exclusion
+was only ever applied to Poster view — Overview view has had its own identical badge the whole time
+and was never given the same exclusion, so it double-printed on every row for every library type.
+
+Fixed by applying the same `f !== "status"` filter to Overview view's field list that Poster view
+already had, and corrected the stale comment above Poster view's filter (it claimed Overview "has no
+banner of its own," which stopped being true once Overview's badge was added). Table/List view was
+already correct — it renders "Status" as its own dedicated badge cell only when explicitly added as
+a column, with no separate always-on indicator to duplicate against.
+
+Verified: `npx tsc --noEmit` clean. Live-verified on the running dev server — Overview view now
+shows just the badge + year (no duplicate lowercase status text) for the same items that showed the
+bug before the fix; Poster and Table views re-checked and unaffected.
+
 ## Round 317 — Poster info: three options were dead weight on most library types
 
 **"Quality," "Path," and "Size on disk" in the Poster info/Overview info/Columns menu (and the
