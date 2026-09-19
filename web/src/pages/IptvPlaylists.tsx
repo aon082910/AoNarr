@@ -523,7 +523,7 @@ export default function IptvPlaylists() {
       <div className="form-panel" style={{ marginTop: 16 }}>
         <label>Playlist token</label>
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
-          Shared by every feed URL above — a media server subscribes with a plain URL and no
+          Shared by every playlist's feed URL — a media server subscribes with a plain URL and no
           custom headers, so this is gated by its own token instead of the admin API key.
         </p>
         <button type="button" className="danger" onClick={regenerateToken}>

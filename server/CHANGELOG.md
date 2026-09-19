@@ -3,6 +3,45 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 321 — copy sweep, part 2: more dangling cross-tab/cross-modal references
+
+Follow-up to Round 320: pulled every remaining "above"/"below" occurrence in the two largest, most
+candidate-dense pages (`Settings.tsx` at ~3300 lines and `MediaDetail.tsx` at ~2200) — both were
+bundled with 7-8 other files in Round 320's page-group review, which likely under-covered them —
+plus a handful of scattered candidates elsewhere, and had each one individually traced against the
+actual tab/tile/modal structure. Six more confirmed:
+
+- `Settings.tsx`'s Trakt List Sync tile said it "reuses the Trakt Client ID set **above** under
+  Metadata Providers" — Trakt List Sync lives under the Library Sync tab, Metadata Providers is a
+  completely different tab (mutually exclusive, same bug class as Round 320's SMTP/Plex-token
+  fixes). Dropped the positional word, matching the fix style already used there.
+- `Settings.tsx`'s Tags tile said a tag's retention override falls back to "Watch-status
+  Auto-Archival **above**" — that section is on the Media Management tab, Tags is on Library Sync.
+  Now names the actual location.
+- `Settings.tsx`'s "Sync from TRaSH-Guides" panel said newly-synced custom formats need "a score for
+  them **below**" — scoring happens in the separate Format Scores tile, not anywhere in this tile's
+  own render (which ends with just the sync buttons and a JSON-paste panel). The very same render
+  function already correctly says "from the Format Scores tile" a few lines earlier with no
+  positional word — this occurrence just hadn't caught up to that phrasing.
+- `Settings.tsx`'s "Unmonitor Deleted Files" description had a duplicated clause, not a positional
+  bug: both halves of a sentence meant to contrast "stay monitored" vs. "unmonitor" said "left
+  monitored" and described the same outcome, never actually saying what the Unmonitor option does.
+- `MediaDetail.tsx`'s Edit Metadata dialog said you could set a poster/backdrop "via the Artwork
+  picker **below**" — the Artwork picker is a separate, mutually-exclusive full-screen modal (opened
+  from the page toolbar), not something reachable or visible from inside this dialog. Reworded to
+  say to close the dialog and use the toolbar button instead.
+- `IptvPlaylists.tsx`'s Playlist Token panel said it's "shared by every feed URL **above**" — a
+  playlist's feed URL only ever renders inside that one playlist's edit modal (a full-screen overlay
+  that covers this exact panel while open), so it's never actually visible "above" this text; also
+  overstated "every" when only one URL is ever shown at a time. Reworded to describe the
+  relationship conceptually instead of claiming visibility.
+
+Verified: `npx tsc --noEmit` clean. Live-verified the two cross-tab Settings.tsx fixes (Trakt Client
+ID, Tags/Archival) directly against the running dev server by switching tabs and expanding each
+tile; the other four are pure text changes confirmed correct via careful tracing (both by the
+auditing agents and independently by direct source reading before editing), with no logic or layout
+touched.
+
 ## Round 320 — copy sweep: dangling "above"/"below" references and grammar fixes
 
 User-reported: Media Analyzer's truncation notice said "summary above still covers everything" right

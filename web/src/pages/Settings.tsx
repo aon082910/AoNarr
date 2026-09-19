@@ -2459,9 +2459,10 @@ export default function Settings() {
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
                   A nightly check now notices when a file AoNarr had on record has disappeared
                   from disk (deleted outside AoNarr, a bad mount, etc.) and corrects its "has file"
-                  status either way. This setting only controls whether it's also unmonitored (off
-                  by default — left monitored, so it gets auto-re-searched and redownloaded like
-                  any other missing item) versus left monitored so AoNarr tries to get it back.
+                  status either way. This setting only controls whether it's also unmonitored — off
+                  by default, left monitored, so it gets auto-re-searched and redownloaded like any
+                  other missing item, versus unmonitored, so AoNarr won't automatically try to get
+                  it back.
                 </p>
                 <label htmlFor="settings-unmonitor-on-delete-66">Unmonitor on delete</label>
                 <select id="settings-unmonitor-on-delete-66"
@@ -2649,7 +2650,7 @@ export default function Settings() {
                   Point this at a public Trakt list or watchlist URL (e.g.{" "}
                   <code>https://trakt.tv/users/you/lists/to-watch</code> or{" "}
                   <code>https://trakt.tv/users/you/watchlist</code>) and AoNarr adds anything new in it as
-                  a monitored movie or TV show — reuses the Trakt Client ID set above under Metadata
+                  a monitored movie or TV show — reuses the Trakt Client ID set under Metadata
                   Providers. Runs every 12 hours; never removes items the list no longer has.
                 </p>
                 <label htmlFor="settings-enable-trakt-sync-78">Enable Trakt sync</label>
@@ -2801,8 +2802,9 @@ export default function Settings() {
             render: () => (
               <div>
                 <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
-                  A tag's archival retention overrides the instance-wide default (Watch-status Auto-
-                  Archival above) for every item it's applied to. Leave blank to use the default, enter a
+                  A tag's archival retention overrides the instance-wide default (Watch-status
+                  Auto-Archival, under Media Management → Media Server Sync) for every item it's
+                  applied to. Leave blank to use the default, enter a
                   number of days to keep items longer/shorter, or "never" to exempt tagged items entirely.
                   When an item has multiple overrides (from tags or collections), the most protective one
                   wins.
@@ -3223,7 +3225,7 @@ export default function Settings() {
                     GitHub repo — unlike the one-off paste below, this is repeatable: re-running updates
                     formats already synced in (matched by TRaSH's own stable id) instead of duplicating them,
                     so it stays current as TRaSH's guides change. Newly-synced formats are scored 0 on every
-                    quality profile until you set a score for them below.
+                    quality profile until you set a score for them in the Format Scores tile.
                   </p>
                   <div style={{ display: "flex", gap: 8 }}>
                     <button type="button" onClick={() => syncTrashFormats("radarr")} disabled={trashSyncing !== null}>

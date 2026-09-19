@@ -1778,7 +1778,7 @@ export default function MediaDetail() {
             </div>
             <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
               Any direct image URL works for either field — paste one from a search result, Fanart.tv
-              (via the Artwork picker below), or anywhere else. Saving also updates this item's .nfo
+              (via the toolbar's Artwork picker — close this dialog first), or anywhere else. Saving also updates this item's .nfo
               sidecar on disk, if it has a file, so a media server picks up the poster correction on
               its next scan.
             </p>
