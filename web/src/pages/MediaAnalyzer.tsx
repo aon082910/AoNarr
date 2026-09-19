@@ -1,12 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { api } from "../api/client.js";
+import { api, downloadFile } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { HdrFormat, MediaInfo } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
-import { ZapIcon } from "../components/NavIcons.js";
+import { SearchIcon, DownloadIcon, ZapIcon } from "../components/NavIcons.js";
+import { ArrowRightIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
+import Pagination, { DEFAULT_PAGE_SIZE_OPTIONS } from "../components/Pagination.js";
 import { notify } from "../utils/notify.js";
 
 interface CompatibilityNote {
@@ -41,8 +43,40 @@ const STAT_LABELS: Record<StatCategory, string> = {
   spokenLanguage: "Spoken language",
 };
 
-/** Mirrors exactly how the server bumped each stat bucket in mediaAnalysis.ts's getLibraryAnalysis
- * — a click on a count table row needs to reproduce that same grouping key client-side to find the
+/** Mirrors server/src/services/mediaAnalysis.ts's normalizeLanguage() exactly — a raw embedded
+ * language tag can be 2-letter ("en"), 3-letter ("eng"/"deu"/"ger" — muxers aren't consistent
+ * about bibliographic vs. terminology ISO 639-2 forms), or missing/"und". Intl.DisplayNames
+ * (built into every modern browser, no dependency) resolves all of those to the same canonical
+ * name, which is what fixes "English"/"en"/"eng" showing up as three separate rows — and is used
+ * here too so a stat-table click (grouped server-side) matches the same items client-side. */
+const languageDisplayNames = new Intl.DisplayNames(["en"], { type: "language" });
+function normalizeLanguage(raw: string | null | undefined): string {
+  const trimmed = (raw ?? "").trim().toLowerCase();
+  if (!trimmed || trimmed === "und" || trimmed === "unk" || trimmed === "n/a" || trimmed === "null") return "Unknown";
+  try {
+    const resolved = languageDisplayNames.of(trimmed);
+    if (!resolved || resolved.toLowerCase() === trimmed) return trimmed.toUpperCase();
+    return resolved;
+  } catch {
+    return trimmed.toUpperCase();
+  }
+}
+
+/** Mirrors server/src/services/mediaAnalysis.ts's resolutionTier() exactly — see that function's
+ * comment for why the long edge (not raw height) drives the HD/UHD classification. */
+function resolutionTier(width: number | null | undefined, height: number | null | undefined): string {
+  if (!width || !height) return "Unknown";
+  const long = Math.max(width, height);
+  if (long >= 3200) return "2160p (4K)";
+  if (long >= 1600) return "1080p";
+  if (long >= 960) return "720p";
+  const short = Math.min(width, height);
+  if (short >= 500) return "576p";
+  if (short >= 400) return "480p";
+  return "SD";
+}
+
+/** A click on a count table row needs to reproduce that same grouping key client-side to find the
  * matching items, since there's no server round-trip for this (every item is already in `data.items`). */
 function matchesStatFilter(item: AnalysisItem, filter: StatFilter): boolean {
   switch (filter.category) {
@@ -52,14 +86,12 @@ function matchesStatFilter(item: AnalysisItem, filter: StatFilter): boolean {
       return (item.mediaInfo.hdrFormat ?? "unknown") === filter.value;
     case "audioCodec":
       return (item.mediaInfo.audioStreams ?? []).some((a) => (a.codec ?? "unknown") === filter.value);
-    case "resolution": {
-      const label = item.mediaInfo.width && item.mediaInfo.height ? `${item.mediaInfo.width}x${item.mediaInfo.height}` : "unknown";
-      return label === filter.value;
-    }
+    case "resolution":
+      return resolutionTier(item.mediaInfo.width, item.mediaInfo.height) === filter.value;
     case "subtitleLanguage":
-      return (item.mediaInfo.subtitleStreams ?? []).some((s) => s.language === filter.value);
+      return (item.mediaInfo.subtitleStreams ?? []).some((s) => normalizeLanguage(s.language) === filter.value);
     case "spokenLanguage":
-      return (item.mediaInfo.audioStreams ?? []).some((a) => a.language === filter.value);
+      return (item.mediaInfo.audioStreams ?? []).some((a) => normalizeLanguage(a.language) === filter.value);
     default:
       return true;
   }
@@ -82,6 +114,16 @@ interface AnalysisResponse {
   truncated: boolean;
 }
 
+interface AnalysisProgress {
+  running: boolean;
+  type: string | null;
+  total: number;
+  done: number;
+  failed: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+}
+
 const HDR_LABELS: Record<HdrFormat, string> = {
   none: "SDR",
   hdr10: "HDR10",
@@ -91,6 +133,20 @@ const HDR_LABELS: Record<HdrFormat, string> = {
   "dolby-vision-hdr10": "Dolby Vision + HDR10",
   unknown: "Unknown",
 };
+
+function itemKey(item: AnalysisItem): string {
+  return `${item.table}-${item.id}`;
+}
+
+function toSearchTarget(item: AnalysisItem) {
+  return {
+    mediaItemId: item.mediaItemId,
+    episodeId: item.table === "episodes" ? item.id : undefined,
+    subItemId: item.table === "sub_items" ? item.id : undefined,
+  };
+}
+
+const BULK_SEARCH_CHUNK = 100;
 
 function CountTable({
   title,
@@ -138,14 +194,20 @@ export default function MediaAnalyzer() {
   const [data, setData] = useState<AnalysisResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState<AnalysisProgress | null>(null);
   const [filterLevel, setFilterLevel] = useState<"all" | "caution" | "incompatible">("all");
   const [statFilter, setStatFilter] = useState<StatFilter | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [searching, setSearching] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(() => Number(localStorage.getItem("aonarr_media_analyzer_page_size")) || 60);
   const { sortRows, sortableHeader } = useSortableTable<AnalysisItem, "title">("title");
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   function load() {
     setLoading(true);
     setStatFilter(null);
+    setSelected(new Set());
     setLoadError(null);
     // Cleared up front, not just on success — otherwise a failed reload after switching type kept
     // showing the previous type's stats/file list with no indication it's stale/wrong-type data.
@@ -161,22 +223,88 @@ export default function MediaAnalyzer() {
   /** Clicking the same row again clears the filter instead of re-applying it — a quick "toggle off". */
   function selectStat(category: StatCategory, value: string) {
     setStatFilter((prev) => (prev && prev.category === category && prev.value === value ? null : { category, value }));
+    setPage(1);
   }
 
   useEffect(load, [type]);
+  useEffect(() => setPage(1), [filterLevel, statFilter]);
+  useEffect(() => {
+    localStorage.setItem("aonarr_media_analyzer_page_size", String(pageSize));
+  }, [pageSize]);
+
+  function stopPolling() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }
+
+  function pollProgress() {
+    api
+      .get<AnalysisProgress>("/media-analysis/progress")
+      .then((p) => {
+        setProgress(p);
+        if (!p.running) {
+          stopPolling();
+          notify.success(`Analysis finished — ${p.done - p.failed} probed${p.failed > 0 ? `, ${p.failed} failed` : ""}.`);
+          load();
+        }
+      })
+      .catch(() => stopPolling());
+  }
+
+  // Picks up an already-running analysis (e.g. started from this page in another tab, or just
+  // before a page refresh) instead of only ever noticing a run this page itself started.
+  useEffect(() => {
+    api
+      .get<AnalysisProgress>("/media-analysis/progress")
+      .then((p) => {
+        if (p.running) {
+          setProgress(p);
+          pollRef.current = setInterval(pollProgress, 1200);
+        }
+      })
+      .catch(() => {});
+    return stopPolling;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function runAnalysis() {
-    setRunning(true);
-    try {
-      const qs = type ? `?type=${type}` : "";
-      await api.post(`/media-analysis/run${qs}`, {});
-      notify.info(
-        "Analysis started in the background — this re-probes every file and can take a while for a large library. Check the Logs page for the result, or come back to this page shortly.",
-        8000
-      );
-    } finally {
-      setTimeout(() => setRunning(false), 5000);
+    const qs = type ? `?type=${type}` : "";
+    const result = await api.post<{ started: boolean; reason?: string }>(`/media-analysis/run${qs}`, {});
+    if (!result.started) {
+      notify.info("An analysis run is already in progress — showing its live progress.");
     }
+    setProgress({ running: true, type: type || null, total: 0, done: 0, failed: 0, startedAt: Date.now(), finishedAt: null });
+    stopPolling();
+    pollRef.current = setInterval(pollProgress, 1200);
+  }
+
+  async function searchItems(targets: AnalysisItem[]) {
+    setSearching(true);
+    try {
+      let grabbed = 0;
+      for (let i = 0; i < targets.length; i += BULK_SEARCH_CHUNK) {
+        const chunk = targets.slice(i, i + BULK_SEARCH_CHUNK);
+        const results = await api.post<{ grabbed: boolean; error?: string }[]>("/search/bulk", {
+          targets: chunk.map(toSearchTarget),
+        });
+        grabbed += results.filter((r) => r.grabbed).length;
+      }
+      notify.success(`Grabbed ${grabbed} of ${targets.length} item(s).`);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  function toggleSelect(item: AnalysisItem) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const key = itemKey(item);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   }
 
   if (loading && !data) return <p className="empty">Loading...</p>;
@@ -189,6 +317,18 @@ export default function MediaAnalyzer() {
     }) ?? [],
     (a, b) => a.title.localeCompare(b.title)
   );
+  const totalPages = Math.max(1, Math.ceil(filteredItems.length / pageSize));
+  const pageItems = filteredItems.slice((page - 1) * pageSize, page * pageSize);
+  const pageAllSelected = pageItems.length > 0 && pageItems.every((i) => selected.has(itemKey(i)));
+
+  function toggleSelectPage() {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (pageAllSelected) pageItems.forEach((i) => next.delete(itemKey(i)));
+      else pageItems.forEach((i) => next.add(itemKey(i)));
+      return next;
+    });
+  }
 
   return (
     <div>
@@ -196,30 +336,56 @@ export default function MediaAnalyzer() {
       <p style={{ color: "var(--muted)" }}>
         Read-only inspection of every file's actual codec, resolution, HDR/Dolby Vision signaling,
         audio tracks, and subtitle tracks — plus rule-based playback-compatibility notes for common
-        hardware/software gotchas. Nothing here modifies or moves any file.
+        hardware/software gotchas. Nothing here modifies or moves any file, other than "Search" —
+        which behaves exactly like Cutoff Unmet's own re-search action.
       </p>
 
       <PageToolbar
         left={
           <ToolbarButton
             icon={<ZapIcon />}
-            label={running ? "Analyzing..." : "Analyze Now"}
+            label={progress?.running ? "Analyzing..." : "Analyze Now"}
             onClick={runAnalysis}
-            disabled={running}
-            title={running ? "Analyzing..." : "Analyze now"}
+            disabled={!!progress?.running}
+            title={progress?.running ? "Analyzing..." : "Analyze now"}
           />
         }
         right={
-          <select value={type} onChange={(e) => setType(e.target.value)} style={{ maxWidth: 200 }}>
-            <option value="">All libraries</option>
-            {mediaTypes.map((t) => (
-              <option key={t.key} value={t.key}>
-                {t.label}
-              </option>
-            ))}
-          </select>
+          <>
+            <select value={type} onChange={(e) => setType(e.target.value)} style={{ maxWidth: 200 }}>
+              <option value="">All libraries</option>
+              {mediaTypes.map((t) => (
+                <option key={t.key} value={t.key}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+            <ToolbarButton
+              icon={<DownloadIcon />}
+              label="Export CSV"
+              onClick={() => downloadFile(`/media-analysis/export.csv${type ? `?type=${type}` : ""}`, `aonarr-media-analysis${type ? `-${type}` : ""}.csv`)}
+              disabled={!data || data.items.length === 0}
+              title="Export the current analysis as CSV"
+            />
+          </>
         }
       />
+
+      {progress?.running && (
+        <div className="form-panel" style={{ marginBottom: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: "0.85rem", color: "var(--muted)" }}>
+            <span>
+              Analyzing {progress.type ?? "all libraries"}
+              {progress.total > 0 ? ` — ${progress.done} of ${progress.total} probed` : "…"}
+              {progress.failed > 0 ? ` (${progress.failed} failed)` : ""}
+            </span>
+            {progress.total > 0 && <span>{Math.round((progress.done / progress.total) * 100)}%</span>}
+          </div>
+          <div className="progress-bar" style={{ width: "100%" }}>
+            <div style={{ width: progress.total > 0 ? `${Math.round((progress.done / progress.total) * 100)}%` : "3%" }} />
+          </div>
+        </div>
+      )}
 
       {loadError && <p style={{ color: "var(--danger)" }}>{loadError}</p>}
 
@@ -311,27 +477,65 @@ export default function MediaAnalyzer() {
             </select>
           </div>
 
+          {selected.size > 0 && (
+            <div className="form-panel" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <strong>{selected.size} selected</strong>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => searchItems(filteredItems.filter((i) => selected.has(itemKey(i))))}
+                disabled={searching}
+                title={searching ? "Searching..." : "Search selected"}
+                aria-label="Search selected"
+              >
+                <SearchIcon />
+              </button>
+              <button type="button" className="secondary" onClick={() => setSelected(new Set())}>
+                Clear selection
+              </button>
+            </div>
+          )}
+
+          {filteredItems.length > 1 && (
+            <div className="toolbar" style={{ marginBottom: 10 }}>
+              <ToolbarButton
+                icon={<SearchIcon />}
+                label={searching ? "Searching..." : `Search All (${filteredItems.length})`}
+                onClick={() => searchItems(filteredItems)}
+                disabled={searching}
+                title="Search every file currently shown (respects the filters above)"
+              />
+            </div>
+          )}
+
           <table>
             <thead>
               <tr>
+                <th>
+                  <input type="checkbox" checked={pageAllSelected} onChange={toggleSelectPage} title="Select all on this page" aria-label="Select all on this page" />
+                </th>
                 {sortableHeader("title", "Title")}
                 <th>File info</th>
                 <th>HDR</th>
                 <th>Audio</th>
                 <th>Subtitles</th>
                 <th>Compatibility notes</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
-              {filteredItems.length === 0 && (
+              {pageItems.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="empty">
+                  <td colSpan={8} className="empty">
                     Nothing to show.
                   </td>
                 </tr>
               )}
-              {filteredItems.map((item) => (
-                <tr key={`${item.table}-${item.id}`}>
+              {pageItems.map((item) => (
+                <tr key={itemKey(item)}>
+                  <td>
+                    <input type="checkbox" checked={selected.has(itemKey(item))} onChange={() => toggleSelect(item)} />
+                  </td>
                   <td>
                     <Link to={`/media/${item.mediaItemId}`}>{item.title}</Link>
                   </td>
@@ -343,12 +547,12 @@ export default function MediaAnalyzer() {
                   </td>
                   <td>
                     {(item.mediaInfo.audioStreams ?? [])
-                      .map((a) => `${a.codec ?? "?"}${a.channels ? ` ${a.channels}ch` : ""}${a.language ? ` (${a.language})` : ""}`)
+                      .map((a) => `${a.codec ?? "?"}${a.channels ? ` ${a.channels}ch` : ""}${a.language ? ` (${normalizeLanguage(a.language)})` : ""}`)
                       .join(", ") || "-"}
                   </td>
                   <td>
                     {(item.mediaInfo.subtitleStreams ?? []).length > 0
-                      ? (item.mediaInfo.subtitleStreams ?? []).map((s) => s.language ?? s.codec ?? "?").join(", ")
+                      ? (item.mediaInfo.subtitleStreams ?? []).map((s) => (s.language ? normalizeLanguage(s.language) : s.codec ?? "?")).join(", ")
                       : "-"}
                   </td>
                   <td>
@@ -360,10 +564,43 @@ export default function MediaAnalyzer() {
                       </div>
                     ))}
                   </td>
+                  <td style={{ display: "flex", gap: 6 }}>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      onClick={() => searchItems([item])}
+                      disabled={searching}
+                      title="Search for a better release"
+                      aria-label="Search for a better release"
+                    >
+                      <SearchIcon />
+                    </button>
+                    <Link to={`/media/${item.mediaItemId}`}>
+                      <button type="button" className="icon-button" title="Open" aria-label="Open">
+                        <ArrowRightIcon />
+                      </button>
+                    </Link>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
+
+          <Pagination
+            page={page}
+            totalPages={totalPages}
+            total={filteredItems.length}
+            pageSize={pageSize}
+            hasPrev={page > 1}
+            hasNext={page < totalPages}
+            onPrev={() => setPage((p) => p - 1)}
+            onNext={() => setPage((p) => p + 1)}
+            onPageSizeChange={(n) => {
+              setPageSize(n);
+              setPage(1);
+            }}
+            pageSizeOptions={DEFAULT_PAGE_SIZE_OPTIONS}
+          />
         </>
       )}
     </div>

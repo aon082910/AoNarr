@@ -3,6 +3,60 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 312 — Media Analyzer: live progress, search-for-upgrade, pagination/CSV export, and a real language/resolution dedup bug
+Three requested improvements plus a real bug fix to the same page.
+
+**Duplicate resolution/language buckets, fixed.** The Resolution/Subtitle languages/Spoken
+languages summary tables grouped by the raw, unnormalized values — a language tag could be
+2-letter ("en"), 3-letter ("eng"), or either the bibliographic or terminology ISO 639-2 form
+("ger"/"deu", "fre"/"fra", "chi"/"zho" — muxers aren't consistent), so the same actual language
+showed up as 2-3 separate rows; resolution grouped by exact `WxH` ("1920x1080" vs. a cinematically
+-cropped "1920x804" of the same 1080p source) for the same reason. Fixed with two new pure
+functions in `services/mediaAnalysis.ts`: `normalizeLanguage()` (uses `Intl.DisplayNames`, built
+into Node/every browser — no new dependency — to resolve any of those forms to one canonical name,
+falling back to the raw code only when it's genuinely unrecognized) and `resolutionTier()`
+(classifies into the same named tiers the rest of the app already uses for the quality ladder and
+release-name parsing — 480p/576p/720p/1080p/2160p — by the *longer* edge, since a cinematic crop
+shrinks height, not width). Audio/subtitle tracks with no language tag at all now bucket as an
+explicit "Unknown" instead of being silently omitted. Both functions are duplicated client-side
+(same technique already used for `clampLimit`/`csvEscape`-style small utils) so a stat-table click
+still matches the same items it's grouping. New tests cover the exact "en"+"eng" and letterboxed
+-1080p dedup cases directly, and the one pre-existing test that asserted the old raw-string
+behavior is updated to the new (correct) grouping.
+
+**Live analysis progress**, replacing the old fire-and-forget "click Analyze Now, then go check
+the Logs page" experience: `runLibraryAnalysis()` now maintains a module-level progress state
+(`{running, total, done, failed}`) polled every 1.2s by a new `GET /media-analysis/progress`
+endpoint, rendered as a live progress bar with a running "N of M probed" count. `POST /run` now
+refuses to start a second run while one is already in flight (`{started:false, reason:
+"already-running"}`) instead of letting two overlapping probes race each other. Loading the page
+while a run is already active (e.g. started from another tab) picks up its progress immediately
+rather than only ever noticing a run this page itself started.
+
+**"Search for a better release"**, reusing the exact same `POST /search/bulk` automated search
+-and-grab endpoint Cutoff Unmet already uses for this identical "found something suboptimal, try
+to upgrade it" case — per-row and bulk (checkbox selection + "Search all currently shown,"
+respecting whatever filters are active) actions, chunked into batches of 100 to respect that
+endpoint's per-request cap regardless of how many rows are selected.
+
+**Pagination and CSV export**, matching every other list page's now-standard pattern. Since the
+whole analysis result is already fetched in one (fast, ffprobe-free — it only reads already-stored
+`media_info`) request, pagination here windows the already-loaded, already-filtered array
+client-side via the shared `Pagination` component rather than adding new server round-trips.
+"Export CSV" hits a new `GET /media-analysis/export.csv` endpoint (matching `/api/media/export.csv`'s
+existing convention) with one row per analyzed file — title, path, codec, resolution tier, HDR,
+audio/subtitle languages, and compatibility notes.
+
+Verified: `npx tsc --noEmit` clean in both projects; the full server test suite (89 files, 1377
+tests, including 20 new tests for `normalizeLanguage`/`resolutionTier`/the dedup regression) passes
+in a disposable Linux container. Live-verified against the real server with inserted fixture files
+covering "en" vs. "eng" vs. "fre" vs. "fra" audio tracks and a letterboxed-1080p file — confirmed
+they collapse into single "English"/"French"/"1080p" buckets and that clicking a bucket still
+finds the same items; ran a real analysis pass and confirmed the progress bar's poll-and-detect
+-completion cycle end to end (including the already-running guard); confirmed bulk search-selected,
+"Select all on this page", and CSV export (checked the actual response body) all work with no
+console errors.
+
 ## Round 311 — toolbar alignment fix, a real "Downloaded" status bug, and pagination for six more pages
 Three separate fixes/additions from user-reported issues.
 

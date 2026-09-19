@@ -13,10 +13,12 @@ let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 // reads at first import, never as a static top-level import.
 let analyzeCompatibility: (typeof import("../src/services/mediaAnalysis.js"))["analyzeCompatibility"];
 let runLibraryAnalysis: (typeof import("../src/services/mediaAnalysis.js"))["runLibraryAnalysis"];
+let normalizeLanguage: (typeof import("../src/services/mediaAnalysis.js"))["normalizeLanguage"];
+let resolutionTier: (typeof import("../src/services/mediaAnalysis.js"))["resolutionTier"];
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
-  ({ analyzeCompatibility, runLibraryAnalysis } = await import("../src/services/mediaAnalysis.js"));
+  ({ analyzeCompatibility, runLibraryAnalysis, normalizeLanguage, resolutionTier } = await import("../src/services/mediaAnalysis.js"));
 });
 
 function audio(overrides: Partial<AudioStreamInfo> = {}): AudioStreamInfo {
@@ -109,6 +111,59 @@ describe("analyzeCompatibility", () => {
   });
 });
 
+describe("normalizeLanguage", () => {
+  it("resolves 2-letter and 3-letter forms of the same language to one canonical name", () => {
+    expect(normalizeLanguage("en")).toBe("English");
+    expect(normalizeLanguage("eng")).toBe("English");
+  });
+
+  it("resolves both the bibliographic and terminology ISO 639-2 forms to the same name", () => {
+    // Muxers aren't consistent about which they write — "ger"/"deu" (German), "fre"/"fra" (French),
+    // and "chi"/"zho" (Chinese) are the most common real-world mismatches this fixes.
+    expect(normalizeLanguage("ger")).toBe(normalizeLanguage("deu"));
+    expect(normalizeLanguage("fre")).toBe(normalizeLanguage("fra"));
+    expect(normalizeLanguage("chi")).toBe(normalizeLanguage("zho"));
+  });
+
+  it("is case-insensitive", () => {
+    expect(normalizeLanguage("ENG")).toBe("English");
+    expect(normalizeLanguage("Eng")).toBe("English");
+  });
+
+  it("treats missing, empty, and 'und' (undetermined) as Unknown rather than three different buckets", () => {
+    expect(normalizeLanguage(null)).toBe("Unknown");
+    expect(normalizeLanguage(undefined)).toBe("Unknown");
+    expect(normalizeLanguage("")).toBe("Unknown");
+    expect(normalizeLanguage("und")).toBe("Unknown");
+  });
+
+  it("falls back to the raw uppercased code for something it can't resolve, instead of crashing", () => {
+    expect(normalizeLanguage("zzz")).toBe("ZZZ");
+  });
+});
+
+describe("resolutionTier", () => {
+  it("classifies standard landscape dimensions into the app's existing named tiers", () => {
+    expect(resolutionTier(3840, 2160)).toBe("2160p (4K)");
+    expect(resolutionTier(1920, 1080)).toBe("1080p");
+    expect(resolutionTier(1280, 720)).toBe("720p");
+    expect(resolutionTier(720, 576)).toBe("576p");
+    expect(resolutionTier(720, 480)).toBe("480p");
+  });
+
+  it("classifies a cinematically-cropped 1080p master by its stable width, not its shrunk height", () => {
+    // A 2.4:1 crop of a 1080p master is commonly 1920x804 — using height alone would misclassify
+    // this as 720p even though it's really a 1080p source.
+    expect(resolutionTier(1920, 804)).toBe("1080p");
+  });
+
+  it("returns Unknown when either dimension is missing", () => {
+    expect(resolutionTier(null, 1080)).toBe("Unknown");
+    expect(resolutionTier(1920, null)).toBe("Unknown");
+    expect(resolutionTier(undefined, undefined)).toBe("Unknown");
+  });
+});
+
 describe("getLibraryAnalysis", () => {
   async function insertMovie(title: string, mediaInfoValue: string | null): Promise<void> {
     await db
@@ -128,9 +183,46 @@ describe("getLibraryAnalysis", () => {
 
     const { summary, items } = await getLibraryAnalysis("movie");
     expect(summary.byVideoCodec.hevc).toBeGreaterThanOrEqual(1);
-    expect(summary.byResolution["1920x1080"]).toBeGreaterThanOrEqual(1);
-    expect(summary.spokenLanguages.eng).toBeGreaterThanOrEqual(1);
+    expect(summary.byResolution["1080p"]).toBeGreaterThanOrEqual(1);
+    expect(summary.spokenLanguages.English).toBeGreaterThanOrEqual(1);
     expect(items.some((i) => i.title === "Aggregate Test Movie")).toBe(true);
+  });
+
+  // Regression test: raw language tags used to be the grouping key directly, so "en"/"eng"/"ENG"
+  // (and letterboxed vs. unletterboxed dimensions of the same resolution) showed up as separate
+  // rows in the summary tables instead of one combined count.
+  it("collapses differently-tagged forms of the same language/resolution into one summary bucket", async () => {
+    const { getLibraryAnalysis } = await import("../src/services/mediaAnalysis.js");
+    await insertMovie(
+      "Dedup Movie One",
+      JSON.stringify(mediaInfo({ width: 1920, height: 1080, audioStreams: [audio({ language: "en" })], subtitleStreams: [subtitle({ language: "eng" })] }))
+    );
+    await insertMovie(
+      "Dedup Movie Two",
+      // Letterboxed crop of the same 1080p source, and the bibliographic ISO 639-2 form of the
+      // same language tag — both should land in the exact same buckets as the file above.
+      JSON.stringify(mediaInfo({ width: 1920, height: 804, audioStreams: [audio({ language: "eng" })], subtitleStreams: [subtitle({ language: "en" })] }))
+    );
+
+    const { summary } = await getLibraryAnalysis("movie");
+    expect(summary.byResolution["1080p"]).toBeGreaterThanOrEqual(2);
+    expect(summary.byResolution["1920x1080"]).toBeUndefined();
+    expect(summary.spokenLanguages.English).toBeGreaterThanOrEqual(2);
+    expect(summary.subtitleLanguages.English).toBeGreaterThanOrEqual(2);
+    expect(summary.spokenLanguages.en).toBeUndefined();
+    expect(summary.spokenLanguages.eng).toBeUndefined();
+  });
+
+  it("buckets an audio/subtitle track with no language tag as Unknown instead of omitting it entirely", async () => {
+    const { getLibraryAnalysis } = await import("../src/services/mediaAnalysis.js");
+    await insertMovie(
+      "No Language Tag Movie",
+      JSON.stringify(mediaInfo({ audioStreams: [audio({ language: null })], subtitleStreams: [subtitle({ language: null })] }))
+    );
+
+    const { summary } = await getLibraryAnalysis("movie");
+    expect(summary.spokenLanguages.Unknown).toBeGreaterThanOrEqual(1);
+    expect(summary.subtitleLanguages.Unknown).toBeGreaterThanOrEqual(1);
   });
 
   it("counts a file with no media_info at all as filesWithoutMediaInfo, excluded from items", async () => {

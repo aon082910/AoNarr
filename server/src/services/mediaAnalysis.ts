@@ -3,6 +3,51 @@ import { probeMediaInfo, type MediaInfo } from "./ffprobe.js";
 import { isProbeableFile } from "./mediaTypes.js";
 import { log } from "./logger.js";
 
+const languageDisplayNames = new Intl.DisplayNames(["en"], { type: "language" });
+
+/** A file's embedded language tag can be a 2-letter (ISO 639-1, "en"), 3-letter (ISO 639-2, either
+ * the bibliographic "ger" or terminology "deu" form — muxers aren't consistent about which), or
+ * missing/"und" (undetermined) — grouping on the raw string showed "English"/"en"/"eng" as three
+ * separate rows. `Intl.DisplayNames` (built into Node/browsers, no dependency) resolves every one
+ * of those forms to the same canonical English name, so using its output as the grouping key fixes
+ * the duplication. Falls back to the raw (uppercased) code for something it doesn't recognize at
+ * all — it echoes well-formed-but-unknown input back unchanged rather than throwing, which is how
+ * that case is detected. */
+export function normalizeLanguage(raw: string | null | undefined): string {
+  const trimmed = (raw ?? "").trim().toLowerCase();
+  if (!trimmed || trimmed === "und" || trimmed === "unk" || trimmed === "n/a" || trimmed === "null") return "Unknown";
+  try {
+    const resolved = languageDisplayNames.of(trimmed);
+    if (!resolved || resolved.toLowerCase() === trimmed) return trimmed.toUpperCase();
+    return resolved;
+  } catch {
+    return trimmed.toUpperCase();
+  }
+}
+
+/** Buckets actual pixel dimensions into the same named tiers the rest of the app already uses for
+ * quality ladders and release-name parsing (services/releaseParser.ts's COMMON_RESOLUTIONS: 480/
+ * 576/720/1080/2160) — grouping by exact "1920x1080" vs "1920x800" (letterboxed) vs "1920x804"
+ * showed as separate rows even though they're all "1080p" to a viewer. Classified by height
+ * (the number a resolution name actually refers to), with enough tolerance for slightly-cropped
+ * sources to still land in the tier they visually are. */
+export function resolutionTier(width: number | null | undefined, height: number | null | undefined): string {
+  if (!width || !height) return "Unknown";
+  // The longer edge is the stable dimension for HD/UHD widescreen content — a cinematic crop
+  // shrinks height (e.g. a 1080p master letterboxed to 1920x804), not width, so classifying by
+  // width/the long edge avoids mistaking a cropped 1080p file for 720p.
+  const long = Math.max(width, height);
+  if (long >= 3200) return "2160p (4K)";
+  if (long >= 1600) return "1080p";
+  if (long >= 960) return "720p";
+  // Below HD, width alone can't separate 480p (NTSC) from 576p (PAL) — both are commonly exactly
+  // 720 wide — so fall back to the short edge (height, for ordinary landscape video) here only.
+  const short = Math.min(width, height);
+  if (short >= 500) return "576p";
+  if (short >= 400) return "480p";
+  return "SD";
+}
+
 export interface CompatibilityNote {
   level: "ok" | "caution" | "incompatible";
   message: string;
@@ -139,11 +184,6 @@ interface ProbedRow {
   mediaInfoJson: string | null;
 }
 
-function resolutionLabel(info: MediaInfo): string {
-  if (!info.width || !info.height) return "unknown";
-  return `${info.width}x${info.height}`;
-}
-
 function bump(map: Record<string, number>, key: string): void {
   map[key] = (map[key] ?? 0) + 1;
 }
@@ -242,12 +282,12 @@ export async function getLibraryAnalysis(
 
     bump(summary.byVideoCodec, info.videoCodec ?? "unknown");
     bump(summary.byHdrFormat, info.hdrFormat);
-    bump(summary.byResolution, resolutionLabel(info));
+    bump(summary.byResolution, resolutionTier(info.width, info.height));
     for (const a of info.audioStreams) {
       bump(summary.byAudioCodec, a.codec ?? "unknown");
-      if (a.language) bump(summary.spokenLanguages, a.language);
+      bump(summary.spokenLanguages, normalizeLanguage(a.language));
     }
-    for (const s of info.subtitleStreams) if (s.language) bump(summary.subtitleLanguages, s.language);
+    for (const s of info.subtitleStreams) bump(summary.subtitleLanguages, normalizeLanguage(s.language));
 
     if (items.length < ITEM_CAP) {
       items.push({
@@ -271,12 +311,32 @@ export interface RunAnalysisResult {
   failed: number;
 }
 
+export interface AnalysisProgress {
+  running: boolean;
+  type: string | null;
+  total: number;
+  done: number;
+  failed: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+}
+
+let progress: AnalysisProgress = { running: false, type: null, total: 0, done: 0, failed: 0, startedAt: null, finishedAt: null };
+
+/** Polled by the client while a run is in flight to show a live "N of M probed" bar instead of the
+ * fire-and-forget "check the Logs page later" the route used to leave the admin with. */
+export function getAnalysisProgress(): AnalysisProgress {
+  return progress;
+}
+
 /** Re-probes every file of a type (or every type) with the current, full-featured ffprobe wrapper
  * and updates the stored media_info — needed for anything imported before HDR/Dolby-Vision/
  * multi-track audio-subtitle capture existed, or files probed under an older AoNarr version.
  * Read-only with respect to the media files themselves (ffprobe never modifies what it inspects);
- * the only writes are to AoNarr's own media_info column. */
+ * the only writes are to AoNarr's own media_info column and the module-level `progress` above. */
 export async function runLibraryAnalysis(type?: string, signal?: AbortSignal): Promise<RunAnalysisResult> {
+  if (progress.running) throw new Error("An analysis run is already in progress");
+
   let probed = 0;
   let failed = 0;
 
@@ -285,50 +345,83 @@ export async function runLibraryAnalysis(type?: string, signal?: AbortSignal): P
     id: number;
     path: string;
   }[];
-  for (const row of singleRows) {
-    if (signal?.aborted) return { probed, failed };
-    if (!isProbeableFile(row.path)) continue;
-    const info = await probeMediaInfo(row.path);
-    if (!info) {
-      failed++;
-      continue;
-    }
-    await db.prepare("UPDATE media_items SET media_info = ? WHERE id = ?").run(JSON.stringify(info), row.id);
-    probed++;
-  }
-
   const epWhere = type ? "WHERE e.has_file = 1 AND e.file_path IS NOT NULL AND m.type = ?" : "WHERE e.has_file = 1 AND e.file_path IS NOT NULL";
   const epRows = (await db
     .prepare(`SELECT e.id, e.file_path FROM episodes e JOIN media_items m ON m.id = e.media_item_id ${epWhere}`)
     .all(...(type ? [type] : []))) as { id: number; file_path: string }[];
-  for (const row of epRows) {
-    if (signal?.aborted) return { probed, failed };
-    if (!isProbeableFile(row.file_path)) continue;
-    const info = await probeMediaInfo(row.file_path);
-    if (!info) {
-      failed++;
-      continue;
-    }
-    await db.prepare("UPDATE episodes SET media_info = ? WHERE id = ?").run(JSON.stringify(info), row.id);
-    probed++;
-  }
-
   const subWhere = type ? "WHERE s.has_file = 1 AND s.file_path IS NOT NULL AND m.type = ?" : "WHERE s.has_file = 1 AND s.file_path IS NOT NULL";
   const subRows = (await db
     .prepare(`SELECT s.id, s.file_path FROM sub_items s JOIN media_items m ON m.id = s.media_item_id ${subWhere}`)
     .all(...(type ? [type] : []))) as { id: number; file_path: string }[];
-  for (const row of subRows) {
-    if (signal?.aborted) return { probed, failed };
-    if (!isProbeableFile(row.file_path)) continue;
-    const info = await probeMediaInfo(row.file_path);
-    if (!info) {
-      failed++;
-      continue;
-    }
-    await db.prepare("UPDATE sub_items SET media_info = ? WHERE id = ?").run(JSON.stringify(info), row.id);
-    probed++;
-  }
 
-  log.info(`[mediaAnalysis] analyzed ${type ?? "all libraries"}: ${probed} probed, ${failed} failed`);
-  return { probed, failed };
+  progress = {
+    running: true,
+    type: type ?? null,
+    total: singleRows.length + epRows.length + subRows.length,
+    done: 0,
+    failed: 0,
+    startedAt: Date.now(),
+    finishedAt: null,
+  };
+
+  try {
+    for (const row of singleRows) {
+      if (signal?.aborted) return { probed, failed };
+      if (!isProbeableFile(row.path)) {
+        progress.done++;
+        continue;
+      }
+      const info = await probeMediaInfo(row.path);
+      if (!info) {
+        failed++;
+        progress.failed++;
+        progress.done++;
+        continue;
+      }
+      await db.prepare("UPDATE media_items SET media_info = ? WHERE id = ?").run(JSON.stringify(info), row.id);
+      probed++;
+      progress.done++;
+    }
+
+    for (const row of epRows) {
+      if (signal?.aborted) return { probed, failed };
+      if (!isProbeableFile(row.file_path)) {
+        progress.done++;
+        continue;
+      }
+      const info = await probeMediaInfo(row.file_path);
+      if (!info) {
+        failed++;
+        progress.failed++;
+        progress.done++;
+        continue;
+      }
+      await db.prepare("UPDATE episodes SET media_info = ? WHERE id = ?").run(JSON.stringify(info), row.id);
+      probed++;
+      progress.done++;
+    }
+
+    for (const row of subRows) {
+      if (signal?.aborted) return { probed, failed };
+      if (!isProbeableFile(row.file_path)) {
+        progress.done++;
+        continue;
+      }
+      const info = await probeMediaInfo(row.file_path);
+      if (!info) {
+        failed++;
+        progress.failed++;
+        progress.done++;
+        continue;
+      }
+      await db.prepare("UPDATE sub_items SET media_info = ? WHERE id = ?").run(JSON.stringify(info), row.id);
+      probed++;
+      progress.done++;
+    }
+
+    log.info(`[mediaAnalysis] analyzed ${type ?? "all libraries"}: ${probed} probed, ${failed} failed`);
+    return { probed, failed };
+  } finally {
+    progress = { ...progress, running: false, finishedAt: Date.now() };
+  }
 }
