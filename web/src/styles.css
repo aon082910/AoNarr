@@ -616,7 +616,13 @@ button.icon-button.danger:hover { background: rgba(224,92,92,0.15); }
    button as a solid red block instead of the transparent-until-hover toolbar-button treatment. */
 .toolbar-button.danger { background: transparent; color: var(--danger); }
 .toolbar-button.danger:hover { background: rgba(224,92,92,0.12); }
-.toolbar-button-label { max-width: 96px; overflow: hidden; text-overflow: ellipsis; }
+/* No max-width/ellipsis here on purpose — a fixed max-width previously clipped longer labels
+   mid-word (e.g. "Organize & Rename" -> "Organize & Rena...") even though the button had room to
+   grow. Letting the label size to its content and wrapping the whole toolbar row (.toolbar-group's
+   flex-wrap) when crowded matches how Sonarr/Radarr's own toolbar buttons behave and never
+   truncates. */
+.toolbar-button-label { white-space: nowrap; }
+.toolbar-group > .toolbar-button { flex-shrink: 0; }
 
 .toolbar-separator {
   align-self: center;

@@ -3,6 +3,25 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 313 — toolbar button labels were getting clipped mid-word
+
+**Icon-over-label toolbar buttons (`PageToolbar.tsx`'s `ToolbarButton`, rolled out in Round 310)
+truncated longer labels mid-word** — e.g. "Organize & Rename" rendered as "Organize & Rena...".
+`.toolbar-button-label` had a hardcoded `max-width: 96px` with `overflow:hidden;
+text-overflow:ellipsis`; most labels fit under that, but a two-word label like "Organize & Rename"
+(99px at the toolbar's font) overflowed it by just enough to get sliced. Fixed by removing the fixed
+max-width/ellipsis entirely and letting each label size to its own content — `.toolbar-group`
+already wraps to a new row when a toolbar is crowded (the same behavior Sonarr/Radarr's own toolbars
+use), so there was never a need to truncate text to begin with. Also added `flex-shrink: 0` to
+`.toolbar-button` within `.toolbar-group` so a crowded row wraps a button to the next line instead of
+silently shrinking its label narrower than its content, mirroring the identical fix `.toolbar` (the
+older, unrelated toolbar row) already had for the same class of bug.
+
+Verified: `npx tsc --noEmit` clean; checked every current `ToolbarButton` label across the app
+(measured against the real rendered font) and confirmed only "Organize & Rename" was actually
+overflowing the old 96px cap. Live-verified against the running dev server at both normal and a
+narrowed (850px) viewport width — the label now renders in full with no truncation at any width.
+
 ## Round 312 — Media Analyzer: live progress, search-for-upgrade, pagination/CSV export, and a real language/resolution dedup bug
 Three requested improvements plus a real bug fix to the same page.
 
