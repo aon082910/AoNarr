@@ -3,6 +3,78 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 327 — fifteen backend correctness bugs found by extending the audit to server routes
+
+With every page and shared component now given a dedicated pass, extended the audit to the largest
+server-side route files (`media.ts`, `system.ts`, `iptv.ts`, `metadata.ts`, `collections.ts`,
+`requests.ts`, `search.ts`, `opds.ts`, `activity.ts`, `customFormats.ts`, `dashboard.ts`,
+`settings.ts`, `authRoutes.ts`, `import.ts`) using bug classes adapted for backend correctness
+(inconsistent duplicate logic, stale comments, dead parameters, calculation errors, and missing
+response-mapping) instead of the frontend-specific ones used through Round 326. Fifteen confirmed
+and fixed:
+
+- `media.ts`'s "Edit Metadata" PATCH updated `title` without recomputing `sort_title` — every other
+  writer of this table (create, rematch, split, every sync service) keeps them in sync; only editing
+  a title through the normal Edit dialog left it stale, silently breaking that item's sort order.
+- `media.ts`'s bulk monitor/edit/tag endpoints reported the size of the request's id array as the
+  number of items "updated"/"tagged", regardless of how many ids didn't actually exist or get
+  changed — now read the real affected-row count off the query result, matching how bulk/delete and
+  the season-monitor route already do it.
+- `media.ts` had an orphaned doc comment describing the "second opinion" metadata-provider endpoint
+  sitting above an unrelated corrupt-file-check route 30 lines above where it belonged — moved back
+  to its actual endpoint.
+- Anime absolute-episode-number release matching only worked for episodes added via
+  `/metadata/import` — every other way an episode can be added (Trakt/Plex/watchlist sync, import
+  lists, library scan, a manual add) left `absolute_episode_number` NULL, silently breaking
+  bare-absolute-numbered fansub matching depending purely on how a show was added. Switched
+  release-matching to compute it live from the episodes table (the same COUNT approach
+  `importer.ts` already uses for naming templates) instead of trusting a column only one insert
+  path populates.
+- `collections.ts`'s "up to 4 member posters" for a collection card sliced to the first 4
+  members *then* dropped the ones without a poster, instead of the other way around — a smart
+  collection (any viewer) or a fixed collection viewed by a non-admin household user could show
+  blank poster-grid squares even when the collection had 4+ posters available, just because the
+  poster-bearing items weren't among the first 4 in sort/position order.
+- Per-user storage attribution (admin Users page) statted a Music/Audiobook sub-item's `file_path`
+  directly — but that path is a *folder* (one file per track) for these types, and `fs.stat` on a
+  directory returns its own tiny metadata size, not a recursive sum of its contents. Storage from
+  approved music/audiobook requests showed as near-zero. Now prefers each row's already-correct
+  stored `size_bytes` over statting the path.
+- The manual-grab route silently rewrote any Soulseek ("slskd") release's protocol to "torrent"
+  before picking a download client, so grabbing a Soulseek search result either went to the wrong
+  client type or failed with a message claiming no client could handle a "torrent" release. Added
+  "slskd" as its own protocol → client-type mapping.
+- Search-result deduplication keyed on normalized title + exact size, but several indexer adapters
+  default a missing size to the literal number `0` rather than null — two different, unrelated
+  releases that both lack size data collided on that shared "unknown size" sentinel and got wrongly
+  merged, silently discarding one. Falls back to the download URL to tell size-less releases apart.
+- The Activity page's merged timeline fetched `requests` ordered by `created_at` only, but a
+  request's "approved"/"rejected" entry is timestamped by the separate, later `resolved_at` column
+  — an old request resolved moments ago could be excluded from the fetched window entirely, silently
+  dropping a real, recent event from the page. Now orders by `COALESCE(resolved_at, created_at)`.
+- Three stale comments corrected to match actual behavior: `customFormats.ts`'s TRaSH-import
+  docstring omitted `ResolutionSpecification`, which the route's own error message and the
+  underlying translator already support; `dashboard.ts`'s library-sizes comment claimed file size
+  is never stored separately, when `size_bytes` has been a real, populated column for a while.
+- The Settings page's portable config template (export/import) silently dropped three fields on
+  every round-trip: a custom format's media-type scoping, a quality profile's max-size cap, and a
+  quality's preferred-size hint — importing a template onto another instance (or re-creating a
+  format from one) silently unscoped/uncapped/unset them instead of preserving the original config.
+- The manual-import folder browser's hardcoded extension list omitted Comics/Manga's `.cbz`/`.cbr`
+  and every ROM extension, so those files were invisible to manual import even though automatic
+  import fully supports them.
+
+Verified: `npx tsc --noEmit` clean in both `web/` and `server/`; full server test suite (89 files,
+1377 tests) passes with no regressions. Live-verified the highest-risk fixes against the real,
+rebuilt server: a template export/import round-trip confirmed all three previously-dropped fields
+now persist; a fixture 5-item smart collection and a fixture non-admin-visible fixed collection both
+confirmed a poster beyond the first 4 (by sort/position) now surfaces instead of a blank slot; a
+fixture Music sub-item with a real `size_bytes` and a directory-shaped `file_path` confirmed
+per-user storage now reports the correct value instead of near-zero; editing a title confirmed
+`sort_title` now updates with it; a bulk-monitor call with one real and one nonexistent id confirmed
+the response now reports the true affected count. All fixtures (sessions, media items, collections,
+a request) were removed afterward.
+
 ## Round 326 — four bugs found by extending the audit to shared components
 
 With every page now given a dedicated audit pass, extended the same review to the 20 substantive

@@ -35,6 +35,22 @@ import type { MediaType } from "../types/index.js";
 // file can be recognized as subtitle-eligible without hardcoding a type list.
 const VIDEO_EXTENSIONS = new Set([".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v"]);
 
+/** Absolute (AniDB/TVDB-absolute-order-style) episode number for a season/episode pair, counting
+ * from season 1 episode 1 (season 0 specials excluded — absolute numbering conventions don't
+ * count them). Computed live from the episodes table rather than trusting a stored column, since
+ * `episodes.absolute_episode_number` is only ever populated by one of the many code paths that can
+ * insert an episode row (see /metadata/import) — every other insert path (Trakt/Plex/watchlist
+ * sync, import lists, library scan, a manual add, ...) leaves it NULL. */
+export async function computeAbsoluteEpisodeNumber(mediaItemId: number, seasonNumber: number, episodeNumber: number): Promise<number> {
+  const row = (await db
+    .prepare(
+      `SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ? AND season_number > 0
+       AND (season_number < ? OR (season_number = ? AND episode_number <= ?))`
+    )
+    .get(mediaItemId, seasonNumber, seasonNumber, episodeNumber)) as { c: number };
+  return Number(row.c);
+}
+
 /**
  * Downloads a subtitle for one specific language next to a video file — the unit both the
  * at-import path and the background rescan job (services/subtitleRescan.js) operate on.

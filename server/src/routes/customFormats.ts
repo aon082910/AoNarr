@@ -166,9 +166,10 @@ customFormatsRouter.patch(
  * Imports a custom format exported from TRaSH-Guides (or copy-pasted straight from Radarr/
  * Sonarr's own custom format JSON export, since TRaSH publishes in that same shape) by mapping
  * each `specifications` entry to one of AoNarr's condition group types. Only
- * ReleaseTitleSpecification, ReleaseGroupSpecification, and SizeSpecification translate cleanly;
- * anything else (LanguageSpecification's numeric ids are Radarr/Sonarr's own internal language
- * table, IndexerFlagSpecification, etc.) is skipped and reported back rather than silently
+ * ReleaseTitleSpecification, ReleaseGroupSpecification, SizeSpecification, and
+ * ResolutionSpecification translate cleanly; anything else (LanguageSpecification's numeric ids
+ * are Radarr/Sonarr's own internal language table, IndexerFlagSpecification, etc.) is skipped and
+ * reported back rather than silently
  * dropped, since a format missing a condition would otherwise match more releases than intended.
  * Every mapped specification becomes its own AND'd group — a faithful translation of Radarr's
  * "required" specifications; it does not replicate their separate "at least one optional

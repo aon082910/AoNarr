@@ -20,6 +20,7 @@ import { sizeWithinQualityBounds } from "../services/quality.js";
 import { getBlocklistedTitles, isBlocklisted } from "../services/blocklist.js";
 import { searchSlskd } from "../services/soulseek.js";
 import { pickClientForProtocol, searchAndGrabTargets, type BulkSearchTarget } from "../services/scheduler.js";
+import { computeAbsoluteEpisodeNumber } from "../services/importer.js";
 import type { SearchResult } from "../types/index.js";
 
 export const searchRouter = Router();
@@ -66,12 +67,15 @@ function normalizeForDedup(title: string): string {
 /** Collapses near-identical releases (same normalized title, same exact size) posted to more than
  * one indexer into a single row — keeps whichever copy sorted first (the caller's own ranking
  * already puts the best copy first), and records the rest as `alsoOnIndexers`. Size must match
- * exactly (not fuzzy) — two different releases can coincidentally share a title. */
+ * exactly (not fuzzy) — two different releases can coincidentally share a title. A `size` of 0
+ * isn't a real measured size, though — several indexer adapters use it as a "size unknown"
+ * sentinel when an indexer doesn't report one — so two different size-less releases would
+ * otherwise collide on title alone; fall back to the download URL to tell them apart in that case. */
 function dedupeResults(results: AnnotatedSearchResult[]): AnnotatedSearchResult[] {
   const byKey = new Map<string, AnnotatedSearchResult>();
   const order: string[] = [];
   for (const r of results) {
-    const key = `${normalizeForDedup(r.title)}::${r.size}`;
+    const key = r.size > 0 ? `${normalizeForDedup(r.title)}::${r.size}` : `${normalizeForDedup(r.title)}::0::${r.downloadUrl}`;
     const existing = byKey.get(key);
     if (!existing) {
       byKey.set(key, r);
@@ -114,7 +118,7 @@ searchRouter.get(
       targetEpisode = ep.episode_number;
       targetSceneSeason = ep.scene_season_number;
       targetSceneEpisode = ep.scene_episode_number;
-      targetAbsoluteEpisode = item.type === "anime" ? ep.absolute_episode_number : null;
+      targetAbsoluteEpisode = item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, ep.season_number, ep.episode_number) : null;
       // Scene-numbered (TheXEM) query when known — see scheduler.ts's own runAutoSearch for why.
       const seasonStr = String(targetSceneSeason ?? targetSeason).padStart(2, "0");
       const episodeStr = String(targetSceneEpisode ?? targetEpisode).padStart(2, "0");
@@ -237,7 +241,8 @@ searchRouter.post(
     } else {
       const enabled = ((await db.prepare("SELECT * FROM download_clients WHERE enabled = 1").all()) as any[]).map(downloadClientFromRow);
       if (enabled.length === 0) throw new HttpError(400, "Add and enable a download client first");
-      const protocol = b.protocol === "usenet" || b.protocol === "torrent" || b.protocol === "http" ? b.protocol : "torrent";
+      const protocol =
+        b.protocol === "usenet" || b.protocol === "torrent" || b.protocol === "http" || b.protocol === "slskd" ? b.protocol : "torrent";
       const picked = pickClientForProtocol(enabled as any, protocol);
       if (!picked) throw new HttpError(400, `No enabled download client can handle a "${protocol}" release`);
       clientRow = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(picked.id);

@@ -99,7 +99,10 @@ collectionsRouter.get(
           if (collection.smartFilter) {
             const matches = (await queryMediaItemsForFilter(collection.smartFilter)).map(mediaItemFromRow).filter(visible);
             itemCount = matches.length;
-            posterUrls = matches.slice(0, 4).map((m) => m.posterUrl).filter((p): p is string => !!p);
+            posterUrls = matches
+              .filter((m) => !!m.posterUrl)
+              .slice(0, 4)
+              .map((m) => m.posterUrl as string);
           } else if (req.auth?.isAdmin) {
             itemCount = Number(r.itemCount);
             const posterRows = (await db
@@ -119,7 +122,10 @@ collectionsRouter.get(
               )
               .all(collection.id)) as any[]).map(mediaItemFromRow).filter(visible);
             itemCount = members.length;
-            posterUrls = members.slice(0, 4).map((m) => m.posterUrl).filter((p): p is string => !!p);
+            posterUrls = members
+              .filter((m) => !!m.posterUrl)
+              .slice(0, 4)
+              .map((m) => m.posterUrl as string);
           }
           return { ...collection, itemCount, posterUrls };
         })

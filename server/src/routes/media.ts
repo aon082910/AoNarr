@@ -110,10 +110,10 @@ mediaRouter.post(
     if (!Array.isArray(mediaItemIds) || mediaItemIds.length === 0) {
       throw new HttpError(400, "mediaItemIds is required");
     }
-    await db
+    const result = await db
       .prepare(`UPDATE media_items SET monitored = ? WHERE id IN (${mediaItemIds.map(() => "?").join(",")})`)
       .run(monitored ? 1 : 0, ...mediaItemIds);
-    res.json({ updated: mediaItemIds.length });
+    res.json({ updated: result.changes });
   })
 );
 
@@ -141,10 +141,10 @@ mediaRouter.post(
       sets.push("root_folder_id = ?");
       values.push(rootFolderId);
     }
-    await db
+    const result = await db
       .prepare(`UPDATE media_items SET ${sets.join(", ")} WHERE id IN (${mediaItemIds.map(() => "?").join(",")})`)
       .run(...values, ...mediaItemIds);
-    res.json({ updated: mediaItemIds.length });
+    res.json({ updated: result.changes });
   })
 );
 
@@ -161,8 +161,8 @@ mediaRouter.post(
       db.dialect === "postgres"
         ? `INSERT INTO media_item_tags (media_item_id, tag_id) VALUES ${valuesSql} ON CONFLICT DO NOTHING`
         : `INSERT OR IGNORE INTO media_item_tags (media_item_id, tag_id) VALUES ${valuesSql}`;
-    await db.prepare(insertSql).run(...mediaItemIds.flatMap((id: number) => [id, tagId]));
-    res.json({ tagged: mediaItemIds.length });
+    const result = await db.prepare(insertSql).run(...mediaItemIds.flatMap((id: number) => [id, tagId]));
+    res.json({ tagged: result.changes });
   })
 );
 
@@ -855,13 +855,6 @@ mediaRouter.get(
   })
 );
 
-/**
- * Pulls a second (or third...) opinion from another configured metadata provider for this item's
- * type, without touching the item's primary title/overview/poster — stored separately in
- * extra_metadata keyed by provider so the admin can compare sources before deciding (via the
- * ordinary PATCH endpoint) whether to promote one's overview/poster to primary. Matches by title
- * search rather than a shared external id, since providers rarely share id schemes.
- */
 /** On-demand corrupt-file check for a "single" shape item (movie/rom/adult) — the full library
  * scan lives in the scheduled Corrupt Media Check job; this is for checking just this one item
  * right now instead of waiting for the next scheduled run. */
@@ -893,6 +886,13 @@ mediaRouter.post(
   })
 );
 
+/**
+ * Pulls a second (or third...) opinion from another configured metadata provider for this item's
+ * type, without touching the item's primary title/overview/poster — stored separately in
+ * extra_metadata keyed by provider so the admin can compare sources before deciding (via the
+ * ordinary PATCH endpoint) whether to promote one's overview/poster to primary. Matches by title
+ * search rather than a shared external id, since providers rarely share id schemes.
+ */
 mediaRouter.post(
   "/:id/metadata/fetch",
   requireAdmin,
@@ -1056,6 +1056,7 @@ mediaRouter.patch(
     }
     const fields: Record<string, unknown> = {
       title: b.title,
+      sort_title: b.title !== undefined ? String(b.title).toLowerCase() : undefined,
       year: b.year,
       overview: b.overview,
       poster_url: b.posterUrl,

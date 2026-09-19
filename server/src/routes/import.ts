@@ -17,6 +17,8 @@ const MEDIA_EXTENSIONS = new Set([
   ".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v",
   ".mp3", ".flac", ".m4a", ".ogg", ".wav",
   ".epub", ".mobi", ".pdf", ".azw3", ".m4b",
+  ".cbz", ".cbr",
+  ".zip", ".7z", ".nes", ".sfc", ".smc", ".gba", ".gbc", ".gb", ".n64", ".z64", ".nds", ".3ds", ".iso", ".chd",
 ]);
 
 /** Resolves a user-supplied relative path against the downloads dir, refusing to escape it. */

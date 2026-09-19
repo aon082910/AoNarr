@@ -67,20 +67,25 @@ function fileSize(filePath: string | null): number {
 
 /** Sums the on-disk size of everything under one media item (its own file for "single" shape, or
  * every downloaded episode/sub-item for "episodic"/"collection") — used to attribute storage
- * consumption back to the household user whose approved request created it. */
+ * consumption back to the household user whose approved request created it. Prefers each row's
+ * stored `size_bytes` (populated at import time) over statting the path directly, since a
+ * "collection" sub-item's file_path can be a whole folder (Music's one-file-per-track layout) —
+ * fs.stat on a directory returns its own tiny metadata size, not a recursive sum of its contents. */
 async function mediaItemStorageBytes(mediaItemId: number): Promise<number> {
-  const item = (await db.prepare("SELECT path FROM media_items WHERE id = ?").get(mediaItemId)) as { path: string | null } | undefined;
-  let total = fileSize(item?.path ?? null);
+  const item = (await db.prepare("SELECT path, size_bytes FROM media_items WHERE id = ?").get(mediaItemId)) as
+    | { path: string | null; size_bytes: number | null }
+    | undefined;
+  let total = item?.size_bytes ?? fileSize(item?.path ?? null);
 
-  const episodes = (await db.prepare("SELECT file_path FROM episodes WHERE media_item_id = ? AND has_file = 1").all(mediaItemId)) as {
-    file_path: string | null;
-  }[];
-  for (const e of episodes) total += fileSize(e.file_path);
+  const episodes = (await db
+    .prepare("SELECT file_path, size_bytes FROM episodes WHERE media_item_id = ? AND has_file = 1")
+    .all(mediaItemId)) as { file_path: string | null; size_bytes: number | null }[];
+  for (const e of episodes) total += e.size_bytes ?? fileSize(e.file_path);
 
   const subItems = (await db
-    .prepare("SELECT file_path FROM sub_items WHERE media_item_id = ? AND has_file = 1")
-    .all(mediaItemId)) as { file_path: string | null }[];
-  for (const s of subItems) total += fileSize(s.file_path);
+    .prepare("SELECT file_path, size_bytes FROM sub_items WHERE media_item_id = ? AND has_file = 1")
+    .all(mediaItemId)) as { file_path: string | null; size_bytes: number | null }[];
+  for (const s of subItems) total += s.size_bytes ?? fileSize(s.file_path);
 
   return total;
 }

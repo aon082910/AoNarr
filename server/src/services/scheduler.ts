@@ -15,7 +15,7 @@ import {
   qualityProfileFromRow,
   queueItemFromRow,
 } from "../db/mappers.js";
-import { importQueueItem, ImportSkippedError } from "./importer.js";
+import { importQueueItem, ImportSkippedError, computeAbsoluteEpisodeNumber } from "./importer.js";
 import { notifyFailed, notifyGrabbed, notifyHealthIssue, notifyManualInteractionRequired, notifyUpdateAvailable } from "./notifications.js";
 import { checkForUpdate } from "./updateCheck.js";
 import { checkIndexerHealth } from "./indexerClient.js";
@@ -334,6 +334,7 @@ export function pickClientForProtocol(clients: DownloadClient[], protocol: Searc
     torrent: ["qbittorrent", "realdebrid", "alldebrid", "torbox", "blackhole"],
     usenet: ["sabnzbd", "blackhole"],
     http: ["http"],
+    slskd: ["slskd"],
   };
   const preferred = typesForProtocol[protocol] ?? [];
   return clients.find((c) => preferred.includes(c.type)) ?? null;
@@ -490,7 +491,7 @@ export async function runAutoSearch(signal?: AbortSignal) {
                   episode: ep.episode_number,
                   sceneSeason: ep.scene_season_number,
                   sceneEpisode: ep.scene_episode_number,
-                  absoluteEpisode: item.type === "anime" ? ep.absolute_episode_number : null,
+                  absoluteEpisode: item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, ep.season_number, ep.episode_number) : null,
                 },
             blocklisted,
             item.type,
@@ -641,7 +642,7 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
           episode: ep.episode_number,
           sceneSeason: ep.scene_season_number,
           sceneEpisode: ep.scene_episode_number,
-          absoluteEpisode: item.type === "anime" ? ep.absolute_episode_number : null,
+          absoluteEpisode: item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, ep.season_number, ep.episode_number) : null,
         };
         const searchSeason = ep.scene_season_number ?? ep.season_number;
         const searchEpisode = ep.scene_episode_number ?? ep.episode_number;
@@ -932,7 +933,7 @@ export async function retryFailedGrab(match: QueueItem, reason: string): Promise
         episode: ep.episode_number,
         sceneSeason: ep.scene_season_number,
         sceneEpisode: ep.scene_episode_number,
-        absoluteEpisode: item.type === "anime" ? ep.absolute_episode_number : null,
+        absoluteEpisode: item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, ep.season_number, ep.episode_number) : null,
       };
       const searchSeason = ep.scene_season_number ?? ep.season_number;
       const searchEpisode = ep.scene_episode_number ?? ep.episode_number;

@@ -106,9 +106,10 @@ dashboardRouter.get(
 );
 
 /** Actual on-disk file sizes, grouped by library type — sums media_items.path plus every
- * episode/sub_item file_path, statting each file directly since AoNarr doesn't store file size
- * separately (only the release's advertised size at grab time, which can differ from the final
- * file). Cached for 10 minutes since this stats every file in the library on a cache miss. */
+ * episode/sub_item file_path, statting each file directly rather than trusting the stored
+ * `size_bytes` column (populated at import time, but can drift if a file is replaced/edited on
+ * disk outside AoNarr afterward). Cached for 10 minutes since this stats every file in the
+ * library on a cache miss. */
 let sizeCache: { at: number; sizes: Record<string, number> } | null = null;
 const SIZE_CACHE_TTL_MS = 10 * 60 * 1000;
 

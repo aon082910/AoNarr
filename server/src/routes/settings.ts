@@ -74,11 +74,11 @@ const TEMPLATE_VERSION = 1;
 settingsRouter.get(
   "/template/export",
   asyncHandler(async (_req, res) => {
-    const qualities = await db.prepare("SELECT name, rank, min_size_mb, max_size_mb FROM qualities ORDER BY rank").all();
+    const qualities = await db.prepare("SELECT name, rank, min_size_mb, max_size_mb, preferred_size_mb FROM qualities ORDER BY rank").all();
     const profiles = (await db
-      .prepare("SELECT name, allowed_qualities, cutoff, min_format_score FROM quality_profiles")
+      .prepare("SELECT name, allowed_qualities, cutoff, min_format_score, max_size_gb FROM quality_profiles")
       .all()) as any[];
-    const formats = (await db.prepare("SELECT id, name, patterns FROM custom_formats").all()) as any[];
+    const formats = (await db.prepare("SELECT id, name, patterns, media_types FROM custom_formats").all()) as any[];
     const scores = await db
       .prepare(
         `SELECT qp.name AS "profileName", cf.name AS "formatName", s.score
@@ -98,8 +98,13 @@ settingsRouter.get(
         allowedQualities: JSON.parse(p.allowed_qualities),
         cutoff: p.cutoff,
         minFormatScore: p.min_format_score,
+        maxSizeGb: p.max_size_gb,
       })),
-      customFormats: formats.map((f) => ({ name: f.name, conditionGroups: JSON.parse(f.patterns) })),
+      customFormats: formats.map((f) => ({
+        name: f.name,
+        conditionGroups: JSON.parse(f.patterns),
+        mediaTypes: f.media_types ? JSON.parse(f.media_types) : [],
+      })),
       formatScores: scores,
       namingTemplates,
     });
@@ -123,32 +128,35 @@ settingsRouter.post(
       for (const q of b.qualities ?? []) {
         await db
           .prepare(
-            `INSERT INTO qualities (name, rank, min_size_mb, max_size_mb) VALUES (@name, @rank, @min_size_mb, @max_size_mb)
-             ON CONFLICT(name) DO UPDATE SET min_size_mb = excluded.min_size_mb, max_size_mb = excluded.max_size_mb`
+            `INSERT INTO qualities (name, rank, min_size_mb, max_size_mb, preferred_size_mb)
+             VALUES (@name, @rank, @min_size_mb, @max_size_mb, @preferred_size_mb)
+             ON CONFLICT(name) DO UPDATE SET min_size_mb = excluded.min_size_mb, max_size_mb = excluded.max_size_mb,
+               preferred_size_mb = excluded.preferred_size_mb`
           )
-          .run(q);
+          .run({ ...q, preferred_size_mb: q.preferred_size_mb ?? null });
         qualitiesImported++;
       }
 
       for (const p of b.qualityProfiles ?? []) {
         await db
           .prepare(
-            `INSERT INTO quality_profiles (name, allowed_qualities, cutoff, min_format_score)
-             VALUES (@name, @allowedQualities, @cutoff, @minFormatScore)
+            `INSERT INTO quality_profiles (name, allowed_qualities, cutoff, min_format_score, max_size_gb)
+             VALUES (@name, @allowedQualities, @cutoff, @minFormatScore, @maxSizeGb)
              ON CONFLICT(name) DO UPDATE SET allowed_qualities = excluded.allowed_qualities,
-               cutoff = excluded.cutoff, min_format_score = excluded.min_format_score`
+               cutoff = excluded.cutoff, min_format_score = excluded.min_format_score, max_size_gb = excluded.max_size_gb`
           )
-          .run({ ...p, allowedQualities: JSON.stringify(p.allowedQualities) });
+          .run({ ...p, allowedQualities: JSON.stringify(p.allowedQualities), maxSizeGb: p.maxSizeGb ?? null });
         profilesImported++;
       }
 
       for (const f of b.customFormats ?? []) {
+        const mediaTypes = Array.isArray(f.mediaTypes) ? f.mediaTypes : [];
         await db
           .prepare(
-            `INSERT INTO custom_formats (name, patterns) VALUES (@name, @patterns)
-             ON CONFLICT(name) DO UPDATE SET patterns = excluded.patterns`
+            `INSERT INTO custom_formats (name, patterns, media_types) VALUES (@name, @patterns, @mediaTypes)
+             ON CONFLICT(name) DO UPDATE SET patterns = excluded.patterns, media_types = excluded.media_types`
           )
-          .run({ name: f.name, patterns: JSON.stringify(f.conditionGroups) });
+          .run({ name: f.name, patterns: JSON.stringify(f.conditionGroups), mediaTypes: mediaTypes.length > 0 ? JSON.stringify(mediaTypes) : null });
         formatsImported++;
       }
 

@@ -221,7 +221,11 @@ interface TimelineEntry {
  * `history` and `requests` are two different tables with no shared sort key, so real offset
  * pagination over their merge fetches the top `offset + limit` rows from EACH source (each already
  * sorted DESC by its own timestamp — that's enough to guarantee the true top `offset + limit` of the
- * merged set), merges + re-sorts just that window, then slices out the requested page. `total` is a
+ * merged set), merges + re-sorts just that window, then slices out the requested page. `requests`
+ * is ordered by `COALESCE(resolved_at, created_at)`, not just `created_at` — a request contributes
+ * a second timeline entry timestamped by the separate, later `resolved_at` column once it's
+ * approved/rejected, so an old request resolved moments ago still needs to sort near the top for
+ * that entry to make it into the fetched window. `total` is a
  * simple sum of both tables' raw row counts rather than the true merged-entry count (a resolved
  * request contributes two entries — "requested" and "approved"/"rejected" — for one row), which is
  * an accepted approximation rather than a precise count.
@@ -252,7 +256,9 @@ activityRouter.get(
       return { timestamp: row.createdAt, type: row.eventType, title: row.mediaTitle, detail };
     });
 
-    const requestRows = (await db.prepare(`SELECT * FROM requests ORDER BY created_at DESC LIMIT ?`).all(fetchCount)) as any[];
+    const requestRows = (await db
+      .prepare(`SELECT * FROM requests ORDER BY COALESCE(resolved_at, created_at) DESC LIMIT ?`)
+      .all(fetchCount)) as any[];
     for (const r of requestRows) {
       entries.push({ timestamp: r.created_at, type: "requested", title: r.title, detail: null });
       if (r.resolved_at && r.status !== "pending") {
