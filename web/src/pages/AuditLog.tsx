@@ -47,6 +47,13 @@ const EVENT_LABELS: Record<string, string> = {
   download_client_removed: "Removed download client",
   corrupt_media_recycled: "Recycled flagged corrupt media",
   corrupt_media_dismissed: "Dismissed corrupt media flag",
+  media_duplicates_merged: "Merged duplicate media",
+  media_duplicates_dismissed: "Dismissed duplicate media",
+  media_split: "Split media item",
+  user_created_via_invite: "Created user via invite",
+  root_folder_moved: "Moved root folder",
+  root_folder_removed: "Removed root folder",
+  request_auto_approve_skipped_possible_duplicate: "Skipped auto-approval (possible duplicate)",
 };
 
 export default function AuditLog() {

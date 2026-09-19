@@ -195,7 +195,7 @@ export default function RemoteLibrary() {
         <div className="grid">
           {items.length === 0 && <p className="empty">Nothing found.</p>}
           {items.map((item) => (
-            <div key={item.id} className="card" style={{ cursor: "default" }}>
+            <div key={item.id} className="card static" style={{ cursor: "default" }}>
               <div className="poster" style={item.posterUrl ? { backgroundImage: `url(${item.posterUrl})` } : undefined}>
                 {!item.posterUrl && "No poster"}
               </div>

@@ -12,6 +12,12 @@ function formatDuration(ms: number | null): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+const LAST_STATUS_LABELS: Record<string, string> = {
+  success: "Success",
+  error: "Error",
+  cancelled: "Cancelled",
+};
+
 export default function Jobs() {
   const [jobs, setJobs] = useState<JobStatus[]>([]);
   const [editing, setEditing] = useState<Record<string, string>>({});
@@ -138,7 +144,7 @@ function JobsTable({
               <td>
                 {j.lastStatus && (
                   <span className={`badge ${j.lastStatus === "success" ? "ok" : j.lastStatus === "error" ? "danger" : ""}`}>
-                    {j.lastStatus}
+                    {LAST_STATUS_LABELS[j.lastStatus] ?? j.lastStatus}
                   </span>
                 )}
                 {j.lastError && <span style={{ marginLeft: 6, color: "var(--danger)", fontSize: "0.8rem" }}>{j.lastError}</span>}

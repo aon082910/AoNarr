@@ -68,7 +68,7 @@ export default function Person() {
         {person.credits.map((c, idx) => (
           <div
             key={idx}
-            className="card"
+            className={c.libraryMediaItemId ? "card" : "card static"}
             onClick={() => c.libraryMediaItemId && navigate(`/media/${c.libraryMediaItemId}`)}
             style={{ cursor: c.libraryMediaItemId ? "pointer" : "default", opacity: c.libraryMediaItemId ? 1 : 0.7 }}
           >

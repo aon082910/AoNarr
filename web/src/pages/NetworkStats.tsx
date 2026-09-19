@@ -25,6 +25,27 @@ interface NetworkStatsResponse {
   queueByStatus: QueueStat[];
 }
 
+const TYPE_LABELS: Record<string, string> = {
+  qbittorrent: "qBittorrent",
+  sabnzbd: "SABnzbd",
+  http: "Direct HTTP download",
+  ytdlp: "yt-dlp",
+  realdebrid: "Real-Debrid",
+  alldebrid: "AllDebrid",
+  torbox: "TorBox",
+  blackhole: "Blackhole (watch folder)",
+  slskd: "Soulseek (via slskd)",
+};
+
+const QUEUE_STATUS_LABELS: Record<string, string> = {
+  queued: "Queued",
+  downloading: "Downloading",
+  importing: "Importing",
+  completed: "Completed",
+  imported: "Imported",
+  failed: "Failed",
+};
+
 /** What AoNarr actually has to report on network activity: each download client's self-reported
  * bandwidth totals (not every client type exposes this), plus a queue status/size breakdown. Not
  * a packet-level capture — AoNarr doesn't proxy the traffic itself. */
@@ -77,7 +98,7 @@ export default function NetworkStats() {
             {sortedClients.map((c) => (
               <tr key={c.id}>
                 <td>
-                  {c.name} <span style={{ color: "var(--muted)", fontSize: "0.8rem" }}>({c.type})</span>
+                  {c.name} <span style={{ color: "var(--muted)", fontSize: "0.8rem" }}>({TYPE_LABELS[c.type] ?? c.type})</span>
                 </td>
                 {c.available ? (
                   <>
@@ -109,7 +130,7 @@ export default function NetworkStats() {
         <tbody>
           {sortedQueue.map((q) => (
             <tr key={q.status}>
-              <td>{q.status}</td>
+              <td>{QUEUE_STATUS_LABELS[q.status] ?? q.status}</td>
               <td>{q.count}</td>
               <td>{formatBytes(q.totalBytes)}</td>
             </tr>

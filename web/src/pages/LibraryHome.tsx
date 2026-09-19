@@ -57,7 +57,7 @@ export default function LibraryHome() {
             <div className="meta">
               <div className="title">{item.title}</div>
               <div className="sub">
-                {item.year ?? ""} · {mediaTypes.find((t) => t.key === item.type)?.label ?? item.type}
+                {item.year ?? ""} · {mediaTypes.length > 0 ? mediaTypes.find((t) => t.key === item.type)?.label ?? item.type : ""}
               </div>
             </div>
           </Link>

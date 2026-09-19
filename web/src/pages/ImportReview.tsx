@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
 import SearchMatchModal, { type MetadataSearchResult } from "../components/SearchMatchModal.js";
+import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { SearchIcon } from "../components/NavIcons.js";
 import { XIcon } from "../components/ActionIcons.js";
@@ -30,6 +31,8 @@ interface ReviewListResponse {
  * the right match by hand (or dismiss it as not worth adding) instead of it just vanishing.
  */
 export default function ImportReview() {
+  const mediaTypes = useMediaTypes();
+  const labelFor = (key: string) => mediaTypes.find((t) => t.key === key)?.label ?? key;
   const [items, setItems] = useState<ReviewItem[] | null>(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -134,9 +137,9 @@ export default function ImportReview() {
                 <tr key={item.id}>
                   <td>{item.title}</td>
                   <td>{item.year ?? "-"}</td>
-                  <td>{item.type}</td>
+                  <td>{labelFor(item.type)}</td>
                   <td>{item.source === "watchlist" ? "Watchlist Import" : item.source}</td>
-                  <td>{item.createdAt}</td>
+                  <td>{new Date(item.createdAt).toLocaleString()}</td>
                   <td style={{ display: "flex", gap: 6 }}>
                     <button type="button" className="icon-button" onClick={() => setMatching(item)} title="Match..." aria-label="Match">
                       <SearchIcon />

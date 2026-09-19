@@ -3,6 +3,65 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 325 — thirteen more bugs across the next tier of pages
+
+Audited the next 24 not-yet-solo-reviewed pages (`RemoteLibrary.tsx`, `RecycleBin.tsx`,
+`IrcFeeds.tsx`, `CutoffUnmet.tsx`, `CollectionDetail.tsx`, `Collections.tsx`, `AiProviders.tsx`,
+`Recommendations.tsx`, `ImportReview.tsx`, `HistoryPage.tsx`, `CustomColumns.tsx`, `Jobs.tsx`,
+`AuditLog.tsx`, `Blocklist.tsx`, `NetworkStats.tsx`, `Account.tsx`, `Person.tsx`, `CalendarDay.tsx`,
+`InviteAcceptPage.tsx`, `ApiDocs.tsx`, `Changelog.tsx`, `LibraryHome.tsx`, `TrackDetail.tsx`,
+`SharePage.tsx`, `LibraryUngrouped.tsx`) in groups of 3-4, each independently adversarially verified.
+Thirteen confirmed and fixed:
+
+- `RemoteLibrary.tsx`'s browsed-remote-item tiles used the shared `.card` hover-lift styling with no
+  click handler at all, implying clickability they don't have — missing the `static` modifier
+  (`.card.static`) other pages already use for exactly this situation. Same bug found and fixed on
+  `Person.tsx`'s not-yet-in-library filmography credit cards, whose `onClick` is a no-op for them.
+- `CollectionDetail.tsx`'s "Archival retention" control was shown for every collection, but setting
+  it on a *smart* collection silently does nothing — the server only ever applies a collection's
+  retention override by joining through `collection_items`, and smart collections never have rows
+  there (writes to that table are blocked for them). The control is now hidden for smart collections.
+- `CollectionDetail.tsx`'s "No items yet" empty state told the admin to use "Add to collection" to
+  add one "here" — impossible for a smart collection, whose membership can't be manually edited, as
+  the page's own notice directly above already says. Now shows "This smart filter currently matches
+  nothing" instead when a smart collection's filter is empty.
+- `ImportReview.tsx` showed the raw internal `type` key ("movie", "artist", ...) instead of a label,
+  and the raw unformatted SQLite datetime string for "Queued" instead of a formatted date — both
+  fixed via `useMediaTypes()` and `toLocaleString()`, matching sibling pages.
+- `HistoryPage.tsx`'s event-type label map was missing `auto_archived`, the one history event type
+  the watch-status archival job actually logs beyond the four already covered — it fell through to
+  the raw snake_case string with no badge color and no filter-dropdown option. Added the label, badge
+  color, and filter option.
+- `Jobs.tsx`'s "Last result" column printed the raw `lastStatus` enum ("success"/"error"/"cancelled")
+  instead of a label, unlike the adjacent Status column two cells over which already converts its
+  value to "Running"/"Idle". Added a label map.
+- `CustomColumns.tsx` let an admin attach a Quality or any `mediaInfo.*` field preset to any library
+  type, including episodic/collection-shaped ones (TV shows, music, books, ...) where that data is
+  never populated on the parent row — the exact SINGLE_SHAPE_ONLY_FIELDS bug `LibraryType.tsx`
+  already found and fixed for its own built-in toggles, reintroduced here for this admin screen. The
+  Field dropdown now hides those presets once an incompatible library type is selected.
+- `AuditLog.tsx`'s `EVENT_LABELS` map was missing seven event types the server actually logs
+  (duplicate merge/dismiss, media split, invite-created users, root-folder move/remove, a skipped
+  auto-approval) — all fell through to their raw snake_case string. Added all seven.
+- `NetworkStats.tsx` printed the raw queue status string and the raw download-client type key
+  directly, even though this exact codebase already has label maps for both fields elsewhere
+  (`Activity.tsx`'s `QUEUE_STATUS_LABELS`, `DownloadClients.tsx`'s `TYPE_LABELS`) — duplicated both
+  maps locally, matching this codebase's established small-duplicated-map convention.
+- `LibraryHome.tsx`'s Recently Added cards could show a raw internal type key instead of a label on
+  a render where the independent `/dashboard/recently-added` fetch resolves before the separate
+  `/media-types` fetch does — added a loading guard.
+
+Verified: `npx tsc --noEmit` clean. Live-verified every fix against the real, rebuilt server: a
+fixture queue row showed "Downloading" instead of the raw status, and the existing fixture download
+clients now show "qBittorrent" instead of the raw type key on Network Stats; a fixture Import Review
+row showed "Movies" and a formatted date; a fixture `auto_archived` history row showed the new
+label, badge color, and filter option; a fixture audit-log row showed "Merged duplicate media"
+instead of the raw event key; the Custom Columns Field dropdown was confirmed to hide Quality/
+mediaInfo presets for "TV Shows" and show them again for "Movies"; a fixture smart collection with a
+zero-match filter showed the corrected empty-state text with no retention control, while a fixture
+plain collection kept both unchanged. All fixtures (queue row, import-review row, history row,
+audit-log row, two collections) were removed afterward.
+
 ## Round 324 — six more raw-value/dead-option bugs from the next tier of pages
 
 Continued the deep-dive audit (3-4 files per reviewer, up from the original 8-9-file bundles) across

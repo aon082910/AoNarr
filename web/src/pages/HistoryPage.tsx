@@ -27,6 +27,7 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   imported: "Imported",
   failed: "Failed",
   subtitleDownloaded: "Subtitle downloaded",
+  auto_archived: "Auto archived",
 };
 
 function eventDetail(row: HistoryRow): string {
@@ -160,7 +161,9 @@ function HistoryTable({ rows }: { rows: HistoryRow[] }) {
         {sorted.map((r) => (
               <tr key={r.id}>
                 <td>
-                  <span className={`badge ${r.eventType === "failed" ? "danger" : r.eventType === "imported" ? "ok" : ""}`}>
+                  <span
+                    className={`badge ${r.eventType === "failed" ? "danger" : r.eventType === "imported" || r.eventType === "auto_archived" ? "ok" : ""}`}
+                  >
                     {EVENT_TYPE_LABELS[r.eventType] ?? r.eventType}
                   </span>
                 </td>

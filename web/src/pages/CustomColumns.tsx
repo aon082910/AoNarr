@@ -30,6 +30,26 @@ function presetForPath(path: string): string {
   return FIELD_PRESETS.find((p) => p.path === path)?.key ?? "custom";
 }
 
+/** `media_items.quality`/`.media_info` are only ever populated on the parent row for "single"-shape
+ * types (importer.ts writes media_info onto the episode/sub_item row instead for episodic/collection
+ * shapes) — same class of bug LibraryType.tsx's own SINGLE_SHAPE_ONLY_FIELDS documents and guards
+ * against for its built-in field toggles. Offering these presets for a specific non-single library
+ * type here would silently produce an always-blank column. */
+const SINGLE_SHAPE_ONLY_PRESETS = new Set([
+  "videoCodec",
+  "audioCodec",
+  "width",
+  "height",
+  "bitrateKbps",
+  "frameRate",
+  "hdrFormat",
+  "bitDepth",
+  "colorSpace",
+  "audioChannels",
+  "durationSeconds",
+  "quality",
+]);
+
 export default function CustomColumns() {
   const mediaTypes = useMediaTypes();
   const [columns, setColumns] = useState<CustomColumn[]>([]);
@@ -95,6 +115,13 @@ export default function CustomColumns() {
   }
 
   const editing = typeof mode === "number" ? columns.find((c) => c.id === mode) ?? null : null;
+  const selectedTypeShape = mediaType ? mediaTypes.find((t) => t.key === mediaType)?.shape : undefined;
+  // Always keep the currently-picked preset visible (so editing an existing column whose preset
+  // predates a media-type change doesn't yank it out from under the select), but otherwise hide
+  // single-shape-only presets once a non-single library type is chosen.
+  const availablePresets = FIELD_PRESETS.filter(
+    (p) => p.key === fieldPreset || !SINGLE_SHAPE_ONLY_PRESETS.has(p.key) || !mediaType || selectedTypeShape === "single"
+  );
 
   return (
     <div>
@@ -130,7 +157,7 @@ export default function CustomColumns() {
           <form className="form-panel" onSubmit={submit} style={{ padding: 0 }}>
             <label htmlFor="customcolumns-field-1">Field</label>
             <select id="customcolumns-field-1" value={fieldPreset} onChange={(e) => selectPreset(e.target.value)}>
-              {FIELD_PRESETS.map((p) => (
+              {availablePresets.map((p) => (
                 <option key={p.key} value={p.key}>
                   {p.label}
                 </option>

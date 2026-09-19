@@ -84,7 +84,7 @@ export default function CollectionDetail() {
         </p>
       )}
 
-      {auth.isAdmin && (
+      {auth.isAdmin && !collection.smartFilter && (
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16 }}>
           <label style={{ margin: 0 }}>Archival retention:</label>
           <select
@@ -125,7 +125,9 @@ export default function CollectionDetail() {
 
       {collection.items.length === 0 && (
         <p className="empty">
-          No items yet — open a media item and use "Add to collection" to add one here.
+          {collection.smartFilter
+            ? "This smart filter currently matches nothing."
+            : 'No items yet — open a media item and use "Add to collection" to add one here.'}
         </p>
       )}
 
