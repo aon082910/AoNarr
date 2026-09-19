@@ -97,8 +97,9 @@ async function addFromSearchResult(type: "movie" | "series", result: any): Promi
 
   const insertResult = await db
     .prepare(
-      `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
+      `INSERT INTO media_items
+       (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status, release_date, backdrop_url, rating)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing', ?, ?, ?)`
     )
     .run(
       type,
@@ -109,7 +110,10 @@ async function addFromSearchResult(type: "movie" | "series", result: any): Promi
       result.posterUrl,
       JSON.stringify(result.externalIds),
       rootFolderId,
-      qualityProfileId
+      qualityProfileId,
+      result.releaseDate ?? null,
+      result.backdropUrl ?? null,
+      result.rating ?? null
     );
 
   if (type === "series") {

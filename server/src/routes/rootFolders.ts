@@ -25,7 +25,10 @@ rootFoldersRouter.get(
           const stat = fs.statfsSync(folder.path);
           const freeBytes = stat.bfree * stat.bsize;
           const totalBytes = stat.blocks * stat.bsize;
-          const percentUsed = totalBytes > 0 ? Math.round(((totalBytes - freeBytes) / totalBytes) * 100) : null;
+          // Unrounded — rootFolderSelect.ts's isRootFolderOverQuota() compares this same percentage
+          // against quotaPercent without rounding either, so the "over quota" badge here has to
+          // match that unrounded comparison exactly (round only for display, in the frontend).
+          const percentUsed = totalBytes > 0 ? ((totalBytes - freeBytes) / totalBytes) * 100 : null;
           return { ...folder, freeBytes, totalBytes, percentUsed };
         } catch {
           return { ...folder, freeBytes: null, totalBytes: null, percentUsed: null };

@@ -6,7 +6,7 @@ import { requireAdmin } from "../middleware/auth.js";
 import { hashPassword, listActiveSessions } from "../services/auth.js";
 import { isValidMediaType } from "../services/mediaTypes.js";
 import { CONTENT_RATING_ORDER } from "../services/contentRatings.js";
-import { logAuditEvent } from "../services/audit.js";
+import { auditActor, logAuditEvent } from "../services/audit.js";
 
 export const usersRouter = Router();
 usersRouter.use(requireAdmin);
@@ -58,7 +58,8 @@ usersRouter.post(
         await db.prepare("INSERT INTO user_library_access (user_id, media_type) VALUES (?, ?)").run(userId, t);
       }
     });
-    logAuditEvent(null, "admin", "user_created", b.username);
+    const actor = auditActor(req);
+    logAuditEvent(actor.userId, actor.username, "user_created", b.username);
 
     const row = await db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
     res.status(201).json({ ...userFromRow(row), allowedTypes: await getAllowedTypes(userId) });
@@ -70,6 +71,7 @@ usersRouter.patch(
   asyncHandler(async (req, res) => {
     const existing = await db.prepare("SELECT * FROM users WHERE id = ?").get(req.params.id);
     if (!existing) throw new HttpError(404, "User not found");
+    const actor = auditActor(req);
 
     const b = req.body ?? {};
     if (b.password) {
@@ -77,7 +79,7 @@ usersRouter.patch(
       // A password reset should invalidate any session issued under the old password — otherwise
       // a compromised account stays logged in elsewhere even after the admin "fixes" it.
       await db.prepare("DELETE FROM sessions WHERE user_id = ?").run(req.params.id);
-      logAuditEvent(null, "admin", "user_password_reset", (existing as any).username);
+      logAuditEvent(actor.userId, actor.username, "user_password_reset", (existing as any).username);
     }
     const permissionChanges: string[] = [];
     if (b.maxPendingRequests !== undefined) {
@@ -113,7 +115,7 @@ usersRouter.patch(
       permissionChanges.push(`allowed libraries → ${b.allowedTypes.length ? b.allowedTypes.join(", ") : "none"}`);
     }
     if (permissionChanges.length > 0) {
-      logAuditEvent(null, "admin", "user_permissions_changed", `${(existing as any).username}: ${permissionChanges.join("; ")}`);
+      logAuditEvent(actor.userId, actor.username, "user_permissions_changed", `${(existing as any).username}: ${permissionChanges.join("; ")}`);
     }
 
     const row = await db.prepare("SELECT * FROM users WHERE id = ?").get(req.params.id);
@@ -142,7 +144,8 @@ usersRouter.delete(
       const user = (await db.prepare("SELECT username FROM users WHERE id = ?").get(session.user_id)) as
         | { username: string }
         | undefined;
-      logAuditEvent(null, "admin", "session_revoked", user?.username ?? `user #${session.user_id}`);
+      const actor = auditActor(req);
+      logAuditEvent(actor.userId, actor.username, "session_revoked", user?.username ?? `user #${session.user_id}`);
     }
     res.status(204).send();
   })
@@ -167,7 +170,10 @@ usersRouter.delete(
     await db.prepare("DELETE FROM sessions WHERE user_id = ?").run(req.params.id);
     const result = await db.prepare("DELETE FROM users WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "User not found");
-    if (existing) logAuditEvent(null, "admin", "user_deleted", existing.username);
+    if (existing) {
+      const actor = auditActor(req);
+      logAuditEvent(actor.userId, actor.username, "user_deleted", existing.username);
+    }
     res.status(204).send();
   })
 );

@@ -84,8 +84,11 @@ remoteInstancesRouter.get(
     try {
       const remoteRes = await fetch(url, { headers: { "X-Api-Key": row.api_key }, signal: AbortSignal.timeout(15_000) });
       if (!remoteRes.ok) throw new Error(`Remote instance returned HTTP ${remoteRes.status}`);
-      const body = await remoteRes.json();
-      res.json(body);
+      const body = (await remoteRes.json()) as { items?: unknown };
+      // The remote's own GET /api/media always returns a paginated { items, total } envelope, but
+      // this proxy's caller (RemoteLibrary.tsx) expects a bare array — unwrap it here rather than
+      // forwarding the envelope verbatim.
+      res.json(body?.items ?? body);
     } catch (err) {
       throw new HttpError(502, `Could not reach remote instance "${row.name}": ${(err as Error).message}`);
     }

@@ -85,9 +85,8 @@ importListsRouter.patch(
       sets.push("require_review = ?");
       values.push(b.requireReview ? 1 : 0);
     }
-    // minRating/minVotes explicitly allow null (clearing the filter), unlike the COALESCE-based
-    // fields above which never distinguished "not sent" from "clear it" — this route is being
-    // rewritten to explicit per-field sets rather than COALESCE specifically to support that.
+    // minRating/minVotes explicitly allow null (clearing the filter) via the same `!== undefined`
+    // pattern already used for every field above.
     if (b.minRating !== undefined) {
       sets.push("min_rating = ?");
       values.push(b.minRating === null || b.minRating === "" ? null : Number(b.minRating));

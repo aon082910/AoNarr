@@ -3,6 +3,7 @@ import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { searchMetadata, fetchSeriesEpisodesFor } from "../services/metadata.js";
+import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { queueForReview } from "../services/importReview.js";
 import { log } from "../services/logger.js";
@@ -26,9 +27,12 @@ interface RowResult {
 /**
  * Bulk-imports a parsed watchlist export (IMDb "Your Watchlist" CSV, Letterboxd watchlist.csv,
  * Trakt CSV export — the web UI normalizes whichever headers it finds into {title, year, type}
- * before posting here) by metadata-searching each title and adding the top match as monitored,
- * same pipeline as a single Add Media import. Duplicates are skipped automatically rather than
- * prompted one-by-one, since this can be dozens/hundreds of rows. A title the metadata search
+ * before posting here) by metadata-searching each title and adding the top match as monitored.
+ * A cut-down version of a single Add Media import — auto-selects a root folder per item the same
+ * way, but (unlike Add Media) always monitors every episode of a series and never computes
+ * absolute-episode numbers, since there's no per-row UI here to offer those choices. Duplicates
+ * are skipped automatically rather than prompted one-by-one, since this can be dozens/hundreds of
+ * rows. A title the metadata search
  * comes up empty for is queued in import_review_items (see services/importReview.ts) for manual
  * matching later, rather than just vanishing — see the Import Review page.
  */
@@ -62,10 +66,11 @@ watchlistImportRouter.post(
           continue;
         }
 
+        const rootFolderId = await autoSelectRootFolderId(row.type);
         const insertResult = await db
           .prepare(
-            `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, quality_profile_id, monitored, status)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
+            `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
           )
           .run(
             row.type,
@@ -75,6 +80,7 @@ watchlistImportRouter.post(
             best.overview,
             best.posterUrl,
             JSON.stringify(best.externalIds),
+            rootFolderId,
             qualityProfileId
           );
 

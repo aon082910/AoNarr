@@ -111,7 +111,7 @@ downloadClientsRouter.get(
 );
 
 /** Radarr-style "Test" — validates connectivity/credentials for the already-saved client, same
- * pattern as GET /indexers/:id/test. */
+ * pattern as POST /indexers/:id/test. */
 downloadClientsRouter.post(
   "/:id/test",
   asyncHandler(async (req, res) => {

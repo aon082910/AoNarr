@@ -3,6 +3,67 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 328 — ten more backend bugs from the remaining smaller route files
+
+Finished the server-route sweep by auditing the 25 remaining, smaller route files (`librarySearch.ts`,
+`qualityProfiles.ts`, `importReview.ts`, `qualities.ts`, `delayProfiles.ts`, `mediaServerWebhook.ts`,
+`plexAuth.ts`, `friendLibraries.ts`, `ircFeeds.ts`, `watchlistImport.ts`, `releaseProfiles.ts`,
+`mediaAnalysis.ts`, `aiProviders.ts`, `metrics.ts`, `remoteInstances.ts`, `userInvites.ts`,
+`importLists.ts`, `indexers.ts`, `downloadClients.ts`, `calendarFeed.ts`, `wanted.ts`, `users.ts`,
+`libraryGroups.ts`, `rootFolders.ts`, `discordInteractions.ts`) with the same backend bug classes
+used in Round 327. Ten confirmed and fixed:
+
+- Watchlist Import's `media_items` INSERT never set `root_folder_id`, unlike every other add path —
+  every item added this way silently could never have a downloaded file imported (`importer.ts`
+  throws "has no root folder configured" for any import attempt against it). Now auto-selects one
+  per row, the same way Add Media/Requests/Discord/Overseerr-webhook already do.
+- `users.ts` hardcoded every admin-audit-log write to the literal actor `(null, "admin")` instead
+  of using the `auditActor(req)` helper every other admin route file already uses — on any instance
+  with more than one admin account, every create-user/reset-password/permissions-change/
+  session-revoke/delete-user entry in the Audit Log was misattributed to a generic "admin" instead
+  of the specific admin who did it.
+- The root-folders list endpoint rounded `percentUsed` to an integer before the frontend compared
+  it against the quota threshold, while the real grab-pausing check computes the same percentage
+  unrounded — near a threshold, the "over quota" badge and the actual pause decision could disagree.
+  Now returns the unrounded value (rounding only for the badge's display text).
+- `remoteInstances.ts`'s Remote Library browse proxy forwarded the remote instance's raw
+  `{ items, total }` response envelope verbatim, but the frontend expects (and calls `.map()`/
+  `.length` on) a bare array — breaking the feature with a `TypeError` any time it was used. Now
+  unwraps `body.items` before forwarding.
+- The Discord bot's `/request` add path dropped `release_date`, `backdrop_url`, and `rating` from
+  its `media_items` INSERT even though the TMDB search result it just fetched already carries them
+  — every other add path (Overseerr webhook, the web Add Media flow) persists these. Discord-added
+  titles were missing their release-date "Upcoming" badge and backdrop image.
+- `ircFeeds.ts`'s create route only treated the literal value `false` as "off" for `useSsl`/
+  `enabled`, while its own update route (and the field's own GET response shape) treats any falsy
+  value as off — creating a feed with `useSsl: 0` (exactly what a round-tripped GET response would
+  send back) silently created an SSL-*enabled* feed instead. Also, the named-capture-group regex
+  validation enforced on create was never enforced on update, so editing an existing feed could
+  silently save a regex that would never match anything, with no error.
+- Two stale comments corrected: `downloadClients.ts`'s "Test" route comment cited a nonexistent GET
+  sibling route (the real one is a POST); `importLists.ts` had a comment describing an in-progress
+  COALESCE-to-explicit-fields rewrite that was, on inspection, already fully complete — every field
+  in the handler already uses the same explicit pattern the comment claimed only some fields lacked.
+- `watchlistImport.ts`'s docstring overstated parity with the single Add Media pipeline ("same
+  pipeline as a single Add Media import") — corrected to note the real, narrower behavior (root
+  folder auto-selection, yes; absolute-episode numbers and a monitor-strategy choice, no) after the
+  missing-root-folder bug above turned out to be exactly the kind of drift an overstated comment lets
+  go unnoticed.
+
+Verified: `npx tsc --noEmit` clean in both `web/` and `server/`; full server test suite (89 files,
+1377 tests) passes with no regressions. Live-verified against the real, rebuilt server: a fixture
+root folder confirmed the quota badge and the real enforcement check now agree on the same
+unrounded percentage; a second fixture admin account confirmed the Audit Log now records the real
+actor instead of a generic "admin"; a fixture IRC feed confirmed `useSsl: 0`/`enabled: 0` now
+persist correctly and an invalid regex is now rejected on update; a fixture root folder and a live
+Open Library author search confirmed a Watchlist Import add now gets a real `root_folder_id`; a
+fixture remote instance pointed at the server's own API confirmed the Remote Library proxy now
+returns a bare array. The Discord bot fix was verified by code review only (correctly wired to match
+the established `overseerrWebhook.ts` INSERT pattern, `tsc`-clean) since exercising it live requires
+a real Discord interactions webhook round-trip, which isn't reproducible in this environment. All
+fixtures (sessions, users, a root folder, an IRC feed, a media item, a remote instance) were removed
+afterward.
+
 ## Round 327 — fifteen backend correctness bugs found by extending the audit to server routes
 
 With every page and shared component now given a dedicated pass, extended the audit to the largest

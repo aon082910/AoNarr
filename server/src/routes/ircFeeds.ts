@@ -36,14 +36,14 @@ ircFeedsRouter.post(
         b.name,
         b.host,
         b.port ?? 6697,
-        b.useSsl === false ? 0 : 1,
+        b.useSsl === undefined ? 1 : b.useSsl ? 1 : 0,
         b.nickname,
         b.saslUser ?? null,
         b.saslPass ? encryptValue(b.saslPass) : null,
         b.channel,
         b.announceRegex,
         b.protocol === "usenet" ? "usenet" : "torrent",
-        b.enabled === false ? 0 : 1
+        b.enabled === undefined ? 1 : b.enabled ? 1 : 0
       );
     const row = await db.prepare("SELECT * FROM irc_feeds WHERE id = ?").get(result.lastInsertRowid);
     restartIrcFeeds().catch(() => {});
@@ -55,6 +55,11 @@ ircFeedsRouter.patch(
   "/:id",
   asyncHandler(async (req, res) => {
     const b = req.body ?? {};
+    if (b.announceRegex !== undefined) {
+      if (!b.announceRegex || !/\(\?<title>/.test(b.announceRegex) || !/\(\?<url>/.test(b.announceRegex)) {
+        throw new HttpError(400, "announceRegex must have named capture groups (?<title>...) and (?<url>...)");
+      }
+    }
     const map: Record<string, string> = {
       name: "name",
       host: "host",

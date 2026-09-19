@@ -2678,7 +2678,7 @@ export default function Settings() {
             description: mediaTypes.find((t) => t.key === f.mediaType)?.label ?? f.mediaType,
             badge:
               typeof f.percentUsed === "number" && f.quotaPercent != null && f.percentUsed >= f.quotaPercent
-                ? `${f.percentUsed}% used — over quota`
+                ? `${Math.round(f.percentUsed)}% used — over quota`
                 : typeof f.freeBytes === "number"
                   ? `${formatBytes(f.freeBytes)} free`
                   : undefined,
