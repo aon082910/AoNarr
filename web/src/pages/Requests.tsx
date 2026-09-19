@@ -28,6 +28,7 @@ export default function Requests() {
   const mediaTypes = useMediaTypes();
   const [requests, setRequests] = useState<MediaRequest[]>([]);
   const [total, setTotal] = useState(0);
+  const [myStats, setMyStats] = useState<{ total: number; approvalRatePercent: number | null } | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(() => Number(localStorage.getItem("aonarr_requests_page_size")) || 100);
   const [showForm, setShowForm] = useState(false);
@@ -45,6 +46,9 @@ export default function Requests() {
       setRequests(data.items);
       setTotal(data.total);
     });
+    if (!auth.isAdmin) {
+      api.get<{ total: number; approvalRatePercent: number | null }>("/requests/stats/me").then(setMyStats);
+    }
   }
   useEffect(load, [page, pageSize]);
 
@@ -156,15 +160,10 @@ export default function Requests() {
         </Modal>
       )}
 
-      {!auth.isAdmin && requests.length > 0 && (
+      {!auth.isAdmin && myStats && myStats.total > 0 && (
         <p style={{ color: "var(--muted)" }}>
-          {requests.length} request(s) total ·{" "}
-          {(() => {
-            const approved = requests.filter((r) => r.status === "approved").length;
-            const rejected = requests.filter((r) => r.status === "rejected").length;
-            const resolved = approved + rejected;
-            return resolved > 0 ? `${Math.round((approved / resolved) * 100)}% approval rate` : "none resolved yet";
-          })()}
+          {myStats.total} request(s) total ·{" "}
+          {myStats.approvalRatePercent === null ? "none resolved yet" : `${myStats.approvalRatePercent}% approval rate`}
         </p>
       )}
 

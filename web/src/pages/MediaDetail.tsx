@@ -305,6 +305,7 @@ export default function MediaDetail() {
   const [syncingSceneNumbering, setSyncingSceneNumbering] = useState(false);
   const [seededSeasons, setSeededSeasons] = useState(false);
   const [groupBreadcrumb, setGroupBreadcrumb] = useState<string | null>(null);
+  const [groupChain, setGroupChain] = useState<number[] | null>(null);
   const [pendingGroupId, setPendingGroupId] = useState<number | null>(null);
   const [metadataProviders, setMetadataProviders] = useState<Record<string, string[]>>({});
   const [fetchingProvider, setFetchingProvider] = useState<string | null>(null);
@@ -453,11 +454,13 @@ export default function MediaDetail() {
   useEffect(() => {
     if (!item?.groupId) {
       setGroupBreadcrumb(null);
+      setGroupChain(null);
       return;
     }
-    api
-      .get<{ breadcrumb: LibraryGroup[] }>(`/library-groups/${item.groupId}`)
-      .then((detail) => setGroupBreadcrumb(detail.breadcrumb.map((g) => g.name).join(" / ")));
+    api.get<{ breadcrumb: LibraryGroup[] }>(`/library-groups/${item.groupId}`).then((detail) => {
+      setGroupBreadcrumb(detail.breadcrumb.map((g) => g.name).join(" / "));
+      setGroupChain(detail.breadcrumb.map((g) => g.id));
+    });
   }, [item?.groupId]);
 
   async function addToCollection() {
@@ -1864,7 +1867,7 @@ export default function MediaDetail() {
 
       {showMove && typeInfo && (
         <Modal title="Move to Group" onClose={() => setShowMove(false)}>
-          <GroupPicker type={item.type} groupLevels={typeInfo.groupLevels} onChange={setPendingGroupId} />
+          <GroupPicker type={item.type} groupLevels={typeInfo.groupLevels} initialChain={groupChain ?? undefined} onChange={setPendingGroupId} />
           <button type="button" onClick={saveGroup} disabled={!pendingGroupId} style={{ marginTop: 8 }}>
             Save location
           </button>

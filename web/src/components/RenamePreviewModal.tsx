@@ -80,9 +80,22 @@ export default function RenamePreviewModal({
               </div>
             </>
           )}
+          {preview.errors.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <p style={{ color: "var(--danger)", fontSize: "0.85rem" }}>{preview.errors.length} file(s) would fail to rename:</p>
+              <ul style={{ margin: 0, paddingLeft: 18, fontSize: "0.8rem", color: "var(--danger)" }}>
+                {preview.errors.map((e, idx) => (
+                  <li key={idx}>
+                    {e.title}: {e.error}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {preview.skippedMusic > 0 && (
             <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
-              {preview.skippedMusic} music track(s) skipped — track filenames are never templated (see Naming settings).
+              {preview.skippedMusic} track/chapter file(s) skipped — this tool doesn't retroactively rename
+              already-placed track/chapter files (new imports already follow the naming template).
             </p>
           )}
           <div style={{ display: "flex", gap: 8, marginTop: 12 }}>

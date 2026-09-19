@@ -3,6 +3,47 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 326 — four bugs found by extending the audit to shared components
+
+With every page now given a dedicated audit pass, extended the same review to the 20 substantive
+shared components in `web/src/components/` (excluding the two pure-icon files) — code reused across
+many pages, so a bug here can affect more than one screen at once. Four confirmed and fixed:
+
+- `MediaDetail.tsx`'s "Move to Group" dialog never passed `GroupPicker`'s `initialChain` prop, even
+  though the component was built specifically to accept it ("Pass `initialChain` ... to preselect an
+  existing item's current location") and `MediaDetail.tsx` already fetches that item's exact
+  root-first group-id chain for its own "Location: ..." breadcrumb — it just discarded the ids and
+  kept only the display names. Moving an already-grouped item meant every level had to be re-picked
+  from scratch, with the current location's breadcrumb also hidden while the dialog was open. Now
+  threads the fetched ids through as `initialChain`, matching how `AddPreview.tsx` already does it.
+- `RenamePreviewModal.tsx`'s skipped-file note hardcoded "music track(s)" and claimed track
+  filenames are "never templated" — but the same `skippedMusic` count also covers Audiobook chapter
+  files (this modal's opener is gated only on admin, not media type), and Music track filenames
+  *are* templated at import time via a setting added since this text was written (Round 173's
+  `namingArtistTrackTemplate`); only this retroactive bulk-rename tool skips already-placed ones.
+  Reworded to "track/chapter file(s) skipped — this tool doesn't retroactively rename already-placed
+  track/chapter files (new imports already follow the naming template)."
+- `RenamePreviewModal.tsx` declared a per-item `errors` array on its preview response — the same
+  shape callers already render via `notify.error` after a *real* rename fails — but never read or
+  displayed it during the preview itself, so an admin previewing a rename got no warning about items
+  that would fail until after committing to the real operation. Added a red-highlighted list of
+  failing items to the preview, shown before the Rename button.
+- `Requests.tsx`'s "N request(s) total" line above the table counted only the current page's
+  fetched items (capped at the selected page size), while the correct grand total was already shown
+  moments later by the shared `Pagination` component on the same page — two different numbers
+  presented as the same fact once a household user has more requests than fits on one page. The
+  approval-rate percentage next to it had the same page-scoped bug. Added a narrow `GET
+  /requests/stats/me` endpoint (self-scoped version of the existing admin-only `/requests/stats`
+  per-user counts) and switched the summary line to it instead of deriving from the paginated array.
+
+Verified: `npx tsc --noEmit` clean in both `web/` and `server/`. Live-verified against the real,
+rebuilt server: a fixture session for the existing non-admin test user confirmed `/requests/stats/me`
+and the rendered summary line both report the true count/rate; a fixture single-level "site" group
+and a fixture Online Videos item confirmed the Move to Group dropdown now preselects the item's
+current site instead of starting blank; the Rename preview modal was re-opened on a live item to
+confirm no regression in the ordinary (no-error) case. All fixtures (a session token, a media item,
+a library group) were removed afterward.
+
 ## Round 325 — thirteen more bugs across the next tier of pages
 
 Audited the next 24 not-yet-solo-reviewed pages (`RemoteLibrary.tsx`, `RecycleBin.tsx`,

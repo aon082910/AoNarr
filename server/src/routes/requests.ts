@@ -132,6 +132,28 @@ requestsRouter.get(
   })
 );
 
+/** A household user's own request totals/approval rate — the same counts `/stats` computes per
+ * user for the admin Users page, but self-scoped and reachable by a non-admin, since the Requests
+ * page shows this summary to the requester themselves, not just admins. */
+requestsRouter.get(
+  "/stats/me",
+  asyncHandler(async (req, res) => {
+    const user = req.auth?.user;
+    if (!user) throw new HttpError(401, "Not authenticated");
+    const counts = (await db
+      .prepare(`SELECT status, COUNT(*) AS c FROM requests WHERE user_id = ? GROUP BY status`)
+      .all(user.id)) as { status: string; c: number }[];
+    const byStatus: Record<string, number> = { pending: 0, approved: 0, rejected: 0 };
+    for (const row of counts) byStatus[row.status] = Number(row.c);
+    const total = byStatus.pending + byStatus.approved + byStatus.rejected;
+    const resolved = byStatus.approved + byStatus.rejected;
+    res.json({
+      total,
+      approvalRatePercent: resolved > 0 ? Math.round((byStatus.approved / resolved) * 100) : null,
+    });
+  })
+);
+
 /**
  * Restricted users submit requests for media they don't have access to add directly; an admin
  * reviews the queue and approves (creating the real library entry) or rejects — unless the user
