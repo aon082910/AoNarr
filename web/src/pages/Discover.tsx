@@ -17,6 +17,8 @@ interface DiscoverItem {
   type: "movie" | "series";
   inLibrary: boolean;
   mediaItemId: number | null;
+  backdropUrl?: string | null;
+  rating?: number | null;
 }
 
 interface DiscoverResponse {
@@ -68,6 +70,8 @@ export default function Discover() {
         overview: item.overview,
         posterUrl: item.posterUrl,
         externalIds: item.externalIds,
+        backdropUrl: item.backdropUrl ?? null,
+        rating: item.rating ?? null,
       },
       manual: false,
     };

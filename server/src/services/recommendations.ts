@@ -8,12 +8,15 @@ import { fetchSeriesEpisodesFor } from "./metadata.js";
 import { log } from "./logger.js";
 
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w342";
+const TMDB_BACKDROP_BASE = "https://image.tmdb.org/t/p/w1280";
 const SOURCE_SAMPLE_SIZE = 5;
 
 export interface Recommendation {
   title: string;
   year: number | null;
   posterUrl: string | null;
+  backdropUrl: string | null;
+  rating: number | null;
   externalIds: Record<string, string>;
   type: "movie" | "series" | "artist";
   sourceTitle: string;
@@ -126,6 +129,8 @@ async function recommendMovies(
         title: r.title ?? r.name ?? "Unknown",
         year: r.release_date ? Number(r.release_date.slice(0, 4)) : null,
         posterUrl: r.poster_path ? `${TMDB_IMAGE_BASE}${r.poster_path}` : null,
+        backdropUrl: r.backdrop_path ? `${TMDB_BACKDROP_BASE}${r.backdrop_path}` : null,
+        rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
         externalIds: { tmdb: String(r.id) },
         type: "movie",
         sourceTitle: source.title,
@@ -153,6 +158,8 @@ async function recommendSeries(
         title: r.name ?? r.title ?? "Unknown",
         year: r.first_air_date ? Number(r.first_air_date.slice(0, 4)) : null,
         posterUrl: r.poster_path ? `${TMDB_IMAGE_BASE}${r.poster_path}` : null,
+        backdropUrl: r.backdrop_path ? `${TMDB_BACKDROP_BASE}${r.backdrop_path}` : null,
+        rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
         externalIds: { tmdb: String(r.id) },
         type: "series",
         sourceTitle: source.title,
@@ -187,6 +194,8 @@ async function recommendArtists(apiKey: string): Promise<Recommendation[]> {
         title: a.name,
         year: null,
         posterUrl: image || null,
+        backdropUrl: null, // Last.fm's artist data has no backdrop-style image, only the square artist photo above
+        rating: null,
         externalIds: a.mbid ? { musicbrainz: a.mbid } : {},
         type: "artist",
         sourceTitle: source.title,

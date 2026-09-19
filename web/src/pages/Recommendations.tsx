@@ -11,6 +11,8 @@ interface Recommendation {
   title: string;
   year: number | null;
   posterUrl: string | null;
+  backdropUrl: string | null;
+  rating: number | null;
   externalIds: Record<string, string>;
   type: MediaType;
   sourceTitle: string;
@@ -45,7 +47,15 @@ export default function Recommendations() {
   function openPreview(r: Recommendation) {
     const state: AddPreviewState = {
       type: r.type,
-      result: { title: r.title, year: r.year, overview: null, posterUrl: r.posterUrl, externalIds: r.externalIds },
+      result: {
+        title: r.title,
+        year: r.year,
+        overview: null,
+        posterUrl: r.posterUrl,
+        externalIds: r.externalIds,
+        backdropUrl: r.backdropUrl,
+        rating: r.rating,
+      },
       manual: false,
     };
     navigate("/add/preview", { state });

@@ -3,6 +3,27 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 315 — trending/recommended items were missing their backdrop image in the new preview
+
+Round 314 sent Discover/Recommendations cards to the same `/add/preview` hero page Add Media and
+Global Search already use, but the poster showed while the big backdrop image behind the title
+never did — `fetchTrendingMovies`/`fetchTrendingSeries` (`services/metadata.ts`) and
+`recommendMovies`/`recommendSeries`/`recommendArtists` (`services/recommendations.ts`) built their
+own result objects straight from TMDB's/Last.fm's raw response instead of going through the shared
+search helpers, and never carried over `backdrop_path` or `vote_average` — so `MetadataSearchResult
+.backdropUrl`/`.rating` were always `null` for a trending or recommended item, even though the exact
+same TMDB response includes them (every other metadata path already captures both, e.g.
+`searchMoviesTmdb`). Fixed by mapping `backdropUrl`/`rating` the same way those other paths already
+do (`TMDB_BACKDROP_BASE = ".../t/p/w1280"` + `backdrop_path`), and threading both fields through
+`DiscoverItem`/`Recommendation` on the client so `openPreview()` now hands them to `/add/preview`
+along with everything else.
+
+Verified: `npx tsc --noEmit` clean in both projects. Live-verified against the rebuilt real server —
+patched `window.fetch` to serve a fixture Discover/Recommendations result with a `backdropUrl` and
+`rating` set, clicked through to `/add/preview`, and confirmed via the DOM (`.media-backdrop`'s
+`background-image` style) that the backdrop image URL and the rating pill both actually render,
+for both entry points.
+
 ## Round 314 — Discover/Recommendations cards open a real preview, plus a "View more" per section on Discover
 
 **Clicking a Discover or Recommendations card now opens a preview** instead of doing nothing (the

@@ -271,6 +271,8 @@ export async function fetchTrendingMovies(): Promise<MetadataSearchResult[]> {
     posterUrl: r.poster_path ? `${TMDB_IMAGE_BASE}${r.poster_path}` : null,
     externalIds: { tmdb: String(r.id) },
     releaseDate: r.release_date || null,
+    backdropUrl: r.backdrop_path ? `${TMDB_BACKDROP_BASE}${r.backdrop_path}` : null,
+    rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
   }));
 }
 
@@ -285,6 +287,8 @@ export async function fetchTrendingSeries(): Promise<MetadataSearchResult[]> {
     overview: r.overview || null,
     posterUrl: r.poster_path ? `${TMDB_IMAGE_BASE}${r.poster_path}` : null,
     externalIds: { tmdb: String(r.id) },
+    backdropUrl: r.backdrop_path ? `${TMDB_BACKDROP_BASE}${r.backdrop_path}` : null,
+    rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
   }));
 }
 
