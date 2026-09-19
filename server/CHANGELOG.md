@@ -3,6 +3,33 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 317 — Poster info: three options were dead weight on most library types
+
+**"Quality," "Path," and "Size on disk" in the Poster info/Overview info/Columns menu (and the
+matching Sort options) never did anything on any episodic (TV/Anime/Sports/PPV) or collection
+(Music/Books/Comics/Manga/Audiobooks/...) library** — checking the box or picking the sort option
+looked like a real setting but silently produced no visible change. Root cause: `media_items
+.quality`/`.path`/`.size_bytes` are only ever populated when a file is placed directly against the
+*parent* row (`importer.ts`'s `typeConfig.shape === "single"` branch) — for episodic/collection
+shapes a file always belongs to a child episode/sub-item instead, and (per `schema.sql`'s own
+comment on `size_bytes`) there was never any per-child size/quality/path tracking to roll up from,
+so those three columns are simply always `NULL` for every non-"single" media type. `fieldValue()` in
+`LibraryType.tsx` correctly returned `""` for them, which then got filtered out of the display —
+correct behavior, but the picker still offered them everywhere regardless, so a Series/Album/Book
+library's Poster info menu had three checkboxes that could never do anything.
+
+Fixed by hiding those three options from Poster info/Overview info/Columns (`allFieldKeys`, one
+shared list already backing all three) and from the Sort dropdown whenever the current library
+type's shape isn't "single" — the options now only ever appear where they can actually show a
+value, matching how Sonarr's own series list has no per-series "current quality" column for the
+same underlying reason. Movies/ROMs/Videos/Courses/Adult (single-shape) are unaffected — all ten
+options still show exactly as before.
+
+Verified: `npx tsc --noEmit` clean. Live-verified against the running dev server across all three
+affected surfaces (Poster info, Table view's Columns, and the Sort dropdown) on both a single-shape
+type (Movies — all ten options still present) and episodic/collection types (TV Shows, Music — the
+three dead options are gone from all three surfaces, table header row matches).
+
 ## Round 316 — live-tailing System → Logs, Radarr/Sonarr-style
 
 **System → Logs now live-tails**, matching how the other Starr apps' own Logs page behaves, instead

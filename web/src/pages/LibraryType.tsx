@@ -61,6 +61,16 @@ const EXTRA_FIELD_LABELS: Record<string, string> = {
 const DEFAULT_LIST_COLUMNS: ExtraField[] = ["year", "status", "monitored"];
 const DEFAULT_POSTER_FIELDS: ExtraField[] = ["year", "status", "monitored"];
 
+/** These three only ever have a value on a "single"-shape item (movie/rom/video/course/adult) —
+ * `media_items.quality`/`.path`/`.size_bytes` are populated by importer.ts only when a file is
+ * placed directly against the parent row (see schema.sql's comment on size_bytes), which for
+ * "episodic" (series/anime/sports/ppv) and "collection" (music/books/comics/...) shapes never
+ * happens — a file always belongs to a child episode/sub-item instead, and there's no per-child
+ * size/quality/path tracking to roll up from. Offering these as togglable Poster info/Overview
+ * info/Columns/Sort options on those library types looked like a real setting but silently did
+ * nothing, since fieldValue() always returns "" for them there. */
+const SINGLE_SHAPE_ONLY_FIELDS = new Set(["quality", "path", "sizeOnDisk"]);
+
 /** item.releaseDate is a date-only string ("2026-09-20") — new Date(str) parses that as UTC
  * midnight, which shifts the Unreleased/Missing boundary by the viewer's UTC offset (the same
  * class of bug already fixed in Calendar.tsx/Dashboard.tsx). Compares local calendar days instead. */
@@ -665,7 +675,10 @@ export function LibraryItemGrid({
   }, [auth.isAdmin]);
 
   const customColumnsForType = customColumns.filter((c) => !c.mediaType || c.mediaType === type);
-  const allFieldKeys: ExtraField[] = [...Object.keys(EXTRA_FIELD_LABELS), ...customColumnsForType.map((c) => `custom:${c.id}`)];
+  const allFieldKeys: ExtraField[] = [
+    ...Object.keys(EXTRA_FIELD_LABELS).filter((f) => typeInfo?.shape === "single" || !SINGLE_SHAPE_ONLY_FIELDS.has(f)),
+    ...customColumnsForType.map((c) => `custom:${c.id}`),
+  ];
   function fieldLabel(field: ExtraField): string {
     if (field.startsWith("custom:")) {
       return customColumnsForType.find((c) => c.id === Number(field.slice(7)))?.label ?? field;
@@ -1204,11 +1217,11 @@ export function LibraryItemGrid({
               <option value="year">Sort: Year</option>
               <option value="status">Sort: Status</option>
               <option value="monitored">Sort: Monitored</option>
-              <option value="quality">Sort: Quality</option>
+              {typeInfo?.shape === "single" && <option value="quality">Sort: Quality</option>}
               <option value="contentRating">Sort: Content rating</option>
               <option value="releaseDate">Sort: Release date</option>
-              <option value="path">Sort: Path</option>
-              <option value="sizeOnDisk">Sort: Size on disk</option>
+              {typeInfo?.shape === "single" && <option value="path">Sort: Path</option>}
+              {typeInfo?.shape === "single" && <option value="sizeOnDisk">Sort: Size on disk</option>}
             </select>
             <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as StatusFilter)} style={{ maxWidth: 160 }}>
               <option value="all">All statuses</option>
