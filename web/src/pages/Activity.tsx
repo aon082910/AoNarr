@@ -475,7 +475,7 @@ export default function Activity() {
                     </div>
                   </td>
                   <td>{q.quality ?? "-"}</td>
-                  <td>{q.size ? `${(q.size / 1e9).toFixed(2)} GB` : "-"}</td>
+                  <td>{q.size ? formatSize(q.size) : "-"}</td>
                   <td className="toolbar">
                     {(q.status === "queued" || q.status === "downloading") && (
                       <button type="button" className="icon-button" onClick={() => setPriority(q.id, "top")} title="Prioritize" aria-label="Prioritize">

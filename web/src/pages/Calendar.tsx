@@ -306,7 +306,7 @@ export default function Calendar() {
                         {entry.kind === "event" ? (
                           <span className="badge">Custom date</span>
                         ) : (
-                          <span className={`badge ${entry.hasFile ? "ok" : ""}`}>{entry.hasFile ? "Downloaded" : "Missing"}</span>
+                          <span className={`badge ${entry.hasFile ? "ok" : "danger"}`}>{entry.hasFile ? "Downloaded" : "Missing"}</span>
                         )}
                       </td>
                       <td>
@@ -358,7 +358,7 @@ export default function Calendar() {
                           {entry.kind === "event" ? (
                             <span className="badge">Custom date</span>
                           ) : (
-                            <span className={`badge ${entry.hasFile ? "ok" : ""}`}>{entry.hasFile ? "Downloaded" : "Missing"}</span>
+                            <span className={`badge ${entry.hasFile ? "ok" : "danger"}`}>{entry.hasFile ? "Downloaded" : "Missing"}</span>
                           )}
                         </td>
                         <td>

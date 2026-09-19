@@ -108,7 +108,7 @@ export default function RecycleBin() {
                 <tr key={r.id}>
                   <td>{r.title}</td>
                   <td>{r.reason}</td>
-                  <td style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.filePath}</td>
+                  <td title={r.filePath} style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.filePath}</td>
                   <td>{new Date(r.detectedAt).toLocaleString()}</td>
                   <td style={{ display: "flex", gap: 6 }}>
                     <button type="button" className="icon-button danger" onClick={() => recycleReviewItem(r.id, r.title)} title="Recycle" aria-label="Recycle">
@@ -184,7 +184,7 @@ function RecycledFilesTable({
               {e.title}
               {e.restoreError && <div style={{ color: "var(--danger)", fontSize: "0.8rem" }}>Restore failed: {e.restoreError}</div>}
             </td>
-            <td style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.originalPath}</td>
+            <td title={e.originalPath} style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.originalPath}</td>
             <td>{formatBytes(e.sizeBytes)}</td>
             <td>{new Date(e.deletedAt).toLocaleString()}</td>
             <td style={{ display: "flex", gap: 6 }}>

@@ -1193,17 +1193,22 @@ export default function System() {
           Retroactively re-renames every already-imported file whose current path no longer
           matches its library type's naming template (Settings → Media Management → Naming) — for
           after you've changed a template and want existing files to catch up, not just new
-          imports. Files with no change needed are skipped; Music is skipped entirely since its
-          track filenames are always kept as-downloaded rather than templated.
+          imports. Files with no change needed are skipped; Music and Audiobooks are skipped
+          entirely since their individual track/chapter filenames are always kept as-downloaded
+          rather than templated.
         </p>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <select value={renameType} onChange={(e) => setRenameType(e.target.value)} style={{ maxWidth: 220 }}>
             <option value="">All library types</option>
-            {mediaTypes.map((t) => (
-              <option key={t.key} value={t.key}>
-                {t.label}
-              </option>
-            ))}
+            {/* Music/Audiobooks (multiFilePerChild) are always a no-op here (see the paragraph
+                above) — picking one of them specifically would rename zero files every time. */}
+            {mediaTypes
+              .filter((t) => !t.multiFilePerChild)
+              .map((t) => (
+                <option key={t.key} value={t.key}>
+                  {t.label}
+                </option>
+              ))}
           </select>
           <button onClick={runRenameFiles} disabled={renaming} className="secondary">
             {renaming ? "Renaming..." : "Rename files now"}
@@ -1213,7 +1218,10 @@ export default function System() {
           <div style={{ marginTop: 12 }}>
             <p>
               {renameResult.renamed.length} file(s) renamed
-              {renameResult.skippedMusic > 0 && `, ${renameResult.skippedMusic} Music file(s) skipped`}
+              {/* skippedMusic aggregates both Music AND Audiobooks skips (see RenameResult in
+                  importer.ts) — worded generically rather than blaming "Music" for what might
+                  entirely be Audiobooks files in a library with no Music at all. */}
+              {renameResult.skippedMusic > 0 && `, ${renameResult.skippedMusic} Music/Audiobooks file(s) skipped`}
               {renameResult.errors.length > 0 && `, ${renameResult.errors.length} error(s)`}.
             </p>
             {renameResult.renamed.length > 0 && (

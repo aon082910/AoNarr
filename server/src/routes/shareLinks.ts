@@ -3,6 +3,7 @@ import { Router } from "express";
 import { db } from "../db/index.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
+import { getMediaTypeConfig } from "../services/mediaTypes.js";
 
 /** Admin-only: create/list/revoke share links for a media item. Mounted at /api/media. */
 export const shareLinksRouter = Router();
@@ -56,10 +57,14 @@ shareLinksPublicRouter.get(
       throw new HttpError(404, "This share link has expired");
     }
 
-    const item = await db
+    const item = (await db
       .prepare("SELECT type, title, year, overview, poster_url, status FROM media_items WHERE id = ?")
-      .get(link.media_item_id);
+      .get(link.media_item_id)) as { type: string } | undefined;
     if (!item) throw new HttpError(404, "The shared item no longer exists");
-    res.json(item);
+    // The raw `type` column is a database key ("artist", "ppv", ...), not something to show a
+    // visitor directly — several types' keys read as nonsense words (or the wrong word entirely)
+    // compared to their real label ("Music", "Sports PPV"); resolve it the same way the rest of
+    // the app already does before sending it to this fully public, unauthenticated page.
+    res.json({ ...item, typeLabel: getMediaTypeConfig(item.type).label });
   })
 );

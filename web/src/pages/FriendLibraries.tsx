@@ -115,8 +115,8 @@ export default function FriendLibraries() {
 
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", marginBottom: 16 }}>
         {libraries.map((l) => (
-          <div key={l.id} className="card" style={{ padding: 16 }}>
-            <div onClick={() => openEdit(l)}>
+          <div key={l.id} className="card" style={{ padding: 16 }} onClick={() => openEdit(l)}>
+            <div>
               <div style={{ fontWeight: 600 }}>{l.name}</div>
               <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: 4 }}>
                 {TYPE_LABELS[l.type]} · {l.url}

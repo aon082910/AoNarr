@@ -1062,12 +1062,13 @@ export interface RenameResult {
  * Retroactively re-renames every already-imported file for items whose naming template has
  * changed since they were imported — Sonarr/Radarr's "Rename Files" bulk action. Never touches
  * anything without a file yet, and only actually moves a file when the freshly-computed
- * destination differs from where it already is. Music (multiFilePerChild) is deliberately skipped
- * — its individual track filenames are always kept as-downloaded rather than templated (see
- * placeAlbumFiles), so a template change there would only affect the album folder name, a
- * different and riskier operation (renaming a folder full of files with no per-file destination
- * to verify against) than this function's per-file model handles; the count is still reported so
- * a caller isn't left thinking Music was silently included.
+ * destination differs from where it already is. Music and Audiobooks (multiFilePerChild shapes)
+ * are deliberately skipped — their individual track/chapter filenames are always kept as-
+ * downloaded rather than templated (see placeAlbumFiles), so a template change there would only
+ * affect the album/book folder name, a different and riskier operation (renaming a folder full of
+ * files with no per-file destination to verify against) than this function's per-file model
+ * handles; the count is still reported (as `skippedMusic`, shared by both types) so a caller isn't
+ * left thinking they were silently included.
  */
 export async function renameLibraryFiles(mediaType?: MediaType, dryRun = false): Promise<RenameResult> {
   const result: RenameResult = { renamed: [], errors: [], skippedMusic: 0 };

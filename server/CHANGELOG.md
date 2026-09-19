@@ -3,6 +3,79 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 319 — similar-bugs sweep: 14 confirmed defects across 12 pages
+
+Following up on Round 317/318's Poster-info/Overview-view bugs, ran a multi-agent audit (6 reviewers
+reading all 50 pages in full, each finding independently re-verified against the actual source)
+specifically hunting for the same three bug classes — dead toggle options, raw internal values
+leaking into user-facing text, and inconsistent card clickability — plus any other concrete
+correctness bug in conditional rendering. All 14 findings were confirmed and fixed:
+
+**Dead toggle options** (an option offered everywhere, but only ever works in some contexts):
+- `LibraryType.tsx`'s Status filter offered "Cutoff unmet"/"Filename doesn't match title" on every
+  library type, but both are computed from `media_items.quality`/`.path`, which — same root cause
+  as Round 317's Poster-info fix — are only ever populated for "single"-shape types. Hidden for
+  episodic/collection types now, matching the Sort dropdown's existing gating.
+- `Duplicates.tsx`'s duplicate-group table showed a "Quality" column unconditionally; always `-` for
+  episodic/collection types for the identical reason. Hidden the same way the file already
+  conditionally hides its "Children" header.
+- `System.tsx`'s "Rename Files" type dropdown offered "Music" and "Audiobooks", both of which
+  (`multiFilePerChild` shapes) are unconditionally skipped by the rename routine — picking either
+  always renamed zero files. Also fixed the result banner, which reported every skip as "Music file(s)
+  skipped" even when the library being renamed was Audiobooks-only.
+- `WatchlistImport.tsx`'s single-title Type dropdown included "Courses", which has no metadata-search
+  provider configured — searching always silently failed and queued the row as "No metadata match
+  found" with no indication the type itself could never work (`AddMedia.tsx` already guards this via
+  `hasMetadataSearch`; this flow didn't).
+
+**Raw internal values shown to users** instead of the proper label:
+- `MediaDetail.tsx`'s Type/status pill printed the raw database key (`item.type`) instead of
+  `typeInfo.label` — e.g. a Music item's own detail page read "artist · Continuing" instead of
+  "Music · Continuing", even though `typeInfo` was already computed on the same page.
+- `SharePage.tsx` — the fully public, unauthenticated `/share/:token` page — had the identical bug:
+  the server now resolves and sends `typeLabel` (`getMediaTypeConfig(type).label`) instead of the
+  client guessing at a capitalized raw key.
+- `MediaAnalyzer.tsx`'s "HDR format" stat panel (and the "Filtered to..." caption it drives) printed
+  the raw internal slug ("dolby-vision", "hdr10plus") even though the main file table right next to
+  it correctly used `HDR_LABELS` for the same field on the same data. Both now share one
+  `labelForStat()` helper so they can't drift apart again.
+
+**Inconsistent card clickability** (styled/hoverable like every other clickable card, but only part
+of it actually was):
+- `FriendLibraries.tsx` and `CollectionDetail.tsx` both had their card's `onClick` on an inner text
+  wrapper instead of the outer `.card` div — hovering the card's padding or whitespace between
+  elements showed the lift/border-highlight every clickable card gets, but clicking there did
+  nothing. Moved `onClick` to the outer card (existing action buttons already/now call
+  `stopPropagation()`), matching how equivalent cards elsewhere in the app are built.
+- `MediaDetail.tsx`'s Artwork-background tiles are deliberately non-clickable (only their two
+  buttons are), but kept the shared `.card` class, whose `:hover` rule still fired regardless of the
+  inline `cursor: default` override (a CSS pseudo-class isn't neutralized by an inline style).
+  Added a `.card.static` modifier that actually suppresses the hover lift/border for tiles like this.
+
+**Other**:
+- `Calendar.tsx`'s day-detail panel and Agenda table showed a "Missing" item's status badge in plain
+  gray, while the identical fact renders red (danger) in the month-grid mini-pills and on
+  `CalendarDay.tsx`'s own page — a copy-paste omission now made consistent everywhere.
+- `Activity.tsx`'s Queue table hardcoded `(size / 1e9).toFixed(2)} GB` instead of using the file's
+  own KB/MB/GB-scaling `formatSize()` helper (already used correctly a few hundred lines later) —
+  any queue item under ~5MB (a small ebook/comic/sample release) rendered as an uninformative
+  "0.00 GB".
+- `RecycleBin.tsx` (both tables), `Users.tsx`'s Active Sessions Device column, and `Duplicates.tsx`'s
+  file-path cell all truncated long text (paths, user-agent strings) with no `title` attribute to
+  recover the full value on hover — `MediaDetail.tsx` already has this exact pattern with the
+  tooltip; these didn't.
+
+Verified: `npx tsc --noEmit` clean in both projects. Live-verified against the real, rebuilt server —
+the Status/Sort/Rename-type/Watchlist-type dropdowns' shape-based filtering (Movies keeps every
+option, TV Shows/episodic types don't); a Music item's detail page and its public share link both
+now read "Music" instead of "artist"; a fixture Media Analyzer response confirmed "Dolby
+Vision"/"HDR10+" render instead of raw slugs in both the stat table and its tooltip; a fixture
+Friend Library tile's previously-dead whitespace now opens its edit modal on click. The remaining
+findings (Duplicates/Activity/RecycleBin/Users/Calendar/Artwork-modal/CollectionDetail) are small,
+independent, single-line-or-few-line changes confirmed correct by direct code reading against the
+audit's exact citations; live fixture data wasn't set up for each given the volume of confirmed
+findings in this round.
+
 ## Round 318 — Overview view mode duplicated the Status field as raw text next to its own badge
 
 Checking "Status" in Poster info (on by default) and switching to **Overview** view mode showed

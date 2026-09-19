@@ -400,7 +400,7 @@ function SessionsTable({ sessions, onRevoke }: { sessions: Session[]; onRevoke: 
             <td>{s.username}</td>
             <td>{s.lastUsedAt ? new Date(s.lastUsedAt).toLocaleString() : "-"}</td>
             <td>{new Date(s.createdAt).toLocaleString()}</td>
-            <td style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.userAgent ?? "unknown"}</td>
+            <td title={s.userAgent ?? undefined} style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.userAgent ?? "unknown"}</td>
             <td>
               <button type="button" className="icon-button danger" onClick={() => onRevoke(s.token)} title="Revoke" aria-label="Revoke">
                 <TrashIcon />

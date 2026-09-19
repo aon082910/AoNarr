@@ -1229,9 +1229,12 @@ export function LibraryItemGrid({
               <option value="unmonitored">Unmonitored</option>
               <option value="downloaded">Downloaded</option>
               <option value="missing">Missing</option>
-              <option value="cutoffUnmet">Cutoff unmet</option>
+              {/* Both computed server-side from media_items.quality/.path (mediaQuery.ts), which —
+                  same as SINGLE_SHAPE_ONLY_FIELDS above — are only ever populated for "single"-shape
+                  items; picking either on an episodic/collection type always returned zero results. */}
+              {typeInfo?.shape === "single" && <option value="cutoffUnmet">Cutoff unmet</option>}
               <option value="unmatched">Unmatched (no metadata match)</option>
-              <option value="filenameMismatch">Filename doesn't match title</option>
+              {typeInfo?.shape === "single" && <option value="filenameMismatch">Filename doesn't match title</option>}
             </select>
             {tags.length > 0 && (
               <select

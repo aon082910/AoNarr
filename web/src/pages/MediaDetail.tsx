@@ -1497,7 +1497,7 @@ export default function MediaDetail() {
               </span>
             )}
             <span className="pill" title="Type / status">
-              {item.type} · {item.status}
+              {typeInfo?.label ?? item.type} · {item.status}
             </span>
             {typeof item.runtimeMinutes === "number" && item.runtimeMinutes > 0 && (
               <span className="pill" title="Runtime">
@@ -2055,7 +2055,7 @@ export default function MediaDetail() {
                   </p>
                   <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
                     {artworkOptions.backgrounds.map((url, idx) => (
-                      <div key={idx} className="card" style={{ padding: 0, cursor: "default" }}>
+                      <div key={idx} className="card static" style={{ padding: 0, cursor: "default" }}>
                         <div style={{ aspectRatio: "16/9", backgroundImage: `url(${url})`, backgroundSize: "cover", backgroundPosition: "center", borderRadius: "6px 6px 0 0" }} />
                         <div style={{ display: "flex", gap: 4, padding: 6 }}>
                           <button type="button" className="secondary" style={{ flex: 1, fontSize: "0.75rem" }} onClick={() => selectArtwork(url, "backdrop")}>

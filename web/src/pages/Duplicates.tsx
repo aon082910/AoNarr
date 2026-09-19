@@ -136,7 +136,12 @@ export default function Duplicates() {
 
       {groups?.map((g) => {
         const key = groupKey(g);
-        const typeLabel = mediaTypes.find((t) => t.key === g.type)?.label ?? g.type;
+        const groupTypeInfo = mediaTypes.find((t) => t.key === g.type);
+        const typeLabel = groupTypeInfo?.label ?? g.type;
+        // Same reasoning as LibraryType.tsx's SINGLE_SHAPE_ONLY_FIELDS — media_items.quality is only
+        // ever populated for "single"-shape items, so the column is always empty for episodic/
+        // collection duplicate groups (TV shows, music, books, ...) and only worth showing otherwise.
+        const showQuality = groupTypeInfo?.shape === "single";
         return (
           <div
             key={key}
@@ -153,7 +158,7 @@ export default function Duplicates() {
                   <th></th>
                   <th>Title</th>
                   <th>File</th>
-                  <th>Quality</th>
+                  {showQuality && <th>Quality</th>}
                   <th>Matched to</th>
                   <th>{g.items.some((i) => i.childCount > 0) ? "Children" : ""}</th>
                   <th>Monitored</th>
@@ -184,12 +189,15 @@ export default function Duplicates() {
                     <td>
                       <span className={`badge ${item.hasFile ? "ok" : ""}`}>{item.hasFile ? "Downloaded" : "Missing"}</span>
                       {item.path && (
-                        <div style={{ color: "var(--muted)", fontSize: "0.75rem", maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <div
+                          title={item.path}
+                          style={{ color: "var(--muted)", fontSize: "0.75rem", maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                        >
                           {item.path}
                         </div>
                       )}
                     </td>
-                    <td>{item.quality ?? "-"}</td>
+                    {showQuality && <td>{item.quality ?? "-"}</td>}
                     <td>
                       {item.matchedProviders.length > 0 ? (
                         item.matchedProviders.join(", ")

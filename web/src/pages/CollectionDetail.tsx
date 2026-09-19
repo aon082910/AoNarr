@@ -131,32 +131,40 @@ export default function CollectionDetail() {
 
       <div className="grid">
         {collection.items.map((item, index) => (
-          <div key={item.id} className="card">
-            <div
-              className="poster"
-              style={item.posterUrl ? { backgroundImage: `url(${item.posterUrl})` } : undefined}
-              onClick={() => navigate(`/media/${item.id}`)}
-            >
+          <div key={item.id} className="card" onClick={() => navigate(`/media/${item.id}`)}>
+            <div className="poster" style={item.posterUrl ? { backgroundImage: `url(${item.posterUrl})` } : undefined}>
               {!item.posterUrl && "No poster"}
             </div>
             <div className="meta">
-              <div className="title" onClick={() => navigate(`/media/${item.id}`)} style={{ cursor: "pointer" }}>
-                {item.title}
-              </div>
+              <div className="title">{item.title}</div>
               <div className="sub">
                 {item.year ?? ""} · {labelFor(item.type)}
               </div>
               {!collection.smartFilter && (
                 <>
                   <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-                    <button type="button" className="icon-button" disabled={index === 0} onClick={() => move(index, -1)} style={{ flex: 1 }} title="Move up" aria-label="Move up">
+                    <button
+                      type="button"
+                      className="icon-button"
+                      disabled={index === 0}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        move(index, -1);
+                      }}
+                      style={{ flex: 1 }}
+                      title="Move up"
+                      aria-label="Move up"
+                    >
                       <ArrowUpIcon />
                     </button>
                     <button
                       type="button"
                       className="icon-button"
                       disabled={index === collection.items.length - 1}
-                      onClick={() => move(index, 1)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        move(index, 1);
+                      }}
                       style={{ flex: 1 }}
                       title="Move down"
                       aria-label="Move down"
@@ -164,7 +172,17 @@ export default function CollectionDetail() {
                       <ArrowDownIcon />
                     </button>
                   </div>
-                  <button type="button" className="icon-button danger" style={{ marginTop: 6, width: "100%" }} onClick={() => removeItem(item.id)} title="Remove" aria-label="Remove">
+                  <button
+                    type="button"
+                    className="icon-button danger"
+                    style={{ marginTop: 6, width: "100%" }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeItem(item.id);
+                    }}
+                    title="Remove"
+                    aria-label="Remove"
+                  >
                     <TrashIcon />
                   </button>
                 </>

@@ -210,6 +210,10 @@ h2 { font-size: 1.2rem; margin: 24px 0 12px; }
 }
 
 .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+/* A .card tile that isn't itself a click target (its own buttons inside are) — an inline
+   `cursor: default` alone doesn't stop .card:hover's lift/border-highlight, which still implied
+   the whole tile was clickable (e.g. MediaDetail.tsx's Artwork-background tiles). */
+.card.static:hover { border-color: var(--border); transform: none; }
 
 .card .poster {
   position: relative;

@@ -134,6 +134,15 @@ const HDR_LABELS: Record<HdrFormat, string> = {
   unknown: "Unknown",
 };
 
+/** Most stat categories are already human-readable (resolution tiers, codec names, normalized
+ * language names) — only "hdrFormat" keys are raw internal slugs ("dolby-vision", "hdr10plus", ...)
+ * that need HDR_LABELS. Shared by CountTable's rows and the "Filtered to..." caption below so the
+ * two don't drift (the caption used to show the raw slug even when the table row next to it showed
+ * the proper label for the identical value). */
+function labelForStat(category: StatCategory, value: string): string {
+  return category === "hdrFormat" ? HDR_LABELS[value as HdrFormat] ?? value : value;
+}
+
 function itemKey(item: AnalysisItem): string {
   return `${item.table}-${item.id}`;
 }
@@ -174,10 +183,10 @@ function CountTable({
               <tr
                 key={key}
                 onClick={() => onSelect(category, key)}
-                title={`Show every file with ${title.toLowerCase()} "${key === "none" ? "SDR" : key}"`}
+                title={`Show every file with ${title.toLowerCase()} "${labelForStat(category, key)}"`}
                 style={{ cursor: "pointer", background: active ? "var(--panel-2, rgba(255,255,255,0.08))" : undefined }}
               >
-                <td>{key === "none" ? "SDR" : key}</td>
+                <td>{labelForStat(category, key)}</td>
                 <td style={{ textAlign: "right" }}>{count}</td>
               </tr>
             );
@@ -460,7 +469,7 @@ export default function MediaAnalyzer() {
           {statFilter && (
             <p style={{ color: "var(--muted)" }}>
               Filtered to files where {STAT_LABELS[statFilter.category].toLowerCase()} is{" "}
-              <strong>{statFilter.value === "none" ? "SDR" : statFilter.value}</strong> ({filteredItems.length} of {data.items.length}){" "}
+              <strong>{labelForStat(statFilter.category, statFilter.value)}</strong> ({filteredItems.length} of {data.items.length}){" "}
               <button type="button" className="secondary" onClick={() => setStatFilter(null)}>
                 Clear
               </button>

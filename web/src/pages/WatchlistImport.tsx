@@ -176,11 +176,16 @@ export default function WatchlistImport() {
               <input id="watchlistimport-year-optional-2" value={singleYear} onChange={(e) => setSingleYear(e.target.value)} placeholder="2024" />
               <label htmlFor="watchlistimport-type-3">Type</label>
               <select id="watchlistimport-type-3" value={singleType} onChange={(e) => setSingleType(e.target.value as MediaType)}>
-                {mediaTypes.map((t) => (
-                  <option key={t.key} value={t.key}>
-                    {t.label}
-                  </option>
-                ))}
+                {/* Only types with a metadata-search provider — this flow has no manual-entry
+                    fallback like AddMedia.tsx's, so picking a type without one (e.g. Courses)
+                    guaranteed a silent "No metadata match found" every time. */}
+                {mediaTypes
+                  .filter((t) => t.hasMetadataSearch)
+                  .map((t) => (
+                    <option key={t.key} value={t.key}>
+                      {t.label}
+                    </option>
+                  ))}
               </select>
               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                 <button type="button" onClick={submitSingle} disabled={importing || !singleTitle.trim()}>

@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 
 interface SharedItem {
   type: string;
+  typeLabel: string;
   title: string;
   year: number | null;
   overview: string | null;
@@ -40,7 +41,7 @@ export default function SharePage() {
             <h2 style={{ margin: "0 0 4px" }}>
               {item.title} {item.year ? `(${item.year})` : ""}
             </h2>
-            <p style={{ color: "#888", textTransform: "capitalize" }}>{item.type}</p>
+            <p style={{ color: "#888" }}>{item.typeLabel}</p>
             {item.overview && <p>{item.overview}</p>}
           </div>
         </div>
