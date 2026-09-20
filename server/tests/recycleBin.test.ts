@@ -208,14 +208,25 @@ describe("restoreAllFromRecycleBin / purgeAllRecycleBinEntries", () => {
   });
 
   it("purge-all skips (not fails) an entry currently restoring", async () => {
-    const { purgeAllRecycleBinEntries, startRestoreFromRecycleBin } = await import("../src/services/recycleBin.js");
+    const { purgeAllRecycleBinEntries } = await import("../src/services/recycleBin.js");
     const restoring = await recycleTestFile("movie", "Restoring During Purge All");
-    await startRestoreFromRecycleBin(restoring.id);
+    // Sets the flag directly rather than going through startRestoreFromRecycleBin's real
+    // fire-and-forget restore — that restore's own async completion (mkdir + move + DELETE) races
+    // against this test's purgeAllRecycleBinEntries call with no way to guarantee which finishes
+    // first, and a real Postgres server's network round-trips shift that race unpredictably (this
+    // was flaky in CI). Directly marking the row `restoring` and never resolving it exercises the
+    // exact same guard purgeRecycleBinEntry checks, deterministically.
+    await db.prepare("UPDATE recycle_bin SET restoring = 1 WHERE id = ?").run(restoring.id);
 
     const result = await purgeAllRecycleBinEntries("movie");
-    await new Promise((r) => setTimeout(r, 50)); // let the real restore finish so it doesn't leak into later tests
 
     expect(result.skipped).toBe(1);
+    expect(await db.prepare("SELECT id FROM recycle_bin WHERE id = ?").get(restoring.id)).toBeDefined();
+
+    // Never resolves on its own (nothing is actually restoring it) — clean it up directly rather
+    // than leaving a permanently-stuck "restoring" row in the shared test table for every test
+    // after this one.
+    await db.prepare("DELETE FROM recycle_bin WHERE id = ?").run(restoring.id);
   });
 
   it("with no mediaType filter, restores/purges across every type", async () => {
