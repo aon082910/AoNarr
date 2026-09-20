@@ -10,6 +10,7 @@ vi.mock("../src/services/ffprobe.js", () => ({
 }));
 
 const searchMetadata = vi.fn();
+const fetchByExternalId = vi.fn();
 const fetchSeriesEpisodesFor = vi.fn();
 const fetchSeriesEpisodesForProvider = vi.fn();
 const fetchSeriesSeasonsFor = vi.fn();
@@ -18,6 +19,7 @@ const fetchCollectionChildrenFor = vi.fn();
 const fetchMovieByTmdbId = vi.fn();
 vi.mock("../src/services/metadata.js", () => ({
   searchMetadata: (...args: unknown[]) => searchMetadata(...args),
+  fetchByExternalId: (...args: unknown[]) => fetchByExternalId(...args),
   fetchSeriesEpisodesFor: (...args: unknown[]) => fetchSeriesEpisodesFor(...args),
   fetchSeriesEpisodesForProvider: (...args: unknown[]) => fetchSeriesEpisodesForProvider(...args),
   fetchSeriesSeasonsFor: (...args: unknown[]) => fetchSeriesSeasonsFor(...args),
@@ -79,6 +81,10 @@ beforeEach(async () => {
 
   probeMediaInfo.mockReset().mockResolvedValue(null);
   searchMetadata.mockReset().mockResolvedValue([]);
+  // Defaults to "this id lookup isn't supported/failed" so every existing already-matched-item test
+  // that doesn't care about the ID-lookup path falls straight through to the searchMetadata mock,
+  // same as before refreshOneItem started trying an id-based lookup first.
+  fetchByExternalId.mockReset().mockRejectedValue(new Error("not mocked"));
   fetchSeriesEpisodesFor.mockReset().mockResolvedValue([]);
   fetchSeriesSeasonsFor.mockReset().mockResolvedValue([]);
   fetchArtistAlbumsFor.mockReset().mockResolvedValue(null);
@@ -605,6 +611,52 @@ describe("refreshLibraryMetadata / refreshOneMediaItem", () => {
     const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(id)) as any;
     expect(row.title).toBe("Already Matched"); // untouched
     expect(row.overview).toBe("New overview"); // overview/poster/year still refresh regardless
+  });
+
+  it("regression: an already-matched item is looked up by its own id, not by a fresh title search that could drift to a different result", async () => {
+    // This is the exact bug: fix a wrong match via Different Match (sets a real external id), then
+    // hit Refresh — a plain title search for the (now correct) title could still rank a different,
+    // unrelated show first (a shared title, a regional version, a reboot), silently putting the
+    // WRONG show's overview/poster/backdrop/rating right back even though the title text itself
+    // never changes. Looking the item up by its own id instead removes that ambiguity entirely.
+    const id = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, external_ids, status) VALUES ('movie','Correct Show','correct show',1,0,?,'missing')`)
+          .run(JSON.stringify({ tmdb: "555" }))
+      ).lastInsertRowid
+    );
+    fetchByExternalId.mockResolvedValue({ title: "Correct Show", year: 2020, overview: "The correct overview", posterUrl: "correct.jpg", externalIds: { tmdb: "555" } });
+    // A title search would return an entirely different, wrong show — proving it's never consulted.
+    searchMetadata.mockResolvedValue([{ title: "Correct Show", year: 1999, overview: "The WRONG show's overview", posterUrl: "wrong.jpg", externalIds: { tmdb: "1" } }]);
+
+    const result = await refreshOneMediaItem(id);
+
+    expect(result.ok).toBe(true);
+    expect(fetchByExternalId).toHaveBeenCalledWith("movie", "tmdb", "555");
+    expect(searchMetadata).not.toHaveBeenCalled();
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(id)) as any;
+    expect(row.overview).toBe("The correct overview");
+    expect(row.poster_url).toBe("correct.jpg");
+    expect(JSON.parse(row.external_ids)).toEqual({ tmdb: "555" }); // still untouched, as always
+  });
+
+  it("falls back to a title search when the item's id isn't one fetchByExternalId can look up", async () => {
+    const id = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, external_ids, status) VALUES ('series','Tvmaze Only Show','tvmaze only show',1,0,?,'missing')`)
+          .run(JSON.stringify({ tvmaze: "42" }))
+      ).lastInsertRowid
+    );
+    // fetchByExternalId has no tvmaze branch — the default mock rejection simulates that.
+    searchMetadata.mockResolvedValue([{ title: "Tvmaze Only Show", year: 2021, overview: "From title search", posterUrl: null, externalIds: { tvmaze: "42" } }]);
+
+    const result = await refreshOneMediaItem(id);
+
+    expect(result.ok).toBe(true);
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(id)) as any;
+    expect(row.overview).toBe("From title search");
   });
 
   it("returns ok:false without changing anything when the metadata search finds no match", async () => {

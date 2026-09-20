@@ -3,6 +3,43 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 334 — fix Refresh reverting a corrected match back to the wrong one
+
+User-reported bug: fix a wrong match via "Different Match," then click "Refresh," and the item's
+overview/poster/backdrop/rating silently reverted to the *old, wrong* show's data — even though the
+title text and `external_ids` (correctly updated by the rematch) never changed, so it looked like
+nothing had happened until you looked past the title.
+
+Root cause: `services/libraryScan.ts`'s `refreshOneItem` (shared by the per-item "Refresh" button and
+the whole-library Refresh job) always re-ran a plain **title search** to get its data, regardless of
+whether the item already had a real provider id — it only used that id to decide whether to skip
+overwriting `title`/`external_ids` themselves. For a shared/ambiguous title (a US vs. UK version, a
+reboot, a franchise entry), that fresh title search can easily rank a completely different show
+first. Since only the title/id columns were protected, every *other* field (overview, poster,
+backdrop, rating, runtime, release date) still got silently overwritten with that wrong show's data.
+
+- `refreshOneItem` now looks an already-matched item up **by its own stored id** via
+  `fetchByExternalId` (tmdb, tvdb, tvmaze, trakt, anilist, imdb, igdb, rawg — tried in that order,
+  whichever the item actually has) instead of re-searching by title. Falls back to the existing
+  title search only for an item that's never been matched at all (a Scan & Import guess), or when
+  none of the item's ids are ones `fetchByExternalId` supports.
+- Extended `fetchByExternalId` (`services/metadata.ts`) with `tvmaze` and `trakt` cases (a real
+  by-id show lookup for each) — it previously only covered tmdb/imdb/tvdb/anilist/igdb/rawg/isbn/
+  youtubePlaylist, which would have left a TVMaze- or Trakt-matched series still exposed to this
+  exact bug even after the `refreshOneItem` fix.
+
+Verified: `tsc --noEmit` clean; full server suite (90 files / 1400 tests) passes, including two new
+regression tests (an already-matched item is looked up by id and never even calls `searchMetadata`;
+an item whose only id isn't one `fetchByExternalId` supports correctly falls back to a title search)
+and new `fetchByExternalId` coverage for the tvmaze/trakt cases. Live-verified end to end against the
+real running server using TVMaze (the one provider with a free, keyless API, so genuinely reachable
+here): created an item, "rematched" it to the real UK version of The Office (tvmaze id 1292, a
+deliberately different show from the US version TVMaze's own title search for "The Office" ranks
+first), then hit Refresh — the item's overview correctly stayed the UK show's real content (mentions
+Slough, Gareth, David Brent, the BBC) and its poster updated to the UK show's real artwork, instead
+of drifting to the US version the way a plain title re-search would have. Fixture cleaned up
+afterward.
+
 ## Round 333 — multi-provider metadata matching, episode-union merge, external-id dedup, provider icons
 
 The root cause of duplicate TV shows from mixing metadata providers: `services/duplicateCheck.ts`

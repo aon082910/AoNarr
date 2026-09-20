@@ -713,6 +713,26 @@ describe("fetchByExternalId", () => {
     await expect(metadata.fetchByExternalId("series", "tvdb", "6")).rejects.toThrow('No TVDB series found for id "6"');
   });
 
+  it("tvmaze: strips HTML from the summary, and uses a distinct message for a 404 vs. a generic HTTP error", async () => {
+    stub([{ test: (u) => u.includes("api.tvmaze.com/shows/5"), response: ok({ id: 5, name: "X", premiered: "2010-01-01", summary: "<p>ov</p>", image: { medium: "http://img" } }) }]);
+    expect(await metadata.fetchByExternalId("series", "tvmaze", "5")).toEqual({ title: "X", year: 2010, overview: "ov", posterUrl: "http://img", externalIds: { tvmaze: "5" } });
+
+    stub([{ test: (u) => u.includes("api.tvmaze.com/shows/999"), response: notOk(404) }]);
+    await expect(metadata.fetchByExternalId("series", "tvmaze", "999")).rejects.toThrow('No TVMaze show found for id "999"');
+
+    stub([{ test: (u) => u.includes("api.tvmaze.com/shows/6"), response: notOk(500) }]);
+    await expect(metadata.fetchByExternalId("series", "tvmaze", "6")).rejects.toThrow("TVMaze lookup failed: HTTP 500");
+  });
+
+  it("trakt: maps the flat (not .show-nested) detail shape, always with a null posterUrl", async () => {
+    setSetting("traktClientId", "cid");
+    stub([{ test: (u) => u.includes("api.trakt.tv/shows/7"), response: ok({ title: "X", year: 2010, overview: "ov", ids: { trakt: 7 } }) }]);
+    expect(await metadata.fetchByExternalId("series", "trakt", "7")).toEqual({ title: "X", year: 2010, overview: "ov", posterUrl: null, externalIds: { trakt: "7" } });
+
+    stub([{ test: (u) => u.includes("api.trakt.tv/shows/999"), response: notOk(404) }]);
+    await expect(metadata.fetchByExternalId("series", "trakt", "999")).rejects.toThrow('No Trakt show found for id "999"');
+  });
+
   it("anilist: only populates runtimeMinutes for the anime type, and throws when the id has no match", async () => {
     stub([{ test: (u) => u.includes("graphql.anilist.co"), response: ok({ data: { Media: { id: 1, title: { romaji: "R" }, duration: 24, averageScore: 0 } } }) }]);
     const asAnime = await metadata.fetchByExternalId("anime", "anilist", "1");

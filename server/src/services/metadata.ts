@@ -2003,6 +2003,35 @@ export async function fetchByExternalId(type: MediaType, provider: string, id: s
       };
     }
 
+    case "tvmaze": {
+      const res = await fetch(`https://api.tvmaze.com/shows/${encodeURIComponent(id)}`);
+      if (!res.ok) throw new Error(res.status === 404 ? `No TVMaze show found for id "${id}"` : `TVMaze lookup failed: HTTP ${res.status}`);
+      const s: any = await res.json();
+      return {
+        title: s.name,
+        year: s.premiered ? Number(s.premiered.slice(0, 4)) : null,
+        overview: s.summary ? s.summary.replace(/<[^>]+>/g, "") : null,
+        posterUrl: s.image?.medium || null,
+        externalIds: { tvmaze: String(s.id) },
+      };
+    }
+
+    case "trakt": {
+      const clientId = requireSetting("traktClientId", "Trakt Client ID");
+      const res = await fetch(`https://api.trakt.tv/shows/${encodeURIComponent(id)}?extended=full`, { headers: traktHeaders(clientId) });
+      if (!res.ok) throw new Error(res.status === 404 ? `No Trakt show found for id "${id}"` : `Trakt lookup failed: HTTP ${res.status}`);
+      const s: any = await res.json();
+      if (!s) throw new Error(`No Trakt show found for id "${id}"`);
+      return {
+        title: s.title,
+        year: s.year ?? null,
+        overview: s.overview || null,
+        // Trakt's API doesn't host poster images at all — same gap searchSeriesTrakt already has.
+        posterUrl: null,
+        externalIds: { trakt: String(s.ids.trakt) },
+      };
+    }
+
     case "anilist": {
       const anilistType = type === "manga" ? "MANGA" : "ANIME";
       const gql = `

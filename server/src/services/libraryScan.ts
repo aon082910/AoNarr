@@ -7,6 +7,7 @@ import { parseReleaseTitle } from "./releaseParser.js";
 import { probeMediaInfo } from "./ffprobe.js";
 import {
   searchMetadata,
+  fetchByExternalId,
   fetchSeriesEpisodesFor,
   fetchSeriesEpisodesForProvider,
   fetchSeriesSeasonsFor,
@@ -14,6 +15,7 @@ import {
   fetchCollectionChildrenFor,
   fetchMovieByTmdbId,
   type MetadataEpisode,
+  type MetadataSearchResult,
 } from "./metadata.js";
 import { log } from "./logger.js";
 
@@ -626,8 +628,10 @@ async function scanAndImportLibraryInner(
 }
 
 /** Re-pulls overview/poster/year from the same metadata provider used at add-time for every item
- * of a type — the closest a title-only search API can get to "refresh," since there's no
- * fetch-by-id call generic enough to cover every provider this app supports.
+ * of a type. An already-matched item is looked up directly by its own stored id (see
+ * refreshOneItem's REFRESH_ID_LOOKUP_PROVIDERS) rather than by title, so a shared/ambiguous title
+ * can't drift it onto a different result; an item with no id yet falls back to a title search,
+ * since that's the only thing available for a first-time match.
  *
  * Title/external ids are only overwritten for items that don't have external ids yet — i.e. items
  * that were never actually matched to real metadata in the first place, almost always a Scan &
@@ -635,8 +639,8 @@ async function scanAndImportLibraryInner(
  * ever get, so leaving the guessed title in place forever (the previous behavior) meant Scan &
  * Import's filename guess was permanent even after the item's overview/poster/year had all been
  * correctly filled in from the real provider result. An item that's already matched (has external
- * ids) keeps its title untouched, since a fuzzy title-only search could occasionally land on the
- * wrong result and this shouldn't silently rename something that was already correct. */
+ * ids) keeps its title untouched — renaming something that was already correct would be a
+ * surprising side effect of a button that only advertises refreshing overview/poster/year. */
 export async function refreshLibraryMetadata(type: string, signal?: AbortSignal): Promise<{ updated: number; failed: number; childrenAdded: number }> {
   const items = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[];
   const typeConfig = getMediaTypeConfig(type as any);
@@ -661,6 +665,12 @@ export async function refreshLibraryMetadata(type: string, signal?: AbortSignal)
 /** Re-pulls one item's own overview/poster/year from its metadata provider and backfills any
  * episode/child it's missing — the single-item unit of work shared by refreshLibraryMetadata's
  * whole-library loop above and the per-item "Refresh" button on a media page. */
+/** Providers `fetchByExternalId` can look up directly, in the order tried when an already-matched
+ * item carries more than one — same tmdb-first bias as fetchSeriesEpisodesFor's own priority list.
+ * Deliberately not every provider `metadataProviders` can list (fetchByExternalId doesn't support
+ * all of them) — an id it can't look up just falls through to the title-search fallback below. */
+const REFRESH_ID_LOOKUP_PROVIDERS = ["tmdb", "tvdb", "tvmaze", "trakt", "anilist", "imdb", "igdb", "rawg"] as const;
+
 async function refreshOneItem(
   item: any,
   type: string,
@@ -668,11 +678,34 @@ async function refreshOneItem(
   onlySeasonNumber?: number
 ): Promise<{ ok: true; childrenAdded: number } | { ok: false }> {
   try {
-    const results = await searchMetadata(type as any, item.title);
-    const best = results[0];
-    if (!best) return { ok: false };
-
     const alreadyMatched = item.external_ids && item.external_ids !== "{}";
+    const existingExternalIds: Record<string, string> = alreadyMatched ? JSON.parse(item.external_ids) : {};
+
+    // An already-matched item must be looked up BY ITS OWN ID, not by re-running a plain title
+    // search — a title search can drift to an entirely different result (a shared title, a
+    // different regional version, a reboot) even though the title/external_ids columns themselves
+    // are never touched below. That drift silently overwrote overview/poster/backdrop/rating with
+    // the wrong show's data, which is what made "fix a wrong match via Different Match, then hit
+    // Refresh" put the wrong poster/overview right back — the title text alone stayed correct, so
+    // it looked like nothing had changed until you looked past the title.
+    let best: MetadataSearchResult | null = null;
+    if (alreadyMatched) {
+      for (const provider of REFRESH_ID_LOOKUP_PROVIDERS) {
+        if (!existingExternalIds[provider]) continue;
+        try {
+          best = await fetchByExternalId(type as any, provider, existingExternalIds[provider]);
+          break;
+        } catch {
+          // this id's provider lookup isn't supported for this type, or the call itself failed —
+          // try the next id the item has, or fall through to the title search below
+        }
+      }
+    }
+    if (!best) {
+      const results = await searchMetadata(type as any, item.title);
+      best = results[0] ?? null;
+    }
+    if (!best) return { ok: false };
     // Scoped to one season leaves the show's own overview/poster/year/title untouched — those
     // aren't season-level data, and re-writing them on a "just refresh this season" click would be
     // a surprising side effect the button never advertised.
@@ -697,13 +730,15 @@ async function refreshOneItem(
           item.id
         );
 
-      // TMDB's title-search endpoint (what searchMetadata used above just called) doesn't include
-      // production_companies — only the by-id detail endpoint does — so Studio needs its own
-      // extra lookup. Best-effort: a movie with no TMDB id yet, or a hiccup on this one extra
-      // call, just leaves studio unset rather than failing the whole refresh.
+      // TMDB's title-search endpoint doesn't include production_companies — only the by-id detail
+      // endpoint does (fetchByExternalId's tmdb branch above already calls it for an already-matched
+      // movie, but doesn't thread `studio` into the main UPDATE above, so this re-fetches rather
+      // than plumbing that through) — Studio needs its own lookup either way. Best-effort: a movie
+      // with no TMDB id yet, or a hiccup on this one extra call, just leaves studio unset rather
+      // than failing the whole refresh.
       if (type === "movie") {
         try {
-          const tmdbId = (alreadyMatched ? JSON.parse(item.external_ids) : best.externalIds ?? {}).tmdb;
+          const tmdbId = (alreadyMatched ? existingExternalIds : best.externalIds ?? {}).tmdb;
           if (tmdbId) {
             const detail = await fetchMovieByTmdbId(String(tmdbId));
             if (detail.studio) {
@@ -721,7 +756,7 @@ async function refreshOneItem(
     // for, or a season that's aired since this item was first added — as monitored+missing, the
     // same state a normal Add Media gives every episode/child up front. Never touches an
     // existing row's has_file/file_path, so this can't un-download anything.
-    const externalIdsForChildren = alreadyMatched ? JSON.parse(item.external_ids) : best.externalIds ?? {};
+    const externalIdsForChildren = alreadyMatched ? existingExternalIds : best.externalIds ?? {};
     const childrenAdded = await syncMissingChildren(item.id, typeConfig, externalIdsForChildren, onlySeasonNumber);
 
     if (typeConfig.shape === "episodic" && Object.keys(externalIdsForChildren).length > 0) {
