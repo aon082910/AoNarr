@@ -2144,14 +2144,35 @@ export function parseProviderUrl(url: string): { provider: string; id: string } 
   return null;
 }
 
-/** Dispatches to the right episode-fetch implementation based on which provider's id is present. */
+/** Every provider capable of listing a series' episodes, keyed the same as `external_ids`/
+ * `metadataProviders` — the single source of truth both `fetchSeriesEpisodesFor`'s priority
+ * dispatch and `fetchSeriesEpisodesForProvider`'s explicit-provider lookup are built from, so a
+ * new provider only needs adding here once. */
+const SERIES_EPISODE_FETCHERS: Record<string, (id: string) => Promise<MetadataEpisode[]>> = {
+  tmdb: fetchSeriesEpisodesTmdb,
+  tvdb: fetchSeriesEpisodesTvdb,
+  tvmaze: fetchSeriesEpisodesTvmaze,
+  trakt: fetchSeriesEpisodesTrakt,
+  anilist: fetchSeriesEpisodesAnilist,
+};
+
+/** Dispatches to the right episode-fetch implementation based on which provider's id is present,
+ * preferring tmdb > tvdb > tvmaze > trakt > anilist when an item has more than one. */
 export async function fetchSeriesEpisodesFor(externalIds: Record<string, string>): Promise<MetadataEpisode[]> {
-  if (externalIds.tmdb) return fetchSeriesEpisodesTmdb(externalIds.tmdb);
-  if (externalIds.tvdb) return fetchSeriesEpisodesTvdb(externalIds.tvdb);
-  if (externalIds.tvmaze) return fetchSeriesEpisodesTvmaze(externalIds.tvmaze);
-  if (externalIds.trakt) return fetchSeriesEpisodesTrakt(externalIds.trakt);
-  if (externalIds.anilist) return fetchSeriesEpisodesAnilist(externalIds.anilist);
+  for (const provider of ["tmdb", "tvdb", "tvmaze", "trakt", "anilist"]) {
+    if (externalIds[provider]) return SERIES_EPISODE_FETCHERS[provider](externalIds[provider]);
+  }
   return [];
+}
+
+/** Fetches episodes from one specific provider rather than letting the priority order in
+ * `fetchSeriesEpisodesFor` pick — used to pull a *second* provider's episode list as a supplement
+ * (e.g. TVDB's Season 0 specials for a show whose primary match is TMDB, which excludes them) so a
+ * multi-provider merge isn't limited to whichever provider happens to win the dispatch. Returns an
+ * empty list for a provider with no episode-fetch implementation at all (e.g. one that only
+ * supplies show-level metadata) rather than throwing. */
+export async function fetchSeriesEpisodesForProvider(provider: string, id: string): Promise<MetadataEpisode[]> {
+  return SERIES_EPISODE_FETCHERS[provider]?.(id) ?? [];
 }
 
 /** Dispatches to the right album-list implementation; also reports which provider was used so it can be stored per-album (needed to later fetch tracks from the right API). */

@@ -11,6 +11,7 @@ vi.mock("../src/services/ffprobe.js", () => ({
 
 const searchMetadata = vi.fn();
 const fetchSeriesEpisodesFor = vi.fn();
+const fetchSeriesEpisodesForProvider = vi.fn();
 const fetchSeriesSeasonsFor = vi.fn();
 const fetchArtistAlbumsFor = vi.fn();
 const fetchCollectionChildrenFor = vi.fn();
@@ -18,6 +19,7 @@ const fetchMovieByTmdbId = vi.fn();
 vi.mock("../src/services/metadata.js", () => ({
   searchMetadata: (...args: unknown[]) => searchMetadata(...args),
   fetchSeriesEpisodesFor: (...args: unknown[]) => fetchSeriesEpisodesFor(...args),
+  fetchSeriesEpisodesForProvider: (...args: unknown[]) => fetchSeriesEpisodesForProvider(...args),
   fetchSeriesSeasonsFor: (...args: unknown[]) => fetchSeriesSeasonsFor(...args),
   fetchArtistAlbumsFor: (...args: unknown[]) => fetchArtistAlbumsFor(...args),
   fetchCollectionChildrenFor: (...args: unknown[]) => fetchCollectionChildrenFor(...args),
@@ -37,6 +39,9 @@ let backfillEpisodicAndCollectionHasFile: (typeof import("../src/services/librar
 let backfillMissingAlbumTracks: (typeof import("../src/services/libraryScan.js"))["backfillMissingAlbumTracks"];
 let scanAndImportAllLibraries: (typeof import("../src/services/libraryScan.js"))["scanAndImportAllLibraries"];
 let refreshAllLibraries: (typeof import("../src/services/libraryScan.js"))["refreshAllLibraries"];
+let mergeEpisodesIntoItem: (typeof import("../src/services/libraryScan.js"))["mergeEpisodesIntoItem"];
+let matchAdditionalProviders: (typeof import("../src/services/libraryScan.js"))["matchAdditionalProviders"];
+let matchProvidersForLibrary: (typeof import("../src/services/libraryScan.js"))["matchProvidersForLibrary"];
 
 beforeAll(async () => {
   // libraryScan.ts imports db/index.js directly.
@@ -54,6 +59,9 @@ beforeAll(async () => {
     backfillMissingAlbumTracks,
     scanAndImportAllLibraries,
     refreshAllLibraries,
+    mergeEpisodesIntoItem,
+    matchAdditionalProviders,
+    matchProvidersForLibrary,
   } = await import("../src/services/libraryScan.js"));
 });
 
@@ -823,5 +831,133 @@ describe("scanAndImportAllLibraries / refreshAllLibraries", () => {
     await refreshAllLibraries(controller.signal);
 
     expect(searchMetadata).not.toHaveBeenCalled();
+  });
+});
+
+describe("mergeEpisodesIntoItem", () => {
+  it("inserts a missing episode and backfills a placeholder title, without touching a real one", async () => {
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('series','Merge Ep Show','merge ep show',1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored) VALUES (?,1,1,'Episode 1',1)`).run(showId);
+    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored) VALUES (?,1,2,'Real Title',1)`).run(showId);
+
+    const added = await mergeEpisodesIntoItem(showId, [
+      { seasonNumber: 1, episodeNumber: 1, title: "Real Pilot", airDate: "2020-01-01", overview: null }, // placeholder title -> patched
+      { seasonNumber: 1, episodeNumber: 2, title: "Provider Guess", airDate: "2020-01-08", overview: null }, // real title -> untouched
+      { seasonNumber: 0, episodeNumber: 1, title: "Special", airDate: "2020-01-15", overview: null }, // not tracked yet -> inserted
+    ]);
+
+    expect(added).toBe(1);
+    const episodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ? ORDER BY season_number, episode_number").all(showId)) as any[];
+    expect(episodes).toHaveLength(3);
+    expect(episodes.find((e) => e.season_number === 0)).toMatchObject({ title: "Special" });
+    expect(episodes.find((e) => e.season_number === 1 && e.episode_number === 1).title).toBe("Real Pilot");
+    expect(episodes.find((e) => e.season_number === 1 && e.episode_number === 2).title).toBe("Real Title");
+  });
+
+  it("returns 0 without querying anything for an empty episode list", async () => {
+    expect(await mergeEpisodesIntoItem(999999, [])).toBe(0);
+  });
+});
+
+describe("matchAdditionalProviders", () => {
+  it("searches every other configured provider, merges ids/extra_metadata, and merges in that provider's missing episodes", async () => {
+    const showId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, external_ids, status) VALUES ('series','Multi Provider Show','multi provider show',1,0,?,'missing')`)
+          .run(JSON.stringify({ tmdb: "1" }))
+      ).lastInsertRowid
+    );
+
+    searchMetadata.mockImplementation(async (_type: string, _query: string, provider: string) =>
+      provider === "tvdb" ? [{ title: "Multi Provider Show", year: 2020, overview: "O", posterUrl: null, externalIds: { tvdb: "42" } }] : []
+    );
+    fetchSeriesEpisodesForProvider.mockImplementation(async (provider: string) =>
+      provider === "tvdb" ? [{ seasonNumber: 0, episodeNumber: 1, title: "Special", airDate: null, overview: null }] : []
+    );
+
+    const results = await matchAdditionalProviders(showId);
+
+    expect(results).toEqual([{ provider: "tvdb", episodesAdded: 1 }]);
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(showId)) as any;
+    expect(JSON.parse(row.external_ids)).toEqual({ tmdb: "1", tvdb: "42" });
+    expect(JSON.parse(row.extra_metadata).tvdb).toMatchObject({ title: "Multi Provider Show" });
+    const specialEp = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ? AND season_number = 0").get(showId)) as any;
+    expect(specialEp).toMatchObject({ title: "Special" });
+  });
+
+  it("never overwrites an id the item already has, and never even searches a provider whose id is already present", async () => {
+    const showId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, external_ids, status) VALUES ('series','Already Matched Show','already matched show',1,0,?,'missing')`)
+          .run(JSON.stringify({ tmdb: "1", tvdb: "9" }))
+      ).lastInsertRowid
+    );
+    searchMetadata.mockResolvedValue([{ title: "X", year: 2020, overview: null, posterUrl: null, externalIds: { tvdb: "999", trakt: "5" } }]);
+    fetchSeriesEpisodesForProvider.mockResolvedValue([]);
+
+    await matchAdditionalProviders(showId);
+
+    expect(searchMetadata).not.toHaveBeenCalledWith("series", expect.anything(), "tmdb");
+    expect(searchMetadata).not.toHaveBeenCalledWith("series", expect.anything(), "tvdb");
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(showId)) as any;
+    expect(JSON.parse(row.external_ids).tvdb).toBe("9"); // not clobbered by trakt's own search result also reporting a tvdb id
+  });
+
+  it("continues past a provider whose search throws, still recording the ones that succeeded", async () => {
+    const showId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, external_ids, status) VALUES ('series','Resilient Show','resilient show',1,0,?,'missing')`)
+          .run(JSON.stringify({ tmdb: "1" }))
+      ).lastInsertRowid
+    );
+    searchMetadata.mockImplementation(async (_type: string, _query: string, provider: string) => {
+      if (provider === "tvdb") throw new Error("network down");
+      if (provider === "tvmaze") return [{ title: "Resilient Show", year: 2020, overview: null, posterUrl: null, externalIds: { tvmaze: "7" } }];
+      return [];
+    });
+    fetchSeriesEpisodesForProvider.mockResolvedValue([]);
+
+    const results = await matchAdditionalProviders(showId);
+
+    expect(results.map((r) => r.provider)).toContain("tvmaze");
+    expect(results.map((r) => r.provider)).not.toContain("tvdb");
+  });
+
+  it("returns [] immediately once every configured provider is already represented in external_ids", async () => {
+    const id = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, external_ids, status) VALUES ('comic','Fully Matched Comic','fully matched comic',1,0,?,'missing')`)
+          .run(JSON.stringify({ comicvine: "1" }))
+      ).lastInsertRowid
+    );
+    expect(await matchAdditionalProviders(id)).toEqual([]);
+    expect(searchMetadata).not.toHaveBeenCalled();
+  });
+});
+
+describe("matchProvidersForLibrary", () => {
+  it("runs matchAdditionalProviders across every item of a type and totals the results", async () => {
+    await db.prepare(`DELETE FROM media_items WHERE type = 'anime'`).run();
+    await db
+      .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, external_ids, status) VALUES ('anime','Anime One','anime one',1,0,?,'missing')`)
+      .run(JSON.stringify({ anilist: "1" }));
+    await db
+      .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, external_ids, status) VALUES ('anime','Anime Two','anime two',1,0,?,'missing')`)
+      .run(JSON.stringify({ anilist: "2" }));
+    searchMetadata.mockImplementation(async (_type: string, _query: string, provider: string) =>
+      provider === "tvdb" ? [{ title: "X", year: null, overview: null, posterUrl: null, externalIds: { tvdb: "1" } }] : []
+    );
+    fetchSeriesEpisodesForProvider.mockResolvedValue([]);
+
+    const result = await matchProvidersForLibrary("anime");
+
+    expect(result).toEqual({ itemsMatched: 2, providersMatched: 2 });
   });
 });

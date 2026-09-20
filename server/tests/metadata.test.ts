@@ -939,6 +939,25 @@ describe("fetchSeriesEpisodesFor", () => {
   });
 });
 
+describe("fetchSeriesEpisodesForProvider", () => {
+  it("fetches from the explicitly named provider, ignoring priority order entirely", async () => {
+    setSetting("tvdbApiKey", "k");
+    stub([
+      { test: (u) => u.includes("/v4/login"), response: ok({ data: { token: "t" } }) },
+      { test: (u) => u.includes("/v4/series/9/episodes/default"), response: ok({ data: { episodes: [{ seasonNumber: 0, number: 1, name: "Special", aired: "2010-01-01", overview: "ov" }] } }) },
+    ]);
+    // Would resolve to tmdb under fetchSeriesEpisodesFor's own priority order — this bypasses that
+    // entirely, which is the whole point (pulling a *second* provider's list as a supplement).
+    expect(await metadata.fetchSeriesEpisodesForProvider("tvdb", "9")).toEqual([
+      { seasonNumber: 0, episodeNumber: 1, title: "Special", airDate: "2010-01-01", overview: "ov" },
+    ]);
+  });
+
+  it("returns [] for a provider with no episode-fetch implementation, instead of throwing", async () => {
+    await expect(metadata.fetchSeriesEpisodesForProvider("musicbrainz", "123")).resolves.toEqual([]);
+  });
+});
+
 describe("fetchSeriesSeasonsFor", () => {
   it("maps TMDB season posters, swallows a TMDB failure to [], and returns [] without a tmdb id", async () => {
     setSetting("tmdbApiKey", "k");

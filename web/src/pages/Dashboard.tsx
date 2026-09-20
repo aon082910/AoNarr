@@ -87,37 +87,56 @@ export default function Dashboard() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    setLoading(true);
-    setLoadError(null);
-    Promise.all([
-      api.get<MediaItem[]>("/dashboard/recently-added"),
-      api.get<RecentlyChangedEntry[]>("/dashboard/recent"),
-      api.get<RecentlyWatchedEntry[]>("/dashboard/recently-watched"),
-      auth.isAdmin
-        ? api.get<UpcomingEntry[]>(`/wanted/calendar?start=${todayIso()}&end=${addDaysIso(14)}`)
-        : Promise.resolve([]),
-      api.get<Record<string, number>>("/dashboard/library-sizes"),
-      api.get<Record<string, number>>("/dashboard/library-counts"),
-    ])
-      .then(([added, changed, watched, cal, sizes, counts]) => {
-        setRecentlyAdded(added);
-        setRecentlyChanged(changed);
-        setRecentlyWatched(watched);
-        setUpcoming(cal);
-        setLibrarySizes(sizes);
-        setLibraryCounts(counts);
-      })
-      // Without this, one failed request left every widget rendering as legitimately empty
-      // ("Nothing added yet.", 0 items) with no indication anything actually failed.
-      .catch((e) => setLoadError((e as Error).message))
-      .finally(() => setLoading(false));
+    // `showSpinner` only applies on the very first load — a background refresh updates the same
+    // state in place without ever blanking the page back to "Loading...".
+    function load(showSpinner: boolean) {
+      if (showSpinner) {
+        setLoading(true);
+        setLoadError(null);
+      }
+      Promise.all([
+        api.get<MediaItem[]>("/dashboard/recently-added"),
+        api.get<RecentlyChangedEntry[]>("/dashboard/recent"),
+        api.get<RecentlyWatchedEntry[]>("/dashboard/recently-watched"),
+        auth.isAdmin
+          ? api.get<UpcomingEntry[]>(`/wanted/calendar?start=${todayIso()}&end=${addDaysIso(14)}`)
+          : Promise.resolve([]),
+        api.get<Record<string, number>>("/dashboard/library-sizes"),
+        api.get<Record<string, number>>("/dashboard/library-counts"),
+      ])
+        .then(([added, changed, watched, cal, sizes, counts]) => {
+          setRecentlyAdded(added);
+          setRecentlyChanged(changed);
+          setRecentlyWatched(watched);
+          setUpcoming(cal);
+          setLibrarySizes(sizes);
+          setLibraryCounts(counts);
+        })
+        // Without this, one failed request left every widget rendering as legitimately empty
+        // ("Nothing added yet.", 0 items) with no indication anything actually failed. Only
+        // surfaced on the initial load — a background refresh failing silently once (network
+        // hiccup) shouldn't replace an already-populated dashboard with an error message.
+        .catch((e) => {
+          if (showSpinner) setLoadError((e as Error).message);
+        })
+        .finally(() => {
+          if (showSpinner) setLoading(false);
+        });
 
-    // Surfaces the same checks the System page computes on demand, right where an admin will
-    // actually see them without having to think to go look — Radarr shows health warnings as a
-    // banner near the top of its own dashboard for the same reason.
-    if (auth.isAdmin) {
-      api.get<HealthSummary>("/system/health").then(setHealth).catch(() => setHealth(null));
+      // Surfaces the same checks the System page computes on demand, right where an admin will
+      // actually see them without having to think to go look — Radarr shows health warnings as a
+      // banner near the top of its own dashboard for the same reason.
+      if (auth.isAdmin) {
+        api.get<HealthSummary>("/system/health").then(setHealth).catch(() => setHealth(null));
+      }
     }
+
+    load(true);
+    // A Dashboard tab left open otherwise only ever reflects what the library looked like at the
+    // moment it was opened — counts/sizes/recently-added never update again until the user
+    // navigates away and back. 60s keeps it reasonably live without polling aggressively.
+    const interval = setInterval(() => load(false), 60_000);
+    return () => clearInterval(interval);
   }, [auth.isAdmin]);
 
   const healthMessages: string[] = health

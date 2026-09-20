@@ -9,7 +9,7 @@ import DropdownMenu from "../components/DropdownMenu.js";
 import Modal from "../components/Modal.js";
 import MonitorToggle from "../components/MonitorToggle.js";
 import RenamePreviewModal from "../components/RenamePreviewModal.js";
-import { PlusCircleIcon, CheckSquareIcon, SlashIcon, ZapIcon, RotateCcwIcon, SearchIcon, DownloadIcon } from "../components/NavIcons.js";
+import { PlusCircleIcon, CheckSquareIcon, SlashIcon, ZapIcon, RotateCcwIcon, SearchIcon, DownloadIcon, GlobeIcon } from "../components/NavIcons.js";
 import { PencilIcon, XIcon, CheckIcon, TrashIcon, FolderIcon, ChevronLeftIcon, ChevronRightIcon, GridIcon, RowsIcon, TableIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton, ToolbarSeparator } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
@@ -501,10 +501,21 @@ export function LibraryItemGrid({
   const [importingCsv, setImportingCsv] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [matchingProviders, setMatchingProviders] = useState(false);
+  const [metadataProviderCount, setMetadataProviderCount] = useState(0);
   const [showRenamePreview, setShowRenamePreview] = useState(false);
   const csvInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { auth } = useAuth();
+  // Gates the "Match All Providers" toolbar button — meaningless (nothing left to check once the
+  // one already-matched provider is excluded) for a type with 0 or 1 configured providers.
+  useEffect(() => {
+    if (!auth.isAdmin) return;
+    api
+      .get<Record<string, string[]>>("/metadata/providers")
+      .then((providers) => setMetadataProviderCount(providers[type]?.length ?? 0))
+      .catch(() => setMetadataProviderCount(0));
+  }, [auth.isAdmin, type]);
   const location = useLocation();
   const navigationType = useNavigationType();
   const [letterIndex, setLetterIndex] = useState<{ id: number; letter: string }[]>([]);
@@ -995,15 +1006,27 @@ export function LibraryItemGrid({
     load();
   }
 
-  // Runs in the background on the server (probing every file with ffprobe can take a while for a
-  // real library — long enough to blow past an HTTP/gateway timeout if the request waited for it),
-  // so this only confirms it started; check the Logs page for the actual matched/created/skipped
-  // counts once it's done, or just come back to this list in a bit.
+  // These three actions (scan-import, refresh, match-providers) all run as fire-and-forget
+  // background jobs server-side — there's no completion event to wait for, so this just polls
+  // load()/loadStats() a few times over the minute or so most jobs finish within, then gives up.
+  // Without this, the list/stats only ever reflected pre-job state until the user manually
+  // reloaded or navigated away and back, even though the job itself had long since finished.
+  function pollAfterBackgroundJob() {
+    let attempts = 0;
+    const interval = setInterval(() => {
+      load();
+      loadStats();
+      attempts++;
+      if (attempts >= 12) clearInterval(interval);
+    }, 5000);
+  }
+
   async function scanAndImport() {
     setScanning(true);
     try {
       await api.post(`/media/scan-import?type=${type}`, {});
       notify.info("Scan & import started in the background — this can take a while for a large library. Check the Logs page for the result, or come back to this list shortly.", 7000);
+      pollAfterBackgroundJob();
     } catch (e) {
       notify.error((e as Error).message);
     } finally {
@@ -1016,10 +1039,24 @@ export function LibraryItemGrid({
     try {
       await api.post(`/media/refresh?type=${type}`, {});
       notify.info("Refresh started in the background — check the Logs page for the result, or come back to this list shortly.", 6000);
+      pollAfterBackgroundJob();
     } catch (e) {
       notify.error((e as Error).message);
     } finally {
       setTimeout(() => setRefreshing(false), 5000);
+    }
+  }
+
+  async function matchAllProviders() {
+    setMatchingProviders(true);
+    try {
+      await api.post(`/media/match-providers?type=${type}`, {});
+      notify.info("Matching against every other configured provider in the background — check the Logs page for the result, or come back to this list shortly.", 6000);
+      pollAfterBackgroundJob();
+    } catch (e) {
+      notify.error((e as Error).message);
+    } finally {
+      setTimeout(() => setMatchingProviders(false), 5000);
     }
   }
 
@@ -1111,6 +1148,15 @@ export function LibraryItemGrid({
                 onClick={refreshLibrary}
                 disabled={refreshing}
                 title="Refresh — re-pull overview/poster/year for every item in this library"
+              />
+            )}
+            {auth.isAdmin && metadataProviderCount > 1 && (
+              <ToolbarButton
+                icon={<GlobeIcon />}
+                label={matchingProviders ? "Matching..." : "Match All Providers"}
+                onClick={matchAllProviders}
+                disabled={matchingProviders}
+                title="Match All Providers — for every item in this library, search every other configured metadata provider and merge in its id, staged metadata, and (for episodic types) any episode it lists that this item doesn't have yet"
               />
             )}
             {auth.isAdmin && (

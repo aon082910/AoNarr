@@ -23,25 +23,47 @@ export interface PossibleDuplicate {
  * Catches likely duplicates *before* they're created, rather than only after the fact via the
  * "repeated imports" health check — normalized-title match within the same library type, plus a
  * year match when both sides have one (so "Dune" 1984 and "Dune" 2021 aren't flagged against
- * each other, but two "Dune (2021)" adds would be).
+ * each other, but two "Dune (2021)" adds would be) — OR a shared external provider id
+ * (`externalIds`, when the caller has one in hand from a metadata search result), since title/year
+ * matching alone misses two adds of the same show that landed on different metadata providers
+ * disagreeing on year (a regional premiere vs. a US air date) or title spelling. Still just a
+ * warning either way — the caller can bypass it with `confirmDuplicate`, same as before this was
+ * added; a real external-id match is just a far more reliable signal than title/year ever was.
  */
-export async function findPossibleDuplicates(type: string, title: string, year: number | null): Promise<PossibleDuplicate[]> {
+export async function findPossibleDuplicates(
+  type: string,
+  title: string,
+  year: number | null,
+  externalIds?: Record<string, string>
+): Promise<PossibleDuplicate[]> {
   const needle = normalizeTitle(title);
-  if (!needle) return [];
+  const idEntries = externalIds ? Object.entries(externalIds).filter(([, v]) => v) : [];
+  if (!needle && idEntries.length === 0) return [];
 
-  const candidates = (await db.prepare("SELECT id, title, year, poster_url FROM media_items WHERE type = ?").all(type)) as {
+  const candidates = (await db.prepare("SELECT id, title, year, poster_url, external_ids FROM media_items WHERE type = ?").all(type)) as {
     id: number;
     title: string;
     year: number | null;
     poster_url: string | null;
+    external_ids: string | null;
   }[];
 
   return candidates
     .filter((c) => {
-      const candidateNormalized = normalizeTitle(c.title);
-      if (candidateNormalized !== needle) return false;
-      if (year != null && c.year != null && year !== c.year) return false;
-      return true;
+      if (needle) {
+        const candidateNormalized = normalizeTitle(c.title);
+        if (candidateNormalized === needle && (year == null || c.year == null || year === c.year)) return true;
+      }
+      if (idEntries.length > 0 && c.external_ids) {
+        let candidateIds: Record<string, string> = {};
+        try {
+          candidateIds = JSON.parse(c.external_ids);
+        } catch {
+          return false;
+        }
+        return idEntries.some(([provider, id]) => candidateIds[provider] === id);
+      }
+      return false;
     })
     .map((c) => ({ id: c.id, title: c.title, year: c.year, posterUrl: c.poster_url }));
 }
@@ -77,23 +99,69 @@ export interface DuplicateGroup {
   key: string;
 }
 
+function matchedProvidersFor(row: any): string[] {
+  try {
+    return row.external_ids ? Object.keys(JSON.parse(row.external_ids)) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Shapes a group of raw media_items rows into the DuplicateGroupItem[] + suggested-keeper the
+ * Duplicates page renders — shared by both grouping passes in findDuplicateGroups below so they
+ * can't drift into computing "suggested keeper" differently from each other. */
+function buildGroupItems(rowsInGroup: any[]): DuplicateGroupItem[] {
+  const items: DuplicateGroupItem[] = rowsInGroup.map((row) => ({
+    id: row.id,
+    title: row.title,
+    year: row.year,
+    posterUrl: row.poster_url,
+    hasFile: !!row.has_file,
+    path: row.path,
+    monitored: !!row.monitored,
+    addedAt: row.added_at,
+    childCount: row.childCount ?? 0,
+    suggestedKeeper: false,
+    quality: row.quality,
+    contentRating: row.content_rating,
+    matchedProviders: matchedProvidersFor(row),
+  }));
+
+  // Suggested keeper: has a file/children over one that doesn't, then the most children, then the
+  // earliest-added (most likely the "real" original entry, not a re-scan artifact) — purely a UI
+  // hint, the admin picks the actual keeper explicitly.
+  const best = [...items].sort((a, b) => {
+    if (a.hasFile !== b.hasFile) return a.hasFile ? -1 : 1;
+    if (a.childCount !== b.childCount) return b.childCount - a.childCount;
+    return (a.addedAt ?? "").localeCompare(b.addedAt ?? "");
+  })[0];
+  best.suggestedKeeper = true;
+  return items;
+}
+
 /**
  * Whole-library sweep for existing media_items rows that are almost certainly the same title —
  * distinct from findPossibleDuplicates above, which only checks one candidate title *before* it's
- * created. Grouped by exact (normalized title, year) rather than the looser "either side missing a
- * year" match findPossibleDuplicates uses: a title-only match risks lumping together two genuinely
- * different items that just happen to share a name, which is a much worse outcome for a merge tool
- * (irreversible without the recycle bin) than for a pre-add warning (which the admin can just
- * dismiss). Real duplicates from the movie-import bug this was built for always share an exact
- * (title, year) pair, since both came from the same filename-parsing logic.
+ * created. Two independent grouping passes over the same rows:
+ * 1. Exact (normalized title, year) — a title-only match risks lumping together two genuinely
+ *    different items that just happen to share a name, which is a much worse outcome for a merge
+ *    tool (irreversible without the recycle bin) than for a pre-add warning (which the admin can
+ *    just dismiss). Real duplicates from the movie-import bug this was originally built for always
+ *    share an exact (title, year) pair, since both came from the same filename-parsing logic.
+ * 2. Shared external provider id — catches the case (1) can't: the same show added twice via two
+ *    different metadata providers that disagree on year or title spelling (see
+ *    services/libraryScan.ts's matchAdditionalProviders doc comment for the full story). Emitted
+ *    as its own group only when its member set isn't already identical to a group (1) already
+ *    found, so agreeing signals don't produce two redundant entries on the Duplicates page.
  */
 export async function findDuplicateGroups(type?: string): Promise<DuplicateGroup[]> {
   const types = type ? [type] : MEDIA_TYPE_KEYS;
   const groups: DuplicateGroup[] = [];
 
-  // normalized_key already stores the full `${type}::${normalizedTitle}::${year}` composite (see
-  // runScheduledDuplicateCheck's insert, which writes g.key there directly) — not just the
-  // title/year portion — so this compares directly against it rather than re-prefixing with type.
+  // normalized_key already stores the full `${type}::${normalizedTitle}::${year}` (or
+  // `${type}::ext::${provider}:${id}`) composite (see runScheduledDuplicateCheck's insert, which
+  // writes g.key there directly) — not just the title/year portion — so this compares directly
+  // against it rather than re-prefixing with type.
   const dismissedRows = (await db.prepare("SELECT normalized_key FROM duplicate_group_seen WHERE dismissed = 1").all()) as {
     normalized_key: string;
   }[];
@@ -107,56 +175,46 @@ export async function findDuplicateGroups(type?: string): Promise<DuplicateGroup
     // pattern as the Library page's own child-count attachment.
     if (shape === "episodic" || shape === "collection") await attachChildCounts(rows);
 
-    const byKey = new Map<string, any[]>();
+    const byTitleKey = new Map<string, any[]>();
     for (const row of rows) {
       const normalized = normalizeTitle(row.title);
       if (!normalized) continue;
       const key = `${normalized}::${row.year ?? "?"}`;
-      if (!byKey.has(key)) byKey.set(key, []);
-      byKey.get(key)!.push(row);
+      if (!byTitleKey.has(key)) byTitleKey.set(key, []);
+      byTitleKey.get(key)!.push(row);
     }
 
-    for (const [groupKey, rowsInGroup] of byKey.entries()) {
+    const emittedMemberSets: Set<string> = new Set();
+    for (const [groupKey, rowsInGroup] of byTitleKey.entries()) {
       if (rowsInGroup.length < 2) continue;
       if (dismissedKeys.has(`${t}::${groupKey}`)) continue;
+      emittedMemberSets.add(rowsInGroup.map((r) => r.id).sort().join(","));
+      groups.push({ type: t, title: rowsInGroup[0].title, year: rowsInGroup[0].year, items: buildGroupItems(rowsInGroup), key: `${t}::${groupKey}` });
+    }
 
-      const items: DuplicateGroupItem[] = [];
-      for (const row of rowsInGroup) {
-        const childCount = row.childCount ?? 0;
-        let matchedProviders: string[] = [];
-        try {
-          matchedProviders = row.external_ids ? Object.keys(JSON.parse(row.external_ids)) : [];
-        } catch {
-          matchedProviders = [];
-        }
-        items.push({
-          id: row.id,
-          title: row.title,
-          year: row.year,
-          posterUrl: row.poster_url,
-          hasFile: !!row.has_file,
-          path: row.path,
-          monitored: !!row.monitored,
-          addedAt: row.added_at,
-          childCount,
-          suggestedKeeper: false,
-          quality: row.quality,
-          contentRating: row.content_rating,
-          matchedProviders,
-        });
+    const byExternalId = new Map<string, any[]>();
+    for (const row of rows) {
+      for (const [provider, id] of Object.entries(
+        (() => {
+          try {
+            return row.external_ids ? (JSON.parse(row.external_ids) as Record<string, string>) : {};
+          } catch {
+            return {};
+          }
+        })()
+      )) {
+        const key = `${provider}:${id}`;
+        if (!byExternalId.has(key)) byExternalId.set(key, []);
+        byExternalId.get(key)!.push(row);
       }
+    }
 
-      // Suggested keeper: has a file/children over one that doesn't, then the most children, then
-      // the earliest-added (most likely the "real" original entry, not a re-scan artifact) — purely
-      // a UI hint, the admin picks the actual keeper explicitly.
-      const best = [...items].sort((a, b) => {
-        if (a.hasFile !== b.hasFile) return a.hasFile ? -1 : 1;
-        if (a.childCount !== b.childCount) return b.childCount - a.childCount;
-        return (a.addedAt ?? "").localeCompare(b.addedAt ?? "");
-      })[0];
-      best.suggestedKeeper = true;
-
-      groups.push({ type: t, title: rowsInGroup[0].title, year: rowsInGroup[0].year, items, key: `${t}::${groupKey}` });
+    for (const [extKey, rowsInGroup] of byExternalId.entries()) {
+      if (rowsInGroup.length < 2) continue;
+      const groupKey = `ext::${extKey}`;
+      if (dismissedKeys.has(`${t}::${groupKey}`)) continue;
+      if (emittedMemberSets.has(rowsInGroup.map((r) => r.id).sort().join(","))) continue;
+      groups.push({ type: t, title: rowsInGroup[0].title, year: rowsInGroup[0].year, items: buildGroupItems(rowsInGroup), key: `${t}::${groupKey}` });
     }
   }
 

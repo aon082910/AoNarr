@@ -30,6 +30,7 @@ import {
   fetchAlternateTitlesFor,
   fetchCastFor,
   fetchOmdbRatings,
+  fetchSeriesEpisodesForProvider,
   fetchTmdbCollectionFor,
   fetchTrailerFor,
   searchMetadata,
@@ -41,6 +42,9 @@ import {
   refreshLibraryMetadata,
   refreshOneMediaItem,
   logScanResult,
+  matchAdditionalProviders,
+  matchProvidersForLibrary,
+  mergeEpisodesIntoItem,
 } from "../services/libraryScan.js";
 import { notifyGrabbed } from "../services/notifications.js";
 import { recycleFile } from "../services/recycleBin.js";
@@ -498,6 +502,23 @@ mediaRouter.post(
   })
 );
 
+/** One-time bulk backfill of matchAdditionalProviders (see services/libraryScan.ts) across every
+ * already-imported item of a type — for shows/items added before this feature existed, or that
+ * only ever matched one provider. Fire-and-forget for the same reason as scan-import/refresh above
+ * (this hits every OTHER configured provider for every item in the type, sequentially). */
+mediaRouter.post(
+  "/match-providers",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const type = req.query.type as string | undefined;
+    if (!type || !isValidMediaType(type)) throw new HttpError(400, "A valid type is required");
+    matchProvidersForLibrary(type)
+      .then((result) => log.info(`[match-providers] "${type}": matched ${result.providersMatched} provider(s) across ${result.itemsMatched} item(s)`))
+      .catch((err) => log.warn(`[match-providers] "${type}" failed:`, (err as Error).message));
+    res.json({ started: true });
+  })
+);
+
 /** Per-item versions of the two buttons above — scoped to just this media item's own folder/title
  * instead of the whole library, same as Radarr/Sonarr's own per-item "Search"/"Refresh" actions.
  * Awaited rather than fire-and-forget: a single item is fast enough not to risk a gateway timeout,
@@ -894,6 +915,15 @@ mediaRouter.post(
  * extra_metadata keyed by provider so the admin can compare sources before deciding (via the
  * ordinary PATCH endpoint) whether to promote one's overview/poster to primary. Matches by title
  * search rather than a shared external id, since providers rarely share id schemes.
+ *
+ * For an episodic item, this ALSO merges in any episode the fetched provider lists that this item
+ * doesn't have yet (e.g. TVDB/TVMaze's Season 0 specials for a show whose primary match is TMDB,
+ * which excludes them) via the same non-destructive mergeEpisodesIntoItem matchAdditionalProviders
+ * uses — unlike the 4-field show-level merge, episode merging is additive-only (never overwrites or
+ * removes an existing episode row) so there's no "which source wins" choice to make before
+ * applying it. The found provider id is also folded into external_ids (never overwriting one the
+ * item already has), the same benefit a later duplicate check gets from the automatic
+ * all-providers match on import.
  */
 mediaRouter.post(
   "/:id/metadata/fetch",
@@ -905,7 +935,8 @@ mediaRouter.post(
 
     const provider = req.body?.provider;
     if (!provider) throw new HttpError(400, "provider is required");
-    if (!getMediaTypeConfig(item.type).metadataProviders.includes(provider)) {
+    const typeConfig = getMediaTypeConfig(item.type);
+    if (!typeConfig.metadataProviders.includes(provider)) {
       throw new HttpError(400, `"${provider}" is not a metadata provider for "${item.type}"`);
     }
 
@@ -915,10 +946,27 @@ mediaRouter.post(
     if (!best) throw new HttpError(404, `No "${provider}" result found for "${item.title}"`);
 
     const extra = { ...item.extraMetadata, [provider]: best };
-    await db.prepare("UPDATE media_items SET extra_metadata = ? WHERE id = ?").run(JSON.stringify(extra), req.params.id);
+    // mediaItemFromRow leaves externalIds as the raw JSON string (unlike extraMetadata, which it
+    // already parses) — spreading it directly would fan a string out into one object key per
+    // character instead of parsing it.
+    const externalIds: Record<string, string> = item.externalIds ? JSON.parse(item.externalIds) : {};
+    for (const [key, value] of Object.entries(best.externalIds ?? {})) {
+      if (!externalIds[key]) externalIds[key] = value;
+    }
+
+    let episodesAdded = 0;
+    const providerId = best.externalIds?.[provider];
+    if (typeConfig.shape === "episodic" && providerId) {
+      const episodes = await fetchSeriesEpisodesForProvider(provider, providerId).catch(() => []);
+      episodesAdded = await mergeEpisodesIntoItem(Number(req.params.id), episodes);
+    }
+
+    await db
+      .prepare("UPDATE media_items SET extra_metadata = ?, external_ids = ? WHERE id = ?")
+      .run(JSON.stringify(extra), JSON.stringify(externalIds), req.params.id);
 
     const updated = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
-    res.json(mediaItemFromRow(updated));
+    res.json({ ...mediaItemFromRow(updated), episodesAdded });
   })
 );
 
@@ -958,7 +1006,7 @@ mediaRouter.post(
     if (!isValidMediaType(b.type)) throw new HttpError(400, `Unknown media type "${b.type}"`);
 
     if (!b.confirmDuplicate) {
-      const duplicates = await findPossibleDuplicates(b.type, b.title, b.year ?? null);
+      const duplicates = await findPossibleDuplicates(b.type, b.title, b.year ?? null, b.externalIds);
       if (duplicates.length > 0) {
         res.status(409).json({ duplicates });
         return;
@@ -983,7 +1031,9 @@ mediaRouter.post(
         path: b.path ?? null,
         rootFolderId,
         qualityProfileId: b.qualityProfileId ?? null,
-        monitored: b.monitored ?? 1,
+        // better-sqlite3 (like Postgres) rejects binding a raw JS boolean — coerce to 1/0, while
+        // keeping the original ?? 1 default for null/undefined intact.
+        monitored: (b.monitored ?? 1) ? 1 : 0,
         status: b.status ?? "unknown",
         groupId: b.groupId ?? null,
         releaseDate: b.releaseDate ?? null,
@@ -1083,7 +1133,10 @@ mediaRouter.patch(
     for (const [col, val] of Object.entries(fields)) {
       if (val !== undefined) {
         sets.push(`${col} = ?`);
-        values.push(val);
+        // better-sqlite3 (like Postgres) rejects binding a raw JS boolean — coerce to 1/0. The
+        // frontend always sends monitored/protected as 0/1 already, so this only matters for an
+        // external API caller (an MCP tool, a script) sending idiomatic JSON true/false.
+        values.push(typeof val === "boolean" ? (val ? 1 : 0) : val);
       }
     }
     if (sets.length > 0) {

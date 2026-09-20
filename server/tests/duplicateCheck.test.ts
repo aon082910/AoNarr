@@ -188,6 +188,36 @@ describe("duplicateCheck", () => {
     expect(await findPossibleDuplicates("movie", "", 2020)).toEqual([]);
     expect(await findPossibleDuplicates("series", "Pre-Add Check", 2020)).toEqual([]); // scoped to type
   });
+
+  it("findPossibleDuplicates also matches on a shared external id, even with a different title and year", async () => {
+    const { findPossibleDuplicates } = await import("../src/services/duplicateCheck.js");
+
+    const existingId = await insertMovie("Original Title", 2019, 0, { externalIds: JSON.stringify({ tmdb: "555", tvdb: "999" }) });
+
+    // Same tmdb id, but a totally different title/year — the exact drift-between-providers case
+    // this was added for (see services/libraryScan.ts's matchAdditionalProviders doc comment).
+    const matches = await findPossibleDuplicates("movie", "A Completely Different Title", 2024, { tmdb: "555" });
+    expect(matches.map((d) => d.id)).toEqual([existingId]);
+
+    // A different id for the same provider does not match.
+    expect(await findPossibleDuplicates("movie", "Yet Another Title", 2024, { tmdb: "556" })).toEqual([]);
+
+    // No externalIds passed at all falls back to today's title/year-only behavior.
+    expect(await findPossibleDuplicates("movie", "A Completely Different Title", 2024)).toEqual([]);
+  });
+
+  it("findDuplicateGroups also groups rows sharing an external id even when title/year differ", async () => {
+    const { findDuplicateGroups } = await import("../src/services/duplicateCheck.js");
+
+    const idA = await insertMovie("External Id Group A", 2018, 0, { externalIds: JSON.stringify({ tmdb: "42424" }) });
+    const idB = await insertMovie("External Id Group B", 2021, 1, { externalIds: JSON.stringify({ tmdb: "42424", tvdb: "1" }) });
+
+    const groups = await findDuplicateGroups("movie");
+    const group = groups.find((g) => g.items.some((i) => i.id === idA) && g.items.some((i) => i.id === idB));
+    expect(group).toBeDefined();
+    expect(group!.key).toContain("ext::tmdb:42424");
+    expect(group!.items.map((i) => i.matchedProviders).flat()).toEqual(expect.arrayContaining(["tmdb", "tvdb"]));
+  });
 });
 
 describe("mergeMediaItems: guard branches", () => {

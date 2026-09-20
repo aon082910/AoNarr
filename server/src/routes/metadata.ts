@@ -15,6 +15,7 @@ import {
   searchMetadata,
 } from "../services/metadata.js";
 import { insertTracksForAlbum } from "../services/importLists.js";
+import { matchAdditionalProviders } from "../services/libraryScan.js";
 import { getMediaTypeConfig } from "../services/mediaTypes.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { isExcluded } from "../services/importExclusions.js";
@@ -180,7 +181,7 @@ metadataRouter.post(
     if (!b.type || !b.title) throw new HttpError(400, "type and title are required");
 
     if (!b.confirmDuplicate) {
-      const duplicates = await findPossibleDuplicates(b.type, b.title, b.year ?? null);
+      const duplicates = await findPossibleDuplicates(b.type, b.title, b.year ?? null, b.externalIds);
       if (duplicates.length > 0) {
         res.status(409).json({ duplicates });
         return;
@@ -206,7 +207,11 @@ metadataRouter.post(
         externalIds: JSON.stringify(externalIds),
         rootFolderId,
         qualityProfileId: b.qualityProfileId ?? null,
-        monitored: b.monitored ?? 1,
+        // better-sqlite3 (like Postgres) rejects binding a raw JS boolean — coerce to 1/0, while
+        // keeping the original ?? 1 default for null/undefined intact. The frontend always sends
+        // 0/1 already; this only matters for an external caller (an MCP tool, a script) sending
+        // idiomatic JSON true/false.
+        monitored: (b.monitored ?? 1) ? 1 : 0,
         status: "unknown",
         groupId: b.groupId ?? null,
         releaseDate: b.releaseDate ?? null,
@@ -340,6 +345,17 @@ metadataRouter.post(
       // the user instead of the item silently sitting there with zero children forever.
       log.warn(`[metadata] failed to import children for media item ${mediaItemId}:`, (err as Error).message);
     }
+
+    // Fire-and-forget: tries every other configured provider for this type, merging in its id,
+    // its own show-level fields (for later review in the Metadata Sources popup), and — for an
+    // episodic item — any episode (e.g. Season 0 specials) it lists that the primary provider
+    // doesn't. Not awaited so the add itself stays fast; see matchAdditionalProviders' own doc
+    // comment for why this also fixes duplicate-detection across providers going forward.
+    matchAdditionalProviders(Number(mediaItemId))
+      .then((results) => {
+        if (results.length > 0) log.info(`[metadata] matched ${results.length} additional provider(s) for "${b.title}"`);
+      })
+      .catch((err) => log.warn(`[metadata] additional-provider match failed for "${b.title}":`, (err as Error).message));
 
     const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId);
     const actor = auditActor(req);

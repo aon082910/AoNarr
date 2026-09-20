@@ -36,6 +36,7 @@ import {
   SlidersIcon,
 } from "../components/NavIcons.js";
 import { TrashIcon, PencilIcon, FolderIcon, EyeIcon, ArrowLeftIcon, ArrowUpIcon, GridIcon } from "../components/ActionIcons.js";
+import { ProviderIcon } from "../components/ProviderIcons.js";
 import { PageToolbar, ToolbarButton, ToolbarSeparator } from "../components/PageToolbar.js";
 import type { Collection, HistoryEvent, MediaInfo, MediaItem, QualityProfile, RootFolder, SearchResult, Tag } from "../types.js";
 import { formatBytes, formatMediaInfo } from "../utils/format.js";
@@ -335,6 +336,7 @@ export default function MediaDetail() {
   const [externalUrl, setExternalUrl] = useState("");
   const [tagToAdd, setTagToAdd] = useState<number | "">("");
 
+  const [showMetadataSources, setShowMetadataSources] = useState(false);
   const [showArtwork, setShowArtwork] = useState(false);
   const [artworkOptions, setArtworkOptions] = useState<ArtworkOptions | null>(null);
   const [loadingArtwork, setLoadingArtwork] = useState(false);
@@ -854,8 +856,12 @@ export default function MediaDetail() {
     if (!item) return;
     setFetchingProvider(provider);
     try {
-      const updated = await api.post<MediaDetailResponse>(`/media/${item.id}/metadata/fetch`, { provider });
-      setItem({ ...item, extraMetadata: updated.extraMetadata });
+      const updated = await api.post<MediaDetailResponse & { episodesAdded?: number }>(`/media/${item.id}/metadata/fetch`, { provider });
+      setItem({ ...item, extraMetadata: updated.extraMetadata, externalIds: updated.externalIds });
+      // Episodes merge in immediately (non-destructive add-only, so there's no "which source wins"
+      // choice to make first) — the 4-field merge table above still needs an explicit Apply, so
+      // only the episode side effect gets a toast here.
+      if (updated.episodesAdded) notify.success(`${provider}: added ${updated.episodesAdded} missing episode(s)`);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -1367,6 +1373,14 @@ export default function MediaDetail() {
                   title="Search for a different match — search with a custom query and pick a different metadata match, for when the current title is wrong or garbled"
                 />
               )}
+              {(metadataProviders[item.type]?.length ?? 0) > 0 && (
+                <ToolbarButton
+                  icon={<GlobeIcon />}
+                  label="Metadata Sources"
+                  onClick={() => setShowMetadataSources(true)}
+                  title="Additional Metadata Sources — pull a second opinion from another provider, merge in missing episodes, and pick which source wins per field"
+                />
+              )}
               <ToolbarButton
                 icon={<DownloadIcon />}
                 label="Export Plex"
@@ -1579,15 +1593,15 @@ export default function MediaDetail() {
             {isAdmin &&
               Object.entries(externalIds).map(([provider, providerId]) => {
                 const link = EXTERNAL_ID_LINKS[provider]?.(providerId, item.type);
+                const label = `${provider}: ${providerId}`;
                 return (
-                  <span key={provider} className="pill" title={`External ID — ${provider}`}>
-                    <GlobeIcon />{" "}
+                  <span key={provider} className="pill" title={label} style={{ padding: "4px 8px" }}>
                     {link ? (
-                      <a href={link} target="_blank" rel="noreferrer">
-                        {provider}: {providerId}
+                      <a href={link} target="_blank" rel="noreferrer" aria-label={label} style={{ display: "flex" }}>
+                        <ProviderIcon provider={provider} />
                       </a>
                     ) : (
-                      `${provider}: ${providerId}`
+                      <ProviderIcon provider={provider} />
                     )}
                   </span>
                 );
@@ -1937,14 +1951,15 @@ export default function MediaDetail() {
           );
         })()}
 
-      {isAdmin && (metadataProviders[item.type]?.length ?? 0) > 0 && (
-        <>
-          <h2>Additional Metadata Sources</h2>
+      {isAdmin && showMetadataSources && (metadataProviders[item.type]?.length ?? 0) > 0 && (
+        <Modal title="Additional Metadata Sources" onClose={() => setShowMetadataSources(false)} maxWidth={900}>
           <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
             Pull a second opinion from another provider without changing this item's primary
-            fields yet. Once you've fetched from one or more, pick which source to use per field
-            below — mixing and matching (e.g. this provider's poster with that one's overview) is
-            fine — then apply the merged result in one go.
+            fields yet — for an episodic show, any episode that provider lists but this one doesn't
+            have yet (e.g. Season 0 specials) is added right away, since that's non-destructive.
+            Once you've fetched from one or more, pick which source to use per field below — mixing
+            and matching (e.g. this provider's poster with that one's overview) is fine — then apply
+            the merged result in one go.
           </p>
           <div className="toolbar" style={{ marginBottom: 12 }}>
             {metadataProviders[item.type].map((p) => (
@@ -2038,7 +2053,7 @@ export default function MediaDetail() {
                 </>
               );
             })()}
-        </>
+        </Modal>
       )}
 
       {showArtwork && (

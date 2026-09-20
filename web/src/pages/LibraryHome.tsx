@@ -18,9 +18,16 @@ export default function LibraryHome() {
   const [sizes, setSizes] = useState<Record<string, number>>({});
 
   useEffect(() => {
-    api.get<MediaItem[]>("/dashboard/recently-added").then(setRecent);
-    api.get<Record<string, number>>("/dashboard/library-counts").then(setCounts);
-    api.get<Record<string, number>>("/dashboard/library-sizes").then(setSizes);
+    function load() {
+      api.get<MediaItem[]>("/dashboard/recently-added").then(setRecent);
+      api.get<Record<string, number>>("/dashboard/library-counts").then(setCounts);
+      api.get<Record<string, number>>("/dashboard/library-sizes").then(setSizes);
+    }
+    load();
+    // Left-open-tab staleness fix, same reasoning as Dashboard.tsx's own periodic refresh — this
+    // page otherwise never updates its counts/sizes/recently-added again after the initial mount.
+    const interval = setInterval(load, 60_000);
+    return () => clearInterval(interval);
   }, []);
 
   const totalSize = Object.values(sizes).reduce((sum, n) => sum + n, 0);

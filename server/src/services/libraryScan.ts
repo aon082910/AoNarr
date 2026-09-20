@@ -8,10 +8,12 @@ import { probeMediaInfo } from "./ffprobe.js";
 import {
   searchMetadata,
   fetchSeriesEpisodesFor,
+  fetchSeriesEpisodesForProvider,
   fetchSeriesSeasonsFor,
   fetchArtistAlbumsFor,
   fetchCollectionChildrenFor,
   fetchMovieByTmdbId,
+  type MetadataEpisode,
 } from "./metadata.js";
 import { log } from "./logger.js";
 
@@ -775,6 +777,44 @@ export async function scanAndImportOneMediaItem(mediaItemId: number, signal?: Ab
  * overview from the provider list — without this, a placeholder episode, once it exists, was never
  * revisited by anything and kept its placeholder forever even after a later Refresh matched the
  * show to real metadata. */
+/** Inserts any episode from `episodes` that isn't already tracked for this item (matched by
+ * season+episode number), and backfills a placeholder title/missing air-date on an existing row —
+ * the actual DB-write half of the episodic branch `syncMissingChildren` used to do inline. Split
+ * out (and exported) so a caller that already has a *specific* provider's episode list in hand —
+ * e.g. matchAdditionalProviders below, merging in a second provider's Season 0/specials that the
+ * item's primary provider doesn't report — can reuse the exact same non-destructive merge instead
+ * of re-fetching through fetchSeriesEpisodesFor's one-provider priority dispatch. Returns how many
+ * episodes were newly inserted. Never touches has_file/file_path on an existing row. */
+export async function mergeEpisodesIntoItem(mediaItemId: number, episodes: MetadataEpisode[], onlySeasonNumber?: number): Promise<number> {
+  const filtered = onlySeasonNumber != null ? episodes.filter((ep) => ep.seasonNumber === onlySeasonNumber) : episodes;
+  if (filtered.length === 0) return 0;
+  const existing = (await db
+    .prepare("SELECT id, season_number, episode_number, title, air_date FROM episodes WHERE media_item_id = ?")
+    .all(mediaItemId)) as { id: number; season_number: number; episode_number: number; title: string | null; air_date: string | null }[];
+  const existingByKey = new Map(existing.map((e) => [`${e.season_number}:${e.episode_number}`, e]));
+  let added = 0;
+  for (const ep of filtered) {
+    const row = existingByKey.get(`${ep.seasonNumber}:${ep.episodeNumber}`);
+    if (!row) {
+      await db
+        .prepare(
+          `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
+           VALUES (?, ?, ?, ?, ?, ?, 1)`
+        )
+        .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
+      added++;
+      continue;
+    }
+    const isPlaceholderTitle = !row.title || /^Episode \d+$/.test(row.title);
+    if (isPlaceholderTitle || !row.air_date) {
+      await db
+        .prepare("UPDATE episodes SET title = ?, air_date = COALESCE(air_date, ?), overview = COALESCE(overview, ?) WHERE id = ?")
+        .run(isPlaceholderTitle ? ep.title : row.title, ep.airDate, ep.overview, row.id);
+    }
+  }
+  return added;
+}
+
 async function syncMissingChildren(
   mediaItemId: number,
   typeConfig: ReturnType<typeof getMediaTypeConfig>,
@@ -784,34 +824,8 @@ async function syncMissingChildren(
   if (Object.keys(externalIds).length === 0) return 0;
 
   if (typeConfig.shape === "episodic") {
-    let episodes = await fetchSeriesEpisodesFor(externalIds).catch(() => []);
-    if (onlySeasonNumber != null) episodes = episodes.filter((ep) => ep.seasonNumber === onlySeasonNumber);
-    if (episodes.length === 0) return 0;
-    const existing = (await db
-      .prepare("SELECT id, season_number, episode_number, title, air_date FROM episodes WHERE media_item_id = ?")
-      .all(mediaItemId)) as { id: number; season_number: number; episode_number: number; title: string | null; air_date: string | null }[];
-    const existingByKey = new Map(existing.map((e) => [`${e.season_number}:${e.episode_number}`, e]));
-    let added = 0;
-    for (const ep of episodes) {
-      const row = existingByKey.get(`${ep.seasonNumber}:${ep.episodeNumber}`);
-      if (!row) {
-        await db
-          .prepare(
-            `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-             VALUES (?, ?, ?, ?, ?, ?, 1)`
-          )
-          .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
-        added++;
-        continue;
-      }
-      const isPlaceholderTitle = !row.title || /^Episode \d+$/.test(row.title);
-      if (isPlaceholderTitle || !row.air_date) {
-        await db
-          .prepare("UPDATE episodes SET title = ?, air_date = COALESCE(air_date, ?), overview = COALESCE(overview, ?) WHERE id = ?")
-          .run(isPlaceholderTitle ? ep.title : row.title, ep.airDate, ep.overview, row.id);
-      }
-    }
-    return added;
+    const episodes = await fetchSeriesEpisodesFor(externalIds).catch(() => []);
+    return mergeEpisodesIntoItem(mediaItemId, episodes, onlySeasonNumber);
   }
 
   if (typeConfig.shape === "collection" && typeConfig.multiFilePerChild) {
@@ -853,6 +867,92 @@ async function syncMissingChildren(
   }
 
   return 0;
+}
+
+export interface ProviderMatchResult {
+  provider: string;
+  episodesAdded: number;
+}
+
+/**
+ * Automatically searches every OTHER configured metadata provider for this item's type (skipping
+ * any provider whose id the item already carries) and, for each hit: merges its id into
+ * `external_ids`, stages its full result under `extra_metadata[provider]` (the same shape the
+ * manual "Fetch from X" button already writes — see routes/media.ts's `POST /:id/metadata/fetch`),
+ * and for an episodic item, merges in any episode that provider lists but this item doesn't have
+ * yet (e.g. TVDB/TVMaze's Season 0 specials on a show whose primary match is TMDB, which excludes
+ * them — see fetchSeriesEpisodesFor's per-provider table).
+ *
+ * This is what actually fixes duplicate shows caused by two different providers disagreeing on
+ * year/title/episode-list: once an item carries every provider's id, services/duplicateCheck.ts's
+ * external-id match can catch a later re-add regardless of which provider it happens to search
+ * against next time. Runs providers sequentially, not in parallel — several of these APIs
+ * (MusicBrainz in particular) expect roughly one request per second, and this can run against a
+ * whole library's worth of items via matchProvidersForLibrary below.
+ *
+ * Never throws — a provider with no result, or one whose API call fails outright, is skipped and
+ * logged rather than aborting the rest. Returns an empty array immediately once every configured
+ * provider for the type is already represented in `external_ids` (trivially true for a type with
+ * 0 configured providers at all) — nothing left to check.
+ */
+export async function matchAdditionalProviders(mediaItemId: number): Promise<ProviderMatchResult[]> {
+  const item = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId)) as any;
+  if (!item) return [];
+  const typeConfig = getMediaTypeConfig(item.type);
+  const externalIds: Record<string, string> = item.external_ids ? JSON.parse(item.external_ids) : {};
+  const extraMetadata: Record<string, unknown> = item.extra_metadata ? JSON.parse(item.extra_metadata) : {};
+  const otherProviders = typeConfig.metadataProviders.filter((p) => !externalIds[p]);
+  if (otherProviders.length === 0) return [];
+
+  const query = item.year ? `${item.title} ${item.year}` : item.title;
+  const results: ProviderMatchResult[] = [];
+  for (const provider of otherProviders) {
+    try {
+      const searchResults = await searchMetadata(item.type, query, provider);
+      const best = searchResults[0];
+      if (!best) continue;
+
+      for (const [key, value] of Object.entries(best.externalIds ?? {})) {
+        if (!externalIds[key]) externalIds[key] = value;
+      }
+      extraMetadata[provider] = best;
+
+      let episodesAdded = 0;
+      const providerId = best.externalIds?.[provider];
+      if (typeConfig.shape === "episodic" && providerId) {
+        const episodes = await fetchSeriesEpisodesForProvider(provider, providerId).catch(() => []);
+        episodesAdded = await mergeEpisodesIntoItem(mediaItemId, episodes);
+      }
+
+      // Persisted per-provider (not batched until the loop ends) so a crash or a later provider's
+      // failure can't lose a provider that was already successfully matched.
+      await db
+        .prepare("UPDATE media_items SET external_ids = ?, extra_metadata = ? WHERE id = ?")
+        .run(JSON.stringify(externalIds), JSON.stringify(extraMetadata), mediaItemId);
+
+      results.push({ provider, episodesAdded });
+    } catch (err) {
+      log.warn(`[matchAdditionalProviders] "${provider}" failed for "${item.title}":`, (err as Error).message);
+    }
+  }
+  return results;
+}
+
+/** Library-wide, one-time backfill version of matchAdditionalProviders above — for items that were
+ * already imported before this feature existed, or that only ever got matched to one provider.
+ * Sequential across items too, for the same rate-limit reasons. */
+export async function matchProvidersForLibrary(type: string): Promise<{ itemsMatched: number; providersMatched: number }> {
+  const items = (await db.prepare("SELECT id FROM media_items WHERE type = ?").all(type)) as { id: number }[];
+  let itemsMatched = 0;
+  let providersMatched = 0;
+  for (const item of items) {
+    const results = await matchAdditionalProviders(item.id);
+    if (results.length > 0) {
+      itemsMatched++;
+      providersMatched += results.length;
+    }
+  }
+  return { itemsMatched, providersMatched };
 }
 
 /**

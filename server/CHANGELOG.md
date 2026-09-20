@@ -3,6 +3,83 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 333 — multi-provider metadata matching, episode-union merge, external-id dedup, provider icons
+
+The root cause of duplicate TV shows from mixing metadata providers: `services/duplicateCheck.ts`
+matched purely on normalized title + year, never on external provider IDs — so the same show added
+once via a provider reporting one year (a regional premiere) and again via a provider reporting
+another (a US air date), or with a slightly different title, sailed straight past the duplicate
+warning. Fixing that properly meant also fixing why a show would end up matched to only one
+provider's episode list in the first place, since providers disagree on whether Season 0/specials
+even exist (TMDB and Trakt exclude them, TVDB and TVMaze include them, AniList has no seasons at
+all) — so this round is one connected piece of work, not several small ones.
+
+- **`services/duplicateCheck.ts`**: `findPossibleDuplicates`/`findDuplicateGroups` now also flag a
+  match when two items share an external provider id, in addition to the existing title/year check
+  — still just a warning, still overridable via `confirmDuplicate`, same as before. The Duplicates
+  page now also groups already-existing rows that share an id even when their title/year drifted,
+  surfacing duplicates the old title-only sweep could never find.
+- **`services/metadata.ts`**: `fetchSeriesEpisodesFor`'s one-provider-by-priority dispatch is now
+  built from a shared lookup table, and a new `fetchSeriesEpisodesForProvider(provider, id)` lets
+  code fetch a *specific* provider's episode list instead of whichever one wins priority order.
+- **`services/libraryScan.ts`**: extracted the existing non-destructive "insert if missing, patch a
+  placeholder title" episode merge into a reusable `mergeEpisodesIntoItem`. New
+  `matchAdditionalProviders(mediaItemId)` searches every other configured provider for an item's
+  type, merges in each hit's id (never overwriting one the item already has) and full result
+  (staged for the Metadata Sources popup below), and — for an episodic item — merges in any episode
+  that provider lists but this item doesn't have yet (e.g. TVDB's Season 0 specials on a
+  TMDB-matched show). Runs providers sequentially, not in parallel (several of these APIs expect
+  roughly one request per second). New `matchProvidersForLibrary(type)` runs it across a whole
+  library — the one-time backfill for shows imported before this feature existed.
+- **Wired up in three places**: `POST /metadata/import` (the real Add Media flow) now fires
+  `matchAdditionalProviders` as a background follow-up right after a new item is created — "once a
+  show is imported, it tries to match every metadata source" — without slowing the add itself down.
+  The existing manual "Fetch from X" button (`POST /media/:id/metadata/fetch`) now also merges in
+  that provider's missing episodes immediately (non-destructive, so no source-picking needed the
+  way the 4-field merge table requires) and folds its id into `external_ids`. A new "Match All
+  Providers" library-wide action (`POST /media/match-providers`, admin-only, fire-and-forget same
+  as Scan & Import/Refresh) is the one-time backfill for already-imported shows.
+- **UI**: the always-inline "Additional Metadata Sources" section on a media page moved behind a
+  new toolbar button (globe icon) opening it in a popup instead, with a "+N episodes added" toast
+  when a fetch merges in missing episodes. A new "Match All Providers" toolbar button appears on
+  each Library page (gated on the type actually having 2+ providers). The external-id pills
+  (`tmdb: 590223`, browser-default blue link text) are now small colored per-provider icon badges
+  instead — new `web/src/components/ProviderIcons.tsx` covers all 27 providers this app supports.
+- **Stats**: `Dashboard.tsx`/`LibraryHome.tsx` only ever fetched their counts/sizes once on mount,
+  so a tab left open never updated on its own — both now also refresh every 60s. `LibraryType.tsx`'s
+  Scan & Import/Refresh/Match All Providers actions are fire-and-forget background jobs that never
+  refetched the list/stats once the job actually finished — added a bounded poll (every 5s for up
+  to a minute) after starting one. (`routes/dashboard.ts`'s `library-sizes` key-parsing, suspected
+  as a second stats bug going in, turned out to already correctly use a real `` delimiter on
+  both the write and read side — invisible to a plain-text read, the exact class of false positive
+  Round 323 warned about. No change needed there; confirmed by hexdumping the actual bytes before
+  touching anything.)
+- **Two bugs found live while verifying the above, fixed in the same pass**: `POST /media/:id/metadata/fetch`
+  built its merged `external_ids` via `{ ...item.externalIds }` — since the mapper leaves
+  `externalIds` as a raw JSON *string* (unlike `extraMetadata`, which it already parses), spreading
+  it fanned the string out into one object key per character instead of parsing it. And
+  `POST /metadata/import`/`POST /media`/`PATCH /media/:id` all bound `monitored`/`protected` to
+  SQLite as a raw JS boolean when a caller (anything sending idiomatic JSON `true`/`false` — an MCP
+  tool, a script) didn't pre-convert it to 0/1 — better-sqlite3 can't bind a boolean at all, so any
+  such call crashed with a 500. Both were caught by live-testing this round's new endpoints with a
+  real curl payload rather than only through the frontend, which always happened to send 0/1
+  already.
+
+Verified: `tsc --noEmit` clean on both projects; full server suite (90 files / 1396 tests, one new
+file) passes — new coverage for the external-id dedup match, `fetchSeriesEpisodesForProvider`,
+`mergeEpisodesIntoItem`, `matchAdditionalProviders`/`matchProvidersForLibrary`, and the
+`externalIds`-corruption regression. Live-verified end to end against the real running server using
+TVMaze (the one metadata provider with a free, keyless API, so genuinely reachable in this
+environment): imported "Chernobyl" for real, confirmed the background all-providers match fired and
+logged its outcome; deleted 2 of its 5 real episodes and confirmed a manual "Fetch from tvmaze"
+correctly re-added exactly those 2 (`episodesAdded: 2`) without duplicating or disturbing the other
+3; confirmed the dedup fix live — importing a second item titled completely differently but sharing
+the same `tvmaze` id correctly triggered the duplicate warning; drove the real Settings/Library UI
+in the browser (Metadata Sources popup open → fetch → merge table renders correctly; external-id
+pills render provider-icon badges instead of blue text; "Match All Providers" button present on a
+Library page and confirmed via direct API call against real (pre-existing) library items). All
+fixtures cleaned up afterward.
+
 ## Round 332 — infra sweep: db layer, migrations, MCP server, app bootstrap, web api client
 
 Closes out the codebase-wide bug-audit sweep by covering everything that wasn't routes/services/
