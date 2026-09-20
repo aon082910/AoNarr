@@ -501,6 +501,8 @@ export default function Settings() {
   const [plexAuthUrl, setPlexAuthUrl] = useState<string | null>(null);
   const [plexSigningIn, setPlexSigningIn] = useState(false);
   const [plexSignInStatus, setPlexSignInStatus] = useState<"waiting" | "claimed" | null>(null);
+  const [mediaServerTesting, setMediaServerTesting] = useState(false);
+  const [mediaServerTestResult, setMediaServerTestResult] = useState<{ ok: boolean; error?: string; fileCount?: number } | null>(null);
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -736,6 +738,40 @@ export default function Settings() {
       });
   }
 
+  /** Inverse of parseConditionGroups — renders a format's stored conditionGroups back into the
+   * same "SIZE: 4000-15000" DSL text the Add form's textarea and its placeholder/example already
+   * document, so an existing format's conditions can be edited as text and re-parsed on save
+   * rather than needing a whole structured per-condition-type editor. */
+  function conditionGroupsToText(groups: CustomFormat["conditionGroups"]): string {
+    return groups
+      .map((g) => {
+        const prefix = g.negate ? "NOT " : "";
+        if (g.type === "size") return `${prefix}SIZE: ${g.minMb ?? ""}-${g.maxMb ?? ""}`;
+        if (g.type === "year") return `${prefix}YEAR: ${g.minYear ?? ""}-${g.maxYear ?? ""}`;
+        if (g.type === "language") return `${prefix}LANG: ${(g.languages ?? []).join(", ")}`;
+        if (g.type === "releaseGroup") return `${prefix}GROUP: ${(g.patterns ?? []).join(", ")}`;
+        if (g.type === "source") return `${prefix}SOURCE: ${(g.sources ?? []).join(", ")}`;
+        if (g.type === "resolution") return `${prefix}RESOLUTION: ${(g.resolutions ?? []).join(", ")}`;
+        if (g.type === "releaseFlags") return `${prefix}FLAGS: ${(g.flags ?? []).join(", ")}`;
+        if (g.type === "indexerFlag") return `${prefix}INDEXERFLAG: ${(g.indexerFlags ?? []).join(", ")}`;
+        return `${prefix}${(g.patterns ?? []).join(", ")}`;
+      })
+      .join("\n");
+  }
+
+  async function saveCustomFormatName(id: number, name: string) {
+    if (!name.trim()) return;
+    await api.patch(`/custom-formats/${id}`, { name: name.trim() });
+    load();
+  }
+
+  async function saveCustomFormatConditions(id: number, text: string) {
+    const conditionGroups = parseConditionGroups(text);
+    if (conditionGroups.length === 0) return;
+    await api.patch(`/custom-formats/${id}`, { conditionGroups });
+    load();
+  }
+
   async function addCustomFormat(e: FormEvent) {
     e.preventDefault();
     const conditionGroups = parseConditionGroups(formatPatterns);
@@ -836,6 +872,19 @@ export default function Settings() {
   async function removeExclusion(id: number) {
     await api.del(`/import-exclusions/${id}`);
     load();
+  }
+
+  async function testMediaServerConnection() {
+    setMediaServerTesting(true);
+    setMediaServerTestResult(null);
+    try {
+      const result = await api.post<{ ok: boolean; error?: string; fileCount?: number }>("/settings/media-server/test", {});
+      setMediaServerTestResult(result);
+    } catch (e) {
+      setMediaServerTestResult({ ok: false, error: (e as Error).message });
+    } finally {
+      setMediaServerTesting(false);
+    }
   }
 
   async function showWebhookUrl() {
@@ -944,6 +993,26 @@ export default function Settings() {
     const maxSizeGb = value.trim() === "" ? null : Number(value);
     await api.patch(`/quality-profiles/${profileId}`, { maxSizeGb });
     setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, maxSizeGb } : p)));
+  }
+
+  async function saveProfileName(profileId: number, name: string) {
+    if (!name.trim()) return;
+    await api.patch(`/quality-profiles/${profileId}`, { name: name.trim() });
+    setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, name: name.trim() } : p)));
+  }
+
+  async function toggleProfileAllowedQuality(profile: QualityProfile, qualityName: string) {
+    const allowedQualities = profile.allowedQualities.includes(qualityName)
+      ? profile.allowedQualities.filter((q) => q !== qualityName)
+      : [...profile.allowedQualities, qualityName];
+    if (allowedQualities.length === 0) return; // a profile must always allow at least one quality
+    await api.patch(`/quality-profiles/${profile.id}`, { allowedQualities });
+    setProfiles((prev) => prev.map((p) => (p.id === profile.id ? { ...p, allowedQualities } : p)));
+  }
+
+  async function saveProfileCutoff(profileId: number, cutoff: string) {
+    await api.patch(`/quality-profiles/${profileId}`, { cutoff });
+    setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, cutoff } : p)));
   }
 
   async function addTag(e: FormEvent) {
@@ -1058,6 +1127,7 @@ export default function Settings() {
     try {
       await api.put(`/settings/${key}`, { value });
       setSettings((prev) => ({ ...prev, [key]: value }));
+      notify.success("Saved.", 1500);
     } finally {
       setSavingKey(null);
     }
@@ -1108,6 +1178,7 @@ export default function Settings() {
 
   async function updateFolderQuota(id: number, field: "name" | "quotaPercent" | "pauseGrabsAtQuota" | "minFreeSpaceGb", value: number | boolean | string | null) {
     await api.patch(`/root-folders/${id}`, { [field]: value });
+    notify.success("Saved.", 1500);
     load();
   }
 
@@ -1166,6 +1237,12 @@ export default function Settings() {
 
   async function removeProvider(id: number) {
     await api.del(`/subtitles/providers/${id}`);
+    load();
+  }
+
+  async function saveProviderField(id: number, field: "name" | "languages", value: string) {
+    if (!value.trim()) return;
+    await api.patch(`/subtitles/providers/${id}`, { [field]: value.trim() });
     load();
   }
 
@@ -1731,6 +1808,16 @@ export default function Settings() {
                     </p>
                   </div>
                 )}
+                <div className="toolbar" style={{ justifyContent: "flex-start", gap: 12, marginBottom: 8 }}>
+                  <button type="button" className="secondary" onClick={testMediaServerConnection} disabled={mediaServerTesting}>
+                    {mediaServerTesting ? "Testing..." : "Test connection"}
+                  </button>
+                  {mediaServerTestResult && (
+                    <span className={mediaServerTestResult.ok ? "badge ok" : "badge danger"}>
+                      {mediaServerTestResult.ok ? `Connection OK (${mediaServerTestResult.fileCount} file(s) seen)` : mediaServerTestResult.error ?? "Test failed"}
+                    </span>
+                  )}
+                </div>
                 <label htmlFor="settings-refresh-media-server-library-after-each--29">Refresh media server library after each import</label>
                 <select id="settings-refresh-media-server-library-after-each--29"
                   key={settings.mediaServerRefreshOnImport ?? "media-server-refresh-empty"}
@@ -2880,11 +2967,29 @@ export default function Settings() {
             render: () => (
               <div className="form-panel">
                 <label htmlFor="settings-name-92">Name</label>
-                <input id="settings-name-92" value={p.name} disabled />
-                <label htmlFor="settings-allowed-qualities-93">Allowed qualities</label>
-                <input id="settings-allowed-qualities-93" value={p.allowedQualities.join(", ")} disabled />
+                <input id="settings-name-92" key={`profile-name-${p.id}-${p.name}`} defaultValue={p.name} onBlur={(e) => saveProfileName(p.id, e.target.value)} />
+                <label id={`settings-allowed-qualities-93-${p.id}`}>Allowed qualities</label>
+                <div role="group" aria-labelledby={`settings-allowed-qualities-93-${p.id}`} style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 8 }}>
+                  {qualities.map((q) => (
+                    <label key={q.id} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.85rem", margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={p.allowedQualities.includes(q.name)}
+                        onChange={() => toggleProfileAllowedQuality(p, q.name)}
+                        style={{ width: "auto" }}
+                      />
+                      {q.name}
+                    </label>
+                  ))}
+                </div>
                 <label htmlFor="settings-cutoff-stop-upgrading-at-94">Cutoff (stop upgrading at)</label>
-                <input id="settings-cutoff-stop-upgrading-at-94" value={p.cutoff} disabled />
+                <select id="settings-cutoff-stop-upgrading-at-94" value={p.cutoff} onChange={(e) => saveProfileCutoff(p.id, e.target.value)}>
+                  {qualities.map((q) => (
+                    <option key={q.id} value={q.name}>
+                      {q.name}
+                    </option>
+                  ))}
+                </select>
                 <label htmlFor="settings-min-format-score-95">Min format score</label>
                 <input id="settings-min-format-score-95"
                   type="number"
@@ -3108,34 +3213,19 @@ export default function Settings() {
             render: () => (
               <div className="form-panel">
                 <label htmlFor="settings-name-107">Name</label>
-                <input id="settings-name-107" value={f.name} disabled />
-                <label htmlFor="settings-conditions-108">Conditions</label>
-                <textarea id="settings-conditions-108"
-                  disabled
+                <input
+                  id="settings-name-107"
+                  key={`format-name-${f.id}-${f.name}`}
+                  defaultValue={f.name}
+                  onBlur={(e) => saveCustomFormatName(f.id, e.target.value)}
+                />
+                <label htmlFor="settings-conditions-108">Conditions (one group per line — same syntax as Add Custom Format below)</label>
+                <textarea
+                  id="settings-conditions-108"
                   rows={4}
-                  value={f.conditionGroups
-                    .map((g) => {
-                      const body =
-                        g.type === "size"
-                          ? `SIZE ${g.minMb ?? ""}-${g.maxMb ?? ""}MB`
-                          : g.type === "language"
-                          ? `LANG (${(g.languages ?? []).join(" OR ")})`
-                          : g.type === "releaseGroup"
-                          ? `GROUP (${(g.patterns ?? []).join(" OR ")})`
-                          : g.type === "source"
-                          ? `SOURCE (${(g.sources ?? []).join(" OR ")})`
-                          : g.type === "resolution"
-                          ? `RESOLUTION (${(g.resolutions ?? []).join(" OR ")})`
-                          : g.type === "year"
-                          ? `YEAR ${g.minYear ?? ""}-${g.maxYear ?? ""}`
-                          : g.type === "releaseFlags"
-                          ? `FLAGS (${(g.flags ?? []).join(" OR ")})`
-                          : g.type === "indexerFlag"
-                          ? `INDEXERFLAG (${(g.indexerFlags ?? []).join(" OR ")})`
-                          : `(${(g.patterns ?? []).join(" OR ")})`;
-                      return `${g.negate ? "NOT " : ""}${body}`;
-                    })
-                    .join(" AND\n")}
+                  key={`format-conditions-${f.id}`}
+                  defaultValue={conditionGroupsToText(f.conditionGroups)}
+                  onBlur={(e) => saveCustomFormatConditions(f.id, e.target.value)}
                 />
                 <label id="settings-release-profile-applies-to-label">Applies to (leave all unchecked for every library)</label>
                 <div role="group" aria-labelledby="settings-release-profile-applies-to-label" style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 8 }}>
@@ -3423,11 +3513,21 @@ export default function Settings() {
             render: () => (
               <div className="form-panel">
                 <label htmlFor="settings-name-116">Name</label>
-                <input id="settings-name-116" value={p.name} disabled />
+                <input
+                  id="settings-name-116"
+                  key={`subtitle-provider-name-${p.id}-${p.name}`}
+                  defaultValue={p.name}
+                  onBlur={(e) => saveProviderField(p.id, "name", e.target.value)}
+                />
                 <label htmlFor="settings-type-117">Type</label>
                 <input id="settings-type-117" value={p.type === "custom" ? "Custom (JSON API)" : "OpenSubtitles"} disabled />
                 <label htmlFor="settings-languages-118">Languages</label>
-                <input id="settings-languages-118" value={p.languages} disabled />
+                <input
+                  id="settings-languages-118"
+                  key={`subtitle-provider-languages-${p.id}-${p.languages}`}
+                  defaultValue={p.languages}
+                  onBlur={(e) => saveProviderField(p.id, "languages", e.target.value)}
+                />
                 <button className="danger" onClick={() => removeProvider(p.id)}>
                   Delete subtitle provider
                 </button>

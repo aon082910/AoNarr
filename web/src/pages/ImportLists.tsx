@@ -107,6 +107,12 @@ export default function ImportLists() {
     load();
   }
 
+  async function saveField(list: ImportList, field: "name" | "url", value: string) {
+    if (!value.trim() || value === list[field]) return;
+    await api.patch(`/import-lists/${list.id}`, { [field]: value.trim() });
+    load();
+  }
+
   async function toggleEnabled(list: ImportList) {
     await api.patch(`/import-lists/${list.id}`, { enabled: !list.enabled });
     load();
@@ -220,6 +226,7 @@ export default function ImportLists() {
             <tr>
               {listHeader("name", "Name")}
               {listHeader("type", "Type")}
+              <th>URL</th>
               {listHeader("enabled", "Enabled")}
               <th>Review before add</th>
               <th>Filters</th>
@@ -236,8 +243,24 @@ export default function ImportLists() {
               return (a.last_synced_at ?? "").localeCompare(b.last_synced_at ?? "");
             }).map((l) => (
               <tr key={l.id}>
-                <td>{l.name}</td>
+                <td>
+                  <input
+                    key={`${l.id}-name-${l.name}`}
+                    defaultValue={l.name}
+                    onBlur={(e) => saveField(l, "name", e.target.value)}
+                    style={{ fontSize: "0.85rem", minWidth: 120 }}
+                  />
+                </td>
                 <td>{TYPE_LABELS[l.type]}</td>
+                <td>
+                  <input
+                    key={`${l.id}-url-${l.url}`}
+                    defaultValue={l.url}
+                    onBlur={(e) => saveField(l, "url", e.target.value)}
+                    title={l.url}
+                    style={{ fontSize: "0.8rem", minWidth: 160 }}
+                  />
+                </td>
                 <td>
                   <input type="checkbox" checked={!!l.enabled} onChange={() => toggleEnabled(l)} />
                 </td>

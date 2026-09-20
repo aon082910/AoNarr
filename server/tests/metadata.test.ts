@@ -552,7 +552,7 @@ describe("searchMetadata: comics/manga/roms/video/podcast/adult", () => {
     setSetting("rawgApiKey", "k");
     stub([{ test: (u) => u.includes("api.rawg.io/api/games?"), response: ok({ results: [{ name: "Game1", released: "2000-01-01", background_image: "http://bg", id: 1, metacritic: 85, short_screenshots: [{ image: "http://ss0" }, { image: "http://ss1" }] }] }) }]);
     const results = await metadata.searchMetadata("rom", "x", "rawg");
-    expect(results[0]).toEqual({ title: "Game1", year: 2000, overview: null, posterUrl: "http://bg", externalIds: { rawg: "1" }, rating: 8.5, backdropUrl: "http://ss1" });
+    expect(results[0]).toEqual({ title: "Game1", year: 2000, overview: null, posterUrl: "http://bg", externalIds: { rawg: "1" }, rating: 8.5, backdropUrl: "http://ss1", genres: [] });
 
     stub([{ test: (u) => u.includes("api.rawg.io/api/games?"), response: ok({ results: [{ name: "NoMetacritic", id: 2 }] }) }]);
     const noMetacritic = await metadata.searchMetadata("rom", "x", "rawg");
@@ -770,6 +770,15 @@ describe("fetchByExternalId", () => {
     await expect(metadata.fetchByExternalId("rom", "rawg", "1")).rejects.toThrow("RAWG lookup failed: HTTP 500");
   });
 
+  it("rawg: maps the by-id detail response's genres array, used by refreshOneItem's re-match path", async () => {
+    setSetting("rawgApiKey", "k");
+    stub([{ test: (u) => u.includes("api.rawg.io/api/games/2"), response: ok({ id: 2, name: "Genred Game", genres: [{ id: 4, name: "RPG" }, { id: 5, name: "Adventure" }] }) }]);
+    expect((await metadata.fetchByExternalId("rom", "rawg", "2")).genres).toEqual(["RPG", "Adventure"]);
+
+    stub([{ test: (u) => u.includes("api.rawg.io/api/games/3"), response: ok({ id: 3, name: "No Genres Game" }) }]);
+    expect((await metadata.fetchByExternalId("rom", "rawg", "3")).genres).toEqual([]);
+  });
+
   it("isbn: strips separators, resolves the listed author, and falls back to the book title with a clear note", async () => {
     stub([{ test: (u) => u.includes("ISBN:9780143127550"), response: ok({ "ISBN:9780143127550": { title: "The Book", authors: [{ name: "Real Author" }], publish_date: "2001" } }) }]);
     const withAuthor = await metadata.fetchByExternalId("author", "isbn", "978-0143127550");
@@ -901,6 +910,21 @@ describe("fetchMovieByTmdbId / fetchSeriesByTmdbId", () => {
       { test: (u) => u.includes("/movie/9"), response: ok({ id: 9, title: "Foreign Cert Movie" }) },
     ]);
     expect((await metadata.fetchMovieByTmdbId("9")).contentRating).toBeNull();
+  });
+
+  it("fetchMovieByTmdbId maps TMDB's genres array to plain names, needing no extra API call", async () => {
+    setSetting("tmdbApiKey", "k");
+    stub([{ test: (u) => u.includes("/movie/20"), response: ok({ id: 20, title: "Genred Movie", genres: [{ id: 1, name: "Action" }, { id: 2, name: "Comedy" }] }) }]);
+    expect((await metadata.fetchMovieByTmdbId("20")).genres).toEqual(["Action", "Comedy"]);
+
+    stub([{ test: (u) => u.includes("/movie/21"), response: ok({ id: 21, title: "No Genres" }) }]);
+    expect((await metadata.fetchMovieByTmdbId("21")).genres).toEqual([]);
+  });
+
+  it("fetchSeriesByTmdbId maps TMDB's genres array to plain names", async () => {
+    setSetting("tmdbApiKey", "k");
+    stub([{ test: (u) => u.includes("/tv/20"), response: ok({ id: 20, name: "Genred Show", genres: [{ id: 1, name: "Drama" }] }) }]);
+    expect((await metadata.fetchSeriesByTmdbId("20")).genres).toEqual(["Drama"]);
   });
 
   it("fetchSeriesByTmdbId fetches the content rating from TMDB's separate content_ratings endpoint, preferring the US region", async () => {

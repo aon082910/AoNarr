@@ -1490,6 +1490,11 @@ export default function MediaDetail() {
                 {item.contentRating}
               </span>
             )}
+            {item.genres && item.genres.length > 0 && (
+              <span className="pill" title="Genres">
+                {item.genres.join(", ")}
+              </span>
+            )}
             {typeof item.runtimeMinutes === "number" && item.runtimeMinutes > 0 && (
               <span className="pill" title="Runtime">
                 <ClockIcon /> {item.runtimeMinutes} min

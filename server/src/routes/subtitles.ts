@@ -38,6 +38,35 @@ subtitlesRouter.post(
   })
 );
 
+/** Name/languages only — type is immutable after creation (same precedent as Import Lists' own
+ * PATCH route, since switching a provider's type after the fact doesn't make sense: the config
+ * shape underneath it is entirely different). Fixing a bad API key still needs delete-and-recreate
+ * for now; the API key never round-trips back out of the encrypted column to prefill an edit form. */
+subtitlesRouter.patch(
+  "/providers/:id",
+  asyncHandler(async (req, res) => {
+    const existing = await db.prepare("SELECT * FROM subtitle_providers WHERE id = ?").get(req.params.id);
+    if (!existing) throw new HttpError(404, "Subtitle provider not found");
+    const b = req.body ?? {};
+    const sets: string[] = [];
+    const values: any[] = [];
+    if (b.name !== undefined) {
+      sets.push("name = ?");
+      values.push(b.name);
+    }
+    if (b.languages !== undefined) {
+      sets.push("languages = ?");
+      values.push(b.languages);
+    }
+    if (sets.length > 0) {
+      values.push(req.params.id);
+      await db.prepare(`UPDATE subtitle_providers SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+    }
+    const row = await db.prepare("SELECT * FROM subtitle_providers WHERE id = ?").get(req.params.id);
+    res.json(subtitleProviderFromRow(row));
+  })
+);
+
 subtitlesRouter.delete(
   "/providers/:id",
   asyncHandler(async (req, res) => {

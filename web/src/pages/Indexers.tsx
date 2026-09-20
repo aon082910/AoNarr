@@ -4,7 +4,7 @@ import Modal from "../components/Modal.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { Indexer } from "../types.js";
 import { PlusCircleIcon, ZapIcon } from "../components/NavIcons.js";
-import { TrashIcon } from "../components/ActionIcons.js";
+import { PencilIcon, TrashIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
 
@@ -22,7 +22,7 @@ const PROTOCOL_LABELS: Record<Protocol, string> = {
 
 export default function Indexers() {
   const [indexers, setIndexers] = useState<Indexer[]>([]);
-  const [showAdd, setShowAdd] = useState(false);
+  const [mode, setMode] = useState<"add" | number | null>(null);
   const [syncingProwlarr, setSyncingProwlarr] = useState(false);
   const [syncingJackett, setSyncingJackett] = useState(false);
   const [name, setName] = useState("");
@@ -31,6 +31,8 @@ export default function Indexers() {
   const [apiKey, setApiKey] = useState("");
   const [testResults, setTestResults] = useState<Record<number, string>>({});
   const [testingAll, setTestingAll] = useState(false);
+  const [modalTesting, setModalTesting] = useState(false);
+  const [modalTestResult, setModalTestResult] = useState<string | null>(null);
 
   const [resultsPath, setResultsPath] = useState("");
   const [titleField, setTitleField] = useState("title");
@@ -44,6 +46,48 @@ export default function Indexers() {
     api.get<Indexer[]>("/indexers").then(setIndexers);
   }
   useEffect(load, []);
+
+  function resetForm() {
+    setName("");
+    setProtocol("torznab");
+    setUrl("");
+    setApiKey("");
+    setUseFlareSolverr(false);
+    setResultsPath("");
+    setTitleField("title");
+    setSizeField("size");
+    setDownloadUrlField("downloadUrl");
+    setSeedersField("");
+    setPublishDateField("");
+  }
+
+  function openAdd() {
+    resetForm();
+    setModalTestResult(null);
+    setMode("add");
+  }
+
+  function openEdit(i: Indexer) {
+    setName(i.name);
+    setProtocol(i.protocol);
+    setUrl(i.url);
+    setApiKey(i.apiKey ?? "");
+    setUseFlareSolverr(!!i.useFlareSolverr);
+    let ddlConfig: Record<string, any> = {};
+    try {
+      ddlConfig = i.config ? JSON.parse(i.config) : {};
+    } catch {
+      // malformed config on an old row — edit starting from blank DDL fields rather than fail
+    }
+    setResultsPath(ddlConfig.resultsPath ?? "");
+    setTitleField(ddlConfig.titleField ?? "title");
+    setSizeField(ddlConfig.sizeField ?? "size");
+    setDownloadUrlField(ddlConfig.downloadUrlField ?? "downloadUrl");
+    setSeedersField(ddlConfig.seedersField ?? "");
+    setPublishDateField(ddlConfig.publishDateField ?? "");
+    setModalTestResult(null);
+    setMode(i.id);
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -59,13 +103,18 @@ export default function Indexers() {
             publishDateField: publishDateField || null,
           }
         : null;
-    await api.post("/indexers", { name, protocol, url, apiKey: apiKey || null, config, useFlareSolverr });
-    setName("");
-    setUrl("");
-    setApiKey("");
-    setUseFlareSolverr(false);
-    setShowAdd(false);
-    load();
+    const body = { name, protocol, url, apiKey: apiKey || null, config, useFlareSolverr };
+    try {
+      if (mode === "add") {
+        await api.post("/indexers", body);
+      } else if (typeof mode === "number") {
+        await api.patch(`/indexers/${mode}`, body);
+      }
+      setMode(null);
+      load();
+    } catch (e) {
+      notify.error((e as Error).message);
+    }
   }
 
   async function remove(id: number) {
@@ -129,6 +178,25 @@ export default function Indexers() {
     load(); // the test itself just recorded a new health entry — refresh to show it
   }
 
+  async function testInModal(id: number) {
+    setModalTesting(true);
+    setModalTestResult(null);
+    try {
+      const result = await api.post<{ ok: boolean; resultCount?: number; error?: string }>(`/indexers/${id}/test`);
+      setModalTestResult(result.ok ? `OK (${result.resultCount} results)` : `Failed: ${result.error}`);
+    } catch (e) {
+      setModalTestResult(`Failed: ${(e as Error).message}`);
+    } finally {
+      setModalTesting(false);
+    }
+  }
+
+  async function removeAndClose(id: number) {
+    await api.del(`/indexers/${id}`);
+    setMode(null);
+    load();
+  }
+
   async function testAll() {
     setTestingAll(true);
     try {
@@ -163,7 +231,7 @@ export default function Indexers() {
       <PageToolbar
         left={
           <>
-            <ToolbarButton icon={<PlusCircleIcon />} label="Add" onClick={() => setShowAdd(true)} title="Add indexer" />
+            <ToolbarButton icon={<PlusCircleIcon />} label="Add" onClick={openAdd} title="Add indexer" />
             <ToolbarButton
               icon={<ZapIcon />}
               label={syncingProwlarr ? "Syncing..." : "Sync Prowlarr"}
@@ -189,8 +257,8 @@ export default function Indexers() {
         }
       />
 
-      {showAdd && (
-        <Modal title="Add Indexer" onClose={() => setShowAdd(false)} maxWidth={560}>
+      {mode !== null && (
+        <Modal title={mode === "add" ? "Add Indexer" : `Edit — ${name}`} onClose={() => setMode(null)} maxWidth={560}>
       <form className="form-panel" onSubmit={submit} style={{ padding: 0 }}>
         <label htmlFor="indexers-name-1">Name</label>
         <input id="indexers-name-1" value={name} onChange={(e) => setName(e.target.value)} required />
@@ -250,7 +318,23 @@ export default function Indexers() {
           </label>
         )}
 
-        <button type="submit">Add indexer</button>
+        {mode !== "add" && (
+          <div className="toolbar" style={{ justifyContent: "space-between" }}>
+            <button type="button" className="secondary" onClick={() => testInModal(mode as number)} disabled={modalTesting}>
+              {modalTesting ? "Testing..." : "Test connection"}
+            </button>
+            {modalTestResult && <span className={modalTestResult.startsWith("OK") ? "badge ok" : "badge danger"}>{modalTestResult}</span>}
+          </div>
+        )}
+
+        <div className="toolbar" style={{ justifyContent: "space-between", marginTop: 8 }}>
+          <button type="submit">{mode === "add" ? "Add indexer" : "Save"}</button>
+          {mode !== "add" && (
+            <button type="button" className="danger" onClick={() => removeAndClose(mode as number)}>
+              Delete
+            </button>
+          )}
+        </div>
       </form>
         </Modal>
       )}
@@ -263,6 +347,7 @@ export default function Indexers() {
         onToggleFlareSolverr={toggleFlareSolverr}
         onUpdateQueryLimit={updateQueryLimit}
         onTest={test}
+        onEdit={openEdit}
         onRemove={remove}
       />
       {indexers.length === 0 && <p className="empty">No indexers configured yet.</p>}
@@ -278,6 +363,7 @@ function IndexersTable({
   onToggleFlareSolverr,
   onUpdateQueryLimit,
   onTest,
+  onEdit,
   onRemove,
 }: {
   indexers: Indexer[];
@@ -287,6 +373,7 @@ function IndexersTable({
   onToggleFlareSolverr: (i: Indexer) => void;
   onUpdateQueryLimit: (i: Indexer, value: string) => void;
   onTest: (id: number) => void;
+  onEdit: (i: Indexer) => void;
   onRemove: (id: number) => void;
 }) {
   const { sortRows, sortableHeader } = useSortableTable<Indexer, "name" | "protocol" | "url" | "enabled">("name");
@@ -351,6 +438,9 @@ function IndexersTable({
                 <span className={`badge ${health.className}`}>{health.text}</span>
               </td>
               <td style={{ display: "flex", gap: 8 }}>
+                <button type="button" className="icon-button" onClick={() => onEdit(i)} title="Edit" aria-label="Edit">
+                  <PencilIcon />
+                </button>
                 <button type="button" className="icon-button" onClick={() => onTest(i.id)} title="Test" aria-label="Test">
                   <ZapIcon />
                 </button>

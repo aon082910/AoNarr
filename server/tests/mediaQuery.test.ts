@@ -17,14 +17,15 @@ async function insertItem(overrides: Record<string, unknown> = {}): Promise<numb
     quality_profile_id: null as number | null,
     content_rating: null as string | null,
     external_ids: null as string | null,
+    genres: null as string | null,
     ...overrides,
   };
   const result = await db
     .prepare(
-      `INSERT INTO media_items (type, title, sort_title, path, has_file, quality, quality_profile_id, content_rating, external_ids, monitored, status)
-       VALUES ('movie', ?, ?, ?, ?, ?, ?, ?, ?, 1, 'unknown')`
+      `INSERT INTO media_items (type, title, sort_title, path, has_file, quality, quality_profile_id, content_rating, external_ids, genres, monitored, status)
+       VALUES ('movie', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'unknown')`
     )
-    .run(row.title, String(row.title).toLowerCase(), row.path, row.has_file, row.quality, row.quality_profile_id, row.content_rating, row.external_ids);
+    .run(row.title, String(row.title).toLowerCase(), row.path, row.has_file, row.quality, row.quality_profile_id, row.content_rating, row.external_ids, row.genres);
   return Number(result.lastInsertRowid);
 }
 
@@ -252,6 +253,28 @@ describe("buildMediaQuery", () => {
     expect(await runQueryFor(rId, { contentRating: "all", allowedTypes: null })).toBe(true);
   });
 
+  it("genre filters via a substring match on the JSON array text, and 'all' applies no restriction", async () => {
+    const comedyId = await insertItem({ title: "Comedy Item", genres: JSON.stringify(["Comedy", "Drama"]) });
+    const actionId = await insertItem({ title: "Action Item", genres: JSON.stringify(["Action"]) });
+    const noGenreId = await insertItem({ title: "No Genre Item" });
+
+    expect(await runQueryFor(comedyId, { genre: "Comedy", allowedTypes: null })).toBe(true);
+    expect(await runQueryFor(comedyId, { genre: "Drama", allowedTypes: null })).toBe(true);
+    expect(await runQueryFor(actionId, { genre: "Comedy", allowedTypes: null })).toBe(false);
+    expect(await runQueryFor(noGenreId, { genre: "Comedy", allowedTypes: null })).toBe(false);
+    expect(await runQueryFor(actionId, { genre: "all", allowedTypes: null })).toBe(true);
+  });
+
+  it("genre filter doesn't false-positive-match a genre name that's a substring of a different genre", async () => {
+    // "Action" is a substring of "Live Action" — the LIKE '%"<name>"%' match wraps in quotes
+    // specifically so this can't happen (the quoted JSON boundary makes "Action" and "Live Action"
+    // distinct strings to match against, unlike a bare substring search would).
+    const liveActionId = await insertItem({ title: "Live Action Item", genres: JSON.stringify(["Live Action"]) });
+
+    expect(await runQueryFor(liveActionId, { genre: "Action", allowedTypes: null })).toBe(false);
+    expect(await runQueryFor(liveActionId, { genre: "Live Action", allowedTypes: null })).toBe(true);
+  });
+
   // findCutoffUnmetIds/findFilenameMismatchIds (below) scan literally every media_items row with
   // no type filter at all -- allowedTypes only ever applies to the SEPARATE m.type IN (...)
   // condition, never to whether either ids list comes back empty. Each test below is fully
@@ -304,6 +327,14 @@ describe("buildMediaQuery", () => {
   it("a blank/whitespace-only search term adds no condition at all", async () => {
     const result = await buildMediaQuery({ q: "   ", allowedTypes: null });
     expect(result.where).toBe("1=1");
+  });
+
+  it("free-text search also matches against genres, not just the title", async () => {
+    const comedyId = await insertItem({ title: "Totally Unrelated Title", genres: JSON.stringify(["Comedy"]) });
+    const dramaId = await insertItem({ title: "Another Unrelated Title", genres: JSON.stringify(["Drama"]) });
+
+    expect(await runQueryFor(comedyId, { q: "comedy", allowedTypes: null })).toBe(true);
+    expect(await runQueryFor(dramaId, { q: "comedy", allowedTypes: null })).toBe(false);
   });
 
   it("tagId combined with an explicit type adds both conditions and still joins media_item_tags", async () => {

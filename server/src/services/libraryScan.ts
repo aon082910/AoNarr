@@ -176,33 +176,57 @@ export function cleanRomTitle(text: string): string {
 
 const SEASON_FOLDER = /^season\s*0*(\d{1,3})$|^s0*(\d{1,3})$/i;
 const EPISODE_X_FORMAT = /\b0*(\d{1,2})x0*(\d{1,3})\b/i; // "1x01"
-const EPISODE_ONLY = /\bE0*(\d{1,3})\b/i;
+
+const EPISODE_ONLY_RANGE = /\bE0*(\d{1,3})(?:-E?0*(\d{1,3})|((?:E0*\d{1,3})+))?\b/i;
+
+/** Every episode number a bare "E01"/"E01-E02"/"E01E02" marker (no season prefix, used with the
+ * SEASON_FOLDER fallback below) covers — same range/chain expansion releaseParser.ts's
+ * SEASON_EP_RANGE already does for a full "S01E01-E02"-style match, just without the season part
+ * baked into the same regex. */
+function expandEpisodeOnlyMatch(match: RegExpMatchArray): number[] {
+  const start = Number(match[1]);
+  if (match[2]) {
+    const end = Number(match[2]);
+    const nums: number[] = [];
+    for (let n = start; n <= end; n++) nums.push(n);
+    return nums;
+  }
+  if (match[3]) {
+    const nums = [start];
+    const chained = match[3].match(/\d+/g) ?? [];
+    for (const n of chained) nums.push(Number(n));
+    return nums;
+  }
+  return [start];
+}
 
 /**
  * Real TV libraries very often only carry the series name in the folder structure (e.g.
  * `Series Name/Season 01/S01E01.mkv`, sometimes even just `Series Name/Season 01/01.mkv`) rather
  * than repeating it — and the season number — in every single episode's filename. Falls back
- * through, in order: season+episode straight from the filename (handles "S01E01"/"1x01" embedded
- * in the file itself, the common scene-release-style case) → a "Season NN"/"SNN" parent folder
- * plus an "E01"-style marker in the filename. Doesn't guess a bare episode number with no season
- * context or marker at all — too easy to misfire on an unrelated number in the name (a resolution,
- * a year, part of the title itself).
+ * through, in order: season+episode(s) straight from the filename (handles "S01E01"/"1x01"/
+ * Sonarr-style multi-episode "S01E01-E02"/"S01E01E02" embedded in the file itself, the common
+ * scene-release-style case) → a "Season NN"/"SNN" parent folder plus an "E01"/"E01-E02"-style
+ * marker in the filename. Doesn't guess a bare episode number with no season context or marker at
+ * all — too easy to misfire on an unrelated number in the name (a resolution, a year, part of the
+ * title itself). `episodes` is `[]` (not a single null) when nothing at all was recognized, and
+ * ordinarily a one-element array — multi-episode files are the exception, not the common case.
  */
-export function detectSeasonEpisode(parentFolderName: string, filenameBase: string): { season: number | null; episode: number | null } {
+export function detectSeasonEpisode(parentFolderName: string, filenameBase: string): { season: number | null; episodes: number[] } {
   const parsed = parseReleaseTitle(filenameBase);
   if (parsed.seasonNumber !== null && parsed.episodeNumbers && parsed.episodeNumbers.length > 0) {
-    return { season: parsed.seasonNumber, episode: parsed.episodeNumbers[0] };
+    return { season: parsed.seasonNumber, episodes: parsed.episodeNumbers };
   }
   const xMatch = filenameBase.match(EPISODE_X_FORMAT);
-  if (xMatch) return { season: Number(xMatch[1]), episode: Number(xMatch[2]) };
+  if (xMatch) return { season: Number(xMatch[1]), episodes: [Number(xMatch[2])] };
 
   const seasonFolderMatch = parentFolderName.match(SEASON_FOLDER);
   if (seasonFolderMatch) {
     const season = Number(seasonFolderMatch[1] ?? seasonFolderMatch[2]);
-    const epMatch = filenameBase.match(EPISODE_ONLY);
-    if (epMatch) return { season, episode: Number(epMatch[1]) };
+    const epMatch = filenameBase.match(EPISODE_ONLY_RANGE);
+    if (epMatch) return { season, episodes: expandEpisodeOnlyMatch(epMatch) };
   }
-  return { season: null, episode: null };
+  return { season: null, episodes: [] };
 }
 
 /** The parent folder's own name (or the grandparent, when the parent is just a "Season NN" folder
@@ -390,19 +414,23 @@ async function scanAndImportLibraryInner(
 
     try {
       if (typeConfig.shape === "episodic") {
-        let { season, episode } = detectSeasonEpisode(path.basename(parentDir), base);
+        let { season, episodes: parsedEpisodes } = detectSeasonEpisode(path.basename(parentDir), base);
         // Only a fallback-enabled type (course/adult — folder-as-show with no episode-listing
         // provider that could ever backfill a real episode list) tolerates a file with no
         // scene-style marker at all; everything else keeps the original "skip it" behavior
         // unchanged. Season defaults to 1 immediately (independent of which show it belongs to);
         // the episode number, when still unknown, is resolved further below once the show itself
         // is known, since numbering needs to see that show's own existing episodes.
-        if ((season === null || episode === null) && !typeConfig.sequentialEpisodeFallback) {
+        if ((season === null || parsedEpisodes.length === 0) && !typeConfig.sequentialEpisodeFallback) {
           result.skipped++;
           result.skippedFiles.push({ path: filePath, reason: "couldn't detect a season/episode number from the filename or folder" });
           continue;
         }
         if (season === null) season = 1;
+        // Only the sequential-fallback numbering path below (course/adult, always exactly one
+        // synthesized episode per file — never a real multi-episode release) still deals in a
+        // single scalar; every other type moves straight to `parsedEpisodes` for the write loop.
+        let episode: number | null = parsedEpisodes.length > 0 ? parsedEpisodes[0] : null;
 
         // sequentialEpisodeFallback types (course/adult) always take the show title from the
         // FOLDER — the filename there is a lesson/clip's own title, never the show's name, unlike
@@ -511,44 +539,53 @@ async function scanAndImportLibraryInner(
 
         const mediaInfo = isProbeableFile(filePath) ? await probeMediaInfo(filePath) : null;
         const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
-        const existingEp = (await db
-          .prepare("SELECT id, has_file, file_path FROM episodes WHERE media_item_id = ? AND season_number = ? AND episode_number = ?")
-          .get(seriesMatch.id, season, episode)) as { id: number; has_file: number; file_path: string | null } | undefined;
-        if (existingEp?.has_file && existingEp.file_path !== filePath) {
-          // Already has a different file — same reasoning as the "single" shape branch below:
-          // leave the already-tracked file alone rather than silently repointing the episode at
-          // an unrelated second file (a leftover sample, a stray duplicate) that merely parses to
-          // the same season/episode.
-          result.skipped++;
-          result.skippedFiles.push({
-            path: filePath,
-            reason: `matched existing episode S${season}E${episode} which already has a file — left in place rather than duplicating or overwriting`,
-          });
-          continue;
-        } else if (existingEp) {
-          await db
-            .prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?")
-            .run(filePath, quality, mediaInfoJson, existingEp.id);
-        } else {
-          // A fallback type has no episode-listing provider that will ever revisit this row and
-          // give it a real title later (unlike series/anime, where syncMissingChildren backfills
-          // the provider's own episode titles) — seed the filename-derived title up front instead
-          // of a permanent "Episode N" placeholder. Non-fallback types keep that placeholder,
-          // exactly as before.
-          // Same leading-number stripping upsertTrackFromFile already applies to a track's own
-          // title — without it, a numbered lesson's title would keep its own "01 - " prefix, which
-          // looks redundant next to the episode number the UI already shows beside it.
-          const episodeTitle = typeConfig.sequentialEpisodeFallback
-            ? guessTitleFromText(base.replace(/^\d{1,3}[\s._-]*/, "")) || `Episode ${episode}`
-            : `Episode ${episode}`;
-          await db
-            .prepare(
-              `INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path, quality, media_info)
-               VALUES (?, ?, ?, ?, 1, 1, ?, ?, ?)`
-            )
-            .run(seriesMatch.id, season, episode, episodeTitle, filePath, quality, mediaInfoJson);
+        // Sonarr-style multi-episode file: one physical file that's actually episodes 1 and 2
+        // together (a "S01E01-E02"/"S01E01E02" filename) gets the SAME file_path/quality/
+        // media_info written to every one of those episodes' own rows, not just the first — see
+        // detectSeasonEpisode's own doc comment. The sequential-fallback path (course/adult)
+        // always synthesizes exactly one number here, so this loop runs once for every file
+        // outside the real multi-episode case, unchanged from before.
+        const targetEpisodeNumbers = parsedEpisodes.length > 0 ? parsedEpisodes : [episode as number];
+        for (const targetEpisode of targetEpisodeNumbers) {
+          const existingEp = (await db
+            .prepare("SELECT id, has_file, file_path FROM episodes WHERE media_item_id = ? AND season_number = ? AND episode_number = ?")
+            .get(seriesMatch.id, season, targetEpisode)) as { id: number; has_file: number; file_path: string | null } | undefined;
+          if (existingEp?.has_file && existingEp.file_path !== filePath) {
+            // Already has a different file — same reasoning as the "single" shape branch below:
+            // leave the already-tracked file alone rather than silently repointing the episode at
+            // an unrelated second file (a leftover sample, a stray duplicate) that merely parses to
+            // the same season/episode.
+            result.skipped++;
+            result.skippedFiles.push({
+              path: filePath,
+              reason: `matched existing episode S${season}E${targetEpisode} which already has a file — left in place rather than duplicating or overwriting`,
+            });
+            continue;
+          } else if (existingEp) {
+            await db
+              .prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?")
+              .run(filePath, quality, mediaInfoJson, existingEp.id);
+          } else {
+            // A fallback type has no episode-listing provider that will ever revisit this row and
+            // give it a real title later (unlike series/anime, where syncMissingChildren backfills
+            // the provider's own episode titles) — seed the filename-derived title up front instead
+            // of a permanent "Episode N" placeholder. Non-fallback types keep that placeholder,
+            // exactly as before.
+            // Same leading-number stripping upsertTrackFromFile already applies to a track's own
+            // title — without it, a numbered lesson's title would keep its own "01 - " prefix, which
+            // looks redundant next to the episode number the UI already shows beside it.
+            const episodeTitle = typeConfig.sequentialEpisodeFallback
+              ? guessTitleFromText(base.replace(/^\d{1,3}[\s._-]*/, "")) || `Episode ${targetEpisode}`
+              : `Episode ${targetEpisode}`;
+            await db
+              .prepare(
+                `INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path, quality, media_info)
+                 VALUES (?, ?, ?, ?, 1, 1, ?, ?, ?)`
+              )
+              .run(seriesMatch.id, season, targetEpisode, episodeTitle, filePath, quality, mediaInfoJson);
+          }
+          result.matched++;
         }
-        result.matched++;
       } else if (typeConfig.shape === "collection") {
         const folder = folders.find((f) => filePath.startsWith(f.path));
         if (!folder) {
@@ -849,7 +886,8 @@ async function refreshOneItem(
         .prepare(
           `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), year = COALESCE(?, year),
            release_date = COALESCE(?, release_date), backdrop_url = COALESCE(?, backdrop_url), rating = COALESCE(?, rating),
-           runtime_minutes = COALESCE(?, runtime_minutes), status = COALESCE(?, status), content_rating = COALESCE(?, content_rating)
+           runtime_minutes = COALESCE(?, runtime_minutes), status = COALESCE(?, status), content_rating = COALESCE(?, content_rating),
+           genres = COALESCE(?, genres)
            ${alreadyMatched ? "" : ", title = ?, sort_title = ?, external_ids = ?"}
            WHERE id = ?`
         )
@@ -863,6 +901,7 @@ async function refreshOneItem(
           best.runtimeMinutes ?? null,
           best.status ?? null,
           best.contentRating ?? null,
+          best.genres && best.genres.length > 0 ? JSON.stringify(best.genres) : null,
           ...(alreadyMatched ? [] : [best.title, best.title.toLowerCase(), JSON.stringify(best.externalIds ?? {})]),
           item.id
         );

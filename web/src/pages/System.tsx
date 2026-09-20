@@ -274,6 +274,7 @@ export default function System() {
   async function saveSetting(key: string, value: string) {
     await api.put(`/settings/${key}`, { value });
     setSettings((prev) => ({ ...prev, [key]: value }));
+    notify.success("Saved.", 1500);
   }
 
   function loadGroupStats() {

@@ -18,6 +18,9 @@ export interface MediaQueryFilters {
   systemGroupId?: string;
   status?: string;
   contentRating?: string;
+  /** Exact-name membership check against the genres JSON array column (a plain LIKE substring
+   * match — see the WHERE-clause builder below for why). */
+  genre?: string;
   allowedTypes: string[] | null;
   maxContentRating?: string | null;
   /** Free-text title search, scoped to whatever other filters already narrowed this query to. On
@@ -261,15 +264,25 @@ export async function buildMediaQuery(filters: MediaQueryFilters): Promise<Media
     }
   }
 
+  // Plain substring match against the JSON-array text rather than a dialect-specific JSON
+  // containment operator (SQLite has none without the JSON1 extension's json_each; Postgres's
+  // @>/? operators would need a second, dialect-branched code path for no real benefit here) —
+  // genre names never contain a literal `"`, so `%"Action"%` can only match a real array element.
+  if (filters.genre && filters.genre !== "all") {
+    conditions.push("m.genres LIKE ?");
+    params.push(`%"${filters.genre}"%`);
+  }
+
   if (filters.q?.trim()) {
+    const q = filters.q.trim();
     if (db.dialect === "postgres") {
-      conditions.push("m.title ILIKE ?");
-      params.push(`%${filters.q.trim()}%`);
+      conditions.push("(m.title ILIKE ? OR m.genres ILIKE ?)");
+      params.push(`%${q}%`, `%${q}%`);
     } else {
       const ftsQuery = toFts5Query(filters.q);
       if (ftsQuery) {
-        conditions.push("m.id IN (SELECT media_item_id FROM library_search_fts WHERE library_search_fts MATCH ?)");
-        params.push(ftsQuery);
+        conditions.push("(m.id IN (SELECT media_item_id FROM library_search_fts WHERE library_search_fts MATCH ?) OR m.genres LIKE ?)");
+        params.push(ftsQuery, `%${q}%`);
       }
     }
   }
@@ -322,6 +335,11 @@ export const MEDIA_SORT_COLUMNS: Record<string, string> = {
   // search/grab/upgrade decision.
   quality: "(SELECT q.rank FROM qualities q WHERE q.name = m.quality) ASC",
   contentRating: `${CONTENT_RATING_SORT_EXPR} ASC`,
+  // No fixed severity order to sort by (unlike content rating) — sorting the raw JSON-array text
+  // alphabetically still clusters items by their first-listed genre, since a JSON array's first
+  // element sits immediately after the opening `["` in both dialects, with no JSON-extraction
+  // function needed on either database.
+  genres: "m.genres ASC",
   added: "m.id DESC",
   releaseDate: "m.release_date DESC",
   path: "m.path ASC",

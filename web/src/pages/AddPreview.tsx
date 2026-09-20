@@ -157,6 +157,7 @@ export default function AddPreview() {
           studio: result.studio ?? null,
           performers: result.performers ?? undefined,
           contentRating: result.contentRating ?? null,
+          genres: result.genres ?? undefined,
         }),
       };
       const created = await api.post<MediaItem>(manual ? "/media" : "/metadata/import", payload);

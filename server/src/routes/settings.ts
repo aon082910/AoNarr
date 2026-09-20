@@ -8,6 +8,7 @@ import { buildOtpauthUrl, generateBase32Secret, verifyTotp } from "../services/t
 import { getSetting, setSetting, deleteSetting, getAllSettings } from "../services/settingsStore.js";
 import { applySocksProxySetting } from "../services/socksProxy.js";
 import { sendTestNotification } from "../services/notifications.js";
+import { fetchWatchedFiles, getMediaServerConfig } from "../services/mediaServer.js";
 import { checkRateLimit, recordFailure, recordSuccess } from "../services/rateLimiter.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 
@@ -43,6 +44,27 @@ settingsRouter.post(
     try {
       await sendTestNotification(req.params.provider);
       res.json({ ok: true });
+    } catch (err) {
+      res.json({ ok: false, error: (err as Error).message });
+    }
+  })
+);
+
+/** Verifies the configured Plex/Jellyfin/Emby URL+token actually work, without waiting for the
+ * next scheduled watch-status sync to silently fail — reuses the exact same request path that
+ * sync already goes through (getMediaServerConfig + fetchWatchedFiles), just reporting success/
+ * failure instead of the real watched-file list. */
+settingsRouter.post(
+  "/media-server/test",
+  asyncHandler(async (_req, res) => {
+    const cfg = getMediaServerConfig();
+    if (!cfg) {
+      res.json({ ok: false, error: "Media server type, URL, and token must all be set first" });
+      return;
+    }
+    try {
+      const files = await fetchWatchedFiles();
+      res.json({ ok: true, fileCount: files.length });
     } catch (err) {
       res.json({ ok: false, error: (err as Error).message });
     }

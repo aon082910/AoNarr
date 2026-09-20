@@ -497,6 +497,43 @@ describe("placeFile — episodic shape (series)", () => {
 
     await expect(placeFile({ itemId: showId, episodeId: null, subItemId: null, sourceFile: src, quality: null })).rejects.toThrow(ImportSkippedError);
   });
+
+  it("recognizes a multi-episode filename covers more than the one episode it was searched for, and writes both rows", async () => {
+    const folder = await insertRootFolder("series");
+    const { showId, epId } = await insertShowWithEpisode(folder.id, { season: 1, episode: 1 });
+    const ep2Id = Number(
+      (await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,2,'Ep2',1,0)`).run(showId))
+        .lastInsertRowid
+    );
+    // Queued/searched against episode 1 only (as every grab always is — see releaseParser.ts), but
+    // the file that actually landed is a real multi-episode release covering episodes 1 AND 2.
+    const src = writeDownloadFile("Breaking.Bad.S01E01-E02.HDTV-720p.mkv");
+
+    const result = await placeFile({ itemId: showId, episodeId: epId, subItemId: null, sourceFile: src, quality: "HDTV-720p" });
+
+    const ep1 = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(epId)) as any;
+    const ep2 = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(ep2Id)) as any;
+    expect(ep1).toMatchObject({ has_file: 1, file_path: result.destPath, quality: "HDTV-720p" });
+    expect(ep2).toMatchObject({ has_file: 1, file_path: result.destPath, quality: "HDTV-720p" });
+    const history = (await db.prepare("SELECT * FROM history WHERE media_item_id = ? ORDER BY id").all(showId)) as any[];
+    expect(history).toHaveLength(2);
+    expect(history.map((h) => JSON.parse(h.data).episodeId).sort()).toEqual([epId, ep2Id].sort());
+  });
+
+  it("does not treat a same-season sibling as covered when the filename only names the one episode it was searched for", async () => {
+    const folder = await insertRootFolder("series");
+    const { showId, epId } = await insertShowWithEpisode(folder.id, { season: 1, episode: 1 });
+    const ep2Id = Number(
+      (await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,2,'Ep2',1,0)`).run(showId))
+        .lastInsertRowid
+    );
+    const src = writeDownloadFile("Breaking.Bad.S01E01.HDTV-720p.mkv");
+
+    await placeFile({ itemId: showId, episodeId: epId, subItemId: null, sourceFile: src, quality: "HDTV-720p" });
+
+    const ep2 = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(ep2Id)) as any;
+    expect(ep2.has_file).toBe(0);
+  });
 });
 
 describe("placeFile — collection shape, single-file-per-child (author/book)", () => {
@@ -640,6 +677,36 @@ describe("placeSeasonPackFiles", () => {
     expect(row2.has_file).toBe(1);
     // The unmatched E99 file was never moved.
     expect(fs.existsSync(path.join(downloadsDir, "Show.S01.PACK", "Show.S01E99.mkv"))).toBe(true);
+  });
+
+  it("writes a single multi-episode file in the pack to every episode row it covers", async () => {
+    const folder = await insertRootFolder("series");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('series','Show','show',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    const ep1 = Number((await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,1,'Ep1',1,0)`).run(showId)).lastInsertRowid);
+    const ep2 = Number((await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,2,'Ep2',1,0)`).run(showId)).lastInsertRowid);
+    const ep3 = Number((await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,3,'Ep3',1,0)`).run(showId)).lastInsertRowid);
+    const anchor = writeDownloadFile(path.join("Show.S01.PACK", "Show.S01E01-E02.mkv"));
+    writeDownloadFile(path.join("Show.S01.PACK", "Show.S01E03.mkv"));
+
+    const result = await placeSeasonPackFiles({ itemId: showId, seasonNumber: 1, anchorFile: anchor, quality: null });
+
+    expect(result.episodeCount).toBe(3);
+    const [row1, row2, row3] = (await Promise.all([
+      db.prepare("SELECT * FROM episodes WHERE id = ?").get(ep1),
+      db.prepare("SELECT * FROM episodes WHERE id = ?").get(ep2),
+      db.prepare("SELECT * FROM episodes WHERE id = ?").get(ep3),
+    ])) as any[];
+    expect(row1.has_file).toBe(1);
+    expect(row2.has_file).toBe(1);
+    expect(row3.has_file).toBe(1);
+    // Episodes 1 and 2 came from the same physical multi-episode file, so they share a path.
+    expect(row1.file_path).toBe(row2.file_path);
+    expect(row1.file_path).not.toBe(row3.file_path);
+    const history = (await db.prepare("SELECT * FROM history WHERE media_item_id = ? ORDER BY id").all(showId)) as any[];
+    expect(history).toHaveLength(3);
   });
 
   it("throws ImportSkippedError when not a single file in the pack matches a known episode", async () => {
@@ -824,6 +891,39 @@ describe("renameLibraryFiles / renameOneMediaItem", () => {
 
     expect(result.renamed).toEqual([]);
     expect(result.skippedMusic).toBe(1);
+  });
+
+  it("renames a multi-episode file's shared path exactly once, updating both episode rows", async () => {
+    const folder = await insertRootFolder("series");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('series','Show','show',?,1,1,'downloaded')`).run(folder.id))
+        .lastInsertRowid
+    );
+    const oldPath = path.join(folder.path, "old-e1e2.mkv");
+    fs.mkdirSync(path.dirname(oldPath), { recursive: true });
+    fs.writeFileSync(oldPath, "x");
+    const ep1 = Number(
+      (await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path) VALUES (?,1,1,'Ep1',1,1,?)`).run(showId, oldPath))
+        .lastInsertRowid
+    );
+    const ep2 = Number(
+      (await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path) VALUES (?,1,2,'Ep2',1,1,?)`).run(showId, oldPath))
+        .lastInsertRowid
+    );
+
+    const result = await renameOneMediaItem(showId);
+
+    // One rename entry for the shared file, not two — a second attempt to move the same
+    // already-relocated physical file would otherwise throw ENOENT on the second episode row.
+    expect(result.renamed).toHaveLength(1);
+    expect(result.errors).toEqual([]);
+    expect(fs.existsSync(oldPath)).toBe(false);
+    const [row1, row2] = (await Promise.all([
+      db.prepare("SELECT * FROM episodes WHERE id = ?").get(ep1),
+      db.prepare("SELECT * FROM episodes WHERE id = ?").get(ep2),
+    ])) as any[];
+    expect(row1.file_path).toBe(row2.file_path);
+    expect(fs.existsSync(row1.file_path)).toBe(true);
   });
 
   it("renameLibraryFiles processes every item of a type and continues past one item's failure", async () => {

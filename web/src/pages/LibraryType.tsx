@@ -10,7 +10,7 @@ import Modal from "../components/Modal.js";
 import MonitorToggle from "../components/MonitorToggle.js";
 import RenamePreviewModal from "../components/RenamePreviewModal.js";
 import { PlusCircleIcon, CheckSquareIcon, SlashIcon, ZapIcon, RotateCcwIcon, SearchIcon, DownloadIcon, GlobeIcon } from "../components/NavIcons.js";
-import { PencilIcon, XIcon, CheckIcon, SaveIcon, TrashIcon, FolderIcon, ChevronLeftIcon, ChevronRightIcon, GridIcon, RowsIcon, TableIcon } from "../components/ActionIcons.js";
+import { PencilIcon, XIcon, CheckIcon, SaveIcon, TrashIcon, FolderIcon, ChevronLeftIcon, ChevronRightIcon, GridIcon, RowsIcon, TableIcon, FilterIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton, ToolbarSeparator } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
@@ -36,6 +36,7 @@ interface LibraryStats {
   childCount: number;
   childHaveCount: number;
   contentRatings: string[];
+  genres: string[];
   /** How many items of this type still have their old, pre-episodic data structure (see
    * MediaItem.legacyShape) — only ever nonzero for course/adult. Drives the "Convert to Episodic"
    * toolbar button. */
@@ -48,6 +49,7 @@ const EMPTY_STATS: LibraryStats = {
   childCount: 0,
   childHaveCount: 0,
   contentRatings: [],
+  genres: [],
   legacyCount: 0,
 };
 
@@ -209,6 +211,10 @@ export default function LibraryType() {
   const [editingOverview, setEditingOverview] = useState(false);
   const [overviewDraft, setOverviewDraft] = useState("");
   const [logoUrlDraft, setLogoUrlDraft] = useState("");
+  // Dismissible per page-view, not persisted — reset whenever the library type itself changes so a
+  // dismissal on one library (say, ROMs) doesn't silently follow the admin to another (Adult).
+  const [ungroupedBannerDismissed, setUngroupedBannerDismissed] = useState(false);
+  useEffect(() => setUngroupedBannerDismissed(false), [type]);
 
   const currentKind = groupDetail ? groupDetail.group.kind : groupLevels[0];
   const nextKind = groupDetail ? groupDetail.nextKind : groupLevels[1] ?? (groupLevels.length === 1 ? null : groupLevels[0]);
@@ -282,6 +288,23 @@ export default function LibraryType() {
     return (
       <div>
         <h1>{typeInfo.label}</h1>
+        {auth.isAdmin && !groupId && !ungroupedBannerDismissed && ungroupedCount > 0 && (
+          <div className="form-panel" style={{ borderColor: "var(--accent)", marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <span>
+              <strong>{ungroupedCount}</strong> item(s) haven't been matched to a {KIND_LABEL[groupLevels[0] ?? ""] ?? "group"} yet —{" "}
+              <Link to={`/library/${type}/ungrouped`}>view them</Link>, then use Refresh or Match All Providers there to organize them automatically.
+            </span>
+            <button
+              type="button"
+              className="icon-button"
+              onClick={() => setUngroupedBannerDismissed(true)}
+              title="Dismiss"
+              aria-label="Dismiss"
+            >
+              <XIcon />
+            </button>
+          </div>
+        )}
         {groupDetail && (
           <p style={{ color: "var(--muted)" }}>
             <Link to={`/library/${type}`}>{typeInfo.label}</Link>
@@ -474,6 +497,7 @@ export function LibraryItemGrid({
     loadFieldSet(`aonarr_library_poster_fields_${type}`, DEFAULT_POSTER_FIELDS)
   );
   const [contentRatingFilter, setContentRatingFilter] = useState<string | "all">("all");
+  const [genreFilter, setGenreFilter] = useState<string | "all">("all");
   const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   // Debounced — fires the actual (server-side, SQL-level) search 350ms after typing stops, not on
@@ -546,6 +570,10 @@ export function LibraryItemGrid({
   const csvInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { auth } = useAuth();
+  // Dismissible per page-view, not persisted — reset whenever the library type changes so a
+  // dismissal on one library doesn't silently follow the admin to another.
+  const [legacyBannerDismissed, setLegacyBannerDismissed] = useState(false);
+  useEffect(() => setLegacyBannerDismissed(false), [type]);
   // Gates the "Match All Providers" toolbar button — meaningless (nothing left to check once the
   // one already-matched provider is excluded) for a type with 0 or 1 configured providers.
   useEffect(() => {
@@ -592,6 +620,7 @@ export function LibraryItemGrid({
     const params = scopeParams();
     if (statusFilter !== "all") params.set("status", statusFilter);
     if (contentRatingFilter !== "all") params.set("contentRating", contentRatingFilter);
+    if (genreFilter !== "all") params.set("genre", genreFilter);
     if (searchQuery) params.set("q", searchQuery);
     params.set("sort", sortKey);
     params.set("limit", String(pageSize));
@@ -613,7 +642,7 @@ export function LibraryItemGrid({
     api.get<LibraryStats>(`/media/stats?${scopeParams().toString()}`).then(setStats);
   }
 
-  useEffect(load, [type, groupId, tagFilter, statusFilter, contentRatingFilter, searchQuery, sortKey, page, pageSize, systemFilter]);
+  useEffect(load, [type, groupId, tagFilter, statusFilter, contentRatingFilter, genreFilter, searchQuery, sortKey, page, pageSize, systemFilter]);
   // A new search narrows/changes the result set entirely — staying on page 5 of the old,
   // unfiltered results would just show an empty page. Skips the very first render (searchQuery
   // starts at "") so mounting the page doesn't force an unnecessary page reset.
@@ -670,6 +699,7 @@ export function LibraryItemGrid({
     const params = scopeParams();
     if (statusFilter !== "all") params.set("status", statusFilter);
     if (contentRatingFilter !== "all") params.set("contentRating", contentRatingFilter);
+    if (genreFilter !== "all") params.set("genre", genreFilter);
     // Must mirror load()'s own filters exactly (including the search query) — a letter's page
     // offset is only meaningful against the same result set the pages are cut from.
     if (searchQuery) params.set("q", searchQuery);
@@ -685,7 +715,7 @@ export function LibraryItemGrid({
     return () => {
       cancelled = true;
     };
-  }, [type, groupId, tagFilter, statusFilter, contentRatingFilter, sortKey, searchQuery]);
+  }, [type, groupId, tagFilter, statusFilter, contentRatingFilter, genreFilter, sortKey, searchQuery]);
 
   // Once a letter jump has moved to a different page, waits for that page's items to actually
   // arrive before scrolling — the target row doesn't exist in the DOM until then.
@@ -724,7 +754,7 @@ export function LibraryItemGrid({
       return;
     }
     setPage(0);
-  }, [type, groupId, tagFilter, statusFilter, contentRatingFilter, sortKey, pageSize]);
+  }, [type, groupId, tagFilter, statusFilter, contentRatingFilter, genreFilter, sortKey, pageSize]);
   useEffect(() => {
     // Guarded against out-of-order responses: switching libraries quickly could let an earlier
     // type's slower-to-resolve request land after a later type's faster one, overwriting the
@@ -768,6 +798,7 @@ export function LibraryItemGrid({
     setStatusFilter(c.statusFilter as StatusFilter);
     setTagFilter(c.tagFilter);
     setContentRatingFilter(c.contentRatingFilter);
+    setGenreFilter(c.genreFilter ?? "all");
     setViewMode(c.viewMode as ViewMode);
     setPosterSize(c.posterSize as PosterSize);
     setListColumns(new Set(c.listColumns as ExtraField[]));
@@ -787,6 +818,7 @@ export function LibraryItemGrid({
           statusFilter,
           tagFilter,
           contentRatingFilter,
+          genreFilter,
           viewMode,
           posterSize,
           listColumns: Array.from(listColumns),
@@ -952,6 +984,7 @@ export function LibraryItemGrid({
     // why the library looks empty — and a tag/system filter or search query left over from a
     // completely different type's data is just as misleading.
     setContentRatingFilter("all");
+    setGenreFilter("all");
     setTagFilter("all");
     setSystemFilter("all");
     setSearchInput("");
@@ -1229,6 +1262,16 @@ export function LibraryItemGrid({
           ))}
         </p>
       )}
+      {auth.isAdmin && !legacyBannerDismissed && stats.legacyCount > 0 && (
+        <div className="form-panel" style={{ borderColor: "var(--accent)", marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <span>
+            <strong>{stats.legacyCount}</strong> item(s) are still in the old format — click "Convert to Episodic" below to restructure them.
+          </span>
+          <button type="button" className="icon-button" onClick={() => setLegacyBannerDismissed(true)} title="Dismiss" aria-label="Dismiss">
+            <XIcon />
+          </button>
+        </div>
+      )}
       <PageToolbar
         left={
           <>
@@ -1372,54 +1415,97 @@ export function LibraryItemGrid({
               {typeInfo?.shape === "single" && <option value="path">Sort: Path</option>}
               {typeInfo?.shape === "single" && <option value="sizeOnDisk">Sort: Size on disk</option>}
             </select>
-            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as StatusFilter)} style={{ maxWidth: 160 }}>
-              <option value="all">All statuses</option>
-              <option value="monitored">Monitored</option>
-              <option value="unmonitored">Unmonitored</option>
-              <option value="downloaded">Downloaded</option>
-              <option value="missing">Missing</option>
-              {/* Both computed server-side from media_items.quality/.path (mediaQuery.ts), which —
-                  same as SINGLE_SHAPE_ONLY_FIELDS above — are only ever populated for "single"-shape
-                  items; picking either on an episodic/collection type always returned zero results. */}
-              {typeInfo?.shape === "single" && <option value="cutoffUnmet">Cutoff unmet</option>}
-              <option value="unmatched">Unmatched (no metadata match)</option>
-              {typeInfo?.shape === "single" && <option value="filenameMismatch">Filename doesn't match title</option>}
-            </select>
-            {tags.length > 0 && (
-              <select
-                value={tagFilter}
-                onChange={(e) => setTagFilter(e.target.value === "all" ? "all" : Number(e.target.value))}
-                style={{ maxWidth: 160 }}
-              >
-                <option value="all">All tags</option>
-                {tags.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-            )}
-            {stats.contentRatings.length > 0 && (
-              <select value={contentRatingFilter} onChange={(e) => setContentRatingFilter(e.target.value)} style={{ maxWidth: 160 }}>
-                <option value="all">All content ratings</option>
-                {stats.contentRatings.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
-            )}
-            {type === "rom" && groupId === undefined && (
-              <select value={systemFilter} onChange={(e) => setSystemFilter(e.target.value)} style={{ maxWidth: 160 }}>
-                <option value="all">All systems</option>
-                {systemGroups.map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.name}
-                  </option>
-                ))}
-                <option value="unknown">Unknown system</option>
-              </select>
-            )}
+            {/* Every result-narrowing filter lives behind one "Filters" trigger instead of each
+                being its own always-visible <select> — with View/Sort/Tags/Content
+                rating/Genre/System all rendered as separate selects, this toolbar's total width
+                routinely exceeded even a wide desktop window, wrapping the Save/Search group onto
+                its own line below the dropdowns. Consolidating shrinks the row enough to reliably
+                fit on one line, the same "reduce clutter into a popup" direction already applied
+                to Export & Bulk/Customize — View/Sort/Poster size stay as direct selects since
+                those are view-presentation pickers, not filters. */}
+            <DropdownMenu
+              label={
+                <>
+                  <FilterIcon /> Filters
+                </>
+              }
+            >
+              <div style={{ padding: "4px 10px 8px", display: "flex", flexDirection: "column", gap: 8, minWidth: 200 }} onClick={(e) => e.stopPropagation()}>
+                <label style={{ display: "block", fontSize: "0.75rem", color: "var(--muted)" }}>
+                  Status
+                  <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as StatusFilter)} style={{ width: "100%", marginTop: 2 }}>
+                    <option value="all">All statuses</option>
+                    <option value="monitored">Monitored</option>
+                    <option value="unmonitored">Unmonitored</option>
+                    <option value="downloaded">Downloaded</option>
+                    <option value="missing">Missing</option>
+                    {/* Both computed server-side from media_items.quality/.path (mediaQuery.ts), which —
+                        same as SINGLE_SHAPE_ONLY_FIELDS above — are only ever populated for "single"-shape
+                        items; picking either on an episodic/collection type always returned zero results. */}
+                    {typeInfo?.shape === "single" && <option value="cutoffUnmet">Cutoff unmet</option>}
+                    <option value="unmatched">Unmatched (no metadata match)</option>
+                    {typeInfo?.shape === "single" && <option value="filenameMismatch">Filename doesn't match title</option>}
+                  </select>
+                </label>
+                {tags.length > 0 && (
+                  <label style={{ display: "block", fontSize: "0.75rem", color: "var(--muted)" }}>
+                    Tags
+                    <select
+                      value={tagFilter}
+                      onChange={(e) => setTagFilter(e.target.value === "all" ? "all" : Number(e.target.value))}
+                      style={{ width: "100%", marginTop: 2 }}
+                    >
+                      <option value="all">All tags</option>
+                      {tags.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {stats.contentRatings.length > 0 && (
+                  <label style={{ display: "block", fontSize: "0.75rem", color: "var(--muted)" }}>
+                    Content rating
+                    <select value={contentRatingFilter} onChange={(e) => setContentRatingFilter(e.target.value)} style={{ width: "100%", marginTop: 2 }}>
+                      <option value="all">All content ratings</option>
+                      {stats.contentRatings.map((r) => (
+                        <option key={r} value={r}>
+                          {r}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {stats.genres.length > 0 && (
+                  <label style={{ display: "block", fontSize: "0.75rem", color: "var(--muted)" }}>
+                    Genre
+                    <select value={genreFilter} onChange={(e) => setGenreFilter(e.target.value)} style={{ width: "100%", marginTop: 2 }}>
+                      <option value="all">All genres</option>
+                      {stats.genres.map((g) => (
+                        <option key={g} value={g}>
+                          {g}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {type === "rom" && groupId === undefined && (
+                  <label style={{ display: "block", fontSize: "0.75rem", color: "var(--muted)" }}>
+                    System
+                    <select value={systemFilter} onChange={(e) => setSystemFilter(e.target.value)} style={{ width: "100%", marginTop: 2 }}>
+                      <option value="all">All systems</option>
+                      {systemGroups.map((g) => (
+                        <option key={g.id} value={g.id}>
+                          {g.name}
+                        </option>
+                      ))}
+                      <option value="unknown">Unknown system</option>
+                    </select>
+                  </label>
+                )}
+              </div>
+            </DropdownMenu>
             {viewMode === "poster" && (
               <select value={posterSize} onChange={(e) => setPosterSize(e.target.value as PosterSize)} style={{ maxWidth: 190 }}>
                 <option value="xsmall">X-small posters</option>

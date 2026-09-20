@@ -109,6 +109,10 @@ ensureColumn("users", "display_name", "display_name TEXT");
 ensureColumn("users", "avatar_path", "avatar_path TEXT");
 ensureColumn("users", "bio", "bio TEXT");
 ensureColumn("users", "social_links", "social_links TEXT");
+// A JSON array of strings, same storage convention as extra_metadata/performers (genres are
+// multi-valued, unlike content_rating's single-scalar column) — see mediaQuery.ts for how
+// filter/sort/search treat this as JSON text rather than a real array column.
+ensureColumn("media_items", "genres", "genres TEXT");
 
 /**
  * One-time transition marker for the course/adult "collection"/"single" -> "episodic" shape change

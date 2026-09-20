@@ -479,6 +479,10 @@ export async function placeFile(params: {
   // Distinguishes a first-time import from a replace of a file the item already had, so the
   // right notification event fires (notifyImported vs. Radarr/Sonarr's "On Upgrade").
   let hadFileBefore = typeConfig.shape === "single" && !!item.hasFile;
+  // Populated only for the episodic branch below when the real filename covers more than the one
+  // episode this import was queued against (e.g. a multi-episode release) — every row here gets
+  // the same file info written and its own history entry, not just the originally-queued episode.
+  let episodicRows: { id: number }[] | null = null;
 
   if (typeConfig.shape === "single") {
     const segments = renderPathSegments(getNamingTemplate(item.type), { title: item.title, year: item.year ?? "", quality: quality ?? "" });
@@ -487,6 +491,30 @@ export async function placeFile(params: {
     const epRow = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(episodeId)) as any;
     if (!epRow) throw new Error(`Episode ${episodeId} not found`);
     hadFileBefore = !!epRow.has_file;
+
+    // The file that actually landed may legitimately cover more than the one episode this import
+    // was searched for (e.g. a multi-episode release like "S01E01-E02.mkv") — detect any
+    // additional same-season episodes the real filename covers so they get marked Downloaded too,
+    // not just the episode this import was originally queued against.
+    const detected = detectSeasonEpisode(path.basename(path.dirname(sourceFile)), path.basename(sourceFile, ext));
+    const siblingEpisodeNumbers =
+      detected.season === epRow.season_number ? detected.episodes.filter((n) => n !== epRow.episode_number) : [];
+    const siblingEpRows =
+      siblingEpisodeNumbers.length > 0
+        ? ((await db
+            .prepare(
+              `SELECT * FROM episodes WHERE media_item_id = ? AND season_number = ? AND episode_number IN (${siblingEpisodeNumbers
+                .map(() => "?")
+                .join(",")})`
+            )
+            .all(epRow.media_item_id, epRow.season_number, ...siblingEpisodeNumbers)) as any[])
+        : [];
+    const allEpRows = [epRow, ...siblingEpRows];
+    if (allEpRows.length > 1) episodicRows = allEpRows.map((e) => ({ id: e.id }));
+    const primaryEpisodeNumber = Math.min(...allEpRows.map((e: any) => e.episode_number));
+    const lastEpisodeNumber = Math.max(...allEpRows.map((e: any) => e.episode_number));
+    const primaryEpRow = allEpRows.find((e: any) => e.episode_number === primaryEpisodeNumber);
+
     // Running count across every season up to and including this episode — what anime naming
     // conventions call "absolute" numbering (e.g. episode 26 instead of S02E01), as an
     // alternative to {season}/{episode} in a custom naming template.
@@ -500,16 +528,19 @@ export async function placeFile(params: {
             `SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ? AND season_number > 0
            AND (season_number < ? OR (season_number = ? AND episode_number <= ?))`
           )
-          .get(epRow.media_item_id, epRow.season_number, epRow.season_number, epRow.episode_number)) as { c: number }
+          .get(epRow.media_item_id, epRow.season_number, epRow.season_number, primaryEpisodeNumber)) as { c: number }
       ).c
     );
     const segments = renderPathSegments(getNamingTemplate(item.type), {
       parentTitle: item.title,
       season: epRow.season_number,
-      episode: epRow.episode_number,
+      episode:
+        allEpRows.length > 1
+          ? `${String(primaryEpisodeNumber).padStart(2, "0")}-${String(lastEpisodeNumber).padStart(2, "0")}`
+          : primaryEpisodeNumber,
       absoluteEpisode,
-      airDate: epRow.air_date ?? "",
-      episodeTitle: epRow.title ?? "",
+      airDate: primaryEpRow.air_date ?? "",
+      episodeTitle: primaryEpRow.title ?? "",
       year: item.year ?? "",
       quality: quality ?? "",
     });
@@ -578,13 +609,16 @@ export async function placeFile(params: {
       item.id
     );
   } else if (episodeId) {
-    await db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?").run(
-      destPath,
-      quality,
-      mediaInfoJson,
-      sizeBytes,
-      episodeId
-    );
+    const rows = episodicRows ?? [{ id: episodeId }];
+    for (const row of rows) {
+      await db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?").run(
+        destPath,
+        quality,
+        mediaInfoJson,
+        sizeBytes,
+        row.id
+      );
+    }
   } else if (subItemId) {
     await db.prepare("UPDATE sub_items SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?").run(
       destPath,
@@ -595,11 +629,15 @@ export async function placeFile(params: {
     );
   }
 
-  // episodeId/subItemId/quality are what duplicates.ts's repeated-import check groups on.
-  await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
-    item.id,
-    JSON.stringify({ fileLabel, destPath, episodeId: episodeId ?? null, subItemId: subItemId ?? null, quality: quality ?? null })
-  );
+  // episodeId/subItemId/quality are what duplicates.ts's repeated-import check groups on. One
+  // history row per covered episode when a single file spans more than one (multi-episode release).
+  const historyEpisodeIds = episodicRows ? episodicRows.map((r) => r.id) : [episodeId ?? null];
+  for (const historyEpisodeId of historyEpisodeIds) {
+    await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
+      item.id,
+      JSON.stringify({ fileLabel, destPath, episodeId: historyEpisodeId, subItemId: subItemId ?? null, quality: quality ?? null })
+    );
+  }
 
   // Radarr's "Kodi (XBMC)/Emby" metadata consumer, off by default there too — an admin who wants
   // AoNarr to keep a Kodi/Jellyfin/Emby-readable .nfo sidecar next to every imported file opts in
@@ -825,12 +863,16 @@ export async function placeSeasonPackFiles(params: {
     // A season pack's own folder name (e.g. "Show.S01.1080p.WEB-DL") won't itself look like a
     // "Season NN" folder to detectSeasonEpisode, so a file with no season of its own (e.g. a bare
     // "01.mkv") falls back to assuming it belongs to the season this whole download is for.
-    const episodeNumber = detected.season === null || detected.season === seasonNumber ? detected.episode : null;
-    const targetEpisode = episodeNumber !== null ? episodes.find((e) => e.episode_number === episodeNumber) : undefined;
-    if (!targetEpisode) {
+    const episodeNumbers = detected.season === null || detected.season === seasonNumber ? detected.episodes : [];
+    // A Sonarr-style multi-episode file within the pack (e.g. "S01E01-E02.mkv") resolves to every
+    // one of this season's own episode rows it actually covers, not just the first.
+    const targetEpisodes = episodeNumbers.map((n) => episodes.find((e) => e.episode_number === n)).filter((e): e is any => !!e);
+    if (targetEpisodes.length === 0) {
       log.warn(`[importer] couldn't match "${path.basename(src)}" to a known episode of season ${seasonNumber} for "${item.title}" — left in place`);
       continue;
     }
+    const primaryEpisodeNumber = Math.min(...targetEpisodes.map((e) => e.episode_number));
+    const lastEpisodeNumber = Math.max(...targetEpisodes.map((e) => e.episode_number));
 
     // Season 0 (specials) is excluded from the running count — see the identical comment in
     // placeFile() above.
@@ -841,15 +883,19 @@ export async function placeSeasonPackFiles(params: {
             `SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ? AND season_number > 0
            AND (season_number < ? OR (season_number = ? AND episode_number <= ?))`
           )
-          .get(itemId, seasonNumber, seasonNumber, episodeNumber)) as { c: number }
+          .get(itemId, seasonNumber, seasonNumber, primaryEpisodeNumber)) as { c: number }
       ).c
     );
     const segments = renderPathSegments(getNamingTemplate(item.type), {
       parentTitle: item.title,
       season: seasonNumber,
-      episode: episodeNumber as number,
+      // A plain number for the (overwhelmingly common) single-episode case, unchanged — a
+      // pre-formatted "01-02" string for a real multi-episode file, which renderTemplate's
+      // {episode:00} token already renders as-is (its zero-pad branch only fires for numbers),
+      // so no naming-template changes are needed to support this.
+      episode: targetEpisodes.length > 1 ? `${String(primaryEpisodeNumber).padStart(2, "0")}-${String(lastEpisodeNumber).padStart(2, "0")}` : primaryEpisodeNumber,
       absoluteEpisode,
-      episodeTitle: targetEpisode.title ?? "",
+      episodeTitle: targetEpisodes[0].title ?? "",
       year: item.year ?? "",
       quality: quality ?? "",
     });
@@ -861,23 +907,26 @@ export async function placeSeasonPackFiles(params: {
     if (VIDEO_EXTENSIONS.has(ext.toLowerCase())) await tryDownloadSubtitle(dest, item.id);
     const mediaInfo = await probeMediaInfo(dest);
     const sizeBytes = await fsp.stat(dest).then((s) => s.size).catch(() => null);
-    await db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?").run(
-      dest,
-      quality,
-      mediaInfo ? JSON.stringify(mediaInfo) : null,
-      sizeBytes,
-      targetEpisode.id
-    );
-    // One row per episode, with episodeId/quality set — the same shape placeFile's single-episode
-    // path uses, and what duplicates.ts's repeated-import grouping keys on. A single season-level
-    // summary row here (as this used to write) collapsed every season-pack import of this series
-    // to the same "media item, no episode/sub-item" key, so importing two different seasons looked
-    // like one item repeatedly re-imported.
-    await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
-      item.id,
-      JSON.stringify({ fileLabel, destPath: dest, episodeId: targetEpisode.id, subItemId: null, quality: quality ?? null })
-    );
-    importedCount++;
+    for (const targetEpisode of targetEpisodes) {
+      await db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?").run(
+        dest,
+        quality,
+        mediaInfo ? JSON.stringify(mediaInfo) : null,
+        sizeBytes,
+        targetEpisode.id
+      );
+      // One row per episode, with episodeId/quality set — the same shape placeFile's single-episode
+      // path uses, and what duplicates.ts's repeated-import grouping keys on. A single season-level
+      // summary row here (as this used to write) collapsed every season-pack import of this series
+      // to the same "media item, no episode/sub-item" key, so importing two different seasons looked
+      // like one item repeatedly re-imported. A multi-episode file gets one history row per episode
+      // it actually covers, same reasoning.
+      await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
+        item.id,
+        JSON.stringify({ fileLabel, destPath: dest, episodeId: targetEpisode.id, subItemId: null, quality: quality ?? null })
+      );
+    }
+    importedCount += targetEpisodes.length;
   }
 
   if (importedCount === 0) {
@@ -1190,8 +1239,20 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
             .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND season_number = ? AND has_file = 1 AND file_path IS NOT NULL")
             .all(item.id, onlySeasonNumber)
         : db.prepare("SELECT * FROM episodes WHERE media_item_id = ? AND has_file = 1 AND file_path IS NOT NULL").all(item.id))) as any[];
+      // Group by file_path first — a multi-episode release (e.g. "S01E01-E02.mkv") writes the
+      // same file_path to every episode row it covers, and moving each row independently would
+      // try to move the same already-relocated physical file a second time.
+      const fileGroups = new Map<string, any[]>();
       for (const epRow of episodes) {
-        const ext = path.extname(epRow.file_path);
+        const key = path.resolve(epRow.file_path);
+        if (!fileGroups.has(key)) fileGroups.set(key, []);
+        fileGroups.get(key)!.push(epRow);
+      }
+      for (const group of fileGroups.values()) {
+        group.sort((a, b) => a.episode_number - b.episode_number);
+        const primary = group[0];
+        const lastEpisodeNumber = group[group.length - 1].episode_number;
+        const ext = path.extname(primary.file_path);
         const absoluteEpisode = Number(
           (
             (await db
@@ -1199,28 +1260,37 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
                 `SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ? AND season_number > 0
                AND (season_number < ? OR (season_number = ? AND episode_number <= ?))`
               )
-              .get(item.id, epRow.season_number, epRow.season_number, epRow.episode_number)) as { c: number }
+              .get(item.id, primary.season_number, primary.season_number, primary.episode_number)) as { c: number }
           ).c
         );
         const segments = renderPathSegments(template, {
           parentTitle: item.title,
-          season: epRow.season_number,
-          episode: epRow.episode_number,
+          season: primary.season_number,
+          episode:
+            group.length > 1
+              ? `${String(primary.episode_number).padStart(2, "0")}-${String(lastEpisodeNumber).padStart(2, "0")}`
+              : primary.episode_number,
           absoluteEpisode,
-          airDate: epRow.air_date ?? "",
-          episodeTitle: epRow.title ?? "",
+          airDate: primary.air_date ?? "",
+          episodeTitle: primary.title ?? "",
           year: item.year ?? "",
-          quality: epRow.quality ?? "",
+          quality: primary.quality ?? "",
         });
-        const { destPath } = resolveDest(rootFolder.path, segments, ext, epRow.file_path, namingEnabled);
-        if (path.resolve(destPath) === path.resolve(epRow.file_path)) continue;
+        const { destPath } = resolveDest(rootFolder.path, segments, ext, primary.file_path, namingEnabled);
+        if (path.resolve(destPath) === path.resolve(primary.file_path)) continue;
         if (!dryRun) {
-          const oldDir = path.dirname(epRow.file_path);
-          await moveFile(epRow.file_path, destPath, true);
+          const oldDir = path.dirname(primary.file_path);
+          await moveFile(primary.file_path, destPath, true);
           removeEmptyParents(oldDir, rootFolder.path);
-          await db.prepare("UPDATE episodes SET file_path = ? WHERE id = ?").run(destPath, epRow.id);
+          for (const epRow of group) {
+            await db.prepare("UPDATE episodes SET file_path = ? WHERE id = ?").run(destPath, epRow.id);
+          }
         }
-        result.renamed.push({ title: `${item.title} — ${epRow.season_number}x${epRow.episode_number}`, from: epRow.file_path, to: destPath });
+        const label =
+          group.length > 1
+            ? `${item.title} — ${primary.season_number}x${primary.episode_number}-${lastEpisodeNumber}`
+            : `${item.title} — ${primary.season_number}x${primary.episode_number}`;
+        result.renamed.push({ title: label, from: primary.file_path, to: destPath });
       }
     } else if (typeConfig.shape === "collection" && typeConfig.multiFilePerChild) {
       const count = (await db.prepare("SELECT COUNT(*) AS c FROM sub_items WHERE media_item_id = ? AND has_file = 1").get(item.id)) as {

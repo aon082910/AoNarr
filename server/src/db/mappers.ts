@@ -30,6 +30,7 @@ export function mediaItemFromRow(row: any) {
     addedAt: row.added_at,
     mediaInfo: row.media_info ? JSON.parse(row.media_info) : null,
     contentRating: row.content_rating,
+    genres: row.genres ? JSON.parse(row.genres) : [],
     groupId: row.group_id,
     legacyShape: row.legacy_shape,
     extraMetadata: row.extra_metadata ? JSON.parse(row.extra_metadata) : {},

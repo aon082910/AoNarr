@@ -41,6 +41,7 @@ export interface MetadataSearchResult {
   studio?: string | null;
   performers?: string[];
   contentRating?: string | null;
+  genres?: string[];
 }
 
 export interface AudioStreamInfo {
@@ -104,6 +105,7 @@ export interface MediaItem {
   addedAt: string;
   mediaInfo: MediaInfo | null;
   contentRating: string | null;
+  genres: string[];
   /** Episode/album-level download progress for "episodic"/"collection"-shape types (series, anime,
    * music, books, ...) — absent for "single"-shape types (movies, ROMs, ...), which have no
    * children and whose own hasFile is the whole picture. */
@@ -453,6 +455,7 @@ export interface SavedLibraryView {
     statusFilter: string;
     tagFilter: number | "all";
     contentRatingFilter: string;
+    genreFilter?: string;
     viewMode: string;
     posterSize: string;
     listColumns: string[];

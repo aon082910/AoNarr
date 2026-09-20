@@ -106,6 +106,45 @@ export async function startRestoreFromRecycleBin(id: number): Promise<void> {
   })();
 }
 
+/** Restores every entry of the given media type (or every entry, if omitted) — the Recycle Bin
+ * page's per-section "Restore All". Skips entries already restoring (same guard
+ * startRestoreFromRecycleBin itself enforces) rather than failing the whole batch over one, and
+ * kicks each restore off via the same fire-and-forget path so a many-GB file doesn't hold this up. */
+export async function restoreAllFromRecycleBin(mediaType?: string): Promise<{ started: number; skipped: number }> {
+  const rows = (await (mediaType
+    ? db.prepare("SELECT id FROM recycle_bin WHERE media_type = ? AND restoring = 0").all(mediaType)
+    : db.prepare("SELECT id FROM recycle_bin WHERE restoring = 0").all())) as { id: number }[];
+  let started = 0;
+  for (const row of rows) {
+    try {
+      await startRestoreFromRecycleBin(row.id);
+      started++;
+    } catch (err) {
+      log.warn(`[recycleBin] restore-all skipped entry ${row.id}:`, (err as Error).message);
+    }
+  }
+  return { started, skipped: rows.length - started };
+}
+
+/** Permanently purges every entry of the given media type (or every entry, if omitted) — the
+ * Recycle Bin page's per-section "Delete All". Skips (not fails) any entry currently restoring,
+ * matching purgeRecycleBinEntry's own guard, and tolerates individual failures the same way. */
+export async function purgeAllRecycleBinEntries(mediaType?: string): Promise<{ purged: number; skipped: number }> {
+  const rows = (await (mediaType
+    ? db.prepare("SELECT id FROM recycle_bin WHERE media_type = ?").all(mediaType)
+    : db.prepare("SELECT id FROM recycle_bin").all())) as { id: number }[];
+  let purged = 0;
+  for (const row of rows) {
+    try {
+      await purgeRecycleBinEntry(row.id);
+      purged++;
+    } catch (err) {
+      log.warn(`[recycleBin] purge-all skipped entry ${row.id}:`, (err as Error).message);
+    }
+  }
+  return { purged, skipped: rows.length - purged };
+}
+
 export async function purgeRecycleBinEntry(id: number): Promise<void> {
   const row = (await db.prepare("SELECT * FROM recycle_bin WHERE id = ?").get(id)) as { recycle_path: string; restoring: number } | undefined;
   if (!row) return;

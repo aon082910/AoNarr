@@ -57,6 +57,12 @@ export interface MetadataSearchResult {
    * left null rather than guessed at, same "unranked stays unblocked" philosophy as the rest of that
    * module. Only populated by the by-id detail lookups; list/search endpoints don't carry it. */
   contentRating?: string | null;
+  /** Multi-valued, unlike every other field on this interface — TMDB movie/series by-id detail
+   * responses and RAWG's search+detail responses already include a full genre list in the same
+   * object this interface's other fields already come from, no extra API call needed. Not
+   * populated by every provider (AniList/IGDB/TVDB would each need their own field-list/endpoint
+   * addition, left for later). */
+  genres?: string[];
 }
 
 export interface MetadataEpisode {
@@ -208,6 +214,7 @@ export async function fetchMovieByTmdbId(tmdbId: string): Promise<MetadataSearch
     physicalReleaseDate: releaseDates.physicalReleaseDate,
     status: r.status || null,
     contentRating: releaseDates.contentRating,
+    genres: Array.isArray(r.genres) ? r.genres.map((g: any) => g.name).filter(Boolean) : [],
   };
 }
 
@@ -244,6 +251,7 @@ export async function fetchSeriesByTmdbId(tmdbId: string): Promise<MetadataSearc
     runtimeMinutes: Array.isArray(r.episode_run_time) && r.episode_run_time.length > 0 ? r.episode_run_time[0] : null,
     status: r.status || null,
     contentRating,
+    genres: Array.isArray(r.genres) ? r.genres.map((g: any) => g.name).filter(Boolean) : [],
   };
 }
 
@@ -1306,6 +1314,7 @@ async function searchRomsRawg(query: string): Promise<MetadataSearchResult[]> {
     // reliable of the two.
     rating: typeof g.metacritic === "number" && g.metacritic > 0 ? g.metacritic / 10 : null,
     backdropUrl: g.short_screenshots?.[1]?.image || null,
+    genres: Array.isArray(g.genres) ? g.genres.map((genre: any) => genre.name).filter(Boolean) : [],
   }));
 }
 
@@ -2221,6 +2230,7 @@ export async function fetchByExternalId(type: MediaType, provider: string, id: s
         externalIds: { rawg: String(g.id) },
         rating: typeof g.metacritic === "number" && g.metacritic > 0 ? g.metacritic / 10 : null,
         backdropUrl: g.short_screenshots?.[1]?.image || null,
+        genres: Array.isArray(g.genres) ? g.genres.map((genre: any) => genre.name).filter(Boolean) : [],
       };
     }
 

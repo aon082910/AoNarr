@@ -59,6 +59,24 @@ export default function RecycleBin() {
     load();
   }
 
+  async function restoreAllOfType(type: string) {
+    await api.post(`/recycle-bin/restore-all?mediaType=${encodeURIComponent(type)}`, {});
+    load();
+  }
+
+  async function purgeAllOfType(type: string, label: string, count: number) {
+    if (
+      !(await confirmDialog({
+        title: "Delete all forever",
+        message: `Permanently delete all ${count} recycled ${label} item(s)? This cannot be undone.`,
+        danger: true,
+      }))
+    )
+      return;
+    await api.del(`/recycle-bin/purge-all?mediaType=${encodeURIComponent(type)}`);
+    load();
+  }
+
   const byType = entries.reduce<Record<string, RecycleBinEntry[]>>((acc, e) => {
     (acc[e.mediaType] ??= []).push(e);
     return acc;
@@ -132,7 +150,7 @@ export default function RecycleBin() {
         const isOpen = openType === type;
         return (
           <div key={type} style={{ marginBottom: 12 }}>
-            <h2>
+            <h2 style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <button
                 type="button"
                 onClick={() => setOpenType(isOpen ? null : type)}
@@ -141,6 +159,27 @@ export default function RecycleBin() {
               >
                 {isOpen ? "▾" : "▸"} {label} ({items.length})
               </button>
+              <span style={{ display: "flex", gap: 6 }}>
+                <button
+                  type="button"
+                  className="icon-button"
+                  onClick={() => restoreAllOfType(type)}
+                  disabled={items.every((e) => e.restoring)}
+                  title="Restore all"
+                  aria-label={`Restore all ${label}`}
+                >
+                  <RotateCcwIcon />
+                </button>
+                <button
+                  type="button"
+                  className="icon-button danger"
+                  onClick={() => purgeAllOfType(type, label, items.length)}
+                  title="Delete all forever"
+                  aria-label={`Delete all ${label} forever`}
+                >
+                  <TrashIcon />
+                </button>
+              </span>
             </h2>
             {isOpen && <RecycledFilesTable items={items} onRestore={restore} onPurge={purge} />}
           </div>

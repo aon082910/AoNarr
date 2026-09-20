@@ -3,6 +3,52 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 338 — Multi-episode files, genres, toolbar fix, a real profile page, and a popup audit
+
+Nine more requests, three of which referenced Round 337 work as allegedly still broken. Two of
+those turned out to be a stale browser tab still running the pre-Round-337 JS bundle from before
+the container was last updated (confirmed by asking exactly what happened on click — "still plain
+text, not a button" is the fingerprint of the old markup, not a code defect); the third was an
+already-understood, by-design behavior (bulk-imported ROM/Adult/Course items sitting in
+"Ungrouped" until matched) that just needed better in-app visibility, not a behavior change.
+
+- **Multi-episode files** ("S01E01-E02", Sonarr-style) now import correctly. The filename parser
+  already extracted every episode number in a range/chain — the actual bug was three separate
+  downstream consumers (the directory scan, the queue importer's single-file path, and its
+  season-pack path) each keeping only the first one. A single multi-episode file now marks every
+  episode it covers as Downloaded, with the same file path on each row, and "Organize & Rename" no
+  longer double-moves a file shared by two episode rows (a second bug found while fixing the first).
+- **Genres** are now a first-class field: auto-pulled from TMDB (movie/series) and RAWG (ROMs) with
+  no extra API calls needed (both already returned a genre list this codebase was previously
+  discarding), shown as a pill on the backdrop, and filterable/sortable/searchable on the library
+  page — typing a genre name into the library search box now finds it, same as a title match would.
+- **Fixed the library toolbar wrapping onto two rows** on real desktop widths, not just narrow
+  windows — confirmed live via the page's own layout measurements before attempting a fix. The
+  accumulated width of every dropdown this page can show genuinely doesn't fit one row once a
+  library has tags, content ratings, and now genres too. Consolidated Status/Tags/Content
+  rating/Genre/System into one "Filters" popup (the same pattern already used for Poster info/
+  Columns), which reliably keeps the row on one line instead of trying to force-fit an
+  ever-growing set of always-visible selects.
+- **The Account page is now an actual full-page profile**, not a settings-form box: a banner,
+  a large avatar overlapping it, the display name/username/bio front and center, and Profile/
+  Security tabs — defaults to a read-only profile view with an Edit-profile toggle for the form
+  fields, instead of always showing the edit form.
+- **Recycle Bin gained Restore All / Delete All**, scoped to each media type's own section (an
+  admin restoring Movies doesn't also restore TV Shows) rather than one global action.
+- **Audited every settings popup for missing Save/Test/Delete affordances.** Root folders (and
+  ~15 similar tiles) already auto-save on every change but never confirmed it — added a save
+  toast. Fixed the real gaps: Indexers and Import Lists had no way to edit an existing entry at all
+  (delete-and-recreate was the only fix for a typo'd URL); Quality Profiles' Name/Allowed
+  qualities/Cutoff and Custom Formats' Name/Conditions were hardcoded read-only even though their
+  save routes already accepted edits; Subtitle Providers had no edit route at all; Media Server
+  Sync had no way to verify a URL/token actually work before something depends on them silently
+  failing later — each of these now has the affordance it was missing.
+- Clarified (not changed): ROMs/Adult/Course items only ever join a System/Site group once a
+  metadata match succeeds — a bulk import that's never been individually refreshed/matched stays
+  in "Ungrouped" by design. Added a dismissible banner at the top of the library page pointing
+  admins at Refresh/Match All Providers (or Convert to Episodic, for old-format Course/Adult items)
+  instead of leaving a large silent bucket with no obvious next step.
+
 ## Round 337 — CI fix, Jump-to-letter fix, content ratings, backups, profile page, and UI polish
 
 Ten more requests plus a recurring CI failure. Two items turned out smaller than they looked once

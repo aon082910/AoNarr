@@ -2,7 +2,13 @@ import { Router } from "express";
 import { db } from "../db/index.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { purgeRecycleBinEntry, startRestoreFromRecycleBin } from "../services/recycleBin.js";
+import {
+  purgeAllRecycleBinEntries,
+  purgeRecycleBinEntry,
+  restoreAllFromRecycleBin,
+  startRestoreFromRecycleBin,
+} from "../services/recycleBin.js";
+import { auditActor, logAuditEvent } from "../services/audit.js";
 
 export const recycleBinRouter = Router();
 recycleBinRouter.use(requireAdmin);
@@ -25,6 +31,35 @@ recycleBinRouter.get(
         restoreError: r.restore_error,
       }))
     );
+  })
+);
+
+/** Restores every not-already-restoring entry, optionally scoped to one media type — the Recycle
+ * Bin page's per-section "Restore All". Registered ahead of the parameterized `/:id/restore` and
+ * `/:id` routes below so "restore-all"/"purge-all" can't be captured as an `:id`. */
+recycleBinRouter.post(
+  "/restore-all",
+  asyncHandler(async (req, res) => {
+    const mediaType = typeof req.query.mediaType === "string" ? req.query.mediaType : undefined;
+    const result = await restoreAllFromRecycleBin(mediaType);
+    if (result.started > 0) {
+      const actor = auditActor(req);
+      logAuditEvent(actor.userId, actor.username, "recycle_bin_restore_all", `${result.started} item(s)${mediaType ? ` (${mediaType})` : ""}`);
+    }
+    res.json(result);
+  })
+);
+
+recycleBinRouter.delete(
+  "/purge-all",
+  asyncHandler(async (req, res) => {
+    const mediaType = typeof req.query.mediaType === "string" ? req.query.mediaType : undefined;
+    const result = await purgeAllRecycleBinEntries(mediaType);
+    if (result.purged > 0) {
+      const actor = auditActor(req);
+      logAuditEvent(actor.userId, actor.username, "recycle_bin_purge_all", `${result.purged} item(s)${mediaType ? ` (${mediaType})` : ""}`);
+    }
+    res.json(result);
   })
 );
 

@@ -217,7 +217,7 @@ mediaRouter.post(
 mediaRouter.get(
   "/",
   asyncHandler(async (req, res) => {
-    const { type, tagId, groupId, systemGroupId, sort, status, contentRating, q } = req.query as {
+    const { type, tagId, groupId, systemGroupId, sort, status, contentRating, genre, q } = req.query as {
       type?: MediaType;
       tagId?: string;
       groupId?: string;
@@ -225,6 +225,7 @@ mediaRouter.get(
       sort?: string;
       status?: string;
       contentRating?: string;
+      genre?: string;
       q?: string;
     };
     const allowedTypes = allowedTypesFor(req);
@@ -240,6 +241,7 @@ mediaRouter.get(
       systemGroupId,
       status,
       contentRating,
+      genre,
       allowedTypes,
       maxContentRating: req.auth?.user?.maxContentRating,
       q,
@@ -281,7 +283,7 @@ mediaRouter.get(
     const { type, tagId, groupId, systemGroupId } = req.query as { type?: MediaType; tagId?: string; groupId?: string; systemGroupId?: string };
     const allowedTypes = allowedTypesFor(req);
     if (allowedTypes && type && !allowedTypes.includes(type)) {
-      res.json({ total: 0, haveCount: 0, missingCount: 0, childCount: 0, childHaveCount: 0, contentRatings: [], legacyCount: 0 });
+      res.json({ total: 0, haveCount: 0, missingCount: 0, childCount: 0, childHaveCount: 0, contentRatings: [], genres: [], legacyCount: 0 });
       return;
     }
 
@@ -294,7 +296,7 @@ mediaRouter.get(
       maxContentRating: req.auth?.user?.maxContentRating,
     });
     if (where === null) {
-      res.json({ total: 0, haveCount: 0, missingCount: 0, childCount: 0, childHaveCount: 0, contentRatings: [], legacyCount: 0 });
+      res.json({ total: 0, haveCount: 0, missingCount: 0, childCount: 0, childHaveCount: 0, contentRatings: [], genres: [], legacyCount: 0 });
       return;
     }
 
@@ -304,6 +306,22 @@ mediaRouter.get(
     const ratingRows = (await db
       .prepare(`SELECT DISTINCT m.content_rating AS rating FROM ${fromClause} WHERE ${where} AND m.content_rating IS NOT NULL ORDER BY m.content_rating`)
       .all(...params)) as { rating: string }[];
+    // genres is a JSON-array column, not a scalar — SELECT DISTINCT would return whole
+    // combinations ("Action,Comedy" as one row) instead of individual facets, so this fetches
+    // every matching row's own array and flattens/dedupes it in application code instead.
+    const genreRows = (await db.prepare(`SELECT m.genres AS genres FROM ${fromClause} WHERE ${where} AND m.genres IS NOT NULL`).all(...params)) as {
+      genres: string;
+    }[];
+    const genreSet = new Set<string>();
+    for (const row of genreRows) {
+      try {
+        const parsed = JSON.parse(row.genres);
+        if (Array.isArray(parsed)) parsed.forEach((g) => typeof g === "string" && genreSet.add(g));
+      } catch {
+        // malformed JSON on some pre-existing row — skip rather than fail the whole stats request
+      }
+    }
+    const genres = Array.from(genreSet).sort();
 
     let childCount = 0;
     let childHaveCount = 0;
@@ -340,6 +358,7 @@ mediaRouter.get(
       childCount,
       childHaveCount,
       contentRatings: ratingRows.map((r) => r.rating),
+      genres,
       legacyCount,
     });
   })
@@ -358,13 +377,14 @@ mediaRouter.get(
 mediaRouter.get(
   "/title-index",
   asyncHandler(async (req, res) => {
-    const { type, tagId, groupId, systemGroupId, status, contentRating, q } = req.query as {
+    const { type, tagId, groupId, systemGroupId, status, contentRating, genre, q } = req.query as {
       type?: MediaType;
       tagId?: string;
       groupId?: string;
       systemGroupId?: string;
       status?: string;
       contentRating?: string;
+      genre?: string;
       q?: string;
     };
     const allowedTypes = allowedTypesFor(req);
@@ -380,6 +400,7 @@ mediaRouter.get(
       systemGroupId,
       status,
       contentRating,
+      genre,
       allowedTypes,
       maxContentRating: req.auth?.user?.maxContentRating,
       q,

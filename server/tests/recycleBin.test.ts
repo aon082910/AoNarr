@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -143,6 +143,91 @@ describe("recycleFile / restore / purge — directories (Music albums)", () => {
     await purgeRecycleBinEntry(row.id);
 
     expect(fs.existsSync(row.recycle_path)).toBe(false);
+  });
+});
+
+describe("restoreAllFromRecycleBin / purgeAllRecycleBinEntries", () => {
+  // Earlier describe blocks in this file deliberately leave some entries un-restored/un-purged
+  // (to assert their leftover state), which would otherwise inflate these tests' exact counts —
+  // start every test in this block from a clean table.
+  beforeEach(async () => {
+    const { purgeAllRecycleBinEntries } = await import("../src/services/recycleBin.js");
+    await purgeAllRecycleBinEntries();
+  });
+
+  async function recycleTestFile(mediaType: string, title: string): Promise<{ src: string; id: number }> {
+    const { recycleFile } = await import("../src/services/recycleBin.js");
+    const src = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-src-")), `${title}.mkv`);
+    fs.writeFileSync(src, "x");
+    await recycleFile(src, mediaType, title, null);
+    const row = (await db.prepare("SELECT * FROM recycle_bin WHERE original_path = ?").get(src)) as any;
+    return { src, id: row.id };
+  }
+
+  it("restores every entry of the given media type and leaves other types alone", async () => {
+    const { restoreAllFromRecycleBin } = await import("../src/services/recycleBin.js");
+    const movie1 = await recycleTestFile("movie", "Restore All Movie 1");
+    const movie2 = await recycleTestFile("movie", "Restore All Movie 2");
+    const series1 = await recycleTestFile("series", "Restore All Series 1");
+
+    const result = await restoreAllFromRecycleBin("movie");
+    await new Promise((r) => setTimeout(r, 50)); // restores run detached
+
+    expect(result).toMatchObject({ started: 2, skipped: 0 });
+    expect(fs.existsSync(movie1.src)).toBe(true);
+    expect(fs.existsSync(movie2.src)).toBe(true);
+    expect(fs.existsSync(series1.src)).toBe(false); // untouched — different media type
+    expect(await db.prepare("SELECT id FROM recycle_bin WHERE id = ?").get(series1.id)).toBeDefined();
+  });
+
+  it("restore-all skips an entry already restoring instead of failing the whole batch", async () => {
+    const { restoreAllFromRecycleBin, startRestoreFromRecycleBin } = await import("../src/services/recycleBin.js");
+    const alreadyRestoring = await recycleTestFile("movie", "Already Restoring");
+    const normal = await recycleTestFile("movie", "Normal Restore");
+    await startRestoreFromRecycleBin(alreadyRestoring.id); // marks it restoring = 1
+
+    const result = await restoreAllFromRecycleBin("movie");
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(result.started).toBe(1);
+    expect(fs.existsSync(normal.src)).toBe(true);
+  });
+
+  it("purges every entry of the given media type and leaves other types alone", async () => {
+    const { purgeAllRecycleBinEntries } = await import("../src/services/recycleBin.js");
+    const movie1 = await recycleTestFile("movie", "Purge All Movie 1");
+    const series1 = await recycleTestFile("series", "Purge All Series 1");
+    const row1 = (await db.prepare("SELECT recycle_path FROM recycle_bin WHERE id = ?").get(movie1.id)) as any;
+
+    const result = await purgeAllRecycleBinEntries("movie");
+
+    expect(result).toMatchObject({ purged: 1, skipped: 0 });
+    expect(fs.existsSync(row1.recycle_path)).toBe(false);
+    expect(await db.prepare("SELECT id FROM recycle_bin WHERE id = ?").get(movie1.id)).toBeUndefined();
+    expect(await db.prepare("SELECT id FROM recycle_bin WHERE id = ?").get(series1.id)).toBeDefined();
+  });
+
+  it("purge-all skips (not fails) an entry currently restoring", async () => {
+    const { purgeAllRecycleBinEntries, startRestoreFromRecycleBin } = await import("../src/services/recycleBin.js");
+    const restoring = await recycleTestFile("movie", "Restoring During Purge All");
+    await startRestoreFromRecycleBin(restoring.id);
+
+    const result = await purgeAllRecycleBinEntries("movie");
+    await new Promise((r) => setTimeout(r, 50)); // let the real restore finish so it doesn't leak into later tests
+
+    expect(result.skipped).toBe(1);
+  });
+
+  it("with no mediaType filter, restores/purges across every type", async () => {
+    const { purgeAllRecycleBinEntries } = await import("../src/services/recycleBin.js");
+    const movie1 = await recycleTestFile("movie", "Purge All Any Movie");
+    const series1 = await recycleTestFile("series", "Purge All Any Series");
+
+    const result = await purgeAllRecycleBinEntries();
+
+    expect(result.purged).toBeGreaterThanOrEqual(2);
+    expect(await db.prepare("SELECT id FROM recycle_bin WHERE id = ?").get(movie1.id)).toBeUndefined();
+    expect(await db.prepare("SELECT id FROM recycle_bin WHERE id = ?").get(series1.id)).toBeUndefined();
   });
 });
 

@@ -200,23 +200,35 @@ describe("cleanRomTitle", () => {
 
 describe("detectSeasonEpisode", () => {
   it("reads season/episode straight from an S01E01-style filename", () => {
-    expect(detectSeasonEpisode("Show", "Show.S02E05.1080p")).toEqual({ season: 2, episode: 5 });
+    expect(detectSeasonEpisode("Show", "Show.S02E05.1080p")).toEqual({ season: 2, episodes: [5] });
   });
 
   it("reads the 1x05 format", () => {
-    expect(detectSeasonEpisode("Show", "Show.1x05")).toEqual({ season: 1, episode: 5 });
+    expect(detectSeasonEpisode("Show", "Show.1x05")).toEqual({ season: 1, episodes: [5] });
   });
 
   it("falls back to a 'Season NN' parent folder plus a bare E-marker filename", () => {
-    expect(detectSeasonEpisode("Season 02", "E03")).toEqual({ season: 2, episode: 3 });
+    expect(detectSeasonEpisode("Season 02", "E03")).toEqual({ season: 2, episodes: [3] });
   });
 
   it("accepts a compact 'SNN' folder name too", () => {
-    expect(detectSeasonEpisode("S03", "E07")).toEqual({ season: 3, episode: 7 });
+    expect(detectSeasonEpisode("S03", "E07")).toEqual({ season: 3, episodes: [7] });
   });
 
-  it("returns nulls when no season/episode can be determined at all", () => {
-    expect(detectSeasonEpisode("Random Folder", "randomfile")).toEqual({ season: null, episode: null });
+  it("returns nulls/empty when no season/episode can be determined at all", () => {
+    expect(detectSeasonEpisode("Random Folder", "randomfile")).toEqual({ season: null, episodes: [] });
+  });
+
+  it("expands a Sonarr-style multi-episode range from the filename (S01E01-E02)", () => {
+    expect(detectSeasonEpisode("Show", "Show.S01E01-E02.1080p")).toEqual({ season: 1, episodes: [1, 2] });
+  });
+
+  it("expands a chained multi-episode filename (S01E01E02E03)", () => {
+    expect(detectSeasonEpisode("Show", "Show.S01E01E02E03.1080p")).toEqual({ season: 1, episodes: [1, 2, 3] });
+  });
+
+  it("expands a multi-episode range in a bare season-folder filename (E01-E02)", () => {
+    expect(detectSeasonEpisode("Season 01", "E01-E02")).toEqual({ season: 1, episodes: [1, 2] });
   });
 });
 
@@ -398,6 +410,25 @@ describe("scanAndImportLibrary — series (episodic shape)", () => {
 
     const show = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(showId)) as any;
     expect(show.has_file).toBe(1);
+  });
+
+  it("writes a single multi-episode file (S01E01-E02) to both matching episode rows", async () => {
+    const folder = await insertRootFolder("series");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('series','Show','show',1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,1,'Ep1',1,0)`).run(showId);
+    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,2,'Ep2',1,0)`).run(showId);
+    const filePath = writeFile(path.join(folder.path, "Show", "Season 01"), "Show.S01E01-E02.mkv");
+
+    const result = await scanAndImportLibrary("series");
+
+    expect(result.matched).toBe(2);
+    const episodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ? ORDER BY episode_number").all(showId)) as any[];
+    expect(episodes).toHaveLength(2);
+    expect(episodes[0]).toMatchObject({ episode_number: 1, has_file: 1, file_path: filePath });
+    expect(episodes[1]).toMatchObject({ episode_number: 2, has_file: 1, file_path: filePath });
   });
 });
 
