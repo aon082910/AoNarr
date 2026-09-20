@@ -11,12 +11,14 @@ const COLLECTION_RELEASE_LABELS: Record<string, string> = {
   manga: "Chapter release",
   video: "New video",
   course: "New lesson",
+  podcast: "New episode",
 };
 
 const SINGLE_RELEASE_LABELS: Record<string, string> = {
   movie: "Movie release",
   rom: "Game release",
   adult: "Release",
+  ppv: "Movie release",
 };
 
 export function describeCalendarEntry(entry: {

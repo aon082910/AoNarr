@@ -5,7 +5,7 @@ import path from "node:path";
 import { db } from "../db/index.js";
 import { nowExpr } from "../db/asyncDb.js";
 import { config } from "../config.js";
-import { mediaItemFromRow, queueItemFromRow, rootFolderFromRow } from "../db/mappers.js";
+import { decryptIfSet, mediaItemFromRow, queueItemFromRow, rootFolderFromRow } from "../db/mappers.js";
 import { notifyImported, notifyUpgraded } from "./notifications.js";
 import { writeNfoSidecar } from "./metadataExport.js";
 import { writeAudioTags } from "./audioTagWriter.js";
@@ -110,6 +110,7 @@ async function tryDownloadSubtitle(videoPath: string, mediaItemId: number): Prom
     | { type: string; api_key: string | null; languages: string; config: string | null }
     | undefined;
   if (!provider) return;
+  provider.api_key = decryptIfSet(provider.api_key);
   if (provider.type !== "custom" && !provider.api_key) return;
 
   const languages = provider.languages

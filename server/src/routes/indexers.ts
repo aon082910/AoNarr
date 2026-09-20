@@ -8,6 +8,7 @@ import { attachIndexerHealth } from "../services/indexerHealth.js";
 import { syncFromProwlarr } from "../services/prowlarrSync.js";
 import { syncFromJackett } from "../services/jackettSync.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
+import { encryptValue } from "../services/encryption.js";
 
 export const indexersRouter = Router();
 indexersRouter.use(requireAdmin);
@@ -55,7 +56,7 @@ indexersRouter.post(
         name: b.name,
         protocol: b.protocol,
         url: b.url,
-        apiKey: b.apiKey ?? null,
+        apiKey: b.apiKey ? encryptValue(b.apiKey) : null,
         categories: b.categories ?? "",
         mediaTypes: b.mediaTypes ?? "movie,series,artist,author",
         enabled: b.enabled === false ? 0 : 1,
@@ -89,14 +90,18 @@ indexersRouter.patch(
       queryLimitPerHour: "query_limit_per_hour",
     };
     const booleanKeys = new Set(["enabled", "useFlareSolverr"]);
+    const secretKeys = new Set(["apiKey"]);
     const sets: string[] = [];
     const values: any[] = [];
     for (const [key, col] of Object.entries(map)) {
       if (b[key] !== undefined) {
         sets.push(`${col} = ?`);
         // Postgres (like better-sqlite3) rejects binding a raw JS boolean to an INTEGER column —
-        // coerce true/false to 1/0 for the columns that are actually booleans.
-        values.push(booleanKeys.has(key) ? (b[key] ? 1 : 0) : b[key]);
+        // coerce true/false to 1/0 for the columns that are actually booleans. apiKey is encrypted
+        // at rest, same as the equivalent download_clients credential — see services/encryption.ts.
+        values.push(
+          booleanKeys.has(key) ? (b[key] ? 1 : 0) : secretKeys.has(key) && b[key] ? encryptValue(b[key]) : b[key]
+        );
       }
     }
     if (b.config !== undefined) {

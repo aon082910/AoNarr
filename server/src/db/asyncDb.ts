@@ -16,9 +16,10 @@
  *   to `$1, $2, ...` internally. Nothing about how call sites pass parameters needs to change.
  * - `.run()`'s result still exposes `.lastInsertRowid` on both backends. Postgres has no native
  *   equivalent (no ROWID), so every INSERT run through this interface has `RETURNING id` appended
- *   automatically (every one of this app's ~40 tables has an `id` primary key, so this is safe
- *   unconditionally) and `.lastInsertRowid` is populated from the returned row. The ~38 existing
- *   call sites that read `.lastInsertRowid` don't need to change at all beyond adding `await`.
+ *   automatically — except for the handful of tables with no plain `id` column (see
+ *   TABLES_WITHOUT_ID below: a key-value table and composite-primary-key junction tables) — and
+ *   `.lastInsertRowid` is populated from the returned row. The ~38 existing call sites that read
+ *   `.lastInsertRowid` don't need to change at all beyond adding `await`.
  * - Transactions are explicit BEGIN/COMMIT/ROLLBACK on both backends (not better-sqlite3's own
  *   `db.transaction()` sugar, which requires a synchronous callback and can't wrap `await`ed
  *   statements) — the one place where using this interface looks different from the current

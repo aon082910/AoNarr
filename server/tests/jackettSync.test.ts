@@ -4,12 +4,15 @@ import { setupTestDb } from "./helpers/testDb.js";
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let syncFromJackett: (typeof import("../src/services/jackettSync.js"))["syncFromJackett"];
 let setSetting: (typeof import("../src/services/settingsStore.js"))["setSetting"];
+let decryptValue: (typeof import("../src/services/encryption.js"))["decryptValue"];
+let isEncryptedValue: (typeof import("../src/services/encryption.js"))["isEncryptedValue"];
 
 beforeAll(async () => {
   // jackettSync.ts imports db/index.js directly — must load after setupTestDb() has set env vars.
   ({ db } = await setupTestDb());
   ({ syncFromJackett } = await import("../src/services/jackettSync.js"));
   ({ setSetting } = await import("../src/services/settingsStore.js"));
+  ({ decryptValue, isEncryptedValue } = await import("../src/services/encryption.js"));
   setSetting("jackettUrl", "http://jackett.local:9117");
   setSetting("jackettApiKey", "test-api-key");
 });
@@ -85,9 +88,12 @@ describe("syncFromJackett — success path", () => {
       name: "My Indexer",
       protocol: "torznab",
       url: "http://jackett.local:9117/api/v2.0/indexers/my%20indexer/results/torznab",
-      api_key: "test-api-key",
       enabled: 1,
     });
+    // api_key is encrypted at rest (see app.ts's reencryptLegacyCredentials doc comment) — the
+    // sync writes ciphertext, not the plaintext Jackett API key.
+    expect(isEncryptedValue(row.api_key)).toBe(true);
+    expect(decryptValue(row.api_key)).toBe("test-api-key");
   });
 
   it("updates the existing row on a re-sync instead of duplicating it", async () => {

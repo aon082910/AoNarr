@@ -6,14 +6,18 @@ import type { AsyncDb } from "./asyncDb.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * `schema.postgres.sql` is a mechanical translation of `schema.sql` (SQLite): the *only* two
- * substitutions needed were `INTEGER PRIMARY KEY AUTOINCREMENT` → `SERIAL PRIMARY KEY` and
- * `datetime('now')` → an explicit UTC-formatted-as-text equivalent (so `created_at`-style TEXT
+ * `schema.postgres.sql` is a mechanical translation of `schema.sql` (SQLite): the two substitutions
+ * needed at the CREATE TABLE level were `INTEGER PRIMARY KEY AUTOINCREMENT` → `SERIAL PRIMARY KEY`
+ * and `datetime('now')` → an explicit UTC-formatted-as-text equivalent (so `created_at`-style TEXT
  * columns hold the exact same string shape on both backends — application code that does
  * `new Date(row.created_at)` or string-compares two such columns doesn't need to know which
  * backend it's talking to). Every other construct in the schema (TEXT/INTEGER/REAL columns,
  * REFERENCES ... ON DELETE CASCADE/SET NULL, UNIQUE, composite PRIMARY KEY, CHECK) is standard
- * ANSI SQL and needed no translation — see DATABASE_MIGRATION.md for the fuller audit.
+ * ANSI SQL and needed no translation at the *syntax* level — see DATABASE_MIGRATION.md for the
+ * fuller audit. One of those "no translation needed" columns, `INTEGER`, still needed a *type*
+ * correction after the fact for a handful of real byte-count columns whose values exceed 32 bits —
+ * see TYPE_MIGRATIONS below; keep that in mind before assuming a new INTEGER column needs nothing
+ * further just because its syntax round-tripped cleanly.
  */
 const SCHEMA_SQL = fs.readFileSync(path.join(__dirname, "schema.postgres.sql"), "utf-8");
 

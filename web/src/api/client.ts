@@ -2,9 +2,10 @@ const BASE = "/api";
 const KEY_STORAGE = "aonarr_api_key";
 const TOKEN_STORAGE = "aonarr_session_token";
 
-/** Thrown on any non-2xx response; carries the HTTP status and parsed JSON body so callers can
- * branch on structured error data (e.g. a 409 duplicate-warning payload) instead of only a
- * message string. */
+/** Thrown on a non-2xx response other than 401 (which request()/downloadFile()/uploadRaw()/
+ * uploadFormFile() all special-case into a forced logout instead); carries the HTTP status and
+ * parsed JSON body so callers can branch on structured error data (e.g. a 409 duplicate-warning
+ * payload) instead of only a message string. */
 export class ApiError extends Error {
   status: number;
   body: any;
@@ -92,6 +93,11 @@ export async function downloadFile(path: string, suggestedFilename: string): Pro
   if (sessionToken) headers["X-Session-Token"] = sessionToken;
 
   const res = await fetch(`${BASE}${path}`, { headers });
+  if (res.status === 401) {
+    clearCredentials();
+    window.location.reload();
+    throw new Error("Unauthorized");
+  }
   if (!res.ok) throw new Error(`Download failed: ${res.status}`);
   const blob = await res.blob();
   const disposition = res.headers.get("Content-Disposition");
@@ -114,6 +120,11 @@ export async function uploadRaw(path: string, data: ArrayBuffer): Promise<unknow
   if (sessionToken) headers["X-Session-Token"] = sessionToken;
 
   const res = await fetch(`${BASE}${path}`, { method: "POST", headers, body: data });
+  if (res.status === 401) {
+    clearCredentials();
+    window.location.reload();
+    throw new Error("Unauthorized");
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `Upload failed: ${res.status}`);
@@ -135,6 +146,11 @@ export async function uploadFormFile<T>(path: string, file: File): Promise<T> {
   form.append("file", file);
 
   const res = await fetch(`${BASE}${path}`, { method: "POST", headers, body: form });
+  if (res.status === 401) {
+    clearCredentials();
+    window.location.reload();
+    throw new Error("Unauthorized");
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `Upload failed: ${res.status}`);

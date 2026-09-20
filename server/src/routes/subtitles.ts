@@ -1,9 +1,10 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
-import { subtitleProviderFromRow } from "../db/mappers.js";
+import { decryptIfSet, subtitleProviderFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { searchCustomSubtitles, searchSubtitles, type CustomSubtitleProviderConfig } from "../services/subtitleClient.js";
+import { encryptValue } from "../services/encryption.js";
 
 export const subtitlesRouter = Router();
 subtitlesRouter.use(requireAdmin);
@@ -31,7 +32,7 @@ subtitlesRouter.post(
         `INSERT INTO subtitle_providers (name, type, api_key, languages, enabled, config)
          VALUES (?, ?, ?, ?, ?, ?)`
       )
-      .run(b.name, type, b.apiKey ?? null, b.languages ?? "eng", b.enabled ?? 1, b.config ? JSON.stringify(b.config) : null);
+      .run(b.name, type, b.apiKey ? encryptValue(b.apiKey) : null, b.languages ?? "eng", b.enabled ?? 1, b.config ? JSON.stringify(b.config) : null);
     const row = await db.prepare("SELECT * FROM subtitle_providers WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(subtitleProviderFromRow(row));
   })
@@ -59,10 +60,11 @@ subtitlesRouter.get(
     if (!provider) throw new HttpError(400, "No enabled subtitle provider configured");
 
     const parsedConfig = provider.config ? JSON.parse(provider.config) : {};
+    const apiKey = decryptIfSet(provider.api_key);
     const results =
       provider.type === "custom"
-        ? await searchCustomSubtitles(parsedConfig as CustomSubtitleProviderConfig, provider.api_key, fileName, provider.languages)
-        : await searchSubtitles(provider.api_key, fileName, provider.languages, {
+        ? await searchCustomSubtitles(parsedConfig as CustomSubtitleProviderConfig, apiKey, fileName, provider.languages)
+        : await searchSubtitles(apiKey!, fileName, provider.languages, {
             hearingImpaired: parsedConfig.hearingImpaired,
             foreignPartsOnly: parsedConfig.foreignPartsOnly,
           });

@@ -1,6 +1,7 @@
 import { db } from "../db/index.js";
 import { getSetting } from "./settingsStore.js";
 import { log } from "./logger.js";
+import { encryptValue } from "./encryption.js";
 
 interface JackettIndexer {
   id: string;
@@ -37,6 +38,7 @@ export async function syncFromJackett(): Promise<{ synced: number; error?: strin
     try {
       const url = `${jackettUrl}/api/v2.0/indexers/${encodeURIComponent(idx.id)}/results/torznab`;
       const config = JSON.stringify({ jackettId: idx.id });
+      const encryptedApiKey = encryptValue(apiKey);
 
       const existing = (await db.prepare(`SELECT id FROM indexers WHERE config LIKE ?`).get(`%"jackettId":"${idx.id}"%`)) as
         | { id: number }
@@ -50,13 +52,13 @@ export async function syncFromJackett(): Promise<{ synced: number; error?: strin
         await db.prepare("UPDATE indexers SET name = ?, protocol = 'torznab', url = ?, api_key = ? WHERE id = ?").run(
           idx.name,
           url,
-          apiKey,
+          encryptedApiKey,
           existing.id
         );
       } else {
         await db
           .prepare("INSERT INTO indexers (name, protocol, url, api_key, enabled, config) VALUES (?, 'torznab', ?, ?, 1, ?)")
-          .run(idx.name, url, apiKey, config);
+          .run(idx.name, url, encryptedApiKey, config);
       }
       synced++;
     } catch (err) {

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { db } from "../db/index.js";
+import { decryptIfSet } from "../db/mappers.js";
 import { getMediaTypeConfig } from "./mediaTypes.js";
 import { downloadSubtitleForLanguage } from "./importer.js";
 import { log } from "./logger.js";
@@ -21,6 +22,7 @@ export async function rescanMissingSubtitles(): Promise<void> {
     | { type: string; api_key: string | null; languages: string; config: string | null }
     | undefined;
   if (!provider) return;
+  provider.api_key = decryptIfSet(provider.api_key);
   if (provider.type !== "custom" && !provider.api_key) return;
 
   const languages = provider.languages

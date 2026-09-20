@@ -4,12 +4,15 @@ import { setupTestDb } from "./helpers/testDb.js";
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let syncFromProwlarr: (typeof import("../src/services/prowlarrSync.js"))["syncFromProwlarr"];
 let setSetting: (typeof import("../src/services/settingsStore.js"))["setSetting"];
+let decryptValue: (typeof import("../src/services/encryption.js"))["decryptValue"];
+let isEncryptedValue: (typeof import("../src/services/encryption.js"))["isEncryptedValue"];
 
 beforeAll(async () => {
   // prowlarrSync.ts imports db/index.js directly — must load after setupTestDb() has set env vars.
   ({ db } = await setupTestDb());
   ({ syncFromProwlarr } = await import("../src/services/prowlarrSync.js"));
   ({ setSetting } = await import("../src/services/settingsStore.js"));
+  ({ decryptValue, isEncryptedValue } = await import("../src/services/encryption.js"));
   setSetting("prowlarrUrl", "http://prowlarr.local:9696");
   setSetting("prowlarrApiKey", "test-api-key");
 });
@@ -88,9 +91,12 @@ describe("syncFromProwlarr — success path", () => {
       name: "NZB Haven",
       protocol: "newznab",
       url: "http://prowlarr.local:9696/9001",
-      api_key: "test-api-key",
       enabled: 1,
     });
+    // api_key is encrypted at rest (see app.ts's reencryptLegacyCredentials doc comment) — the
+    // sync writes ciphertext, not the plaintext Prowlarr API key.
+    expect(isEncryptedValue(nzb.api_key)).toBe(true);
+    expect(decryptValue(nzb.api_key)).toBe("test-api-key");
     const [torrent] = await indexerRowsByPattern("9002");
     expect(torrent).toMatchObject({ name: "Torrent Town", protocol: "torznab", enabled: 0 });
   });

@@ -169,7 +169,9 @@ dropCheckConstraint(
      media_types TEXT NOT NULL DEFAULT 'movie,series,anime,artist,author,audiobook,comic,manga,rom,video,course,adult',
      enabled INTEGER NOT NULL DEFAULT 1,
      priority INTEGER NOT NULL DEFAULT 25,
-     config TEXT
+     config TEXT,
+     use_flaresolverr INTEGER NOT NULL DEFAULT 0,
+     query_limit_per_hour INTEGER
    )`
 );
 
@@ -199,6 +201,7 @@ repairDanglingReference(
      media_item_id INTEGER NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
      episode_id INTEGER REFERENCES episodes(id) ON DELETE CASCADE,
      sub_item_id INTEGER REFERENCES sub_items(id) ON DELETE CASCADE,
+     season_number INTEGER,
      title TEXT NOT NULL,
      indexer_id INTEGER REFERENCES indexers(id) ON DELETE SET NULL,
      download_client_id INTEGER REFERENCES download_clients(id) ON DELETE SET NULL,
@@ -208,7 +211,10 @@ repairDanglingReference(
      status TEXT NOT NULL DEFAULT 'queued',
      progress REAL NOT NULL DEFAULT 0,
      added_at TEXT NOT NULL DEFAULT (datetime('now')),
-     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+     last_progress_at TEXT,
+     download_path TEXT,
+     retry_count INTEGER NOT NULL DEFAULT 0
    )`
 );
 
@@ -250,8 +256,9 @@ function ensureUsersAdminRole() {
 ensureUsersAdminRole();
 
 // Every table with a `REFERENCES users(...)` foreign key needs the same dangling-reference repair
-// as queue/blocklist above, in case an earlier run of this migration (or the indexers/download_clients
-// ones) already rewrote their FK text to point at a throwaway `_pre_migration` table.
+// as queue above (and blocklist further below), in case an earlier run of this migration (or the
+// indexers/download_clients ones) already rewrote their FK text to point at a throwaway
+// `_pre_migration` table.
 repairDanglingReference(
   "user_library_access",
   `CREATE TABLE user_library_access (
@@ -340,7 +347,11 @@ dropCheckConstraint(
      last_synced_at TEXT,
      last_added_count INTEGER,
      last_error TEXT,
-     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+     created_at TEXT NOT NULL DEFAULT (datetime('now')),
+     require_review INTEGER NOT NULL DEFAULT 0,
+     min_rating REAL,
+     min_votes INTEGER,
+     exclude_genres TEXT
    )`
 );
 

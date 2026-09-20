@@ -5,7 +5,7 @@ import { decryptValue } from "../services/encryption.js";
 /** decryptValue() already returns a value unchanged if it isn't in the encrypted format, so this
  * is safe to call on a column that predates encryption-at-rest support for it — just needs the
  * null-guard decryptValue itself doesn't do. */
-function decryptIfSet(value: string | null): string | null {
+export function decryptIfSet(value: string | null): string | null {
   return value ? decryptValue(value) : value;
 }
 
@@ -72,7 +72,7 @@ export function episodeFromRow(row: any) {
     quality: row.quality,
     filePath: row.file_path,
     mediaInfo: row.media_info ? JSON.parse(row.media_info) : null,
-    sizeBytes: row.size_bytes,
+    sizeBytes: row.size_bytes == null ? null : Number(row.size_bytes),
     sceneSeasonNumber: row.scene_season_number,
     sceneEpisodeNumber: row.scene_episode_number,
     absoluteEpisodeNumber: row.absolute_episode_number,
@@ -105,7 +105,7 @@ export function subItemFromRow(row: any) {
     seriesName: row.series_name ?? null,
     seriesPosition: row.series_position ?? null,
     narrator: row.narrator ?? null,
-    sizeBytes: row.size_bytes,
+    sizeBytes: row.size_bytes == null ? null : Number(row.size_bytes),
   };
 }
 
@@ -115,7 +115,7 @@ export function indexerFromRow(row: any) {
     name: row.name,
     protocol: row.protocol,
     url: row.url,
-    apiKey: row.api_key,
+    apiKey: decryptIfSet(row.api_key),
     categories: row.categories,
     mediaTypes: row.media_types,
     enabled: row.enabled,
@@ -354,7 +354,7 @@ export function subtitleProviderFromRow(row: any) {
     id: row.id,
     name: row.name,
     type: row.type,
-    apiKey: row.api_key,
+    apiKey: decryptIfSet(row.api_key),
     languages: row.languages,
     enabled: row.enabled,
     config: row.config ? JSON.parse(row.config) : null,

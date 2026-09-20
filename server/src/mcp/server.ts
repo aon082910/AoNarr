@@ -154,7 +154,10 @@ export function createAoNarrMcpServer(): McpServer {
     },
     async (args) => {
       try {
-        return textResult(await callApi("POST", "/api/media", args));
+        // better-sqlite3 can't bind a raw JS boolean — coerce to 1/0 the same way set_monitored
+        // already does for this exact field before it reaches POST /api/media.
+        const { monitored, ...rest } = args;
+        return textResult(await callApi("POST", "/api/media", { ...rest, monitored: monitored ? 1 : 0 }));
       } catch (err) {
         return errorResult(err);
       }
@@ -234,6 +237,7 @@ export function createAoNarrMcpServer(): McpServer {
         episodeId: z.number().optional(),
         subItemId: z.number().optional(),
         size: z.number().optional(),
+        indexerId: z.number().optional().describe("From the search_releases result this release came from — lets a later blocklist action scope to that specific indexer"),
       },
     },
     async ({ mediaItemId, ...rest }) => {

@@ -3,6 +3,71 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 332 — infra sweep: db layer, migrations, MCP server, app bootstrap, web api client
+
+Closes out the codebase-wide bug-audit sweep by covering everything that wasn't routes/services/
+pages/components: `server/src/db/` (mappers, the SQLite client + migrations, Postgres schema),
+`server/src/middleware/`, `server/src/mcp/server.ts`, `server/src/app.ts`, and the frontend's
+`web/src/api/client.ts`/hooks/utils/context. 14 confirmed and fixed:
+
+- `episodeFromRow`/`subItemFromRow` returned `size_bytes` unconverted, unlike every other mapper in
+  the file — under the Postgres driver this column comes back as a string (BIGINT), so summing an
+  episode's size (`MediaDetail.tsx`'s season-size total) silently string-concatenated instead of
+  adding. Now wrapped in `Number(...)` like `mediaItemFromRow`/`queueItemFromRow` already are.
+- Three of `client.ts`'s CHECK-constraint-removal/dangling-reference-repair table rebuilds
+  (`indexers`, `queue`, `import_lists`) were missing columns that `ensureColumn` already adds to the
+  live table before the rebuild runs — on a database that still needed one of these migrations, the
+  rebuild's `INSERT ... SELECT` would fail outright ("no such column"), crashing startup with that
+  table stuck mid-migration. All three rebuilt `CREATE TABLE` statements now match the live schema.
+- A comment introducing the users-FK dangling-reference repairs claimed blocklist's repair was
+  "above" when it's actually further below — reworded so a future repair call doesn't get misplaced
+  relative to it.
+- The `add_media` MCP tool forwarded its `monitored` field as a raw JS boolean straight into
+  POST /api/media, which better-sqlite3 can't bind — every call failed with a 500. Now coerced to
+  1/0 first, matching `set_monitored`'s own existing convention for the identical field.
+- The `grab_release` MCP tool's schema had no `indexerId` field, so an MCP-grabbed release's queue
+  row always got `indexer_id = NULL` — a later "remove + blocklist" on that download couldn't scope
+  the block to the offending indexer the way a web-UI grab always can. Added the field.
+- `indexers.api_key` and `subtitle_providers.api_key` were the only two credential-shaped columns
+  never covered by encryption-at-rest (`download_clients`/`irc_feeds`/`ai_providers` all are) —
+  neither table's write path encrypted, neither table's real read paths decrypted. Added encryption
+  on every write (the two routes' POST/PATCH, and the Prowlarr/Jackett sync services' own raw
+  UPDATE/INSERT calls), decryption on every real read (the two mappers, plus the three raw-row
+  subtitle-search call sites in `subtitles.ts`/`importer.ts`/`subtitleRescan.ts` that don't go
+  through a mapper), and both tables to `app.ts`'s existing legacy-plaintext backfill sweep.
+- Two stale doc comments caught making a claim the same file's own code already contradicts:
+  `asyncDb.ts`'s header said appending `RETURNING id` was "safe unconditionally" right next to the
+  `TABLES_WITHOUT_ID` exception list it's actually gated on; `postgresSchema.ts`'s header said only
+  2 SQLite→Postgres substitutions were ever needed, ignoring its own `TYPE_MIGRATIONS` block (a
+  3rd: widening 4 byte-count columns to `BIGINT` after the literal `INTEGER` translation overflowed
+  on anything past ~2.1GB).
+- `web/src/api/client.ts`'s `downloadFile`/`uploadRaw`/`uploadFormFile` didn't special-case a 401
+  the way `request()` does — an expired session hitting a backup download/restore or CSV import
+  just showed a generic error toast instead of logging the user out, leaving stale credentials in
+  `localStorage` failing every subsequent call. Now all three force the same logout. `ApiError`'s
+  doc comment was also stale in the same area (claimed to cover every non-2xx response, but 401
+  throws a plain `Error` instead, before `ApiError` is ever constructed).
+- The calendar's per-type release labels (`describeCalendarEntry`) predate two media types added in
+  later rounds — `podcast` (collection-shape) and `ppv`/Sports PPV (single-shape) — so both silently
+  fell back to a generic "New release"/"Release" instead of a type-specific label. Added `podcast` →
+  "New episode" and `ppv` → "Movie release" (matching the near-identical `movie` type).
+
+Verified: `tsc --noEmit` clean on both projects; full server suite (89 files / 1381 tests) passes,
+with `jackettSync.test.ts`/`prowlarrSync.test.ts` updated to assert the now-encrypted `api_key`
+column instead of the old plaintext-equality check. Live-verified against the running server: created
+a real indexer and subtitle provider via the API with a plaintext key, confirmed the raw DB column is
+ciphertext while the API response and a direct `decryptValue()` call both correctly recover the
+original plaintext, and confirmed a PATCH re-encrypts a rotated key; hit the real `/subtitles/search`
+route and confirmed it reached OpenSubtitles' real API using the decrypted key (a genuine HTTP 403 on
+the fake test key, not a local decryption crash); drove the real Calendar page with a fixture podcast
+episode and a fixture PPV release and confirmed both new labels render; and reproduced the 401 fix
+live in the browser — deleted a valid session server-side, clicked "Download backup", and confirmed
+it now force-logs-out to the login screen with `localStorage` cleared, instead of the old silent error
+toast. `client.ts`'s three migration-rebuild fixes and the MCP `monitored`/`indexerId` fixes were
+verified by code review and the passing test suite rather than live-triggered, since exercising them
+needs either a pre-migration legacy database or a real MCP client, neither practical to fake safely
+against this shared persistent environment.
+
 ## Round 331 — per-client download type selection for debrid clients, real TorBox Usenet support
 
 New feature: Settings -> Download Clients now lets a **TorBox** client declare which release

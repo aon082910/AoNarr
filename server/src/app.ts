@@ -85,13 +85,13 @@ import { themeRouter } from "./routes/theme.js";
 import { friendLibrariesRouter } from "./routes/friendLibraries.js";
 
 /**
- * download_clients.password/.api_key, irc_feeds.sasl_pass, and ai_providers.api_key live in their
- * own dedicated tables rather than the generic `settings` table, so settingsStore.ts's own
- * self-healing re-encryption (loadSettingsCache) never sees them — an install that predates
- * encryption-at-rest support for these three tables has plaintext rows here. Same idea, scoped to
- * these instead: read, and if a value isn't already in our encrypted format, encrypt and write it
- * back, so a stolen/leaked DB backup can't recover it in plaintext from the next boot onward
- * without anyone re-entering it by hand.
+ * download_clients.password/.api_key, irc_feeds.sasl_pass, ai_providers.api_key, indexers.api_key,
+ * and subtitle_providers.api_key live in their own dedicated tables rather than the generic
+ * `settings` table, so settingsStore.ts's own self-healing re-encryption (loadSettingsCache) never
+ * sees them — an install that predates encryption-at-rest support for these tables has plaintext
+ * rows here. Same idea, scoped to these instead: read, and if a value isn't already in our
+ * encrypted format, encrypt and write it back, so a stolen/leaked DB backup can't recover it in
+ * plaintext from the next boot onward without anyone re-entering it by hand.
  */
 async function reencryptLegacyCredentials(): Promise<void> {
   let count = 0;
@@ -131,6 +131,25 @@ async function reencryptLegacyCredentials(): Promise<void> {
   for (const p of providers) {
     if (p.api_key && !isEncryptedValue(p.api_key)) {
       await db.prepare("UPDATE ai_providers SET api_key = ? WHERE id = ?").run(encryptValue(p.api_key), p.id);
+      count++;
+    }
+  }
+
+  const indexerRows = (await db.prepare("SELECT id, api_key FROM indexers").all()) as { id: number; api_key: string | null }[];
+  for (const i of indexerRows) {
+    if (i.api_key && !isEncryptedValue(i.api_key)) {
+      await db.prepare("UPDATE indexers SET api_key = ? WHERE id = ?").run(encryptValue(i.api_key), i.id);
+      count++;
+    }
+  }
+
+  const subtitleProviders = (await db.prepare("SELECT id, api_key FROM subtitle_providers").all()) as {
+    id: number;
+    api_key: string | null;
+  }[];
+  for (const sp of subtitleProviders) {
+    if (sp.api_key && !isEncryptedValue(sp.api_key)) {
+      await db.prepare("UPDATE subtitle_providers SET api_key = ? WHERE id = ?").run(encryptValue(sp.api_key), sp.id);
       count++;
     }
   }
