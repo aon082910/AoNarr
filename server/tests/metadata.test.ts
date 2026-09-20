@@ -875,17 +875,73 @@ describe("fetchMovieByTmdbId / fetchSeriesByTmdbId", () => {
     expect(result.title).toBe("Still Works");
     expect(result.digitalReleaseDate).toBeNull();
     expect(result.physicalReleaseDate).toBeNull();
+    expect(result.contentRating).toBeNull();
+  });
+
+  it("fetchMovieByTmdbId extracts the US certification from release_dates, preferring US over other regions", async () => {
+    setSetting("tmdbApiKey", "k");
+    stub([
+      { test: (u) => u.includes("/movie/8/release_dates"), response: ok({
+        results: [
+          { iso_3166_1: "GB", release_dates: [{ type: 3, release_date: "2020-01-01T00:00:00.000Z", certification: "15" }] },
+          { iso_3166_1: "US", release_dates: [{ type: 3, release_date: "2020-01-05T00:00:00.000Z", certification: "PG-13" }] },
+        ],
+      }) },
+      { test: (u) => u.includes("/movie/8"), response: ok({ id: 8, title: "Rated Movie" }) },
+    ]);
+    expect((await metadata.fetchMovieByTmdbId("8")).contentRating).toBe("PG-13");
+  });
+
+  it("fetchMovieByTmdbId drops a certification that isn't in this app's rating vocabulary", async () => {
+    setSetting("tmdbApiKey", "k");
+    stub([
+      { test: (u) => u.includes("/movie/9/release_dates"), response: ok({
+        results: [{ iso_3166_1: "DE", release_dates: [{ type: 3, release_date: "2020-01-01T00:00:00.000Z", certification: "FSK 12" }] }],
+      }) },
+      { test: (u) => u.includes("/movie/9"), response: ok({ id: 9, title: "Foreign Cert Movie" }) },
+    ]);
+    expect((await metadata.fetchMovieByTmdbId("9")).contentRating).toBeNull();
+  });
+
+  it("fetchSeriesByTmdbId fetches the content rating from TMDB's separate content_ratings endpoint, preferring the US region", async () => {
+    setSetting("tmdbApiKey", "k");
+    stub([
+      { test: (u) => u.includes("/tv/5/content_ratings"), response: ok({
+        results: [
+          { iso_3166_1: "GB", rating: "15" },
+          { iso_3166_1: "US", rating: "TV-MA" },
+        ],
+      }) },
+      { test: (u) => u.includes("/tv/5"), response: ok({ id: 5, name: "Rated Show" }) },
+    ]);
+    expect((await metadata.fetchSeriesByTmdbId("5")).contentRating).toBe("TV-MA");
+  });
+
+  it("fetchSeriesByTmdbId leaves the content rating null when the content_ratings call itself fails", async () => {
+    setSetting("tmdbApiKey", "k");
+    stub([{ test: (u) => u.includes("/tv/6"), response: ok({ id: 6, name: "Unrated Show" }) }]);
+    // No route matches "/tv/6/content_ratings" — routedFetch throws, which fetchSeriesByTmdbId must
+    // swallow (see its own .catch()) rather than letting it bubble up.
+    const result = await metadata.fetchSeriesByTmdbId("6");
+    expect(result.title).toBe("Unrated Show");
+    expect(result.contentRating).toBeNull();
   });
 });
 
 describe("fetchOmdbRatings", () => {
   it("parses Rotten Tomatoes/Metacritic/imdbRating and throws on Response:False", async () => {
     setSetting("omdbApiKey", "k");
-    stub([{ test: (u) => u.includes("omdbapi.com"), response: ok({ Response: "True", imdbRating: "8.5", Ratings: [{ Source: "Rotten Tomatoes", Value: "85%" }, { Source: "Metacritic", Value: "75/100" }] }) }]);
-    expect(await metadata.fetchOmdbRatings("tt1")).toEqual({ imdbRating: 8.5, rottenTomatoesScore: 85, metacriticScore: 75 });
+    stub([{ test: (u) => u.includes("omdbapi.com"), response: ok({ Response: "True", imdbRating: "8.5", Rated: "PG-13", Ratings: [{ Source: "Rotten Tomatoes", Value: "85%" }, { Source: "Metacritic", Value: "75/100" }] }) }]);
+    expect(await metadata.fetchOmdbRatings("tt1")).toEqual({ imdbRating: 8.5, rottenTomatoesScore: 85, metacriticScore: 75, contentRating: "PG-13" });
 
     stub([{ test: (u) => u.includes("omdbapi.com"), response: ok({ Response: "False", Error: "Movie not found!" }) }]);
     await expect(metadata.fetchOmdbRatings("tt999")).rejects.toThrow("Movie not found!");
+  });
+
+  it("drops an OMDb Rated value that isn't in this app's rating vocabulary", async () => {
+    setSetting("omdbApiKey", "k");
+    stub([{ test: (u) => u.includes("omdbapi.com"), response: ok({ Response: "True", imdbRating: "N/A", Rated: "Not Rated", Ratings: [] }) }]);
+    expect((await metadata.fetchOmdbRatings("tt1")).contentRating).toBeNull();
   });
 });
 

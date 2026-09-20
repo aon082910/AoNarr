@@ -41,6 +41,7 @@ const EVENT_LABELS: Record<string, string> = {
   totp_disabled: "Disabled two-factor authentication",
   api_key_regenerated: "Regenerated API key",
   backup_downloaded: "Downloaded a database backup",
+  backup_deleted: "Deleted a database backup",
   indexer_added: "Added indexer",
   indexer_removed: "Removed indexer",
   download_client_added: "Added download client",

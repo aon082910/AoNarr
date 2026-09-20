@@ -156,6 +156,7 @@ export default function AddPreview() {
           runtimeMinutes: result.runtimeMinutes ?? null,
           studio: result.studio ?? null,
           performers: result.performers ?? undefined,
+          contentRating: result.contentRating ?? null,
         }),
       };
       const created = await api.post<MediaItem>(manual ? "/media" : "/metadata/import", payload);

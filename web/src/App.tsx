@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
-import { api } from "./api/client.js";
+import { api, avatarUrl } from "./api/client.js";
 import Dashboard from "./pages/Dashboard.js";
 import Onboarding, { shouldShowOnboarding } from "./pages/Onboarding.js";
 import { useAuth } from "./context/AuthContext.js";
@@ -11,6 +11,7 @@ import CommandPalette from "./components/CommandPalette.js";
 import Toaster from "./components/Toaster.js";
 import ConfirmModal from "./components/ConfirmModal.js";
 import PromptModal from "./components/PromptModal.js";
+import Modal from "./components/Modal.js";
 import DropdownMenu from "./components/DropdownMenu.js";
 import { useMediaTypes } from "./hooks/useMediaTypes.js";
 import { useCustomizableLayout } from "./hooks/useCustomizableLayout.js";
@@ -235,12 +236,20 @@ export default function App() {
   // such group at all, so without these they'd have no way to reach either page short of typing
   // the URL by hand — Requests.tsx already renders a full submission form for them, it just had no
   // nav link pointing at it before Discover made that gap obvious.
+  // A photo (once set — see Account.tsx) replaces the generic person icon here, the one spot in
+  // the whole nav shell that identifies who's actually signed in.
+  const accountIcon =
+    auth.user?.avatarPath && avatarUrl(auth.user.id) ? (
+      <img src={avatarUrl(auth.user.id)!} alt="" style={{ width: 20, height: 20, borderRadius: "50%", objectFit: "cover" }} />
+    ) : (
+      <UserIcon />
+    );
   const standaloneLinks: NavLinkDef[] = isAdmin
-    ? [{ to: "/account", label: "Account", icon: <UserIcon /> }]
+    ? [{ to: "/account", label: "Account", icon: accountIcon }]
     : [
         { to: "/discover", label: "Discover", icon: <CompassIcon /> },
         { to: "/requests", label: "Requests", icon: <InboxIcon /> },
-        { to: "/account", label: "Account", icon: <UserIcon /> },
+        { to: "/account", label: "Account", icon: accountIcon },
       ];
 
   // Only the admin-only section groups are reorderable — Library stays pinned right after
@@ -458,10 +467,9 @@ export default function App() {
 
             {isAdmin && (
               <div className="sidebar-customize">
-                <a onClick={() => setCustomizingSidebar((v) => !v)} style={{ cursor: "pointer", fontSize: "0.85rem" }}>
-                  {customizingSidebar ? "Done customizing" : "Customize sections..."}
-                </a>
-                {customizingSidebar && customizePanel}
+                <button type="button" className="link-button" style={{ fontSize: "0.85rem" }} onClick={() => setCustomizingSidebar(true)}>
+                  Customize sections...
+                </button>
               </div>
             )}
 
@@ -498,16 +506,9 @@ export default function App() {
           {isAdmin && visibleGroups.map((g) => <TopbarGroup key={g.key} label={g.label} icon={groupByKey.get(g.key)?.icon} links={groupByKey.get(g.key)?.links ?? []} />)}
           <div className="topbar-spacer" style={{ position: "relative" }}>
             {isAdmin && (
-              <>
-                <button type="button" className="secondary" onClick={() => setCustomizingSidebar((v) => !v)} title="Layout options">
-                  ⚙
-                </button>
-                {customizingSidebar && (
-                  <div className="dropdown-menu" style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, left: "auto", minWidth: 260 }}>
-                    {customizePanel}
-                  </div>
-                )}
-              </>
+              <button type="button" className="secondary" onClick={() => setCustomizingSidebar(true)} title="Layout options">
+                ⚙
+              </button>
             )}
             <ThemeToggle />
             <LayoutWidthToggle />
@@ -517,6 +518,12 @@ export default function App() {
             </a>
           </div>
         </header>
+      )}
+
+      {isAdmin && customizingSidebar && (
+        <Modal title="Customize Navigation" onClose={() => setCustomizingSidebar(false)}>
+          {customizePanel}
+        </Modal>
       )}
 
       <main className="content" id="main-content" tabIndex={-1}>

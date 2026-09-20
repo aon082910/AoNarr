@@ -95,6 +95,10 @@ export interface SessionUser {
   autoApprove: boolean;
   maxContentRating: string | null;
   totpEnabled: boolean;
+  displayName: string | null;
+  avatarPath: string | null;
+  bio: string | null;
+  socialLinks: { label: string; url: string }[];
 }
 
 export async function getSessionUser(token: string): Promise<SessionUser | null> {
@@ -118,6 +122,10 @@ export async function getSessionUser(token: string): Promise<SessionUser | null>
         auto_approve: number;
         max_content_rating: string | null;
         totp_enabled: number;
+        display_name: string | null;
+        avatar_path: string | null;
+        bio: string | null;
+        social_links: string | null;
       }
     | undefined;
   if (!user) return null;
@@ -135,5 +143,9 @@ export async function getSessionUser(token: string): Promise<SessionUser | null>
     autoApprove: !!user.auto_approve,
     maxContentRating: user.max_content_rating,
     totpEnabled: !!user.totp_enabled,
+    displayName: user.display_name,
+    avatarPath: user.avatar_path,
+    bio: user.bio,
+    socialLinks: user.social_links ? JSON.parse(user.social_links) : [],
   };
 }

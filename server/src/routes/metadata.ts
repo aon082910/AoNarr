@@ -194,8 +194,8 @@ metadataRouter.post(
     const result = await db
       .prepare(
         `INSERT INTO media_items
-         (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability, series_type, backdrop_url, rating, runtime_minutes, studio, extra_metadata)
-         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability, @seriesType, @backdropUrl, @rating, @runtimeMinutes, @studio, @extraMetadata)`
+         (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability, series_type, backdrop_url, rating, runtime_minutes, studio, content_rating, extra_metadata)
+         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability, @seriesType, @backdropUrl, @rating, @runtimeMinutes, @studio, @contentRating, @extraMetadata)`
       )
       .run({
         type: b.type,
@@ -221,6 +221,7 @@ metadataRouter.post(
         rating: b.rating ?? null,
         runtimeMinutes: b.runtimeMinutes ?? null,
         studio: b.studio ?? null,
+        contentRating: b.contentRating ?? null,
         // Whisparr-style performer tracking, scoped to "store what ThePornDB gave us" rather than
         // a full performer-as-entity system (no dedicated performer pages/filtering) — see
         // searchAdultThePornDb in metadata.ts for where this comes from.

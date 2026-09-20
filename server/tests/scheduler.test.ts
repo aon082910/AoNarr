@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import { setupTestDb } from "./helpers/testDb.js";
+import { nowExpr, nowOffsetHoursExpr } from "../src/db/asyncDb.js";
 
 const searchAllIndexers = vi.fn();
 const checkIndexerHealth = vi.fn();
@@ -835,12 +836,12 @@ describe("cleanupStalledDownloads", () => {
   it("fails and retries a download whose progress hasn't moved past the configured threshold", async () => {
     const client = await insertClient();
     const movie = await insertMovie();
-    // SQLite-native date arithmetic, not a JS ISO string — the threshold query compares this
-    // column against nowOffsetHoursExpr(db, ...)'s own SQL-generated value, and a JS
-    // toISOString() ("...T...Z") doesn't lexicographically compare correctly against SQLite's own
-    // "YYYY-MM-DD HH:MM:SS" datetime() format.
+    // Dialect-native date arithmetic, not a JS ISO string — the threshold query compares this
+    // column against nowOffsetHoursExpr(db, ...)'s own SQL-generated value, and a JS toISOString()
+    // ("...T...Z") doesn't lexicographically compare correctly against either dialect's own
+    // "YYYY-MM-DD HH:MM:SS" text format.
     const result = await db
-      .prepare("INSERT INTO queue (media_item_id, title, download_client_id, status, last_progress_at) VALUES (?, 'x', ?, 'downloading', datetime('now', '-8 hours'))")
+      .prepare(`INSERT INTO queue (media_item_id, title, download_client_id, status, last_progress_at) VALUES (?, 'x', ?, 'downloading', ${nowOffsetHoursExpr(db, -8)})`)
       .run(movie.id, client.id);
     const id = result.lastInsertRowid;
     searchAllIndexers.mockResolvedValue([]);
@@ -855,7 +856,7 @@ describe("cleanupStalledDownloads", () => {
   it("leaves a recently-progressing download alone", async () => {
     const client = await insertClient();
     const movie = await insertMovie();
-    await db.prepare("INSERT INTO queue (media_item_id, title, download_client_id, status, last_progress_at) VALUES (?, 'x', ?, 'downloading', datetime('now'))").run(movie.id, client.id);
+    await db.prepare(`INSERT INTO queue (media_item_id, title, download_client_id, status, last_progress_at) VALUES (?, 'x', ?, 'downloading', ${nowExpr(db)})`).run(movie.id, client.id);
 
     await cleanupStalledDownloads();
 
@@ -876,7 +877,7 @@ describe("pruneOldFailedQueueItems", () => {
 
   it("leaves a recently-failed item in place", async () => {
     const movie = await insertMovie();
-    const result = await db.prepare("INSERT INTO queue (media_item_id, title, status, updated_at) VALUES (?, 'x', 'failed', datetime('now'))").run(movie.id);
+    const result = await db.prepare(`INSERT INTO queue (media_item_id, title, status, updated_at) VALUES (?, 'x', 'failed', ${nowExpr(db)})`).run(movie.id);
 
     await pruneOldFailedQueueItems();
 

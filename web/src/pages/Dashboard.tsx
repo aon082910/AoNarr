@@ -7,8 +7,9 @@ import { useCustomizableLayout } from "../hooks/useCustomizableLayout.js";
 import type { MediaItem } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 import { SlidersIcon } from "../components/NavIcons.js";
-import { ArrowUpIcon, ArrowDownIcon, ArrowRightIcon } from "../components/ActionIcons.js";
+import { ArrowUpIcon, ArrowDownIcon, ArrowRightIcon, ChevronsDownIcon, ChevronsUpIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
+import Modal from "../components/Modal.js";
 
 interface RecentlyWatchedEntry {
   mediaItemId: number;
@@ -156,6 +157,9 @@ export default function Dashboard() {
   const totalCount = Object.values(libraryCounts).reduce((sum, n) => sum + n, 0);
 
   const [customizing, setCustomizing] = useState(false);
+  // Collapsed by default — a household with several unreachable indexers can produce a long enough
+  // list that it dominates the dashboard above the actual widgets otherwise.
+  const [healthExpanded, setHealthExpanded] = useState(false);
 
   const widgetDefs: { key: string; label: string; render: () => ReactNode }[] = [
     {
@@ -335,18 +339,11 @@ export default function Dashboard() {
     <div>
       <h1>Dashboard</h1>
       <PageToolbar
-        left={
-          <ToolbarButton
-            icon={<SlidersIcon />}
-            label={customizing ? "Done" : "Customize"}
-            onClick={() => setCustomizing((v) => !v)}
-            title={customizing ? "Done customizing" : "Customize layout"}
-          />
-        }
+        left={<ToolbarButton icon={<SlidersIcon />} label="Customize" onClick={() => setCustomizing(true)} title="Customize layout" />}
       />
 
       {customizing && (
-        <div className="form-panel" style={{ maxWidth: 480, marginBottom: 20 }}>
+        <Modal title="Customize Dashboard" onClose={() => setCustomizing(false)}>
           <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
             Reorder, hide, or resize widgets — saved on this device. Two half-width widgets sit
             side by side; a full-width one takes the whole row.
@@ -389,7 +386,7 @@ export default function Dashboard() {
               </div>
             </div>
           ))}
-        </div>
+        </Modal>
       )}
 
       {loadError && (
@@ -401,14 +398,29 @@ export default function Dashboard() {
 
       {healthMessages.length > 0 && (
         <div className="form-panel" style={{ borderColor: "var(--danger)", marginBottom: 16 }}>
-          <strong style={{ color: "var(--danger)" }}>Health issues</strong>
-          <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
-            {healthMessages.map((m, idx) => (
-              <li key={idx} style={{ fontSize: "0.85rem" }}>
-                {m}
-              </li>
-            ))}
-          </ul>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <strong style={{ color: "var(--danger)" }}>
+              {healthExpanded ? "Health issues" : `${healthMessages.length} health issue${healthMessages.length === 1 ? "" : "s"}`}
+            </strong>
+            <button
+              type="button"
+              className="icon-button"
+              onClick={() => setHealthExpanded((v) => !v)}
+              title={healthExpanded ? "Collapse" : "Expand"}
+              aria-label={healthExpanded ? "Collapse health issues" : "Expand health issues"}
+            >
+              {healthExpanded ? <ChevronsUpIcon /> : <ChevronsDownIcon />}
+            </button>
+          </div>
+          {healthExpanded && (
+            <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+              {healthMessages.map((m, idx) => (
+                <li key={idx} style={{ fontSize: "0.85rem" }}>
+                  {m}
+                </li>
+              ))}
+            </ul>
+          )}
           <button type="button" className="icon-button" style={{ marginTop: 8 }} onClick={() => navigate("/system")} title="View System" aria-label="View System">
             <ArrowRightIcon />
           </button>

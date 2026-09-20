@@ -3,6 +3,61 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 337 — CI fix, Jump-to-letter fix, content ratings, backups, profile page, and UI polish
+
+Ten more requests plus a recurring CI failure. Two items turned out smaller than they looked once
+investigated (Backups was ~90% already built; the Media Analyzer's backend was already running
+fully in the background), and one turned into a real, previously-invisible bug — the reported
+symptom ("only # and A light up") was the exact fingerprint needed to find it after an initial
+smaller-scale repro came back clean.
+
+- **Fixed the GitHub Actions "Server tests / test-postgres" job**, broken on every push. Pulled the
+  actual failure logs and found three real root causes, none of them flaky: (1) Postgres returns
+  `BIGINT`/`COUNT()`/`SUM()` results as strings, not numbers — 48 call sites across the codebase
+  relied on them being numbers; fixed once, at the driver level, by registering a bigint type
+  parser, rather than patching each call site (this was also a real, currently-live bug for anyone
+  running the Postgres driver in production, not just a test artifact). (2) A release-group
+  success/failure counter's `ON CONFLICT DO UPDATE SET x = x + 1` was ambiguous under Postgres
+  (`x` matches both the existing row and the proposed one) — every other such query in the
+  codebase already qualifies this correctly; this one didn't. (3) A test file hardcoded raw SQLite
+  `datetime()` syntax instead of using this codebase's own existing dialect-aware helper. Verified
+  by running the full suite against a real local Postgres container before pushing, not just
+  trusting the fix in theory.
+- **The Library page's A-Z "jump to letter" sidebar was broken on any library over 500 items** —
+  confirmed via the reported symptom (only "#" and "A" enabled): the sidebar's index fetch asked
+  for "every matching item" via a very large `limit`, which the shared list endpoint's safety cap
+  silently truncated to 500, permanently graying out every letter past wherever the 500th item fell
+  alphabetically. Fixed with a new lightweight endpoint built specifically for "every id+title, no
+  cap" rather than reusing the capped one.
+- **Content rating now shows as a badge on the backdrop** (Radarr-style) instead of a separate row
+  further down the page, and is **auto-populated from TMDB** (movie certifications, and a new call
+  for TV content ratings that didn't exist before) on match and refresh — previously this field was
+  manual-entry-only, end to end, with no automated path ever writing to it.
+- **Backups gained a Radarr-style file list.** The backend (scheduled backups, S3 upload, dialect-
+  aware backup/restore) already existed and was more capable than expected — the actual gap was no
+  way to see what backup files already exist on disk. "Backup Now" now also saves into the
+  configured backup directory (in addition to still downloading immediately), and a new table lists
+  every existing backup with Download/Delete actions per row.
+- **The Account page is now an actual profile**, not just "Signed in as X": a photo (upload +
+  displayed in the nav sidebar/topbar next to the Account link), a display name, a bio, and a
+  free-form list of links — self-service, alongside the existing two-factor setup.
+- **Media Analyzer**: traced the reported "stops when I navigate away" — the backend was already a
+  true fire-and-forget background job, unaffected by which page is open. The actual gap was 100%
+  frontend: progress polling lived in the page component itself and was torn down on navigation.
+  Moved it into an app-level context (mounted once, like the auth context) so a run's progress and
+  its completion notice now survive navigating anywhere in the app.
+- Collapsed the Dashboard's Health Issues box by default (with an expand toggle) — a household with
+  several unreachable indexers could produce a list long enough to dominate the whole dashboard.
+- The Theme and Layout-width toggles in the sidebar/topbar footer are now real `<button>`s instead
+  of plain clickable text.
+- The Dashboard's "Customize" button and the nav's gear/"Customize sections" control now open as
+  popups (matching the Metadata Sources/Export & Bulk pattern) instead of an inline panel and a
+  dropdown respectively — the same underlying nav-customize feature had two different, inconsistent
+  treatments depending on which entry point (sidebar link vs. topbar button) opened it.
+- Fixed episode-table column misalignment on multi-season pages: each season renders its own table,
+  which previously auto-sized its own columns independently, so Title/Air date/etc. visibly drifted
+  out of line between seasons whenever one season's episode titles were longer than another's.
+
 ## Round 336 — Library page fixes/polish, crash hardening, MediaDetail overhaul, smarter search, multi-date releases
 
 A large batch of 14 user-reported bugs/requests across the Library list page, media detail page,

@@ -2,7 +2,17 @@ import * as cheerio from "cheerio";
 import { parseStringPromise } from "xml2js";
 import { getSetting } from "./settingsStore.js";
 import { MEDIA_TYPES, getMediaTypeConfig } from "./mediaTypes.js";
+import { CONTENT_RATING_ORDER } from "./contentRatings.js";
 import type { MediaType } from "../types/index.js";
+
+/** Keeps a provider's raw certification string only if it's an exact match for this app's own
+ * MPAA/TV-Parental-Guidelines vocabulary (contentRatings.ts) — anything else (OMDb's "Not
+ * Rated"/"Unrated"/"Approved"/"Passed", a region code that doesn't map cleanly) is dropped to null
+ * rather than guessed at, same "unranked stays unblocked" philosophy contentRatingRank() already
+ * uses for values it doesn't recognize. */
+function normalizeContentRating(raw: string | null | undefined): string | null {
+  return raw && (CONTENT_RATING_ORDER as string[]).includes(raw) ? raw : null;
+}
 
 export interface MetadataSearchResult {
   title: string;
@@ -41,6 +51,12 @@ export interface MetadataSearchResult {
    * usually null even for a fully-matched movie. */
   digitalReleaseDate?: string | null;
   physicalReleaseDate?: string | null;
+  /** MPAA (movies) or TV Parental Guidelines (series) certification, normalized to an exact member
+   * of contentRatings.ts's CONTENT_RATING_ORDER (e.g. "PG-13", "TV-MA") — anything a provider
+   * returns that isn't an exact match (an OMDb "Not Rated"/"Approved", an unmapped region code) is
+   * left null rather than guessed at, same "unranked stays unblocked" philosophy as the rest of that
+   * module. Only populated by the by-id detail lookups; list/search endpoints don't carry it. */
+  contentRating?: string | null;
 }
 
 export interface MetadataEpisode {
@@ -118,16 +134,21 @@ async function searchMoviesTmdb(query: string): Promise<MetadataSearchResult[]> 
 
 /** TMDB's separate /movie/{id}/release_dates endpoint — the main movie detail response only ever
  * carries one generic `release_date` (usually the theatrical/earliest one, already used for
- * `releaseDate` above); this is the only place Digital/Physical dates live. Per-region (each
- * TMDB "result" is one country), with a `type` enum: 1=Premiere, 2=Limited theatrical,
- * 3=Theatrical, 4=Digital, 5=Physical, 6=TV. Prefers the US region (the most consistently
- * populated one) and falls back to the earliest date of that type from any region — most movies
- * have neither yet, so both fields are often null even for an otherwise fully-matched movie. */
-async function fetchMovieReleaseDatesTmdb(tmdbId: string, apiKey: string): Promise<{ digitalReleaseDate: string | null; physicalReleaseDate: string | null }> {
+ * `releaseDate` above); this is the only place Digital/Physical dates AND the MPAA certification
+ * live. Per-region (each TMDB "result" is one country), with a `type` enum: 1=Premiere, 2=Limited
+ * theatrical, 3=Theatrical, 4=Digital, 5=Physical, 6=TV — each entry can also carry its own
+ * `certification` string. Prefers the US region (the most consistently populated one) and falls
+ * back to any region — most movies have neither release-date type yet, so both date fields are
+ * often null even for an otherwise fully-matched movie. */
+async function fetchMovieReleaseDatesTmdb(
+  tmdbId: string,
+  apiKey: string
+): Promise<{ digitalReleaseDate: string | null; physicalReleaseDate: string | null; contentRating: string | null }> {
   const res = await fetch(`https://api.themoviedb.org/3/movie/${tmdbId}/release_dates?api_key=${apiKey}`);
   if (!res.ok) throw new Error(`TMDB release dates lookup failed: HTTP ${res.status}`);
   const body: any = await res.json();
   const regions: any[] = body.results ?? [];
+  const us = regions.filter((r) => r.iso_3166_1 === "US");
 
   function datesOfType(regionList: any[], type: number): string[] {
     return regionList
@@ -138,13 +159,23 @@ async function fetchMovieReleaseDatesTmdb(tmdbId: string, apiKey: string): Promi
   }
 
   function earliestDateForType(type: number): string | null {
-    const us = regions.filter((r) => r.iso_3166_1 === "US");
     const usDates = datesOfType(us, type);
     if (usDates.length > 0) return usDates[0];
     return datesOfType(regions, type)[0] ?? null;
   }
 
-  return { digitalReleaseDate: earliestDateForType(4), physicalReleaseDate: earliestDateForType(5) };
+  function certificationOf(regionList: any[]): string | null {
+    for (const entry of regionList.flatMap((r) => r.release_dates ?? [])) {
+      if (entry.certification) return entry.certification;
+    }
+    return null;
+  }
+
+  return {
+    digitalReleaseDate: earliestDateForType(4),
+    physicalReleaseDate: earliestDateForType(5),
+    contentRating: normalizeContentRating(certificationOf(us) ?? certificationOf(regions)),
+  };
 }
 
 /** Direct-by-id lookup, not search — for callers that already have a TMDB id (an Overseerr/
@@ -155,8 +186,13 @@ export async function fetchMovieByTmdbId(tmdbId: string): Promise<MetadataSearch
   if (!res.ok) throw new Error(`TMDB movie lookup failed: HTTP ${res.status}`);
   const r: any = await res.json();
   // Best-effort: a hiccup on this second call (or a movie TMDB simply has no digital/physical
-  // dates recorded for) just leaves both fields null rather than failing the whole lookup.
-  const releaseDates = await fetchMovieReleaseDatesTmdb(String(r.id), key).catch(() => ({ digitalReleaseDate: null, physicalReleaseDate: null }));
+  // dates/certification recorded for) just leaves those fields null rather than failing the whole
+  // lookup.
+  const releaseDates = await fetchMovieReleaseDatesTmdb(String(r.id), key).catch(() => ({
+    digitalReleaseDate: null,
+    physicalReleaseDate: null,
+    contentRating: null,
+  }));
   return {
     title: r.title,
     year: r.release_date ? Number(r.release_date.slice(0, 4)) : null,
@@ -171,7 +207,22 @@ export async function fetchMovieByTmdbId(tmdbId: string): Promise<MetadataSearch
     digitalReleaseDate: releaseDates.digitalReleaseDate,
     physicalReleaseDate: releaseDates.physicalReleaseDate,
     status: r.status || null,
+    contentRating: releaseDates.contentRating,
   };
+}
+
+/** TMDB's separate /tv/{id}/content_ratings endpoint — the main series detail response carries no
+ * certification at all. Same per-region shape and US-then-any-region preference as
+ * fetchMovieReleaseDatesTmdb's certification lookup, just a flatter response (one `rating` string
+ * per region, no `type` enum to filter by). Best-effort: most shows don't have a certification for
+ * every region, so this often ends up null even for a fully-matched series. */
+async function fetchSeriesContentRatingTmdb(tmdbId: string, apiKey: string): Promise<string | null> {
+  const res = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}/content_ratings?api_key=${apiKey}`);
+  if (!res.ok) throw new Error(`TMDB content ratings lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  const regions: any[] = body.results ?? [];
+  const us = regions.find((r) => r.iso_3166_1 === "US");
+  return normalizeContentRating(us?.rating || regions.find((r) => r.rating)?.rating || null);
 }
 
 export async function fetchSeriesByTmdbId(tmdbId: string): Promise<MetadataSearchResult> {
@@ -179,6 +230,9 @@ export async function fetchSeriesByTmdbId(tmdbId: string): Promise<MetadataSearc
   const res = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${key}`);
   if (!res.ok) throw new Error(`TMDB series lookup failed: HTTP ${res.status}`);
   const r: any = await res.json();
+  // Best-effort: a hiccup on this second call just leaves contentRating null rather than failing
+  // the whole lookup.
+  const contentRating = await fetchSeriesContentRatingTmdb(String(r.id), key).catch(() => null);
   return {
     title: r.name,
     year: r.first_air_date ? Number(r.first_air_date.slice(0, 4)) : null,
@@ -189,6 +243,7 @@ export async function fetchSeriesByTmdbId(tmdbId: string): Promise<MetadataSearc
     rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
     runtimeMinutes: Array.isArray(r.episode_run_time) && r.episode_run_time.length > 0 ? r.episode_run_time[0] : null,
     status: r.status || null,
+    contentRating,
   };
 }
 
@@ -217,6 +272,13 @@ export interface ExternalRatings {
   imdbRating: number | null;
   rottenTomatoesScore: number | null;
   metacriticScore: number | null;
+  /** OMDb's own `Rated` field (e.g. "PG-13"), normalized against CONTENT_RATING_ORDER — junk values
+   * ("N/A"/"Not Rated"/"Unrated") and pre-MPAA classic-era ratings ("Approved"/"Passed") fall out to
+   * null via the same normalizeContentRating() the TMDB lookups use. Exposed here for a caller that
+   * wants OMDb's opinion specifically; not wired into the automatic scan/refresh pipeline itself,
+   * which (like every other auto-populated field) stays TMDB-only, matching fetchOmdbRatings' own
+   * on-demand-only role. */
+  contentRating: string | null;
 }
 
 /** Radarr-style extra ratings row (IMDb + Rotten Tomatoes + Metacritic) via OMDb's by-id lookup,
@@ -244,6 +306,7 @@ export async function fetchOmdbRatings(imdbId: string): Promise<ExternalRatings>
     imdbRating: Number.isFinite(imdbRating) ? imdbRating : null,
     rottenTomatoesScore: rt ? Number(rt.replace("%", "")) : null,
     metacriticScore: mc ? Number(mc.split("/")[0]) : null,
+    contentRating: normalizeContentRating(body.Rated),
   };
 }
 

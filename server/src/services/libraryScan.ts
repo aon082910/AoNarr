@@ -849,7 +849,7 @@ async function refreshOneItem(
         .prepare(
           `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), year = COALESCE(?, year),
            release_date = COALESCE(?, release_date), backdrop_url = COALESCE(?, backdrop_url), rating = COALESCE(?, rating),
-           runtime_minutes = COALESCE(?, runtime_minutes), status = COALESCE(?, status)
+           runtime_minutes = COALESCE(?, runtime_minutes), status = COALESCE(?, status), content_rating = COALESCE(?, content_rating)
            ${alreadyMatched ? "" : ", title = ?, sort_title = ?, external_ids = ?"}
            WHERE id = ?`
         )
@@ -862,6 +862,7 @@ async function refreshOneItem(
           best.rating ?? null,
           best.runtimeMinutes ?? null,
           best.status ?? null,
+          best.contentRating ?? null,
           ...(alreadyMatched ? [] : [best.title, best.title.toLowerCase(), JSON.stringify(best.externalIds ?? {})]),
           item.id
         );

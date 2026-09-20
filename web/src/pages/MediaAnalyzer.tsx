@@ -10,6 +10,7 @@ import { ArrowRightIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 import Pagination, { DEFAULT_PAGE_SIZE_OPTIONS } from "../components/Pagination.js";
 import { notify } from "../utils/notify.js";
+import { useMediaAnalysis } from "../context/MediaAnalysisContext.js";
 
 interface CompatibilityNote {
   level: "ok" | "caution";
@@ -114,16 +115,6 @@ interface AnalysisResponse {
   truncated: boolean;
 }
 
-interface AnalysisProgress {
-  running: boolean;
-  type: string | null;
-  total: number;
-  done: number;
-  failed: number;
-  startedAt: number | null;
-  finishedAt: number | null;
-}
-
 const HDR_LABELS: Record<HdrFormat, string> = {
   none: "SDR",
   hdr10: "HDR10",
@@ -203,7 +194,7 @@ export default function MediaAnalyzer() {
   const [data, setData] = useState<AnalysisResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [progress, setProgress] = useState<AnalysisProgress | null>(null);
+  const { progress, runAnalysis: runAnalysisForType } = useMediaAnalysis();
   const [filterLevel, setFilterLevel] = useState<"all" | "caution">("all");
   const [statFilter, setStatFilter] = useState<StatFilter | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -211,7 +202,6 @@ export default function MediaAnalyzer() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(() => Number(localStorage.getItem("aonarr_media_analyzer_page_size")) || 60);
   const { sortRows, sortableHeader } = useSortableTable<AnalysisItem, "title">("title");
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   function load() {
     setLoading(true);
@@ -241,53 +231,16 @@ export default function MediaAnalyzer() {
     localStorage.setItem("aonarr_media_analyzer_page_size", String(pageSize));
   }, [pageSize]);
 
-  function stopPolling() {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }
-
-  function pollProgress() {
-    api
-      .get<AnalysisProgress>("/media-analysis/progress")
-      .then((p) => {
-        setProgress(p);
-        if (!p.running) {
-          stopPolling();
-          notify.success(`Analysis finished — ${p.done - p.failed} probed${p.failed > 0 ? `, ${p.failed} failed` : ""}.`);
-          load();
-        }
-      })
-      .catch(() => stopPolling());
-  }
-
-  // Picks up an already-running analysis (e.g. started from this page in another tab, or just
-  // before a page refresh) instead of only ever noticing a run this page itself started.
+  // Progress polling/the completion toast now live in MediaAnalysisContext (mounted once, above
+  // this page, so a run survives navigating away) — this just reloads the file list once a run
+  // this page can see transitions from running to finished, whether it was started from here or
+  // was already in progress when this page mounted.
+  const wasRunning = useRef(false);
   useEffect(() => {
-    api
-      .get<AnalysisProgress>("/media-analysis/progress")
-      .then((p) => {
-        if (p.running) {
-          setProgress(p);
-          pollRef.current = setInterval(pollProgress, 1200);
-        }
-      })
-      .catch(() => {});
-    return stopPolling;
+    if (wasRunning.current && !progress?.running) load();
+    wasRunning.current = !!progress?.running;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function runAnalysis() {
-    const qs = type ? `?type=${type}` : "";
-    const result = await api.post<{ started: boolean; reason?: string }>(`/media-analysis/run${qs}`, {});
-    if (!result.started) {
-      notify.info("An analysis run is already in progress — showing its live progress.");
-    }
-    setProgress({ running: true, type: type || null, total: 0, done: 0, failed: 0, startedAt: Date.now(), finishedAt: null });
-    stopPolling();
-    pollRef.current = setInterval(pollProgress, 1200);
-  }
+  }, [progress?.running]);
 
   async function searchItems(targets: AnalysisItem[]) {
     setSearching(true);
@@ -354,7 +307,7 @@ export default function MediaAnalyzer() {
           <ToolbarButton
             icon={<ZapIcon />}
             label={progress?.running ? "Analyzing..." : "Analyze Now"}
-            onClick={runAnalysis}
+            onClick={() => runAnalysisForType(type)}
             disabled={!!progress?.running}
             title={progress?.running ? "Analyzing..." : "Analyze now"}
           />

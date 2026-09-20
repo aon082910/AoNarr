@@ -18,8 +18,8 @@ export default function LayoutWidthToggle() {
   }
 
   return (
-    <a onClick={toggle} style={{ cursor: "pointer" }}>
+    <button type="button" className="link-button" onClick={toggle}>
       {width === "full" ? "Switch to centered layout" : "Switch to full-width layout"}
-    </a>
+    </button>
   );
 }

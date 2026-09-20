@@ -747,6 +747,35 @@ describe("refreshLibraryMetadata / refreshOneMediaItem", () => {
     expect(row.status).toBe("Released");
   });
 
+  it("populates content_rating from the provider result when the item has none yet", async () => {
+    const id = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('movie','A Movie','a movie',1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    searchMetadata.mockResolvedValue([{ title: "A Movie", year: 2020, overview: null, posterUrl: null, externalIds: { tmdb: "1" }, contentRating: "PG-13" }]);
+
+    await refreshOneMediaItem(id);
+
+    const row = (await db.prepare("SELECT content_rating FROM media_items WHERE id = ?").get(id)) as { content_rating: string };
+    expect(row.content_rating).toBe("PG-13");
+  });
+
+  it("never clobbers an existing (e.g. manually-set) content_rating with a missing one from the provider", async () => {
+    const id = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status, content_rating) VALUES ('movie','A Movie','a movie',1,0,'missing','R')`)
+          .run()
+      ).lastInsertRowid
+    );
+    searchMetadata.mockResolvedValue([{ title: "A Movie", year: 2020, overview: "updated", posterUrl: null, externalIds: { tmdb: "1" } }]); // no contentRating field
+
+    await refreshOneMediaItem(id);
+
+    const row = (await db.prepare("SELECT content_rating FROM media_items WHERE id = ?").get(id)) as { content_rating: string };
+    expect(row.content_rating).toBe("R");
+  });
+
   it("never overwrites the title of an item that's already matched (has external ids)", async () => {
     const id = Number(
       (

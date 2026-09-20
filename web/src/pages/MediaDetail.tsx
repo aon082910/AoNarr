@@ -1485,6 +1485,11 @@ export default function MediaDetail() {
             <span className="pill" title="Type / status">
               {typeInfo?.label ?? item.type} · {item.status}
             </span>
+            {item.contentRating && (
+              <span className="pill" title="Content rating">
+                {item.contentRating}
+              </span>
+            )}
             {typeof item.runtimeMinutes === "number" && item.runtimeMinutes > 0 && (
               <span className="pill" title="Runtime">
                 <ClockIcon /> {item.runtimeMinutes} min
@@ -1756,9 +1761,12 @@ export default function MediaDetail() {
         )}
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-        <span style={{ color: "var(--muted)", fontSize: "0.85rem" }}>Content rating:</span>
-        {isAdmin ? (
+      {/* Now shown as a pill on the backdrop above (auto-populated from metadata when available) —
+          this row is just the manual override control for admins; auto-population is a default,
+          not a lock, so this always stays editable regardless of where the value came from. */}
+      {isAdmin && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+          <span style={{ color: "var(--muted)", fontSize: "0.85rem" }}>Content rating:</span>
           <select
             value={item.contentRating ?? ""}
             onChange={(e) => updateContentRating(e.target.value || null)}
@@ -1771,10 +1779,8 @@ export default function MediaDetail() {
               </option>
             ))}
           </select>
-        ) : (
-          <span className="badge">{item.contentRating ?? "Unrated"}</span>
-        )}
-      </div>
+        </div>
+      )}
 
       {allCollections.length > 0 && (
         <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 12 }}>
@@ -2630,7 +2636,17 @@ export default function MediaDetail() {
                     )}
                   </div>
                   {isOpen && (
-                    <table style={{ marginBottom: 0 }}>
+                    <table className="episode-table" style={{ marginBottom: 0 }}>
+                      <colgroup>
+                        <col style={{ width: "8%" }} />
+                        <col style={{ width: showEpisodeFilePath ? "20%" : "39%" }} />
+                        <col style={{ width: showEpisodeFilePath ? "10%" : "12%" }} />
+                        <col style={{ width: showEpisodeFilePath ? "9%" : "10%" }} />
+                        <col style={{ width: showEpisodeFilePath ? "9%" : "10%" }} />
+                        <col style={{ width: showEpisodeFilePath ? "13%" : "16%" }} />
+                        {showEpisodeFilePath && <col style={{ width: "26%" }} />}
+                        <col style={{ width: "5%" }} />
+                      </colgroup>
                       <thead>
                         <tr>
                           <th>Episode</th>
@@ -2647,7 +2663,9 @@ export default function MediaDetail() {
                         {seasonEpisodes.map((ep) => (
                           <tr key={ep.id} onClick={() => navigate(`/media/${item.id}/episode/${ep.id}`)} style={{ cursor: "pointer" }}>
                             <td>{ep.episodeNumber}</td>
-                            <td>{ep.title ?? <span style={{ color: "var(--muted)", fontStyle: "italic" }}>Episode {ep.episodeNumber}</span>}</td>
+                            <td style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={ep.title ?? undefined}>
+                              {ep.title ?? <span style={{ color: "var(--muted)", fontStyle: "italic" }}>Episode {ep.episodeNumber}</span>}
+                            </td>
                             <td>{ep.airDate ?? "-"}</td>
                             <td>
                               <MonitorToggle monitored={!!ep.monitored} onToggle={() => toggleEpisodeMonitored(ep)} />

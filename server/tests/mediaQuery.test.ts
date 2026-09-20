@@ -290,10 +290,15 @@ describe("buildMediaQuery", () => {
     expect(await runQueryFor(matchedId, filters)).toBe(false);
   });
 
-  it("wires a free-text search into the SQLite FTS5 subquery with the toFts5Query-transformed term", async () => {
+  it("wires a free-text search into the SQLite FTS5 subquery with the toFts5Query-transformed term, or a plain ILIKE under Postgres (no FTS5 there)", async () => {
     const result = await buildMediaQuery({ q: "the matrix", allowedTypes: null });
-    expect(result.where).toContain("library_search_fts MATCH ?");
-    expect(result.params).toContain(toFts5Query("the matrix"));
+    if (db.dialect === "postgres") {
+      expect(result.where).toContain("m.title ILIKE ?");
+      expect(result.params).toContain("%the matrix%");
+    } else {
+      expect(result.where).toContain("library_search_fts MATCH ?");
+      expect(result.params).toContain(toFts5Query("the matrix"));
+    }
   });
 
   it("a blank/whitespace-only search term adds no condition at all", async () => {

@@ -40,6 +40,7 @@ export interface MetadataSearchResult {
   runtimeMinutes?: number | null;
   studio?: string | null;
   performers?: string[];
+  contentRating?: string | null;
 }
 
 export interface AudioStreamInfo {
@@ -354,9 +355,24 @@ export interface MediaRequest {
   resolvedAt: string | null;
 }
 
+export interface SocialLink {
+  label: string;
+  url: string;
+}
+
 export interface AuthMe {
   isAdmin: boolean;
-  user?: { id: number; username: string; role: string; allowedTypes: string[]; totpEnabled?: boolean };
+  user?: {
+    id: number;
+    username: string;
+    role: string;
+    allowedTypes: string[];
+    totpEnabled?: boolean;
+    displayName?: string | null;
+    avatarPath?: string | null;
+    bio?: string | null;
+    socialLinks?: SocialLink[];
+  };
 }
 
 export interface SearchResult {

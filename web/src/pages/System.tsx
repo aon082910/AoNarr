@@ -226,6 +226,8 @@ export default function System() {
   const [backingUp, setBackingUp] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const restoreInputRef = useRef<HTMLInputElement>(null);
+  const [backups, setBackups] = useState<{ fileName: string; sizeBytes: number; createdAt: string }[]>([]);
+  const [deletingBackup, setDeletingBackup] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[] | null>(null);
   const [logsLoading, setLogsLoading] = useState(false);
   const [logLevelFilter, setLogLevelFilter] = useState("");
@@ -542,12 +544,40 @@ export default function System() {
     }
   }
 
+  function loadBackups() {
+    api
+      .get<{ backups: { fileName: string; sizeBytes: number; createdAt: string }[] }>("/system/backups")
+      .then((data) => setBackups(data.backups))
+      .catch(() => setBackups([]));
+  }
+
+  useEffect(() => {
+    if (tab === "backups") loadBackups();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
   async function downloadBackup() {
     setBackingUp(true);
     try {
+      // Also writes the bundle into the configured backup directory (see the "/backup" route), so
+      // "Backup Now" populates the list below immediately, same as Radarr's own does.
       await downloadFile("/system/backup", "aonarr-backup.aonarrbackup");
+      loadBackups();
     } finally {
       setBackingUp(false);
+    }
+  }
+
+  async function deleteBackup(fileName: string) {
+    if (!(await confirmDialog({ title: "Delete backup", message: `Permanently delete "${fileName}"? This can't be undone.`, danger: true }))) return;
+    setDeletingBackup(fileName);
+    try {
+      await api.del(`/system/backups/${encodeURIComponent(fileName)}`);
+      loadBackups();
+    } catch (e) {
+      notify.error((e as Error).message);
+    } finally {
+      setDeletingBackup(null);
     }
   }
 
@@ -1084,6 +1114,53 @@ export default function System() {
           },
         ]}
       />
+      <h2 style={{ marginTop: 24 }}>Existing Backups</h2>
+      {backups.length === 0 ? (
+        <p className="empty">
+          {settings.backupDir ? "No backups yet — use Backup Now above, or wait for the next scheduled run." : "Set a backup directory above to see existing backups here."}
+        </p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Filename</th>
+              <th>Date</th>
+              <th>Size</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {backups.map((b) => (
+              <tr key={b.fileName}>
+                <td>{b.fileName}</td>
+                <td>{new Date(b.createdAt).toLocaleString()}</td>
+                <td>{formatBytes(b.sizeBytes)}</td>
+                <td>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    onClick={() => downloadFile(`/system/backups/${encodeURIComponent(b.fileName)}`, b.fileName)}
+                    title="Download"
+                    aria-label={`Download ${b.fileName}`}
+                  >
+                    <DownloadIcon />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button danger"
+                    onClick={() => deleteBackup(b.fileName)}
+                    disabled={deletingBackup === b.fileName}
+                    title="Delete"
+                    aria-label={`Delete ${b.fileName}`}
+                  >
+                    <TrashIcon />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
       </div>
       <div style={{ display: tab === "maintenance" ? undefined : "none" }}>
       <h2>Maintenance</h2>

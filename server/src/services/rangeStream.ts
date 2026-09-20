@@ -25,6 +25,14 @@ export const CONTENT_TYPES: Record<string, string> = {
   ".flac": "audio/flac",
   ".ogg": "audio/ogg",
   ".wav": "audio/wav",
+  // Added for the account-avatar route (routes/authRoutes.ts) — small enough that range support is
+  // never actually exercised, but reusing this one already-tested file-serving function beats
+  // writing a second one just to skip a header a browser doesn't send for an <img> anyway.
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
 };
 
 /**

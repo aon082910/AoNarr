@@ -108,6 +108,10 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE queue ADD COLUMN IF NOT EXISTS download_path TEXT`,
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS digital_release_date TEXT`,
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS physical_release_date TEXT`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_path TEXT`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS social_links TEXT`,
 ];
 
 /**

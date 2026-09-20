@@ -105,6 +105,10 @@ ensureColumn(
 ensureColumn("download_clients", "download_types", "download_types TEXT");
 ensureColumn("media_items", "digital_release_date", "digital_release_date TEXT");
 ensureColumn("media_items", "physical_release_date", "physical_release_date TEXT");
+ensureColumn("users", "display_name", "display_name TEXT");
+ensureColumn("users", "avatar_path", "avatar_path TEXT");
+ensureColumn("users", "bio", "bio TEXT");
+ensureColumn("users", "social_links", "social_links TEXT");
 
 /**
  * One-time transition marker for the course/adult "collection"/"single" -> "episodic" shape change

@@ -656,6 +656,11 @@ export function LibraryItemGrid({
   // current filters (not just the current page), fetched separately from the paginated `items`
   // list itself so jumping to a letter whose items live on a different page still works. Only
   // fetched when sorted by title, since the jump sidebar is meaningless (and hidden) otherwise.
+  // Hits a dedicated lightweight endpoint rather than "/media" itself: "/media" caps `limit` at 500
+  // (a deliberate, shared safety cap other pages rely on) which would silently truncate this index
+  // to the alphabetically-first 500 items on any larger library, permanently graying out every
+  // later letter — "/media/title-index" returns every matching {id, title} with no cap at all,
+  // since that's structurally what this needs and it skips the full item payload to stay cheap.
   useEffect(() => {
     if (sortKey !== "title") {
       setLetterIndex([]);
@@ -668,10 +673,7 @@ export function LibraryItemGrid({
     // Must mirror load()'s own filters exactly (including the search query) — a letter's page
     // offset is only meaningful against the same result set the pages are cut from.
     if (searchQuery) params.set("q", searchQuery);
-    params.set("sort", "title");
-    params.set("limit", "100000");
-    params.set("offset", "0");
-    api.get<{ items: MediaItem[] }>(`/media?${params.toString()}`).then((data) => {
+    api.get<{ items: { id: number; title: string }[] }>(`/media/title-index?${params.toString()}`).then((data) => {
       if (cancelled) return;
       setLetterIndex(
         data.items.map((it) => {

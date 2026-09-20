@@ -18,8 +18,8 @@ export default function ThemeToggle() {
   }
 
   return (
-    <a onClick={toggle} style={{ cursor: "pointer" }}>
+    <button type="button" className="link-button" onClick={toggle}>
       {theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
-    </a>
+    </button>
   );
 }

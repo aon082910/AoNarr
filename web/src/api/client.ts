@@ -157,3 +157,15 @@ export async function uploadFormFile<T>(path: string, file: File): Promise<T> {
   }
   return res.json();
 }
+
+/** URL for a user's avatar image, or null if this session has no credential to attach — an
+ * <img src> can't carry the X-Api-Key/X-Session-Token headers a plain fetch/api.get() call would,
+ * so (same as Activity.tsx's EventSource and System.tsx's log stream) whichever credential this
+ * session has travels as a query param instead; requireAuth already accepts both as a fallback for
+ * exactly this "can't set a custom header" case. */
+export function avatarUrl(userId: number): string | null {
+  const apiKey = getApiKey();
+  const sessionToken = getSessionToken();
+  const authParam = apiKey ? `apikey=${encodeURIComponent(apiKey)}` : sessionToken ? `sessionToken=${encodeURIComponent(sessionToken)}` : null;
+  return authParam ? `${BASE}/auth/me/avatar/${userId}?${authParam}` : null;
+}

@@ -285,6 +285,10 @@ export function userFromRow(row: any) {
     maxPendingRequests: row.max_pending_requests,
     autoApprove: row.auto_approve,
     maxContentRating: row.max_content_rating,
+    displayName: row.display_name,
+    avatarPath: row.avatar_path,
+    bio: row.bio,
+    socialLinks: row.social_links ? JSON.parse(row.social_links) : [],
   };
 }
 

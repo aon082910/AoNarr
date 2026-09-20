@@ -2,10 +2,15 @@ import { db } from "../db/index.js";
 
 export async function recordGroupSuccess(releaseGroup: string | null): Promise<void> {
   if (!releaseGroup) return;
+  // The table-qualified name on the right-hand side isn't optional under Postgres: `excluded` (the
+  // proposed row) also has a `successes` column, so a bare `successes` in the SET clause is
+  // genuinely ambiguous between "the existing row" and "excluded" — unlike every other
+  // ON CONFLICT DO UPDATE in this codebase, this one increments off the *current* value rather than
+  // just overwriting with `excluded`'s, so it must name which "successes" it means.
   await db
     .prepare(
       `INSERT INTO release_group_stats (release_group, successes) VALUES (?, 1)
-       ON CONFLICT(release_group) DO UPDATE SET successes = successes + 1`
+       ON CONFLICT(release_group) DO UPDATE SET successes = release_group_stats.successes + 1`
     )
     .run(releaseGroup);
 }
@@ -15,7 +20,7 @@ export async function recordGroupFailure(releaseGroup: string | null): Promise<v
   await db
     .prepare(
       `INSERT INTO release_group_stats (release_group, failures) VALUES (?, 1)
-       ON CONFLICT(release_group) DO UPDATE SET failures = failures + 1`
+       ON CONFLICT(release_group) DO UPDATE SET failures = release_group_stats.failures + 1`
     )
     .run(releaseGroup);
 }

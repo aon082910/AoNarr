@@ -28,7 +28,17 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import Database from "better-sqlite3";
-import { Pool, type PoolClient } from "pg";
+import { Pool, type PoolClient, types as pgTypes } from "pg";
+
+// node-postgres returns BIGINT/BIGSERIAL columns and COUNT()/SUM() aggregate results (all OID 20 —
+// "int8") as a JS *string* by default, to avoid silently losing precision above
+// Number.MAX_SAFE_INTEGER — but better-sqlite3 returns the same columns/aggregates as plain numbers,
+// so a query result's shape otherwise differs by dialect (`{ c: "0" }` vs `{ c: 0 }`) even though
+// every call site treats it as a number. Every real BIGINT column in this schema is a byte count
+// (size_bytes, queue.size, disk_usage_samples.*_bytes) — always far under the safe-integer limit —
+// so it's safe to just parse int8 as a number process-wide instead of auditing every COUNT()/SUM()
+// call site to wrap it in Number(...) individually.
+pgTypes.setTypeParser(20, (value: string) => parseInt(value, 10));
 
 export interface RunResult {
   changes: number;

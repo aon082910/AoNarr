@@ -345,6 +345,58 @@ mediaRouter.get(
   })
 );
 
+/**
+ * Every {id, title} matching the current filters, in title order, with NO row cap — powers the
+ * Library page's A-Z jump sidebar, which structurally needs "every matching item" to know which
+ * letters actually have content and where each one sits in the sorted list. The main "/" route's
+ * `clampLimit()` (max 500) is a deliberate safety cap for the paginated list and is wrong to reuse
+ * here: a library over 500 items would silently truncate the jump index to whatever the
+ * alphabetically-first 500 items are, permanently graying out every later letter. This route skips
+ * the full row shape (poster/overview/external ids/child counts) entirely, so even an uncapped scan
+ * stays cheap. Registered before "/:id" for the same reason "/stats" already is.
+ */
+mediaRouter.get(
+  "/title-index",
+  asyncHandler(async (req, res) => {
+    const { type, tagId, groupId, systemGroupId, status, contentRating, q } = req.query as {
+      type?: MediaType;
+      tagId?: string;
+      groupId?: string;
+      systemGroupId?: string;
+      status?: string;
+      contentRating?: string;
+      q?: string;
+    };
+    const allowedTypes = allowedTypesFor(req);
+    if (allowedTypes && type && !allowedTypes.includes(type)) {
+      res.json({ items: [] });
+      return;
+    }
+
+    const { where, params, fromClause } = await buildMediaQuery({
+      type,
+      tagId,
+      groupId,
+      systemGroupId,
+      status,
+      contentRating,
+      allowedTypes,
+      maxContentRating: req.auth?.user?.maxContentRating,
+      q,
+    });
+    if (where === null) {
+      res.json({ items: [] });
+      return;
+    }
+
+    const rows = (await db.prepare(`SELECT m.id, m.title FROM ${fromClause} WHERE ${where} ORDER BY m.sort_title ASC`).all(...params)) as {
+      id: number;
+      title: string;
+    }[];
+    res.json({ items: rows });
+  })
+);
+
 function csvEscape(value: unknown): string {
   const s = value === null || value === undefined ? "" : String(value);
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -1044,8 +1096,8 @@ mediaRouter.post(
     const result = await db
       .prepare(
         `INSERT INTO media_items
-         (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability, series_type, backdrop_url, rating, runtime_minutes, studio)
-         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @path, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability, @seriesType, @backdropUrl, @rating, @runtimeMinutes, @studio)`
+         (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability, series_type, backdrop_url, rating, runtime_minutes, studio, content_rating)
+         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @path, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability, @seriesType, @backdropUrl, @rating, @runtimeMinutes, @studio, @contentRating)`
       )
       .run({
         type: b.type,
@@ -1070,6 +1122,7 @@ mediaRouter.post(
         rating: b.rating ?? null,
         runtimeMinutes: b.runtimeMinutes ?? null,
         studio: b.studio ?? null,
+        contentRating: b.contentRating ?? null,
       });
 
     const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(result.lastInsertRowid);

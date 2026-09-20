@@ -1,5 +1,9 @@
+import fs from "node:fs";
+import path from "node:path";
 import { Router } from "express";
+import multer from "multer";
 import { db } from "../db/index.js";
+import { config } from "../config.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { clientIp } from "../middleware/auth.js";
 import {
@@ -13,8 +17,22 @@ import {
 import { logAuditEvent } from "../services/audit.js";
 import { checkRateLimit, recordFailure, recordSuccess } from "../services/rateLimiter.js";
 import { buildOtpauthUrl, generateBase32Secret, verifyTotp } from "../services/totp.js";
+import { streamFileWithRangeSupport } from "../services/rangeStream.js";
 
 export const authRouter = Router();
+
+const AVATAR_DIR = path.join(config.configDir, "avatars");
+const AVATAR_EXTENSION_BY_MIMETYPE: Record<string, string> = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+};
+const avatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => cb(null, file.mimetype in AVATAR_EXTENSION_BY_MIMETYPE),
+});
 
 /** Public — lets the web UI decide whether to show "create admin account" or the normal login form. */
 authRouter.get(
@@ -200,6 +218,67 @@ authRouter.post(
     }
     await db.prepare("UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE id = ?").run(req.auth.user.id);
     res.status(204).send();
+  })
+);
+
+/** Self-service profile fields — display name, bio, and a free-form list of social/website links.
+ * Deliberately NOT username/password here: those stay admin-managed via PATCH /api/users/:id (a
+ * household account can't rename or re-key itself), same boundary the TOTP routes above already
+ * draw between "manage my own account" and "manage the account." */
+authRouter.patch(
+  "/me",
+  asyncHandler(async (req, res) => {
+    if (!req.auth?.user) throw new HttpError(401, "Not authenticated");
+    const b = req.body ?? {};
+    const socialLinks = Array.isArray(b.socialLinks)
+      ? b.socialLinks
+          .filter((l: any) => l && typeof l.label === "string" && typeof l.url === "string" && l.label.trim() && l.url.trim())
+          .map((l: any) => ({ label: l.label.trim(), url: l.url.trim() }))
+      : [];
+    await db
+      .prepare("UPDATE users SET display_name = ?, bio = ?, social_links = ? WHERE id = ?")
+      .run(b.displayName?.trim() || null, b.bio?.trim() || null, JSON.stringify(socialLinks), req.auth.user.id);
+    res.status(204).send();
+  })
+);
+
+authRouter.post(
+  "/me/avatar",
+  avatarUpload.single("file"),
+  asyncHandler(async (req, res) => {
+    if (!req.auth?.user) throw new HttpError(401, "Not authenticated");
+    if (!req.file) throw new HttpError(400, "file is required (multipart form field \"file\"), and must be a JPEG/PNG/WebP/GIF image");
+
+    const ext = AVATAR_EXTENSION_BY_MIMETYPE[req.file.mimetype];
+    fs.mkdirSync(AVATAR_DIR, { recursive: true });
+    // Clears out a previous avatar under any of the other extensions first — otherwise switching
+    // from a .png to a .jpg avatar would leave the old .png sitting on disk forever, orphaned once
+    // avatar_path below points at the new file instead.
+    for (const oldExt of Object.values(AVATAR_EXTENSION_BY_MIMETYPE)) {
+      try {
+        fs.unlinkSync(path.join(AVATAR_DIR, `user-${req.auth.user.id}${oldExt}`));
+      } catch {
+        // no existing avatar with this extension, nothing to clean up
+      }
+    }
+    const fileName = `user-${req.auth.user.id}${ext}`;
+    fs.writeFileSync(path.join(AVATAR_DIR, fileName), req.file.buffer);
+    await db.prepare("UPDATE users SET avatar_path = ? WHERE id = ?").run(fileName, req.auth.user.id);
+    res.json({ avatarPath: fileName });
+  })
+);
+
+/** Not gated to "only the logged-in user's own id" — every account in a household can see every
+ * other account's display name/avatar already (Users.tsx lists them all for an admin, and a
+ * shared-library household has no real privacy boundary between its own members), so there's
+ * nothing an avatar image itself would leak that isn't already visible elsewhere. Still requires
+ * *some* valid session/API key, same as every other route under /auth and /api. */
+authRouter.get(
+  "/me/avatar/:userId",
+  asyncHandler(async (req, res) => {
+    const user = (await db.prepare("SELECT avatar_path FROM users WHERE id = ?").get(req.params.userId)) as { avatar_path: string | null } | undefined;
+    if (!user?.avatar_path) throw new HttpError(404, "No avatar set");
+    streamFileWithRangeSupport(req, res, path.join(AVATAR_DIR, user.avatar_path));
   })
 );
 

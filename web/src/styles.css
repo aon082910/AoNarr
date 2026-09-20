@@ -301,6 +301,13 @@ table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
 th { color: var(--muted); font-weight: 500; }
 
+/* A show with multiple seasons expanded renders one <table> per season, each auto-sizing its own
+   columns from that season's own content by default — Season 1's Title column can end up a
+   different width than Season 2's, so text visibly drifts out of line down the page. Fixed layout
+   + an explicit <colgroup> (same widths on every season's table) keeps every season's columns on
+   the same grid regardless of that season's own episode-title lengths. */
+.episode-table { table-layout: fixed; }
+
 .badge {
   display: inline-block;
   padding: 2px 8px;
@@ -363,6 +370,21 @@ button {
 button:hover { opacity: 0.9; }
 button.secondary { background: var(--border); }
 button.danger { background: var(--danger); }
+
+/* Resets a <button> down to look exactly like the plain clickable text it replaces (the sidebar
+   footer's Theme/Layout toggles) — real button semantics (keyboard-focusable, proper role) without
+   any of button's own default chrome (background/border/padding/the margin-top above meant for a
+   button following a stacked label+input). */
+button.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
 
 /* Same box (background, border, padding, radius) as input/select so a button sitting in the same
    toolbar row as selects — a dropdown trigger, a scan/refresh action — looks like part of the

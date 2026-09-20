@@ -37,6 +37,7 @@ import { listReleaseGroupStats } from "../services/releaseGroupStats.js";
 import { findLibraryMismatches } from "../services/libraryValidation.js";
 import { getMediaServerConfig } from "../services/mediaServer.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
+import { getSetting } from "../services/settingsStore.js";
 
 export const systemRouter = Router();
 systemRouter.use(requireAdmin);
@@ -581,21 +582,99 @@ const PG_DUMP_MAGIC = "PGDMP";
  * services/scheduledBackup.ts's writeBackupBundle) — SQLite via better-sqlite3's own online backup
  * API (safe mid-write, no need to pause anything), Postgres via `pg_dump` in custom format, shared
  * with the scheduled-backup job so both paths produce identically-restorable files. Bundling the
- * key means a restore onto a different config volume can still decrypt every stored credential. */
+ * key means a restore onto a different config volume can still decrypt every stored credential.
+ *
+ * When a backup directory is configured (Settings → Backup), the bundle is written straight there
+ * (same "aonarr-backup-<stamp>.aonarrbackup" naming the scheduled job uses) so it shows up in
+ * "/backups" below immediately, matching how Radarr's own "Backup Now" populates its own list —
+ * "backup now" and "the scheduled job" both just mean "write one of these files." Falls back to a
+ * throwaway temp file (today's behavior) when no directory is configured, since there's nowhere to
+ * list it from anyway. Either way, the response streamed back to the browser is identical. */
 systemRouter.get(
   "/backup",
   asyncHandler(async (req, res) => {
-    const tmpFile = path.join(os.tmpdir(), `aonarr-backup-${Date.now()}.${BACKUP_BUNDLE_EXTENSION}`);
-    await writeBackupBundle(tmpFile);
+    const dir = getSetting("backupDir");
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const fileName = `aonarr-backup-${stamp}.${BACKUP_BUNDLE_EXTENSION}`;
+    if (dir) fs.mkdirSync(dir, { recursive: true });
+    const destPath = dir ? path.join(dir, fileName) : path.join(os.tmpdir(), fileName);
+    await writeBackupBundle(destPath);
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "backup_downloaded");
-    res.download(tmpFile, `aonarr-backup-${stamp}.${BACKUP_BUNDLE_EXTENSION}`, (err) => {
-      fs.unlink(tmpFile, () => {});
+    res.download(destPath, fileName, (err) => {
+      // Only clean up the throwaway temp-file case — a backup written into the configured
+      // directory stays there so it shows up in the list, same as a scheduled backup would.
+      if (!dir) fs.unlink(destPath, () => {});
       // Throwing here lands in process-level uncaughtException, not the route's error handler —
       // the handler promise already resolved when res.download() was called.
       if (err && !res.headersSent) res.status(500).json({ error: `Backup download failed: ${err.message}` });
     });
+  })
+);
+
+/** Every extension a backup file on disk can carry — the current bundle format plus the legacy
+ * single-file dumps from before bundling existed (see BACKUP_BUNDLE_EXTENSION's own doc comment) —
+ * shared by the list/download/delete routes below and runScheduledBackup's own rotation filter. */
+const BACKUP_FILE_EXTENSIONS = [`.${BACKUP_BUNDLE_EXTENSION}`, ".db", ".dump"];
+
+/** Resolves `fileName` to an absolute path inside the configured backup directory, or throws —
+ * rejects anything that isn't a bare filename (no `/`, `\`, or `..` — no path traversal out of the
+ * directory) and anything that isn't one of this app's own backup file extensions, so these routes
+ * can only ever touch a file this app itself could have written here. */
+function resolveBackupFilePath(fileName: string): string {
+  const dir = getSetting("backupDir");
+  if (!dir) throw new HttpError(400, "No backup directory is configured");
+  if (!fileName || fileName.includes("/") || fileName.includes("\\") || fileName.includes("..")) {
+    throw new HttpError(400, "Invalid backup file name");
+  }
+  if (!BACKUP_FILE_EXTENSIONS.some((ext) => fileName.endsWith(ext))) {
+    throw new HttpError(400, "Invalid backup file name");
+  }
+  return path.join(dir, fileName);
+}
+
+/** Every backup file currently on disk in the configured backup directory, newest first — the
+ * list this app's own "Backup Now" and the scheduled job both write into (see the "/backup" route
+ * and services/scheduledBackup.ts's runScheduledBackup), surfaced so an admin can see what already
+ * exists instead of only ever being able to trigger a fresh one or restore from a re-uploaded file. */
+systemRouter.get(
+  "/backups",
+  asyncHandler(async (req, res) => {
+    const dir = getSetting("backupDir");
+    if (!dir || !fs.existsSync(dir)) {
+      res.json({ backups: [] });
+      return;
+    }
+    const backups = fs
+      .readdirSync(dir)
+      .filter((f) => BACKUP_FILE_EXTENSIONS.some((ext) => f.endsWith(ext)))
+      .map((fileName) => {
+        const stat = fs.statSync(path.join(dir, fileName));
+        return { fileName, sizeBytes: stat.size, createdAt: stat.mtime.toISOString() };
+      })
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    res.json({ backups });
+  })
+);
+
+systemRouter.get(
+  "/backups/:fileName",
+  asyncHandler(async (req, res) => {
+    const filePath = resolveBackupFilePath(req.params.fileName);
+    if (!fs.existsSync(filePath)) throw new HttpError(404, "Backup file not found");
+    res.download(filePath, req.params.fileName);
+  })
+);
+
+systemRouter.delete(
+  "/backups/:fileName",
+  asyncHandler(async (req, res) => {
+    const filePath = resolveBackupFilePath(req.params.fileName);
+    if (!fs.existsSync(filePath)) throw new HttpError(404, "Backup file not found");
+    fs.unlinkSync(filePath);
+    const actor = auditActor(req);
+    logAuditEvent(actor.userId, actor.username, "backup_deleted", req.params.fileName);
+    res.status(204).send();
   })
 );
 
