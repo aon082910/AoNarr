@@ -162,6 +162,16 @@ describe("parseReleaseTitle", () => {
     expect(p.seasonNumber).toBe(2);
     expect(p.episodeNumbers).toEqual([7]);
   });
+
+  it("extracts an IMDb id embedded in the release title, lowercased", () => {
+    const p = parseReleaseTitle("Movie.Name.2020.1080p.WEBRip.x264-GROUP[TT1234567]");
+    expect(p.imdbId).toBe("tt1234567");
+  });
+
+  it("returns a null imdbId when the title carries none", () => {
+    const p = parseReleaseTitle("Movie.Name.2020.1080p.WEBRip.x264-GROUP");
+    expect(p.imdbId).toBeNull();
+  });
 });
 
 describe("releaseMatchesEpisode", () => {

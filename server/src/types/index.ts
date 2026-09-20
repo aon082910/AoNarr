@@ -21,11 +21,17 @@ export interface MediaItem {
   status: string; // e.g. "continuing", "ended", "announced", "released"
   addedAt: string;
   releaseDate: string | null;
+  /** Movies only, from TMDB's separate /movie/{id}/release_dates endpoint — the earliest Digital/
+   * Physical release dates, when TMDB has recorded them (most movies don't have these populated,
+   * even once otherwise fully matched). See isReleaseAvailableForSearch, which prefers these over
+   * the flat delay-based approximation whenever they're available. */
+  digitalReleaseDate?: string | null;
+  physicalReleaseDate?: string | null;
   /** Radarr-style search gate for "single"-shape types (movies): null/"announced" searches as
    * soon as added (today's behavior), "inCinemas" waits until releaseDate has passed, "released"
-   * waits releaseDate plus the configured delay (settings' minimumAvailabilityReleasedDelayDays)
-   * — an approximation of a digital/home release window since AoNarr only stores one release date
-   * per item, not TMDB's separate per-type release dates. */
+   * waits for the earliest of digitalReleaseDate/physicalReleaseDate when TMDB has one, else
+   * releaseDate plus the configured delay (settings' minimumAvailabilityReleasedDelayDays) as an
+   * approximation of a digital/home release window. */
   minimumAvailability: "announced" | "inCinemas" | "released" | null;
   /** "daily" (talk shows, news — named/searched by air date instead of season/episode) vs
    * null/"standard" (the default). Only meaningful for "episodic"-shape types (series, anime). */
@@ -179,4 +185,11 @@ export interface SearchResult {
   /** Torznab's downloadvolumefactor attribute — 0 = freeleech, 0.5 = halfleech, 1 = normal, null =
    * not reported by this indexer. See customFormatScoring.ts's "indexerFlag" condition type. */
   downloadVolumeFactor?: number | null;
+  /** An external id the indexer itself reported for this specific release, via Torznab's `imdb`/
+   * `tmdbid` attrs (not every indexer sends these) — a much stronger identity signal than anything
+   * extracted from the title text, since it comes from the indexer's own catalog data rather than
+   * a regex guess. See scheduler.ts's chooseBestResult for how this and a title-parsed id are used
+   * together to prefer a confirmed match without ever excluding an unconfirmed one. */
+  imdbId?: string | null;
+  tmdbId?: string | null;
 }

@@ -92,11 +92,11 @@ async function rowsToIndexers(): Promise<Indexer[]> {
 /**
  * Radarr-style "minimum availability" gate for "single"-shape items (movies, ROMs, adult — Movies
  * is the real driving case): "announced"/null searches as soon as the item's added, same as
- * always. "inCinemas" waits until releaseDate has passed. "released" waits releaseDate plus a
- * configurable delay (default 90 days), an approximation of a digital/home-release window since
- * AoNarr only stores one release date per item, not TMDB's separate theatrical/digital/physical
- * dates the way Radarr's own four-tier version does. An item with no releaseDate at all is never
- * gated — there's nothing to wait on, so it behaves like "announced".
+ * always. "inCinemas" waits until releaseDate has passed. "released" prefers TMDB's own real
+ * Digital/Physical dates (whichever comes first) when it has recorded either — matching Radarr's
+ * own multi-date minimumAvailability semantics — falling back to releaseDate plus a configurable
+ * delay (default 90 days) only for a movie TMDB hasn't recorded either date for yet. An item with
+ * no releaseDate at all is never gated — there's nothing to wait on, so it behaves like "announced".
  */
 export function isReleaseAvailableForSearch(item: MediaItem): boolean {
   const availability = item.minimumAvailability;
@@ -105,11 +105,18 @@ export function isReleaseAvailableForSearch(item: MediaItem): boolean {
   const releaseDate = new Date(item.releaseDate);
   if (isNaN(releaseDate.getTime())) return true;
 
-  const threshold = new Date(releaseDate);
-  if (availability === "released") {
-    const delayDays = Math.max(0, parseInt(getSetting("minimumAvailabilityReleasedDelayDays") ?? "90", 10) || 90);
-    threshold.setDate(threshold.getDate() + delayDays);
+  if (availability !== "released") return releaseDate.getTime() <= Date.now();
+
+  const realDates = [item.digitalReleaseDate, item.physicalReleaseDate]
+    .map((d) => (d ? new Date(d) : null))
+    .filter((d): d is Date => !!d && !isNaN(d.getTime()));
+  if (realDates.length > 0) {
+    return Math.min(...realDates.map((d) => d.getTime())) <= Date.now();
   }
+
+  const threshold = new Date(releaseDate);
+  const delayDays = Math.max(0, parseInt(getSetting("minimumAvailabilityReleasedDelayDays") ?? "90", 10) || 90);
+  threshold.setDate(threshold.getDate() + delayDays);
   return threshold.getTime() <= Date.now();
 }
 
@@ -210,13 +217,42 @@ export interface ChosenResult {
   quality: string;
 }
 
+/** A single-shape target's own identity (year + external provider ids) — passed to
+ * chooseBestResult so it can prefer a release confirmed to actually be this item over an
+ * unconfirmed one, without ever excluding the unconfirmed one outright (see matchTierFor). Not
+ * meaningful for episodic/collection targets, which already confirm identity via season/episode/
+ * air-date matching (releaseMatchesEpisode/releaseMatchesAirDate) — those callers pass `null`. */
+export interface TargetIdentity {
+  year: number | null;
+  externalIds: Record<string, string>;
+}
+
+/**
+ * 2 = the release's own reported or title-embedded external id matches the target's; 1 = the
+ * release's parsed year matches the target's; 0 = neither, or no identity was given at all
+ * (episodic/collection searches, which confirm identity a different way). Used purely as an
+ * additional sort key in chooseBestResult below, never to exclude a candidate — a title/year
+ * mismatch is common even for the objectively correct release (a regional premiere date, an
+ * indexer that mis-scraped the year), so this is a tiebreaker among already-viable candidates,
+ * not a filter.
+ */
+export function matchTierFor(result: SearchResult, identity: TargetIdentity | null): number {
+  if (!identity) return 0;
+  const parsed = parseReleaseTitle(result.title);
+  const candidateImdb = (result.imdbId ?? parsed.imdbId)?.toLowerCase();
+  if (candidateImdb && identity.externalIds.imdb && candidateImdb === identity.externalIds.imdb.toLowerCase()) return 2;
+  if (result.tmdbId && identity.externalIds.tmdb && result.tmdbId === identity.externalIds.tmdb) return 2;
+  if (parsed.year != null && identity.year != null && parsed.year === identity.year) return 1;
+  return 0;
+}
+
 /**
  * Picks the best result for a target: filters to allowed qualities, prefers matching
  * episode/season, ranks by quality first, then by custom-format score, then seeders. Releases
  * scoring below the profile's minimum custom format score are rejected outright, mirroring
  * Sonarr/Radarr's "minimum custom format score" gate.
  */
-async function chooseBestResult(
+export async function chooseBestResult(
   results: SearchResult[],
   allowedQualities: string[],
   cutoff: string,
@@ -228,7 +264,8 @@ async function chooseBestResult(
     | null,
   blocklisted: Set<string>,
   mediaType: string,
-  delayProfile: DelayProfile | null = null
+  delayProfile: DelayProfile | null = null,
+  identity: TargetIdentity | null = null
 ): Promise<ChosenResult | null> {
   const notBlocklisted = results.filter((r) => !blocklisted.has(r.title));
   const withParsed = notBlocklisted
@@ -260,6 +297,7 @@ async function chooseBestResult(
         .filter(({ parsed }) => parsed.quality === best)
         .map(async ({ result }) => ({
           result,
+          matchTier: matchTierFor(result, identity),
           ...(await scoreRelease(result.title, result.size ?? null, qualityProfileId, mediaType, result.downloadVolumeFactor ?? null)),
         }))
     )
@@ -277,6 +315,7 @@ async function chooseBestResult(
   candidates.sort(
     (a, b) =>
       b.totalScore - a.totalScore ||
+      b.matchTier - a.matchTier ||
       (b.result.seeders ?? 0) - (a.result.seeders ?? 0) ||
       (reputationByGroup.get(parseReleaseTitle(b.result.title).releaseGroup) ?? 0.5) -
         (reputationByGroup.get(parseReleaseTitle(a.result.title).releaseGroup) ?? 0.5) ||
@@ -452,7 +491,8 @@ export async function runAutoSearch(signal?: AbortSignal) {
           continue;
         }
         const query = item.year ? `${item.title} ${item.year}` : item.title;
-        const results = await searchAllIndexers(indexers, query, item.type);
+        const identity: TargetIdentity = { year: item.year, externalIds: item.externalIds ? JSON.parse(item.externalIds) : {} };
+        const results = await searchAllIndexers(indexers, query, item.type, false, identity.externalIds);
         const best = await chooseBestResult(
           results,
           allowedQualities,
@@ -462,7 +502,8 @@ export async function runAutoSearch(signal?: AbortSignal) {
           null,
           blocklisted,
           item.type,
-          delayProfile
+          delayProfile,
+          identity
         );
         if (best) {
           const targetClient = pickClientForProtocol(clients, best.result.protocol);
@@ -646,6 +687,7 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
       let episodeTarget:
         | { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null; absoluteEpisode?: number | null }
         | null = null;
+      let identity: TargetIdentity | null = null;
       if (t.episodeId) {
         const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(t.episodeId)) as any;
         if (!ep) {
@@ -671,9 +713,10 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
         query = `${item.title} ${sub.title}`;
       } else {
         query = item.year ? `${item.title} ${item.year}` : item.title;
+        identity = { year: item.year, externalIds: item.externalIds ? JSON.parse(item.externalIds) : {} };
       }
 
-      const searchResults = await searchAllIndexers(indexers, query, item.type);
+      const searchResults = await searchAllIndexers(indexers, query, item.type, false, identity?.externalIds);
       const best = await chooseBestResult(
         searchResults,
         allowedQualities,
@@ -683,7 +726,8 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
         episodeTarget,
         blocklisted,
         item.type,
-        delayProfile
+        delayProfile,
+        identity
       );
       if (!best) {
         results.push({ ...t, grabbed: false, error: "No matching results" });
@@ -939,6 +983,7 @@ export async function retryFailedGrab(match: QueueItem, reason: string): Promise
     let episodeTarget:
       | { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null; absoluteEpisode?: number | null }
       | null = null;
+    let identity: TargetIdentity | null = null;
     let query: string;
     if (match.episodeId) {
       const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(match.episodeId)) as any;
@@ -959,10 +1004,11 @@ export async function retryFailedGrab(match: QueueItem, reason: string): Promise
       query = `${item.title} ${sub.title}`;
     } else {
       query = item.year ? `${item.title} ${item.year}` : item.title;
+      identity = { year: item.year, externalIds: item.externalIds ? JSON.parse(item.externalIds) : {} };
     }
 
     const indexers = await rowsToIndexers();
-    const results = await searchAllIndexers(indexers, query, item.type);
+    const results = await searchAllIndexers(indexers, query, item.type, false, identity?.externalIds);
     const delayProfiles = await loadDelayProfiles();
     const delayProfile = pickDelayProfile(delayProfiles, await tagIdsForMediaItem(item.id));
     const best = await chooseBestResult(
@@ -974,7 +1020,8 @@ export async function retryFailedGrab(match: QueueItem, reason: string): Promise
       episodeTarget,
       blocklisted,
       item.type,
-      delayProfile
+      delayProfile,
+      identity
     );
     if (!best) {
       log.info(`[scheduler] retry exhausted search results for "${mediaTitle}" — notifying instead`);

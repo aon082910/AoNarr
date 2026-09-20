@@ -109,6 +109,11 @@ export interface MediaItem {
   childCount?: number;
   childHaveCount?: number;
   releaseDate: string | null;
+  /** Movies only, from TMDB's separate release_dates endpoint — the earliest Digital/Physical
+   * release dates, when TMDB has recorded them (most movies don't have these populated yet, even
+   * once otherwise fully matched). */
+  digitalReleaseDate?: string | null;
+  physicalReleaseDate?: string | null;
   minimumAvailability: "announced" | "inCinemas" | "released" | null;
   seriesType: "standard" | "daily" | null;
   backdropUrl: string | null;

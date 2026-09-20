@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import App from "./App.js";
 import ApiKeyGate from "./components/ApiKeyGate.js";
+import { ErrorBoundary } from "./components/ErrorBoundary.js";
 import SharePage from "./pages/SharePage.js";
 import InviteAcceptPage from "./pages/InviteAcceptPage.js";
 import "./styles.css";
@@ -24,20 +25,22 @@ fetch("/api/theme.css")
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <BrowserRouter>
-      <Routes>
-        <Route path="/share/:token" element={<SharePage />} />
-        <Route path="/invite/:token" element={<InviteAcceptPage />} />
-        <Route
-          path="/*"
-          element={
-            <ApiKeyGate>
-              <App />
-            </ApiKeyGate>
-          }
-        />
-      </Routes>
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/share/:token" element={<SharePage />} />
+          <Route path="/invite/:token" element={<InviteAcceptPage />} />
+          <Route
+            path="/*"
+            element={
+              <ApiKeyGate>
+                <App />
+              </ApiKeyGate>
+            }
+          />
+        </Routes>
+      </BrowserRouter>
+    </ErrorBoundary>
   </React.StrictMode>
 );
 

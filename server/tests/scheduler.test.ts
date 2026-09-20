@@ -74,6 +74,8 @@ let checkHealthAndNotify: (typeof import("../src/services/scheduler.js"))["check
 let runSeedGoalCleanup: (typeof import("../src/services/scheduler.js"))["runSeedGoalCleanup"];
 let startScheduler: (typeof import("../src/services/scheduler.js"))["startScheduler"];
 let ImportSkippedError: (typeof import("../src/services/importer.js"))["ImportSkippedError"];
+let chooseBestResult: (typeof import("../src/services/scheduler.js"))["chooseBestResult"];
+let matchTierFor: (typeof import("../src/services/scheduler.js"))["matchTierFor"];
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
@@ -97,6 +99,8 @@ beforeAll(async () => {
     checkHealthAndNotify,
     runSeedGoalCleanup,
     startScheduler,
+    chooseBestResult,
+    matchTierFor,
   } = await import("../src/services/scheduler.js"));
 });
 
@@ -226,6 +230,46 @@ describe("isReleaseAvailableForSearch", () => {
 
   it("never gates an item with no release date at all", () => {
     expect(isReleaseAvailableForSearch({ minimumAvailability: "released", releaseDate: null } as any)).toBe(true);
+  });
+
+  it("'released' prefers a real digital/physical date over the flat delay approximation, even when the approximation would already be satisfied", () => {
+    setSetting("minimumAvailabilityReleasedDelayDays", "90");
+    const longAgo = new Date(Date.now() - 200 * 86_400_000).toISOString(); // delay-based threshold already passed
+    const futureDigital = new Date(Date.now() + 5 * 86_400_000).toISOString(); // but TMDB's own digital date hasn't arrived yet
+    expect(isReleaseAvailableForSearch({ minimumAvailability: "released", releaseDate: longAgo, digitalReleaseDate: futureDigital } as any)).toBe(
+      false
+    );
+  });
+
+  it("'released' becomes available once the real digital date passes, even if the flat delay approximation wouldn't have allowed it yet", () => {
+    setSetting("minimumAvailabilityReleasedDelayDays", "90");
+    const recent = new Date(Date.now() - 5 * 86_400_000).toISOString(); // delay-based threshold NOT yet passed
+    const pastDigital = new Date(Date.now() - 1 * 86_400_000).toISOString();
+    expect(isReleaseAvailableForSearch({ minimumAvailability: "released", releaseDate: recent, digitalReleaseDate: pastDigital } as any)).toBe(
+      true
+    );
+  });
+
+  it("'released' uses the earliest of digital/physical when both are present", () => {
+    const recent = new Date(Date.now() - 5 * 86_400_000).toISOString();
+    const earlyPhysical = new Date(Date.now() - 1 * 86_400_000).toISOString();
+    const laterDigital = new Date(Date.now() + 30 * 86_400_000).toISOString();
+    expect(
+      isReleaseAvailableForSearch({
+        minimumAvailability: "released",
+        releaseDate: recent,
+        digitalReleaseDate: laterDigital,
+        physicalReleaseDate: earlyPhysical,
+      } as any)
+    ).toBe(true); // physical already passed, even though digital hasn't
+  });
+
+  it("'released' falls back to the flat delay approximation when TMDB has neither digital nor physical date for this movie", () => {
+    setSetting("minimumAvailabilityReleasedDelayDays", "90");
+    const longAgo = new Date(Date.now() - 200 * 86_400_000).toISOString();
+    expect(
+      isReleaseAvailableForSearch({ minimumAvailability: "released", releaseDate: longAgo, digitalReleaseDate: null, physicalReleaseDate: null } as any)
+    ).toBe(true);
   });
 });
 
@@ -959,5 +1003,98 @@ describe("startScheduler", () => {
     expect(new Set(keys).size).toBe(keys.length); // every job key is unique
     expect(keys).toContain("autoSearch");
     expect(keys).toContain("queuePoll");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// matchTierFor / chooseBestResult — Title/Year/external-id matching (Round 336)
+// ---------------------------------------------------------------------------
+
+describe("matchTierFor", () => {
+  it("returns 0 when no identity is given at all (episodic/collection searches)", () => {
+    expect(matchTierFor(fakeResult(), null)).toBe(0);
+  });
+
+  it("returns 2 when the result's own reported imdbId matches the target's", () => {
+    const result = fakeResult({ imdbId: "tt1234567", title: "Some.Movie.1999.1080p-GROUP" }); // wrong year in title, id still wins
+    expect(matchTierFor(result, { year: 2020, externalIds: { imdb: "tt1234567" } })).toBe(2);
+  });
+
+  it("returns 2 when the result's own reported tmdbId matches the target's", () => {
+    const result = fakeResult({ tmdbId: "603" });
+    expect(matchTierFor(result, { year: 2020, externalIds: { tmdb: "603" } })).toBe(2);
+  });
+
+  it("returns 2 for an imdb id embedded in the title itself when the indexer reported none", () => {
+    const result = fakeResult({ title: "Some.Movie.2020.1080p.WEB-DL.x264-GROUP[tt1234567]" });
+    expect(matchTierFor(result, { year: 1999, externalIds: { imdb: "tt1234567" } })).toBe(2); // id wins even though year doesn't match
+  });
+
+  it("returns 1 when only the parsed year matches, with no id at all", () => {
+    const result = fakeResult({ title: "Some.Movie.2020.1080p.WEB-DL.x264-GROUP" });
+    expect(matchTierFor(result, { year: 2020, externalIds: {} })).toBe(1);
+  });
+
+  it("returns 0 when neither the id nor the year match", () => {
+    const result = fakeResult({ title: "Some.Movie.1999.1080p.WEB-DL.x264-GROUP" });
+    expect(matchTierFor(result, { year: 2020, externalIds: { imdb: "tt9999999" } })).toBe(0);
+  });
+});
+
+describe("chooseBestResult — identity as a tiebreaker (never a hard filter)", () => {
+  it("prefers a confirmed external-id match over a higher-seeder release with no identity signal at all", async () => {
+    const confirmed = fakeResult({ title: "Correct.Movie.2020.1080p.WEB-DL.x264-GROUP", imdbId: "tt1234567", seeders: 5 });
+    const wrong = fakeResult({ title: "Different.Movie.2020.1080p.WEB-DL.x264-OTHER", seeders: 500 });
+
+    const best = await chooseBestResult(
+      [wrong, confirmed],
+      [],
+      "",
+      null,
+      0,
+      null,
+      new Set(),
+      "movie",
+      null,
+      { year: 2020, externalIds: { imdb: "tt1234567" } }
+    );
+
+    expect(best?.result.title).toBe(confirmed.title);
+  });
+
+  it("prefers a year match over a release with neither year nor id, even with fewer seeders", async () => {
+    const rightYear = fakeResult({ title: "Some.Movie.2020.1080p.WEB-DL.x264-GROUP", seeders: 2 });
+    const noSignal = fakeResult({ title: "Some.Movie.1080p.WEB-DL.x264-OTHER", seeders: 200 }); // no year at all in the title
+
+    const best = await chooseBestResult([noSignal, rightYear], [], "", null, 0, null, new Set(), "movie", null, { year: 2020, externalIds: {} });
+
+    expect(best?.result.title).toBe(rightYear.title);
+  });
+
+  it("still returns a result when nothing matches the given identity — a mismatch never excludes a candidate", async () => {
+    const onlyOption = fakeResult({ title: "Totally.Unrelated.1999.1080p.WEB-DL.x264-GROUP" });
+
+    const best = await chooseBestResult([onlyOption], [], "", null, 0, null, new Set(), "movie", null, { year: 2020, externalIds: { imdb: "tt9999999" } });
+
+    expect(best?.result.title).toBe(onlyOption.title);
+  });
+
+  it("passing no identity at all (the episodic/collection call sites) doesn't change existing behavior — highest seeders wins", async () => {
+    const higherSeeders = fakeResult({ title: "Show.S01E01.1080p.WEB-DL.x264-GROUP", seeders: 100 });
+    const lowerSeeders = fakeResult({ title: "Show.S01E01.1080p.WEB-DL.x264-OTHER", seeders: 5 });
+
+    const best = await chooseBestResult(
+      [lowerSeeders, higherSeeders],
+      [],
+      "",
+      null,
+      0,
+      { season: 1, episode: 1 },
+      new Set(),
+      "series",
+      null
+    );
+
+    expect(best?.result.title).toBe(higherSeeders.title);
   });
 });

@@ -106,6 +106,8 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE import_lists ADD COLUMN IF NOT EXISTS min_votes INTEGER`,
   `ALTER TABLE import_lists ADD COLUMN IF NOT EXISTS exclude_genres TEXT`,
   `ALTER TABLE queue ADD COLUMN IF NOT EXISTS download_path TEXT`,
+  `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS digital_release_date TEXT`,
+  `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS physical_release_date TEXT`,
 ];
 
 /**

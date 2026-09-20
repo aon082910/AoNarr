@@ -15,11 +15,17 @@ export default function Modal({
   onClose,
   children,
   maxWidth = 480,
+  zIndex = 1000,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   maxWidth?: number;
+  /** Every ordinary page/config modal uses the default (1000) — only ConfirmModal/PromptModal pass
+   * a higher value, so a confirm/prompt dialog triggered from inside an already-open page modal
+   * (e.g. "Delete this root folder?" from the root folders config popup) always stacks visually on
+   * top of it instead of tying on z-index and losing to DOM order (whichever rendered later). */
+  zIndex?: number;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -108,7 +114,7 @@ export default function Modal({
         alignItems: "flex-start",
         justifyContent: "center",
         paddingTop: "8vh",
-        zIndex: 1000,
+        zIndex,
       }}
     >
       <div

@@ -28,6 +28,19 @@ export interface MetadataSearchResult {
   /** Whisparr-style performer tracking — ThePornDB scene search only; stored as-is in the item's
    * extra_metadata (see routes/metadata.ts's /import), not a dedicated performer-entity system. */
   performers?: string[];
+  /** The provider's own real-world status string — TMDB movies: "Released"/"Post
+   * Production"/"In Production"/etc.; TMDB/TVDB series: "Returning Series"/"Ended"/"Canceled"/etc.
+   * Only populated by the by-id detail lookups (search results don't carry it). Written into
+   * media_items.status by libraryScan.ts, replacing the 'unknown'/'missing' placeholder every item
+   * otherwise keeps forever — most providers/types have no such concept and simply leave this unset. */
+  status?: string | null;
+  /** Movies only, and only from the by-id TMDB detail lookup (TMDB's separate
+   * /movie/{id}/release_dates endpoint, not the main movie detail response) — the earliest Digital
+   * and Physical release dates, distinct from `releaseDate` (the theatrical/primary date). Most
+   * movies don't have these yet (they're only known once TMDB itself records them), so both are
+   * usually null even for a fully-matched movie. */
+  digitalReleaseDate?: string | null;
+  physicalReleaseDate?: string | null;
 }
 
 export interface MetadataEpisode {
@@ -103,6 +116,37 @@ async function searchMoviesTmdb(query: string): Promise<MetadataSearchResult[]> 
   }));
 }
 
+/** TMDB's separate /movie/{id}/release_dates endpoint — the main movie detail response only ever
+ * carries one generic `release_date` (usually the theatrical/earliest one, already used for
+ * `releaseDate` above); this is the only place Digital/Physical dates live. Per-region (each
+ * TMDB "result" is one country), with a `type` enum: 1=Premiere, 2=Limited theatrical,
+ * 3=Theatrical, 4=Digital, 5=Physical, 6=TV. Prefers the US region (the most consistently
+ * populated one) and falls back to the earliest date of that type from any region — most movies
+ * have neither yet, so both fields are often null even for an otherwise fully-matched movie. */
+async function fetchMovieReleaseDatesTmdb(tmdbId: string, apiKey: string): Promise<{ digitalReleaseDate: string | null; physicalReleaseDate: string | null }> {
+  const res = await fetch(`https://api.themoviedb.org/3/movie/${tmdbId}/release_dates?api_key=${apiKey}`);
+  if (!res.ok) throw new Error(`TMDB release dates lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  const regions: any[] = body.results ?? [];
+
+  function datesOfType(regionList: any[], type: number): string[] {
+    return regionList
+      .flatMap((r) => r.release_dates ?? [])
+      .filter((d) => d.type === type && d.release_date)
+      .map((d) => String(d.release_date).slice(0, 10))
+      .sort();
+  }
+
+  function earliestDateForType(type: number): string | null {
+    const us = regions.filter((r) => r.iso_3166_1 === "US");
+    const usDates = datesOfType(us, type);
+    if (usDates.length > 0) return usDates[0];
+    return datesOfType(regions, type)[0] ?? null;
+  }
+
+  return { digitalReleaseDate: earliestDateForType(4), physicalReleaseDate: earliestDateForType(5) };
+}
+
 /** Direct-by-id lookup, not search — for callers that already have a TMDB id (an Overseerr/
  * Jellyseerr webhook's approved request, for one) rather than a title to search for. */
 export async function fetchMovieByTmdbId(tmdbId: string): Promise<MetadataSearchResult> {
@@ -110,6 +154,9 @@ export async function fetchMovieByTmdbId(tmdbId: string): Promise<MetadataSearch
   const res = await fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${key}`);
   if (!res.ok) throw new Error(`TMDB movie lookup failed: HTTP ${res.status}`);
   const r: any = await res.json();
+  // Best-effort: a hiccup on this second call (or a movie TMDB simply has no digital/physical
+  // dates recorded for) just leaves both fields null rather than failing the whole lookup.
+  const releaseDates = await fetchMovieReleaseDatesTmdb(String(r.id), key).catch(() => ({ digitalReleaseDate: null, physicalReleaseDate: null }));
   return {
     title: r.title,
     year: r.release_date ? Number(r.release_date.slice(0, 4)) : null,
@@ -121,6 +168,9 @@ export async function fetchMovieByTmdbId(tmdbId: string): Promise<MetadataSearch
     rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
     runtimeMinutes: typeof r.runtime === "number" && r.runtime > 0 ? r.runtime : null,
     studio: r.production_companies?.[0]?.name ?? null,
+    digitalReleaseDate: releaseDates.digitalReleaseDate,
+    physicalReleaseDate: releaseDates.physicalReleaseDate,
+    status: r.status || null,
   };
 }
 
@@ -138,6 +188,7 @@ export async function fetchSeriesByTmdbId(tmdbId: string): Promise<MetadataSearc
     backdropUrl: r.backdrop_path ? `${TMDB_BACKDROP_BASE}${r.backdrop_path}` : null,
     rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
     runtimeMinutes: Array.isArray(r.episode_run_time) && r.episode_run_time.length > 0 ? r.episode_run_time[0] : null,
+    status: r.status || null,
   };
 }
 
@@ -2000,6 +2051,7 @@ export async function fetchByExternalId(type: MediaType, provider: string, id: s
         overview: s.overview || null,
         posterUrl: s.image || null,
         externalIds: { tvdb: String(s.id) },
+        status: s.status?.name || null,
       };
     }
 
@@ -2013,6 +2065,7 @@ export async function fetchByExternalId(type: MediaType, provider: string, id: s
         overview: s.summary ? s.summary.replace(/<[^>]+>/g, "") : null,
         posterUrl: s.image?.medium || null,
         externalIds: { tvmaze: String(s.id) },
+        status: s.status || null,
       };
     }
 

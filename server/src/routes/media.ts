@@ -185,25 +185,20 @@ mediaRouter.post(
       throw new HttpError(400, "mediaItemIds is required");
     }
 
+    // Wrapped in one transaction (previously it wasn't, unlike this codebase's usual convention
+    // for a multi-row loop — see duplicateCheck.ts's mergeMediaItems) so a failure partway through
+    // a multi-item delete can't leave some rows removed and others not; reuses the same cascade
+    // helper the single-item DELETE /:id route already uses instead of duplicating its recycle/
+    // exclusion/delete logic a second time.
     let deleted = 0;
-    for (const id of mediaItemIds) {
-      const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(id)) as any;
-      if (!row) continue;
-
-      if (addExclusion) await addImportExclusion(row);
-      if (deleteFiles) {
-        if (row.path) await recycleFile(row.path, row.type, row.title, row.id);
-        const children = (
-          (await db.prepare("SELECT file_path FROM episodes WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id)) as any[]
-        ).concat(
-          (await db.prepare("SELECT file_path FROM sub_items WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id)) as any[]
-        );
-        for (const child of children) await recycleFile(child.file_path, row.type, row.title, row.id);
+    await db.transaction(async () => {
+      for (const id of mediaItemIds) {
+        const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(id)) as any;
+        if (!row) continue;
+        await deleteMediaItemCascade(row, !!deleteFiles, !!addExclusion);
+        deleted++;
       }
-
-      await db.prepare("DELETE FROM media_items WHERE id = ?").run(id);
-      deleted++;
-    }
+    });
 
     if (deleted > 0) {
       const actor = auditActor(req);

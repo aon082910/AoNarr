@@ -32,8 +32,12 @@ const SEARCH_TIMEOUT_MS = 20_000;
 const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
 const searchCache = new Map<string, { expiresAt: number; results: SearchResult[] }>();
 
-function cacheKey(indexerId: number, query: string, mediaType: MediaType): string {
-  return `${indexerId}:${mediaType}:${query.toLowerCase()}`;
+function cacheKey(indexerId: number, query: string, mediaType: MediaType, externalIds?: Record<string, string>): string {
+  // imdb/tmdb ids (when present) change the actual request URL sent to the indexer (see
+  // searchTorznabNewznab) — folded into the key so a cached result for the plain-title query can't
+  // be wrongly reused for an id-narrowed request, or vice versa.
+  const idPart = externalIds?.imdb || externalIds?.tmdb ? `:${externalIds.imdb ?? ""}:${externalIds.tmdb ?? ""}` : "";
+  return `${indexerId}:${mediaType}:${query.toLowerCase()}${idPart}`;
 }
 
 /**
@@ -130,13 +134,26 @@ export async function checkIndexerHealth(indexer: Indexer): Promise<{ ok: boolea
   }
 }
 
-async function searchTorznabNewznab(indexer: Indexer, query: string, mediaType: MediaType): Promise<SearchResult[]> {
+async function searchTorznabNewznab(
+  indexer: Indexer,
+  query: string,
+  mediaType: MediaType,
+  externalIds?: Record<string, string>
+): Promise<SearchResult[]> {
   const url = new URL(indexer.url.replace(/\/+$/, "") + "/api");
   url.searchParams.set("t", "search");
   url.searchParams.set("q", query);
   const cats = indexer.categories?.trim() || categoriesForMediaType(mediaType);
   url.searchParams.set("cat", cats);
   if (indexer.apiKey) url.searchParams.set("apikey", indexer.apiKey);
+  // Best-effort narrowing for indexers that support Torznab's id-search params — harmless for ones
+  // that don't (an unrecognized param is simply ignored), tightens results for ones that do. Only
+  // meaningful for movie/TV-shaped categories; other shapes (music, books, ROMs, ...) have no such
+  // id space in Torznab's spec.
+  if (["movie", "series", "anime", "sports", "ppv"].includes(mediaType)) {
+    if (externalIds?.imdb) url.searchParams.set("imdbid", externalIds.imdb.replace(/^tt/i, ""));
+    if (externalIds?.tmdb) url.searchParams.set("tmdbid", externalIds.tmdb);
+  }
 
   const res = await fetchIndexerText(url.toString(), indexer, SEARCH_TIMEOUT_MS);
   if (!res.ok) throw new Error(`Indexer "${indexer.name}" returned HTTP ${res.status}`);
@@ -156,6 +173,8 @@ async function searchTorznabNewznab(indexer: Indexer, query: string, mediaType: 
     let peers: number | null = null;
     let leechers: number | null = null;
     let downloadVolumeFactor: number | null = null;
+    let imdbId: string | null = null;
+    let tmdbId: string | null = null;
     const torznabAttrs: any[] = item["torznab:attr"] ?? item.attr ?? [];
     for (const attr of torznabAttrs) {
       const a = attr?.$;
@@ -169,6 +188,10 @@ async function searchTorznabNewznab(indexer: Indexer, query: string, mediaType: 
       // "normal" — customFormatScoring.ts's indexerFlag condition treats those the same way (never
       // matches, so a "must be freeleech" condition group correctly excludes unknown-status results).
       if (a.name === "downloadvolumefactor") downloadVolumeFactor = Number(a.value);
+      // Not every indexer reports these, but when one does it's a far stronger identity signal
+      // than anything parsed out of the title text — see scheduler.ts's chooseBestResult.
+      if (a.name === "imdb" || a.name === "imdbid") imdbId = /^tt/i.test(String(a.value)) ? String(a.value).toLowerCase() : `tt${a.value}`;
+      if (a.name === "tmdbid") tmdbId = String(a.value);
     }
     // Torznab's "peers" attr is the TOTAL peer count (seeders + leechers), not the leecher count
     // on its own — most indexers only emit seeders/peers, not a separate leechers attr, so derive
@@ -187,6 +210,8 @@ async function searchTorznabNewznab(indexer: Indexer, query: string, mediaType: 
       protocol: indexer.protocol === "torznab" ? "torrent" : "usenet",
       category: cats,
       downloadVolumeFactor,
+      imdbId,
+      tmdbId,
     });
   }
 
@@ -333,7 +358,8 @@ function recordIfRateLimited(indexer: Indexer, err: unknown): void {
 export async function searchIndexer(
   indexer: Indexer,
   query: string,
-  mediaType: MediaType
+  mediaType: MediaType,
+  externalIds?: Record<string, string>
 ): Promise<SearchResult[]> {
   if (isIndexerBackedOff(indexer.id)) {
     throw new Error(`Indexer "${indexer.name}" is backed off after a recent 429 — skipping`);
@@ -346,7 +372,7 @@ export async function searchIndexer(
   try {
     let results: SearchResult[];
     if (indexer.protocol === "torznab" || indexer.protocol === "newznab") {
-      results = await searchTorznabNewznab(indexer, query, mediaType);
+      results = await searchTorznabNewznab(indexer, query, mediaType, externalIds);
     } else if (indexer.protocol === "rss") {
       results = await searchRss(indexer, query);
     } else if (indexer.protocol === "ddl") {
@@ -363,12 +389,12 @@ export async function searchIndexer(
   }
 }
 
-async function searchIndexerCached(indexer: Indexer, query: string, mediaType: MediaType): Promise<SearchResult[]> {
-  const key = cacheKey(indexer.id, query, mediaType);
+async function searchIndexerCached(indexer: Indexer, query: string, mediaType: MediaType, externalIds?: Record<string, string>): Promise<SearchResult[]> {
+  const key = cacheKey(indexer.id, query, mediaType, externalIds);
   const cached = searchCache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.results;
 
-  const results = await searchIndexer(indexer, query, mediaType);
+  const results = await searchIndexer(indexer, query, mediaType, externalIds);
   searchCache.set(key, { expiresAt: Date.now() + SEARCH_CACHE_TTL_MS, results });
   return results;
 }
@@ -408,10 +434,13 @@ async function runSearch(
   applicable: Indexer[],
   query: string,
   mediaType: MediaType,
-  bypassCache: boolean
+  bypassCache: boolean,
+  externalIds?: Record<string, string>
 ): Promise<SearchResult[]> {
   const settled = await Promise.allSettled(
-    applicable.map((i) => (bypassCache ? searchIndexer(i, query, mediaType) : searchIndexerCached(i, query, mediaType)))
+    applicable.map((i) =>
+      bypassCache ? searchIndexer(i, query, mediaType, externalIds) : searchIndexerCached(i, query, mediaType, externalIds)
+    )
   );
 
   const results: SearchResult[] = [];
@@ -428,17 +457,18 @@ export async function searchAllIndexers(
   indexers: Indexer[],
   query: string,
   mediaType: MediaType,
-  bypassCache = false
+  bypassCache = false,
+  externalIds?: Record<string, string>
 ): Promise<SearchResult[]> {
   const applicable = indexers.filter(
     (i) => i.enabled && i.mediaTypes.split(",").includes(mediaType)
   );
 
-  let results = await runSearch(applicable, query, mediaType, bypassCache);
+  let results = await runSearch(applicable, query, mediaType, bypassCache, externalIds);
 
   if (results.length === 0) {
     for (const variant of generateSceneVariants(query)) {
-      results = await runSearch(applicable, variant, mediaType, bypassCache);
+      results = await runSearch(applicable, variant, mediaType, bypassCache, externalIds);
       if (results.length > 0) {
         log.info(`[indexerClient] scene-name fallback "${variant}" found results where "${query}" found none`);
         break;

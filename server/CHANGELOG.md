@@ -3,6 +3,69 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 336 — Library page fixes/polish, crash hardening, MediaDetail overhaul, smarter search, multi-date releases
+
+A large batch of 14 user-reported bugs/requests across the Library list page, media detail page,
+config modals, bulk delete, and core search/matching/release-date logic, shipped together. Two
+turned out to be confirmed systemic bugs (not isolated cosmetic issues) found via code audit;
+two more genuine bugs — one causing real data corruption — were only caught during live browser
+verification after the initial fix.
+
+- **Bulk-delete crash hardening.** `POST /media/bulk/delete` now wraps its whole loop in a single
+  `db.transaction(...)` and reuses the existing single-item `deleteMediaItemCascade()` helper
+  instead of duplicating its logic, so a mid-batch failure can no longer leave the library half
+  deleted. The app also gained its first-ever React error boundary
+  (`web/src/components/ErrorBoundary.tsx`, wrapping the whole route tree in `main.tsx`) so any
+  single uncaught render error shows a "Something went wrong" screen with a Reload button instead
+  of a permanently blank page needing a container restart. The Library page's own bulk-delete
+  handler now also catches and reports request failures instead of leaving the selection silently
+  stale.
+- **Library dropdown/filter state was leaking across library types**, confirmed as a systemic bug:
+  view mode, poster size, visible columns, and poster-info fields were all persisted to *global*
+  (non-per-type) localStorage keys with no reset when switching library types, and tag/system
+  filters and the search box weren't reset either. All of these are now namespaced per type and
+  reset on type change, matching the status/sort/page-size pattern already in place. Live testing
+  after the initial fix caught a second, deeper bug in that *existing* pattern itself: because the
+  "write on value change" and "read on type change" effects both listed the shared `type` value as
+  a dependency, switching library types made the write-effects fire first using the outgoing type's
+  stale state, corrupting the new type's storage key before the reset effect could even run. Fixed
+  by removing `type` from every persistence effect's dependency list.
+- **Config popups could render behind the config modal that opened them** — confirmed systemic:
+  `ConfirmModal`/`PromptModal` share the base `Modal` component's hardcoded z-index with every other
+  page modal, so plain DOM order decided which one visually won. `Modal` now accepts an optional
+  `zIndex` prop, and confirm/prompt dialogs always render above whatever opened them (e.g. deleting
+  a root folder from inside its own settings modal).
+- **Metadata Sources fetch/apply errors** now render inside that popup itself instead of a
+  page-level banner hidden behind it.
+- **Export & Bulk** is now a toolbar button that opens a popup, matching the Metadata Sources
+  pattern, instead of a plain dropdown menu.
+- **Toolbar layout**: the Library page's view/sort/filter controls and the search box now stay
+  visually grouped as one row, with a new save-icon button (replacing the old checkmark) and the
+  search box anchored to the right edge.
+- Media page: root folder now shows its configured **name** (falling back to its path only when
+  unnamed), with the full path still available as a hover tooltip.
+- Episode table gained a toggle-able **File Path column**, and a **season Expand All/Collapse All**
+  button next to the existing List/Tile toggle — both Sonarr-style conveniences that didn't exist
+  before.
+- **Cast** and **Alternate Titles** switched from an unbounded horizontal scroll strip / run-on line
+  to a capped, wrapping list with a "+N more" button to expand the full list.
+- Single-file media pages (movies, ROMs, PPVs, legacy adult/course items) replaced the old top path
+  pill and separate "File details" toggle panel with a single **Radarr-style Files table**
+  (relative path, size, quality, video, audio, subtitles, date added) — everything that panel used
+  to show now lives in one place.
+- The "Type / status" pill was always showing "Unknown" because nothing ever wrote a real value
+  into it. Movie/series metadata lookups now capture the provider's real status (Released, Ended,
+  Continuing, etc.) and it's written back into the library on scan/refresh.
+- **Search/grab matching** now also considers year and external ids (IMDb/TMDB), not just title
+  text: indexer queries append `imdbid`/`tmdbid` params when known, Torznab responses' own
+  `imdb`/`tmdbid` attributes and title-embedded IMDb ids are parsed, and a confirmed-identity or
+  matching-year release now wins as a tiebreaker among releases already tied on format score —
+  purely an additional ranking signal, never a hard filter, so nothing is ever excluded from
+  results.
+- **Release dates** now capture the actual day, not just the year, and movies additionally get real
+  TMDB digital/physical release dates (previously only approximated as "release date + 90 days").
+  The "released" availability gate now prefers a real digital/physical date when TMDB has one.
+
 ## Round 335 — Courses/Adult work like TV Shows (folder = show, files = episodes); ROM filename cleanup + system filter
 
 Two related asks: Courses and Adult should organize like TV Shows instead of one flat file/list per

@@ -22,6 +22,12 @@ export interface ParsedRelease {
    * pattern matched (so it never overrides a real season/episode detection) — see
    * releaseMatchesEpisode's `absoluteEpisodeNumber` param for how this gets used. */
   absoluteEpisode: number | null;
+  /** An IMDb id embedded directly in the release title itself (some release groups/indexers tag
+   * these on, e.g. "Movie.Name.2020.1080p.WEBRip.x264-GROUP[tt1234567]") — rare, but when present
+   * it's an unambiguous identity signal worth preferring over a plain title/year comparison. Most
+   * releases don't carry one; null in that case (see indexerClient.ts for the other, more common
+   * source of an id — an indexer's own Torznab response attributes, not the title text). */
+  imdbId: string | null;
 }
 
 // Group 3 (hyphenated range end, e.g. "S01E01-E03"/"S01E01-03") and group 4 (a chain of bare
@@ -43,6 +49,7 @@ const AIR_DATE = /\b((?:19|20)\d{2})[.\-\s](\d{1,2})[.\-\s](\d{1,2})\b/;
 // no SxxExx designator anywhere in the title. Deliberately narrow (requires the space-hyphen-space
 // separator) to avoid catching an arbitrary number elsewhere in the title.
 const ABSOLUTE_EPISODE = /\s-\s0*(\d{1,4})(?=\s|\[|\(|$)/;
+const IMDB_ID = /\btt\d{7,8}\b/i;
 const COMMON_RESOLUTIONS = new Set([480, 576, 720, 1080, 2160]);
 
 const RESOLUTION_2160 = /\b(2160p|4k|uhd)\b/i;
@@ -214,6 +221,8 @@ export function parseReleaseTitle(title: string): ParsedRelease {
     }
   }
 
+  const imdbMatch = title.match(IMDB_ID);
+
   return {
     seasonNumber,
     episodeNumbers,
@@ -227,6 +236,7 @@ export function parseReleaseTitle(title: string): ParsedRelease {
     releaseGroup: detectReleaseGroup(title),
     airDate,
     absoluteEpisode,
+    imdbId: imdbMatch ? imdbMatch[0].toLowerCase() : null,
   };
 }
 

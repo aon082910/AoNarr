@@ -704,7 +704,7 @@ describe("fetchByExternalId", () => {
       { test: (u) => u.includes("/v4/login"), response: ok({ data: { token: "t" } }) },
       { test: (u) => u.includes("/v4/series/5/extended"), response: ok({ data: { id: 5, name: "X", year: "2000", overview: "ov", image: "http://img" } }) },
     ]);
-    expect(await metadata.fetchByExternalId("series", "tvdb", "5")).toEqual({ title: "X", year: 2000, overview: "ov", posterUrl: "http://img", externalIds: { tvdb: "5" } });
+    expect(await metadata.fetchByExternalId("series", "tvdb", "5")).toEqual({ title: "X", year: 2000, overview: "ov", posterUrl: "http://img", externalIds: { tvdb: "5" }, status: null });
 
     stub([
       { test: (u) => u.includes("/v4/login"), response: ok({ data: { token: "t" } }) },
@@ -715,7 +715,7 @@ describe("fetchByExternalId", () => {
 
   it("tvmaze: strips HTML from the summary, and uses a distinct message for a 404 vs. a generic HTTP error", async () => {
     stub([{ test: (u) => u.includes("api.tvmaze.com/shows/5"), response: ok({ id: 5, name: "X", premiered: "2010-01-01", summary: "<p>ov</p>", image: { medium: "http://img" } }) }]);
-    expect(await metadata.fetchByExternalId("series", "tvmaze", "5")).toEqual({ title: "X", year: 2010, overview: "ov", posterUrl: "http://img", externalIds: { tvmaze: "5" } });
+    expect(await metadata.fetchByExternalId("series", "tvmaze", "5")).toEqual({ title: "X", year: 2010, overview: "ov", posterUrl: "http://img", externalIds: { tvmaze: "5" }, status: null });
 
     stub([{ test: (u) => u.includes("api.tvmaze.com/shows/999"), response: notOk(404) }]);
     await expect(metadata.fetchByExternalId("series", "tvmaze", "999")).rejects.toThrow('No TVMaze show found for id "999"');
@@ -825,6 +825,56 @@ describe("fetchMovieByTmdbId / fetchSeriesByTmdbId", () => {
 
     stub([{ test: (u) => u.includes("/tv/3"), response: ok({ id: 3, name: "NoRuntime", episode_run_time: [] }) }]);
     expect((await metadata.fetchSeriesByTmdbId("3")).runtimeMinutes).toBeNull();
+  });
+
+  it("fetchMovieByTmdbId and fetchSeriesByTmdbId map TMDB's own status field", async () => {
+    setSetting("tmdbApiKey", "k");
+    stub([{ test: (u) => u.includes("/movie/4"), response: ok({ id: 4, title: "Status Movie", status: "Post Production" }) }]);
+    expect((await metadata.fetchMovieByTmdbId("4")).status).toBe("Post Production");
+
+    stub([{ test: (u) => u.includes("/tv/4"), response: ok({ id: 4, name: "Status Show", status: "Returning Series" }) }]);
+    expect((await metadata.fetchSeriesByTmdbId("4")).status).toBe("Returning Series");
+  });
+
+  it("fetchMovieByTmdbId fetches the earliest Digital/Physical release dates from TMDB's separate release_dates endpoint, preferring the US region", async () => {
+    setSetting("tmdbApiKey", "k");
+    stub([
+      { test: (u) => u.includes("/movie/5/release_dates"), response: ok({
+        results: [
+          { iso_3166_1: "GB", release_dates: [{ type: 4, release_date: "2020-01-01T00:00:00.000Z" }] },
+          { iso_3166_1: "US", release_dates: [{ type: 4, release_date: "2020-03-15T00:00:00.000Z" }, { type: 5, release_date: "2020-04-01T00:00:00.000Z" }] },
+        ],
+      }) },
+      { test: (u) => u.includes("/movie/5"), response: ok({ id: 5, title: "Dated Movie" }) },
+    ]);
+
+    const result = await metadata.fetchMovieByTmdbId("5");
+    expect(result.digitalReleaseDate).toBe("2020-03-15"); // US region preferred over the earlier GB date
+    expect(result.physicalReleaseDate).toBe("2020-04-01");
+  });
+
+  it("fetchMovieByTmdbId leaves digital/physical release dates null when TMDB has neither, rather than failing the whole lookup", async () => {
+    setSetting("tmdbApiKey", "k");
+    stub([
+      { test: (u) => u.includes("/movie/6/release_dates"), response: ok({ results: [] }) },
+      { test: (u) => u.includes("/movie/6"), response: ok({ id: 6, title: "Undated Movie" }) },
+    ]);
+
+    const result = await metadata.fetchMovieByTmdbId("6");
+    expect(result.digitalReleaseDate).toBeNull();
+    expect(result.physicalReleaseDate).toBeNull();
+  });
+
+  it("fetchMovieByTmdbId still returns the rest of the movie's data even when the release_dates call itself fails", async () => {
+    setSetting("tmdbApiKey", "k");
+    stub([{ test: (u) => u.includes("/movie/7"), response: ok({ id: 7, title: "Still Works" }) }]);
+    // No route matches "/movie/7/release_dates" — routedFetch throws "unmocked fetch call", which
+    // fetchMovieByTmdbId must swallow (see its own .catch()) rather than letting it bubble up.
+
+    const result = await metadata.fetchMovieByTmdbId("7");
+    expect(result.title).toBe("Still Works");
+    expect(result.digitalReleaseDate).toBeNull();
+    expect(result.physicalReleaseDate).toBeNull();
   });
 });
 

@@ -58,12 +58,16 @@ function torznabItem(opts: {
   peers?: number;
   leechers?: number;
   dlvf?: number;
+  imdb?: string;
+  tmdbid?: string;
 }): string {
   const attrs: string[] = [];
   if (opts.seeders !== undefined) attrs.push(`<torznab:attr name="seeders" value="${opts.seeders}"/>`);
   if (opts.peers !== undefined) attrs.push(`<torznab:attr name="peers" value="${opts.peers}"/>`);
   if (opts.leechers !== undefined) attrs.push(`<torznab:attr name="leechers" value="${opts.leechers}"/>`);
   if (opts.dlvf !== undefined) attrs.push(`<torznab:attr name="downloadvolumefactor" value="${opts.dlvf}"/>`);
+  if (opts.imdb !== undefined) attrs.push(`<torznab:attr name="imdb" value="${opts.imdb}"/>`);
+  if (opts.tmdbid !== undefined) attrs.push(`<torznab:attr name="tmdbid" value="${opts.tmdbid}"/>`);
   return `<item>
     <title>${opts.title}</title>
     <link>${opts.downloadUrl}</link>
@@ -290,8 +294,50 @@ describe("searchIndexer — torznab/newznab", () => {
         protocol: "torrent",
         category: "2000",
         downloadVolumeFactor: 0,
+        imdbId: null,
+        tmdbId: null,
       },
     ]);
+  });
+
+  it("reads imdb/tmdbid torznab:attr fields off a result, when the indexer reports them", async () => {
+    const xml = torznabXml(torznabItem({ title: "The.Matrix.1999.1080p", downloadUrl: "https://idx.example.com/dl/9", imdb: "0133093", tmdbid: "603" }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => xml }));
+
+    const results = await searchIndexer(makeIndexer({ protocol: "torznab", categories: "2000" }), "q", "movie");
+
+    expect(results[0].imdbId).toBe("tt0133093"); // "tt" prefix added when the indexer reports a bare number
+    expect(results[0].tmdbId).toBe("603");
+  });
+
+  it("keeps an indexer-reported imdb id that already carries the tt prefix as-is", async () => {
+    const xml = torznabXml(torznabItem({ title: "x", downloadUrl: "https://idx.example.com/dl/10", imdb: "tt0133093" }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => xml }));
+
+    const results = await searchIndexer(makeIndexer({ protocol: "torznab", categories: "2000" }), "q", "movie");
+
+    expect(results[0].imdbId).toBe("tt0133093");
+  });
+
+  it("appends imdbid/tmdbid query params for a movie-shaped search when given, stripping any 'tt' prefix from the imdb id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => torznabXml("") });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await searchIndexer(makeIndexer({ protocol: "torznab", categories: "2000" }), "The Matrix", "movie", { imdb: "tt0133093", tmdb: "603" });
+
+    const url = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(url.searchParams.get("imdbid")).toBe("0133093");
+    expect(url.searchParams.get("tmdbid")).toBe("603");
+  });
+
+  it("never appends imdbid/tmdbid for a non movie/TV-shaped type (no such id space for it)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => torznabXml("") });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await searchIndexer(makeIndexer({ protocol: "torznab", categories: "3000", mediaTypes: "artist" }), "Some Artist", "artist", { imdb: "tt0133093" });
+
+    const url = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(url.searchParams.has("imdbid")).toBe(false);
   });
 
   it("uses an explicit leechers attr instead of deriving it, when present", async () => {
@@ -671,5 +717,24 @@ describe("searchAllIndexers — caching", () => {
     await searchAllIndexers([indexer], "bypass query", "movie", true);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not reuse a cached plain-query result for the same query once external ids are given (they change the actual request URL)", async () => {
+    // A non-empty response, so the empty-result scene-variant retry loop (generateSceneVariants)
+    // never kicks in and adds extra fetch calls this test isn't about.
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => torznabXml(torznabItem({ title: "id-cache query result", downloadUrl: "https://idx.example.com/dl/idcache" })),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const indexer = makeIndexer({ protocol: "torznab", mediaTypes: "movie", categories: "2000" });
+
+    await searchAllIndexers([indexer], "id-cache query", "movie", false, undefined);
+    await searchAllIndexers([indexer], "id-cache query", "movie", false, { imdb: "tt0133093" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const secondUrl = new URL(fetchMock.mock.calls[1][0] as string);
+    expect(secondUrl.searchParams.get("imdbid")).toBe("0133093");
   });
 });

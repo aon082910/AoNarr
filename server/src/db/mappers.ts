@@ -34,6 +34,8 @@ export function mediaItemFromRow(row: any) {
     legacyShape: row.legacy_shape,
     extraMetadata: row.extra_metadata ? JSON.parse(row.extra_metadata) : {},
     releaseDate: row.release_date,
+    digitalReleaseDate: row.digital_release_date,
+    physicalReleaseDate: row.physical_release_date,
     minimumAvailability: row.minimum_availability,
     seriesType: row.series_type,
     backdropUrl: row.backdrop_url,

@@ -466,9 +466,17 @@ async function scanAndImportLibraryInner(
             if (best) {
               await db
                 .prepare(
-                  "UPDATE media_items SET overview = ?, poster_url = ?, year = ?, external_ids = ?, release_date = ? WHERE id = ?"
+                  "UPDATE media_items SET overview = ?, poster_url = ?, year = ?, external_ids = ?, release_date = ?, status = COALESCE(?, status) WHERE id = ?"
                 )
-                .run(best.overview ?? null, best.posterUrl ?? null, best.year ?? null, JSON.stringify(best.externalIds ?? {}), best.releaseDate ?? null, newId);
+                .run(
+                  best.overview ?? null,
+                  best.posterUrl ?? null,
+                  best.year ?? null,
+                  JSON.stringify(best.externalIds ?? {}),
+                  best.releaseDate ?? null,
+                  best.status ?? null,
+                  newId
+                );
               await syncMissingChildren(newId, typeConfig, best.externalIds ?? {});
             }
           } catch {
@@ -841,7 +849,7 @@ async function refreshOneItem(
         .prepare(
           `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), year = COALESCE(?, year),
            release_date = COALESCE(?, release_date), backdrop_url = COALESCE(?, backdrop_url), rating = COALESCE(?, rating),
-           runtime_minutes = COALESCE(?, runtime_minutes)
+           runtime_minutes = COALESCE(?, runtime_minutes), status = COALESCE(?, status)
            ${alreadyMatched ? "" : ", title = ?, sort_title = ?, external_ids = ?"}
            WHERE id = ?`
         )
@@ -853,6 +861,7 @@ async function refreshOneItem(
           best.backdropUrl ?? null,
           best.rating ?? null,
           best.runtimeMinutes ?? null,
+          best.status ?? null,
           ...(alreadyMatched ? [] : [best.title, best.title.toLowerCase(), JSON.stringify(best.externalIds ?? {})]),
           item.id
         );
@@ -860,9 +869,11 @@ async function refreshOneItem(
       // TMDB's title-search endpoint doesn't include production_companies — only the by-id detail
       // endpoint does (fetchByExternalId's tmdb branch above already calls it for an already-matched
       // movie, but doesn't thread `studio` into the main UPDATE above, so this re-fetches rather
-      // than plumbing that through) — Studio needs its own lookup either way. Best-effort: a movie
-      // with no TMDB id yet, or a hiccup on this one extra call, just leaves studio unset rather
-      // than failing the whole refresh.
+      // than plumbing that through) — Studio needs its own lookup either way. This is also the only
+      // place Digital/Physical release dates get refreshed from (fetchMovieByTmdbId's own separate
+      // release_dates call — see metadata.ts), for the same reason. Best-effort: a movie with no
+      // TMDB id yet, or a hiccup on this one extra call, just leaves these fields unset/unchanged
+      // rather than failing the whole refresh.
       if (type === "movie") {
         try {
           const tmdbId = (alreadyMatched ? existingExternalIds : best.externalIds ?? {}).tmdb;
@@ -870,6 +881,11 @@ async function refreshOneItem(
             const detail = await fetchMovieByTmdbId(String(tmdbId));
             if (detail.studio) {
               await db.prepare("UPDATE media_items SET studio = ? WHERE id = ?").run(detail.studio, item.id);
+            }
+            if (detail.digitalReleaseDate || detail.physicalReleaseDate) {
+              await db
+                .prepare("UPDATE media_items SET digital_release_date = COALESCE(?, digital_release_date), physical_release_date = COALESCE(?, physical_release_date) WHERE id = ?")
+                .run(detail.digitalReleaseDate ?? null, detail.physicalReleaseDate ?? null, item.id);
             }
           }
         } catch {

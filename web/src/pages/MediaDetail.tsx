@@ -35,7 +35,7 @@ import {
   GlobeIcon,
   SlidersIcon,
 } from "../components/NavIcons.js";
-import { TrashIcon, PencilIcon, FolderIcon, EyeIcon, ArrowLeftIcon, ArrowUpIcon, GridIcon } from "../components/ActionIcons.js";
+import { TrashIcon, PencilIcon, FolderIcon, EyeIcon, ArrowLeftIcon, ArrowUpIcon, GridIcon, ChevronsDownIcon, ChevronsUpIcon } from "../components/ActionIcons.js";
 import { ProviderIcon } from "../components/ProviderIcons.js";
 import { PageToolbar, ToolbarButton, ToolbarSeparator } from "../components/PageToolbar.js";
 import type { Collection, HistoryEvent, MediaInfo, MediaItem, QualityProfile, RootFolder, SearchResult, Tag } from "../types.js";
@@ -171,114 +171,25 @@ interface ArtworkOptions {
   logos: string[];
 }
 
-/** Radarr-style "File details" breakdown — container/codec/resolution/HDR plus every audio and
- * subtitle track, instead of the single formatMediaInfo() summary line. Only rendered for a
- * single-shape item with a file and probed media info (see mediaAnalysis.ts's probeMediaInfo). */
-function FileDetailsPanel({ mediaInfo, path }: { mediaInfo: MediaInfo; path: string | null }) {
-  return (
-    <div className="form-panel" style={{ marginBottom: 12 }}>
-      <table>
-        <tbody>
-          {path && (
-            <tr>
-              <th>Path</th>
-              <td style={{ wordBreak: "break-all" }}>{path}</td>
-            </tr>
-          )}
-          {(mediaInfo.width || mediaInfo.height) && (
-            <tr>
-              <th>Resolution</th>
-              <td>
-                {mediaInfo.width ?? "?"}x{mediaInfo.height ?? "?"}
-              </td>
-            </tr>
-          )}
-          {mediaInfo.videoCodec && (
-            <tr>
-              <th>Video codec</th>
-              <td>{mediaInfo.videoCodec}</td>
-            </tr>
-          )}
-          {mediaInfo.hdrFormat && mediaInfo.hdrFormat !== "none" && (
-            <tr>
-              <th>HDR</th>
-              <td>{mediaInfo.hdrFormat}</td>
-            </tr>
-          )}
-          {typeof mediaInfo.frameRate === "number" && (
-            <tr>
-              <th>Frame rate</th>
-              <td>{mediaInfo.frameRate.toFixed(2)} fps</td>
-            </tr>
-          )}
-          {typeof mediaInfo.bitrateKbps === "number" && (
-            <tr>
-              <th>Bitrate</th>
-              <td>{Math.round(mediaInfo.bitrateKbps)} kbps</td>
-            </tr>
-          )}
-          {typeof mediaInfo.durationSeconds === "number" && (
-            <tr>
-              <th>Duration</th>
-              <td>{Math.round(mediaInfo.durationSeconds / 60)} min</td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+/** Formats a MediaInfo audio/subtitle stream list into a short human-readable summary for one
+ * cell of the Files table below (e.g. "AAC 5.1 (en)", "en, fr, de") — the full per-track detail
+ * this used to show in a separate expandable "File details" panel now lives directly in that
+ * table's own columns instead. */
+function summarizeAudio(mediaInfo: MediaInfo): string {
+  if (mediaInfo.audioStreams && mediaInfo.audioStreams.length > 0) {
+    return mediaInfo.audioStreams
+      .map((a) => [a.codec, a.channelLayout ?? (a.channels ? `${a.channels}ch` : null), a.language && a.language !== "und" ? `(${a.language})` : null].filter(Boolean).join(" "))
+      .join(", ");
+  }
+  if (mediaInfo.audioCodec) {
+    return [mediaInfo.audioCodec, mediaInfo.audioChannels ? `${mediaInfo.audioChannels}ch` : null].filter(Boolean).join(" ");
+  }
+  return "-";
+}
 
-      {mediaInfo.audioStreams && mediaInfo.audioStreams.length > 0 && (
-        <>
-          <p style={{ fontWeight: 600, marginBottom: 4 }}>Audio tracks</p>
-          <table>
-            <thead>
-              <tr>
-                <th>Codec</th>
-                <th>Channels</th>
-                <th>Language</th>
-                <th>Default</th>
-              </tr>
-            </thead>
-            <tbody>
-              {mediaInfo.audioStreams.map((a, idx) => (
-                <tr key={idx}>
-                  <td>{a.codec ?? "?"}</td>
-                  <td>{a.channelLayout ?? a.channels ?? "?"}</td>
-                  <td>{a.language ?? "und"}</td>
-                  <td>{a.default ? "✓" : ""}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </>
-      )}
-
-      {mediaInfo.subtitleStreams && mediaInfo.subtitleStreams.length > 0 && (
-        <>
-          <p style={{ fontWeight: 600, margin: "10px 0 4px" }}>Subtitle tracks</p>
-          <table>
-            <thead>
-              <tr>
-                <th>Codec</th>
-                <th>Language</th>
-                <th>Forced</th>
-                <th>Default</th>
-              </tr>
-            </thead>
-            <tbody>
-              {mediaInfo.subtitleStreams.map((s, idx) => (
-                <tr key={idx}>
-                  <td>{s.codec ?? "?"}</td>
-                  <td>{s.language ?? "und"}</td>
-                  <td>{s.forced ? "✓" : ""}</td>
-                  <td>{s.default ? "✓" : ""}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </>
-      )}
-    </div>
-  );
+function summarizeSubtitles(mediaInfo: MediaInfo): string {
+  if (!mediaInfo.subtitleStreams || mediaInfo.subtitleStreams.length === 0) return "-";
+  return mediaInfo.subtitleStreams.map((s) => s.language ?? "und").join(", ");
 }
 
 export default function MediaDetail() {
@@ -337,6 +248,9 @@ export default function MediaDetail() {
   const [tagToAdd, setTagToAdd] = useState<number | "">("");
 
   const [showMetadataSources, setShowMetadataSources] = useState(false);
+  const [sourcesError, setSourcesError] = useState<string | null>(null);
+  const [showAllCast, setShowAllCast] = useState(false);
+  const [showAllAltTitles, setShowAllAltTitles] = useState(false);
   const [showArtwork, setShowArtwork] = useState(false);
   const [artworkOptions, setArtworkOptions] = useState<ArtworkOptions | null>(null);
   const [loadingArtwork, setLoadingArtwork] = useState(false);
@@ -362,7 +276,6 @@ export default function MediaDetail() {
   const [refreshingItem, setRefreshingItem] = useState(false);
   const [showEditMetadata, setShowEditMetadata] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const [showFileDetails, setShowFileDetails] = useState(false);
   const [history, setHistory] = useState<HistoryEvent[] | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [editTitle, setEditTitle] = useState("");
@@ -379,6 +292,7 @@ export default function MediaDetail() {
   const [importOnlySeasonNumber, setImportOnlySeasonNumber] = useState<number | null>(null);
   const [seasonActionBusy, setSeasonActionBusy] = useState<{ seasonNumber: number; action: string } | null>(null);
   const [seasonView, setSeasonView] = useState<"list" | "tile">(() => (localStorage.getItem("aonarr_season_view") as "list" | "tile") || "list");
+  const [showEpisodeFilePath, setShowEpisodeFilePath] = useState(() => localStorage.getItem("aonarr_episode_show_filepath") === "1");
   const [showSplit, setShowSplit] = useState(false);
   const [splitSelected, setSplitSelected] = useState<Set<number>>(new Set());
   const [splitTitle, setSplitTitle] = useState("");
@@ -400,6 +314,9 @@ export default function MediaDetail() {
   useEffect(() => {
     localStorage.setItem("aonarr_season_view", seasonView);
   }, [seasonView]);
+  useEffect(() => {
+    localStorage.setItem("aonarr_episode_show_filepath", showEpisodeFilePath ? "1" : "0");
+  }, [showEpisodeFilePath]);
   useEffect(() => {
     api
       .get<{ watched: boolean }>(`/media/${id}/watch-state`)
@@ -573,7 +490,8 @@ export default function MediaDetail() {
   useEffect(() => {
     setHistory(null);
     setShowHistory(false);
-    setShowFileDetails(false);
+    setShowAllCast(false);
+    setShowAllAltTitles(false);
     setSeededSeasons(false);
     setOpenSeasons(new Set());
     setShowEditMetadata(false);
@@ -855,6 +773,7 @@ export default function MediaDetail() {
   async function fetchSupplemental(provider: string) {
     if (!item) return;
     setFetchingProvider(provider);
+    setSourcesError(null);
     try {
       const updated = await api.post<MediaDetailResponse & { episodesAdded?: number }>(`/media/${item.id}/metadata/fetch`, { provider });
       setItem({ ...item, extraMetadata: updated.extraMetadata, externalIds: updated.externalIds });
@@ -863,7 +782,10 @@ export default function MediaDetail() {
       // only the episode side effect gets a toast here.
       if (updated.episodesAdded) notify.success(`${provider}: added ${updated.episodesAdded} missing episode(s)`);
     } catch (err) {
-      setError((err as Error).message);
+      // Shown inside the Metadata Sources modal itself (sourcesError), not the shared page-level
+      // `error` banner — that banner sits in the page body, which this modal's own overlay covers,
+      // so an error there was invisible behind the very popup the user was looking at.
+      setSourcesError((err as Error).message);
     } finally {
       setFetchingProvider(null);
     }
@@ -881,6 +803,7 @@ export default function MediaDetail() {
   async function applyMerge() {
     if (!item) return;
     setApplyingMerge(true);
+    setSourcesError(null);
     try {
       const payload = {
         title: mergedValue(item, "title", mergeChoice.title),
@@ -896,7 +819,7 @@ export default function MediaDetail() {
       setItem({ ...item, ...payload });
       setMergeChoice({ title: "current", year: "current", overview: "current", posterUrl: "current" });
     } catch (err) {
-      setError((err as Error).message);
+      setSourcesError((err as Error).message);
     } finally {
       setApplyingMerge(false);
     }
@@ -924,6 +847,12 @@ export default function MediaDetail() {
       else next.add(seasonNumber);
       return next;
     });
+  }
+
+  /** Sonarr-style single toggle for every season's open/collapsed state at once, instead of
+   * clicking each season header individually. */
+  function toggleAllSeasons(allSeasonNumbers: number[]) {
+    setOpenSeasons((prev) => (prev.size >= allSeasonNumbers.length ? new Set() : new Set(allSeasonNumbers)));
   }
 
   /** Clicking a season tile switches back to the list view with that season expanded and scrolled
@@ -1478,7 +1407,25 @@ export default function MediaDetail() {
             </div>
             {alternateTitles && alternateTitles.length > 0 && (
               <p style={{ color: "var(--muted)", fontSize: "0.8rem", margin: "0 0 6px" }} title="Alternate titles (from TMDB)">
-                AKA {alternateTitles.join(" · ")}
+                AKA {(showAllAltTitles ? alternateTitles : alternateTitles.slice(0, 4)).join(" · ")}
+                {alternateTitles.length > 4 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllAltTitles((v) => !v)}
+                    style={{
+                      marginLeft: 6,
+                      fontSize: "0.8rem",
+                      padding: 0,
+                      border: "none",
+                      background: "none",
+                      color: "var(--link, #4a9eff)",
+                      cursor: "pointer",
+                      width: "auto",
+                    }}
+                  >
+                    {showAllAltTitles ? "Show less" : `+${alternateTitles.length - 4} more`}
+                  </button>
+                )}
               </p>
             )}
             {shape === "single" && (
@@ -1489,21 +1436,6 @@ export default function MediaDetail() {
                 <span style={{ marginLeft: 8, color: "var(--muted)", fontSize: "0.85rem" }}>{formatMediaInfo(item.mediaInfo)}</span>
               )}
             </p>
-          )}
-          {shape === "single" && !!item.hasFile && item.mediaInfo && (
-            <>
-              <button
-                type="button"
-                className="icon-button"
-                style={{ marginBottom: 6, width: 26, height: 26 }}
-                title={showFileDetails ? "Hide file details" : "File details"}
-                aria-label={showFileDetails ? "Hide file details" : "Show file details"}
-                onClick={() => setShowFileDetails((v) => !v)}
-              >
-                <ListIcon />
-              </button>
-              {showFileDetails && <FileDetailsPanel mediaInfo={item.mediaInfo} path={item.path} />}
-            </>
           )}
           {item.overview && <p>{item.overview}</p>}
           {trailerUrl && (
@@ -1522,9 +1454,32 @@ export default function MediaDetail() {
               directly-editable selects in the old table, so their actual <select> controls moved
               into the Edit Metadata modal (below) and only their current value shows here. */}
           <div className="detail-pills">
-            {item.year != null && (
-              <span className="pill" title="Year">
-                <CalendarIcon /> {item.year}
+            {(() => {
+              // Full month/day/year when a real release date is on file (already stored this way
+              // for movies — see metadata.ts — just never surfaced beyond the bare year before
+              // now); falls back to the plain year pill for anything else.
+              const parsedReleaseDate = item.releaseDate ? new Date(item.releaseDate) : null;
+              const validReleaseDate = parsedReleaseDate && !isNaN(parsedReleaseDate.getTime()) ? parsedReleaseDate : null;
+              return validReleaseDate ? (
+                <span className="pill" title="Release date">
+                  <CalendarIcon /> {validReleaseDate.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}
+                </span>
+              ) : (
+                item.year != null && (
+                  <span className="pill" title="Year">
+                    <CalendarIcon /> {item.year}
+                  </span>
+                )
+              );
+            })()}
+            {item.digitalReleaseDate && !isNaN(new Date(item.digitalReleaseDate).getTime()) && (
+              <span className="pill" title="Digital release date">
+                <DownloadIcon /> Digital: {new Date(item.digitalReleaseDate).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}
+              </span>
+            )}
+            {item.physicalReleaseDate && !isNaN(new Date(item.physicalReleaseDate).getTime()) && (
+              <span className="pill" title="Physical release date">
+                <HardDriveIcon /> Physical: {new Date(item.physicalReleaseDate).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}
               </span>
             )}
             <span className="pill" title="Type / status">
@@ -1586,13 +1541,8 @@ export default function MediaDetail() {
               </span>
             )}
             {isAdmin && rootFolder && (
-              <span className="pill" title="Root folder">
-                <FolderIcon /> {rootFolder.path}
-              </span>
-            )}
-            {isAdmin && item.path && (
-              <span className="pill" title={item.path} style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis" }}>
-                <HardDriveIcon /> {item.path}
+              <span className="pill" title={rootFolder.path}>
+                <FolderIcon /> {rootFolder.name || rootFolder.path}
               </span>
             )}
             {isAdmin &&
@@ -1621,11 +1571,76 @@ export default function MediaDetail() {
         </div>
       </div>
 
+      {shape === "single" && (
+        <>
+          <h2>
+            <HardDriveIcon /> Files
+          </h2>
+          <table style={{ marginBottom: 16 }}>
+            <thead>
+              <tr>
+                <th>Relative Path</th>
+                <th>Size</th>
+                <th>Quality</th>
+                <th>Video</th>
+                <th>Audio</th>
+                <th>Subtitles</th>
+                <th>Date Added</th>
+              </tr>
+            </thead>
+            <tbody>
+              {item.hasFile && item.path ? (
+                <tr>
+                  <td style={{ wordBreak: "break-all" }} title={item.path}>
+                    {rootFolder && item.path.startsWith(rootFolder.path)
+                      ? item.path.slice(rootFolder.path.length).replace(/^[/\\]/, "")
+                      : item.path}
+                  </td>
+                  <td>{item.sizeBytes ? formatBytes(item.sizeBytes) : "-"}</td>
+                  <td>{item.quality ?? "-"}</td>
+                  <td>
+                    {item.mediaInfo
+                      ? [
+                          item.mediaInfo.videoCodec,
+                          item.mediaInfo.width || item.mediaInfo.height ? `${item.mediaInfo.width ?? "?"}x${item.mediaInfo.height ?? "?"}` : null,
+                          item.mediaInfo.hdrFormat && item.mediaInfo.hdrFormat !== "none" ? item.mediaInfo.hdrFormat : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ") || "-"
+                      : "-"}
+                  </td>
+                  <td>{item.mediaInfo ? summarizeAudio(item.mediaInfo) : "-"}</td>
+                  <td>{item.mediaInfo ? summarizeSubtitles(item.mediaInfo) : "-"}</td>
+                  <td>{item.addedAt ? new Date(item.addedAt).toLocaleDateString() : "-"}</td>
+                </tr>
+              ) : (
+                <tr>
+                  <td colSpan={7} className="empty">
+                    No file
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </>
+      )}
+
       {cast && cast.length > 0 && (
         <>
-          <h2>Cast</h2>
-          <div style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 8, marginBottom: 12 }}>
-            {cast.map((c) => (
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <h2 style={{ margin: 0 }}>Cast</h2>
+            {cast.length > 8 && (
+              <button
+                type="button"
+                onClick={() => setShowAllCast((v) => !v)}
+                style={{ fontSize: "0.8rem", padding: 0, border: "none", background: "none", color: "var(--link, #4a9eff)", cursor: "pointer", width: "auto" }}
+              >
+                {showAllCast ? "Show less" : `More (+${cast.length - 8})`}
+              </button>
+            )}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 8, marginBottom: 12 }}>
+            {(showAllCast ? cast : cast.slice(0, 8)).map((c) => (
               <div
                 key={c.personId}
                 style={{ flex: "0 0 90px", cursor: "pointer", textAlign: "center" }}
@@ -1957,7 +1972,15 @@ export default function MediaDetail() {
         })()}
 
       {isAdmin && showMetadataSources && (metadataProviders[item.type]?.length ?? 0) > 0 && (
-        <Modal title="Additional Metadata Sources" onClose={() => setShowMetadataSources(false)} maxWidth={900}>
+        <Modal
+          title="Additional Metadata Sources"
+          onClose={() => {
+            setShowMetadataSources(false);
+            setSourcesError(null);
+          }}
+          maxWidth={900}
+        >
+          {sourcesError && <p style={{ color: "var(--danger)" }}>{sourcesError}</p>}
           <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
             Pull a second opinion from another provider without changing this item's primary
             fields yet — for an episodic show, any episode that provider lists but this one doesn't
@@ -2423,6 +2446,35 @@ export default function MediaDetail() {
               <button type="button" className="icon-button" onClick={() => setSeasonView("tile")} disabled={seasonView === "tile"} title="Tile view" aria-label="Tile view">
                 <GridIcon />
               </button>
+              {seasonView === "list" &&
+                (() => {
+                  const allSeasonNumbers = Array.from(new Set((item.children as Episode[]).map((ep) => ep.seasonNumber)));
+                  const allOpen = openSeasons.size >= allSeasonNumbers.length;
+                  return (
+                    <button
+                      type="button"
+                      className="icon-button"
+                      onClick={() => toggleAllSeasons(allSeasonNumbers)}
+                      title={allOpen ? "Collapse all seasons" : "Expand all seasons"}
+                      aria-label={allOpen ? "Collapse all seasons" : "Expand all seasons"}
+                    >
+                      {allOpen ? <ChevronsUpIcon /> : <ChevronsDownIcon />}
+                    </button>
+                  );
+                })()}
+              {seasonView === "list" && (
+                <button
+                  type="button"
+                  className="icon-button"
+                  style={showEpisodeFilePath ? { color: "var(--accent, #4a9eff)" } : undefined}
+                  onClick={() => setShowEpisodeFilePath((v) => !v)}
+                  title={showEpisodeFilePath ? "Hide the File Path column" : "Show the File Path column"}
+                  aria-label={showEpisodeFilePath ? "Hide file path column" : "Show file path column"}
+                  aria-pressed={showEpisodeFilePath}
+                >
+                  <EyeIcon />
+                </button>
+              )}
             </div>
           </div>
           {seasonView === "tile" && (
@@ -2587,6 +2639,7 @@ export default function MediaDetail() {
                           <th>Monitored</th>
                           <th>File</th>
                           <th>Quality</th>
+                          {showEpisodeFilePath && <th>File Path</th>}
                           <th></th>
                         </tr>
                       </thead>
@@ -2608,6 +2661,11 @@ export default function MediaDetail() {
                                 <div style={{ color: "var(--muted)", fontSize: "0.75rem" }}>{formatMediaInfo(ep.mediaInfo)}</div>
                               )}
                             </td>
+                            {showEpisodeFilePath && (
+                              <td style={{ fontSize: "0.8rem", color: "var(--muted)", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={ep.filePath ?? undefined}>
+                                {ep.filePath ?? "-"}
+                              </td>
+                            )}
                             <td onClick={(e) => e.stopPropagation()}>
                               {isAdmin && (
                                 <button

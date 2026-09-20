@@ -10,7 +10,7 @@ import Modal from "../components/Modal.js";
 import MonitorToggle from "../components/MonitorToggle.js";
 import RenamePreviewModal from "../components/RenamePreviewModal.js";
 import { PlusCircleIcon, CheckSquareIcon, SlashIcon, ZapIcon, RotateCcwIcon, SearchIcon, DownloadIcon, GlobeIcon } from "../components/NavIcons.js";
-import { PencilIcon, XIcon, CheckIcon, TrashIcon, FolderIcon, ChevronLeftIcon, ChevronRightIcon, GridIcon, RowsIcon, TableIcon } from "../components/ActionIcons.js";
+import { PencilIcon, XIcon, CheckIcon, SaveIcon, TrashIcon, FolderIcon, ChevronLeftIcon, ChevronRightIcon, GridIcon, RowsIcon, TableIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton, ToolbarSeparator } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
@@ -462,10 +462,17 @@ export function LibraryItemGrid({
   const [pageSize, setPageSize] = useState<number>(
     () => Number(localStorage.getItem(`aonarr_library_page_size_${type}`)) || DEFAULT_PAGE_SIZE
   );
-  const [viewMode, setViewMode] = useState<ViewMode>(() => (localStorage.getItem("aonarr_library_view") as ViewMode) || "poster");
-  const [posterSize, setPosterSize] = useState<PosterSize>(() => (localStorage.getItem("aonarr_library_poster_size") as PosterSize) || "medium");
-  const [listColumns, setListColumns] = useState<Set<ExtraField>>(() => loadFieldSet("aonarr_library_columns", DEFAULT_LIST_COLUMNS));
-  const [posterFields, setPosterFields] = useState<Set<ExtraField>>(() => loadFieldSet("aonarr_library_poster_fields", DEFAULT_POSTER_FIELDS));
+  // Namespaced per type for the same reason status/sort/page-size are (see the reset effect
+  // below) — these four used to be stored under one global key shared by every library type, so
+  // e.g. switching Table view on for Movies silently turned it on for every other library too.
+  const [viewMode, setViewMode] = useState<ViewMode>(() => (localStorage.getItem(`aonarr_library_view_${type}`) as ViewMode) || "poster");
+  const [posterSize, setPosterSize] = useState<PosterSize>(
+    () => (localStorage.getItem(`aonarr_library_poster_size_${type}`) as PosterSize) || "medium"
+  );
+  const [listColumns, setListColumns] = useState<Set<ExtraField>>(() => loadFieldSet(`aonarr_library_columns_${type}`, DEFAULT_LIST_COLUMNS));
+  const [posterFields, setPosterFields] = useState<Set<ExtraField>>(() =>
+    loadFieldSet(`aonarr_library_poster_fields_${type}`, DEFAULT_POSTER_FIELDS)
+  );
   const [contentRatingFilter, setContentRatingFilter] = useState<string | "all">("all");
   const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -524,6 +531,7 @@ export function LibraryItemGrid({
   const [matchingProviders, setMatchingProviders] = useState(false);
   const [metadataProviderCount, setMetadataProviderCount] = useState(0);
   const [showRenamePreview, setShowRenamePreview] = useState(false);
+  const [showExportBulk, setShowExportBulk] = useState(false);
   const [converting, setConverting] = useState(false);
   // "System" filter — only meaningful on ROM's flat "Browse all" page (groupId undefined here means
   // that page; the tile-browse Maker page already scopes to one specific groupId, and Ungrouped
@@ -882,43 +890,71 @@ export function LibraryItemGrid({
     }
   }
 
+  // `type` is deliberately NOT a dependency of any of these seven persistence effects, even
+  // though each one uses it to build its storage key — this was a real, subtle bug (found via live
+  // testing, not just theory): with `type` in the deps, switching type re-ran EVERY one of these
+  // effects too (since they all watch `type`), each writing that OLD type's still-current-in-memory
+  // value into the NEW type's key, in the same effect-flush as (but before, by declaration order)
+  // the restore effect below — which then immediately read back its own just-written contamination
+  // instead of that new type's real (or absent) saved value. Omitting `type` here means React only
+  // re-runs a given effect when ITS OWN value actually changes (a real user edit), never merely
+  // because the type changed; the closure still captures whichever `type` is current at the time it
+  // does run, so the correct key is always written when a value genuinely changes.
   useEffect(() => {
-    localStorage.setItem("aonarr_library_view", viewMode);
+    localStorage.setItem(`aonarr_library_view_${type}`, viewMode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode]);
   useEffect(() => {
-    localStorage.setItem("aonarr_library_poster_size", posterSize);
+    localStorage.setItem(`aonarr_library_poster_size_${type}`, posterSize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [posterSize]);
   useEffect(() => {
     localStorage.setItem(`aonarr_library_sort_${type}`, sortKey);
-  }, [sortKey, type]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortKey]);
   useEffect(() => {
     localStorage.setItem(`aonarr_library_status_${type}`, statusFilter);
-  }, [statusFilter, type]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter]);
   useEffect(() => {
     localStorage.setItem(`aonarr_library_page_size_${type}`, String(pageSize));
-  }, [pageSize, type]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageSize]);
+  useEffect(() => {
+    localStorage.setItem(`aonarr_library_columns_${type}`, JSON.stringify(Array.from(listColumns)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listColumns]);
+  useEffect(() => {
+    localStorage.setItem(`aonarr_library_poster_fields_${type}`, JSON.stringify(Array.from(posterFields)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [posterFields]);
   // The component instance is reused (not remounted) when navigating between library types on the
   // same route (e.g. Movies -> Series both match `/library/:type`), so the lazy useState
   // initializers above only ever run once — without this, switching type wouldn't pick up that
   // type's own remembered sort/status/page-size and would just keep showing whichever library's
-  // filter was active before the switch.
+  // filter was active before the switch. Runs AFTER the seven persistence effects above in every
+  // sense that matters (they no longer fire at all on a bare type change, per the comment above),
+  // so it always reads each key's real, uncontaminated value for the new type.
   useEffect(() => {
     setStatusFilter((localStorage.getItem(`aonarr_library_status_${type}`) as StatusFilter) || "all");
     setSortKey((localStorage.getItem(`aonarr_library_sort_${type}`) as SortKey) || "added");
     setPageSize(Number(localStorage.getItem(`aonarr_library_page_size_${type}`)) || DEFAULT_PAGE_SIZE);
-    // Not persisted per-type like the filters above, so it isn't restored here — just cleared. A
-    // rating filter left over from a previous type (e.g. "R") can be entirely absent from the new
+    setViewMode((localStorage.getItem(`aonarr_library_view_${type}`) as ViewMode) || "poster");
+    setPosterSize((localStorage.getItem(`aonarr_library_poster_size_${type}`) as PosterSize) || "medium");
+    setListColumns(loadFieldSet(`aonarr_library_columns_${type}`, DEFAULT_LIST_COLUMNS));
+    setPosterFields(loadFieldSet(`aonarr_library_poster_fields_${type}`, DEFAULT_POSTER_FIELDS));
+    // Not persisted per-type like the filters above, so they aren't restored here — just cleared.
+    // A rating filter left over from a previous type (e.g. "R") can be entirely absent from the new
     // type's own rating vocabulary, silently rendering "Nothing here yet" with the dropdown itself
     // gone (it only shows when the current type actually has ratings), with no visible way to tell
-    // why the library looks empty.
+    // why the library looks empty — and a tag/system filter or search query left over from a
+    // completely different type's data is just as misleading.
     setContentRatingFilter("all");
+    setTagFilter("all");
+    setSystemFilter("all");
+    setSearchInput("");
+    setSearchQuery("");
   }, [type]);
-  useEffect(() => {
-    localStorage.setItem("aonarr_library_columns", JSON.stringify(Array.from(listColumns)));
-  }, [listColumns]);
-  useEffect(() => {
-    localStorage.setItem("aonarr_library_poster_fields", JSON.stringify(Array.from(posterFields)));
-  }, [posterFields]);
 
   function toggleListColumn(field: ExtraField) {
     setListColumns((prev) => {
@@ -998,15 +1034,22 @@ export function LibraryItemGrid({
       ],
     });
     if (!confirmed) return;
-    const result = await api.post<{ deleted: number; skipped: number }>("/media/bulk/delete", {
-      mediaItemIds: Array.from(selected),
-      deleteFiles: confirmed.values.deleteFiles,
-      addExclusion: confirmed.values.addExclusion,
-    });
-    setSelected(new Set());
-    notify.success(`Removed ${result.deleted} item(s)${result.skipped > 0 ? `, ${result.skipped} already gone` : ""}.`);
-    load();
-    loadStats();
+    try {
+      const result = await api.post<{ deleted: number; skipped: number }>("/media/bulk/delete", {
+        mediaItemIds: Array.from(selected),
+        deleteFiles: confirmed.values.deleteFiles,
+        addExclusion: confirmed.values.addExclusion,
+      });
+      notify.success(`Removed ${result.deleted} item(s)${result.skipped > 0 ? `, ${result.skipped} already gone` : ""}.`);
+    } catch (e) {
+      // A failed request used to leave `selected` pointing at rows that may or may not still
+      // exist, with no feedback at all — surface it instead of silently doing nothing.
+      notify.error((e as Error).message);
+    } finally {
+      setSelected(new Set());
+      load();
+      loadStats();
+    }
   }
 
   async function exportCsv() {
@@ -1279,37 +1322,12 @@ export function LibraryItemGrid({
             )}
             {auth.isAdmin && <ToolbarSeparator />}
             {auth.isAdmin && (
-              <div className="toolbar">
-                <DropdownMenu label="Export & Bulk">
-                  <button type="button" onClick={exportCsv}>
-                    Export CSV
-                  </button>
-                  <button type="button" onClick={() => exportMetadata("nfo")}>
-                    Export metadata (.nfo)
-                  </button>
-                  <button type="button" onClick={() => exportMetadata("json")}>
-                    Export metadata (JSON)
-                  </button>
-                  {["movie", "series", "anime", "sports", "ppv"].includes(type) && (
-                    <button
-                      type="button"
-                      onClick={() => exportMetadata("plexmatch")}
-                      title="A .plexmatch file per item's own folder — Plex's own match-override format, since Plex doesn't read .nfo sidecars"
-                    >
-                      Export for Plex (.plexmatch)
-                    </button>
-                  )}
-                  {["author", "audiobook", "comic", "manga"].includes(type) && (
-                    <button type="button" onClick={exportCalibre}>
-                      Export for Calibre
-                    </button>
-                  )}
-                  <div className="dropdown-divider" />
-                  <button type="button" onClick={() => csvInputRef.current?.click()} disabled={importingCsv}>
-                    {importingCsv ? "Importing..." : "Bulk edit via CSV..."}
-                  </button>
-                </DropdownMenu>
-              </div>
+              <ToolbarButton
+                icon={<DownloadIcon />}
+                label="Export & Bulk"
+                onClick={() => setShowExportBulk(true)}
+                title="Export this library, or bulk-edit it via CSV"
+              />
             )}
             <input
               ref={csvInputRef}
@@ -1322,13 +1340,6 @@ export function LibraryItemGrid({
         }
         right={
           <>
-            <input
-              type="search"
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              placeholder={`Search ${typeLabel.toLowerCase()}...`}
-              style={{ maxWidth: 220 }}
-            />
             <DropdownMenu
               label={
                 <>
@@ -1462,16 +1473,36 @@ export function LibraryItemGrid({
                 ))}
               </select>
             )}
-            {auth.isAdmin && (
-              <button type="button" className="icon-button" onClick={saveCurrentAsView} title="Save the current sort/filter/columns as a reusable named view" aria-label="Save view">
-                <CheckIcon />
-              </button>
-            )}
-            {auth.isAdmin && activeViewId !== "" && (
-              <button type="button" className="icon-button danger" onClick={deleteActiveView} title="Delete this saved view" aria-label="Delete view">
-                <TrashIcon />
-              </button>
-            )}
+            {/* Grouped in one flex unit (rather than giving Save its own marginLeft:auto) so Save/
+                Delete-view/Search always wrap together and land pushed to the right edge of
+                whichever row they end up on — with each element's own auto-margin, a narrower
+                viewport could wrap Search onto a new line by itself, left-aligned, separated from
+                the Save button it's meant to sit immediately after. */}
+            <span style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+              {auth.isAdmin && (
+                <button
+                  type="button"
+                  className="icon-button"
+                  onClick={saveCurrentAsView}
+                  title="Save the current sort/filter/columns as a reusable named view"
+                  aria-label="Save view"
+                >
+                  <SaveIcon />
+                </button>
+              )}
+              {auth.isAdmin && activeViewId !== "" && (
+                <button type="button" className="icon-button danger" onClick={deleteActiveView} title="Delete this saved view" aria-label="Delete view">
+                  <TrashIcon />
+                </button>
+              )}
+              <input
+                type="search"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                placeholder={`Search ${typeLabel.toLowerCase()}...`}
+                style={{ maxWidth: 220 }}
+              />
+            </span>
           </>
         }
       />
@@ -1759,6 +1790,80 @@ export function LibraryItemGrid({
             ))}
           </select>
         </div>
+      )}
+
+      {auth.isAdmin && showExportBulk && (
+        <Modal title="Export & Bulk" onClose={() => setShowExportBulk(false)} maxWidth={420}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                exportCsv();
+                setShowExportBulk(false);
+              }}
+            >
+              Export CSV
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                exportMetadata("nfo");
+                setShowExportBulk(false);
+              }}
+            >
+              Export metadata (.nfo)
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                exportMetadata("json");
+                setShowExportBulk(false);
+              }}
+            >
+              Export metadata (JSON)
+            </button>
+            {["movie", "series", "anime", "sports", "ppv"].includes(type) && (
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  exportMetadata("plexmatch");
+                  setShowExportBulk(false);
+                }}
+                title="A .plexmatch file per item's own folder — Plex's own match-override format, since Plex doesn't read .nfo sidecars"
+              >
+                Export for Plex (.plexmatch)
+              </button>
+            )}
+            {["author", "audiobook", "comic", "manga"].includes(type) && (
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  exportCalibre();
+                  setShowExportBulk(false);
+                }}
+              >
+                Export for Calibre
+              </button>
+            )}
+            <div className="dropdown-divider" />
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                csvInputRef.current?.click();
+                setShowExportBulk(false);
+              }}
+              disabled={importingCsv}
+            >
+              {importingCsv ? "Importing..." : "Bulk edit via CSV..."}
+            </button>
+          </div>
+        </Modal>
       )}
 
       {showRenamePreview && (

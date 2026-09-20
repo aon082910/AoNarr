@@ -35,6 +35,34 @@ export function CheckIcon() {
   );
 }
 
+export function SaveIcon() {
+  return (
+    <Icon>
+      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+      <polyline points="17 21 17 13 7 13 7 21" />
+      <polyline points="7 3 7 8 15 8" />
+    </Icon>
+  );
+}
+
+export function ChevronsDownIcon() {
+  return (
+    <Icon>
+      <polyline points="7 13 12 18 17 13" />
+      <polyline points="7 6 12 11 17 6" />
+    </Icon>
+  );
+}
+
+export function ChevronsUpIcon() {
+  return (
+    <Icon>
+      <polyline points="17 11 12 6 7 11" />
+      <polyline points="17 18 12 13 7 18" />
+    </Icon>
+  );
+}
+
 export function PencilIcon() {
   return (
     <Icon>

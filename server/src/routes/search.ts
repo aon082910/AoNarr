@@ -18,6 +18,7 @@ import { scoreRelease } from "../services/customFormatScoring.js";
 import { log } from "../services/logger.js";
 import { sizeWithinQualityBounds } from "../services/quality.js";
 import { getBlocklistedTitles, isBlocklisted } from "../services/blocklist.js";
+import { matchTierFor, type TargetIdentity } from "../services/scheduler.js";
 import { searchSlskd } from "../services/soulseek.js";
 import { pickClientForProtocol, searchAndGrabTargets, type BulkSearchTarget } from "../services/scheduler.js";
 import { computeAbsoluteEpisodeNumber } from "../services/importer.js";
@@ -47,6 +48,10 @@ export interface AnnotatedSearchResult extends SearchResult {
   sizeAllowed: boolean;
   formatScore: number;
   formatMatches: string[];
+  /** 2 = this release's own reported/title-embedded external id matches the target's; 1 = its
+   * parsed year matches; 0 = neither (or not applicable — an episode/sub-item search, which
+   * already confirms identity a different way). See scheduler.ts's matchTierFor. */
+  matchTier: number;
   blocklisted: boolean;
   rejected: boolean;
   rejectReason?: string;
@@ -111,6 +116,12 @@ searchRouter.get(
     const subItemId = req.query.subItemId as string | undefined;
     const seasonNumberParam = req.query.seasonNumber as string | undefined;
 
+    // Only meaningful for the plain whole-item search below (no episode/season/sub-item target) —
+    // an episodic/collection search already confirms identity via season/episode/sub-item title
+    // matching instead. See scheduler.ts's chooseBestResult/matchTierFor for how this is used: a
+    // preference among already-viable results, never a filter.
+    let identityExternalIds: Record<string, string> = {};
+
     if (episodeId) {
       const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(episodeId)) as any;
       if (!ep) throw new HttpError(404, "Episode not found");
@@ -133,12 +144,14 @@ searchRouter.get(
       const sub = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId)) as any;
       if (!sub) throw new HttpError(404, "Sub-item not found");
       query = `${item.title} ${sub.title}`;
+    } else {
+      identityExternalIds = item.externalIds ? JSON.parse(item.externalIds) : {};
     }
 
     const indexers = ((await db.prepare("SELECT * FROM indexers WHERE enabled = 1").all()) as any[]).map(
       indexerFromRow
     );
-    const rawResults = await searchAllIndexers(indexers as any, query, item.type as any, true);
+    const rawResults = await searchAllIndexers(indexers as any, query, item.type as any, true, identityExternalIds);
 
     // Soulseek has no Torznab-style indexer — a configured, enabled slskd client is queried
     // directly instead and its results merged in alongside the indexer ones. Music-shaped
@@ -168,6 +181,10 @@ searchRouter.get(
     }
 
     const blocklisted = await getBlocklistedTitles(item.id);
+    // Same "plain whole-item search" condition that populated identityExternalIds above (no
+    // episode/season/sub-item target) — an episodic/collection search already confirms identity a
+    // different way, so identity stays null for those and matchTierFor always returns 0 for them.
+    const identity: TargetIdentity | null = targetSeason === null && !subItemId ? { year: item.year, externalIds: identityExternalIds } : null;
     const annotated: AnnotatedSearchResult[] = await Promise.all(rawResults.map(async (r) => {
       const parsed = parseReleaseTitle(r.title);
       const matchesTarget =
@@ -191,6 +208,7 @@ searchRouter.get(
         sizeAllowed: sizeWithinQualityBounds(parsed.quality, r.size ?? null),
         formatScore: totalScore,
         formatMatches: matches.map((m) => m.name),
+        matchTier: matchTierFor(r, identity),
         blocklisted: blocklisted.has(r.title),
         rejected,
         rejectReason,
@@ -211,6 +229,7 @@ searchRouter.get(
         Number(a.rejected) - Number(b.rejected) ||
         Number(a.blocklisted) - Number(b.blocklisted) ||
         b.formatScore - a.formatScore ||
+        b.matchTier - a.matchTier ||
         (b.seeders ?? 0) - (a.seeders ?? 0)
     );
 

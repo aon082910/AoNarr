@@ -721,6 +721,32 @@ describe("refreshLibraryMetadata / refreshOneMediaItem", () => {
     expect(JSON.parse(row.external_ids)).toEqual({ tmdb: "1" });
   });
 
+  it("populates the real provider status in place of the 'unknown'/'missing' placeholder, when the provider returns one", async () => {
+    const id = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('movie','A Movie','a movie',1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    searchMetadata.mockResolvedValue([{ title: "A Movie", year: 2020, overview: null, posterUrl: null, externalIds: { tmdb: "1" }, status: "Released" }]);
+
+    await refreshOneMediaItem(id);
+
+    const row = (await db.prepare("SELECT status FROM media_items WHERE id = ?").get(id)) as { status: string };
+    expect(row.status).toBe("Released");
+  });
+
+  it("leaves the existing status untouched when the provider result has none (never clobbers a real value with a missing one)", async () => {
+    const id = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('movie','A Movie','a movie',1,0,'Released')`).run())
+        .lastInsertRowid
+    );
+    searchMetadata.mockResolvedValue([{ title: "A Movie", year: 2020, overview: "updated", posterUrl: null, externalIds: { tmdb: "1" } }]); // no status field
+
+    await refreshOneMediaItem(id);
+
+    const row = (await db.prepare("SELECT status FROM media_items WHERE id = ?").get(id)) as { status: string };
+    expect(row.status).toBe("Released");
+  });
+
   it("never overwrites the title of an item that's already matched (has external ids)", async () => {
     const id = Number(
       (

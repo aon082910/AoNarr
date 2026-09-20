@@ -21,7 +21,7 @@ export default function PromptModal() {
   if (!pending) return null;
 
   return (
-    <Modal title={pending.title} onClose={() => pending.resolve(null)} maxWidth={440}>
+    <Modal title={pending.title} onClose={() => pending.resolve(null)} maxWidth={440} zIndex={1100}>
       {pending.message && <p style={{ marginTop: 0 }}>{pending.message}</p>}
       <form
         onSubmit={(e) => {

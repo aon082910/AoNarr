@@ -26,7 +26,7 @@ export default function ConfirmModal() {
   }
 
   return (
-    <Modal title={pending.title} onClose={() => respond(false)} maxWidth={440}>
+    <Modal title={pending.title} onClose={() => respond(false)} maxWidth={440} zIndex={1100}>
       <p style={{ marginTop: 0, whiteSpace: "pre-line" }}>{pending.message}</p>
       {pending.options?.map((o) => (
         <label key={o.key} style={{ display: "flex", alignItems: "center", gap: 8, margin: "10px 0", cursor: "pointer" }}>
