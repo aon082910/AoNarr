@@ -860,6 +860,23 @@ describe("TorBoxAdapter", () => {
     ({ downloadId } = await adapter().addDownload(client, "magnet:?xt=x", null));
     await vi.waitFor(async () => expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("failed"));
   });
+
+  it("routes to the /usenet/... endpoints instead of /torrents/... when the release protocol is usenet", async () => {
+    const fetchMock = routedFetch([
+      { test: (u) => u.includes("/usenet/createusenetdownload"), response: ok({ data: { usenetdownload_id: "u1" } }) },
+      { test: (u) => u.includes("/usenet/mylist"), response: ok({ data: { download_finished: true, files: [{ id: 1, name: "f.mkv" }] } }) },
+      { test: (u) => u.includes("/usenet/requestdl"), response: ok({ data: "https://tb/direct-usenet" }) },
+      { test: (u) => u === "https://tb/direct-usenet", response: fileResponse("bytes") },
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = await insertClient({ type: "torbox", api_key: "key" });
+
+    const { downloadId } = await adapter().addDownload(client, "https://indexer/download.nzb", null, "Some.Release", "usenet");
+    await vi.waitFor(async () => {
+      expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("completed");
+    });
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("/torrents/"))).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

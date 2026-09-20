@@ -257,6 +257,25 @@ describe("pickClientForProtocol", () => {
   it("returns null when no configured client speaks the protocol", () => {
     expect(pickClientForProtocol([{ type: "http" } as any], "torrent")).toBeNull();
   });
+
+  it("defaults an unconfigured TorBox client to torrent-only, excluding it from usenet picks", () => {
+    const clients = [{ type: "torbox", downloadTypes: null }] as any[];
+    expect(pickClientForProtocol(clients, "torrent")?.type).toBe("torbox");
+    expect(pickClientForProtocol(clients, "usenet")).toBeNull();
+  });
+
+  it("routes usenet releases to a TorBox client explicitly opted into Usenet", () => {
+    const clients = [{ type: "sabnzbd", downloadTypes: null }, { type: "torbox", downloadTypes: ["usenet"] }] as any[];
+    expect(pickClientForProtocol(clients, "usenet")?.type).toBe("sabnzbd"); // sabnzbd still wins by preference order
+    expect(pickClientForProtocol([{ type: "torbox", downloadTypes: ["usenet"] }] as any[], "usenet")?.type).toBe("torbox");
+    // A TorBox client scoped to usenet-only no longer matches a torrent release.
+    expect(pickClientForProtocol([{ type: "torbox", downloadTypes: ["usenet"] }] as any[], "torrent")).toBeNull();
+  });
+
+  it("never routes usenet releases to Real-Debrid or AllDebrid, regardless of downloadTypes", () => {
+    const clients = [{ type: "realdebrid", downloadTypes: ["usenet"] }, { type: "alldebrid", downloadTypes: ["usenet"] }] as any[];
+    expect(pickClientForProtocol(clients, "usenet")).toBeNull();
+  });
 });
 
 describe("grab", () => {
@@ -268,7 +287,7 @@ describe("grab", () => {
 
     await grab(client, movie, null, null, { result: fakeResult(), quality: "WEBDL-1080p" });
 
-    expect(adapter.addDownload).toHaveBeenCalledWith(client, fakeResult().downloadUrl, undefined, fakeResult().title);
+    expect(adapter.addDownload).toHaveBeenCalledWith(client, fakeResult().downloadUrl, undefined, fakeResult().title, "torrent");
     const queueRow = (await db.prepare("SELECT * FROM queue WHERE media_item_id = ?").get(movie.id)) as any;
     expect(queueRow).toMatchObject({ download_id: "dl-1", quality: "WEBDL-1080p", status: "queued" });
     const historyRow = (await db.prepare("SELECT * FROM history WHERE media_item_id = ?").get(movie.id)) as any;
@@ -550,7 +569,7 @@ describe("runAutoSearch", () => {
     await runAutoSearch();
 
     expect(searchAllIndexers).not.toHaveBeenCalled();
-    expect(adapter.addDownload).toHaveBeenCalledWith(expect.objectContaining({ id: ytClient.id }), "https://www.youtube.com/watch?v=abc123", null, "A Video");
+    expect(adapter.addDownload).toHaveBeenCalledWith(expect.objectContaining({ id: ytClient.id }), "https://www.youtube.com/watch?v=abc123", null, "A Video", "http");
   });
 
   it("continues past one item's exception and still processes the rest", async () => {

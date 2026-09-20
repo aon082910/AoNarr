@@ -57,12 +57,17 @@ export default function DownloadClients() {
   const [apiKey, setApiKey] = useState("");
   const [category, setCategory] = useState("aonarr");
   const [audioOnly, setAudioOnly] = useState(false);
+  const [downloadTypes, setDownloadTypes] = useState<string[]>(["torrent"]);
 
   const [mappings, setMappings] = useState<RemotePathMapping[]>([]);
   const [mappingClientId, setMappingClientId] = useState<number | "">("");
   const [mappingRemotePath, setMappingRemotePath] = useState("");
   const [mappingLocalPath, setMappingLocalPath] = useState("");
   const mappingSort = useSortableTable<RemotePathMapping, "client" | "remote" | "local">("client");
+
+  function toggleDownloadType(t: string) {
+    setDownloadTypes((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
+  }
 
   const needsHost = type === "qbittorrent" || type === "sabnzbd" || type === "slskd";
   const needsWatchFolder = type === "blackhole";
@@ -104,6 +109,7 @@ export default function DownloadClients() {
     setApiKey("");
     setCategory("aonarr");
     setAudioOnly(false);
+    setDownloadTypes(["torrent"]);
   }
 
   function openAdd() {
@@ -122,6 +128,7 @@ export default function DownloadClients() {
     setApiKey(c.apiKey ?? "");
     setCategory(c.category ?? "aonarr");
     setAudioOnly(!!c.audioOnly);
+    setDownloadTypes(c.downloadTypes && c.downloadTypes.length > 0 ? c.downloadTypes : ["torrent"]);
     setTestResult(null);
     setMode(c.id);
   }
@@ -141,6 +148,9 @@ export default function DownloadClients() {
       apiKey: apiKey || null,
       category,
       audioOnly,
+      // Only TorBox genuinely caches more than one protocol — everyone else always sends the
+      // torrent-only default so nothing stale sticks around from before the type was switched.
+      downloadTypes: type === "torbox" ? downloadTypes : ["torrent"],
     };
     try {
       if (mode === "add") {
@@ -235,6 +245,7 @@ export default function DownloadClients() {
             <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: 4 }}>
               {TYPE_LABELS[c.type as ClientType] ?? c.type}
               {c.host ? ` · ${c.host}:${c.port}` : ""}
+              {c.type === "torbox" ? ` · ${(c.downloadTypes && c.downloadTypes.length > 0 ? c.downloadTypes : ["torrent"]).join(" + ")}` : ""}
             </div>
             <span className={`badge ${c.enabled ? "ok" : ""}`} style={{ marginTop: 8, display: "inline-block", marginRight: 6 }}>
               {c.enabled ? "Enabled" : "Disabled"}
@@ -432,6 +443,24 @@ export default function DownloadClients() {
                   From torbox.app → Settings → API key. AoNarr sends grabbed magnet/torrent links to
                   TorBox, waits for it to cache them, then downloads the file(s) directly — no
                   host/port needed, it's always their public API.
+                </p>
+
+                <label>Download types</label>
+                <div style={{ display: "flex", gap: 16 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 400 }}>
+                    <input type="checkbox" checked={downloadTypes.includes("torrent")} onChange={() => toggleDownloadType("torrent")} />
+                    Torrent / Magnet
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 400 }}>
+                    <input type="checkbox" checked={downloadTypes.includes("usenet")} onChange={() => toggleDownloadType("usenet")} />
+                    Usenet
+                  </label>
+                </div>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+                  TorBox is unique among AoNarr's debrid clients in caching Usenet as well as
+                  torrents — Real-Debrid and AllDebrid only ever handle torrents/magnets. Grabbed
+                  releases of an unchecked type skip this client and go to your next matching one
+                  (e.g. SABnzbd) instead.
                 </p>
               </>
             )}

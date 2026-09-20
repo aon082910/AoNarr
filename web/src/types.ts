@@ -153,6 +153,10 @@ export interface DownloadClient {
   category: string | null;
   enabled: 0 | 1;
   audioOnly: 0 | 1;
+  /** Which release protocol(s) this client should be used for — only meaningful for TorBox, the
+   * only debrid provider here that caches both torrents and Usenet. Null means unconfigured (falls
+   * back to torrent-only). */
+  downloadTypes: string[] | null;
 }
 
 export interface QualityProfile {

@@ -234,6 +234,8 @@ searchRouter.post(
 
     // Either an explicit client id, or (the UI's normal path) the release's protocol — an NZB
     // handed to qBittorrent, or a torrent to a disabled client, just fails at the client.
+    const protocol =
+      b.protocol === "usenet" || b.protocol === "torrent" || b.protocol === "http" || b.protocol === "slskd" ? b.protocol : "torrent";
     let clientRow: unknown;
     if (b.downloadClientId) {
       clientRow = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(b.downloadClientId);
@@ -241,8 +243,6 @@ searchRouter.post(
     } else {
       const enabled = ((await db.prepare("SELECT * FROM download_clients WHERE enabled = 1").all()) as any[]).map(downloadClientFromRow);
       if (enabled.length === 0) throw new HttpError(400, "Add and enable a download client first");
-      const protocol =
-        b.protocol === "usenet" || b.protocol === "torrent" || b.protocol === "http" || b.protocol === "slskd" ? b.protocol : "torrent";
       const picked = pickClientForProtocol(enabled as any, protocol);
       if (!picked) throw new HttpError(400, `No enabled download client can handle a "${protocol}" release`);
       clientRow = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(picked.id);
@@ -250,7 +250,7 @@ searchRouter.post(
     const client = downloadClientFromRow(clientRow) as any;
 
     const adapter = getDownloadClientAdapter(client.type);
-    const grab = await adapter.addDownload(client, b.downloadUrl, client.category, b.title);
+    const grab = await adapter.addDownload(client, b.downloadUrl, client.category, b.title, protocol);
     const quality = parseReleaseTitle(b.title ?? "").quality;
 
     const result = await db

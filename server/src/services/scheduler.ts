@@ -296,7 +296,7 @@ export async function grab(
 ): Promise<void> {
   const { result: best, quality } = chosen;
   const adapter = getDownloadClientAdapter(client.type);
-  const grabResult = await adapter.addDownload(client, best.downloadUrl, client.category, best.title);
+  const grabResult = await adapter.addDownload(client, best.downloadUrl, client.category, best.title, best.protocol);
 
   await db
     .prepare(
@@ -326,18 +326,33 @@ export async function grab(
   log.info(`[scheduler] grabbed "${best.title}" for "${mediaItem.title}"`);
 }
 
+/** Debrid client types whose provider can genuinely handle more than one release protocol — right
+ * now just TorBox, which caches both torrents and Usenet (Real-Debrid/AllDebrid only ever do
+ * torrents, so they're never worth gating on their own downloadTypes). */
+const MULTI_PROTOCOL_DEBRID_TYPES = new Set(["torbox"]);
+
 /** A grabbed release only works with a download client that speaks its protocol — picking
  * `clients[0]` blindly (the old behavior) breaks the moment more than one client type is
- * configured, which is now common since http/ytdlp clients coexist with qBittorrent/SABnzbd. */
+ * configured, which is now common since http/ytdlp clients coexist with qBittorrent/SABnzbd.
+ * A client whose provider handles more than one protocol (see MULTI_PROTOCOL_DEBRID_TYPES) is only
+ * considered a match when its own `downloadTypes` setting includes this protocol — unconfigured
+ * (null) keeps the historical torrent-only default so existing setups are unaffected until an
+ * admin opts a client into Usenet from Settings -> Download Clients. */
 export function pickClientForProtocol(clients: DownloadClient[], protocol: SearchResult["protocol"]): DownloadClient | null {
   const typesForProtocol: Record<string, string[]> = {
     torrent: ["qbittorrent", "realdebrid", "alldebrid", "torbox", "blackhole"],
-    usenet: ["sabnzbd", "blackhole"],
+    usenet: ["sabnzbd", "torbox", "blackhole"],
     http: ["http"],
     slskd: ["slskd"],
   };
   const preferred = typesForProtocol[protocol] ?? [];
-  return clients.find((c) => preferred.includes(c.type)) ?? null;
+  return (
+    clients.find((c) => {
+      if (!preferred.includes(c.type)) return false;
+      if (MULTI_PROTOCOL_DEBRID_TYPES.has(c.type)) return (c.downloadTypes ?? ["torrent"]).includes(protocol);
+      return true;
+    }) ?? null
+  );
 }
 
 /** Parses "HH:MM" into minutes-since-midnight and checks whether the current local time falls

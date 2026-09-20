@@ -10,6 +10,18 @@ import { encryptValue } from "../services/encryption.js";
 export const downloadClientsRouter = Router();
 downloadClientsRouter.use(requireAdmin);
 
+const VALID_DOWNLOAD_TYPES = new Set(["torrent", "usenet"]);
+
+/** Validates/normalizes a client's `downloadTypes` override (which release protocol(s) it should
+ * be used for — see services/scheduler.ts's pickClientForProtocol). An empty array or anything not
+ * an array collapses to null ("not configured, use this client type's own default"), same
+ * empty-means-null convention as customFormats.ts's mediaTypes. */
+function normalizeDownloadTypes(input: unknown): string[] | null {
+  if (!Array.isArray(input)) return null;
+  const filtered = input.filter((v): v is string => typeof v === "string" && VALID_DOWNLOAD_TYPES.has(v));
+  return filtered.length > 0 ? Array.from(new Set(filtered)) : null;
+}
+
 downloadClientsRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
@@ -25,11 +37,12 @@ downloadClientsRouter.post(
     if (!b.name || !b.type) throw new HttpError(400, "name and type are required");
     const needsHost = b.type === "qbittorrent" || b.type === "sabnzbd" || b.type === "slskd";
     if (needsHost && (!b.host || !b.port)) throw new HttpError(400, "host and port are required for this client type");
+    const downloadTypes = normalizeDownloadTypes(b.downloadTypes);
 
     const result = await db
       .prepare(
-        `INSERT INTO download_clients (name, type, host, port, use_ssl, username, password, api_key, category, enabled, audio_only)
-         VALUES (@name, @type, @host, @port, @useSsl, @username, @password, @apiKey, @category, @enabled, @audioOnly)`
+        `INSERT INTO download_clients (name, type, host, port, use_ssl, username, password, api_key, category, enabled, audio_only, download_types)
+         VALUES (@name, @type, @host, @port, @useSsl, @username, @password, @apiKey, @category, @enabled, @audioOnly, @downloadTypes)`
       )
       .run({
         name: b.name,
@@ -43,6 +56,7 @@ downloadClientsRouter.post(
         category: b.category ?? null,
         enabled: b.enabled === false ? 0 : 1,
         audioOnly: b.audioOnly ? 1 : 0,
+        downloadTypes: downloadTypes ? JSON.stringify(downloadTypes) : null,
       });
     const row = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(result.lastInsertRowid);
     const actor = auditActor(req);
@@ -67,6 +81,7 @@ downloadClientsRouter.patch(
       category: "category",
       enabled: "enabled",
       audioOnly: "audio_only",
+      downloadTypes: "download_types",
     };
     const booleanKeys = new Set(["useSsl", "enabled", "audioOnly"]);
     const sets: string[] = [];
@@ -78,8 +93,22 @@ downloadClientsRouter.patch(
         // Postgres (like better-sqlite3) rejects binding a raw JS boolean to an INTEGER column —
         // coerce true/false to 1/0 for the handful of columns that are actually booleans
         // (everything else passes through as-is). password/apiKey are encrypted at rest, same as
-        // the equivalent settings-table credentials — see services/encryption.ts.
-        values.push(booleanKeys.has(key) ? (b[key] ? 1 : 0) : secretKeys.has(key) && b[key] ? encryptValue(b[key]) : b[key]);
+        // the equivalent settings-table credentials — see services/encryption.ts. downloadTypes is
+        // stored as a JSON array, same normalize-to-null-when-empty convention as POST above.
+        values.push(
+          key === "downloadTypes"
+            ? (() => {
+                const dt = normalizeDownloadTypes(b.downloadTypes);
+                return dt ? JSON.stringify(dt) : null;
+              })()
+            : booleanKeys.has(key)
+              ? b[key]
+                ? 1
+                : 0
+              : secretKeys.has(key) && b[key]
+                ? encryptValue(b[key])
+                : b[key]
+        );
       }
     }
     if (sets.length > 0) {

@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { config } from "../config.js";
 import { db } from "../db/index.js";
 import { downloadClientFromRow } from "../db/mappers.js";
-import type { DownloadClient, QueueItem } from "../types/index.js";
+import type { DownloadClient, QueueItem, SearchResult } from "../types/index.js";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { decodeSlskdDownloadUrl } from "./soulseek.js";
@@ -54,11 +54,16 @@ export interface QueueStatusUpdate {
  * in-process adapters (http, ytdlp) that write the file into downloadsDir themselves — naming it
  * to match gives the importer's fuzzy-match a much better target than a raw URL basename would. */
 export interface DownloadClientAdapter {
+  /** `protocol` is the grabbed release's own SearchResult.protocol — only read by adapters whose
+   * provider handles more than one protocol (currently just TorBoxAdapter, which branches between
+   * its torrent and Usenet caching APIs); every other adapter ignores it. Undefined when the
+   * caller has no SearchResult on hand (e.g. an Online Videos direct download). */
   addDownload(
     client: DownloadClient,
     downloadUrl: string,
     category: string | null,
-    releaseTitle?: string
+    releaseTitle?: string,
+    protocol?: SearchResult["protocol"]
   ): Promise<GrabResult>;
   getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]>;
   /** Not every backend has a real queue to reorder (the in-process http/ytdlp adapters download
@@ -744,11 +749,14 @@ class RealDebridAdapter implements DownloadClientAdapter {
 
 /**
  * TorBox — the same "debrid" torrent-caching shape as Real-Debrid/AllDebrid, just a different
- * provider (and one that also caches Usenet, though only the torrent side is wired up here, same
- * scope as the RD/AD adapters). client.apiKey holds the TorBox API key (Settings on torbox.app);
- * no host/port, always their public API. Every response is wrapped as `{ success, detail, data }`;
- * `success: false` (or a torrent-level error/dead state) is treated as a failure the same way RD's
- * `status === "error"` is.
+ * provider — and unlike Real-Debrid/AllDebrid, it also caches Usenet, via a separate `/usenet/...`
+ * API namespace that otherwise mirrors the torrent one exactly (`usenet_id` in place of
+ * `torrent_id`, same mylist/requestdl shape). Which of the two a given client instance is used for
+ * is controlled by its `downloadTypes` setting (Settings -> Download Clients) — see
+ * services/scheduler.ts's pickClientForProtocol; defaults to torrent-only when unconfigured.
+ * client.apiKey holds the TorBox API key (Settings on torbox.app); no host/port, always their
+ * public API. Every response is wrapped as `{ success, detail, data }`; `success: false` (or an
+ * item-level error/dead state) is treated as a failure the same way RD's `status === "error"` is.
  */
 class TorBoxAdapter implements DownloadClientAdapter {
   private jobs = new Map<string, InProcessJob>();
@@ -762,14 +770,18 @@ class TorBoxAdapter implements DownloadClientAdapter {
     client: DownloadClient,
     downloadUrl: string,
     _category: string | null,
-    releaseTitle?: string
+    releaseTitle?: string,
+    protocol?: SearchResult["protocol"]
   ): Promise<GrabResult> {
     const downloadId = crypto.randomUUID();
     this.jobs.set(downloadId, { progress: 0, status: "downloading" });
+    const isUsenet = protocol === "usenet";
+    const kind = isUsenet ? "usenet" : "torrents";
+    const idParam = isUsenet ? "usenet_id" : "torrent_id";
 
     (async () => {
       try {
-        const torrentId = await this.addToTorBox(client, downloadUrl);
+        const itemId = isUsenet ? await this.addToTorBoxUsenet(client, downloadUrl, releaseTitle) : await this.addToTorBox(client, downloadUrl);
 
         // Poll TorBox's own caching/download progress until the files are actually present on
         // their end. `progress` has been observed both as a 0-1 fraction and a 0-100 percentage
@@ -778,12 +790,12 @@ class TorBoxAdapter implements DownloadClientAdapter {
         const deadline = Date.now() + DEBRID_POLL_TIMEOUT_MS;
         for (;;) {
           if (Date.now() > deadline) throw new Error("TorBox did not finish within the polling window");
-          const res = await fetch(`${this.base}/torrents/mylist?id=${torrentId}&bypass_cache=true`, { headers: this.headers(client) });
+          const res = await fetch(`${this.base}/${kind}/mylist?id=${itemId}&bypass_cache=true`, { headers: this.headers(client) });
           if (!res.ok) throw new Error(`TorBox status check failed: HTTP ${res.status}`);
           const body: any = await res.json();
           if (body.success === false) throw new Error(`TorBox reported: ${body.detail ?? "unknown error"}`);
           const info: any = Array.isArray(body.data) ? body.data[0] : body.data;
-          if (!info) throw new Error("TorBox reported no torrent info");
+          if (!info) throw new Error(`TorBox reported no ${isUsenet ? "usenet download" : "torrent"} info`);
           if (typeof info.download_state === "string" && /error|dead|fail/i.test(info.download_state)) {
             throw new Error(`TorBox reported "${info.download_state}"`);
           }
@@ -801,7 +813,7 @@ class TorBoxAdapter implements DownloadClientAdapter {
         fs.mkdirSync(config.downloadsDir, { recursive: true });
         for (const file of files) {
           const dlRes = await fetch(
-            `${this.base}/torrents/requestdl?token=${encodeURIComponent(client.apiKey ?? "")}&torrent_id=${torrentId}&file_id=${file.id}`
+            `${this.base}/${kind}/requestdl?token=${encodeURIComponent(client.apiKey ?? "")}&${idParam}=${itemId}&file_id=${file.id}`
           );
           if (!dlRes.ok) throw new Error(`TorBox requestdl failed: HTTP ${dlRes.status}`);
           const dlBody: any = await dlRes.json();
@@ -853,6 +865,28 @@ class TorBoxAdapter implements DownloadClientAdapter {
     const torrentId = body.data?.torrent_id ?? body.data?.id;
     if (!torrentId) throw new Error("TorBox createtorrent returned no torrent id");
     return String(torrentId);
+  }
+
+  /** An NZB has no magnet-style redirect ambiguity to resolve up front the way a torrent release
+   * does — createusenetdownload's `link` param has TorBox fetch the indexer's download URL itself,
+   * the same "hand the provider a URL it fetches on its own" shape AllDebrid's magnet/upload
+   * already uses for an http(s) magnet-pointing URL. */
+  private async addToTorBoxUsenet(client: DownloadClient, downloadUrl: string, releaseTitle?: string): Promise<string> {
+    const form = new FormData();
+    form.append("link", downloadUrl);
+    if (releaseTitle) form.append("name", releaseTitle);
+
+    const res = await fetch(`${this.base}/usenet/createusenetdownload`, {
+      method: "POST",
+      headers: this.headers(client),
+      body: form,
+    });
+    if (!res.ok) throw new Error(`TorBox createusenetdownload failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+    if (body.success === false) throw new Error(`TorBox createusenetdownload rejected: ${body.detail ?? "unknown error"}`);
+    const usenetId = body.data?.usenetdownload_id ?? body.data?.id;
+    if (!usenetId) throw new Error("TorBox createusenetdownload returned no id");
+    return String(usenetId);
   }
 
   async getStatus(_client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {

@@ -104,6 +104,12 @@ export interface DownloadClient {
   category: string | null;
   enabled: MonitorStatus;
   audioOnly: MonitorStatus;
+  /** Which release protocol(s) this client should be used for — only meaningful for a debrid
+   * client type that can genuinely handle more than one (currently just TorBox, which caches both
+   * torrents and Usenet; Real-Debrid/AllDebrid only ever do torrents). Null means "not configured",
+   * which pickClientForProtocol treats as the historical torrent-only default so existing setups
+   * are unaffected until an admin opts a client into another protocol. */
+  downloadTypes: string[] | null;
 }
 
 export interface QualityProfile {

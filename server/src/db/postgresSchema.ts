@@ -66,6 +66,7 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE queue ADD COLUMN IF NOT EXISTS last_progress_at TEXT`,
   `ALTER TABLE queue ADD COLUMN IF NOT EXISTS season_number INTEGER`,
   `ALTER TABLE download_clients ADD COLUMN IF NOT EXISTS audio_only INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE download_clients ADD COLUMN IF NOT EXISTS download_types TEXT`,
   `ALTER TABLE root_folders ADD COLUMN IF NOT EXISTS pause_grabs_at_quota INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE library_groups ADD COLUMN IF NOT EXISTS overview TEXT`,
   `ALTER TABLE qualities ADD COLUMN IF NOT EXISTS preferred_size_mb INTEGER`,

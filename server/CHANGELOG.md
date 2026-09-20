@@ -3,6 +3,43 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 331 — per-client download type selection for debrid clients, real TorBox Usenet support
+
+New feature: Settings -> Download Clients now lets a **TorBox** client declare which release
+protocol(s) it should be used for — Torrent/Magnet, Usenet, or both — instead of every debrid
+client silently being torrent-only. Real-Debrid and AllDebrid don't get this control since neither
+provider's API supports Usenet at all; TorBox is the one debrid client here that genuinely caches
+both, via its own separate `/usenet/...` API namespace (mirroring `/torrents/...` almost exactly:
+same `createusenetdownload`/`mylist`/`requestdl` shape, `usenet_id` in place of `torrent_id`).
+
+- `DownloadClient` gained a `downloadTypes: string[] | null` field (new `download_types` TEXT
+  column, migrated in for existing installs). Null means "unconfigured", which
+  `pickClientForProtocol` treats as the historical torrent-only default so nothing changes for
+  existing TorBox setups until an admin opts in.
+- `pickClientForProtocol` now also considers TorBox for `usenet` releases (previously only
+  SABnzbd/Blackhole), gated on the client's own `downloadTypes` — a TorBox client scoped to
+  Usenet-only no longer matches a torrent release, and vice versa.
+- `TorBoxAdapter.addDownload` branches on the grabbed release's protocol: a torrent release still
+  goes through `/torrents/createtorrent` exactly as before; a Usenet release now goes through a new
+  `/usenet/createusenetdownload` call (handing TorBox the indexer's NZB URL directly via its `link`
+  param, the same "let the provider fetch it" shape AllDebrid's magnet upload already uses for an
+  http(s) URL) and polls/downloads via the mirrored `/usenet/mylist`+`/usenet/requestdl` endpoints.
+- The manual grab route and the scheduler's automatic grab path both now thread the release's
+  protocol through to `adapter.addDownload` so TorBox knows which endpoint family to use; every
+  other adapter ignores the added parameter.
+- Settings -> Download Clients' TorBox form gained a "Download types" checkbox pair, and each
+  TorBox tile shows which type(s) it's scoped to.
+
+Verified: `tsc --noEmit` clean on both projects; full server suite (89 files / 1381 tests) passes,
+including new coverage for `pickClientForProtocol`'s TorBox gating and `TorBoxAdapter`'s Usenet
+branch. Live-verified end to end against the running server: created a TorBox client scoped to
+Usenet-only via the real API, confirmed a manual torrent-protocol grab correctly refuses (no
+enabled client can take it) while a usenet-protocol grab correctly routes to it and reaches
+TorBox's real `/usenet/createusenetdownload` endpoint (a genuine HTTP 403 from TorBox on the fake
+test API key, not a 404, confirming the endpoint path itself is correct); also drove the Settings
+UI directly in the browser (add a TorBox client, toggle both checkboxes, save, confirm the tile's
+"torrent + usenet" summary). All fixtures cleaned up afterward.
+
 ## Round 330 — nine bugs closing out the services layer
 
 Finished the services-layer sweep with the ~39 remaining files under 100 lines each

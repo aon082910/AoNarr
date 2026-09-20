@@ -140,6 +140,7 @@ export function downloadClientFromRow(row: any) {
     category: row.category,
     enabled: row.enabled,
     audioOnly: row.audio_only,
+    downloadTypes: row.download_types ? JSON.parse(row.download_types) : null,
   };
 }
 

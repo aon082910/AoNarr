@@ -102,6 +102,7 @@ ensureColumn(
   "download_path",
   "download_path TEXT" // remote-path-mapping-translated location of this download, set by pollQueue when the client reports one (see services/downloadClient.ts's applyRemotePathMapping)
 );
+ensureColumn("download_clients", "download_types", "download_types TEXT");
 
 /**
  * indexers.protocol and download_clients.type originally shipped with a rigid `CHECK (... IN (...))`
@@ -186,7 +187,8 @@ dropCheckConstraint(
      api_key TEXT,
      category TEXT,
      enabled INTEGER NOT NULL DEFAULT 1,
-     audio_only INTEGER NOT NULL DEFAULT 0
+     audio_only INTEGER NOT NULL DEFAULT 0,
+     download_types TEXT
    )`
 );
 
