@@ -36,8 +36,20 @@ interface LibraryStats {
   childCount: number;
   childHaveCount: number;
   contentRatings: string[];
+  /** How many items of this type still have their old, pre-episodic data structure (see
+   * MediaItem.legacyShape) — only ever nonzero for course/adult. Drives the "Convert to Episodic"
+   * toolbar button. */
+  legacyCount: number;
 }
-const EMPTY_STATS: LibraryStats = { total: 0, haveCount: 0, missingCount: 0, childCount: 0, childHaveCount: 0, contentRatings: [] };
+const EMPTY_STATS: LibraryStats = {
+  total: 0,
+  haveCount: 0,
+  missingCount: 0,
+  childCount: 0,
+  childHaveCount: 0,
+  contentRatings: [],
+  legacyCount: 0,
+};
 
 const POSTER_SIZE_PX: Record<PosterSize, number> = { xsmall: 90, small: 120, medium: 160, large: 220, xlarge: 300 };
 
@@ -405,6 +417,14 @@ export default function LibraryType() {
             <Link to={`/library/${type}/ungrouped`}>{ungroupedCount} ungrouped item(s) →</Link>
           </p>
         )}
+        {/* Tile browsing (System -> Maker) narrows to one group at a time — there's nowhere in that
+         * flow to filter "every ROM under System X across all its Makers", so this is the one entry
+         * point into a flat, filterable view of the whole library instead. */}
+        {!groupId && type === "rom" && (
+          <p style={{ marginTop: ungroupedCount > 0 ? 4 : 16 }}>
+            <Link to={`/library/${type}/all`}>Browse all ROMs →</Link>
+          </p>
+        )}
       </div>
     );
   }
@@ -504,6 +524,17 @@ export function LibraryItemGrid({
   const [matchingProviders, setMatchingProviders] = useState(false);
   const [metadataProviderCount, setMetadataProviderCount] = useState(0);
   const [showRenamePreview, setShowRenamePreview] = useState(false);
+  const [converting, setConverting] = useState(false);
+  // "System" filter — only meaningful on ROM's flat "Browse all" page (groupId undefined here means
+  // that page; the tile-browse Maker page already scopes to one specific groupId, and Ungrouped
+  // always passes the literal "none"). A ROM only ever gets a group once actually matched (see
+  // libraryScan.ts's refreshOneItem), so "unknown" genuinely means "not yet matched" here.
+  const [systemGroups, setSystemGroups] = useState<LibraryGroup[]>([]);
+  const [systemFilter, setSystemFilter] = useState<string>("all");
+  useEffect(() => {
+    if (type !== "rom" || groupId !== undefined) return;
+    api.get<LibraryGroup[]>(`/library-groups?mediaType=rom`).then(setSystemGroups);
+  }, [type, groupId]);
   const csvInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { auth } = useAuth();
@@ -532,7 +563,13 @@ export function LibraryItemGrid({
   function scopeParams() {
     const params = new URLSearchParams();
     params.set("type", type);
-    if (groupId) params.set("groupId", groupId);
+    if (groupId) {
+      params.set("groupId", groupId);
+    } else if (type === "rom" && systemFilter === "unknown") {
+      params.set("groupId", "none");
+    } else if (type === "rom" && systemFilter !== "all") {
+      params.set("systemGroupId", systemFilter);
+    }
     if (tagFilter !== "all") params.set("tagId", String(tagFilter));
     return params;
   }
@@ -568,7 +605,7 @@ export function LibraryItemGrid({
     api.get<LibraryStats>(`/media/stats?${scopeParams().toString()}`).then(setStats);
   }
 
-  useEffect(load, [type, groupId, tagFilter, statusFilter, contentRatingFilter, searchQuery, sortKey, page, pageSize]);
+  useEffect(load, [type, groupId, tagFilter, statusFilter, contentRatingFilter, searchQuery, sortKey, page, pageSize, systemFilter]);
   // A new search narrows/changes the result set entirely — staying on page 5 of the old,
   // unfiltered results would just show an empty page. Skips the very first render (searchQuery
   // starts at "") so mounting the page doesn't force an unnecessary page reset.
@@ -580,7 +617,7 @@ export function LibraryItemGrid({
     }
     setPage(0);
   }, [searchQuery]);
-  useEffect(loadStats, [type, groupId, tagFilter]);
+  useEffect(loadStats, [type, groupId, tagFilter, systemFilter]);
 
   // Remembers where the user was scrolled to on this exact URL (type/group/filters/page all live
   // in the URL already) so navigating to a show and hitting the browser Back button returns to the
@@ -1060,6 +1097,32 @@ export function LibraryItemGrid({
     }
   }
 
+  /** One-time restructuring of every item in this library still on its old, pre-episodic data
+   * structure (see MediaItem.legacyShape) into the folder-as-show/file-as-episode structure new
+   * scans already use. Pure local DB work, not a slow external-API call per item like the buttons
+   * above — awaited directly so the admin sees the actual result instead of a "started" toast. */
+  async function convertToEpisodic() {
+    if (
+      !(await confirmDialog({
+        title: "Convert to Episodic",
+        message: `Restructure all ${stats.legacyCount} existing item(s) in this library into the new folder-as-show/file-as-episode structure? This can't be undone.`,
+        danger: true,
+      }))
+    )
+      return;
+    setConverting(true);
+    try {
+      const result = await api.post<{ convertedShows: number; convertedEpisodes: number }>(`/media/convert-to-episodic?type=${type}`, {});
+      notify.success(`Converted ${result.convertedShows} show(s) with ${result.convertedEpisodes} episode(s) total.`);
+      load();
+      loadStats();
+    } catch (e) {
+      notify.error((e as Error).message);
+    } finally {
+      setConverting(false);
+    }
+  }
+
   /** Sonarr/Radarr-style "Rename Files" — moves/renames every already-imported file in this
    * library to match the current naming template (Settings → Media Management → Naming), the
    * same function System → Rename Files calls, just pre-scoped to this one type. Shows a preview
@@ -1165,6 +1228,15 @@ export function LibraryItemGrid({
                 label="Organize & Rename"
                 onClick={organizeLibrary}
                 title="Organize & Rename — move/rename every already-imported file in this library to match the current naming template (Settings → Media Management → Naming)"
+              />
+            )}
+            {auth.isAdmin && (type === "course" || type === "adult") && stats.legacyCount > 0 && (
+              <ToolbarButton
+                icon={<RotateCcwIcon />}
+                label={converting ? "Converting..." : "Convert to Episodic"}
+                onClick={convertToEpisodic}
+                disabled={converting}
+                title={`Convert to Episodic — restructure ${stats.legacyCount} existing item(s) into the new folder-as-show/file-as-episode structure, one time`}
               />
             )}
             {auth.isAdmin && (mediaServerConfigured || starrImportable) && <ToolbarSeparator />}
@@ -1322,6 +1394,17 @@ export function LibraryItemGrid({
                     {r}
                   </option>
                 ))}
+              </select>
+            )}
+            {type === "rom" && groupId === undefined && (
+              <select value={systemFilter} onChange={(e) => setSystemFilter(e.target.value)} style={{ maxWidth: 160 }}>
+                <option value="all">All systems</option>
+                {systemGroups.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+                <option value="unknown">Unknown system</option>
               </select>
             )}
             {viewMode === "poster" && (

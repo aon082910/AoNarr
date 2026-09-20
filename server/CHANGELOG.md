@@ -3,6 +3,53 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 335 — Courses/Adult work like TV Shows (folder = show, files = episodes); ROM filename cleanup + system filter
+
+Two related asks: Courses and Adult should organize like TV Shows instead of one flat file/list per
+item — a folder becomes a *show* whose title comes straight from the folder name, and the files
+inside it become that show's *episodes*, so a complete lesson/clip list survives even with no
+"season" markers in the filenames at all. Separately, ROMs should match Movies' filename-to-title
+behavior, plus gain a "filter by game system" dropdown.
+
+- `services/mediaTypes.ts`: `course` and `adult` switch from `shape: "collection"`/`"single"` to
+  `shape: "episodic"` — this already works with zero metadata provider (proven: it's exactly how
+  `series` scanning already behaves whenever a provider search fails, and `course` already ran
+  provider-less under its old shape). A new `sequentialEpisodeFallback` flag (set only on these two
+  types) lets a file with no `S01E02`-style marker still become an episode — season defaults to 1,
+  episode number comes from a leading number in the filename ("01 - Intro.mp4") or otherwise
+  appends after the show's current highest episode — instead of being skipped, which is what every
+  *other* episodic type (series/anime/sports) still does unchanged.
+- `services/libraryScan.ts`: the "Refresh" button now re-scans a course/adult show's own folder for
+  new files (there's no episode-listing provider for either that could ever backfill one the way
+  `series`/tmdb already does), so it actually picks up new lessons/clips instead of silently no-op'ing
+  past the overview/poster re-pull. ThePornDB stays enrichment-only for Adult, the same role
+  TMDB plays for Series — the existing "never overwrite an already-matched item's title" logic
+  already covers this with no new code.
+- **Existing data isn't touched automatically.** Every existing Adult/Course item is stamped with a
+  new `media_items.legacy_shape` column the moment it's added (a one-time, non-repeatable migration)
+  and keeps rendering/behaving exactly as it did before — right down to Missing/Downloaded status,
+  child counts, and the Wanted/calendar lists — until an admin clicks the new **"Convert to
+  Episodic"** library-toolbar button, which restructures every item of that type in one transaction
+  (course's `sub_items` become `episodes`; an adult item's own file becomes its one episode) and
+  clears the stamp. A brand new library with nothing to convert never shows the button at all.
+- ROMs: a new `cleanRomTitle()` strips No-Intro/GoodTools/TOSEC-style filename cruft (region tags
+  like "(USA)", revision tags like "(Rev 1)", language lists, "[!]"/translation-patch tags) before
+  it becomes the searchable game title — matching stays fully on-demand (Refresh / Add Media), same
+  as Movies, never automatic at scan time. A ROM now also auto-assigns itself a System/Maker
+  `library_groups` entry the moment a *real* match returns platform data (via Refresh, not just the
+  guided Add Media flow) — never guessed from the file extension, and never overwriting a group set
+  by hand. A new "filter by game system" dropdown lives on a new flat "Browse all ROMs" page
+  (`/library/rom/all`), since the System → Maker tile-browsing tree has nowhere to filter across an
+  entire System's Makers at once; unmatched ROMs group under "Unknown system".
+
+Verified: `tsc --noEmit` clean on both projects; full server suite passes including new coverage for
+the folder-as-show fallback numbering, the legacy-shape scan-time/status/child-count carve-outs, the
+Convert to Episodic transaction, `cleanRomTitle`, the new recursive System filter, and the ROM
+group-auto-assignment. Live-verified against the running stack: scanned a real course folder with no
+provider configured and confirmed the folder name became the show title with sequentially-numbered
+episodes; ran Convert to Episodic against real pre-existing data; matched a real messy ROM filename
+and confirmed the cleaned title drove the search and a System group got created automatically.
+
 ## Round 334 — fix Refresh reverting a corrected match back to the wrong one
 
 User-reported bug: fix a wrong match via "Different Match," then click "Refresh," and the item's

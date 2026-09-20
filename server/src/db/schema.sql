@@ -381,7 +381,11 @@ CREATE TABLE IF NOT EXISTS collection_items (
 -- Generic nested grouping above a media_item, for library types whose real-world organization
 -- goes deeper than "one item, optionally with children" — e.g. ROMs (System -> Maker -> Game),
 -- Adult (Site -> Maker -> Series -> Video), Online Videos and Courses (Site -> Creator -> item).
--- One table serves every type rather than bespoke tables per hierarchy: `kind` names the level
+-- This is a manual, admin-curated browsing layer *on top of* however a type's items are actually
+-- scanned/organized on disk (Adult/Courses folder-scan into shows/episodes independently of this
+-- table — see media_items.legacy_shape and services/mediaTypes.ts's groupLevels doc comment) — an
+-- item's group here is orthogonal to, and optional relative to, its own folder location. One table
+-- serves every type rather than bespoke tables per hierarchy: `kind` names the level
 -- (e.g. "system", "maker", "site"), `media_type` scopes it to one MEDIA_TYPES key, and
 -- `parent_group_id` nests groups arbitrarily deep. A media_item's `group_id` (see below) points at
 -- its immediate parent group — walk `parent_group_id` up from there for the full breadcrumb.

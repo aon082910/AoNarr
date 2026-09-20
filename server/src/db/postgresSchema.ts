@@ -134,4 +134,25 @@ export async function migratePostgresSchema(db: AsyncDb): Promise<void> {
   for (const stmt of TYPE_MIGRATIONS) {
     await db.exec(stmt);
   }
+  await ensureLegacyShapeColumn(db);
+}
+
+/**
+ * Postgres equivalent of client.ts's one-time `legacy_shape` stamp — see that file's comment for
+ * the full reasoning. Unlike every migration in COLUMN_MIGRATIONS above, this can't just be another
+ * `ADD COLUMN IF NOT EXISTS` line: those are safe to rerun forever because they never write data,
+ * only shape. This one has to know whether it JUST created the column (stamp existing course/adult
+ * rows) versus the column already existing from a previous startup (do nothing, or every new
+ * post-upgrade course/adult row would get wrongly stamped too) — `ADD COLUMN IF NOT EXISTS` alone
+ * gives no way to tell those two cases apart, so this checks `information_schema.columns` first,
+ * the same way client.ts's SQLite path checks `PRAGMA table_info` first.
+ */
+async function ensureLegacyShapeColumn(db: AsyncDb): Promise<void> {
+  const existing = (await db
+    .prepare(`SELECT 1 FROM information_schema.columns WHERE table_name = 'media_items' AND column_name = 'legacy_shape'`)
+    .get()) as unknown;
+  if (existing) return;
+  await db.exec(`ALTER TABLE media_items ADD COLUMN legacy_shape TEXT`);
+  await db.exec(`UPDATE media_items SET legacy_shape = 'collection' WHERE type = 'course'`);
+  await db.exec(`UPDATE media_items SET legacy_shape = 'single' WHERE type = 'adult'`);
 }

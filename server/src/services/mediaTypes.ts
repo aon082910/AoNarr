@@ -4,10 +4,15 @@
  * and naming defaults are all driven by `shape` rather than hardcoded per-type branches.
  *
  * Shapes:
- * - "single": one file per item (Movies, ROMs, Adult) — grabbed/imported as a unit.
- * - "episodic": season/episode children (TV Shows, Anime) — uses the `episodes` table.
+ * - "single": one file per item (Movies, ROMs) — grabbed/imported as a unit.
+ * - "episodic": season/episode children — uses the `episodes` table. Covers provider-backed shows
+ *   (TV Shows, Anime) as well as folder-only shows with no metadata provider at all (Courses,
+ *   Adult): a folder becomes the "show" (its title always comes from the folder/filename, never
+ *   from a provider match — see libraryScan.ts's guessSeriesTitle), and the files inside become
+ *   its "episodes". `sequentialEpisodeFallback` is what lets the latter group default season/
+ *   episode numbers when a file carries no scene-style marker instead of being skipped.
  * - "collection": an open-ended list of named children (Music albums, Books, Comics issues,
- *   Online Video uploads, Course lessons) — uses the generic `sub_items` table. `multiFilePerChild`
+ *   Online Video uploads) — uses the generic `sub_items` table. `multiFilePerChild`
  *   is true only for Music, where a "child" (album) download typically contains many files (one
  *   per track) rather than a single file per child.
  */
@@ -24,6 +29,12 @@ export interface MediaTypeConfig {
   metadataProviders: string[];
   defaultProvider: string | null; // null when no viable search provider exists (manual-only)
   multiFilePerChild?: boolean;
+  /** Episodic-only: a file with no season/episode marker at all is still turned into an episode
+   * (season 1, sequential episode number) instead of being skipped — for folder-as-show types with
+   * no metadata provider to ever backfill a real episode list (Courses, Adult). Provider-backed
+   * episodic types (series/anime/sports) must leave this unset — a marker-less file for those
+   * stays skipped, exactly as before. */
+  sequentialEpisodeFallback?: boolean;
   /** Nested grouping levels above the media_item itself, outermost first — e.g. rom's
    * ["system", "maker"] means System -> Maker -> Game. Empty/absent means items of this type
    * aren't grouped (browsed as a flat list, same as before library_groups existed). */
@@ -226,18 +237,27 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
   course: {
     key: "course",
     label: "Courses",
-    shape: "collection",
-    childLabel: "Lesson",
+    // A course folder is a "show" (its title is the folder name, never a provider match — there is
+    // no viable public search API for arbitrary course platforms, same as before) and its lesson
+    // files are its "episodes" — this is what lets a course keep a complete lesson list (including
+    // ones with no season/module structure at all) the same way a TV show keeps a complete episode
+    // list, instead of a flat unordered Lessons table.
+    shape: "episodic",
+    sequentialEpisodeFallback: true,
     extensions: [...VIDEO_EXT, ...BOOK_EXT],
     indexerCategory: "5000",
     metadataProviders: [],
-    defaultProvider: null, // no viable public search API for arbitrary course platforms; manual-only
+    defaultProvider: null,
     groupLevels: ["site", "creator"],
   },
   adult: {
     key: "adult",
     label: "Adult",
-    shape: "single",
+    // A folder is a "show" (its title is the folder name, never a ThePornDB match) and its video
+    // files are its "episodes" — ThePornDB stays as enrichment only (overview/poster), the same
+    // role TMDB plays for Series, and can never rename the folder-derived title.
+    shape: "episodic",
+    sequentialEpisodeFallback: true,
     extensions: VIDEO_EXT,
     indexerCategory: "6000",
     metadataProviders: ["theporndb"],
@@ -265,4 +285,14 @@ export function typeKeysByShape(shape: MediaShape): string[] {
   return Object.values(MEDIA_TYPES)
     .filter((t) => t.shape === shape)
     .map((t) => t.key);
+}
+
+/** A media_item's real shape, accounting for `legacy_shape` — a row stamped with one (only ever
+ * "single" or "collection", on adult/course rows that predate their type's switch to "episodic")
+ * keeps rendering/behaving under that OLD shape until an admin explicitly runs "Convert to
+ * Episodic" for its library, at which point the stamp is cleared and it falls through to its
+ * type's real, current shape below. Every other row (legacyShape null/undefined — the overwhelming
+ * majority, and every row of every other type) is completely unaffected. */
+export function effectiveShape(item: { type: string; legacyShape?: string | null }): MediaShape {
+  return (item.legacyShape as MediaShape | null | undefined) ?? getMediaTypeConfig(item.type).shape;
 }

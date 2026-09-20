@@ -18,11 +18,14 @@ wantedRouter.get(
   "/missing",
   asyncHandler(async (_req, res) => {
     const placeholders = SINGLE_SHAPE_TYPES.map(() => "?").join(",");
+    // `legacy_shape = 'single'` picks up a not-yet-converted adult item, which no longer appears in
+    // SINGLE_SHAPE_TYPES by type (adult is "episodic" now) but still has its file directly on the
+    // item itself — see media_items.legacy_shape.
     const movies = await db
       .prepare(
         `SELECT id AS "mediaItemId", title AS "mediaTitle", type, NULL AS "episodeId", NULL AS "subItemId",
                 title AS label, year AS "sortKey"
-         FROM media_items WHERE type IN (${placeholders}) AND monitored = 1 AND has_file = 0`
+         FROM media_items WHERE (type IN (${placeholders}) OR legacy_shape = 'single') AND monitored = 1 AND has_file = 0`
       )
       .all(...SINGLE_SHAPE_TYPES);
 
@@ -94,7 +97,7 @@ wantedRouter.get(
         `SELECT id AS "mediaItemId", title AS "mediaTitle", type AS type, NULL AS "episodeId", NULL AS "subItemId",
                 title AS label, release_date AS date, has_file AS "hasFile", 'media' AS kind
          FROM media_items
-         WHERE release_date BETWEEN ? AND ? AND type IN (${singleShapePlaceholders})`
+         WHERE release_date BETWEEN ? AND ? AND (type IN (${singleShapePlaceholders}) OR legacy_shape = 'single')`
       )
       .all(start, end, ...SINGLE_SHAPE_TYPES);
 

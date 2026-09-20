@@ -95,12 +95,16 @@ export interface MediaItem {
   protected: 0 | 1;
   status: string;
   groupId: number | null;
+  /** Set only on a not-yet-converted course/adult item that predates its type's switch to
+   * "episodic" — "single" or "collection", the shape it still actually has on disk until an admin
+   * runs Convert to Episodic for that library. Null/undefined for every other item. */
+  legacyShape?: "single" | "collection" | null;
   extraMetadata: Record<string, { title: string; year: number | null; overview: string | null; posterUrl: string | null }>;
   addedAt: string;
   mediaInfo: MediaInfo | null;
   contentRating: string | null;
   /** Episode/album-level download progress for "episodic"/"collection"-shape types (series, anime,
-   * music, books, ...) — absent for "single"-shape types (movies, ROMs, adult), which have no
+   * music, books, ...) — absent for "single"-shape types (movies, ROMs, ...), which have no
    * children and whose own hasFile is the whole picture. */
   childCount?: number;
   childHaveCount?: number;

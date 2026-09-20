@@ -105,6 +105,29 @@ ensureColumn(
 ensureColumn("download_clients", "download_types", "download_types TEXT");
 
 /**
+ * One-time transition marker for the course/adult "collection"/"single" -> "episodic" shape change
+ * (see services/mediaTypes.ts's effectiveShape()): every existing course/adult row is stamped with
+ * its OLD shape the moment this column is first created, so it keeps rendering/behaving exactly as
+ * it did before the config flip until an admin explicitly runs "Convert to Episodic" for that
+ * library (routes/media.ts's POST /media/convert-to-episodic, which clears the stamp back to NULL
+ * once it restructures the row). Deliberately not a plain ensureColumn() call: unlike every
+ * rerunnable backfill in this file, "does this row have a legacy_shape yet" is NOT a safe condition
+ * to reapply on a later startup — by then, brand-new post-upgrade course/adult rows would exist
+ * too, and this must never stamp those. Gating the one-time UPDATEs on "the column didn't exist
+ * until this exact statement created it" is what makes this fire exactly once, ever.
+ */
+{
+  const hasLegacyShapeColumn = (db.prepare(`PRAGMA table_info(media_items)`).all() as { name: string }[]).some(
+    (c) => c.name === "legacy_shape"
+  );
+  if (!hasLegacyShapeColumn) {
+    db.exec(`ALTER TABLE media_items ADD COLUMN legacy_shape TEXT`);
+    db.prepare(`UPDATE media_items SET legacy_shape = 'collection' WHERE type = 'course'`).run();
+    db.prepare(`UPDATE media_items SET legacy_shape = 'single' WHERE type = 'adult'`).run();
+  }
+}
+
+/**
  * indexers.protocol and download_clients.type originally shipped with a rigid `CHECK (... IN (...))`
  * list. New protocol/client types (ddl, rss, http, ytdlp) need those values to be insertable, and
  * SQLite can't drop/alter a CHECK constraint in place — the table has to be rebuilt. This runs once

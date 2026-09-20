@@ -1278,7 +1278,12 @@ export default function MediaDetail() {
   if (!item) return <p className="empty">Loading...</p>;
 
   const typeInfo = mediaTypes.find((t) => t.key === item.type);
-  const shape = typeInfo?.shape;
+  // legacyShape (see MediaItem.legacyShape) is only ever set on a not-yet-converted course/adult
+  // item that predates its type's switch to "episodic" — reading it here is what makes this whole
+  // page keep rendering that item with its old UI (a single video / a flat Lessons table) until an
+  // admin runs Convert to Episodic, since every shape-gated section below just reads this one
+  // variable rather than typeInfo.shape directly.
+  const shape = item.legacyShape ?? typeInfo?.shape;
   const childLabel = typeInfo?.childLabel ?? "Item";
 
   const rootFolder = rootFolders.find((f) => f.id === item.rootFolderId);

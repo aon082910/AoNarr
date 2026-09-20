@@ -37,8 +37,14 @@ export async function findLibraryMismatches(): Promise<LibraryMismatch[]> {
   const mismatches: LibraryMismatch[] = [];
 
   const singlePlaceholders = SINGLE_SHAPE_TYPES.map(() => "?").join(",");
+  // `legacy_shape = 'single'` picks up a not-yet-converted adult item, which no longer appears in
+  // SINGLE_SHAPE_TYPES by type (adult is "episodic" now) but still has its file directly on the
+  // item itself — see media_items.legacy_shape.
   const items = (await db
-    .prepare(`SELECT id, title, path, type FROM media_items WHERE has_file = 1 AND type IN (${singlePlaceholders}) AND path IS NOT NULL`)
+    .prepare(
+      `SELECT id, title, path, type FROM media_items
+       WHERE has_file = 1 AND (type IN (${singlePlaceholders}) OR legacy_shape = 'single') AND path IS NOT NULL`
+    )
     .all(...SINGLE_SHAPE_TYPES)) as { id: number; title: string; path: string; type: string }[];
   for (const item of items) {
     if (!serverTails.has(pathTail(item.path))) {

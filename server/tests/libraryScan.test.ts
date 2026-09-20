@@ -17,6 +17,7 @@ const fetchSeriesSeasonsFor = vi.fn();
 const fetchArtistAlbumsFor = vi.fn();
 const fetchCollectionChildrenFor = vi.fn();
 const fetchMovieByTmdbId = vi.fn();
+const fetchRomDetailsFor = vi.fn();
 vi.mock("../src/services/metadata.js", () => ({
   searchMetadata: (...args: unknown[]) => searchMetadata(...args),
   fetchByExternalId: (...args: unknown[]) => fetchByExternalId(...args),
@@ -26,12 +27,14 @@ vi.mock("../src/services/metadata.js", () => ({
   fetchArtistAlbumsFor: (...args: unknown[]) => fetchArtistAlbumsFor(...args),
   fetchCollectionChildrenFor: (...args: unknown[]) => fetchCollectionChildrenFor(...args),
   fetchMovieByTmdbId: (...args: unknown[]) => fetchMovieByTmdbId(...args),
+  fetchRomDetailsFor: (...args: unknown[]) => fetchRomDetailsFor(...args),
 }));
 
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let normalizeForMatch: (typeof import("../src/services/libraryScan.js"))["normalizeForMatch"];
 let titlesMatch: (typeof import("../src/services/libraryScan.js"))["titlesMatch"];
 let guessTitleFromText: (typeof import("../src/services/libraryScan.js"))["guessTitleFromText"];
+let cleanRomTitle: (typeof import("../src/services/libraryScan.js"))["cleanRomTitle"];
 let detectSeasonEpisode: (typeof import("../src/services/libraryScan.js"))["detectSeasonEpisode"];
 let scanAndImportLibrary: (typeof import("../src/services/libraryScan.js"))["scanAndImportLibrary"];
 let scanAndImportOneMediaItem: (typeof import("../src/services/libraryScan.js"))["scanAndImportOneMediaItem"];
@@ -44,6 +47,7 @@ let refreshAllLibraries: (typeof import("../src/services/libraryScan.js"))["refr
 let mergeEpisodesIntoItem: (typeof import("../src/services/libraryScan.js"))["mergeEpisodesIntoItem"];
 let matchAdditionalProviders: (typeof import("../src/services/libraryScan.js"))["matchAdditionalProviders"];
 let matchProvidersForLibrary: (typeof import("../src/services/libraryScan.js"))["matchProvidersForLibrary"];
+let convertLibraryToEpisodic: (typeof import("../src/services/libraryScan.js"))["convertLibraryToEpisodic"];
 
 beforeAll(async () => {
   // libraryScan.ts imports db/index.js directly.
@@ -52,6 +56,7 @@ beforeAll(async () => {
     normalizeForMatch,
     titlesMatch,
     guessTitleFromText,
+    cleanRomTitle,
     detectSeasonEpisode,
     scanAndImportLibrary,
     scanAndImportOneMediaItem,
@@ -64,6 +69,7 @@ beforeAll(async () => {
     mergeEpisodesIntoItem,
     matchAdditionalProviders,
     matchProvidersForLibrary,
+    convertLibraryToEpisodic,
   } = await import("../src/services/libraryScan.js"));
 });
 
@@ -90,6 +96,7 @@ beforeEach(async () => {
   fetchArtistAlbumsFor.mockReset().mockResolvedValue(null);
   fetchCollectionChildrenFor.mockReset().mockResolvedValue({ provider: null, children: [] });
   fetchMovieByTmdbId.mockReset().mockResolvedValue({});
+  fetchRomDetailsFor.mockReset().mockResolvedValue(null);
 
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-libscan-"));
 });
@@ -154,6 +161,40 @@ describe("guessTitleFromText", () => {
 
   it("returns the whole string, cleaned up, when nothing matches any cut pattern", () => {
     expect(guessTitleFromText("Just_A.Plain-Title")).toBe("Just A Plain-Title");
+  });
+});
+
+describe("cleanRomTitle", () => {
+  it("strips a region tag", () => {
+    expect(cleanRomTitle("Super Mario World (USA)")).toBe("Super Mario World");
+  });
+
+  it("strips a multi-region list", () => {
+    expect(cleanRomTitle("Sonic the Hedgehog (USA, Europe)")).toBe("Sonic the Hedgehog");
+  });
+
+  it("strips the older GoodTools single-letter region convention, but not a real parenthetical word mid-title", () => {
+    expect(cleanRomTitle("Chrono Trigger (U)")).toBe("Chrono Trigger");
+  });
+
+  it("strips a revision tag", () => {
+    expect(cleanRomTitle("Super Mario World (USA) (Rev 1)")).toBe("Super Mario World");
+  });
+
+  it("strips a language-code list", () => {
+    expect(cleanRomTitle("Some Game (En,Fr,De)")).toBe("Some Game");
+  });
+
+  it("strips a verified-good-dump bracket tag", () => {
+    expect(cleanRomTitle("Some Game [!]")).toBe("Some Game");
+  });
+
+  it("strips a translation-patch bracket tag", () => {
+    expect(cleanRomTitle("Some Game [T+Eng100%]")).toBe("Some Game");
+  });
+
+  it("returns the whole string, cleaned up, when nothing matches any ROM-specific marker", () => {
+    expect(cleanRomTitle("Just_A.Plain-Title")).toBe("Just A Plain-Title");
   });
 });
 
@@ -357,6 +398,90 @@ describe("scanAndImportLibrary — series (episodic shape)", () => {
 
     const show = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(showId)) as any;
     expect(show.has_file).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scanAndImportLibrary — course/adult (episodic shape, no episode-marker fallback)
+// ---------------------------------------------------------------------------
+
+describe("scanAndImportLibrary — course/adult (folder-as-show, sequentialEpisodeFallback)", () => {
+  it("course: creates a folder-as-show with the folder name as its title (no metadata provider involved) and numbers marker-less lesson files from a leading number in the filename", async () => {
+    const folder = await insertRootFolder("course");
+    writeFile(path.join(folder.path, "Intro to Python"), "01 - Getting Started.mp4");
+    writeFile(path.join(folder.path, "Intro to Python"), "02 - Variables.mp4");
+
+    const result = await scanAndImportLibrary("course");
+
+    expect(result.matched).toBe(2);
+    // Both files belong to the same folder-derived show, so only the FIRST one attempts the
+    // best-effort enrichment lookup (course has zero configured providers, so this real call would
+    // throw and be swallowed — mocked here as an empty result, same net effect) — the second file
+    // finds the already-created show and never repeats it.
+    expect(searchMetadata).toHaveBeenCalledTimes(1);
+    expect(searchMetadata).toHaveBeenCalledWith("course", "Intro to Python");
+    const show = (await db.prepare("SELECT * FROM media_items WHERE type='course'").get()) as any;
+    expect(show.title).toBe("Intro to Python");
+    const episodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ? ORDER BY episode_number").all(show.id)) as any[];
+    expect(episodes.map((e) => ({ season: e.season_number, episode: e.episode_number, title: e.title }))).toEqual([
+      { season: 1, episode: 1, title: "Getting Started" },
+      { season: 1, episode: 2, title: "Variables" },
+    ]);
+  });
+
+  it("course: a lesson file with no leading number at all still becomes an episode instead of being skipped, appended after the current highest episode", async () => {
+    const folder = await insertRootFolder("course");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('course','My Course','my course',1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,1,'Getting Started',1,1)`).run(showId);
+    writeFile(path.join(folder.path, "My Course"), "Bonus Content.mp4");
+
+    const result = await scanAndImportLibrary("course");
+
+    expect(result.matched).toBe(1);
+    const episodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ? ORDER BY episode_number").all(showId)) as any[];
+    expect(episodes).toHaveLength(2);
+    expect(episodes[1]).toMatchObject({ season_number: 1, episode_number: 2, title: "Bonus Content" });
+  });
+
+  it("adult: ThePornDB enrichment can update overview/poster but never the folder-derived show title", async () => {
+    const folder = await insertRootFolder("adult");
+    writeFile(path.join(folder.path, "Some Studio Scene"), "clip.mp4");
+    // Deliberately a DIFFERENT title than the folder name — proves the enrichment call's own result
+    // title is never used to (re)name the show, exactly like series/tmdb.
+    searchMetadata.mockResolvedValue([{ title: "A Completely Different Title", overview: "scene overview", posterUrl: "https://p/x.jpg", externalIds: { theporndb: "abc" } }]);
+
+    await scanAndImportLibrary("adult");
+
+    const show = (await db.prepare("SELECT * FROM media_items WHERE type='adult'").get()) as any;
+    expect(show.title).toBe("Some Studio Scene");
+    expect(show.overview).toBe("scene overview");
+    const ep = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").get(show.id)) as any;
+    expect(ep).toMatchObject({ season_number: 1, episode_number: 1, has_file: 1, title: "clip" });
+  });
+
+  it("does not attach a new episode to an existing show that hasn't been converted from its old shape yet (legacy_shape set) — skips it with a clear reason instead", async () => {
+    const folder = await insertRootFolder("course");
+    const showId = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, monitored, has_file, status, legacy_shape) VALUES ('course','Legacy Course','legacy course',1,0,'missing','collection')`
+          )
+          .run()
+      ).lastInsertRowid
+    );
+    writeFile(path.join(folder.path, "Legacy Course"), "New Lesson.mp4");
+
+    const result = await scanAndImportLibrary("course");
+
+    expect(result.matched).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.skippedFiles[0].reason).toContain("hasn't been converted to the new episode structure yet");
+    const episodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").all(showId)) as any[];
+    expect(episodes).toHaveLength(0);
   });
 });
 
@@ -773,6 +898,65 @@ describe("refreshLibraryMetadata / refreshOneMediaItem", () => {
 
     expect(result.failed + result.updated).toBe(1); // only the first item was ever attempted
   });
+
+  it("course: Refresh picks up a new lesson file from disk even though there's no metadata provider to ever backfill one", async () => {
+    const folder = await insertRootFolder("course");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('course','My Course','my course',1,1,'downloaded')`).run())
+        .lastInsertRowid
+    );
+    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,1,'Getting Started',1,1)`).run(showId);
+    // Loosely matches the show's own title (so the onlyTitle gate passes) without exactly matching
+    // it (so the strict per-show match falls through to the onlyMediaItemId fallback) — same
+    // convention the "onlyMediaItemId attaches..." per-item-scoping test above already relies on.
+    writeFile(path.join(folder.path, "My Course"), "My Course - Bonus.mp4");
+
+    const result = await refreshOneMediaItem(showId);
+
+    expect(result.ok).toBe(true);
+    expect(result.childrenAdded).toBeGreaterThan(0);
+    const episodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").all(showId)) as any[];
+    expect(episodes).toHaveLength(2);
+    expect(episodes.some((e) => e.episode_number === 2 && e.has_file === 1)).toBe(true);
+  });
+
+  it("rom: auto-assigns a System (and Maker) library_group once a match actually returns platform data — never guessed, and never overwriting an existing group", async () => {
+    const id = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('rom','Some Game','some game',1,1,'downloaded')`).run())
+        .lastInsertRowid
+    );
+    searchMetadata.mockResolvedValue([{ title: "Some Game", year: 1998, overview: "O", posterUrl: null, externalIds: { rawg: "123" } }]);
+    fetchRomDetailsFor.mockResolvedValue({ overview: null, system: "Super Nintendo", maker: "Nintendo", systemLogoUrl: null });
+
+    const result = await refreshOneMediaItem(id);
+
+    expect(result.ok).toBe(true);
+    const row = (await db.prepare("SELECT group_id FROM media_items WHERE id = ?").get(id)) as { group_id: number | null };
+    expect(row.group_id).toBeTruthy();
+    const group = (await db.prepare("SELECT * FROM library_groups WHERE id = ?").get(row.group_id!)) as any;
+    expect(group).toMatchObject({ kind: "maker", name: "Nintendo" });
+    const system = (await db.prepare("SELECT * FROM library_groups WHERE id = ?").get(group.parent_group_id)) as any;
+    expect(system).toMatchObject({ kind: "system", name: "Super Nintendo" });
+  });
+
+  it("rom: never overwrites a group an admin already set manually, even when a fresh match returns different platform data", async () => {
+    const existingGroupId = Number(
+      (await db.prepare(`INSERT INTO library_groups (media_type, kind, name, sort_name) VALUES ('rom','system','Manually Set','manually set')`).run()).lastInsertRowid
+    );
+    const id = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status, group_id) VALUES ('rom','Some Game','some game',1,1,'downloaded',?)`)
+          .run(existingGroupId)
+      ).lastInsertRowid
+    );
+    searchMetadata.mockResolvedValue([{ title: "Some Game", year: 1998, overview: "O", posterUrl: null, externalIds: { rawg: "123" } }]);
+
+    await refreshOneMediaItem(id);
+
+    const row = (await db.prepare("SELECT group_id FROM media_items WHERE id = ?").get(id)) as { group_id: number };
+    expect(row.group_id).toBe(existingGroupId);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1011,5 +1195,77 @@ describe("matchProvidersForLibrary", () => {
     const result = await matchProvidersForLibrary("anime");
 
     expect(result).toEqual({ itemsMatched: 2, providersMatched: 2 });
+  });
+});
+
+describe("convertLibraryToEpisodic", () => {
+  it("course: turns every legacy sub_item (Lesson) into an episode, in release_date order, and clears legacy_shape", async () => {
+    const showId = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, monitored, has_file, status, legacy_shape) VALUES ('course','My Course','my course',1,1,'downloaded','collection')`
+          )
+          .run()
+      ).lastInsertRowid
+    );
+    await db
+      .prepare(`INSERT INTO sub_items (media_item_id, title, release_date, has_file, file_path, monitored) VALUES (?, 'Second Lesson', '2020-02-01', 1, '/l2.mp4', 1)`)
+      .run(showId);
+    await db
+      .prepare(`INSERT INTO sub_items (media_item_id, title, release_date, has_file, file_path, monitored) VALUES (?, 'First Lesson', '2020-01-01', 1, '/l1.mp4', 1)`)
+      .run(showId);
+
+    const result = await convertLibraryToEpisodic("course");
+
+    expect(result).toEqual({ convertedShows: 1, convertedEpisodes: 2 });
+    expect(await db.prepare("SELECT COUNT(*) AS c FROM sub_items WHERE media_item_id = ?").get(showId)).toMatchObject({ c: 0 });
+    const episodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ? ORDER BY episode_number").all(showId)) as any[];
+    expect(episodes.map((e) => ({ season: e.season_number, episode: e.episode_number, title: e.title, file_path: e.file_path }))).toEqual([
+      { season: 1, episode: 1, title: "First Lesson", file_path: "/l1.mp4" },
+      { season: 1, episode: 2, title: "Second Lesson", file_path: "/l2.mp4" },
+    ]);
+    const show = (await db.prepare("SELECT legacy_shape FROM media_items WHERE id = ?").get(showId)) as { legacy_shape: string | null };
+    expect(show.legacy_shape).toBeNull();
+  });
+
+  it("adult: turns a legacy single-file item into a show with exactly one episode, and clears the item's own file fields", async () => {
+    const id = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, monitored, has_file, path, quality, status, legacy_shape) VALUES ('adult','Some Studio Scene','some studio scene',1,1,'/clip.mp4','WEBDL-1080p','downloaded','single')`
+          )
+          .run()
+      ).lastInsertRowid
+    );
+
+    const result = await convertLibraryToEpisodic("adult");
+
+    expect(result).toEqual({ convertedShows: 1, convertedEpisodes: 1 });
+    const ep = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").get(id)) as any;
+    expect(ep).toMatchObject({ season_number: 1, episode_number: 1, title: "Some Studio Scene", has_file: 1, file_path: "/clip.mp4", quality: "WEBDL-1080p" });
+    const show = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(id)) as any;
+    expect(show.legacy_shape).toBeNull();
+    expect(show.path).toBeNull();
+    expect(show.quality).toBeNull();
+  });
+
+  it("only touches rows actually stamped legacy_shape — an already-converted item of the same type is left alone", async () => {
+    const convertedId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('course','Already Converted','already converted',1,1,'downloaded')`).run())
+        .lastInsertRowid
+    );
+    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,1,'Existing Episode',1,1)`).run(convertedId);
+
+    const result = await convertLibraryToEpisodic("course");
+
+    expect(result).toEqual({ convertedShows: 0, convertedEpisodes: 0 });
+    const episodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").all(convertedId)) as any[];
+    expect(episodes).toHaveLength(1); // unchanged, not duplicated
+  });
+
+  it("rejects a type Convert to Episodic doesn't support", async () => {
+    await expect(convertLibraryToEpisodic("movie")).rejects.toThrow();
   });
 });

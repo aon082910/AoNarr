@@ -61,6 +61,7 @@ import {
 const LibraryHome = lazy(() => import("./pages/LibraryHome.js"));
 const LibraryType = lazy(() => import("./pages/LibraryType.js"));
 const LibraryUngrouped = lazy(() => import("./pages/LibraryUngrouped.js"));
+const LibraryAll = lazy(() => import("./pages/LibraryAll.js"));
 const MediaDetail = lazy(() => import("./pages/MediaDetail.js"));
 const EpisodeDetail = lazy(() => import("./pages/EpisodeDetail.js"));
 const SubItemDetail = lazy(() => import("./pages/SubItemDetail.js"));
@@ -531,6 +532,7 @@ export default function App() {
           <Route path="/library/:type" element={<LibraryType />} />
           <Route path="/library/:type/g/:groupId" element={<LibraryType />} />
           <Route path="/library/:type/ungrouped" element={<LibraryUngrouped />} />
+          <Route path="/library/:type/all" element={<LibraryAll />} />
           <Route path="/media/:id" element={<MediaDetail />} />
           <Route path="/media/:mediaId/episode/:episodeId" element={<EpisodeDetail />} />
           <Route path="/media/:mediaId/item/:subItemId" element={<SubItemDetail />} />

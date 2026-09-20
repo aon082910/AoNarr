@@ -14,9 +14,11 @@ import {
   fetchArtistAlbumsFor,
   fetchCollectionChildrenFor,
   fetchMovieByTmdbId,
+  fetchRomDetailsFor,
   type MetadataEpisode,
   type MetadataSearchResult,
 } from "./metadata.js";
+import { findOrCreateLibraryGroup } from "./libraryGroups.js";
 import { log } from "./logger.js";
 
 export function normalizeForMatch(s: string): string {
@@ -130,6 +132,48 @@ export function guessTitleFromText(text: string): string {
     .trim();
 }
 
+/** No-Intro/GoodTools/TOSEC-style ROM filenames carry a whole different set of parenthetical/
+ * bracketed tags than a movie/TV release name does (region, revision, language, dump-verification)
+ * — none of which guessTitleFromText's marker list above knows about, so a name like "Super Mario
+ * World (USA) (Rev 1).sfc" guessed literally everything after "Super Mario World" as part of the
+ * title. Same "cut at the earliest recognized marker" strategy, with a ROM-specific marker list. */
+const ROM_CUT_PATTERNS = [
+  // A whole region parenthetical — one or more comma-separated region names. The older GoodTools
+  // single-letter convention (U)/(E)/(J)/(K) is intentionally its own, stricter pattern (matched
+  // only when a letter is the ENTIRE parenthetical) to avoid misfiring on a real single-letter word
+  // that happens to sit in parentheses mid-title.
+  /\((USA|Europe|World|Japan|Asia|Australia|Brazil|Canada|China|Denmark|Finland|France|Germany|Greece|Hong Kong|Italy|Korea|Netherlands|Norway|Portugal|Russia|Spain|Sweden|Taiwan|UK|Unknown|Unl)(\s*,\s*[A-Za-z ]+)*\)/i,
+  /\([UEJKA]\)/,
+  // Revision/version tags: "(Rev 1)", "(Rev A)", "(v1.1)".
+  /\(Rev\s?\w+\)/i,
+  /\(v\d+(\.\d+)?\)/i,
+  // A language-code list: "(En,Fr,De)".
+  /\((?:[A-Z][a-z]?)(?:\s*,\s*[A-Z][a-z]?)+\)/,
+  // Dump-verification / translation-patch bracket tags: "[!]", "[b1]", "[o]", "[t1]", "[f1]",
+  // "[h1C]", "[T+Eng100%]".
+  /\[!\]/,
+  /\[[bo]\d*\]/i,
+  /\[t\d*\]/i,
+  /\[f\d*\]/i,
+  /\[h\d*[a-z]?\]/i,
+  /\[T[+-][A-Za-z0-9%_.]+\]/i,
+];
+
+export function cleanRomTitle(text: string): string {
+  const normalized = text.replace(/[._]/g, " ");
+  let cutIndex = normalized.length;
+  for (const p of ROM_CUT_PATTERNS) {
+    const m = normalized.match(p);
+    if (m && m.index !== undefined && m.index < cutIndex) cutIndex = m.index;
+  }
+  return normalized
+    .slice(0, cutIndex)
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[\s([{.,:;_-]+$/, "")
+    .trim();
+}
+
 const SEASON_FOLDER = /^season\s*0*(\d{1,3})$|^s0*(\d{1,3})$/i;
 const EPISODE_X_FORMAT = /\b0*(\d{1,2})x0*(\d{1,3})\b/i; // "1x01"
 const EPISODE_ONLY = /\bE0*(\d{1,3})\b/i;
@@ -161,16 +205,29 @@ export function detectSeasonEpisode(parentFolderName: string, filenameBase: stri
   return { season: null, episode: null };
 }
 
-/** Same folder-awareness reasoning as detectSeasonEpisode: prefers a title guessed from the
- * filename itself when it looks substantial, otherwise falls back to the parent folder name (or
- * the grandparent, when the parent is just a "Season NN" folder rather than the series' own). */
-function guessSeriesTitle(parentDir: string, filenameBase: string): string {
-  const fromFilename = guessTitleFromText(filenameBase);
-  if (fromFilename.length > 2) return fromFilename;
-
+/** The parent folder's own name (or the grandparent, when the parent is just a "Season NN" folder
+ * rather than the show's own) — the folder-only half of guessSeriesTitle below, extracted so a
+ * sequentialEpisodeFallback type (course/adult) can use it directly without ever considering the
+ * filename. For those types the filename is a LESSON/CLIP's own title, not the show's — a bare
+ * lesson file like "01 - Getting Started.mp4" has nothing for guessTitleFromText to cut at, so the
+ * whole filename would otherwise look "substantial" and get mistaken for the show title itself
+ * (every lesson in a course folder would end up creating its own separate "show"). */
+function guessShowTitleFromFolder(parentDir: string): string {
   const parentName = path.basename(parentDir);
   const folderName = SEASON_FOLDER.test(parentName) ? path.basename(path.dirname(parentDir)) : parentName;
   return guessTitleFromText(folderName);
+}
+
+/** Same folder-awareness reasoning as detectSeasonEpisode: prefers a title guessed from the
+ * filename itself when it looks substantial, otherwise falls back to the parent folder name (or
+ * the grandparent, when the parent is just a "Season NN" folder rather than the series' own). Only
+ * used for provider-backed episodic types (series/anime/sports), where the filename really is
+ * expected to carry the show's own name alongside its season/episode marker — see
+ * guessShowTitleFromFolder above for the sequentialEpisodeFallback (course/adult) case. */
+function guessSeriesTitle(parentDir: string, filenameBase: string): string {
+  const fromFilename = guessTitleFromText(filenameBase);
+  if (fromFilename.length > 2) return fromFilename;
+  return guessShowTitleFromFolder(parentDir);
 }
 
 function walkForExtensions(dir: string, extensions: string[], knownPaths: Set<string>, out: string[]): void {
@@ -333,13 +390,25 @@ async function scanAndImportLibraryInner(
 
     try {
       if (typeConfig.shape === "episodic") {
-        const { season, episode } = detectSeasonEpisode(path.basename(parentDir), base);
-        if (season === null || episode === null) {
+        let { season, episode } = detectSeasonEpisode(path.basename(parentDir), base);
+        // Only a fallback-enabled type (course/adult — folder-as-show with no episode-listing
+        // provider that could ever backfill a real episode list) tolerates a file with no
+        // scene-style marker at all; everything else keeps the original "skip it" behavior
+        // unchanged. Season defaults to 1 immediately (independent of which show it belongs to);
+        // the episode number, when still unknown, is resolved further below once the show itself
+        // is known, since numbering needs to see that show's own existing episodes.
+        if ((season === null || episode === null) && !typeConfig.sequentialEpisodeFallback) {
           result.skipped++;
           result.skippedFiles.push({ path: filePath, reason: "couldn't detect a season/episode number from the filename or folder" });
           continue;
         }
-        const guessedTitle = guessSeriesTitle(parentDir, base);
+        if (season === null) season = 1;
+
+        // sequentialEpisodeFallback types (course/adult) always take the show title from the
+        // FOLDER — the filename there is a lesson/clip's own title, never the show's name, unlike
+        // a provider-backed episodic type's filename ("Breaking.Bad.S01E01.mkv") which really does
+        // carry the show's name alongside its season/episode marker.
+        const guessedTitle = typeConfig.sequentialEpisodeFallback ? guessShowTitleFromFolder(parentDir) : guessSeriesTitle(parentDir, base);
         if (!guessedTitle) {
           result.skipped++;
           result.skippedFiles.push({ path: filePath, reason: "couldn't guess a series title from the filename or folder" });
@@ -355,6 +424,20 @@ async function scanAndImportLibraryInner(
         // to the known target, so attach it there rather than creating a "The Office" twin next to
         // "The Office (US)" because the strict match missed.
         if (!seriesMatch && onlyMediaItemId) seriesMatch = seriesItems.find((m) => m.id === onlyMediaItemId);
+
+        if (seriesMatch && seriesMatch.legacy_shape) {
+          // An existing show that predates this type's switch to "episodic" and hasn't been
+          // converted yet (see media_items.legacy_shape) — its real data still lives in the old
+          // sub_items/single-file structure, so attaching a new episode row here would create a
+          // hybrid, half-old/half-new item. Leave it alone until the admin runs Convert to Episodic.
+          result.skipped++;
+          result.skippedFiles.push({
+            path: filePath,
+            reason: `"${seriesMatch.title}" hasn't been converted to the new episode structure yet — run Convert to Episodic for this library first`,
+          });
+          continue;
+        }
+
         if (!seriesMatch) {
           // No existing series to match against at all — create one, same as the single-shape
           // branch already does for movies. Otherwise a fresh TV library with nothing pre-added
@@ -394,6 +477,30 @@ async function scanAndImportLibraryInner(
           }
         }
 
+        if (episode === null) {
+          // sequentialEpisodeFallback is guaranteed true here (the only way season/episode could
+          // both still be null past the initial guard above) — try a leading "01 - " style number
+          // in the filename first, same convention/collision-guard upsertTrackFromFile already uses
+          // for un-numbered album tracks, so numbered lessons land in content order rather than
+          // whatever order the filesystem happens to walk them in; falls back to appending after
+          // this show's current highest episode in the season for anything else unnumbered.
+          const leadingNumber = base.match(/^(\d{1,3})\b/);
+          let candidate = leadingNumber ? Number(leadingNumber[1]) : null;
+          if (candidate) {
+            const collision = (await db
+              .prepare("SELECT file_path FROM episodes WHERE media_item_id = ? AND season_number = ? AND episode_number = ?")
+              .get(seriesMatch.id, season, candidate)) as { file_path: string | null } | undefined;
+            if (collision?.file_path && path.resolve(collision.file_path) !== path.resolve(filePath)) candidate = null;
+          }
+          if (!candidate) {
+            const maxRow = (await db
+              .prepare("SELECT COALESCE(MAX(episode_number), 0) AS m FROM episodes WHERE media_item_id = ? AND season_number = ?")
+              .get(seriesMatch.id, season)) as { m: number };
+            candidate = Number(maxRow.m) + 1;
+          }
+          episode = candidate;
+        }
+
         const mediaInfo = isProbeableFile(filePath) ? await probeMediaInfo(filePath) : null;
         const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
         const existingEp = (await db
@@ -415,12 +522,23 @@ async function scanAndImportLibraryInner(
             .prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?")
             .run(filePath, quality, mediaInfoJson, existingEp.id);
         } else {
+          // A fallback type has no episode-listing provider that will ever revisit this row and
+          // give it a real title later (unlike series/anime, where syncMissingChildren backfills
+          // the provider's own episode titles) — seed the filename-derived title up front instead
+          // of a permanent "Episode N" placeholder. Non-fallback types keep that placeholder,
+          // exactly as before.
+          // Same leading-number stripping upsertTrackFromFile already applies to a track's own
+          // title — without it, a numbered lesson's title would keep its own "01 - " prefix, which
+          // looks redundant next to the episode number the UI already shows beside it.
+          const episodeTitle = typeConfig.sequentialEpisodeFallback
+            ? guessTitleFromText(base.replace(/^\d{1,3}[\s._-]*/, "")) || `Episode ${episode}`
+            : `Episode ${episode}`;
           await db
             .prepare(
               `INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path, quality, media_info)
                VALUES (?, ?, ?, ?, 1, 1, ?, ?, ?)`
             )
-            .run(seriesMatch.id, season, episode, `Episode ${episode}`, filePath, quality, mediaInfoJson);
+            .run(seriesMatch.id, season, episode, episodeTitle, filePath, quality, mediaInfoJson);
         }
         result.matched++;
       } else if (typeConfig.shape === "collection") {
@@ -545,7 +663,7 @@ async function scanAndImportLibraryInner(
           result.matched++;
         }
       } else {
-        const guessedTitle = guessTitleFromText(base);
+        const guessedTitle = type === "rom" ? cleanRomTitle(base) : guessTitleFromText(base);
         if (!guessedTitle) {
           result.skipped++;
           result.skippedFiles.push({ path: filePath, reason: `couldn't guess a title from the filename "${base}"` });
@@ -680,6 +798,7 @@ async function refreshOneItem(
   try {
     const alreadyMatched = item.external_ids && item.external_ids !== "{}";
     const existingExternalIds: Record<string, string> = alreadyMatched ? JSON.parse(item.external_ids) : {};
+    let childrenAdded = 0;
 
     // An already-matched item must be looked up BY ITS OWN ID, not by re-running a plain title
     // search — a title search can drift to an entirely different result (a shared title, a
@@ -689,27 +808,35 @@ async function refreshOneItem(
     // Refresh" put the wrong poster/overview right back — the title text alone stayed correct, so
     // it looked like nothing had changed until you looked past the title.
     let best: MetadataSearchResult | null = null;
-    if (alreadyMatched) {
-      for (const provider of REFRESH_ID_LOOKUP_PROVIDERS) {
-        if (!existingExternalIds[provider]) continue;
-        try {
-          best = await fetchByExternalId(type as any, provider, existingExternalIds[provider]);
-          break;
-        } catch {
-          // this id's provider lookup isn't supported for this type, or the call itself failed —
-          // try the next id the item has, or fall through to the title search below
+    try {
+      if (alreadyMatched) {
+        for (const provider of REFRESH_ID_LOOKUP_PROVIDERS) {
+          if (!existingExternalIds[provider]) continue;
+          try {
+            best = await fetchByExternalId(type as any, provider, existingExternalIds[provider]);
+            break;
+          } catch {
+            // this id's provider lookup isn't supported for this type, or the call itself failed —
+            // try the next id the item has, or fall through to the title search below
+          }
         }
       }
+      if (!best) {
+        const results = await searchMetadata(type as any, item.title);
+        best = results[0] ?? null;
+      }
+    } catch {
+      // No metadata provider configured at all (course) or the search call itself failed — for a
+      // sequentialEpisodeFallback type (course/adult) there's still useful work for Refresh to do
+      // below (picking up new episode files from disk), so this doesn't abort the whole function;
+      // every other type's contract (no metadata found = a failed refresh) is preserved by the
+      // `!typeConfig.sequentialEpisodeFallback` check right below.
     }
-    if (!best) {
-      const results = await searchMetadata(type as any, item.title);
-      best = results[0] ?? null;
-    }
-    if (!best) return { ok: false };
+    if (!best && !typeConfig.sequentialEpisodeFallback) return { ok: false };
     // Scoped to one season leaves the show's own overview/poster/year/title untouched — those
     // aren't season-level data, and re-writing them on a "just refresh this season" click would be
     // a surprising side effect the button never advertised.
-    if (onlySeasonNumber == null) {
+    if (best && onlySeasonNumber == null) {
       await db
         .prepare(
           `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), year = COALESCE(?, year),
@@ -751,25 +878,58 @@ async function refreshOneItem(
       }
     }
 
-    // Backfills any episode/child the provider now lists that this item doesn't have yet —
-    // e.g. a show Scan & Import or a Starr import only ever created rows for downloaded files
-    // for, or a season that's aired since this item was first added — as monitored+missing, the
-    // same state a normal Add Media gives every episode/child up front. Never touches an
-    // existing row's has_file/file_path, so this can't un-download anything.
-    const externalIdsForChildren = alreadyMatched ? existingExternalIds : best.externalIds ?? {};
-    const childrenAdded = await syncMissingChildren(item.id, typeConfig, externalIdsForChildren, onlySeasonNumber);
+    if (best) {
+      // Backfills any episode/child the provider now lists that this item doesn't have yet —
+      // e.g. a show Scan & Import or a Starr import only ever created rows for downloaded files
+      // for, or a season that's aired since this item was first added — as monitored+missing, the
+      // same state a normal Add Media gives every episode/child up front. Never touches an
+      // existing row's has_file/file_path, so this can't un-download anything.
+      const externalIdsForChildren = alreadyMatched ? existingExternalIds : best.externalIds ?? {};
+      childrenAdded += await syncMissingChildren(item.id, typeConfig, externalIdsForChildren, onlySeasonNumber);
 
-    if (typeConfig.shape === "episodic" && Object.keys(externalIdsForChildren).length > 0) {
-      const seasons = await fetchSeriesSeasonsFor(externalIdsForChildren).catch(() => []);
-      for (const s of seasons) {
-        if (onlySeasonNumber != null && s.seasonNumber !== onlySeasonNumber) continue;
-        if (!s.posterUrl) continue;
-        await db
-          .prepare(
-            `INSERT INTO seasons (media_item_id, season_number, poster_url) VALUES (?, ?, ?)
-             ON CONFLICT (media_item_id, season_number) DO UPDATE SET poster_url = excluded.poster_url`
-          )
-          .run(item.id, s.seasonNumber, s.posterUrl);
+      if (typeConfig.shape === "episodic" && Object.keys(externalIdsForChildren).length > 0) {
+        const seasons = await fetchSeriesSeasonsFor(externalIdsForChildren).catch(() => []);
+        for (const s of seasons) {
+          if (onlySeasonNumber != null && s.seasonNumber !== onlySeasonNumber) continue;
+          if (!s.posterUrl) continue;
+          await db
+            .prepare(
+              `INSERT INTO seasons (media_item_id, season_number, poster_url) VALUES (?, ?, ?)
+               ON CONFLICT (media_item_id, season_number) DO UPDATE SET poster_url = excluded.poster_url`
+            )
+            .run(item.id, s.seasonNumber, s.posterUrl);
+        }
+      }
+    }
+
+    if (typeConfig.sequentialEpisodeFallback) {
+      // No episode-listing provider exists for these types (course has none at all; adult's
+      // ThePornDB has no per-show episode list) that syncMissingChildren above could ever backfill
+      // new episodes from — so "Refresh" instead re-scans this show's own folder for files added
+      // since it was last scanned, the same per-item machinery the "Scan & Import" button already
+      // uses. Without this, Refresh only ever re-pulled overview/poster/year for these two types
+      // and silently never picked up a single new lesson/clip file.
+      const scanResult = await scanAndImportOneMediaItem(item.id, undefined, onlySeasonNumber);
+      childrenAdded += scanResult.matched + scanResult.created;
+    }
+
+    // Match-confirmed System/Maker auto-assignment: a ROM only ever gets a group here once a real
+    // match (this Refresh, or an earlier one) actually returns platform data — never guessed from
+    // the file extension. Never overwrites a group an admin already set (via "Move to Group" or the
+    // guided Add Media flow), and is entirely best-effort: a ROM whose id doesn't resolve to
+    // platform data, or a hiccup on the lookup/create, simply keeps no System rather than failing
+    // the rest of the refresh.
+    if (type === "rom" && !item.group_id) {
+      try {
+        const idsForRomDetails = alreadyMatched ? existingExternalIds : best?.externalIds ?? {};
+        const details = await fetchRomDetailsFor(idsForRomDetails);
+        if (details?.system) {
+          const systemId = await findOrCreateLibraryGroup("rom", "system", details.system, null, details.systemLogoUrl);
+          const groupId = details.maker ? await findOrCreateLibraryGroup("rom", "maker", details.maker, systemId) : systemId;
+          await db.prepare("UPDATE media_items SET group_id = ? WHERE id = ?").run(groupId, item.id);
+        }
+      } catch {
+        // best-effort only, see comment above
       }
     }
 
@@ -988,6 +1148,88 @@ export async function matchProvidersForLibrary(type: string): Promise<{ itemsMat
     }
   }
   return { itemsMatched, providersMatched };
+}
+
+export interface ConvertToEpisodicResult {
+  convertedShows: number;
+  convertedEpisodes: number;
+}
+
+/**
+ * One-time, admin-triggered restructuring of every not-yet-converted row of a type (see
+ * media_items.legacy_shape) into the real episodic shape — course's old "collection" rows
+ * (sub_items -> episodes) or adult's old "single" rows (one file directly on the item -> one
+ * episode). Never runs automatically: existing rows keep rendering/behaving under their old shape
+ * (via services/mediaTypes.ts's effectiveShape()) until this is explicitly invoked for that
+ * library, by design — see the CHANGELOG entry for why. The whole per-type conversion runs in one
+ * transaction, same safety model duplicateCheck.ts's mergeMediaItems already uses: a failure
+ * partway rolls back the entire batch rather than leaving some items converted and others not.
+ */
+export async function convertLibraryToEpisodic(type: string): Promise<ConvertToEpisodicResult> {
+  if (type !== "course" && type !== "adult") {
+    throw new Error(`Convert to Episodic isn't supported for type "${type}"`);
+  }
+
+  let convertedShows = 0;
+  let convertedEpisodes = 0;
+
+  await db.transaction(async () => {
+    if (type === "course") {
+      const items = (await db
+        .prepare("SELECT id FROM media_items WHERE type = 'course' AND legacy_shape = 'collection'")
+        .all()) as { id: number }[];
+      for (const item of items) {
+        // sub_items has no explicit position column — release_date is the closest thing to a
+        // meaningful order a lesson list ever had; NULLs (never had one) sort last, then by id
+        // (insertion/scan order) as the final tiebreaker.
+        const lessons = (await db
+          .prepare("SELECT * FROM sub_items WHERE media_item_id = ? ORDER BY release_date IS NULL, release_date, id")
+          .all(item.id)) as any[];
+        let episodeNumber = 1;
+        for (const lesson of lessons) {
+          await db
+            .prepare(
+              `INSERT INTO episodes (media_item_id, season_number, episode_number, title, has_file, file_path, quality, media_info, monitored)
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)`
+            )
+            .run(
+              item.id,
+              episodeNumber,
+              lesson.title,
+              lesson.has_file ?? 0,
+              lesson.file_path ?? null,
+              lesson.quality ?? null,
+              lesson.media_info ?? null,
+              lesson.monitored ?? 1
+            );
+          episodeNumber++;
+          convertedEpisodes++;
+        }
+        await db.prepare("DELETE FROM sub_items WHERE media_item_id = ?").run(item.id);
+        await db.prepare("UPDATE media_items SET legacy_shape = NULL WHERE id = ?").run(item.id);
+        convertedShows++;
+      }
+    } else {
+      // adult: a per-item 1:1 transform (not a folder-based merge of multiple old items into one
+      // show) — each existing single-file item becomes its own show with exactly one episode.
+      const items = (await db.prepare("SELECT * FROM media_items WHERE type = 'adult' AND legacy_shape = 'single'").all()) as any[];
+      for (const item of items) {
+        await db
+          .prepare(
+            `INSERT INTO episodes (media_item_id, season_number, episode_number, title, has_file, file_path, quality, media_info, monitored)
+             VALUES (?, 1, 1, ?, ?, ?, ?, ?, 1)`
+          )
+          .run(item.id, item.title, item.has_file ?? 0, item.path ?? null, item.quality ?? null, item.media_info ?? null);
+        await db
+          .prepare("UPDATE media_items SET legacy_shape = NULL, path = NULL, quality = NULL, media_info = NULL WHERE id = ?")
+          .run(item.id);
+        convertedShows++;
+        convertedEpisodes++;
+      }
+    }
+  });
+
+  return { convertedShows, convertedEpisodes };
 }
 
 /**

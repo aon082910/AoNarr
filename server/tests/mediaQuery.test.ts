@@ -170,6 +170,66 @@ describe("buildMediaQuery", () => {
     expect(await runQueryFor(fullyMissing, { status: "missing", allowedTypes: null })).toBe(true);
   });
 
+  // Regression coverage for the course/adult -> episodic shape switch: a not-yet-converted item
+  // (see media_items.legacy_shape) must keep being evaluated under its OLD, real shape, not the
+  // type's new "episodic" one — its data still lives in the old structure until Convert to
+  // Episodic runs, so evaluating it as episodic would wrongly call it "missing" forever.
+  it("status downloaded/missing on a legacy_shape='single' item (a not-yet-converted adult item) still just checks has_file, even though its type is now episodic", async () => {
+    const result = await db
+      .prepare(
+        `INSERT INTO media_items (type, title, sort_title, has_file, path, monitored, status, legacy_shape) VALUES ('adult', 'Legacy Adult', 'legacy adult', 1, '/clip.mp4', 1, 'downloaded', 'single')`
+      )
+      .run();
+    const id = Number(result.lastInsertRowid);
+
+    expect(await runQueryFor(id, { status: "downloaded", allowedTypes: null })).toBe(true);
+    expect(await runQueryFor(id, { status: "missing", allowedTypes: null })).toBe(false);
+  });
+
+  it("status downloaded/missing on a legacy_shape='collection' item (a not-yet-converted course) is based on its sub_items, even though its type is now episodic", async () => {
+    const result = await db
+      .prepare(
+        `INSERT INTO media_items (type, title, sort_title, has_file, monitored, status, legacy_shape) VALUES ('course', 'Legacy Course', 'legacy course', 1, 1, 'downloaded', 'collection')`
+      )
+      .run();
+    const id = Number(result.lastInsertRowid);
+    await db.prepare(`INSERT INTO sub_items (media_item_id, title, has_file, monitored) VALUES (?, 'Lesson 1', 1, 1)`).run(id);
+    await db.prepare(`INSERT INTO sub_items (media_item_id, title, has_file, monitored) VALUES (?, 'Lesson 2', 0, 1)`).run(id);
+
+    // 1 of 2 lessons downloaded — if this were wrongly treated as episodic (0 episodes exist for
+    // it), it would satisfy neither downloaded nor missing at all.
+    expect(await runQueryFor(id, { status: "downloaded", allowedTypes: null })).toBe(false);
+    expect(await runQueryFor(id, { status: "missing", allowedTypes: null })).toBe(true);
+  });
+
+  it("systemGroupId matches an item grouped at a descendant (Maker) level under that System, not just the System group itself", async () => {
+    const systemId = Number(
+      (await db.prepare(`INSERT INTO library_groups (media_type, kind, name, sort_name) VALUES ('rom','system','SNES','snes')`).run()).lastInsertRowid
+    );
+    const otherSystemId = Number(
+      (await db.prepare(`INSERT INTO library_groups (media_type, kind, name, sort_name) VALUES ('rom','system','NES','nes')`).run()).lastInsertRowid
+    );
+    const makerId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO library_groups (media_type, kind, name, sort_name, parent_group_id) VALUES ('rom','maker','Nintendo','nintendo',?)`)
+          .run(systemId)
+      ).lastInsertRowid
+    );
+    const romResult = await db
+      .prepare(`INSERT INTO media_items (type, title, sort_title, has_file, monitored, status, group_id) VALUES ('rom', 'Some Game', 'some game', 1, 1, 'downloaded', ?)`)
+      .run(makerId);
+    const romId = Number(romResult.lastInsertRowid);
+
+    expect(await runQueryFor(romId, { systemGroupId: String(systemId), allowedTypes: null })).toBe(true);
+    expect(await runQueryFor(romId, { systemGroupId: String(otherSystemId), allowedTypes: null })).toBe(false);
+  });
+
+  it("systemGroupId short-circuits to no rows for a group id that doesn't exist", async () => {
+    const result = await buildMediaQuery({ systemGroupId: "999999", allowedTypes: null });
+    expect(result.where).toBeNull();
+  });
+
   it("status:unmatched includes an item with null, empty, or bare-'{}' external_ids, but not a real match", async () => {
     const nullIds = await insertItem({ title: "Unmatched Null", external_ids: null });
     const emptyIds = await insertItem({ title: "Unmatched Empty", external_ids: "" });

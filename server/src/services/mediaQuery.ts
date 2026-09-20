@@ -11,6 +11,11 @@ export interface MediaQueryFilters {
   type?: string;
   tagId?: string;
   groupId?: string;
+  /** A top-level (e.g. ROM "system") library_groups id — matches every item grouped directly under
+   * it OR under any of its descendant groups (e.g. every Maker under that System), unlike `groupId`
+   * above which only ever matches an exact group_id. Mutually exclusive with `groupId` in practice
+   * (the frontend only ever sends one or the other). */
+  systemGroupId?: string;
   status?: string;
   contentRating?: string;
   allowedTypes: string[] | null;
@@ -20,6 +25,25 @@ export interface MediaQueryFilters {
    * index (see schema.sql); Postgres has no FTS5, so it falls back to a plain `title ILIKE`
    * against the item's own title only. */
   q?: string;
+}
+
+/** Every library_groups id nested under (and including) `groupId`, via the same recursive
+ * parent_group_id walk routes/libraryGroups.ts's groupCounts() already uses to roll up counts —
+ * reused here so "filter by System" matches every item actually grouped at the Maker level
+ * beneath it, not just an item directly attached to the System group itself (which essentially
+ * never happens — items are grouped at the deepest level). */
+async function resolveGroupAndDescendants(groupId: string): Promise<number[]> {
+  const rows = (await db
+    .prepare(
+      `WITH RECURSIVE desc_groups(id) AS (
+         SELECT id FROM library_groups WHERE id = ?
+         UNION ALL
+         SELECT lg.id FROM desc_groups JOIN library_groups lg ON lg.parent_group_id = desc_groups.id
+       )
+       SELECT id FROM desc_groups`
+    )
+    .all(groupId)) as { id: number }[];
+  return rows.map((r) => r.id);
 }
 
 export interface MediaQuery {
@@ -104,13 +128,19 @@ async function findCutoffUnmetIds(): Promise<number[]> {
   return rows.filter((r) => qualityRank(r.quality) < qualityRank(r.cutoff)).map((r) => r.id);
 }
 
-/** For episodic (series/anime/sports) and collection (music/books/comics/...) shapes, a media
+/** For episodic (series/anime/sports/...) and collection (music/books/comics/...) shapes, a media
  * item's own `has_file` only means "at least one episode/track has a file" (see
  * services/childCounts.ts) — filtering "downloaded"/"missing" on that flag alone showed a series
  * with 1 of 10 episodes under "Downloaded" and hid it from "Missing". This instead treats
  * "downloaded" as fully complete (every episode/track present) and "missing" as its exact
  * complement (nothing, or only some, present) for those two shapes, while single-file shapes
- * (movies, ROMs, ...) keep the plain has_file check they always had. */
+ * (movies, ROMs, ...) keep the plain has_file check they always had.
+ *
+ * `legacy_shape` (see media_items.legacy_shape) takes priority over a row's TYPE-based shape: an
+ * adult item stamped `legacy_shape = 'single'` still uses the plain has_file check even though
+ * `adult` is now an episodic-shaped type, and a course item stamped `legacy_shape = 'collection'`
+ * still uses the sub_items completeness check — exactly the shape each still actually has on disk
+ * until an admin runs Convert to Episodic for that library. */
 function downloadStatusCondition(kind: "downloaded" | "missing"): { sql: string; params: unknown[] } {
   const episodicTypes = typeKeysByShape("episodic");
   const collectionTypes = typeKeysByShape("collection");
@@ -121,19 +151,25 @@ function downloadStatusCondition(kind: "downloaded" | "missing"): { sql: string;
     return keys.map(() => "?").join(",");
   }
 
-  const singleClause = `m.type NOT IN (${inList([...episodicTypes, ...collectionTypes])}) AND m.has_file = ${kind === "downloaded" ? 1 : 0}`;
+  const singleClause = `(m.legacy_shape = 'single' OR (m.legacy_shape IS NULL AND m.type NOT IN (${inList([
+    ...episodicTypes,
+    ...collectionTypes,
+  ])}))) AND m.has_file = ${kind === "downloaded" ? 1 : 0}`;
 
   const episodicComplete = `NOT EXISTS (SELECT 1 FROM episodes e WHERE e.media_item_id = m.id AND e.has_file = 0) AND EXISTS (SELECT 1 FROM episodes e2 WHERE e2.media_item_id = m.id)`;
   const episodicClause =
     episodicTypes.length === 0
       ? "1=0"
-      : `m.type IN (${inList(episodicTypes)}) AND ${kind === "downloaded" ? episodicComplete : `NOT (${episodicComplete})`}`;
+      : `m.legacy_shape IS NULL AND m.type IN (${inList(episodicTypes)}) AND ${kind === "downloaded" ? episodicComplete : `NOT (${episodicComplete})`}`;
 
   const collectionComplete = `NOT EXISTS (SELECT 1 FROM sub_items s WHERE s.media_item_id = m.id AND s.has_file = 0) AND EXISTS (SELECT 1 FROM sub_items s2 WHERE s2.media_item_id = m.id)`;
-  const collectionClause =
-    collectionTypes.length === 0
-      ? "1=0"
-      : `m.type IN (${inList(collectionTypes)}) AND ${kind === "downloaded" ? collectionComplete : `NOT (${collectionComplete})`}`;
+  // Unlike episodicClause, this can't just short-circuit to "1=0" when collectionTypes is empty —
+  // a course row stamped legacy_shape = 'collection' still needs this branch even though "course"
+  // itself no longer appears in collectionTypes (its type is "episodic" now).
+  const collectionTypeMatch = collectionTypes.length > 0 ? ` OR (m.legacy_shape IS NULL AND m.type IN (${inList(collectionTypes)}))` : "";
+  const collectionClause = `(m.legacy_shape = 'collection'${collectionTypeMatch}) AND ${
+    kind === "downloaded" ? collectionComplete : `NOT (${collectionComplete})`
+  }`;
 
   return { sql: `((${singleClause}) OR (${episodicClause}) OR (${collectionClause}))`, params };
 }
@@ -143,6 +179,11 @@ export async function buildMediaQuery(filters: MediaQueryFilters): Promise<Media
   const params: unknown[] = [];
   let joinTags = false;
 
+  const systemGroupIds = filters.systemGroupId ? await resolveGroupAndDescendants(filters.systemGroupId) : null;
+  // The System group itself (or its id) doesn't exist — no item can possibly match.
+  if (systemGroupIds && systemGroupIds.length === 0) return { where: null, params: [], fromClause: "" };
+  const systemGroupClause = systemGroupIds ? `m.group_id IN (${systemGroupIds.map(() => "?").join(",")})` : null;
+
   if (filters.tagId) {
     joinTags = true;
     conditions.push("mit.tag_id = ?");
@@ -151,12 +192,21 @@ export async function buildMediaQuery(filters: MediaQueryFilters): Promise<Media
       conditions.push("m.type = ?");
       params.push(filters.type);
     }
-    if (filters.groupId === "none") {
+    if (systemGroupClause) {
+      conditions.push(systemGroupClause);
+      params.push(...systemGroupIds!);
+    } else if (filters.groupId === "none") {
       conditions.push("m.group_id IS NULL");
     } else if (filters.groupId) {
       conditions.push("m.group_id = ?");
       params.push(filters.groupId);
     }
+  } else if (systemGroupClause && filters.type) {
+    conditions.push("m.type = ?", systemGroupClause);
+    params.push(filters.type, ...systemGroupIds!);
+  } else if (systemGroupClause) {
+    conditions.push(systemGroupClause);
+    params.push(...systemGroupIds!);
   } else if (filters.groupId === "none" && filters.type) {
     conditions.push("m.type = ?", "m.group_id IS NULL");
     params.push(filters.type);
@@ -239,7 +289,14 @@ export async function buildMediaQuery(filters: MediaQueryFilters): Promise<Media
 function sqlInList(keys: string[]): string {
   return keys.length > 0 ? keys.map((k) => `'${k}'`).join(",") : "NULL";
 }
+// legacy_shape (see media_items.legacy_shape) is checked first and takes priority over the
+// type-based branches below, same reasoning/precedence as downloadStatusCondition() above.
 const STATUS_SORT_EXPR = `CASE
+  WHEN m.legacy_shape = 'single' THEN m.has_file
+  WHEN m.legacy_shape = 'collection' THEN
+    CASE WHEN EXISTS (SELECT 1 FROM sub_items s2 WHERE s2.media_item_id = m.id)
+              AND NOT EXISTS (SELECT 1 FROM sub_items s WHERE s.media_item_id = m.id AND s.has_file = 0)
+         THEN 1 ELSE 0 END
   WHEN m.type IN (${sqlInList(typeKeysByShape("episodic"))}) THEN
     CASE WHEN EXISTS (SELECT 1 FROM episodes e2 WHERE e2.media_item_id = m.id)
               AND NOT EXISTS (SELECT 1 FROM episodes e WHERE e.media_item_id = m.id AND e.has_file = 0)

@@ -1,5 +1,5 @@
 import { db } from "../db/index.js";
-import { getMediaTypeConfig } from "./mediaTypes.js";
+import { effectiveShape } from "./mediaTypes.js";
 
 /**
  * Sonarr/Radarr-style per-item download progress: for "episodic" (series/anime) and "collection"
@@ -7,11 +7,16 @@ import { getMediaTypeConfig } from "./mediaTypes.js";
  * has a file" (see libraryScan.ts's rollup) — it says nothing about how many of its episodes/albums
  * are actually present. This attaches `childCount`/`childHaveCount` (total/downloaded children) to
  * each item of those shapes, mutating the mapped items in place. "single"-shape items (movies, ROMs,
- * adult) have no children and are left untouched — their own hasFile is already the full picture.
+ * ...) have no children and are left untouched — their own hasFile is already the full picture.
+ *
+ * Uses effectiveShape() rather than a plain type lookup so a not-yet-converted course/adult item
+ * (see media_items.legacy_shape) keeps reporting counts from its real, current data (sub_items for
+ * a legacy course, nothing at all for a legacy adult item) instead of the empty `episodes` table
+ * its type would otherwise suggest.
  */
-export async function attachChildCounts(items: { id: number | bigint; type: string }[]): Promise<void> {
-  const episodicIds = items.filter((i) => getMediaTypeConfig(i.type).shape === "episodic").map((i) => i.id);
-  const collectionIds = items.filter((i) => getMediaTypeConfig(i.type).shape === "collection").map((i) => i.id);
+export async function attachChildCounts(items: { id: number | bigint; type: string; legacyShape?: string | null }[]): Promise<void> {
+  const episodicIds = items.filter((i) => effectiveShape(i) === "episodic").map((i) => i.id);
+  const collectionIds = items.filter((i) => effectiveShape(i) === "collection").map((i) => i.id);
 
   const [episodeCounts, subItemCounts] = await Promise.all([
     countChildren("episodes", episodicIds),

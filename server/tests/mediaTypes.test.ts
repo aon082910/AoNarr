@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { MEDIA_TYPES, MEDIA_TYPE_KEYS, isValidMediaType, getMediaTypeConfig, isProbeableFile } from "../src/services/mediaTypes.js";
+import { MEDIA_TYPES, MEDIA_TYPE_KEYS, isValidMediaType, getMediaTypeConfig, isProbeableFile, effectiveShape } from "../src/services/mediaTypes.js";
 
 describe("MEDIA_TYPE_KEYS / isValidMediaType", () => {
   it("every config's own key matches the object key it's stored under", () => {
@@ -38,6 +38,44 @@ describe("getMediaTypeConfig", () => {
     for (const key of multiFileTypes) {
       expect(getMediaTypeConfig(key).shape).toBe("collection");
     }
+  });
+});
+
+describe("course/adult: folder-as-show episodic config", () => {
+  it("course and adult are episodic with the sequential-episode-number fallback enabled", () => {
+    expect(getMediaTypeConfig("course").shape).toBe("episodic");
+    expect(getMediaTypeConfig("course").sequentialEpisodeFallback).toBe(true);
+    expect(getMediaTypeConfig("adult").shape).toBe("episodic");
+    expect(getMediaTypeConfig("adult").sequentialEpisodeFallback).toBe(true);
+  });
+
+  it("no provider-backed episodic type accidentally enables the fallback", () => {
+    for (const key of ["series", "anime", "sports"]) {
+      expect(getMediaTypeConfig(key).sequentialEpisodeFallback).toBeFalsy();
+    }
+  });
+
+  it("course/adult's groupLevels (the manual, admin-curated browsing hierarchy) are unchanged by the shape switch", () => {
+    expect(getMediaTypeConfig("course").groupLevels).toEqual(["site", "creator"]);
+    expect(getMediaTypeConfig("adult").groupLevels).toEqual(["site", "maker", "series"]);
+  });
+
+  it("adult keeps its metadata provider (enrichment-only) and course stays manual-only", () => {
+    expect(getMediaTypeConfig("adult").metadataProviders).toEqual(["theporndb"]);
+    expect(getMediaTypeConfig("course").metadataProviders).toEqual([]);
+    expect(getMediaTypeConfig("course").defaultProvider).toBeNull();
+  });
+});
+
+describe("effectiveShape", () => {
+  it("falls back to the type's current shape when legacyShape is absent", () => {
+    expect(effectiveShape({ type: "adult" })).toBe("episodic");
+    expect(effectiveShape({ type: "course", legacyShape: null })).toBe("episodic");
+  });
+
+  it("a legacyShape stamp overrides the type's current shape — the not-yet-converted case", () => {
+    expect(effectiveShape({ type: "adult", legacyShape: "single" })).toBe("single");
+    expect(effectiveShape({ type: "course", legacyShape: "collection" })).toBe("collection");
   });
 });
 

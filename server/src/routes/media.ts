@@ -45,6 +45,7 @@ import {
   matchAdditionalProviders,
   matchProvidersForLibrary,
   mergeEpisodesIntoItem,
+  convertLibraryToEpisodic,
 } from "../services/libraryScan.js";
 import { notifyGrabbed } from "../services/notifications.js";
 import { recycleFile } from "../services/recycleBin.js";
@@ -221,10 +222,11 @@ mediaRouter.post(
 mediaRouter.get(
   "/",
   asyncHandler(async (req, res) => {
-    const { type, tagId, groupId, sort, status, contentRating, q } = req.query as {
+    const { type, tagId, groupId, systemGroupId, sort, status, contentRating, q } = req.query as {
       type?: MediaType;
       tagId?: string;
       groupId?: string;
+      systemGroupId?: string;
       sort?: string;
       status?: string;
       contentRating?: string;
@@ -240,6 +242,7 @@ mediaRouter.get(
       type,
       tagId,
       groupId,
+      systemGroupId,
       status,
       contentRating,
       allowedTypes,
@@ -280,10 +283,10 @@ mediaRouter.get(
 mediaRouter.get(
   "/stats",
   asyncHandler(async (req, res) => {
-    const { type, tagId, groupId } = req.query as { type?: MediaType; tagId?: string; groupId?: string };
+    const { type, tagId, groupId, systemGroupId } = req.query as { type?: MediaType; tagId?: string; groupId?: string; systemGroupId?: string };
     const allowedTypes = allowedTypesFor(req);
     if (allowedTypes && type && !allowedTypes.includes(type)) {
-      res.json({ total: 0, haveCount: 0, missingCount: 0, childCount: 0, childHaveCount: 0, contentRatings: [] });
+      res.json({ total: 0, haveCount: 0, missingCount: 0, childCount: 0, childHaveCount: 0, contentRatings: [], legacyCount: 0 });
       return;
     }
 
@@ -291,11 +294,12 @@ mediaRouter.get(
       type,
       tagId,
       groupId,
+      systemGroupId,
       allowedTypes,
       maxContentRating: req.auth?.user?.maxContentRating,
     });
     if (where === null) {
-      res.json({ total: 0, haveCount: 0, missingCount: 0, childCount: 0, childHaveCount: 0, contentRatings: [] });
+      res.json({ total: 0, haveCount: 0, missingCount: 0, childCount: 0, childHaveCount: 0, contentRatings: [], legacyCount: 0 });
       return;
     }
 
@@ -323,6 +327,17 @@ mediaRouter.get(
       }
     }
 
+    // A structural stat like total/childCount above, not scoped by the view's own status/content
+    // rating filters — (type === "course" || "adult") is the only case where this is ever nonzero,
+    // since legacy_shape is only ever stamped on those two types' rows (see media_items.legacy_shape).
+    let legacyCount = 0;
+    if (type === "course" || type === "adult") {
+      const legacyRow = (await db
+        .prepare("SELECT COUNT(*) AS c FROM media_items WHERE type = ? AND legacy_shape IS NOT NULL")
+        .get(type)) as { c: number | string };
+      legacyCount = Number(legacyRow.c);
+    }
+
     res.json({
       total: Number(totalsRow.total),
       haveCount: Number(totalsRow.have ?? 0),
@@ -330,6 +345,7 @@ mediaRouter.get(
       childCount,
       childHaveCount,
       contentRatings: ratingRows.map((r) => r.rating),
+      legacyCount,
     });
   })
 );
@@ -516,6 +532,22 @@ mediaRouter.post(
       .then((result) => log.info(`[match-providers] "${type}": matched ${result.providersMatched} provider(s) across ${result.itemsMatched} item(s)`))
       .catch((err) => log.warn(`[match-providers] "${type}" failed:`, (err as Error).message));
     res.json({ started: true });
+  })
+);
+
+/** One-time, admin-triggered restructuring of a course/adult library's existing pre-episodic rows
+ * (see media_items.legacy_shape) into the real folder-as-show/file-as-episode structure. Unlike
+ * scan-import/refresh/match-providers above, this is pure local DB restructuring, not a slow
+ * external-API call per item, so it's awaited directly rather than fire-and-forget — the admin
+ * clicking the button wants to know it actually finished, and how many rows it touched. */
+mediaRouter.post(
+  "/convert-to-episodic",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const type = req.query.type as string | undefined;
+    if (type !== "course" && type !== "adult") throw new HttpError(400, 'type must be "course" or "adult"');
+    const result = await convertLibraryToEpisodic(type);
+    res.json(result);
   })
 );
 
