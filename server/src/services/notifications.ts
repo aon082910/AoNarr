@@ -318,12 +318,6 @@ export async function notifyDuplicatesFound(count: number, sampleTitles: string[
   });
 }
 
-/** Radarr/Sonarr-style "On Health Issue" — fired by the scheduler's own periodic health check
- * (see scheduler.ts's checkHealthAndNotify), not from the on-demand System page GET, so an admin
- * who isn't actively looking at the System page still finds out. `summary` is a short, human
- * combined description of everything currently wrong, not a single-issue message — kept as one
- * notification per check rather than one per problem, so a bad indexer + low disk space doesn't
- * spam every configured provider twice in the same minute. */
 /**
  * Radarr/Sonarr's "Test" button per notification connection — sends a fixed message to exactly
  * one provider, ignoring its event-filter setting entirely (a test should always go through
@@ -436,6 +430,12 @@ export async function sendTestNotification(providerKey: string): Promise<void> {
   }
 }
 
+/** Radarr/Sonarr-style "On Health Issue" — fired by the scheduler's own periodic health check
+ * (see scheduler.ts's checkHealthAndNotify), not from the on-demand System page GET, so an admin
+ * who isn't actively looking at the System page still finds out. `summary` is a short, human
+ * combined description of everything currently wrong, not a single-issue message — kept as one
+ * notification per check rather than one per problem, so a bad indexer + low disk space doesn't
+ * spam every configured provider twice in the same minute. */
 export async function notifyHealthIssue(summary: string): Promise<void> {
   await fanOut({
     title: "Health issue",

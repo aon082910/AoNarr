@@ -119,6 +119,10 @@ export function stopAllJobs(): void {
   for (const key of defs.keys()) stopTask(key);
 }
 
+export function isJobRunning(key: string): boolean {
+  return state.get(key)?.running ?? false;
+}
+
 export function runJobNow(key: string): boolean {
   if (!defs.has(key)) return false;
   execute(key).catch(() => {});

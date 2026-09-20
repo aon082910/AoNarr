@@ -54,7 +54,7 @@ import {
   writeNfoSidecar,
   type ExportableItem,
 } from "../services/metadataExport.js";
-import { probeMediaInfo } from "../services/ffprobe.js";
+import { corruptReason, handleCorrupt, isCorruptMediaReviewEnabled } from "../services/corruptMediaCheck.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { getSetting } from "../services/settingsStore.js";
 import { renameLibraryFiles, renameOneMediaItem } from "../services/importer.js";
@@ -874,15 +874,17 @@ mediaRouter.post(
       return;
     }
 
-    const info = await probeMediaInfo(row.path);
-    const looksLikeVideo = ["movie", "series", "anime", "sports", "ppv", "video", "course", "adult"].includes(row.type);
-    const corrupt = !info || (looksLikeVideo && !info.videoCodec);
-
-    if (corrupt) {
-      await recycleFile(row.path, row.type, `${row.title} (corrupt)`, row.id);
-      await db.prepare("UPDATE media_items SET has_file = 0, path = NULL, quality = NULL WHERE id = ?").run(row.id);
+    const reason = await corruptReason(row.path, row.type);
+    if (reason === null) {
+      res.json({ corrupt: false, checked: true });
+      return;
     }
-    res.json({ corrupt, checked: true });
+
+    // Same detection/handling the scheduled Corrupt Media Check job uses — including honoring
+    // "Hold for review" if the admin has it on, rather than always recycling immediately.
+    const queuedForReview = isCorruptMediaReviewEnabled();
+    await handleCorrupt("media_items", row.id, row.path, row.type, row.title, row.id, reason);
+    res.json({ corrupt: true, checked: true, queuedForReview, reason });
   })
 );
 

@@ -151,6 +151,12 @@ export async function buildMediaQuery(filters: MediaQueryFilters): Promise<Media
       conditions.push("m.type = ?");
       params.push(filters.type);
     }
+    if (filters.groupId === "none") {
+      conditions.push("m.group_id IS NULL");
+    } else if (filters.groupId) {
+      conditions.push("m.group_id = ?");
+      params.push(filters.groupId);
+    }
   } else if (filters.groupId === "none" && filters.type) {
     conditions.push("m.type = ?", "m.group_id IS NULL");
     params.push(filters.type);
@@ -225,13 +231,40 @@ export async function buildMediaQuery(filters: MediaQueryFilters): Promise<Media
   };
 }
 
+// Same "downloaded means fully complete for episodic/collection shapes" definition
+// downloadStatusCondition() uses for the Downloaded/Missing FILTER — built once at module load
+// from the fixed, code-defined type registry (not user input, so safe to inline as SQL literals)
+// so the Status SORT agrees with it instead of falling back to the plain (and, for a
+// multi-episode/track item, misleading) has_file flag.
+function sqlInList(keys: string[]): string {
+  return keys.length > 0 ? keys.map((k) => `'${k}'`).join(",") : "NULL";
+}
+const STATUS_SORT_EXPR = `CASE
+  WHEN m.type IN (${sqlInList(typeKeysByShape("episodic"))}) THEN
+    CASE WHEN EXISTS (SELECT 1 FROM episodes e2 WHERE e2.media_item_id = m.id)
+              AND NOT EXISTS (SELECT 1 FROM episodes e WHERE e.media_item_id = m.id AND e.has_file = 0)
+         THEN 1 ELSE 0 END
+  WHEN m.type IN (${sqlInList(typeKeysByShape("collection"))}) THEN
+    CASE WHEN EXISTS (SELECT 1 FROM sub_items s2 WHERE s2.media_item_id = m.id)
+              AND NOT EXISTS (SELECT 1 FROM sub_items s WHERE s.media_item_id = m.id AND s.has_file = 0)
+         THEN 1 ELSE 0 END
+  ELSE m.has_file
+END`;
+
+// Same CONTENT_RATING_ORDER severity scale used for the maxContentRating restriction above,
+// instead of an alphabetical string sort (which puts e.g. NC-17 second, right after G).
+const CONTENT_RATING_SORT_EXPR = `CASE m.content_rating ${CONTENT_RATING_ORDER.map((r, idx) => `WHEN '${r}' THEN ${idx}`).join(" ")} ELSE -1 END`;
+
 export const MEDIA_SORT_COLUMNS: Record<string, string> = {
   title: "m.sort_title ASC",
   year: "m.year DESC",
-  status: "m.has_file DESC",
+  status: `${STATUS_SORT_EXPR} DESC`,
   monitored: "m.monitored DESC",
-  quality: "m.quality ASC",
-  contentRating: "m.content_rating ASC",
+  // Joined against the admin-configurable qualities table's own rank column instead of an
+  // alphabetical string sort, matching the same ranking qualityRank() uses for every actual
+  // search/grab/upgrade decision.
+  quality: "(SELECT q.rank FROM qualities q WHERE q.name = m.quality) ASC",
+  contentRating: `${CONTENT_RATING_SORT_EXPR} ASC`,
   added: "m.id DESC",
   releaseDate: "m.release_date DESC",
   path: "m.path ASC",

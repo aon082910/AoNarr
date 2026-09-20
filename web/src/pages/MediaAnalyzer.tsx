@@ -12,7 +12,7 @@ import Pagination, { DEFAULT_PAGE_SIZE_OPTIONS } from "../components/Pagination.
 import { notify } from "../utils/notify.js";
 
 interface CompatibilityNote {
-  level: "ok" | "caution" | "incompatible";
+  level: "ok" | "caution";
   message: string;
 }
 
@@ -204,7 +204,7 @@ export default function MediaAnalyzer() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [progress, setProgress] = useState<AnalysisProgress | null>(null);
-  const [filterLevel, setFilterLevel] = useState<"all" | "caution" | "incompatible">("all");
+  const [filterLevel, setFilterLevel] = useState<"all" | "caution">("all");
   const [statFilter, setStatFilter] = useState<StatFilter | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [searching, setSearching] = useState(false);
@@ -480,9 +480,6 @@ export default function MediaAnalyzer() {
             <select value={filterLevel} onChange={(e) => setFilterLevel(e.target.value as typeof filterLevel)} style={{ maxWidth: 220 }}>
               <option value="all">All files ({data.items.length})</option>
               <option value="caution">With caution notes ({data.items.filter((i) => i.compatibilityNotes.some((n) => n.level === "caution")).length})</option>
-              <option value="incompatible">
-                With incompatible notes ({data.items.filter((i) => i.compatibilityNotes.some((n) => n.level === "incompatible")).length})
-              </option>
             </select>
           </div>
 
@@ -568,7 +565,7 @@ export default function MediaAnalyzer() {
                     {item.compatibilityNotes.length === 0 && <span style={{ color: "var(--muted)" }}>-</span>}
                     {item.compatibilityNotes.map((n, idx) => (
                       <div key={idx} style={{ marginBottom: 4 }}>
-                        <span className={`badge ${n.level === "ok" ? "ok" : n.level === "incompatible" ? "danger" : ""}`}>{n.level}</span>{" "}
+                        <span className={`badge ${n.level === "ok" ? "ok" : ""}`}>{n.level}</span>{" "}
                         <span style={{ fontSize: "0.8rem" }}>{n.message}</span>
                       </div>
                     ))}

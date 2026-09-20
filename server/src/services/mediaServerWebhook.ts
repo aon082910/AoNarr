@@ -109,22 +109,33 @@ export async function syncWatchStatusFromMediaServer(): Promise<{ recorded: numb
       .prepare("SELECT id, media_item_id, file_path FROM sub_items WHERE file_path IS NOT NULL")
       .all() as Promise<{ id: number; media_item_id: number; file_path: string }[]>,
   ]);
-  const itemsByTail = new Map(items.map((r) => [pathTail(r.path), r]));
-  const episodesByTail = new Map(episodes.map((r) => [pathTail(r.file_path), r]));
-  const subItemsByTail = new Map(subItems.map((r) => [pathTail(r.file_path), r]));
+  // Same first-match-wins precedence recordWatchEvent's own .find() applies for a path-tail
+  // collision between two distinct library rows — a plain `new Map(iterable)` keeps the LAST
+  // entry on a repeated key instead, which would resolve a shared tail differently here than it
+  // does for a webhook-recorded watch of the exact same file.
+  function firstMatchByTail<T>(rows: T[], tailOf: (r: T) => string): Map<string, T> {
+    const map = new Map<string, T>();
+    for (const r of rows) {
+      const tail = tailOf(r);
+      if (!map.has(tail)) map.set(tail, r);
+    }
+    return map;
+  }
+  const itemsByTail = firstMatchByTail(items, (r) => pathTail(r.path));
+  const episodesByTail = firstMatchByTail(episodes, (r) => pathTail(r.file_path));
+  const subItemsByTail = firstMatchByTail(subItems, (r) => pathTail(r.file_path));
 
   let recorded = 0;
   let maxSeen = lastSync;
+  // The earliest still-unmatched file's timestamp in this batch, if any — the cursor below must
+  // stay strictly before it (see the comment at the cursor computation for why).
+  let earliestUnmatched: Date | null = null;
   for (const file of newlyWatched) {
     const tail = pathTail(file.path);
     const item = itemsByTail.get(tail);
     const episode = !item ? episodesByTail.get(tail) : undefined;
     const subItem = !item && !episode ? subItemsByTail.get(tail) : undefined;
 
-    // The cursor only advances past a file once it's actually matched and recorded — a file
-    // watched before AoNarr imported/matched it must stay eligible for a later run to pick up once
-    // it *is* matched, rather than being permanently excluded by a cursor that moved past its
-    // timestamp on a run where it happened to still be unmatched.
     if (item) {
       await db.prepare("INSERT INTO watch_events (media_item_id) VALUES (?)").run(item.id);
       recorded++;
@@ -137,10 +148,19 @@ export async function syncWatchStatusFromMediaServer(): Promise<{ recorded: numb
       await db.prepare("INSERT INTO watch_events (media_item_id, sub_item_id) VALUES (?, ?)").run(subItem.media_item_id, subItem.id);
       recorded++;
       if (file.lastPlayedAt > maxSeen) maxSeen = file.lastPlayedAt;
+    } else if (earliestUnmatched === null || file.lastPlayedAt < earliestUnmatched) {
+      earliestUnmatched = file.lastPlayedAt;
     }
   }
 
-  setSetting("watchStatusSyncLastRunAt", maxSeen.toISOString());
+  // The cursor only advances past a file once it's actually matched and recorded — a file watched
+  // before AoNarr imported/matched it must stay eligible for a later run to pick up once it *is*
+  // matched. `maxSeen` alone is a running max over matched files only, independent of processing
+  // order, so it can still land past a still-unmatched file's timestamp if a later-played but
+  // already-matched file was processed in the same batch — clamp it to just before the earliest
+  // unmatched file's timestamp (strictly, since the next run's filter is `lastPlayedAt > cursor`).
+  const cursor = earliestUnmatched !== null ? new Date(Math.min(maxSeen.getTime(), earliestUnmatched.getTime() - 1)) : maxSeen;
+  setSetting("watchStatusSyncLastRunAt", cursor.toISOString());
   if (recorded > 0) log.info(`[mediaServerWebhook] watch-status sync recorded ${recorded} new watch event(s)`);
   return { recorded };
 }

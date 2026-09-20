@@ -120,6 +120,10 @@ export interface ArchivalCandidate {
  */
 export async function getUpcomingArchivals(): Promise<ArchivalCandidate[]> {
   if (!getMediaServerConfig()) return [];
+  if (getSetting("archiveEnabled") !== "1") return [];
+  const archiveFolder = getSetting("archiveFolder");
+  const permanentDelete = getSetting("archivePermanentDelete") === "1";
+  if (!permanentDelete && !archiveFolder) return [];
   const afterDays = Number(getSetting("archiveAfterDays") ?? "30") || 30;
 
   let watched: WatchedFile[];

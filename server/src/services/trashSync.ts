@@ -49,11 +49,16 @@ export interface TrashSyncResult {
   added: number;
   updated: number;
   unsupported: string[];
+  /** Formats that DID sync, but with one or more condition types silently dropped (e.g. a
+   * QualityModifierSpecification alongside a translatable title condition) — as opposed to
+   * `unsupported`, which is formats with nothing translatable at all. Surfaced in the log the same
+   * way the paste-JSON import path already surfaces this to the admin directly. */
+  partiallyUnsupported: { name: string; skipped: string[] }[];
   error?: string;
 }
 
 export async function syncTrashFormats(app: "radarr" | "sonarr"): Promise<TrashSyncResult> {
-  const result: TrashSyncResult = { added: 0, updated: 0, unsupported: [] };
+  const result: TrashSyncResult = { added: 0, updated: 0, unsupported: [], partiallyUnsupported: [] };
 
   let files: GithubContentEntry[];
   try {
@@ -78,11 +83,12 @@ export async function syncTrashFormats(app: "radarr" | "sonarr"): Promise<TrashS
 
   for (const trash of fetched) {
     if (!trash?.trash_id || !trash.name || !Array.isArray(trash.specifications)) continue;
-    const { groups } = translateTrashFormat(trash);
+    const { groups, skipped } = translateTrashFormat(trash);
     if (groups.length === 0) {
       result.unsupported.push(trash.name);
       continue;
     }
+    if (skipped.length > 0) result.partiallyUnsupported.push({ name: trash.name, skipped });
 
     try {
       const existing = (await db.prepare("SELECT id FROM custom_formats WHERE trash_id = ?").get(trash.trash_id)) as
@@ -105,5 +111,8 @@ export async function syncTrashFormats(app: "radarr" | "sonarr"): Promise<TrashS
   }
 
   log.info(`[trashSync] ${app}: added ${result.added}, updated ${result.updated}, unsupported ${result.unsupported.length}`);
+  for (const p of result.partiallyUnsupported) {
+    log.info(`[trashSync] "${p.name}" synced with unsupported condition type(s) skipped: ${p.skipped.join(", ")}`);
+  }
   return result;
 }

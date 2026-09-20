@@ -86,11 +86,7 @@ mediaAnalysisRouter.get(
         (info.audioStreams ?? []).map((a) => a.codec ?? "?").join("; "),
         (info.audioStreams ?? []).map((a) => a.language ?? "?").join("; "),
         (info.subtitleStreams ?? []).map((s) => s.language ?? s.codec ?? "?").join("; "),
-        item.compatibilityNotes.some((n) => n.level === "incompatible")
-          ? "incompatible"
-          : item.compatibilityNotes.some((n) => n.level === "caution")
-            ? "caution"
-            : "ok",
+        item.compatibilityNotes.some((n) => n.level === "caution") ? "caution" : "ok",
         item.compatibilityNotes.map((n) => n.message).join(" | "),
       ];
       lines.push(row.map(csvEscape).join(","));

@@ -13,6 +13,17 @@ interface MediaServerConfig {
   token: string;
 }
 
+/** Jellyfin/Emby support per-user library-access restrictions (parental controls, restricted
+ * library visibility), and `/Users` returns them in no guaranteed order — picking users[0] blindly
+ * risked silently importing/looking up against a restricted account's smaller view of the library.
+ * Prefers an administrator account (which always has full access) when the response includes that
+ * flag, falling back to the first user otherwise. Only for the single-user detail/lookup calls
+ * below; fetchJellyfinLikeFiles' own watch-history fetch deliberately still loops every user, since
+ * two different users' watch histories are genuinely different data, not a library-visibility gap. */
+function pickJellyfinAdminUserId(users: { Id: string; Policy?: { IsAdministrator?: boolean } }[]): string | null {
+  return users.find((u) => u.Policy?.IsAdministrator)?.Id ?? users[0]?.Id ?? null;
+}
+
 export function getMediaServerConfig(): MediaServerConfig | null {
   const type = getSetting("mediaServerType") as MediaServerConfig["type"] | null;
   const url = getSetting("mediaServerUrl");
@@ -187,11 +198,12 @@ async function fetchJellyfinMovieDetails(cfg: MediaServerConfig, basePath: strin
   const headers = { "X-Emby-Token": cfg.token, Accept: "application/json" };
   const usersRes = await fetch(`${cfg.url}${basePath}/Users`, { headers });
   if (!usersRes.ok) throw new Error(`${cfg.type} users request failed: ${usersRes.status}`);
-  const users = (await usersRes.json()) as { Id: string }[];
+  const users = (await usersRes.json()) as { Id: string; Policy?: { IsAdministrator?: boolean } }[];
   if (users.length === 0) return [];
+  const adminUserId = pickJellyfinAdminUserId(users);
 
   const itemsRes = await fetch(
-    `${cfg.url}${basePath}/Users/${users[0].Id}/Items?Recursive=true&IncludeItemTypes=Movie&Fields=Path,Overview,ProviderIds,ProductionYear,ImageTags`,
+    `${cfg.url}${basePath}/Users/${adminUserId}/Items?Recursive=true&IncludeItemTypes=Movie&Fields=Path,Overview,ProviderIds,ProductionYear,ImageTags`,
     { headers }
   );
   if (!itemsRes.ok) throw new Error(`${cfg.type} items request failed: ${itemsRes.status}`);
@@ -310,9 +322,9 @@ async function fetchJellyfinSeriesLibrary(cfg: MediaServerConfig, basePath: stri
   const headers = { "X-Emby-Token": cfg.token, Accept: "application/json" };
   const usersRes = await fetch(`${cfg.url}${basePath}/Users`, { headers });
   if (!usersRes.ok) throw new Error(`${cfg.type} users request failed: ${usersRes.status}`);
-  const users = (await usersRes.json()) as { Id: string }[];
+  const users = (await usersRes.json()) as { Id: string; Policy?: { IsAdministrator?: boolean } }[];
   if (users.length === 0) return { shows: new Map(), episodes: [] };
-  const userId = users[0].Id;
+  const userId = pickJellyfinAdminUserId(users);
 
   const shows = new Map<string, MediaServerShowInfo>();
   const showsRes = await fetch(
@@ -497,11 +509,12 @@ async function fetchJellyfinLikeItems(cfg: MediaServerConfig, basePath: string):
   const headers = { "X-Emby-Token": cfg.token, Accept: "application/json" };
   const usersRes = await fetch(`${cfg.url}${basePath}/Users`, { headers });
   if (!usersRes.ok) throw new Error(`${cfg.type} users request failed: ${usersRes.status}`);
-  const users = (await usersRes.json()) as { Id: string }[];
+  const users = (await usersRes.json()) as { Id: string; Policy?: { IsAdministrator?: boolean } }[];
   if (users.length === 0) return { items: [], userId: null };
+  const adminUserId = pickJellyfinAdminUserId(users);
 
   const itemsRes = await fetch(
-    `${cfg.url}${basePath}/Users/${users[0].Id}/Items?Recursive=true&IncludeItemTypes=Movie,Episode&Fields=Path`,
+    `${cfg.url}${basePath}/Users/${adminUserId}/Items?Recursive=true&IncludeItemTypes=Movie,Episode&Fields=Path`,
     { headers }
   );
   if (!itemsRes.ok) throw new Error(`${cfg.type} items request failed: ${itemsRes.status}`);
@@ -511,7 +524,7 @@ async function fetchJellyfinLikeItems(cfg: MediaServerConfig, basePath: string):
   for (const item of body.Items ?? []) {
     if (item.Path && item.Id) items.push({ path: item.Path, id: String(item.Id) });
   }
-  return { items, userId: users[0].Id };
+  return { items, userId: adminUserId };
 }
 
 /**

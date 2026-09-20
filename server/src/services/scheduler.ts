@@ -948,6 +948,8 @@ export async function retryFailedGrab(match: QueueItem, reason: string): Promise
 
     const indexers = await rowsToIndexers();
     const results = await searchAllIndexers(indexers, query, item.type);
+    const delayProfiles = await loadDelayProfiles();
+    const delayProfile = pickDelayProfile(delayProfiles, await tagIdsForMediaItem(item.id));
     const best = await chooseBestResult(
       results,
       profile?.allowedQualities ?? [],
@@ -956,7 +958,8 @@ export async function retryFailedGrab(match: QueueItem, reason: string): Promise
       profile?.minFormatScore ?? 0,
       episodeTarget,
       blocklisted,
-      item.type
+      item.type,
+      delayProfile
     );
     if (!best) {
       log.info(`[scheduler] retry exhausted search results for "${mediaTitle}" — notifying instead`);

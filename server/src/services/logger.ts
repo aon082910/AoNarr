@@ -163,8 +163,8 @@ function withReqTag(args: unknown[]): unknown[] {
   return reqId ? [`[${reqId}]`, ...args] : args;
 }
 
-/** Thin wrapper around console.* that also keeps an in-memory ring buffer of the last 500 lines,
- * surfaced via GET /api/system/logs — so "what's been happening" is visible from the web UI
+/** Thin wrapper around console.* that also keeps an in-memory ring buffer of the last MAX_ENTRIES
+ * lines, surfaced via GET /api/system/logs — so "what's been happening" is visible from the web UI
  * without needing `docker compose logs`. Still logs to stdout/stderr as before for anyone who
  * does want the container logs, and now also to a daily rotating file under <configDir>/logs
  * (see listLogFiles/resolveLogFilePath) so history survives a restart. */

@@ -817,9 +817,14 @@ export default function MediaDetail() {
 
   async function checkCorrupt() {
     if (!item) return;
-    const result = await api.post<{ corrupt: boolean; checked: boolean; reason?: string }>(`/media/${item.id}/check-corrupt`, {});
+    const result = await api.post<{ corrupt: boolean; checked: boolean; queuedForReview?: boolean; reason?: string }>(
+      `/media/${item.id}/check-corrupt`,
+      {}
+    );
     if (!result.checked) {
       notify.info(result.reason ?? "Nothing to check.");
+    } else if (result.corrupt && result.queuedForReview) {
+      notify.info(`This file failed validation (${result.reason}) — queued for review on the Recycle Bin page.`);
     } else if (result.corrupt) {
       notify.error("This file failed validation and was moved to the Recycle Bin. Marked missing — it'll be picked up by auto-search again.");
       load();
@@ -1205,8 +1210,12 @@ export default function MediaDetail() {
     if (!item) return;
     setAiIdentifying(entry.path);
     try {
-      const result = await api.post<{ guess: string }>("/import/ai-identify", { sourcePath: entry.path, mediaType: item.type });
-      setAiGuesses((prev) => ({ ...prev, [entry.path]: result.guess }));
+      const result = await api.post<{ guess: string; usedFrame: boolean; usedTags: boolean }>("/import/ai-identify", {
+        sourcePath: entry.path,
+        mediaType: item.type,
+      });
+      const source = result.usedFrame ? " (from a video frame)" : result.usedTags ? " (from embedded tags)" : "";
+      setAiGuesses((prev) => ({ ...prev, [entry.path]: `${result.guess}${source}` }));
     } catch (e) {
       setAiGuesses((prev) => ({ ...prev, [entry.path]: `Error: ${(e as Error).message}` }));
     } finally {

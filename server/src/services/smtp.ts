@@ -117,16 +117,18 @@ export async function sendEmail(cfg: SmtpConfig, subject: string, body: string):
     await send(`RCPT TO:<${cfg.to}>`);
     await send("DATA");
 
-    const escapedBody = body.replace(/\r\n\./g, "\r\n..");
-    const message = [
+    const rawMessage = [
       `From: AoNarr <${cfg.from}>`,
       `To: <${cfg.to}>`,
       `Subject: ${subject}`,
       `Content-Type: text/plain; charset=utf-8`,
       "",
-      escapedBody,
-      ".",
+      body,
     ].join("\r\n");
+    // Escaped on the fully-assembled message, not on `body` in isolation — a body starting with
+    // "." needs the \r\n that precedes it (from the join above) to already be in place for the
+    // dot-stuffing regex to see it, the same way sendEmailWithAttachment already does it below.
+    const message = `${rawMessage.replace(/\r\n\./g, "\r\n..")}\r\n.`;
     await send(message);
 
     await send("QUIT");

@@ -73,14 +73,19 @@ async function fetchFriendTitles(cfg: FriendLibraryConfig): Promise<FriendLibrar
 }
 
 async function loadLocalTitles(): Promise<Map<string, Set<number | null>>> {
-  const rows = (await db.prepare("SELECT title, year, type FROM media_items WHERE type IN ('movie', 'series')").all()) as {
+  // Plex/Jellyfin/Emby have no separate "anime" category of their own — fetchPlexTitles/
+  // fetchJellyfinLikeTitles always bucket a friend's TV shows (anime included) as "series", so a
+  // locally anime-typed item has to be looked up under that same "series" key or it's always
+  // reported as missing even when the friend genuinely has it.
+  const rows = (await db.prepare("SELECT title, year, type FROM media_items WHERE type IN ('movie', 'series', 'anime')").all()) as {
     title: string;
     year: number | null;
     type: string;
   }[];
   const map = new Map<string, Set<number | null>>();
   for (const r of rows) {
-    const key = `${r.type}:${normalizeTitle(r.title)}`;
+    const bucket = r.type === "anime" ? "series" : r.type;
+    const key = `${bucket}:${normalizeTitle(r.title)}`;
     if (!map.has(key)) map.set(key, new Set());
     map.get(key)!.add(r.year);
   }

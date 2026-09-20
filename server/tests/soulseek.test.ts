@@ -98,7 +98,9 @@ describe("searchSlskd", () => {
         indexerName: "Soulseek (peerA)",
         title: "Song.mp3",
         size: 5_000_000,
-        seeders: 1,
+        // Soulseek has no real seeder-count concept — null, matching every other seederless
+        // protocol, not a fabricated 0/1 off hasFreeUploadSlot (see soulseek.ts's own comment).
+        seeders: null,
         leechers: null,
         publishDate: null,
         downloadUrl: encodeSlskdDownloadUrl("peerA", "@@peerA\\Music\\Song.mp3", 5_000_000),

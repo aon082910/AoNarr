@@ -90,7 +90,10 @@ export async function searchSlskd(client: DownloadClient, query: string): Promis
         indexerName: `Soulseek (${r.username})`,
         title: f.filename.split(/[/\\]/).pop() ?? f.filename,
         size: f.size,
-        seeders: r.hasFreeUploadSlot ? 1 : 0,
+        // Soulseek has no seeder-count concept — `null` (not a fabricated 0/1 off hasFreeUploadSlot)
+        // is what every other seederless protocol in this codebase uses, since real cross-protocol
+        // sort/tiebreak logic treats seeders as a comparable peer count, not a upload-slot flag.
+        seeders: null,
         leechers: null,
         publishDate: null,
         downloadUrl: encodeSlskdDownloadUrl(r.username, f.filename, f.size),

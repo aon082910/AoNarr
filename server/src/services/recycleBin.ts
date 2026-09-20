@@ -120,7 +120,12 @@ export async function purgeRecycleBinEntry(id: number): Promise<void> {
 
 /** Scheduled cleanup: purges anything older than the configured retention. */
 export async function purgeExpiredRecycleBinEntries(): Promise<void> {
-  const days = Math.max(1, parseInt(getSetting("recycleBinRetentionDays") ?? "30", 10) || 30);
+  // Distinguishes "unset" (fall back to the 30-day default) from "explicitly set to 0" (an admin
+  // opting into near-immediate purging) — a plain `parseInt(...) || 30` treated 0 as falsy and
+  // silently replaced it with the default, the opposite of what was requested.
+  const rawDays = getSetting("recycleBinRetentionDays");
+  const parsedDays = rawDays != null ? parseInt(rawDays, 10) : NaN;
+  const days = Math.max(1, Number.isFinite(parsedDays) ? parsedDays : 30);
   const rows = (await db
     .prepare(`SELECT id FROM recycle_bin WHERE deleted_at <= ${nowOffsetExpr(db, -days)} AND restoring = 0`)
     .all()) as { id: number }[];

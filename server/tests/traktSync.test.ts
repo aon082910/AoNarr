@@ -87,7 +87,7 @@ describe("runTraktSync — list URL parsing", () => {
 
     await runTraktSync();
 
-    expect(fetchMock.mock.calls[0][0]).toBe("https://api.trakt.tv/users/someuser/watchlist");
+    expect(fetchMock.mock.calls[0][0]).toBe("https://api.trakt.tv/users/someuser/watchlist?extended=full");
   });
 
   it("requests the named list's items endpoint for a /lists/<slug> URL", async () => {
@@ -96,7 +96,7 @@ describe("runTraktSync — list URL parsing", () => {
 
     await runTraktSync();
 
-    expect(fetchMock.mock.calls[0][0]).toBe("https://api.trakt.tv/users/someuser/lists/to-watch/items");
+    expect(fetchMock.mock.calls[0][0]).toBe("https://api.trakt.tv/users/someuser/lists/to-watch/items?extended=full");
   });
 
   it("reports an error (not a throw) when the Trakt request fails", async () => {

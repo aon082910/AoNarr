@@ -3,6 +3,148 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 329 — forty-six bugs from a full sweep of the services layer
+
+The largest audit pass this series: with every route file done, extended the sweep to all 44
+`server/src/services/*.ts` files of 100+ lines (~16,300 lines — `metadata.ts`, `scheduler.ts`,
+`importer.ts`, `downloadClient.ts`, `libraryScan.ts`, `mediaServer.ts`, `importLists.ts`,
+`starrImport.ts`, `notifications.ts`, `indexerClient.ts`, `mediaAnalysis.ts`, and 33 more), each
+given its own dedicated review (the 11 largest solo, the rest in small groups). Forty-six confirmed
+and fixed:
+
+**Missing metadata on auto-added items** — the recurring theme this round. Six different add
+paths were each missing fields every *other* add path already includes, so an item's completeness
+in the library silently depended on which feature added it:
+- Trakt/TMDB import-list sync, the standalone Trakt List Sync feature, and auto-request-from-
+  watch-history all skipped `overview`/`poster_url` on insert; Trakt-sourced items also never
+  captured an IMDb id, permanently blanking their IMDb/RT/Metacritic ratings. Trakt's list endpoint
+  also wasn't being asked for the extended data (`?extended=full`) that contains the overview.
+- The Discord bot's `/request` add path dropped `release_date`/`backdrop_url`/`rating`.
+- Lidarr/Readarr-imported albums and books never got a `poster_url`, despite Starr's own API
+  providing one and this file already using it for the parent artist/author.
+
+**Correctness bugs that silently produce wrong results:**
+- MusicBrainz's release-group search rejects AoNarr's own multi-type album filter with HTTP 400
+  (repeated `type=` params instead of one pipe-separated value) — configuring more than one album
+  type (the feature's whole point) broke adding *any* new MusicBrainz artist outright.
+- Anime items matched via TMDB (rather than AniList) got no Cast or Alternate Titles — the type
+  dispatch for those two lookups omitted "anime" while every other TMDB dispatch in the file
+  already treats it as tv-shaped.
+- A `Season <N>` release title (space-separated, no "S03" abbreviation) matched as a full season
+  but with no season number extracted, so it could never satisfy a request for that season.
+- Automatic download retries after a failure skipped Delay Profile gating entirely (protocol
+  enable/disable, per-protocol delay, bypass-if-highest-quality) — a retry could grab a
+  disabled-protocol or too-recent release the identical initial search would have refused.
+- The one-shot on-demand "Check Corrupt" button always deleted the file immediately, even with
+  "Hold for review" turned on — it reimplemented detection/handling inline instead of sharing the
+  scheduled job's logic, silently ignoring a setting the admin explicitly enabled. Now shares the
+  same code path and tells the frontend which branch happened.
+- IRC instant-grab ignored a scored release's `rejected` flag (a Release Profile must-not-contain
+  hit, or an over-max-size release) and never passed scene/absolute-episode numbers into episode
+  matching — a release the scheduled search path would refuse, or an anime episode it would match,
+  behaved differently for a grab triggered via IRC.
+- A season-pack import checked its season number with a plain truthy test, so a Season 0
+  (specials) pack was silently misrouted and always failed to import.
+- `Skip Free Space Check` was only enforced for single-file imports — a multi-GB season pack or
+  whole album import could still fill a drive to zero with the safety setting left at its default.
+- The automatic downloaded-file matcher (the common case — most imports never open the manual
+  picker) ignored scene numbering and the anime absolute-episode fallback that every other
+  release-matching call site in the codebase already uses, so a scene-numbered release correctly
+  grabbed could fail to be matched back to the right file at import time.
+- TorBox and AllDebrid's polling loops had no timeout, unlike the identical Real-Debrid loop right
+  next to them — a truly dead/stuck torrent on those two providers polled forever instead of
+  failing after 6 hours.
+- A media library scan's exclusion filter for already-known multi-disc albums compared the wrong
+  directory level, so every track in a CD1/CD2-subfoldered album was silently re-walked and
+  re-processed on every single future scan; the separate one-time "backfill missing track listings"
+  fixup also listed a multi-disc album's folder non-recursively, so it could never actually find
+  those albums' tracks to backfill (its whole reason for existing).
+- Jellyfin/Emby's own per-user library-access restrictions meant three functions that only ever
+  queried `users[0]` (movie import, series import, the manual watch-toggle's item lookup) could
+  silently see a smaller library than the watch-status sync (which correctly loops every user) —
+  now prefers an administrator account when the API reports one.
+- Recording a webhook-driven watch event resolves a path-tail collision by keeping the *first*
+  matching library row; the scheduled watch-status sync resolved the identical lookup by keeping
+  the *last* one — the same watched file could be attributed to a different item depending on which
+  path recorded it. The sync's own "don't skip past a still-unmatched file" cursor logic also had a
+  gap: it only tracked a running max over *matched* files, so a later-played-but-matched file in the
+  same batch could still push the cursor past an unrelated unmatched file's timestamp.
+- Sort-by-Quality and Sort-by-Content-Rating on the Library page both sorted their column as a
+  plain string (alphabetical), not by the app's own configured rank/severity order — quality sort
+  put "Bluray-1080p" before "DVD", and content-rating sort put "NC-17" second, right after "G".
+  Sort-by-Status used the raw `has_file` flag instead of the same "fully complete" definition the
+  Downloaded/Missing *filter* on the same page already uses for episodic/collection items.
+- Filtering the Library page by both a tag and a library group silently dropped the group half of
+  the filter whenever a tag was also selected, returning every tagged item in the whole type instead
+  of just the ones in the browsed group.
+- Two `parseInt(...) || N` / `Number(...) || N` fallbacks (recycle-bin retention days, auto-request-
+  from-watch-history's limit) treated an explicitly configured `0` as invalid input and silently
+  substituted the unrelated default instead of the requested near-zero value.
+- `sendEmail`'s SMTP dot-stuffing escaped the message body in isolation before splicing it into the
+  full DATA payload, so a body starting with "." was left unescaped — `sendEmailWithAttachment`
+  right next to it already escapes the fully-assembled message and gets this right.
+- A DDL indexer's health/reachability check fetched its raw, un-substituted `{query}` URL template
+  instead of a real request, and DDL searches used a plain `fetch()` with no retry-on-transient-
+  failure wrapper, unlike every other indexer protocol.
+- The one-shot audiobook chapter-merge tool could run before every chapter finished downloading
+  (silently dropping the unfinished ones from the merged book forever) and hardcoded the merged
+  row's track number to a value that could collide with a still-downloading track under the same
+  unique constraint.
+- A watched/aged-file "Leaving Soon" preview didn't check the same `archiveEnabled`/archive-folder
+  gates the real scheduled archival run does, so it could list items as scheduled for a specific
+  date when no run would ever actually touch them (feature off, or on with nowhere configured to
+  put the files).
+- `corruptReason()`'s "file is missing" check trusted a single `fs.existsSync()` with no retry,
+  while the ffprobe-failure check two lines below it already guards against the identical class of
+  transient network-mount hiccup — a brief SMB/NFS disconnect could get a perfectly healthy file
+  permanently recycled and its DB row wiped.
+- A friend's-library "already owned" comparison only checked local items typed `movie`/`series` —
+  Plex/Jellyfin/Emby have no separate "anime" category of their own, so a locally anime-typed item
+  the friend also has was always reported as missing.
+- Soulseek search results stored a fabricated `0`/`1` in the generic `seeders` field (based on
+  upload-slot availability, not a real peer count), corrupting real cross-protocol sort/tiebreak
+  logic that treats `seeders` as a comparable count; now `null`, matching every other seederless
+  protocol.
+- A GitHub-sourced TRaSH-Guides format sync silently dropped which condition types got skipped for
+  a partially-translated format — the identical paste-JSON import path already surfaces this to the
+  admin directly.
+- `runJobNow()` (the "Run Now" trigger, e.g. System page's "Scan Library Now") always reported a
+  job as started even when the job's own `execute()` silently skipped it for already running —
+  the caller was told "started" while nothing new happened.
+- Manual-Starr-import album/book matching dropped an already-tracked-but-still-undownloaded child
+  from every result counter instead of counting it as matched, understating the "matched X, created
+  Y, skipped Z" summary Radarr/Sonarr-style Lidarr/Readarr imports log.
+- Two orphaned doc comments (`notifications.ts`, `media.ts`) sat above the wrong function, having
+  been left behind when something was inserted between them and their real target.
+- Three stale comments corrected: `metadata.ts`'s `backdropUrl`/`rating` field docs claimed "only
+  TMDB populates this" (AniList/RAWG/IGDB have for a while); `logger.ts`'s ring-buffer comment said
+  "last 500 lines" against an actual 2000-entry cap; `downloadClient.ts`'s `remotePath` comment
+  claimed it's "only set on completed" when the adapters that populate it do so at other statuses
+  too and the only caller never gated on status anyway.
+- `mediaAnalysis.ts`'s `CompatibilityNote` type declared an "incompatible" severity level that
+  nothing ever actually produced — the whole "With incompatible notes" filter/badge on the Media
+  Analyzer page was a dead control that always showed a zero count and matched nothing. Removed the
+  unreachable level from the type and the dependent UI. Separately, its DTS-HD compatibility note
+  was keyed on `"dts-hd"`/`"dts_hd"` strings ffprobe never actually emits (its `codec_name` for
+  every DTS variant is the bare string `"dts"`) — now reads ffprobe's separate `profile` field to
+  tell DTS-HD apart from core DTS.
+- `identifyMediaFile()`'s "used a video frame vs. embedded tags" result was computed on every
+  return path but never reached the user — the MediaDetail/EpisodeDetail AI-guess UI now shows it.
+
+Verified: `npx tsc --noEmit` clean in both `web/` and `server/`. The full server test suite (89
+files) had 7 pre-existing tests fail after these fixes — all 7 were asserting the *old, buggy*
+behavior (the MusicBrainz multi-type param shape, Soulseek's fabricated seeders, Trakt's URL
+missing `extended=full`, and `getUpcomingArchivals` returning real candidates without the
+archival-enabled gates configured) — updated all 7 to assert the corrected behavior, plus extended
+`archival.test.ts`'s gate coverage to two tests that had gone from "passing for the right reason" to
+"passing for the wrong reason" once the gate landed. Full suite now 89 files / 1377 tests, all
+green. Live-verified a representative, high-risk sample against the real, rebuilt server: quality
+and content-rating sort now return rank/severity order instead of alphabetical; a combined tag+group
+filter now correctly scopes to the group; the on-demand Check Corrupt route now recycles
+immediately with the setting off and correctly holds for review (file/DB row untouched, queued)
+with it on. All fixtures (sessions, media items, a library group, tags, settings) were removed
+afterward.
+
 ## Round 328 — ten more backend bugs from the remaining smaller route files
 
 Finished the server-route sweep by auditing the 25 remaining, smaller route files (`librarySearch.ts`,

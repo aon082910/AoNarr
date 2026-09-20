@@ -14,6 +14,7 @@ const SOURCE_SAMPLE_SIZE = 5;
 export interface Recommendation {
   title: string;
   year: number | null;
+  overview: string | null;
   posterUrl: string | null;
   backdropUrl: string | null;
   rating: number | null;
@@ -128,6 +129,7 @@ async function recommendMovies(
       out.push({
         title: r.title ?? r.name ?? "Unknown",
         year: r.release_date ? Number(r.release_date.slice(0, 4)) : null,
+        overview: r.overview ?? null,
         posterUrl: r.poster_path ? `${TMDB_IMAGE_BASE}${r.poster_path}` : null,
         backdropUrl: r.backdrop_path ? `${TMDB_BACKDROP_BASE}${r.backdrop_path}` : null,
         rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
@@ -157,6 +159,7 @@ async function recommendSeries(
       out.push({
         title: r.name ?? r.title ?? "Unknown",
         year: r.first_air_date ? Number(r.first_air_date.slice(0, 4)) : null,
+        overview: r.overview ?? null,
         posterUrl: r.poster_path ? `${TMDB_IMAGE_BASE}${r.poster_path}` : null,
         backdropUrl: r.backdrop_path ? `${TMDB_BACKDROP_BASE}${r.backdrop_path}` : null,
         rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
@@ -193,6 +196,7 @@ async function recommendArtists(apiKey: string): Promise<Recommendation[]> {
       out.push({
         title: a.name,
         year: null,
+        overview: null,
         posterUrl: image || null,
         backdropUrl: null, // Last.fm's artist data has no backdrop-style image, only the square artist photo above
         rating: null,
@@ -260,7 +264,8 @@ export async function getRecommendations(): Promise<{
  */
 export async function runAutoRequestFromWatchHistory(): Promise<void> {
   if (getSetting("autoRequestFromWatchHistoryEnabled") !== "1") return;
-  const limit = Math.max(1, Number(getSetting("autoRequestFromWatchHistoryLimit") ?? "3") || 3);
+  const parsedLimit = Number(getSetting("autoRequestFromWatchHistoryLimit") ?? "3");
+  const limit = Math.max(1, Number.isFinite(parsedLimit) ? parsedLimit : 3);
 
   const { movies, series } = await getRecommendations();
   const candidates = [...movies, ...series].filter((r) => r.basis === "watched").slice(0, limit);
@@ -292,10 +297,20 @@ export async function runAutoRequestFromWatchHistory(): Promise<void> {
       const rootFolderId = await autoSelectRootFolderId(rec.type);
       const result = await db
         .prepare(
-          `INSERT INTO media_items (type, title, sort_title, year, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
+          `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
         )
-        .run(rec.type, rec.title, rec.title.toLowerCase(), rec.year, rec.posterUrl, JSON.stringify(rec.externalIds), rootFolderId, qualityProfileId);
+        .run(
+          rec.type,
+          rec.title,
+          rec.title.toLowerCase(),
+          rec.year,
+          rec.overview,
+          rec.posterUrl,
+          JSON.stringify(rec.externalIds),
+          rootFolderId,
+          qualityProfileId
+        );
 
       if (rec.type === "series") {
         const episodes = await fetchSeriesEpisodesFor(rec.externalIds).catch(() => []);

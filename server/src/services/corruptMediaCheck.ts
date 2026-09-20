@@ -40,8 +40,15 @@ async function isStillBeingWritten(filePath: string): Promise<boolean> {
  * a classic symptom of a fake/mislabeled release that's actually an html error page or a truncated
  * download saved with a video extension. Returns the reason it failed, or null if it's fine — a
  * plain boolean would lose exactly the information a reviewer needs to judge a flagged file. */
-async function corruptReason(filePath: string, type: string): Promise<string | null> {
-  if (!fs.existsSync(filePath)) return "File is missing from disk";
+export async function corruptReason(filePath: string, type: string): Promise<string | null> {
+  if (!fs.existsSync(filePath)) {
+    // A transient network/SMB mount hiccup can make a perfectly healthy file look momentarily
+    // missing (existsSync swallows ENOENT, ESTALE, ENOTCONN, etc. alike) — same class of glitch
+    // the ffprobe-failure path below already refuses to trust on a single check. Confirm the file
+    // is genuinely still missing after a short wait before recycling it and clearing its DB row.
+    await sleep(3000);
+    if (!fs.existsSync(filePath)) return "File is missing from disk";
+  }
 
   // ffprobe only understands real video/audio containers — an ebook, comic archive, ROM, etc. is
   // never going to probe successfully no matter how healthy it is, which without this check meant
@@ -85,7 +92,7 @@ export async function recycleAndMarkMissing(
   log.warn(`[corruptMediaCheck] "${title}" failed validation — moved to recycle bin, marked missing`);
 }
 
-async function handleCorrupt(
+export async function handleCorrupt(
   table: "media_items" | "episodes" | "sub_items",
   id: number,
   filePath: string,

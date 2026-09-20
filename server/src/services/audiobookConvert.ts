@@ -58,6 +58,15 @@ export async function convertSubItemToM4b(subItemId: number): Promise<{ path: st
     .prepare("SELECT id, track_number, title, file_path FROM tracks WHERE sub_item_id = ? AND has_file = 1 ORDER BY track_number")
     .all(subItemId)) as { id: number; track_number: number; title: string; file_path: string }[];
   if (trackRows.length < 2) throw new Error("Need at least 2 downloaded tracks to merge into one M4B");
+  // Merging while some chapters are still downloading would silently drop them from the book
+  // forever (the merged row replaces every per-track row for this sub-item) — require every known
+  // track to have its file first. This also guarantees the hardcoded track_number below can never
+  // collide with a still-undownloaded track's row, since every row for this sub-item is about to
+  // be deleted, not just the downloaded ones.
+  const totalTracks = (await db.prepare("SELECT COUNT(*) AS c FROM tracks WHERE sub_item_id = ?").get(subItemId)) as { c: number };
+  if (Number(totalTracks.c) > trackRows.length) {
+    throw new Error(`Still waiting on ${Number(totalTracks.c) - trackRows.length} more track(s) to download before this book can be merged`);
+  }
 
   const tracks: TrackToMerge[] = trackRows.map((t) => ({ id: t.id, trackNumber: t.track_number, title: t.title, filePath: t.file_path }));
   for (const t of tracks) {

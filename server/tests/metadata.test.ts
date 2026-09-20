@@ -963,7 +963,10 @@ describe("fetchArtistAlbumsFor", () => {
     const result = await metadata.fetchArtistAlbumsFor({ musicbrainz: "mbid-1", deezer: "5" });
     expect(result).toEqual({ provider: "musicbrainz", albums: [{ title: "Album1", releaseDate: "2000-01-01", externalId: "rg-1" }] });
     const url = new URL(String(fetchMock.mock.calls[0][0]));
-    expect(url.searchParams.getAll("type")).toEqual(["ep", "live"]);
+    // MusicBrainz's release-group search expects multiple types as one pipe-separated value, not
+    // repeated "type=" params (which its backend rejects with HTTP 400 — see configuredAlbumTypes'
+    // own comment in metadata.ts).
+    expect(url.searchParams.getAll("type")).toEqual(["ep|live"]);
   });
 
   it("defaults musicAlbumTypes to ['album'] when unset or only whitespace/commas", async () => {

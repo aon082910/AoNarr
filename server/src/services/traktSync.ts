@@ -19,7 +19,9 @@ function parseTraktListUrl(url: string): TraktListTarget | null {
 
 async function fetchTraktListItems(target: TraktListTarget, clientId: string): Promise<any[]> {
   const path = target.listSlug ? `lists/${target.listSlug}/items` : "watchlist";
-  const url = `https://api.trakt.tv/users/${target.username}/${path}`;
+  // extended=full is what actually puts an overview on each movie/show object — without it
+  // Trakt's list endpoints only return the bare minimum (title/year/ids).
+  const url = `https://api.trakt.tv/users/${target.username}/${path}?extended=full`;
   const res = await fetch(url, {
     headers: { "trakt-api-version": "2", "trakt-api-key": clientId, "Content-Type": "application/json" },
   });
@@ -82,10 +84,17 @@ export async function runTraktSync(): Promise<{ added: number; error?: string }>
         if (await isExcluded("movie", m.title, m.year ?? null, String(tmdbId), "tmdb")) continue;
         await db
           .prepare(
-            `INSERT INTO media_items (type, title, sort_title, year, external_ids, quality_profile_id, monitored, status)
-             VALUES ('movie', ?, ?, ?, ?, ?, 1, 'missing')`
+            `INSERT INTO media_items (type, title, sort_title, year, overview, external_ids, quality_profile_id, monitored, status)
+             VALUES ('movie', ?, ?, ?, ?, ?, ?, 1, 'missing')`
           )
-          .run(m.title, m.title.toLowerCase(), m.year ?? null, JSON.stringify({ tmdb: String(tmdbId), trakt: String(m.ids?.trakt ?? "") }), qualityProfileId);
+          .run(
+            m.title,
+            m.title.toLowerCase(),
+            m.year ?? null,
+            m.overview ?? null,
+            JSON.stringify({ tmdb: String(tmdbId), trakt: String(m.ids?.trakt ?? ""), ...(m.ids?.imdb ? { imdb: m.ids.imdb } : {}) }),
+            qualityProfileId
+          );
         existingMovies.add(String(tmdbId));
         added++;
       } else if (entry.show) {
@@ -93,13 +102,17 @@ export async function runTraktSync(): Promise<{ added: number; error?: string }>
         const tmdbId = s.ids?.tmdb;
         if (!tmdbId || existingSeries.has(String(tmdbId))) continue;
         if (await isExcluded("series", s.title, s.year ?? null, String(tmdbId), "tmdb")) continue;
-        const externalIds = { tmdb: String(tmdbId), trakt: String(s.ids?.trakt ?? "") };
+        const externalIds = {
+          tmdb: String(tmdbId),
+          trakt: String(s.ids?.trakt ?? ""),
+          ...(s.ids?.imdb ? { imdb: s.ids.imdb } : {}),
+        };
         const result = await db
           .prepare(
-            `INSERT INTO media_items (type, title, sort_title, year, external_ids, quality_profile_id, monitored, status)
-             VALUES ('series', ?, ?, ?, ?, ?, 1, 'missing')`
+            `INSERT INTO media_items (type, title, sort_title, year, overview, external_ids, quality_profile_id, monitored, status)
+             VALUES ('series', ?, ?, ?, ?, ?, ?, 1, 'missing')`
           )
-          .run(s.title, s.title.toLowerCase(), s.year ?? null, JSON.stringify(externalIds), qualityProfileId);
+          .run(s.title, s.title.toLowerCase(), s.year ?? null, s.overview ?? null, JSON.stringify(externalIds), qualityProfileId);
 
         const mediaItemId = result.lastInsertRowid;
         const episodes = await fetchSeriesEpisodesFor(externalIds).catch(() => []);

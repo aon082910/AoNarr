@@ -166,8 +166,12 @@ export default function EpisodeDetail() {
   async function aiIdentifyFile(entry: BrowseEntry) {
     setAiIdentifying(entry.path);
     try {
-      const result = await api.post<{ guess: string }>("/import/ai-identify", { sourcePath: entry.path, mediaType: episode?.parent?.type ?? "series" });
-      setAiGuesses((prev) => ({ ...prev, [entry.path]: result.guess }));
+      const result = await api.post<{ guess: string; usedFrame: boolean; usedTags: boolean }>("/import/ai-identify", {
+        sourcePath: entry.path,
+        mediaType: episode?.parent?.type ?? "series",
+      });
+      const source = result.usedFrame ? " (from a video frame)" : result.usedTags ? " (from embedded tags)" : "";
+      setAiGuesses((prev) => ({ ...prev, [entry.path]: `${result.guess}${source}` }));
     } catch (e) {
       setAiGuesses((prev) => ({ ...prev, [entry.path]: `Error: ${(e as Error).message}` }));
     } finally {

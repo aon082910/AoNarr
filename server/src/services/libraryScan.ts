@@ -300,7 +300,14 @@ async function scanAndImportLibraryInner(
           .all(type)) as { file_path: string }[]
       ).map((r) => r.file_path)
     );
-    files = files.filter((f) => !knownAlbumFolders.has(path.dirname(f)));
+    // A multi-disc album's stored file_path is the album's own folder (the disc subfolders'
+    // grandparent, e.g. "Artist/Album [2CD]"), not a track's immediate parent (its own disc
+    // subfolder, "Artist/Album [2CD]/CD1") — check both levels so those tracks are actually
+    // excluded here instead of being re-walked/re-matched on every future scan.
+    files = files.filter((f) => {
+      const dir = path.dirname(f);
+      return !knownAlbumFolders.has(dir) && !knownAlbumFolders.has(path.dirname(dir));
+    });
   }
 
   // Matched against ALL items of this type, not just has_file=0 ones — same reasoning as
@@ -905,15 +912,10 @@ export async function backfillMissingAlbumTracks(): Promise<void> {
       .all(type)) as { id: number; file_path: string }[];
 
     for (const album of albums) {
-      let files: string[];
-      try {
-        files = fs
-          .readdirSync(album.file_path, { withFileTypes: true })
-          .filter((e) => e.isFile() && cfg.extensions.includes(path.extname(e.name).toLowerCase()))
-          .map((e) => path.join(album.file_path, e.name));
-      } catch {
-        continue; // folder moved/removed since the scan — nothing to backfill from
-      }
+      // Recursive — a multi-disc album's file_path is the album's own folder, with tracks actually
+      // living one level deeper in per-disc subfolders (CD1/CD2/...), not directly inside it.
+      const files: string[] = [];
+      walkForExtensions(album.file_path, cfg.extensions, new Set(), files);
       if (files.length === 0) continue;
       for (const filePath of files) await upsertTrackFromFile(album.id, filePath);
       fixed++;

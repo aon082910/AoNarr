@@ -30,7 +30,7 @@ interface StarrImage {
 }
 
 function starrPosterUrl(images: StarrImage[] | undefined): string | null {
-  const poster = images?.find((i) => i.coverType === "poster");
+  const poster = images?.find((i) => i.coverType === "poster") ?? images?.find((i) => i.coverType === "cover");
   return poster?.remoteUrl || poster?.url || null;
 }
 
@@ -194,6 +194,7 @@ interface StarrChildItem {
   // Null for a monitored-but-not-yet-downloaded album/book — see MediaServerLibraryItem.path.
   path: string | null;
   externalId: string | null;
+  posterUrl: string | null;
 }
 
 export interface StarrCollectionImportResult {
@@ -219,6 +220,7 @@ interface LidarrAlbum {
   title: string;
   releaseDate?: string;
   foreignAlbumId?: string;
+  images?: StarrImage[];
 }
 
 interface LidarrTrackFile {
@@ -267,6 +269,7 @@ async function fetchLidarrLibrary(
         releaseDate: album.releaseDate ?? null,
         path: folderPath,
         externalId: album.foreignAlbumId ?? null,
+        posterUrl: starrPosterUrl(album.images),
       });
     }
   }
@@ -288,6 +291,7 @@ interface ReadarrBook {
   title: string;
   releaseDate?: string;
   foreignBookId?: string;
+  images?: StarrImage[];
 }
 
 interface ReadarrBookFile {
@@ -328,6 +332,7 @@ async function fetchReadarrLibrary(
         releaseDate: book.releaseDate ?? null,
         path: filePathByBook.get(book.id) ?? null,
         externalId: book.foreignBookId ?? null,
+        posterUrl: starrPosterUrl(book.images),
       });
     }
   }
@@ -419,18 +424,33 @@ async function importCollectionData(
     if (existingChild) {
       // A child already tracked (from a prior import or Scan & Import) that's still missing on the
       // Starr side (child.path null) is left alone — has_file/file_path only ever move forward from
-      // an actual download, never get reset back to missing by a re-import.
+      // an actual download, never get reset back to missing by a re-import. Still counts as matched
+      // either way, so childrenMatched + childrenCreated + childrenSkipped always sums to the total
+      // children processed, the same identity importSeriesData's equivalent episode handling keeps.
       if (child.path) {
-        await db.prepare("UPDATE sub_items SET has_file = 1, file_path = ? WHERE id = ?").run(child.path, existingChild.id);
-        result.childrenMatched++;
+        await db
+          .prepare("UPDATE sub_items SET has_file = 1, file_path = ?, poster_url = COALESCE(poster_url, ?) WHERE id = ?")
+          .run(child.path, child.posterUrl, existingChild.id);
+      } else if (child.posterUrl) {
+        await db.prepare("UPDATE sub_items SET poster_url = COALESCE(poster_url, ?) WHERE id = ?").run(child.posterUrl, existingChild.id);
       }
+      result.childrenMatched++;
     } else {
       await db
         .prepare(
-          `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored, has_file, file_path)
-         VALUES (?, ?, ?, ?, ?, 1, ?, ?)`
+          `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored, has_file, file_path, poster_url)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`
         )
-        .run(mediaItemId, child.title, child.releaseDate, child.externalId, child.externalId ? externalProvider : null, child.path ? 1 : 0, child.path);
+        .run(
+          mediaItemId,
+          child.title,
+          child.releaseDate,
+          child.externalId,
+          child.externalId ? externalProvider : null,
+          child.path ? 1 : 0,
+          child.path,
+          child.posterUrl
+        );
       result.childrenCreated++;
     }
   }

@@ -7,6 +7,7 @@ import { scoreRelease } from "./customFormatScoring.js";
 import { getBlocklistedTitles } from "./blocklist.js";
 import { downloadClientFromRow, mediaItemFromRow, qualityProfileFromRow } from "../db/mappers.js";
 import { grab, isAlreadyQueued, pickClientForProtocol, type ChosenResult } from "./scheduler.js";
+import { computeAbsoluteEpisodeNumber } from "./importer.js";
 import type { DownloadClient, SearchResult } from "../types/index.js";
 
 export interface IrcFeedRow {
@@ -70,7 +71,8 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
   for (const ep of episodes) {
     if (!titlesMatch(baseTitle, ep.parent_title)) continue;
     if (parsed.seasonNumber === null || !parsed.episodeNumbers?.length) continue;
-    if (!releaseMatchesEpisode(parsed, ep.season_number, ep.episode_number)) continue;
+    const absoluteEpisode = ep.parent_type === "anime" ? await computeAbsoluteEpisodeNumber(ep.parent_id, ep.season_number, ep.episode_number) : null;
+    if (!releaseMatchesEpisode(parsed, ep.season_number, ep.episode_number, ep.scene_season_number, ep.scene_episode_number, absoluteEpisode)) continue;
     if (await isAlreadyQueued(ep.parent_id, ep.id, null)) continue;
     const item = mediaItemFromRow({
       id: ep.parent_id,
@@ -101,8 +103,8 @@ async function tryGrabMatch(
   const blocklisted = await getBlocklistedTitles(item.id);
   if (blocklisted.has(releaseTitle)) return;
 
-  const { totalScore } = await scoreRelease(releaseTitle, null, item.qualityProfileId, item.type);
-  if (totalScore < (profile?.minFormatScore ?? 0)) return;
+  const { totalScore, rejected } = await scoreRelease(releaseTitle, null, item.qualityProfileId, item.type);
+  if (rejected || totalScore < (profile?.minFormatScore ?? 0)) return;
 
   const result: SearchResult = {
     indexerId: null,

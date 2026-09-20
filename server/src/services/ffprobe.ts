@@ -6,6 +6,10 @@ const execFileAsync = promisify(execFile);
 
 export interface AudioStreamInfo {
   codec: string | null;
+  /** ffprobe's own codec_name is the bare family name (e.g. "dts" for core DTS, DTS-HD HRA, and
+   * DTS-HD MA alike) — this is the more specific variant ffprobe reports separately (e.g.
+   * "DTS-HD MA"), needed to actually distinguish them. */
+  profile: string | null;
   channels: number | null;
   channelLayout: string | null;
   language: string | null;
@@ -72,6 +76,7 @@ function extractAudioStreams(streams: any[]): AudioStreamInfo[] {
     .filter((s) => s.codec_type === "audio")
     .map((s) => ({
       codec: s.codec_name ?? null,
+      profile: s.profile ?? null,
       channels: s.channels ?? null,
       channelLayout: s.channel_layout ?? null,
       language: s.tags?.language ?? null,

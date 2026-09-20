@@ -62,6 +62,14 @@ function configureMediaServer(): void {
   setSetting("mediaServerToken", "tok");
 }
 
+// getUpcomingArchivals() mirrors runAutoArchival()'s own archiveEnabled/archiveFolder gates (a
+// preview should only ever show candidates a real run would actually process) — tests that expect
+// real candidates back need this configured, the same way runAutoArchival's own tests already do.
+function configureArchival(): void {
+  setSetting("archiveEnabled", "1");
+  setSetting("archiveFolder", archiveDir);
+}
+
 function makeFile(relPath: string): string {
   const full = path.join(libraryDir, relPath);
   fs.mkdirSync(path.dirname(full), { recursive: true });
@@ -199,6 +207,7 @@ describe("getUpcomingArchivals", () => {
 
   it("returns [] when fetchWatchedFiles throws, and when it returns no watched files at all", async () => {
     configureMediaServer();
+    configureArchival();
     fetchWatchedFiles.mockRejectedValue(new Error("media server unreachable"));
     await expect(getUpcomingArchivals()).resolves.toEqual([]);
 
@@ -208,6 +217,7 @@ describe("getUpcomingArchivals", () => {
 
   it("a watched movie becomes a candidate scheduled at lastPlayedAt + effective retention days; an unwatched one doesn't", async () => {
     configureMediaServer();
+    configureArchival();
     setSetting("archiveAfterDays", "10");
     const file = makeFile("movies/Watched.mkv");
     const watched = watchedNow(file, 5);
@@ -224,6 +234,7 @@ describe("getUpcomingArchivals", () => {
 
   it("excludes an item with a never-archive (-1) retention override", async () => {
     configureMediaServer();
+    configureArchival();
     const file = makeFile("movies/NeverArchive.mkv");
     fetchWatchedFiles.mockResolvedValue([watchedNow(file)]);
     const itemId = await insertMovie({ title: "Protected By Tag", path: file });
@@ -235,6 +246,7 @@ describe("getUpcomingArchivals", () => {
 
   it("includes watched episodes and sub-items with their own composed labels", async () => {
     configureMediaServer();
+    configureArchival();
     const epFile = makeFile("tv/S01E01.mkv");
     const { showId } = await insertShowWithEpisode({ path: epFile });
     const subFile = makeFile("music/track1.mp3");
@@ -250,6 +262,7 @@ describe("getUpcomingArchivals", () => {
 
   it("sorts candidates by scheduledFor ascending", async () => {
     configureMediaServer();
+    configureArchival();
     const soonFile = makeFile("movies/Soon.mkv");
     const laterFile = makeFile("movies/Later.mkv");
     fetchWatchedFiles.mockResolvedValue([watchedNow(soonFile, 20), watchedNow(laterFile, 1)]);

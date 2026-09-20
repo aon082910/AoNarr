@@ -42,9 +42,11 @@ export interface QueueStatusUpdate {
   status: "downloading" | "completed" | "failed";
   /** Absolute path this download's data lives at, in the CLIENT's own filesystem namespace — as
    * reported directly by the client's own API (qBittorrent's save_path/content_path, SABnzbd's
-   * history "storage" field). Only set on "completed" for the adapters that expose one; the
-   * scheduler runs it through applyRemotePathMapping() before storing it, so nothing downstream
-   * ever sees an un-translated remote path. */
+   * history "storage" field). Set whenever the adapter has one on hand, regardless of status —
+   * qBittorrent reports it while still downloading, not only once "completed" — so the scheduler
+   * stores whatever is present rather than gating on status; it's run through
+   * applyRemotePathMapping() before storing it either way, so nothing downstream ever sees an
+   * un-translated remote path. */
   remotePath?: string;
 }
 
@@ -773,7 +775,9 @@ class TorBoxAdapter implements DownloadClientAdapter {
         // their end. `progress` has been observed both as a 0-1 fraction and a 0-100 percentage
         // depending on state, so it's normalized defensively rather than assumed either way.
         let files: { id: number; name?: string }[] = [];
+        const deadline = Date.now() + DEBRID_POLL_TIMEOUT_MS;
         for (;;) {
+          if (Date.now() > deadline) throw new Error("TorBox did not finish within the polling window");
           const res = await fetch(`${this.base}/torrents/mylist?id=${torrentId}&bypass_cache=true`, { headers: this.headers(client) });
           if (!res.ok) throw new Error(`TorBox status check failed: HTTP ${res.status}`);
           const body: any = await res.json();
@@ -968,7 +972,9 @@ class AllDebridAdapter implements DownloadClientAdapter {
 
         // Poll AllDebrid's own caching progress until it's fully fetched on their end.
         let links: { link: string; filename: string }[] = [];
+        const deadline = Date.now() + DEBRID_POLL_TIMEOUT_MS;
         for (;;) {
+          if (Date.now() > deadline) throw new Error("AllDebrid did not finish within the polling window");
           const statusData = await this.call(client, "/magnet/status", { id: String(magnetId) }, "https://api.alldebrid.com/v4.1");
           // `data.magnets` is always an array — even filtered down to one id — never a bare object.
           // Reading it as a single object meant `magnet.statusCode` was always undefined, so neither

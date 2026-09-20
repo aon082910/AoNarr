@@ -2,7 +2,7 @@ import { log } from "./logger.js";
 import { db } from "../db/index.js";
 import { nowExpr } from "../db/asyncDb.js";
 import { getSetting } from "./settingsStore.js";
-import { fetchAlbumTracksFor, fetchArtistAlbumsFor, fetchSeriesEpisodesFor, searchMetadata } from "./metadata.js";
+import { fetchAlbumTracksFor, fetchArtistAlbumsFor, fetchSeriesEpisodesFor, searchMetadata, TMDB_IMAGE_BASE } from "./metadata.js";
 import { isExcluded } from "./importExclusions.js";
 import { findPossibleDuplicates } from "./duplicateCheck.js";
 import { queueForReview } from "./importReview.js";
@@ -196,13 +196,14 @@ async function syncTraktList(list: ImportListRow, qualityProfileId: number | nul
         }
         await db
           .prepare(
-            `INSERT INTO media_items (type, title, sort_title, year, external_ids, quality_profile_id, monitored, status)
-             VALUES ('movie', ?, ?, ?, ?, ?, 1, 'missing')`
+            `INSERT INTO media_items (type, title, sort_title, year, overview, external_ids, quality_profile_id, monitored, status)
+             VALUES ('movie', ?, ?, ?, ?, ?, ?, 1, 'missing')`
           )
           .run(
             m.title,
             m.title.toLowerCase(),
             m.year ?? null,
+            m.overview ?? null,
             JSON.stringify({ tmdb: String(tmdbId), trakt: String(m.ids?.trakt ?? "") }),
             qualityProfileId
           );
@@ -221,10 +222,10 @@ async function syncTraktList(list: ImportListRow, qualityProfileId: number | nul
         const externalIds = { tmdb: String(tmdbId), trakt: String(s.ids?.trakt ?? "") };
         const result = await db
           .prepare(
-            `INSERT INTO media_items (type, title, sort_title, year, external_ids, quality_profile_id, monitored, status)
-             VALUES ('series', ?, ?, ?, ?, ?, 1, 'missing')`
+            `INSERT INTO media_items (type, title, sort_title, year, overview, external_ids, quality_profile_id, monitored, status)
+             VALUES ('series', ?, ?, ?, ?, ?, ?, 1, 'missing')`
           )
-          .run(s.title, s.title.toLowerCase(), s.year ?? null, JSON.stringify(externalIds), qualityProfileId);
+          .run(s.title, s.title.toLowerCase(), s.year ?? null, s.overview ?? null, JSON.stringify(externalIds), qualityProfileId);
         await insertSeriesEpisodes(result.lastInsertRowid, externalIds);
         existingSeries.add(String(tmdbId));
         added++;
@@ -464,12 +465,13 @@ async function syncTmdbList(list: ImportListRow, qualityProfileId: number | null
           continue;
         }
         const externalIds = { tmdb: String(tmdbId) };
+        const posterUrl = entry.poster_path ? `${TMDB_IMAGE_BASE}${entry.poster_path}` : null;
         const result = await db
           .prepare(
-            `INSERT INTO media_items (type, title, sort_title, year, external_ids, quality_profile_id, monitored, status)
-             VALUES ('series', ?, ?, ?, ?, ?, 1, 'missing')`
+            `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, quality_profile_id, monitored, status)
+             VALUES ('series', ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
           )
-          .run(title, title.toLowerCase(), year, JSON.stringify(externalIds), qualityProfileId);
+          .run(title, title.toLowerCase(), year, entry.overview ?? null, posterUrl, JSON.stringify(externalIds), qualityProfileId);
         await insertSeriesEpisodes(result.lastInsertRowid, externalIds);
         existingSeries.add(String(tmdbId));
         added++;
@@ -487,10 +489,18 @@ async function syncTmdbList(list: ImportListRow, qualityProfileId: number | null
         }
         await db
           .prepare(
-            `INSERT INTO media_items (type, title, sort_title, year, external_ids, quality_profile_id, monitored, status)
-             VALUES ('movie', ?, ?, ?, ?, ?, 1, 'missing')`
+            `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, quality_profile_id, monitored, status)
+             VALUES ('movie', ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
           )
-          .run(title, title.toLowerCase(), year, JSON.stringify({ tmdb: String(tmdbId) }), qualityProfileId);
+          .run(
+            title,
+            title.toLowerCase(),
+            year,
+            entry.overview ?? null,
+            entry.poster_path ? `${TMDB_IMAGE_BASE}${entry.poster_path}` : null,
+            JSON.stringify({ tmdb: String(tmdbId) }),
+            qualityProfileId
+          );
         existingMovies.add(String(tmdbId));
         added++;
       }

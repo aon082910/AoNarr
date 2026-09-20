@@ -178,8 +178,16 @@ export function parseReleaseTitle(title: string): ParsedRelease {
       if (seasonMatch) {
         seasonNumber = Number(seasonMatch[1]);
         isFullSeason = true;
-      } else if (FULL_SEASON_HINT.test(title)) {
-        isFullSeason = true;
+      } else {
+        const fullSeasonMatch = title.match(FULL_SEASON_HINT);
+        if (fullSeasonMatch) {
+          isFullSeason = true;
+          // Only the "season <N>" alternative actually names a season ("complete"/"full season"
+          // don't) — extract it so a title like "Show Name Season 3 ..." (space-separated, no
+          // "S03" abbreviation) can still match a request for that specific season.
+          const digits = fullSeasonMatch[1].match(/(\d{1,2})/);
+          if (digits) seasonNumber = Number(digits[1]);
+        }
       }
     }
   }

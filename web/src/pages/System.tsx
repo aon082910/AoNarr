@@ -515,11 +515,15 @@ export default function System() {
   async function scanLibraryNow() {
     setScanningLibrary(true);
     try {
-      await api.post("/jobs/libraryScan/run", {});
-      notify.info(
-        "Library scan started in the background — check the Jobs page or your library after a minute for anything newly matched/imported.",
-        7000
-      );
+      const result = await api.post<{ started: boolean }>("/jobs/libraryScan/run", {});
+      if (result.started) {
+        notify.info(
+          "Library scan started in the background — check the Jobs page or your library after a minute for anything newly matched/imported.",
+          7000
+        );
+      } else {
+        notify.info("A library scan is already running — check the Jobs page for its progress.");
+      }
     } finally {
       setScanningLibrary(false);
     }

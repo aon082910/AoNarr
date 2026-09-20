@@ -253,7 +253,7 @@ function scoreByTokenOverlap(filePaths: string[], releaseTitle: string, baseDir:
 export function findDownloadedFile(
   releaseTitle: string,
   mediaType: MediaType,
-  target?: { season: number; episode: number } | { airDate: string },
+  target?: EpisodeTarget,
   searchRoot?: string | null
 ): string | null {
   const extensions = getMediaTypeConfig(mediaType).extensions;
@@ -280,7 +280,7 @@ function findDownloadedFileIn(
   baseDir: string,
   releaseTitle: string,
   extensions: string[],
-  target?: { season: number; episode: number } | { airDate: string }
+  target?: EpisodeTarget
 ): string | null {
   const candidates = walk(baseDir, extensions, 4);
   if (candidates.length === 0) return null;
@@ -289,7 +289,9 @@ function findDownloadedFileIn(
     const episodeMatches = candidates.filter((filePath) => {
       const relative = path.relative(baseDir, filePath);
       const parsed = parseReleaseTitle(relative);
-      return "airDate" in target ? releaseMatchesAirDate(parsed, target.airDate) : releaseMatchesEpisode(parsed, target.season, target.episode);
+      return "airDate" in target
+        ? releaseMatchesAirDate(parsed, target.airDate)
+        : releaseMatchesEpisode(parsed, target.season, target.episode, target.sceneSeason, target.sceneEpisode, target.absoluteEpisode);
     });
     if (episodeMatches.length > 0) {
       const scored = scoreByTokenOverlap(episodeMatches, releaseTitle, baseDir);
@@ -437,7 +439,9 @@ export function createLibraryFolderSkeleton(item: { type: MediaType; title: stri
   }
 }
 
-type EpisodeTarget = { season: number; episode: number } | { airDate: string };
+type EpisodeTarget =
+  | { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null; absoluteEpisode?: number | null }
+  | { airDate: string };
 
 /**
  * Moves a source file into the right root-folder location for a media item (and, for episodic/
@@ -704,6 +708,8 @@ export async function placeAlbumFiles(params: {
     }
   }
 
+  assertEnoughFreeSpaceForImport(siblings, rootFolder.path);
+
   const tracks = (await db.prepare("SELECT * FROM tracks WHERE sub_item_id = ?").all(subItemId)) as any[];
   const namingEnabled = getNamingEnabled(item.type);
   const trackTemplate = getSetting("namingArtistTrackTemplate") || DEFAULT_TRACK_TEMPLATE;
@@ -803,6 +809,8 @@ export async function placeSeasonPackFiles(params: {
     .filter((e) => e.isFile() && typeConfig.extensions.includes(path.extname(e.name).toLowerCase()))
     .map((e) => path.join(sourceDir, e.name));
 
+  assertEnoughFreeSpaceForImport(siblings, rootFolder.path);
+
   const episodes = (await db
     .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND season_number = ?")
     .all(itemId, seasonNumber)) as any[];
@@ -898,7 +906,13 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
     if (!epRow) throw new Error(`Episode ${queueItem.episodeId} not found`);
     episodeTarget = item.seriesType === "daily" && epRow.air_date
       ? { airDate: epRow.air_date }
-      : { season: epRow.season_number, episode: epRow.episode_number };
+      : {
+          season: epRow.season_number,
+          episode: epRow.episode_number,
+          sceneSeason: epRow.scene_season_number,
+          sceneEpisode: epRow.scene_episode_number,
+          absoluteEpisode: item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, epRow.season_number, epRow.episode_number) : null,
+        };
   }
 
   let sourceFile: string | null;
@@ -933,7 +947,7 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
       anchorFile: sourceFile,
       quality,
     });
-  } else if (typeConfig.shape === "episodic" && !queueItem.episodeId && queueItem.seasonNumber) {
+  } else if (typeConfig.shape === "episodic" && !queueItem.episodeId && queueItem.seasonNumber != null) {
     await placeSeasonPackFiles({
       itemId: item.id,
       seasonNumber: queueItem.seasonNumber,
@@ -1022,6 +1036,28 @@ const RELEASE_MEDIA_EXTENSIONS = new Set([
   ".epub", ".mobi", ".azw3", ".pdf", ".cbz", ".cbr", ".iso",
 ]);
 const SAMPLE_MAX_BYTES = 50 * 1024 * 1024;
+
+/** Same "Skip Free Space Check" guard placeFile() applies to a single file (see its own comment),
+ * but for a multi-file move (a whole album, a whole season pack) — sums every source file's size
+ * first so the check still runs against the operation's true total rather than being silently
+ * skipped just because no single file in the batch happens to exceed free space alone. */
+function assertEnoughFreeSpaceForImport(sourceFiles: string[], rootFolderPath: string): void {
+  if (getSetting("skipFreeSpaceCheck") === "1") return;
+  try {
+    const totalSize = sourceFiles.reduce((sum, f) => sum + fs.statSync(f).size, 0);
+    const stat = fs.statfsSync(rootFolderPath);
+    const freeBytes = stat.bfree * stat.bsize;
+    if (freeBytes < totalSize) {
+      throw new ImportSkippedError(
+        `Not enough free space at "${rootFolderPath}" (${Math.round(freeBytes / 1e9)}GB free, ${Math.round(totalSize / 1e9)}GB needed) — leaving it queued`
+      );
+    }
+  } catch (err) {
+    if (err instanceof ImportSkippedError) throw err;
+    // Can't stat the source/destination filesystem — don't block the import over that; the move
+    // itself will surface a clearer filesystem error if something's actually wrong.
+  }
+}
 
 /** First non-sample media file still under `dir` (recursively), or null if only junk remains. */
 function findRemainingMediaFile(dir: string): string | null {

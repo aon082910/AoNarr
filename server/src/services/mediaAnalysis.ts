@@ -49,7 +49,7 @@ export function resolutionTier(width: number | null | undefined, height: number 
 }
 
 export interface CompatibilityNote {
-  level: "ok" | "caution" | "incompatible";
+  level: "ok" | "caution";
   message: string;
 }
 
@@ -86,11 +86,17 @@ const AUDIO_CODEC_NOTES: Record<string, CompatibilityNote> = {
     message: "Dolby TrueHD (often carrying Atmos) — needs an HDMI passthrough–capable AVR/soundbar; many TV apps and built-in speakers can't decode it directly.",
   },
   dts: { level: "caution", message: "DTS — needs a DTS-licensed device or AVR for passthrough; not every budget soundbar/smart TV supports it." },
-  "dts-hd": { level: "caution", message: "DTS-HD — needs a DTS-HD-capable AVR for passthrough; falls back to core DTS or requires transcoding otherwise." },
-  dts_hd: { level: "caution", message: "DTS-HD — needs a DTS-HD-capable AVR for passthrough; falls back to core DTS or requires transcoding otherwise." },
   opus: { level: "caution", message: "Opus — good software support (VLC, most modern apps) but rarely hardware-decoded by smart TV apps or older AVRs." },
   flac: { level: "caution", message: "FLAC — good software support but rarely hardware-decoded; fine for music, less common for video containers." },
   vorbis: { level: "caution", message: "Vorbis — decent software support but rarely hardware-decoded on TV/AVR hardware." },
+};
+
+// ffprobe's codec_name for every DTS variant (core/HRA/MA) is always the bare string "dts" — the
+// only field that actually distinguishes DTS-HD is the separate `profile` field (e.g. "DTS-HD MA"),
+// so this can't just be another AUDIO_CODEC_NOTES key the way other codecs are.
+const DTS_HD_NOTE: CompatibilityNote = {
+  level: "caution",
+  message: "DTS-HD — needs a DTS-HD-capable AVR for passthrough; falls back to core DTS or requires transcoding otherwise.",
 };
 
 const IMAGE_SUBTITLE_CODECS = new Set(["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"]);
@@ -135,7 +141,8 @@ export function analyzeCompatibility(info: MediaInfo): CompatibilityNote[] {
 
   for (const audio of info.audioStreams) {
     if (!audio.codec) continue;
-    const note = AUDIO_CODEC_NOTES[audio.codec.toLowerCase()];
+    const isDtsHd = audio.codec.toLowerCase() === "dts" && /dts-hd/i.test(audio.profile ?? "");
+    const note = isDtsHd ? DTS_HD_NOTE : AUDIO_CODEC_NOTES[audio.codec.toLowerCase()];
     if (note && !notes.some((n) => n.message === note.message)) notes.push(note);
     else if (!note && !notes.some((n) => n.message.includes(audio.codec!))) {
       notes.push({ level: "caution", message: `Uncommon audio codec "${audio.codec}" — verify your player/receiver supports it.` });

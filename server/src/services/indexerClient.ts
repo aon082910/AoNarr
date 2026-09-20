@@ -114,6 +114,11 @@ export async function checkIndexerHealth(indexer: Indexer): Promise<{ ok: boolea
       capsUrl.searchParams.set("t", "caps");
       if (indexer.apiKey) capsUrl.searchParams.set("apikey", indexer.apiKey);
       url = capsUrl.toString();
+    } else if (indexer.protocol === "ddl") {
+      // A DDL indexer's URL is a template containing the literal "{query}" placeholder (enforced by
+      // the admin UI) — substitute a real search term the same way searchDdl does, rather than
+      // hitting the un-substituted template verbatim.
+      url = indexer.url.replace("{query}", encodeURIComponent("test"));
     } else {
       url = indexer.url;
     }
@@ -244,10 +249,12 @@ async function searchDdl(indexer: Indexer, query: string): Promise<SearchResult[
   }
 
   const url = indexer.url.replace("{query}", encodeURIComponent(query));
-  const res = await fetch(url, {
-    headers: indexer.apiKey ? { Authorization: `Bearer ${indexer.apiKey}` } : {},
-    signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
-  });
+  const res = await withNetworkRetry(() =>
+    fetch(url, {
+      headers: indexer.apiKey ? { Authorization: `Bearer ${indexer.apiKey}` } : {},
+      signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
+    })
+  );
   if (!res.ok) throw new Error(`Indexer "${indexer.name}" returned HTTP ${res.status}`);
   const body = await res.json();
 

@@ -14,10 +14,10 @@ export interface MetadataSearchResult {
    * populates this (used by the Calendar page, which otherwise has no date to show movies by). */
   releaseDate?: string | null;
   /** Fanart/background image (TMDB's backdrop_path) — shown full-bleed behind the media detail
-   * header, distinct from posterUrl. Only TMDB populates this today. */
+   * header, distinct from posterUrl. Also populated by AniList, RAWG, and IGDB. */
   backdropUrl?: string | null;
   /** Provider vote average (TMDB's 0-10 `vote_average`) shown as a ratings badge next to quality/
-   * status. Only TMDB populates this today. */
+   * status. Also populated by AniList, RAWG, and IGDB, each normalized to the same 0-10 scale. */
   rating?: number | null;
   /** Only populated by the by-id TMDB detail lookups (search results don't carry it). */
   runtimeMinutes?: number | null;
@@ -56,7 +56,7 @@ export interface MetadataTrack {
   durationSeconds: number | null;
 }
 
-const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w342";
+export const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w342";
 const TMDB_BACKDROP_BASE = "https://image.tmdb.org/t/p/w1280";
 const MUSICBRAINZ_USER_AGENT = "AoNarr/0.1 (self-hosted media manager)";
 const DISCOGS_USER_AGENT = "AoNarr/0.1 (self-hosted media manager)";
@@ -577,7 +577,7 @@ async function fetchArtistAlbumsMusicbrainz(mbid: string): Promise<MetadataSubIt
   url.searchParams.set("artist", mbid);
   url.searchParams.set("fmt", "json");
   url.searchParams.set("limit", "100");
-  for (const t of configuredAlbumTypes()) url.searchParams.append("type", t);
+  url.searchParams.set("type", configuredAlbumTypes().join("|"));
 
   const res = await fetch(url.toString(), { headers: { "User-Agent": MUSICBRAINZ_USER_AGENT } });
   if (!res.ok) throw new Error(`MusicBrainz album lookup failed: HTTP ${res.status}`);
@@ -2418,7 +2418,7 @@ async function fetchCreditsTmdb(kind: "movie" | "tv", tmdbId: string): Promise<C
 export async function fetchCastFor(type: MediaType, externalIds: Record<string, string>): Promise<CastMember[]> {
   if (!externalIds.tmdb) throw new Error("Cast lookup needs a TMDB id — this item doesn't have one");
   if (type === "movie" || type === "ppv") return fetchCreditsTmdb("movie", externalIds.tmdb);
-  if (type === "series") return fetchCreditsTmdb("tv", externalIds.tmdb);
+  if (type === "series" || type === "anime") return fetchCreditsTmdb("tv", externalIds.tmdb);
   throw new Error(`Cast lookup isn't available for "${type}"`);
 }
 
@@ -2445,7 +2445,7 @@ export async function fetchAlternateTitlesFor(type: MediaType, externalIds: Reco
 
   if (!externalIds.tmdb) throw new Error("Alternate titles lookup needs a TMDB id — this item doesn't have one");
   const key = requireSetting("tmdbApiKey", "TMDB API key");
-  const kind = type === "movie" || type === "ppv" ? "movie" : type === "series" ? "tv" : null;
+  const kind = type === "movie" || type === "ppv" ? "movie" : type === "series" || type === "anime" ? "tv" : null;
   if (!kind) throw new Error(`Alternate titles aren't available for "${type}"`);
 
   const res = await fetch(`https://api.themoviedb.org/3/${kind}/${externalIds.tmdb}/alternative_titles?api_key=${key}`);
