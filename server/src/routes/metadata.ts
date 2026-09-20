@@ -19,7 +19,7 @@ import { getMediaTypeConfig } from "../services/mediaTypes.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { isExcluded } from "../services/importExclusions.js";
 import { log } from "../services/logger.js";
-import { logAuditEvent } from "../services/audit.js";
+import { auditActor, logAuditEvent } from "../services/audit.js";
 import { getSetting } from "../services/settingsStore.js";
 import { createLibraryFolderSkeleton } from "../services/importer.js";
 import { syncSceneNumbering } from "../services/sceneNumbering.js";
@@ -342,7 +342,7 @@ metadataRouter.post(
     }
 
     const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId);
-    const actor = req.auth?.user ? { userId: req.auth.user.id, username: req.auth.user.username } : { userId: null, username: "admin" };
+    const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "media_added", `${b.title} (${b.type})`);
     res.status(201).json({ ...mediaItemFromRow(row), childCount });
   })

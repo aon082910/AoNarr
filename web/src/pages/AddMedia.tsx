@@ -13,6 +13,12 @@ const COURSE_SITE_NAMES: Record<string, string> = {
   "edx.org": "edX",
 };
 
+// Matches server/src/services/nfoParser.ts's actual root-tag whitelist (movie/tvshow/
+// episodedetails/artist/album — real Kodi/Jellyfin scraper conventions). Every other type has no
+// established single-file NFO convention to parse, so offering the control for them just silently
+// prefills nothing instead of erroring.
+const NFO_SUPPORTED_TYPES = new Set<MediaType>(["movie", "series", "anime", "sports", "artist"]);
+
 function detectCourseSite(url: string): { name: string; domain: string } | null {
   try {
     const hostname = new URL(url).hostname.replace(/^www\./, "");
@@ -304,6 +310,7 @@ export default function AddMedia() {
           </>
         )}
 
+        {NFO_SUPPORTED_TYPES.has(type) && (
         <details style={{ marginTop: 12 }}>
           <summary style={{ cursor: "pointer", color: "var(--muted)", fontSize: "0.85rem" }}>
             Import from .nfo file instead
@@ -320,6 +327,7 @@ export default function AddMedia() {
             </button>
           </form>
         </details>
+        )}
 
         {type === "course" && (
           <details style={{ marginTop: 12 }} open>

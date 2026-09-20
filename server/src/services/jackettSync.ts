@@ -43,7 +43,11 @@ export async function syncFromJackett(): Promise<{ synced: number; error?: strin
         | undefined;
 
       if (existing) {
-        await db.prepare("UPDATE indexers SET name = ?, protocol = 'torznab', url = ?, api_key = ?, enabled = 1 WHERE id = ?").run(
+        // Jackett's own API has no per-indexer enable/disable concept to mirror the way Prowlarr's
+        // `idx.enable` does — every indexer it returns is just "configured". `enabled` here is
+        // purely an AoNarr-side admin preference, so an update must never touch it, or a user who
+        // disabled this indexer in AoNarr finds it silently flipped back on the next sync.
+        await db.prepare("UPDATE indexers SET name = ?, protocol = 'torznab', url = ?, api_key = ? WHERE id = ?").run(
           idx.name,
           url,
           apiKey,

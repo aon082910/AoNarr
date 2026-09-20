@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
+import { log } from "./logger.js";
 
 /**
  * Encryption-at-rest for sensitive `settings` table values (indexer/metadata-provider API keys,
@@ -41,6 +42,14 @@ function loadOrCreateKey(): Buffer {
       cachedKey = Buffer.from(hex, "hex");
       return cachedKey;
     }
+    // The file exists but its content isn't a well-formed key (truncated, corrupted, edited by
+    // hand) — this is a materially different, much more dangerous case than "no key file yet"
+    // below: every value already encrypted with the real key becomes permanently undecryptable
+    // the moment a fresh one is generated over it. Loud on purpose, unlike the silent first-boot
+    // case, so an admin has a chance to notice and restore the real key file before that happens.
+    log.error(
+      `[encryption] ${KEY_PATH} exists but its content isn't a valid key — generating a new one. Every already-encrypted setting (indexer/download-client credentials, etc.) will need to be re-entered. If this file was supposed to still be the real key, restore it from backup before restarting instead.`
+    );
   } catch {
     // no key file yet — fall through and create one
   }

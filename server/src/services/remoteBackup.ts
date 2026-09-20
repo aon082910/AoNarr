@@ -49,8 +49,16 @@ export async function uploadBackupToRemote(localPath: string, fileName: string, 
     // Matches any backup this instance has ever produced under this prefix — bundles (current),
     // and legacy single-file .db/.dump backups from before bundling existed — not just the
     // extension of the file just uploaded, so rotation still counts and trims all of them together.
+    // Requires the "aonarr-backup-" filename prefix too (matching scheduledBackup.ts's identical
+    // local-rotation filter), not just a matching extension — an S3 prefix is often a whole bucket
+    // path an admin also uses for other things, and a bare extension check would let rotation
+    // delete unrelated .db/.dump files sitting under the same prefix.
     const objects = (listed.Contents ?? [])
-      .filter((o) => o.Key && /\.(aonarrbackup|db|dump)$/.test(o.Key))
+      .filter((o) => {
+        if (!o.Key) return false;
+        const basename = o.Key.split("/").pop() ?? o.Key;
+        return basename.startsWith("aonarr-backup-") && /\.(aonarrbackup|db|dump)$/.test(basename);
+      })
       .sort((a, b) => (a.Key! < b.Key! ? -1 : 1));
     const toDelete = objects.slice(0, Math.max(0, objects.length - keepCount));
     for (const obj of toDelete) {

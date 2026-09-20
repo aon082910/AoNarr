@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { log } from "./logger.js";
 
 /**
  * Docker-secrets-style env var resolution: `NAME_FILE=/run/secrets/x` takes priority and is read
@@ -11,7 +12,11 @@ export function readEnvOrFile(name: string): string | undefined {
   if (filePath) {
     try {
       return fs.readFileSync(filePath, "utf-8").trim();
-    } catch {
+    } catch (err) {
+      // A caller (e.g. bootstrapAdmin.ts) treats a missing value here the same as the env var
+      // never having been set at all and silently skips whatever it was for — a typo'd or
+      // unreadable secrets-file path would otherwise fail with zero diagnostic anywhere.
+      log.warn(`[env] ${name}_FILE is set to "${filePath}" but couldn't be read:`, (err as Error).message);
       return undefined;
     }
   }

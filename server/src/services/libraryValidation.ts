@@ -51,7 +51,7 @@ export async function findLibraryMismatches(): Promise<LibraryMismatch[]> {
     .prepare(
       `SELECT e.id, e.file_path, e.season_number, e.episode_number, m.id AS media_item_id, m.title AS parent_title, m.type AS media_type
        FROM episodes e JOIN media_items m ON m.id = e.media_item_id
-       WHERE e.has_file = 1 AND m.type IN (${episodicPlaceholders})`
+       WHERE e.has_file = 1 AND m.type IN (${episodicPlaceholders}) AND e.file_path IS NOT NULL`
     )
     .all(...EPISODIC_SHAPE_TYPES)) as {
     id: number;

@@ -3,6 +3,63 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 330 — nine bugs closing out the services layer
+
+Finished the services-layer sweep with the ~39 remaining files under 100 lines each
+(`settingsStore.ts`, `encryption.ts`, `totp.ts`, `rateLimiter.ts`, `overseerrWebhook.ts`,
+`duplicates.ts`, `sceneNumbering.ts`, `libraryValidation.ts`, `jackettSync.ts`, `nfoParser.ts`,
+`audit.ts`, `bootstrapAdmin.ts`, and 27 more), in small groups. Nine confirmed and fixed:
+
+- A season-pack import wrote one summary `history` row for the whole season instead of one row
+  per episode (with that episode's id and quality) the way every other import path does — every
+  season-pack-imported series collapsed to the same "no episode/sub-item" grouping key in the
+  repeated-imports check, so importing two different, entirely legitimate seasons of the same show
+  got misreported as a repeated/duplicate import.
+- The weekly scheduled TheXEM scene-numbering sync hardcoded `type IN ('series', 'anime')` —
+  the only place in the codebase enumerating episodic types by a literal list instead of deriving
+  them from the type registry's `shape` field — silently and permanently excluding Sports items
+  from the recurring re-sync that every other scene-numbering code path (add-time sync, the manual
+  per-item button) already treats Sports as eligible for.
+- The library-validation report's episode query was missing the `file_path IS NOT NULL` guard its
+  own sibling query (and every analogous has_file=1 query elsewhere in the codebase) already has —
+  a has_file=1 episode row with a NULL path crashed the entire `/system/library-validation` request
+  with a TypeError instead of just being skipped.
+- The Jackett indexer sync unconditionally force-enabled an existing indexer row on every sync
+  (recurring every 6 hours, and on a manual "Sync Jackett" click) — since Jackett's own API has no
+  per-indexer enable/disable concept to mirror the way the parallel Prowlarr sync correctly does,
+  this silently reverted an admin's "Disabled" toggle back to enabled, making that control a
+  no-op for any Jackett-sourced indexer.
+- Remote (S3) backup rotation decided which objects count as "a backup eligible for deletion"
+  using only a file-extension check, while local rotation (and this very function's own comment)
+  requires the `aonarr-backup-` filename prefix too — an S3 prefix is often shared with other
+  files, and the weaker remote check could delete unrelated `.db`/`.dump` files sitting under it.
+- The "Import from .nfo file" control was offered unconditionally for every media type, but the
+  parser only recognizes the Kodi/Jellyfin movie/tvshow/episodedetails/album root tags (now also
+  `artist`) — picking an .nfo for Comics, ROMs, Podcasts, or any of the other unsupported types
+  silently prefilled nothing instead of erroring. Now hidden for types with no real NFO convention
+  to parse.
+- `metadata.ts` hand-copied `audit.ts`'s exported `auditActor(req)` helper inline instead of
+  importing and calling it — a second copy of the same "who's the actor for this audit-log entry"
+  logic that could silently drift from the original.
+- A malformed-but-present `encryption.key` file (truncated, corrupted, hand-edited) silently
+  triggered the same "generate and overwrite with a fresh key" fallback as a genuinely missing key
+  file — permanently and silently locking an admin out of every already-encrypted credential with
+  no log at the moment it happened. Now logs loudly for that specific case before regenerating.
+- A typo'd or unreadable `AONARR_ADMIN_USERNAME_FILE`/`AONARR_ADMIN_PASSWORD_FILE` Docker-secrets
+  path silently skipped admin-account bootstrap with zero log output, unlike the very next
+  rejection check three lines later (password too short) which does log a warning.
+
+Verified: `npx tsc --noEmit` clean in both `web/` and `server/`. Full server test suite (89 files /
+1377 tests) passes with no regressions or needed updates. Live-verified against the real, rebuilt
+server: the Add Media page's "Import from .nfo file" control now correctly disappears for Comics
+and reappears for Music/Movies; a fixture second admin account confirmed `/metadata/import`'s
+audit-log entry now shows the real actor instead of the old hardcoded "admin". The remaining fixes
+(Jackett/Prowlarr-style sync, S3 rotation, the scheduled scene-numbering job, a crafted
+malformed-key-file scenario) depend on external services or would risk corrupting real state in
+this shared test environment to exercise live — verified by code review, structural comparison
+against each fix's already-correct sibling implementation, and the passing test suite instead. All
+fixtures (sessions, a second admin account, a media item, an episode) were removed afterward.
+
 ## Round 329 — forty-six bugs from a full sweep of the services layer
 
 The largest audit pass this series: with every route file done, extended the sweep to all 44

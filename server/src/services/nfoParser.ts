@@ -22,7 +22,7 @@ function firstText(value: unknown): string | null {
  */
 export async function parseNfo(xml: string): Promise<ParsedNfo> {
   const parsed = await parseStringPromise(xml, { explicitArray: true, mergeAttrs: true });
-  const root = parsed?.movie ?? parsed?.tvshow ?? parsed?.episodedetails ?? parsed?.musicalbum ?? parsed?.album ?? null;
+  const root = parsed?.movie ?? parsed?.tvshow ?? parsed?.episodedetails ?? parsed?.artist ?? parsed?.musicalbum ?? parsed?.album ?? null;
   if (!root) {
     return { title: null, year: null, overview: null, posterUrl: null, externalIds: {} };
   }

@@ -853,7 +853,7 @@ export async function placeSeasonPackFiles(params: {
       quality: quality ?? "",
     });
     const ext = path.extname(src);
-    const { destPath: dest } = resolveDest(rootFolder.path, segments, ext, src, getNamingEnabled(item.type));
+    const { destPath: dest, fileLabel } = resolveDest(rootFolder.path, segments, ext, src, getNamingEnabled(item.type));
     destFolder = path.dirname(dest);
     await moveFile(src, dest);
 
@@ -867,17 +867,21 @@ export async function placeSeasonPackFiles(params: {
       sizeBytes,
       targetEpisode.id
     );
+    // One row per episode, with episodeId/quality set — the same shape placeFile's single-episode
+    // path uses, and what duplicates.ts's repeated-import grouping keys on. A single season-level
+    // summary row here (as this used to write) collapsed every season-pack import of this series
+    // to the same "media item, no episode/sub-item" key, so importing two different seasons looked
+    // like one item repeatedly re-imported.
+    await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
+      item.id,
+      JSON.stringify({ fileLabel, destPath: dest, episodeId: targetEpisode.id, subItemId: null, quality: quality ?? null })
+    );
     importedCount++;
   }
 
   if (importedCount === 0) {
     throw new ImportSkippedError(`No files in this download could be matched to a known episode of season ${seasonNumber}`);
   }
-
-  await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
-    item.id,
-    JSON.stringify({ seasonNumber, episodeCount: importedCount })
-  );
   await notifyImported(item.title, `season ${seasonNumber} pack — ${importedCount} episode(s)`, destFolder);
   log.info(`[importer] imported season ${seasonNumber} pack for "${item.title}": ${importedCount} episode(s)`);
   return { destFolder, episodeCount: importedCount };

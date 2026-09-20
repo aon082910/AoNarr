@@ -1,5 +1,6 @@
 import { db } from "../db/index.js";
 import { log } from "./logger.js";
+import { typeKeysByShape } from "./mediaTypes.js";
 
 interface XemEntry {
   scene?: { season: number; episode: number };
@@ -63,11 +64,14 @@ export async function syncSceneNumbering(mediaItemId: number): Promise<{ updated
   return { updated };
 }
 
-/** Runs syncSceneNumbering for every episodic series/anime with a TVDB id, on the scheduler's own
- * cadence — TheXEM's mappings occasionally change (a show gets added, or a mapping gets
- * corrected), and a series added before this feature existed never gets one otherwise. */
+/** Runs syncSceneNumbering for every episodic series/anime/sports item with a TVDB id, on the
+ * scheduler's own cadence — TheXEM's mappings occasionally change (a show gets added, or a mapping
+ * gets corrected), and a series added before this feature existed never gets one otherwise. */
 export async function syncAllSceneNumbering(): Promise<void> {
-  const rows = (await db.prepare("SELECT id FROM media_items WHERE type IN ('series', 'anime')").all()) as { id: number }[];
+  const episodicTypes = typeKeysByShape("episodic");
+  const rows = (await db
+    .prepare(`SELECT id FROM media_items WHERE type IN (${episodicTypes.map(() => "?").join(",")})`)
+    .all(...episodicTypes)) as { id: number }[];
   let totalUpdated = 0;
   for (const row of rows) {
     const result = await syncSceneNumbering(row.id);
