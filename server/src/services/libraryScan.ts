@@ -20,6 +20,16 @@ import {
 } from "./metadata.js";
 import { findOrCreateLibraryGroup } from "./libraryGroups.js";
 import { log } from "./logger.js";
+import {
+  findFileSidecar,
+  findShowSidecar,
+  findEpisodeSidecar,
+  findMovieSidecar,
+  findArtistSidecar,
+  findAlbumSidecar,
+  findComicSidecar,
+  type SidecarMetadata,
+} from "./sidecarMetadata.js";
 
 export function normalizeForMatch(s: string): string {
   return s
@@ -415,6 +425,17 @@ async function scanAndImportLibraryInner(
     try {
       if (typeConfig.shape === "episodic") {
         let { season, episodes: parsedEpisodes } = detectSeasonEpisode(path.basename(parentDir), base);
+
+        // A per-episode sidecar (Kodi's own-basename .nfo, e.g. "S01E01.nfo" next to "S01E01.mkv")
+        // can supply season/episode when the filename itself carries no scene-style marker at all
+        // — checked before the "couldn't detect" skip guard below, so a real per-episode NFO can
+        // rescue a file that would otherwise be skipped (or, for a sequentialEpisodeFallback type,
+        // would otherwise get a synthesized number instead of the NFO's own real one).
+        const episodeSidecar = typeConfig.sidecarFormat === "kodi-video" ? await findEpisodeSidecar(filePath) : null;
+        if (episodeSidecar?.season != null && episodeSidecar?.episode != null) {
+          season = episodeSidecar.season;
+          parsedEpisodes = [episodeSidecar.episode];
+        }
         // Only a fallback-enabled type (course/adult — folder-as-show with no episode-listing
         // provider that could ever backfill a real episode list) tolerates a file with no
         // scene-style marker at all; everything else keeps the original "skip it" behavior
@@ -432,11 +453,15 @@ async function scanAndImportLibraryInner(
         // single scalar; every other type moves straight to `parsedEpisodes` for the write loop.
         let episode: number | null = parsedEpisodes.length > 0 ? parsedEpisodes[0] : null;
 
-        // sequentialEpisodeFallback types (course/adult) always take the show title from the
-        // FOLDER — the filename there is a lesson/clip's own title, never the show's name, unlike
-        // a provider-backed episodic type's filename ("Breaking.Bad.S01E01.mkv") which really does
-        // carry the show's name alongside its season/episode marker.
-        const guessedTitle = typeConfig.sequentialEpisodeFallback ? guessShowTitleFromFolder(parentDir) : guessSeriesTitle(parentDir, base);
+        // A show-level sidecar (tvshow.nfo) always wins over filename/folder guessing when
+        // present — sequentialEpisodeFallback types (course/adult) otherwise take the show title
+        // from the FOLDER (the filename there is a lesson/clip's own title, never the show's
+        // name), unlike a provider-backed episodic type's filename ("Breaking.Bad.S01E01.mkv"),
+        // which really does carry the show's own name alongside its season/episode marker.
+        const showSidecar = typeConfig.sidecarFormat === "kodi-video" ? await findShowSidecar(parentDir) : null;
+        const guessedTitle =
+          showSidecar?.title ??
+          (typeConfig.sequentialEpisodeFallback ? guessShowTitleFromFolder(parentDir) : guessSeriesTitle(parentDir, base));
         if (!guessedTitle) {
           result.skipped++;
           result.skippedFiles.push({ path: filePath, reason: "couldn't guess a series title from the filename or folder" });
@@ -481,16 +506,18 @@ async function scanAndImportLibraryInner(
           seriesMatch = { id: newId, title: guessedTitle, has_file: 0 };
           seriesItems.push(seriesMatch);
 
-          // Best-effort: look the guessed title up on a metadata provider right away and seed the
-          // real episode list (title/air date/overview) — without this, every episode this scan
-          // creates for a brand new show gets stuck with a generic "Episode N" title and no air
-          // date forever, since nothing else ever revisits an episode row once it exists. Only
-          // external_ids/overview/poster/year are saved on the show itself, never title/sort_title
-          // — overwriting those here would make this show's own title stop matching the very
-          // filename-guessed title future scans of the same folder guess, breaking re-matching.
+          // Best-effort: enrich the new show right away and seed the real episode list (title/air
+          // date/overview) — without this, every episode this scan creates for a brand new show
+          // gets stuck with a generic "Episode N" title and no air date forever, since nothing else
+          // ever revisits an episode row once it exists. A show-level sidecar (tvshow.nfo) always
+          // wins when present — including for a sequentialEpisodeFallback type (course/adult),
+          // which has no metadataProviders at all and would otherwise never get enriched here — a
+          // plain title/provider search runs otherwise, exactly as before. Only external_ids/
+          // overview/poster/year are saved on the show itself, never title/sort_title — overwriting
+          // those here would make this show's own title stop matching the very filename-guessed
+          // title future scans of the same folder guess, breaking re-matching.
           try {
-            const results = await searchMetadata(type as any, guessedTitle);
-            const best = results[0];
+            const best = showSidecar ? await resolveSidecarEnrichment(type, showSidecar) : (await searchMetadata(type as any, guessedTitle))[0];
             if (best) {
               await db
                 .prepare(
@@ -566,17 +593,24 @@ async function scanAndImportLibraryInner(
               .prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?")
               .run(filePath, quality, mediaInfoJson, existingEp.id);
           } else {
-            // A fallback type has no episode-listing provider that will ever revisit this row and
-            // give it a real title later (unlike series/anime, where syncMissingChildren backfills
-            // the provider's own episode titles) — seed the filename-derived title up front instead
-            // of a permanent "Episode N" placeholder. Non-fallback types keep that placeholder,
-            // exactly as before.
+            // A per-episode sidecar's own title always wins when present, for every episodic type
+            // (not just sequentialEpisodeFallback ones) — checked before either fallback below.
+            // Only meaningful when this file resolves to exactly one target episode; a real
+            // multi-episode file's sidecar (rare in practice) would otherwise apply one episode's
+            // title to every episode it covers, which is worse than the plain placeholder.
+            // Otherwise: a fallback type has no episode-listing provider that will ever revisit
+            // this row and give it a real title later (unlike series/anime, where
+            // syncMissingChildren backfills the provider's own episode titles) — seed the
+            // filename-derived title up front instead of a permanent "Episode N" placeholder.
+            // Non-fallback types keep that placeholder, exactly as before.
             // Same leading-number stripping upsertTrackFromFile already applies to a track's own
             // title — without it, a numbered lesson's title would keep its own "01 - " prefix, which
             // looks redundant next to the episode number the UI already shows beside it.
-            const episodeTitle = typeConfig.sequentialEpisodeFallback
-              ? guessTitleFromText(base.replace(/^\d{1,3}[\s._-]*/, "")) || `Episode ${targetEpisode}`
-              : `Episode ${targetEpisode}`;
+            const episodeTitle =
+              (targetEpisodeNumbers.length === 1 ? episodeSidecar?.title : null) ??
+              (typeConfig.sequentialEpisodeFallback
+                ? guessTitleFromText(base.replace(/^\d{1,3}[\s._-]*/, "")) || `Episode ${targetEpisode}`
+                : `Episode ${targetEpisode}`);
             await db
               .prepare(
                 `INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path, quality, media_info)
@@ -601,7 +635,15 @@ async function scanAndImportLibraryInner(
           result.skippedFiles.push({ path: filePath, reason: "sits directly in the root folder with no parent (Artist/Author/...) folder" });
           continue;
         }
-        const parentTitle = guessTitleFromText(relSegments[0]);
+        // A collection-parent-level sidecar exists in two different shapes: Music's artist.nfo
+        // (folder-based, checked directly) and Comics/Manga's ComicInfo.xml <Series> (file-based —
+        // one issue's sidecar carries both series and issue info at once, so this same parsed
+        // result is threaded through and reused again below for the child, avoiding a second read
+        // of the same file/archive entry). Books/Audiobooks' metadata.opf is per-book only, with no
+        // separate author-level sidecar convention — their parent stays folder-guessed as before.
+        const artistSidecar = typeConfig.sidecarFormat === "kodi-music" ? await findArtistSidecar(path.join(folder.path, relSegments[0])) : null;
+        const comicSidecar = typeConfig.sidecarFormat === "comicinfo" ? await findComicSidecar(filePath) : null;
+        const parentTitle = artistSidecar?.title ?? comicSidecar?.parentTitle ?? guessTitleFromText(relSegments[0]);
         if (!parentTitle) {
           result.skipped++;
           result.skippedFiles.push({ path: filePath, reason: `couldn't guess a title from the parent folder name "${relSegments[0]}"` });
@@ -620,6 +662,23 @@ async function scanAndImportLibraryInner(
             .run(type, parentTitle, parentTitle.toLowerCase(), folder.id, qualityProfileId);
           parentMatch = { id: Number(insertResult.lastInsertRowid), title: parentTitle, has_file: 0 };
           collectionParents.push(parentMatch);
+
+          // Same best-effort enrichment-on-creation the episodic branch already does — a
+          // sidecar-matched new artist otherwise sits with no overview/poster until something else
+          // revisits it. Comics/Manga/Books/Audiobooks stay unenriched here (their sidecar is
+          // per-child, not per-parent) — their own children enrich the parent below once matched.
+          if (artistSidecar) {
+            try {
+              const best = await resolveSidecarEnrichment(type, artistSidecar);
+              if (best) {
+                await db
+                  .prepare("UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), external_ids = ? WHERE id = ?")
+                  .run(best.overview, best.posterUrl, JSON.stringify(best.externalIds ?? {}), parentMatch.id);
+              }
+            } catch {
+              // best-effort only — a bad/unreachable id shouldn't block the rest of the scan
+            }
+          }
         }
 
         const childSubItems = (await db.prepare("SELECT * FROM sub_items WHERE media_item_id = ?").all(parentMatch.id)) as any[];
@@ -634,12 +693,6 @@ async function scanAndImportLibraryInner(
           // of how many disc-subfolder levels sit beneath it) — see albumDir below for why the
           // *file_path* side of that case needed a matching fix.
           const albumFolderName = relSegments.length >= 3 ? relSegments[1] : relSegments[0];
-          const albumTitle = guessTitleFromText(albumFolderName);
-          if (!albumTitle) {
-            result.skipped++;
-            result.skippedFiles.push({ path: filePath, reason: `couldn't guess an album title from the folder name "${albumFolderName}"` });
-            continue;
-          }
           // The album's own directory, not necessarily the specific file's immediate parent — for
           // a multi-disc album (CD1/CD2 subfolders under the album folder), the file's immediate
           // parent is one specific disc's subfolder, but sub_items.file_path needs to point at the
@@ -647,6 +700,22 @@ async function scanAndImportLibraryInner(
           // anything that treats file_path as the album's whole location (deletedFileCheck.ts,
           // cleanupSuggestions.ts). Matches albumFolderName's own segment choice above exactly.
           const albumDir = relSegments.length >= 3 ? path.join(folder.path, relSegments[0], relSegments[1]) : path.join(folder.path, relSegments[0]);
+          // album.nfo for Music, metadata.opf for Audiobooks (the only two multiFilePerChild
+          // types) — sub_items has no overview/poster columns to enrich further with (unlike
+          // media_items), so a sidecar's contribution here is just the child's own title, matching
+          // the album-folder-derived guess it otherwise falls back to.
+          const albumSidecar =
+            typeConfig.sidecarFormat === "kodi-music"
+              ? await findAlbumSidecar(albumDir)
+              : typeConfig.sidecarFormat === "opf"
+              ? await findFileSidecar(typeConfig, filePath)
+              : null;
+          const albumTitle = albumSidecar?.title ?? guessTitleFromText(albumFolderName);
+          if (!albumTitle) {
+            result.skipped++;
+            result.skippedFiles.push({ path: filePath, reason: `couldn't guess an album title from the folder name "${albumFolderName}"` });
+            continue;
+          }
           let childMatch = childSubItems.find((s) => titlesMatch(s.title, albumTitle));
           if (!childMatch) {
             const insertResult = await db
@@ -672,7 +741,12 @@ async function scanAndImportLibraryInner(
           // track list the way an Add Media search + fetchAlbumTracksFor() would.
           await upsertTrackFromFile(childMatch.id, filePath);
         } else {
-          const childTitle = guessTitleFromText(base);
+          // comicSidecar was already parsed above (needed there for the parent/series title) —
+          // reused here rather than reading the same file/archive entry a second time. Books' opf
+          // is genuinely per-child only, so it's looked up fresh here.
+          const childSidecar =
+            typeConfig.sidecarFormat === "comicinfo" ? comicSidecar : typeConfig.sidecarFormat === "opf" ? await findFileSidecar(typeConfig, filePath) : null;
+          const childTitle = childSidecar?.title ?? guessTitleFromText(base);
           if (!childTitle) {
             result.skipped++;
             result.skippedFiles.push({ path: filePath, reason: `couldn't guess a title from the filename "${base}"` });
@@ -708,7 +782,10 @@ async function scanAndImportLibraryInner(
           result.matched++;
         }
       } else {
-        const guessedTitle = type === "rom" ? cleanRomTitle(base) : guessTitleFromText(base);
+        // A sidecar (movie.nfo or <basename>.nfo, Kodi convention) only exists for movie/ppv —
+        // rom has no sidecarFormat configured (no real-world sidecar convention for ROMs).
+        const movieSidecar = typeConfig.sidecarFormat === "kodi-video" ? await findMovieSidecar(filePath) : null;
+        const guessedTitle = movieSidecar?.title ?? (type === "rom" ? cleanRomTitle(base) : guessTitleFromText(base));
         if (!guessedTitle) {
           result.skipped++;
           result.skippedFiles.push({ path: filePath, reason: `couldn't guess a title from the filename "${base}"` });
@@ -717,6 +794,7 @@ async function scanAndImportLibraryInner(
         if (onlyTitle && !looseTitlesMatch(guessedTitle, onlyTitle)) continue;
         const parsed = parseReleaseTitle(base);
         const quality = parsed.quality === "Unknown" ? null : parsed.quality;
+        const year = movieSidecar?.year ?? parsed.year;
 
         const match =
           singleShapeItems.find((m) => titlesMatch(m.title, guessedTitle)) ??
@@ -750,12 +828,43 @@ async function scanAndImportLibraryInner(
               `INSERT INTO media_items (type, title, sort_title, year, path, root_folder_id, quality_profile_id, monitored, has_file, quality, media_info, status)
                VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 'unknown')`
             )
-            .run(type, guessedTitle, guessedTitle.toLowerCase(), parsed.year, filePath, folder?.id ?? null, qualityProfileId, quality, mediaInfoJson);
+            .run(type, guessedTitle, guessedTitle.toLowerCase(), year, filePath, folder?.id ?? null, qualityProfileId, quality, mediaInfoJson);
+          const newId = Number(insertResult.lastInsertRowid);
           // Pushed into the same array this scan matches against — without this, two files in one
           // scan that both guess the same new title (e.g. a movie's main file and its sample) each
           // create their own row instead of the second one matching the first's.
-          singleShapeItems.push({ id: Number(insertResult.lastInsertRowid), title: guessedTitle, has_file: 1, path: filePath });
+          singleShapeItems.push({ id: newId, title: guessedTitle, has_file: 1, path: filePath });
           result.created++;
+
+          // Best-effort enrichment-on-creation via the sidecar — extends the same pattern the
+          // episodic branch already has to single-shape items, which never got any scan-time
+          // enrichment before (a movie/ppv previously sat with no overview/poster until an admin
+          // ran Refresh by hand).
+          if (movieSidecar) {
+            try {
+              const best = await resolveSidecarEnrichment(type, movieSidecar);
+              if (best) {
+                await db
+                  .prepare(
+                    `UPDATE media_items SET overview = ?, poster_url = ?, year = COALESCE(?, year), external_ids = ?, release_date = ?,
+                     content_rating = ?, genres = ?, status = COALESCE(?, status) WHERE id = ?`
+                  )
+                  .run(
+                    best.overview ?? null,
+                    best.posterUrl ?? null,
+                    best.year ?? null,
+                    JSON.stringify(best.externalIds ?? {}),
+                    best.releaseDate ?? null,
+                    best.contentRating ?? null,
+                    best.genres && best.genres.length > 0 ? JSON.stringify(best.genres) : null,
+                    best.status ?? null,
+                    newId
+                  );
+              }
+            } catch {
+              // best-effort only — a bad/unreachable id shouldn't block the rest of the scan
+            }
+          }
         }
       }
     } catch (err) {
@@ -834,6 +943,71 @@ export async function refreshLibraryMetadata(type: string, signal?: AbortSignal)
  * all of them) — an id it can't look up just falls through to the title-search fallback below. */
 const REFRESH_ID_LOOKUP_PROVIDERS = ["tmdb", "tvdb", "tvmaze", "trakt", "anilist", "imdb", "igdb", "rawg"] as const;
 
+/** Turns a parsed sidecar into the same MetadataSearchResult shape a provider search/lookup
+ * returns, so every existing bit of enrichment code downstream (studio/release-dates/genres/
+ * syncMissingChildren/etc., in both the scan-time "brand new item" path below and refreshOneItem)
+ * keeps working completely unmodified against `best`, regardless of whether it came from a
+ * sidecar or a live provider call.
+ *
+ * When the sidecar carries a provider id (a Kodi <uniqueid>, or a Calibre ISBN/Goodreads
+ * identifier that happens to match a lookup-capable provider), fetches the FULL live record for
+ * that id — richer overview/poster/genres/content rating than a bare sidecar ever has on its own,
+ * the same "prefer live enrichment" REFRESH_ID_LOOKUP_PROVIDERS already gives an already-matched
+ * item. Falls back to the sidecar's own fields directly (fully offline-capable) when there's no
+ * id, the id's provider isn't lookup-capable, or the live call itself fails — a sidecar always
+ * wins over guessing from a filename, live-enriched or not. */
+async function resolveSidecarEnrichment(type: string, sidecar: SidecarMetadata): Promise<MetadataSearchResult | null> {
+  if (!sidecar.title) return null;
+  for (const provider of REFRESH_ID_LOOKUP_PROVIDERS) {
+    const id = sidecar.externalIds?.[provider];
+    if (!id) continue;
+    try {
+      return await fetchByExternalId(type as any, provider, id);
+    } catch {
+      // this id's provider lookup isn't supported for this type, or the call itself failed — try
+      // the next id the sidecar has, or fall through to the sidecar's own fields below
+    }
+  }
+  return {
+    title: sidecar.title,
+    year: sidecar.year,
+    overview: sidecar.overview,
+    posterUrl: sidecar.posterUrl,
+    externalIds: sidecar.externalIds ?? {},
+    contentRating: sidecar.contentRating ?? null,
+    genres: sidecar.genres ?? [],
+  };
+}
+
+/** Resolves an already-scanned item's own sidecar for Refresh — from whatever file on disk this
+ * item actually has, since refreshOneItem (unlike the scan loop above) starts from a DB row, not
+ * a filesystem walk. Nothing to check against for an item with no file at all yet (same as the
+ * scan loop's own "no file, no sidecar" reality) — returns null, same as a type with no
+ * `sidecarFormat` configured. */
+async function findItemSidecar(item: any, typeConfig: ReturnType<typeof getMediaTypeConfig>): Promise<SidecarMetadata | null> {
+  if (!typeConfig.sidecarFormat) return null;
+  if (typeConfig.shape === "single") {
+    return item.path ? findFileSidecar(typeConfig, item.path) : null;
+  }
+  if (typeConfig.shape === "episodic") {
+    const epRow = (await db
+      .prepare("SELECT file_path FROM episodes WHERE media_item_id = ? AND has_file = 1 AND file_path IS NOT NULL LIMIT 1")
+      .get(item.id)) as { file_path: string } | undefined;
+    return epRow ? findShowSidecar(path.dirname(epRow.file_path)) : null;
+  }
+  if (typeConfig.shape === "collection") {
+    const subRow = (await db
+      .prepare("SELECT file_path FROM sub_items WHERE media_item_id = ? AND has_file = 1 AND file_path IS NOT NULL LIMIT 1")
+      .get(item.id)) as { file_path: string } | undefined;
+    if (!subRow) return null;
+    // multiFilePerChild's file_path is already the ALBUM folder itself (see the scan loop's own
+    // albumDir comment) — the artist folder .refreshOneItem cares about (the show/parent-level
+    // sidecar it enriches) is one level up. Everything else is a plain per-child file.
+    return typeConfig.sidecarFormat === "kodi-music" ? findArtistSidecar(path.dirname(subRow.file_path)) : findFileSidecar(typeConfig, subRow.file_path);
+  }
+  return null;
+}
+
 async function refreshOneItem(
   item: any,
   type: string,
@@ -853,29 +1027,45 @@ async function refreshOneItem(
     // Refresh" put the wrong poster/overview right back — the title text alone stayed correct, so
     // it looked like nothing had changed until you looked past the title.
     let best: MetadataSearchResult | null = null;
+
+    // A sidecar always wins on Refresh, exactly as it does on Scan — checked first, from whatever
+    // file this item actually has on disk. Never overrides an already-matched item's own
+    // title/sort_title/external_ids below (that guard applies uniformly regardless of where `best`
+    // came from — see its own comment), only its overview/poster/etc — so a sidecar can upgrade an
+    // item's data quality without silently renaming something an admin (or an earlier match) has
+    // already pinned down.
     try {
-      if (alreadyMatched) {
-        for (const provider of REFRESH_ID_LOOKUP_PROVIDERS) {
-          if (!existingExternalIds[provider]) continue;
-          try {
-            best = await fetchByExternalId(type as any, provider, existingExternalIds[provider]);
-            break;
-          } catch {
-            // this id's provider lookup isn't supported for this type, or the call itself failed —
-            // try the next id the item has, or fall through to the title search below
+      const sidecar = await findItemSidecar(item, typeConfig);
+      if (sidecar) best = await resolveSidecarEnrichment(type, sidecar);
+    } catch {
+      // best-effort — fall through to the existing id-lookup/title-search path below
+    }
+
+    if (!best) {
+      try {
+        if (alreadyMatched) {
+          for (const provider of REFRESH_ID_LOOKUP_PROVIDERS) {
+            if (!existingExternalIds[provider]) continue;
+            try {
+              best = await fetchByExternalId(type as any, provider, existingExternalIds[provider]);
+              break;
+            } catch {
+              // this id's provider lookup isn't supported for this type, or the call itself failed —
+              // try the next id the item has, or fall through to the title search below
+            }
           }
         }
+        if (!best) {
+          const results = await searchMetadata(type as any, item.title);
+          best = results[0] ?? null;
+        }
+      } catch {
+        // No metadata provider configured at all (course) or the search call itself failed — for a
+        // sequentialEpisodeFallback type (course/adult) there's still useful work for Refresh to do
+        // below (picking up new episode files from disk), so this doesn't abort the whole function;
+        // every other type's contract (no metadata found = a failed refresh) is preserved by the
+        // `!typeConfig.sequentialEpisodeFallback` check right below.
       }
-      if (!best) {
-        const results = await searchMetadata(type as any, item.title);
-        best = results[0] ?? null;
-      }
-    } catch {
-      // No metadata provider configured at all (course) or the search call itself failed — for a
-      // sequentialEpisodeFallback type (course/adult) there's still useful work for Refresh to do
-      // below (picking up new episode files from disk), so this doesn't abort the whole function;
-      // every other type's contract (no metadata found = a failed refresh) is preserved by the
-      // `!typeConfig.sequentialEpisodeFallback` check right below.
     }
     if (!best && !typeConfig.sequentialEpisodeFallback) return { ok: false };
     // Scoped to one season leaves the show's own overview/poster/year/title untouched — those

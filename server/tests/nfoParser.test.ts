@@ -52,7 +52,17 @@ describe("parseNfo", () => {
 
   it("returns an empty/null result for a root element it doesn't recognize, instead of throwing", async () => {
     const result = await parseNfo(`<somethingelse><title>X</title></somethingelse>`);
-    expect(result).toEqual({ title: null, year: null, overview: null, posterUrl: null, externalIds: {} });
+    expect(result).toEqual({
+      title: null,
+      year: null,
+      overview: null,
+      posterUrl: null,
+      externalIds: {},
+      contentRating: null,
+      genres: [],
+      season: null,
+      episode: null,
+    });
   });
 
   it("returns nulls for missing optional fields rather than throwing", async () => {
@@ -62,5 +72,35 @@ describe("parseNfo", () => {
     expect(result.overview).toBeNull();
     expect(result.posterUrl).toBeNull();
     expect(result.externalIds).toEqual({});
+    expect(result.contentRating).toBeNull();
+    expect(result.genres).toEqual([]);
+    expect(result.season).toBeNull();
+    expect(result.episode).toBeNull();
+  });
+
+  it("extracts season/episode from an episodedetails.nfo", async () => {
+    const xml = `<episodedetails><title>Pilot</title><season>1</season><episode>1</episode></episodedetails>`;
+    const result = await parseNfo(xml);
+    expect(result.season).toBe(1);
+    expect(result.episode).toBe(1);
+  });
+
+  it("extracts content rating (<mpaa>) and every <genre> tag", async () => {
+    const xml = `<movie>
+  <title>X</title>
+  <mpaa>PG-13</mpaa>
+  <genre>Action</genre>
+  <genre>Sci-Fi</genre>
+</movie>`;
+    const result = await parseNfo(xml);
+    expect(result.contentRating).toBe("PG-13");
+    expect(result.genres).toEqual(["Action", "Sci-Fi"]);
+  });
+
+  it("reads a real artist.nfo's <name> field, not <title> (which it doesn't have)", async () => {
+    const xml = `<artist><name>Radiohead</name><biography>An English rock band.</biography></artist>`;
+    const result = await parseNfo(xml);
+    expect(result.title).toBe("Radiohead");
+    expect(result.overview).toBe("An English rock band.");
   });
 });

@@ -39,6 +39,11 @@ export interface MediaTypeConfig {
    * ["system", "maker"] means System -> Maker -> Game. Empty/absent means items of this type
    * aren't grouped (browsed as a flat list, same as before library_groups existed). */
   groupLevels?: string[];
+  /** The on-disk metadata sidecar convention this type's files use, if any — see
+   * services/sidecarMetadata.ts, which Scan/Refresh check before falling back to today's
+   * filename/folder-guessing. Left unset for types with no real-world sidecar convention (ROMs,
+   * Online Videos, Podcasts) rather than a poor-fit guess. */
+  sidecarFormat?: "kodi-video" | "kodi-music" | "comicinfo" | "opf";
 }
 
 const VIDEO_EXT = [".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v"];
@@ -69,6 +74,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     indexerCategory: "2000",
     metadataProviders: ["tmdb", "omdb", "trakt"],
     defaultProvider: "tmdb",
+    sidecarFormat: "kodi-video",
   },
   series: {
     key: "series",
@@ -78,6 +84,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     indexerCategory: "5000",
     metadataProviders: ["tmdb", "tvdb", "tvmaze", "trakt"],
     defaultProvider: "tmdb",
+    sidecarFormat: "kodi-video",
   },
   anime: {
     key: "anime",
@@ -87,6 +94,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     indexerCategory: "5070",
     metadataProviders: ["anilist", "tvdb", "tmdb"],
     defaultProvider: "anilist",
+    sidecarFormat: "kodi-video",
   },
   sports: {
     key: "sports",
@@ -107,6 +115,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     // 1-result search caps) with real coverage gated behind a paid key — see CHANGELOG.
     metadataProviders: ["tvdb", "tvmaze", "trakt"],
     defaultProvider: "tvdb",
+    sidecarFormat: "kodi-video",
   },
   ppv: {
     key: "ppv",
@@ -125,6 +134,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     indexerCategory: "2000,5060",
     metadataProviders: ["tmdb", "omdb", "trakt"],
     defaultProvider: "tmdb",
+    sidecarFormat: "kodi-video",
   },
   artist: {
     key: "artist",
@@ -136,6 +146,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     metadataProviders: ["musicbrainz", "deezer", "discogs", "lastfm"],
     defaultProvider: "musicbrainz",
     multiFilePerChild: true,
+    sidecarFormat: "kodi-music",
   },
   author: {
     key: "author",
@@ -150,6 +161,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     // plays for movies/series/artists.
     metadataProviders: ["openlibrary", "googlebooks", "itunes", "hardcover", "goodreads", "audnexus"],
     defaultProvider: "openlibrary",
+    sidecarFormat: "opf",
   },
   audiobook: {
     key: "audiobook",
@@ -165,6 +177,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     metadataProviders: ["openlibrary", "googlebooks", "audible", "audnexus"],
     defaultProvider: "openlibrary",
     multiFilePerChild: true,
+    sidecarFormat: "opf",
   },
   comic: {
     key: "comic",
@@ -175,6 +188,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     indexerCategory: "7030",
     metadataProviders: ["comicvine"],
     defaultProvider: "comicvine",
+    sidecarFormat: "comicinfo",
   },
   manga: {
     key: "manga",
@@ -190,6 +204,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     // actually populates the Chapters list at add-time, mirroring how Comics defaults to ComicVine
     // for the same reason.
     defaultProvider: "mangadex",
+    sidecarFormat: "comicinfo",
   },
   rom: {
     key: "rom",
@@ -249,6 +264,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     metadataProviders: [],
     defaultProvider: null,
     groupLevels: ["site", "creator"],
+    sidecarFormat: "kodi-video",
   },
   adult: {
     key: "adult",
@@ -263,6 +279,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     metadataProviders: ["theporndb"],
     defaultProvider: "theporndb",
     groupLevels: ["site", "maker", "series"],
+    sidecarFormat: "kodi-video",
   },
 };
 

@@ -3,6 +3,37 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 340 — Automatic sidecar-metadata matching (NFO / ComicInfo.xml / OPF)
+
+The scanner never read a local metadata sidecar for *any* library before this — `.nfo` parsing
+existed, but was wired to exactly one place, the manual "Add Media" prefill button. Scan and
+Refresh now check for one first, for every library type that has a real sidecar convention, before
+falling back to today's filename/folder guessing — and always prefer it over a plain title search
+when present.
+
+- **Kodi-convention NFO/XML** for Movies, TV Shows, Anime, Sports, Sports PPV, Courses, Adult, and
+  Music: `movie.nfo`/`<basename>.nfo` next to a single-shape file; `tvshow.nfo` in the show folder
+  (season-folder aware — works whether episodes sit directly in the show folder or under their own
+  `Season NN` subfolder) plus a per-episode `<basename>.nfo` for season/episode/title; `artist.nfo`
+  and `album.nfo` for Music. Notably applies to Courses and Adult too, which have no metadata
+  provider at all today (no viable public API for either) — previously these two library types
+  could *never* get an overview/poster from anything but a filename guess; a `tvshow.nfo` now
+  enriches them the same way a provider match enriches everything else.
+- **ComicInfo.xml** for Comics/Manga — checked inside the `.cbz` first (the real-world convention,
+  reusing the same `adm-zip` dependency `comicImageConvert.ts` already uses to look inside a
+  comic archive), falling back to an external sidecar file next to it otherwise. Its `<Series>`
+  tag corrects the series/parent title, distinct from `<Title>`/`<Number>`, the issue's own.
+- **Calibre's metadata.opf** for Books/Audiobooks.
+- When a sidecar carries a provider id (a Kodi `<uniqueid>`, a Calibre ISBN/Goodreads identifier),
+  fetches the full live record for it — richer overview/poster/genres/content rating than the bare
+  sidecar fields — falling back to the sidecar's own fields directly (fully offline-capable) when
+  there's no id, its provider isn't lookup-capable, or the live call fails.
+- Fixed a real, previously-unreachable bug in the existing `.nfo` parser while extending it: a
+  genuine Kodi `artist.nfo`'s title field is `<name>`, not `<title>` — every real artist.nfo parsed
+  to a null title before this.
+- Left out (no real-world sidecar convention exists for these, flagged rather than silently
+  dropped): ROMs, Online Videos, Podcasts.
+
 ## Round 339 — Actually fix the toolbar wrap this time
 
 Round 338's toolbar fix ("Filters" dropdown consolidation) only helped at very wide desktop
