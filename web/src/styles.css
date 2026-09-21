@@ -371,10 +371,14 @@ button:hover { opacity: 0.9; }
 button.secondary { background: var(--border); }
 button.danger { background: var(--danger); }
 
-/* Resets a <button> down to look exactly like the plain clickable text it replaces (the sidebar
-   footer's Theme/Layout toggles) — real button semantics (keyboard-focusable, proper role) without
-   any of button's own default chrome (background/border/padding/the margin-top above meant for a
-   button following a stacked label+input). */
+/* Resets a <button> down to look like the plain clickable text it replaces (the sidebar footer's
+   and topbar's Theme/Layout toggles) — real button semantics (keyboard-focusable, proper role)
+   without any of button's own default chrome (background/border/the margin-top above meant for a
+   button following a stacked label+input). Padding/hover are added back per container just below,
+   matching each container's own <a> siblings exactly (Log out, Enable notifications) — a bare
+   padding:0 reset left these with zero visual separation from their padded neighbors, especially
+   in the topbar where several sit inline on one line with nothing but a 4px gap between them,
+   reading as one run-on sentence instead of distinct controls. */
 button.link-button {
   background: none;
   border: none;
@@ -385,6 +389,21 @@ button.link-button {
   text-align: left;
   cursor: pointer;
 }
+.sidebar-footer .link-button {
+  display: block;
+  width: 100%;
+  padding: 10px 20px;
+  font-size: 0.95rem;
+  color: var(--muted);
+  border-radius: 0;
+}
+.sidebar-footer .link-button:hover { color: var(--text); background: rgba(255,255,255,0.03); }
+.topbar-spacer .link-button {
+  padding: 6px 10px;
+  border-radius: 6px;
+  color: var(--muted);
+}
+.topbar-spacer .link-button:hover { color: var(--text); }
 
 /* Same box (background, border, padding, radius) as input/select so a button sitting in the same
    toolbar row as selects — a dropdown trigger, a scan/refresh action — looks like part of the

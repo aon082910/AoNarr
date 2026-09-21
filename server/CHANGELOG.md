@@ -23,6 +23,14 @@ screenshot at one width.
   `justify-content: space-between` that caused it, which also fixes a second thing that
   fix would have caused on toolbars with nothing on the right (Indexers, Import Lists) — the
   left-side buttons themselves spreading out across the whole row instead of staying clustered.
+- **The Theme/Layout toggle buttons weren't actually missing** (reported as "not present" on the
+  top-bar nav layout) — reproduced at the exact reported config (top nav, 1920x1080) and found
+  them present, clickable, and correctly typed as `<button>`s, but with zero padding sitting
+  directly against their padded `<a>` neighbors (Enable notifications, Log out) with only a 4px
+  gap between everything — visually indistinguishable from one run-on line of body text instead of
+  separate controls, easy to miss even though nothing was actually broken. Gave them the same
+  padding/hover treatment as their sibling links in each context (block rows in the sidebar footer,
+  padded pills in the topbar) instead of a bare reset to zero padding everywhere.
   Verified live at 1366px, 1600px, and mobile width, and confirmed pages with a short/empty right
   side aren't affected.
 
