@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { db } from "../db/index.js";
 import { getMediaTypeConfig, isProbeableFile, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
 import { rootFolderFromRow } from "../db/mappers.js";
@@ -519,20 +520,32 @@ async function scanAndImportLibraryInner(
           try {
             const best = showSidecar ? await resolveSidecarEnrichment(type, showSidecar) : (await searchMetadata(type as any, guessedTitle))[0];
             if (best) {
+              // A local poster/backdrop (see localArtwork.ts) always wins over whatever `best`
+              // resolved to, live-fetched or not — the same "an explicit local file is the most
+              // deliberate signal there is" reasoning the rest of the sidecar work already applies.
+              const posterToken = showSidecar?.localPosterPath ? localArtworkToken(null) : null;
+              const backdropToken = showSidecar?.localBackdropPath ? localArtworkToken(null) : null;
               await db
                 .prepare(
-                  `UPDATE media_items SET overview = ?, poster_url = ?, year = ?, external_ids = ?, release_date = ?,
-                   content_rating = ?, genres = ?, status = COALESCE(?, status) WHERE id = ?`
+                  `UPDATE media_items SET overview = ?, poster_url = ?, backdrop_url = COALESCE(?, backdrop_url), year = ?,
+                   external_ids = ?, release_date = ?, content_rating = ?, genres = ?, status = COALESCE(?, status),
+                   local_poster_path = ?, local_poster_token = COALESCE(?, local_poster_token),
+                   local_backdrop_path = ?, local_backdrop_token = COALESCE(?, local_backdrop_token) WHERE id = ?`
                 )
                 .run(
                   best.overview ?? null,
-                  best.posterUrl ?? null,
+                  posterToken ? localArtworkUrl(posterToken) : best.posterUrl ?? null,
+                  backdropToken ? localArtworkUrl(backdropToken) : best.backdropUrl ?? null,
                   best.year ?? null,
                   JSON.stringify(best.externalIds ?? {}),
                   best.releaseDate ?? null,
                   best.contentRating ?? null,
                   best.genres && best.genres.length > 0 ? JSON.stringify(best.genres) : null,
                   best.status ?? null,
+                  showSidecar?.localPosterPath ?? null,
+                  posterToken,
+                  showSidecar?.localBackdropPath ?? null,
+                  backdropToken,
                   newId
                 );
               await syncMissingChildren(newId, typeConfig, best.externalIds ?? {});
@@ -692,20 +705,30 @@ async function scanAndImportLibraryInner(
             try {
               const best = await resolveSidecarEnrichment(type, artistSidecar);
               if (best) {
+                const posterToken = artistSidecar.localPosterPath ? localArtworkToken(null) : null;
+                const backdropToken = artistSidecar.localBackdropPath ? localArtworkToken(null) : null;
                 await db
                   .prepare(
                     `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url),
-                     year = COALESCE(?, year), release_date = COALESCE(?, release_date),
-                     content_rating = COALESCE(?, content_rating), genres = COALESCE(?, genres), external_ids = ? WHERE id = ?`
+                     backdrop_url = COALESCE(?, backdrop_url), year = COALESCE(?, year), release_date = COALESCE(?, release_date),
+                     content_rating = COALESCE(?, content_rating), genres = COALESCE(?, genres), external_ids = ?,
+                     local_poster_path = COALESCE(?, local_poster_path), local_poster_token = COALESCE(?, local_poster_token),
+                     local_backdrop_path = COALESCE(?, local_backdrop_path), local_backdrop_token = COALESCE(?, local_backdrop_token)
+                     WHERE id = ?`
                   )
                   .run(
                     best.overview,
-                    best.posterUrl,
+                    posterToken ? localArtworkUrl(posterToken) : best.posterUrl,
+                    backdropToken ? localArtworkUrl(backdropToken) : best.backdropUrl ?? null,
                     best.year,
                     best.releaseDate ?? null,
                     best.contentRating ?? null,
                     best.genres && best.genres.length > 0 ? JSON.stringify(best.genres) : null,
                     JSON.stringify(best.externalIds ?? {}),
+                    artistSidecar.localPosterPath ?? null,
+                    posterToken,
+                    artistSidecar.localBackdropPath ?? null,
+                    backdropToken,
                     parentMatch.id
                   );
               }
@@ -878,20 +901,29 @@ async function scanAndImportLibraryInner(
             try {
               const best = await resolveSidecarEnrichment(type, movieSidecar);
               if (best) {
+                const posterToken = movieSidecar.localPosterPath ? localArtworkToken(null) : null;
+                const backdropToken = movieSidecar.localBackdropPath ? localArtworkToken(null) : null;
                 await db
                   .prepare(
-                    `UPDATE media_items SET overview = ?, poster_url = ?, year = COALESCE(?, year), external_ids = ?, release_date = ?,
-                     content_rating = ?, genres = ?, status = COALESCE(?, status) WHERE id = ?`
+                    `UPDATE media_items SET overview = ?, poster_url = ?, backdrop_url = COALESCE(?, backdrop_url),
+                     year = COALESCE(?, year), external_ids = ?, release_date = ?, content_rating = ?, genres = ?,
+                     status = COALESCE(?, status), local_poster_path = ?, local_poster_token = COALESCE(?, local_poster_token),
+                     local_backdrop_path = ?, local_backdrop_token = COALESCE(?, local_backdrop_token) WHERE id = ?`
                   )
                   .run(
                     best.overview ?? null,
-                    best.posterUrl ?? null,
+                    posterToken ? localArtworkUrl(posterToken) : best.posterUrl ?? null,
+                    backdropToken ? localArtworkUrl(backdropToken) : best.backdropUrl ?? null,
                     best.year ?? null,
                     JSON.stringify(best.externalIds ?? {}),
                     best.releaseDate ?? null,
                     best.contentRating ?? null,
                     best.genres && best.genres.length > 0 ? JSON.stringify(best.genres) : null,
                     best.status ?? null,
+                    movieSidecar.localPosterPath ?? null,
+                    posterToken,
+                    movieSidecar.localBackdropPath ?? null,
+                    backdropToken,
                     newId
                   );
               }
@@ -1013,6 +1045,21 @@ async function resolveSidecarEnrichment(type: string, sidecar: SidecarMetadata):
   };
 }
 
+/** A local poster/backdrop file (see localArtwork.ts) needs its own unguessable token before it's
+ * anything the browser can actually load — poster_url/backdrop_url get set to the route URL below,
+ * not the raw filesystem path (never exposed to the frontend at all), and GET
+ * /api/media/local-artwork/:token looks the row up by that token, exempt from the normal API-key/
+ * session auth the same way /share/:token already is, since an <img src> can't carry either.
+ * Reuses `existingToken` when one was already generated for this item/kind — keeps the URL stable
+ * across repeated scans/refreshes of the same folder instead of needlessly rotating it every time. */
+function localArtworkToken(existingToken: string | null | undefined): string {
+  return existingToken ?? crypto.randomBytes(20).toString("hex");
+}
+
+function localArtworkUrl(token: string): string {
+  return `/api/media/local-artwork/${token}`;
+}
+
 /** Resolves an already-scanned item's own sidecar for Refresh — from whatever file on disk this
  * item actually has, since refreshOneItem (unlike the scan loop above) starts from a DB row, not
  * a filesystem walk. Nothing to check against for an item with no file at all yet (same as the
@@ -1061,6 +1108,7 @@ async function refreshOneItem(
     // Refresh" put the wrong poster/overview right back — the title text alone stayed correct, so
     // it looked like nothing had changed until you looked past the title.
     let best: MetadataSearchResult | null = null;
+    let sidecar: SidecarMetadata | null = null;
 
     // A sidecar always wins on Refresh, exactly as it does on Scan — checked first, from whatever
     // file this item actually has on disk. Never overrides an already-matched item's own
@@ -1069,7 +1117,7 @@ async function refreshOneItem(
     // item's data quality without silently renaming something an admin (or an earlier match) has
     // already pinned down.
     try {
-      const sidecar = await findItemSidecar(item, typeConfig);
+      sidecar = await findItemSidecar(item, typeConfig);
       if (sidecar) best = await resolveSidecarEnrichment(type, sidecar);
     } catch {
       // best-effort — fall through to the existing id-lookup/title-search path below
@@ -1106,26 +1154,37 @@ async function refreshOneItem(
     // aren't season-level data, and re-writing them on a "just refresh this season" click would be
     // a surprising side effect the button never advertised.
     if (best && onlySeasonNumber == null) {
+      // Same "an explicit local file always wins" rule Scan applies — reuses this item's own
+      // existing token (already on `item`, the row this function started from) rather than
+      // rotating it on every refresh, so a bookmarked/cached local-artwork URL keeps working.
+      const posterToken = sidecar?.localPosterPath ? localArtworkToken(item.local_poster_token) : null;
+      const backdropToken = sidecar?.localBackdropPath ? localArtworkToken(item.local_backdrop_token) : null;
       await db
         .prepare(
           `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), year = COALESCE(?, year),
            release_date = COALESCE(?, release_date), backdrop_url = COALESCE(?, backdrop_url), rating = COALESCE(?, rating),
            runtime_minutes = COALESCE(?, runtime_minutes), status = COALESCE(?, status), content_rating = COALESCE(?, content_rating),
-           genres = COALESCE(?, genres)
+           genres = COALESCE(?, genres),
+           local_poster_path = COALESCE(?, local_poster_path), local_poster_token = COALESCE(?, local_poster_token),
+           local_backdrop_path = COALESCE(?, local_backdrop_path), local_backdrop_token = COALESCE(?, local_backdrop_token)
            ${alreadyMatched ? "" : ", title = ?, sort_title = ?, external_ids = ?"}
            WHERE id = ?`
         )
         .run(
           best.overview,
-          best.posterUrl,
+          posterToken ? localArtworkUrl(posterToken) : best.posterUrl,
           best.year,
           best.releaseDate ?? null,
-          best.backdropUrl ?? null,
+          backdropToken ? localArtworkUrl(backdropToken) : best.backdropUrl ?? null,
           best.rating ?? null,
           best.runtimeMinutes ?? null,
           best.status ?? null,
           best.contentRating ?? null,
           best.genres && best.genres.length > 0 ? JSON.stringify(best.genres) : null,
+          sidecar?.localPosterPath ?? null,
+          posterToken,
+          sidecar?.localBackdropPath ?? null,
+          backdropToken,
           ...(alreadyMatched ? [] : [best.title, best.title.toLowerCase(), JSON.stringify(best.externalIds ?? {})]),
           item.id
         );

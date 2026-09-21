@@ -3,6 +3,7 @@ import path from "node:path";
 import { parseNfo } from "./nfoParser.js";
 import { parseComicInfoXml, findComicInfoInCbz } from "./comicInfoParser.js";
 import { parseOpf } from "./opfParser.js";
+import { resolveLocalArtwork } from "./localArtwork.js";
 import type { MediaTypeConfig } from "./mediaTypes.js";
 
 export interface SidecarMetadata {
@@ -20,6 +21,13 @@ export interface SidecarMetadata {
   /** Only meaningful for an episode-level Kodi episodedetails.nfo. */
   season?: number | null;
   episode?: number | null;
+  /** An absolute on-disk path for a *local* poster/backdrop image, when this sidecar's own folder
+   * has one (see localArtwork.ts) — Kodi's poster.jpg/fanart.jpg convention, or a <thumb> value
+   * that names a local file rather than a real URL. `posterUrl` above stays reserved for an actual
+   * fetchable remote URL; these are mutually exclusive per item (never both set for the same
+   * artwork kind) since a browser can't load either "from" the other. */
+  localPosterPath?: string | null;
+  localBackdropPath?: string | null;
 }
 
 const SEASON_FOLDER = /^season\s*0*(\d{1,3})$|^s0*(\d{1,3})$/i;
@@ -45,8 +53,18 @@ async function tryParseNfoFile(filePath: string): Promise<SidecarMetadata | null
   const xml = readIfExists(filePath);
   if (!xml) return null;
   try {
-    const parsed = await parseNfo(xml);
+    const parsed: SidecarMetadata = await parseNfo(xml);
     if (!parsed.title) return null;
+    // Every Kodi-convention NFO this function ever reads (movie.nfo, tvshow.nfo, artist.nfo,
+    // album.nfo) sits in the exact same folder as its own poster.jpg/fanart.jpg, so resolving
+    // local artwork here — once — covers all of them instead of repeating this in every wrapper
+    // below.
+    const { posterPath, backdropPath } = resolveLocalArtwork(path.dirname(filePath), parsed.posterUrl);
+    if (posterPath) {
+      parsed.posterUrl = null;
+      parsed.localPosterPath = posterPath;
+    }
+    if (backdropPath) parsed.localBackdropPath = backdropPath;
     return parsed;
   } catch {
     // Malformed/non-XML file sitting at a Kodi-conventional path — treat as "no sidecar", never

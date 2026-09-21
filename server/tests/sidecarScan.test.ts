@@ -346,3 +346,86 @@ describe("refreshOneMediaItem — per-episode sidecar re-sync", () => {
     expect(ep).toMatchObject({ title: "Refreshed Lesson", overview: "Refreshed lesson overview." });
   });
 });
+
+describe("scanAndImportLibrary — local poster/backdrop artwork", () => {
+  it("uses a local poster.jpg when the movie's own NFO has no <thumb> at all", async () => {
+    const folder = await insertRootFolder("movie");
+    const dir = path.join(folder.path, "Local Poster Movie");
+    writeFile(dir, "movie.mkv");
+    writeFile(dir, "movie.nfo", `<movie><title>Local Poster Movie</title></movie>`);
+    writeFile(dir, "poster.jpg", "fake local poster bytes");
+
+    const result = await scanAndImportLibrary("movie");
+
+    expect(result).toMatchObject({ created: 1 });
+    const row = (await db.prepare("SELECT * FROM media_items WHERE type='movie'").get()) as any;
+    expect(row.poster_url).toMatch(/^\/api\/media\/local-artwork\/[0-9a-f]+$/);
+    expect(row.local_poster_path).toBe(path.join(dir, "poster.jpg"));
+    expect(row.local_poster_token).toBeTruthy();
+    expect(row.poster_url).toContain(row.local_poster_token);
+  });
+
+  it("does NOT let a coincidental local poster.jpg override a working remote <thumb> URL", async () => {
+    const folder = await insertRootFolder("movie");
+    const dir = path.join(folder.path, "Remote Thumb Movie");
+    writeFile(dir, "movie.mkv");
+    writeFile(dir, "movie.nfo", `<movie><title>Remote Thumb Movie</title><thumb aspect="poster">https://example.com/remote.jpg</thumb></movie>`);
+    writeFile(dir, "poster.jpg", "an unrelated leftover file that happens to share the Kodi convention name");
+
+    await scanAndImportLibrary("movie");
+
+    const row = (await db.prepare("SELECT * FROM media_items WHERE type='movie'").get()) as any;
+    expect(row.poster_url).toBe("https://example.com/remote.jpg");
+    expect(row.local_poster_path).toBeNull();
+    expect(row.local_poster_token).toBeNull();
+  });
+
+  it("resolves a relative <thumb> value against the sidecar's own folder", async () => {
+    const folder = await insertRootFolder("movie");
+    const dir = path.join(folder.path, "Relative Thumb Movie");
+    writeFile(dir, "movie.mkv");
+    writeFile(dir, "movie.nfo", `<movie><title>Relative Thumb Movie</title><thumb aspect="poster">my-custom-art.jpg</thumb></movie>`);
+    writeFile(dir, "my-custom-art.jpg", "fake bytes");
+
+    await scanAndImportLibrary("movie");
+
+    const row = (await db.prepare("SELECT * FROM media_items WHERE type='movie'").get()) as any;
+    expect(row.local_poster_path).toBe(path.join(dir, "my-custom-art.jpg"));
+  });
+
+  it("picks up both a local poster and backdrop for a new show (course), via tvshow.nfo's own folder", async () => {
+    const folder = await insertRootFolder("course");
+    const courseDir = path.join(folder.path, "Local Art Course");
+    writeFile(courseDir, "01 - Lesson.mp4");
+    writeFile(courseDir, "tvshow.nfo", `<tvshow><title>Local Art Course</title></tvshow>`);
+    writeFile(courseDir, "poster.jpg", "fake poster bytes");
+    writeFile(courseDir, "fanart.jpg", "fake fanart bytes");
+
+    await scanAndImportLibrary("course");
+
+    const show = (await db.prepare("SELECT * FROM media_items WHERE type='course'").get()) as any;
+    expect(show.poster_url).toMatch(/^\/api\/media\/local-artwork\/[0-9a-f]+$/);
+    expect(show.backdrop_url).toMatch(/^\/api\/media\/local-artwork\/[0-9a-f]+$/);
+    expect(show.local_poster_path).toBe(path.join(courseDir, "poster.jpg"));
+    expect(show.local_backdrop_path).toBe(path.join(courseDir, "fanart.jpg"));
+    // Two different pieces of art need two different tokens/URLs, not the same one reused.
+    expect(show.poster_url).not.toBe(show.backdrop_url);
+  });
+
+  it("keeps the same local-artwork token across repeated refreshes instead of rotating it", async () => {
+    const folder = await insertRootFolder("movie");
+    const dir = path.join(folder.path, "Stable Token Movie");
+    writeFile(dir, "movie.mkv");
+    writeFile(dir, "movie.nfo", `<movie><title>Stable Token Movie</title></movie>`);
+    writeFile(dir, "poster.jpg", "fake bytes");
+    await scanAndImportLibrary("movie");
+    const created = (await db.prepare("SELECT * FROM media_items WHERE type='movie'").get()) as any;
+    const firstToken = created.local_poster_token;
+    expect(firstToken).toBeTruthy();
+
+    await refreshOneMediaItem(created.id);
+    const afterRefresh = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(created.id)) as any;
+    expect(afterRefresh.local_poster_token).toBe(firstToken);
+    expect(afterRefresh.poster_url).toBe(created.poster_url);
+  });
+});

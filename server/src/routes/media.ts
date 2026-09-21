@@ -692,12 +692,12 @@ mediaRouter.get(
         // Must be named exactly ".plexmatch" inside the item's own folder — never per-title-named
         // like .nfo/.json, since that's not a filename Plex looks for.
         zip.addFile(`${safeFileName(item.title)}/.plexmatch`, Buffer.from(buildPlexMatch(item), "utf-8"));
-        const poster = await fetchPosterBuffer(item.posterUrl);
+        const poster = await fetchPosterBuffer(item.posterUrl, row.local_poster_path);
         if (poster) zip.addFile(`${safeFileName(item.title)}/poster.jpg`, poster);
       } else {
         const body = fmt === "json" ? buildJson(item) : buildNfo(item);
         zip.addFile(`${safeFileName(item.title)}.${fmt}`, Buffer.from(body, "utf-8"));
-        const poster = await fetchPosterBuffer(item.posterUrl);
+        const poster = await fetchPosterBuffer(item.posterUrl, row.local_poster_path);
         if (poster) zip.addFile(`${safeFileName(item.title)}-poster.jpg`, poster);
       }
     }
@@ -721,7 +721,7 @@ mediaRouter.get(
     for (const row of rows) {
       const item = toExportable(row);
       zip.addFile(`${safeFileName(item.title)}/metadata.opf`, Buffer.from(buildCalibreOpf(item), "utf-8"));
-      const cover = await fetchPosterBuffer(item.posterUrl);
+      const cover = await fetchPosterBuffer(item.posterUrl, row.local_poster_path);
       if (cover) zip.addFile(`${safeFileName(item.title)}/cover.jpg`, cover);
     }
     res.setHeader("Content-Disposition", `attachment; filename="aonarr-${type}-calibre.zip"`);
@@ -1286,7 +1286,11 @@ mediaRouter.post(
 
     await db
       .prepare(
-        "UPDATE media_items SET title = ?, sort_title = ?, year = ?, overview = ?, poster_url = ?, external_ids = ?, release_date = ?, backdrop_url = ?, rating = ?, runtime_minutes = ?, studio = ? WHERE id = ?"
+        // A wholesale re-match's poster/backdrop is real, new metadata — whichever local_*_path/
+        // token this item may have had (services/localArtwork.ts) is now stale, orphaned against
+        // an old match, so it's cleared here rather than left pointing at a file the new match's
+        // own poster_url no longer references.
+        "UPDATE media_items SET title = ?, sort_title = ?, year = ?, overview = ?, poster_url = ?, local_poster_path = NULL, local_poster_token = NULL, external_ids = ?, release_date = ?, backdrop_url = ?, local_backdrop_path = NULL, local_backdrop_token = NULL, rating = ?, runtime_minutes = ?, studio = ? WHERE id = ?"
       )
       .run(
         b.title,

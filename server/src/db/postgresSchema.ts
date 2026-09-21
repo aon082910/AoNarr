@@ -113,6 +113,10 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS social_links TEXT`,
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS genres TEXT`,
+  `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS local_poster_path TEXT`,
+  `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS local_poster_token TEXT`,
+  `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS local_backdrop_path TEXT`,
+  `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS local_backdrop_token TEXT`,
 ];
 
 /**

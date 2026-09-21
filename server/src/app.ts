@@ -34,6 +34,7 @@ import { releaseProfilesRouter } from "./routes/releaseProfiles.js";
 import { tracksRouter } from "./routes/tracks.js";
 import { qualitiesRouter } from "./routes/qualities.js";
 import { artworkRouter } from "./routes/artwork.js";
+import { localArtworkRouter } from "./routes/localArtwork.js";
 import { mediaTypesRouter } from "./routes/mediaTypesRoute.js";
 import { librarySearchRouter } from "./routes/librarySearch.js";
 import { collectionsRouter } from "./routes/collections.js";
@@ -258,6 +259,14 @@ export async function createApp(): Promise<Express> {
   // automation already does. Admin-only: every tool proxies to the REST API with the instance
   // admin key, so a restricted household session reaching it would be a full privilege escalation.
   app.all("/api/mcp", requireAdmin, asyncHandler(handleMcpRequest));
+  // Mounted before mediaRouter/tracksRouter/artworkRouter — those each gate their whole router
+  // behind a blanket requireAdmin `.use()` covering all of /api/media/*, which would otherwise
+  // reject this route's own request before Express ever got to trying it, since a router-level
+  // `.use()` with no path runs for every request reaching that router regardless of whether it
+  // has a matching route. This route is deliberately public (see middleware/auth.ts's exemption
+  // list) — an <img src>/background-image can't carry the X-Api-Key/X-Session-Token headers those
+  // other routers require.
+  app.use("/api/media", localArtworkRouter);
   app.use("/api/media", mediaRouter);
   app.use("/api/indexers", indexersRouter);
   app.use("/api/download-clients", downloadClientsRouter);

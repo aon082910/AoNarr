@@ -3,6 +3,38 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 343 — Local poster/backdrop artwork (Kodi poster.jpg/fanart.jpg convention)
+
+Sparked by a peer session generating custom cover art for ~416 restructured Course folders and
+asking whether a `<thumb>` tag naming a local file would actually display — it wouldn't have:
+`posterUrl`/`backdropUrl` were rendered directly as `<img src>`/CSS `background-image` in the
+browser, which can't resolve a bare local filesystem path at all, and AoNarr had no route to serve
+one over HTTP either. Rather than leave that a dead end, added real local-artwork support:
+
+- **Kodi's own convention** — a bare `poster.jpg`/`folder.jpg` (poster) or `fanart.jpg`/
+  `backdrop.jpg` (backdrop) sitting next to a `movie.nfo`/`tvshow.nfo`/`artist.nfo`/`album.nfo` is
+  picked up automatically, no NFO edits required. A `<thumb>` value that's a relative filename
+  (rather than a real URL) is also resolved locally, and — since it's a more explicit signal —
+  takes priority over the bare-file convention when both exist. A *working* remote `<thumb>` URL is
+  never overridden by a same-folder `poster.jpg` some other tool happened to leave behind; this only
+  fills in the cases Round 340 couldn't handle at all (a relative path, or no `<thumb>` at all).
+  Applies to every `kodi-video`/`kodi-music` type (Movies, TV Shows, Anime, Sports, Sports PPV,
+  Courses, Adult, Music) — Comics/Manga/Books/Audiobooks are out of scope for this round.
+- New `GET /api/media/local-artwork/:token` route streams the resolved local file — looked up by
+  its own opaque per-item token (same "capability URL" pattern `/api/share/:token` already uses,
+  and exempt from the normal API-key/session auth for the same reason: an `<img src>` can't carry
+  either), so `poster_url`/`backdrop_url` just point at it like any other URL and every existing
+  page that already renders those needed zero changes. The token is stable across repeated
+  scans/refreshes of the same item rather than rotating every time.
+- Refresh re-checks a sidecar's local artwork the same as everything else Round 341 already made it
+  re-check, and a manual "pick a different poster" or "Different Match" now clears any stale
+  local-artwork pointer it's replacing instead of leaving it orphaned.
+- Bulk NFO/Calibre-OPF export (the .zip download buttons) now embeds the actual local image bytes
+  for a local-artwork item instead of trying to re-fetch AoNarr's own internal route URL, which
+  can't be resolved outside a browser — previously would have silently produced no poster.jpg at
+  all for these. Re-exporting an item's own `.nfo` also no longer writes that internal route URL
+  back into the `<thumb>` tag, which would have been meaningless to anything reading the file later.
+
 ## Round 342 — Fix missing nginx logs in the combined (Unraid CA) image
 
 Reported: "no logs being reported in container logs of unraid." Traced to the `combined` image

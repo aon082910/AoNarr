@@ -28,6 +28,12 @@ export function buildNfo(item: ExportableItem): string {
   const uniqueIds = Object.entries(item.externalIds ?? {})
     .map(([provider, id]) => `  <uniqueid type="${escapeXml(provider)}">${escapeXml(id)}</uniqueid>`)
     .join("\n");
+  // poster_url can also be AoNarr's own local-artwork route (services/localArtwork.ts) rather
+  // than a real fetchable URL, when the source was a local poster.jpg/fanart.jpg or a relative
+  // <thumb> — meaningless written back into a real .nfo file (it's an internal path, not
+  // something anything outside AoNarr could ever resolve), so it's skipped here rather than
+  // round-tripped verbatim.
+  const exportablePosterUrl = item.posterUrl && !item.posterUrl.startsWith("/api/media/local-artwork/") ? item.posterUrl : null;
 
   return [
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`,
@@ -35,7 +41,7 @@ export function buildNfo(item: ExportableItem): string {
     `  <title>${escapeXml(item.title)}</title>`,
     item.year ? `  <year>${item.year}</year>` : null,
     item.overview ? `  <plot>${escapeXml(item.overview)}</plot>` : null,
-    item.posterUrl ? `  <thumb aspect="poster">${escapeXml(item.posterUrl)}</thumb>` : null,
+    exportablePosterUrl ? `  <thumb aspect="poster">${escapeXml(exportablePosterUrl)}</thumb>` : null,
     uniqueIds || null,
     `</${root}>`,
   ]
@@ -131,7 +137,19 @@ export function writeNfoSidecar(filePath: string, item: ExportableItem): void {
  * useful as a genuinely self-contained package. Returns null (never throws) on any failure — a
  * missing/unreachable poster shouldn't fail the whole export, just that one item's image.
  */
-export async function fetchPosterBuffer(posterUrl: string | null): Promise<Buffer | null> {
+export async function fetchPosterBuffer(posterUrl: string | null, localPath?: string | null): Promise<Buffer | null> {
+  // A local poster (services/localArtwork.ts) already sits on disk — read it directly rather than
+  // looping an HTTP request back through this same server for its own /api/media/local-artwork
+  // route, which `posterUrl` would otherwise point at. `fetch()` also can't resolve that route's
+  // path-only URL at all outside a browser (no scheme/host to resolve it against), so this isn't
+  // just an optimization — without it, every local-poster item's export silently got no poster.jpg.
+  if (localPath) {
+    try {
+      return fs.readFileSync(localPath);
+    } catch {
+      return null;
+    }
+  }
   if (!posterUrl) return null;
   try {
     const res = await fetch(posterUrl);

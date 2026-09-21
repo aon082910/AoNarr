@@ -79,6 +79,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     req.path.startsWith("/iptv/m3u/") ||
     req.path.startsWith("/iptv/stream/") ||
     req.path.startsWith("/opds") ||
+    req.path.startsWith("/media/local-artwork/") ||
     req.path.startsWith("/invite/")
   ) {
     next();

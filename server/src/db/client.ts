@@ -113,6 +113,16 @@ ensureColumn("users", "social_links", "social_links TEXT");
 // multi-valued, unlike content_rating's single-scalar column) — see mediaQuery.ts for how
 // filter/sort/search treat this as JSON text rather than a real array column.
 ensureColumn("media_items", "genres", "genres TEXT");
+// Local poster/backdrop artwork (see services/localArtwork.ts) — an absolute on-disk path a sidecar
+// resolved to (Kodi's poster.jpg/fanart.jpg convention, or a <thumb> value that isn't a URL), plus
+// the opaque unguessable token GET /api/media/local-artwork/:token looks the row up by. poster_url/
+// backdrop_url themselves get set to that route's URL, same as any other resolved artwork URL — the
+// *_path columns exist only so the route has something to stream, and the *_token columns so the
+// route doesn't need to be behind the normal API-key/session auth (an <img src> can't carry either).
+ensureColumn("media_items", "local_poster_path", "local_poster_path TEXT");
+ensureColumn("media_items", "local_poster_token", "local_poster_token TEXT");
+ensureColumn("media_items", "local_backdrop_path", "local_backdrop_path TEXT");
+ensureColumn("media_items", "local_backdrop_token", "local_backdrop_token TEXT");
 
 /**
  * One-time transition marker for the course/adult "collection"/"single" -> "episodic" shape change
