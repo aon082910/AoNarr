@@ -3,6 +3,29 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 339 — Actually fix the toolbar wrap this time
+
+Round 338's toolbar fix ("Filters" dropdown consolidation) only helped at very wide desktop
+widths — reported back as still broken after updating, and reproduced live at a completely
+ordinary 1366px laptop width across several library types, not an edge case. The real cause
+wasn't insufficient width reduction — it was two nested `flex-wrap` containers (the toolbar's own
+left/right split, and each side's own internal wrapping): once a side wrapped onto its own line,
+the browser computed its *available* width as only about two-thirds of the row's actual free
+space, so it kept wrapping its own children internally long before genuinely running out of room,
+even at 1600px. Confirmed by measuring real layout rects live rather than guessing from a
+screenshot at one width.
+
+- **Fixed properly**: flattened the toolbar into a single flex-wrap row instead of nesting two
+  independent ones — every left/right control is now a direct sibling, so there's only one
+  layout pass deciding what fits, and it correctly uses the entire row. The previous
+  left-actions/right-controls visual split (right side flush to the edge when there's room to
+  share a line) is preserved with a single `margin-left: auto` instead of the two-group
+  `justify-content: space-between` that caused it, which also fixes a second thing that
+  fix would have caused on toolbars with nothing on the right (Indexers, Import Lists) — the
+  left-side buttons themselves spreading out across the whole row instead of staying clustered.
+  Verified live at 1366px, 1600px, and mobile width, and confirmed pages with a short/empty right
+  side aren't affected.
+
 ## Round 338 — Multi-episode files, genres, toolbar fix, a real profile page, and a popup audit
 
 Nine more requests, three of which referenced Round 337 work as allegedly still broken. Two of

@@ -572,13 +572,26 @@ button.icon-button.danger:hover { background: rgba(224,92,92,0.15); }
 /* Sonarr/Radarr-style page toolbar — a full-content-width bar directly under a page's <h1>,
    split into a left (page actions) and right (view/sort/filter/search) group. Bleeds to the
    edges of .content the same way .media-backdrop does, so it automatically respects the
-   centered/full-width layout preference instead of needing its own special-casing. */
+   centered/full-width layout preference instead of needing its own special-casing.
+
+   .toolbar-group is `display: contents` rather than its own nested flex-wrap container — two
+   independent flex-wrap containers (this one and a wrapping child) get their available width
+   computed inconsistently by the browser once the child needs to wrap: measured live, a
+   .toolbar-group left alone on its own line (after the left group pushed it there) rendered at
+   only ~2/3 of the row's actual free width and wrapped its own children internally well before
+   running out of real room, on both a 1600px and a 1366px viewport. `display: contents` removes
+   that nesting — every left/right item becomes a direct child of one single flex-wrap row, so
+   there's only ever one layout algorithm deciding what fits, and it correctly uses the full row.
+   The old left/right visual split (right-aligned when there's room to share a line) is
+   reproduced with margin-left:auto on the right group's first surviving child instead of
+   justify-content:space-between, since space-between spread every item evenly once they were all
+   siblings of one flex row (very visible when the right side is empty, e.g. Import Lists/Indexers'
+   toolbar — the left-side buttons themselves spread across the whole row instead of clustering). */
 .page-toolbar {
   display: flex;
-  justify-content: space-between;
-  align-items: stretch;
+  align-items: center;
   flex-wrap: wrap;
-  row-gap: 4px;
+  gap: 4px 2px;
   margin: 0 -36px 20px;
   padding: 4px 36px;
   background: var(--panel);
@@ -589,12 +602,13 @@ button.icon-button.danger:hover { background: rgba(224,92,92,0.15); }
   .page-toolbar { margin: 0 -16px 20px; padding: 4px 16px; }
 }
 
-.toolbar-group {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 2px;
-}
+.toolbar-group { display: contents; }
+/* The right-hand PageToolbar group's first surviving child (skipped over any hidden/display:none
+   ones via :first-child being a DOM, not rendering, match is fine here since a display:none
+   element's own auto margin has no visible effect anyway) gets pushed to the row's right edge —
+   the replacement for the old two-group justify-content:space-between, see the comment above. */
+.toolbar-group:last-of-type > :first-child { margin-left: auto; }
+
 /* Same height-alignment fix .toolbar already applies to its own button/select/input/dropdown
    children (see the comment above .toolbar below) — a PageToolbar's right-hand group commonly
    mixes ToolbarButtons with plain selects/inputs/DropdownMenus (search box, Sort/Filter selects,
