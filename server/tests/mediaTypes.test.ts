@@ -55,15 +55,23 @@ describe("course/adult: folder-as-show episodic config", () => {
     }
   });
 
-  it("course/adult's groupLevels (the manual, admin-curated browsing hierarchy) are unchanged by the shape switch", () => {
-    expect(getMediaTypeConfig("course").groupLevels).toEqual(["site", "creator"]);
-    expect(getMediaTypeConfig("adult").groupLevels).toEqual(["site", "maker", "series"]);
+  it("course/adult have no groupLevels — a course/adult folder browses flat, one folder per item, no Site/Creator grouping tier above it", () => {
+    expect(getMediaTypeConfig("course").groupLevels).toBeUndefined();
+    expect(getMediaTypeConfig("adult").groupLevels).toBeUndefined();
   });
 
   it("adult keeps its metadata provider (enrichment-only) and course stays manual-only", () => {
     expect(getMediaTypeConfig("adult").metadataProviders).toEqual(["theporndb"]);
     expect(getMediaTypeConfig("course").metadataProviders).toEqual([]);
     expect(getMediaTypeConfig("course").defaultProvider).toBeNull();
+  });
+});
+
+describe("groupLevels", () => {
+  it("no current type sets groupLevels — every library browses as a flat list, no Site/Creator/System/Maker tier above the item itself", () => {
+    for (const key of MEDIA_TYPE_KEYS) {
+      expect(getMediaTypeConfig(key).groupLevels).toBeUndefined();
+    }
   });
 });
 

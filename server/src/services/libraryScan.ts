@@ -15,11 +15,9 @@ import {
   fetchArtistAlbumsFor,
   fetchCollectionChildrenFor,
   fetchMovieByTmdbId,
-  fetchRomDetailsFor,
   type MetadataEpisode,
   type MetadataSearchResult,
 } from "./metadata.js";
-import { findOrCreateLibraryGroup } from "./libraryGroups.js";
 import { log } from "./logger.js";
 import {
   findFileSidecar,
@@ -1282,26 +1280,6 @@ async function refreshOneItem(
         } catch {
           // best-effort — see comment above
         }
-      }
-    }
-
-    // Match-confirmed System/Maker auto-assignment: a ROM only ever gets a group here once a real
-    // match (this Refresh, or an earlier one) actually returns platform data — never guessed from
-    // the file extension. Never overwrites a group an admin already set (via "Move to Group" or the
-    // guided Add Media flow), and is entirely best-effort: a ROM whose id doesn't resolve to
-    // platform data, or a hiccup on the lookup/create, simply keeps no System rather than failing
-    // the rest of the refresh.
-    if (type === "rom" && !item.group_id) {
-      try {
-        const idsForRomDetails = alreadyMatched ? existingExternalIds : best?.externalIds ?? {};
-        const details = await fetchRomDetailsFor(idsForRomDetails);
-        if (details?.system) {
-          const systemId = await findOrCreateLibraryGroup("rom", "system", details.system, null, details.systemLogoUrl);
-          const groupId = details.maker ? await findOrCreateLibraryGroup("rom", "maker", details.maker, systemId) : systemId;
-          await db.prepare("UPDATE media_items SET group_id = ? WHERE id = ?").run(groupId, item.id);
-        }
-      } catch {
-        // best-effort only, see comment above
       }
     }
 

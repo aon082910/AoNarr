@@ -17,7 +17,6 @@ const fetchSeriesSeasonsFor = vi.fn();
 const fetchArtistAlbumsFor = vi.fn();
 const fetchCollectionChildrenFor = vi.fn();
 const fetchMovieByTmdbId = vi.fn();
-const fetchRomDetailsFor = vi.fn();
 vi.mock("../src/services/metadata.js", () => ({
   searchMetadata: (...args: unknown[]) => searchMetadata(...args),
   fetchByExternalId: (...args: unknown[]) => fetchByExternalId(...args),
@@ -27,7 +26,6 @@ vi.mock("../src/services/metadata.js", () => ({
   fetchArtistAlbumsFor: (...args: unknown[]) => fetchArtistAlbumsFor(...args),
   fetchCollectionChildrenFor: (...args: unknown[]) => fetchCollectionChildrenFor(...args),
   fetchMovieByTmdbId: (...args: unknown[]) => fetchMovieByTmdbId(...args),
-  fetchRomDetailsFor: (...args: unknown[]) => fetchRomDetailsFor(...args),
 }));
 
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
@@ -96,7 +94,6 @@ beforeEach(async () => {
   fetchArtistAlbumsFor.mockReset().mockResolvedValue(null);
   fetchCollectionChildrenFor.mockReset().mockResolvedValue({ provider: null, children: [] });
   fetchMovieByTmdbId.mockReset().mockResolvedValue({});
-  fetchRomDetailsFor.mockReset().mockResolvedValue(null);
 
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-libscan-"));
 });
@@ -1006,43 +1003,6 @@ describe("refreshLibraryMetadata / refreshOneMediaItem", () => {
     expect(episodes.some((e) => e.episode_number === 2 && e.has_file === 1)).toBe(true);
   });
 
-  it("rom: auto-assigns a System (and Maker) library_group once a match actually returns platform data — never guessed, and never overwriting an existing group", async () => {
-    const id = Number(
-      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('rom','Some Game','some game',1,1,'downloaded')`).run())
-        .lastInsertRowid
-    );
-    searchMetadata.mockResolvedValue([{ title: "Some Game", year: 1998, overview: "O", posterUrl: null, externalIds: { rawg: "123" } }]);
-    fetchRomDetailsFor.mockResolvedValue({ overview: null, system: "Super Nintendo", maker: "Nintendo", systemLogoUrl: null });
-
-    const result = await refreshOneMediaItem(id);
-
-    expect(result.ok).toBe(true);
-    const row = (await db.prepare("SELECT group_id FROM media_items WHERE id = ?").get(id)) as { group_id: number | null };
-    expect(row.group_id).toBeTruthy();
-    const group = (await db.prepare("SELECT * FROM library_groups WHERE id = ?").get(row.group_id!)) as any;
-    expect(group).toMatchObject({ kind: "maker", name: "Nintendo" });
-    const system = (await db.prepare("SELECT * FROM library_groups WHERE id = ?").get(group.parent_group_id)) as any;
-    expect(system).toMatchObject({ kind: "system", name: "Super Nintendo" });
-  });
-
-  it("rom: never overwrites a group an admin already set manually, even when a fresh match returns different platform data", async () => {
-    const existingGroupId = Number(
-      (await db.prepare(`INSERT INTO library_groups (media_type, kind, name, sort_name) VALUES ('rom','system','Manually Set','manually set')`).run()).lastInsertRowid
-    );
-    const id = Number(
-      (
-        await db
-          .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status, group_id) VALUES ('rom','Some Game','some game',1,1,'downloaded',?)`)
-          .run(existingGroupId)
-      ).lastInsertRowid
-    );
-    searchMetadata.mockResolvedValue([{ title: "Some Game", year: 1998, overview: "O", posterUrl: null, externalIds: { rawg: "123" } }]);
-
-    await refreshOneMediaItem(id);
-
-    const row = (await db.prepare("SELECT group_id FROM media_items WHERE id = ?").get(id)) as { group_id: number };
-    expect(row.group_id).toBe(existingGroupId);
-  });
 });
 
 // ---------------------------------------------------------------------------

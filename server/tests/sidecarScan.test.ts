@@ -18,7 +18,6 @@ const fetchSeriesSeasonsFor = vi.fn();
 const fetchArtistAlbumsFor = vi.fn();
 const fetchCollectionChildrenFor = vi.fn();
 const fetchMovieByTmdbId = vi.fn();
-const fetchRomDetailsFor = vi.fn();
 vi.mock("../src/services/metadata.js", () => ({
   searchMetadata: (...args: unknown[]) => searchMetadata(...args),
   fetchByExternalId: (...args: unknown[]) => fetchByExternalId(...args),
@@ -28,7 +27,6 @@ vi.mock("../src/services/metadata.js", () => ({
   fetchArtistAlbumsFor: (...args: unknown[]) => fetchArtistAlbumsFor(...args),
   fetchCollectionChildrenFor: (...args: unknown[]) => fetchCollectionChildrenFor(...args),
   fetchMovieByTmdbId: (...args: unknown[]) => fetchMovieByTmdbId(...args),
-  fetchRomDetailsFor: (...args: unknown[]) => fetchRomDetailsFor(...args),
 }));
 
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
@@ -60,7 +58,6 @@ beforeEach(async () => {
   fetchArtistAlbumsFor.mockReset().mockResolvedValue(null);
   fetchCollectionChildrenFor.mockReset().mockResolvedValue({ provider: null, children: [] });
   fetchMovieByTmdbId.mockReset().mockResolvedValue({});
-  fetchRomDetailsFor.mockReset().mockResolvedValue(null);
 });
 
 let tmpRoot: string;

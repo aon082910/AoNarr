@@ -2,8 +2,9 @@ import { Link, useParams } from "react-router-dom";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { LibraryItemGrid } from "./LibraryType.js";
 
-/** Items of a grouped type (ROMs/Adult/Online Videos/Courses) that haven't been filed under a
- * group yet — reachable from the type's top-level group-browse page. */
+/** Items of a grouped type (see mediaTypes.ts's `groupLevels` — no current type sets it, so this
+ * page is unreachable today, but stays in place for a future type that does) that haven't been
+ * filed under a group yet — reachable from the type's top-level group-browse page. */
 export default function LibraryUngrouped() {
   const { type = "" } = useParams<{ type: string }>();
   const mediaTypes = useMediaTypes();

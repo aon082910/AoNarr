@@ -3,6 +3,32 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 344 — Flatten Course/Adult/ROM/Online Videos browsing, remove "Ungrouped"
+
+Requested: each Course folder should be one course, browsed as a flat list — not nested under
+extra Site/Creator "folder" tiles — with no "N item(s) haven't been matched to a group yet"
+Ungrouped nag, and the same for Adult/ROMs/anything else that had it. Confirmed a course folder was
+already correctly treated as exactly one course with Season NN/episode structure (the scanner's
+folder-depth logic never used `groupLevels` at all — that's a completely separate, purely
+admin-curated browse taxonomy layered on top via `group_id`, unrelated to how items are actually
+scanned from disk), so the only real change needed was removing that taxonomy:
+
+- Removed `groupLevels` from all four types that had it — Courses (`site`/`creator`), Adult
+  (`site`/`maker`/`series`), Online Videos (`site`), and ROMs (`system`/`maker`). Since the
+  Ungrouped tab/banner and the grouped tile-browse view are both driven entirely by whether a
+  type's `groupLevels` is non-empty, every one of these now goes straight to its own flat item
+  grid — the exact same experience Movies/TV/Music/etc. already have — with zero frontend code
+  changes needed.
+- ROM's grouping was the one exception worth calling out: System/Maker groups there were the only
+  ones actually auto-populated (from RAWG/IGDB/etc. platform data during Refresh, never from folder
+  structure), not a manual admin chore like the other three. Removed alongside the others per an
+  explicit choice to keep all four consistent — the auto-assignment code (and its now-dead
+  `findOrCreateLibraryGroup` helper) is removed too, since it would otherwise keep doing a real
+  provider lookup on every ROM refresh for a `group_id` nothing displays anymore.
+- The underlying `library_groups` table, its CRUD routes, and the frontend's generic grouped-browse
+  code are all left intact and untouched — genuinely dead for every type today, but available
+  as-is for a future type that wants this kind of manual multi-level taxonomy again.
+
 ## Round 343 — Local poster/backdrop artwork (Kodi poster.jpg/fanart.jpg convention)
 
 Sparked by a peer session generating custom cover art for ~416 restructured Course folders and

@@ -35,9 +35,15 @@ export interface MediaTypeConfig {
    * episodic types (series/anime/sports) must leave this unset — a marker-less file for those
    * stays skipped, exactly as before. */
   sequentialEpisodeFallback?: boolean;
-  /** Nested grouping levels above the media_item itself, outermost first — e.g. rom's
-   * ["system", "maker"] means System -> Maker -> Game. Empty/absent means items of this type
-   * aren't grouped (browsed as a flat list, same as before library_groups existed). */
+  /** Nested grouping levels above the media_item itself, outermost first — e.g. ["system",
+   * "maker"] would mean System -> Maker -> Game. Empty/absent means items of this type aren't
+   * grouped (browsed as a flat list). No current type sets this — ROM/Online Videos/Courses/
+   * Adult all used to (System/Maker, Site, Site/Creator, Site/Maker/Series respectively), but
+   * browsing by an extra manually-curated folder level on top of the actual show/item, plus the
+   * "N item(s) haven't been matched to a group yet" nag that came with it, wasn't worth it for
+   * any of them in practice — a course/adult/ROM folder already *is* the item, one level, no
+   * grouping needed above it. The underlying library_groups table/routes/UI stay intact for a
+   * future type that genuinely wants this. */
   groupLevels?: string[];
   /** The on-disk metadata sidecar convention this type's files use, if any — see
    * services/sidecarMetadata.ts, which Scan/Refresh check before falling back to today's
@@ -222,7 +228,6 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     indexerCategory: "1000,4000,4050,8000",
     metadataProviders: ["rawg", "igdb", "screenscraper", "thegamesdb"],
     defaultProvider: "rawg",
-    groupLevels: ["system", "maker"],
   },
   video: {
     key: "video",
@@ -233,7 +238,6 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     indexerCategory: "5000",
     metadataProviders: ["youtube", "vimeo"],
     defaultProvider: "youtube",
-    groupLevels: ["site"],
   },
   podcast: {
     key: "podcast",
@@ -263,7 +267,6 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     indexerCategory: "5000",
     metadataProviders: [],
     defaultProvider: null,
-    groupLevels: ["site", "creator"],
     sidecarFormat: "kodi-video",
   },
   adult: {
@@ -278,7 +281,6 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     indexerCategory: "6000",
     metadataProviders: ["theporndb"],
     defaultProvider: "theporndb",
-    groupLevels: ["site", "maker", "series"],
     sidecarFormat: "kodi-video",
   },
 };
