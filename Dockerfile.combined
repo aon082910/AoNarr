@@ -31,7 +31,15 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-pip make g++ ca-certificates curl ffmpeg nginx gnupg \
     && rm -rf /var/lib/apt/lists/* \
-    && rm -f /etc/nginx/sites-enabled/default
+    && rm -f /etc/nginx/sites-enabled/default \
+    # Debian's nginx package (unlike the official nginx Docker image, which does this at build
+    # time) logs to real files under /var/log/nginx by default — those never reach `docker logs`,
+    # so every nginx-side request/error was completely invisible in Unraid's own container log
+    # viewer even though the Node app's own console.log output showed up fine right next to it.
+    # Symlinking to the standard streams, same trick the official image uses, merges nginx's own
+    # logging into the container's stdout/stderr alongside the app's.
+    && ln -sf /dev/stdout /var/log/nginx/access.log \
+    && ln -sf /dev/stderr /var/log/nginx/error.log
 # ffsubsync re-aligns a downloaded subtitle's timing against the video's own audio (voice-activity
 # detection, no external API) — used as a best-effort pass on subtitles the picker didn't already
 # consider a high-confidence match (see subtitleSync.ts). --break-system-packages is required on

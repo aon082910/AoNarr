@@ -3,6 +3,21 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 342 — Fix missing nginx logs in the combined (Unraid CA) image
+
+Reported: "no logs being reported in container logs of unraid." Traced to the `combined` image
+(the single-container nginx+node build meant for Unraid CA deployments) installing nginx from
+Debian's own `apt` package rather than the official nginx Docker image — Debian's package logs to
+real files under `/var/log/nginx` by default, which never reach `docker logs`/Unraid's log viewer,
+unlike the official nginx image (used by AoNarr's own split `web` image), which symlinks those
+files to stdout/stderr at build time. Every nginx-side request and error was completely invisible
+in Unraid's UI, even though the Node app's own log lines showed up fine right next to the gap.
+Fixed by symlinking `access.log`/`error.log` to `/dev/stdout`/`/dev/stderr` the same way the
+official image does. Live-verified: rebuilt the image, confirmed the symlinks, and watched real
+`GET` request lines land in `docker logs` that were previously silent. Dockerfile-only change — no
+app code affected, split `server`/`web` images were never affected (the `web` image was already
+using the official nginx base, confirmed unaffected before shipping this fix).
+
 ## Round 341 — Fix incomplete NFO sync (Round 340 follow-up)
 
 Reported after Round 340 shipped: "the reader of nfo is not updating all the information ... seems
