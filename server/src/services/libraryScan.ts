@@ -521,7 +521,8 @@ async function scanAndImportLibraryInner(
             if (best) {
               await db
                 .prepare(
-                  "UPDATE media_items SET overview = ?, poster_url = ?, year = ?, external_ids = ?, release_date = ?, status = COALESCE(?, status) WHERE id = ?"
+                  `UPDATE media_items SET overview = ?, poster_url = ?, year = ?, external_ids = ?, release_date = ?,
+                   content_rating = ?, genres = ?, status = COALESCE(?, status) WHERE id = ?`
                 )
                 .run(
                   best.overview ?? null,
@@ -529,6 +530,8 @@ async function scanAndImportLibraryInner(
                   best.year ?? null,
                   JSON.stringify(best.externalIds ?? {}),
                   best.releaseDate ?? null,
+                  best.contentRating ?? null,
+                  best.genres && best.genres.length > 0 ? JSON.stringify(best.genres) : null,
                   best.status ?? null,
                   newId
                 );
@@ -589,9 +592,26 @@ async function scanAndImportLibraryInner(
             });
             continue;
           } else if (existingEp) {
+            // Reached when this episode's row already exists but its *file path* just changed (a
+            // re-download/re-encode under a new filename, still same season/episode) — a per-episode
+            // sidecar at the new path always wins here too, not just on first import. Note this is
+            // NOT how an in-place edit to an already-tracked file's own .nfo gets picked up (that
+            // file's path is unchanged, so the scan walk never revisits it at all — see knownPaths
+            // in scanAndImportLibraryInner); refreshOneItem's own dedicated per-episode sidecar pass
+            // handles that case instead. Same single-target-episode guard as the create branch below.
+            const sidecarTitle = targetEpisodeNumbers.length === 1 ? episodeSidecar?.title : null;
             await db
-              .prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ? WHERE id = ?")
-              .run(filePath, quality, mediaInfoJson, existingEp.id);
+              .prepare(
+                `UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ?
+                 ${sidecarTitle ? ", title = ?, overview = COALESCE(?, overview)" : ""} WHERE id = ?`
+              )
+              .run(
+                filePath,
+                quality,
+                mediaInfoJson,
+                ...(sidecarTitle ? [sidecarTitle, episodeSidecar?.overview ?? null] : []),
+                existingEp.id
+              );
           } else {
             // A per-episode sidecar's own title always wins when present, for every episodic type
             // (not just sequentialEpisodeFallback ones) — checked before either fallback below.
@@ -606,17 +626,18 @@ async function scanAndImportLibraryInner(
             // Same leading-number stripping upsertTrackFromFile already applies to a track's own
             // title — without it, a numbered lesson's title would keep its own "01 - " prefix, which
             // looks redundant next to the episode number the UI already shows beside it.
+            const singleTargetSidecar = targetEpisodeNumbers.length === 1 ? episodeSidecar : null;
             const episodeTitle =
-              (targetEpisodeNumbers.length === 1 ? episodeSidecar?.title : null) ??
+              singleTargetSidecar?.title ??
               (typeConfig.sequentialEpisodeFallback
                 ? guessTitleFromText(base.replace(/^\d{1,3}[\s._-]*/, "")) || `Episode ${targetEpisode}`
                 : `Episode ${targetEpisode}`);
             await db
               .prepare(
-                `INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path, quality, media_info)
-                 VALUES (?, ?, ?, ?, 1, 1, ?, ?, ?)`
+                `INSERT INTO episodes (media_item_id, season_number, episode_number, title, overview, monitored, has_file, file_path, quality, media_info)
+                 VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?, ?)`
               )
-              .run(seriesMatch.id, season, targetEpisode, episodeTitle, filePath, quality, mediaInfoJson);
+              .run(seriesMatch.id, season, targetEpisode, episodeTitle, singleTargetSidecar?.overview ?? null, filePath, quality, mediaInfoJson);
           }
           result.matched++;
         }
@@ -672,8 +693,21 @@ async function scanAndImportLibraryInner(
               const best = await resolveSidecarEnrichment(type, artistSidecar);
               if (best) {
                 await db
-                  .prepare("UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), external_ids = ? WHERE id = ?")
-                  .run(best.overview, best.posterUrl, JSON.stringify(best.externalIds ?? {}), parentMatch.id);
+                  .prepare(
+                    `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url),
+                     year = COALESCE(?, year), release_date = COALESCE(?, release_date),
+                     content_rating = COALESCE(?, content_rating), genres = COALESCE(?, genres), external_ids = ? WHERE id = ?`
+                  )
+                  .run(
+                    best.overview,
+                    best.posterUrl,
+                    best.year,
+                    best.releaseDate ?? null,
+                    best.contentRating ?? null,
+                    best.genres && best.genres.length > 0 ? JSON.stringify(best.genres) : null,
+                    JSON.stringify(best.externalIds ?? {}),
+                    parentMatch.id
+                  );
               }
             } catch {
               // best-effort only — a bad/unreachable id shouldn't block the rest of the scan
@@ -1154,9 +1188,42 @@ async function refreshOneItem(
       // new episodes from — so "Refresh" instead re-scans this show's own folder for files added
       // since it was last scanned, the same per-item machinery the "Scan & Import" button already
       // uses. Without this, Refresh only ever re-pulled overview/poster/year for these two types
-      // and silently never picked up a single new lesson/clip file.
+      // and silently never picked up a single new lesson/clip file. This only ever walks paths NOT
+      // already tracked (see knownPaths in scanAndImportLibraryInner) — an already-downloaded
+      // episode's own file is never revisited here even if its sidecar changed, which is exactly
+      // what the dedicated pass right below is for.
       const scanResult = await scanAndImportOneMediaItem(item.id, undefined, onlySeasonNumber);
       childrenAdded += scanResult.matched + scanResult.created;
+    }
+
+    if (typeConfig.shape === "episodic" && typeConfig.sidecarFormat === "kodi-video") {
+      // A per-episode .nfo always wins on Refresh too, not just Scan & Import — without this, an
+      // admin who adds/edits episodedetails.nfo files *after* a show has already been scanned once
+      // (the ordinary real-world order) had no way to ever get that data into AoNarr short of
+      // deleting and re-adding the episode, since Scan & Import itself only ever walks paths it
+      // doesn't already know about (see knownPaths above) and never revisits an already-tracked
+      // file just because its sidecar changed. syncMissingChildren above has the same blind spot
+      // from the other direction — it only ever pulls a NEW episode's title/overview from the
+      // metadata provider's own episode list. Scoped to has_file rows only, since there's nothing
+      // on disk to check a sidecar against otherwise; best-effort per episode so one bad/unreadable
+      // .nfo doesn't stall the rest. Runs for every kodi-video episodic type, sequentialEpisodeFallback
+      // included — the rescan above only ever adds new files, never re-syncs an existing one's sidecar.
+      const episodeRows = (await db
+        .prepare("SELECT id, season_number, file_path FROM episodes WHERE media_item_id = ? AND has_file = 1 AND file_path IS NOT NULL")
+        .all(item.id)) as { id: number; season_number: number; file_path: string }[];
+      for (const ep of episodeRows) {
+        if (onlySeasonNumber != null && ep.season_number !== onlySeasonNumber) continue;
+        try {
+          const epSidecar = await findEpisodeSidecar(ep.file_path);
+          if (epSidecar?.title) {
+            await db
+              .prepare("UPDATE episodes SET title = ?, overview = COALESCE(?, overview) WHERE id = ?")
+              .run(epSidecar.title, epSidecar.overview ?? null, ep.id);
+          }
+        } catch {
+          // best-effort — see comment above
+        }
+      }
     }
 
     // Match-confirmed System/Maker auto-assignment: a ROM only ever gets a group here once a real

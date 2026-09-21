@@ -3,6 +3,31 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 341 — Fix incomplete NFO sync (Round 340 follow-up)
+
+Reported after Round 340 shipped: "the reader of nfo is not updating all the information ... seems
+to be only updating the poster." Live-reproduced against a real Course and Series fixture and found
+three real gaps, all in `libraryScan.ts`:
+
+- **Per-episode sidecar data was silently discarded.** A per-episode `<basename>.nfo`'s `<plot>`
+  was parsed but never written anywhere — only its `<title>` made it into the episode row, both on
+  first import and (for an already-tracked episode whose file path changed) on a later rescan.
+- **Refresh never revisited an already-downloaded episode's own sidecar at all**, for *every*
+  episodic type — Scan & Import only ever walks paths it doesn't already know about (so an admin
+  editing an episode's `.nfo` *after* the episode had already been scanned had no way to get that
+  change into AoNarr short of deleting and re-adding it), and Refresh's own provider-driven episode
+  sync (`syncMissingChildren`) only ever pulls a *new* episode's title/overview from a metadata
+  provider, never re-reads a file already on disk. Refresh now makes a dedicated pass over every
+  already-downloaded episode of a kodi-video episodic show (Series/Anime/Sports/Course/Adult),
+  independent of the file-walk, and applies its own `.nfo` if one exists — this is the fix behind
+  the reported symptom: editing a lesson/episode's `.nfo` and hitting Refresh now actually updates
+  that episode's title and overview, not just the show's own poster.
+- **A new show's or artist's first-scan enrichment silently dropped content rating and genres** —
+  only overview/poster/year/external_ids were written on creation; a follow-up Refresh happened to
+  paper over this for the show/artist itself (its own update path already included every field), but
+  the first scan alone under-enriched a brand-new item. Fixed to match the same full field set every
+  other enrichment-on-creation path already writes.
+
 ## Round 340 — Automatic sidecar-metadata matching (NFO / ComicInfo.xml / OPF)
 
 The scanner never read a local metadata sidecar for *any* library before this — `.nfo` parsing

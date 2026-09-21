@@ -134,7 +134,11 @@ describe("scanAndImportLibrary — sidecar matching (episodic: series and course
     const seasonDir = path.join(folder.path, "Wrong Folder Name", "Season 01");
     const epFile = writeFile(seasonDir, "ep01.mkv");
     writeFile(path.dirname(seasonDir), "tvshow.nfo", `<tvshow><title>Breaking Bad</title><uniqueid type="tmdb">1396</uniqueid></tvshow>`);
-    writeFile(seasonDir, "ep01.nfo", `<episodedetails><title>Pilot</title><season>1</season><episode>1</episode></episodedetails>`);
+    writeFile(
+      seasonDir,
+      "ep01.nfo",
+      `<episodedetails><title>Pilot</title><plot>A chemistry teacher's diagnosis changes everything.</plot><season>1</season><episode>1</episode></episodedetails>`
+    );
     fetchByExternalId.mockResolvedValueOnce({
       title: "Breaking Bad",
       year: 2008,
@@ -149,7 +153,15 @@ describe("scanAndImportLibrary — sidecar matching (episodic: series and course
     const show = (await db.prepare("SELECT * FROM media_items WHERE type='series'").get()) as any;
     expect(show).toMatchObject({ title: "Breaking Bad", overview: "A teacher turns to crime." });
     const ep = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").get(show.id)) as any;
-    expect(ep).toMatchObject({ season_number: 1, episode_number: 1, title: "Pilot", file_path: epFile });
+    // The episode's own sidecar overview is used too, not just its title — a per-episode NFO's
+    // <plot> was previously parsed and then silently discarded on insert.
+    expect(ep).toMatchObject({
+      season_number: 1,
+      episode_number: 1,
+      title: "Pilot",
+      overview: "A chemistry teacher's diagnosis changes everything.",
+      file_path: epFile,
+    });
     expect(fetchByExternalId).toHaveBeenCalledWith("series", "tmdb", "1396");
   });
 
@@ -157,7 +169,12 @@ describe("scanAndImportLibrary — sidecar matching (episodic: series and course
     const folder = await insertRootFolder("course");
     const courseDir = path.join(folder.path, "Wrong Course Folder Name");
     writeFile(courseDir, "01 - Welcome.mp4");
-    writeFile(courseDir, "tvshow.nfo", `<tvshow><title>Real Course Title</title><plot>Learn something.</plot></tvshow>`);
+    writeFile(
+      courseDir,
+      "tvshow.nfo",
+      `<tvshow><title>Real Course Title</title><plot>Learn something.</plot><mpaa>All Ages</mpaa><genre>Engineering</genre><genre>Science</genre></tvshow>`
+    );
+    writeFile(courseDir, "01 - Welcome.nfo", `<episodedetails><title>Welcome Lesson</title><plot>The first lesson overview.</plot></episodedetails>`);
 
     const result = await scanAndImportLibrary("course");
 
@@ -166,8 +183,33 @@ describe("scanAndImportLibrary — sidecar matching (episodic: series and course
     // the existing "creates a new series..." test above already relies on.
     expect(result.matched).toBe(1);
     const show = (await db.prepare("SELECT * FROM media_items WHERE type='course'").get()) as any;
-    expect(show).toMatchObject({ title: "Real Course Title", overview: "Learn something." });
+    // content_rating/genres from the show-level sidecar were previously dropped on creation —
+    // only overview/poster/year/external_ids/release_date/status were written.
+    expect(show).toMatchObject({ title: "Real Course Title", overview: "Learn something.", content_rating: "All Ages" });
+    expect(JSON.parse(show.genres)).toEqual(["Engineering", "Science"]);
     expect(searchMetadata).not.toHaveBeenCalled();
+    const ep = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").get(show.id)) as any;
+    expect(ep).toMatchObject({ title: "Welcome Lesson", overview: "The first lesson overview." });
+  });
+});
+
+describe("scanAndImportLibrary — sidecar matching (collection: artist)", () => {
+  it("enriches a new artist from artist.nfo with year/rating/genres, not just overview/poster", async () => {
+    const folder = await insertRootFolder("artist");
+    const albumDir = path.join(folder.path, "Wrong Artist Folder", "OK Computer");
+    writeFile(albumDir, "track01.mp3");
+    writeFile(
+      path.dirname(albumDir),
+      "artist.nfo",
+      `<artist><name>Radiohead</name><plot>An English rock band.</plot><year>1985</year><mpaa>Explicit</mpaa><genre>Rock</genre><genre>Alternative</genre></artist>`
+    );
+
+    const result = await scanAndImportLibrary("artist");
+
+    expect(result.matched).toBe(1);
+    const artist = (await db.prepare("SELECT * FROM media_items WHERE type='artist'").get()) as any;
+    expect(artist).toMatchObject({ title: "Radiohead", overview: "An English rock band.", year: 1985, content_rating: "Explicit" });
+    expect(JSON.parse(artist.genres)).toEqual(["Rock", "Alternative"]);
   });
 });
 
@@ -249,5 +291,58 @@ describe("refreshOneMediaItem — sidecar matching", () => {
     expect(fetchByExternalId).toHaveBeenCalledWith("movie", "tmdb", "111");
     const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(movieId)) as any;
     expect(row.overview).toBe("From the existing id.");
+  });
+});
+
+describe("refreshOneMediaItem — per-episode sidecar re-sync", () => {
+  // Scan & Import only ever walks paths it doesn't already know about (see knownPaths in
+  // scanAndImportLibraryInner) — it never revisits an already-tracked episode file just because
+  // its own .nfo changed after the fact. Refresh needs its own dedicated pass over already-
+  // downloaded episodes to pick that up, independent of the file-walk.
+
+  it("re-applies an edited per-episode .nfo for a provider-backed type (series) without a folder rescan", async () => {
+    const folder = await insertRootFolder("series");
+    const seasonDir = path.join(folder.path, "Test Show", "Season 01");
+    writeFile(seasonDir, "ep01.mkv");
+    writeFile(path.dirname(seasonDir), "tvshow.nfo", `<tvshow><title>Test Show</title></tvshow>`);
+    const nfoPath = writeFile(
+      seasonDir,
+      "ep01.nfo",
+      `<episodedetails><title>Original Title</title><plot>Original overview.</plot><season>1</season><episode>1</episode></episodedetails>`
+    );
+    await scanAndImportLibrary("series");
+    const show = (await db.prepare("SELECT * FROM media_items WHERE type='series'").get()) as any;
+    expect((await db.prepare("SELECT title, overview FROM episodes WHERE media_item_id = ?").get(show.id)) as any).toMatchObject({
+      title: "Original Title",
+      overview: "Original overview.",
+    });
+
+    fs.writeFileSync(nfoPath, `<episodedetails><title>Refreshed Title</title><plot>Refreshed overview.</plot></episodedetails>`);
+    const result = await refreshOneMediaItem(show.id);
+
+    expect(result.ok).toBe(true);
+    const ep = (await db.prepare("SELECT title, overview FROM episodes WHERE media_item_id = ?").get(show.id)) as any;
+    expect(ep).toMatchObject({ title: "Refreshed Title", overview: "Refreshed overview." });
+  });
+
+  it("re-applies an edited per-episode .nfo for a sequentialEpisodeFallback type (course) too", async () => {
+    const folder = await insertRootFolder("course");
+    const courseDir = path.join(folder.path, "Test Course");
+    writeFile(courseDir, "01 - Lesson.mp4");
+    writeFile(courseDir, "tvshow.nfo", `<tvshow><title>Test Course</title></tvshow>`);
+    const nfoPath = writeFile(courseDir, "01 - Lesson.nfo", `<episodedetails><title>Original Lesson</title><plot>Original lesson overview.</plot></episodedetails>`);
+    await scanAndImportLibrary("course");
+    const show = (await db.prepare("SELECT * FROM media_items WHERE type='course'").get()) as any;
+    expect((await db.prepare("SELECT title, overview FROM episodes WHERE media_item_id = ?").get(show.id)) as any).toMatchObject({
+      title: "Original Lesson",
+      overview: "Original lesson overview.",
+    });
+
+    fs.writeFileSync(nfoPath, `<episodedetails><title>Refreshed Lesson</title><plot>Refreshed lesson overview.</plot></episodedetails>`);
+    const result = await refreshOneMediaItem(show.id);
+
+    expect(result.ok).toBe(true);
+    const ep = (await db.prepare("SELECT title, overview FROM episodes WHERE media_item_id = ?").get(show.id)) as any;
+    expect(ep).toMatchObject({ title: "Refreshed Lesson", overview: "Refreshed lesson overview." });
   });
 });
