@@ -269,6 +269,17 @@ export interface CustomFormat {
   mediaTypes: MediaType[]; // empty = applies to every library type
 }
 
+/** One quality profile on a live Radarr/Sonarr/Whisparr instance, translated to what AoNarr could
+ * actually import — see POST /starr-import/quality-profiles/preview. */
+export interface StarrQualityProfilePreview {
+  sourceId: number;
+  name: string;
+  mappedQualities: string[];
+  unmappedQualities: string[];
+  cutoff: string | null;
+  minFormatScore: number;
+}
+
 export interface ReleaseProfile {
   id: number;
   name: string;

@@ -3,6 +3,41 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 345 — Import Quality Profiles/Custom Formats, and library import from Whisparr
+
+Requested: a way to import Quality Profiles, Qualities, and Custom Formats from Sonarr, Radarr,
+Lidarr, Whisparr, and Readarr, plus a working library-import path for each of those apps. Turned
+out library import already existed for Radarr/Sonarr/Lidarr/Readarr (`services/starrImport.ts`) —
+only Whisparr was missing — and Custom Format translation already existed too, reused from the
+TRaSH-Guides importer (its condition-group shape is exactly a Radarr/Sonarr CustomFormat export,
+which is what TRaSH itself mirrors). Quality Profile import didn't exist for any app.
+
+- **Whisparr library import** (Settings → each Adult library page → "Import from Whisparr"): its
+  current (V3/"Eros") API is a flat Movie/Scene list with no season/episode structure of its own —
+  each item carries its Studio denormalized on itself rather than nesting the way Sonarr nests
+  episodes under a series. Scenes are grouped by studio into one AoNarr "show" per studio, numbered
+  season 1 + sequentially (the same synthesized-numbering fallback a locally-scanned Adult folder
+  with no real episode numbers already uses); a scene with no studio at all becomes its own
+  single-episode show.
+- **Quality Profile import** (Settings → Quality → "Import from Radarr/Sonarr/Whisparr"): fetches a
+  live instance's quality profiles, maps each one's allowed qualities/cutoff onto AoNarr's own
+  `qualities` table by name (a quality with no AoNarr equivalent — Radarr's `Raw-HD`, for instance —
+  is left out of that profile rather than failing the whole import), and carries over per-format
+  scores for any of its formats that already exist in AoNarr under the same name. A profile whose
+  cutoff is a Radarr/Sonarr "quality group" (an admin-picked bundle with its own arbitrary name, not
+  a real quality) falls back to the highest-ranked quality it could actually map. Preview-then-pick,
+  not an unconditional sync — a live instance's profiles are rarely all wanted.
+- **Custom Format live import** (Settings → Custom Formats → "Import from a live Radarr/Sonarr/
+  Whisparr instance"): same preview-then-pick flow, pulling straight from `GET .../customformat`
+  instead of requiring a copy-pasted export or a TRaSH-Guides sync.
+- **Lidarr and Readarr are deliberately left out of both Quality Profile and Custom Format import.**
+  Their quality tiers are audio/ebook format names (Lidarr: `MP3-320`, `FLAC`, `ALAC`, ...) or (for
+  the now-officially-retired Readarr) presumably ebook/audiobook formats — nothing in AoNarr's own
+  video-resolution-based `qualities` table has an equivalent, so an import would either create an
+  empty, unusable profile or need to invent a whole second quality vocabulary AoNarr doesn't have.
+  Their library import (artists/albums, authors/books) is unaffected — that never depended on the
+  quality-profile model at all.
+
 ## Round 344 — Flatten Course/Adult/ROM/Online Videos browsing, remove "Ungrouped"
 
 Requested: each Course folder should be one course, browsed as a flat list — not nested under

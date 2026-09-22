@@ -8,13 +8,31 @@ let fetchSonarrSeries: (typeof import("../src/services/starrImport.js"))["fetchS
 let importSeriesFromSonarr: (typeof import("../src/services/starrImport.js"))["importSeriesFromSonarr"];
 let importArtistsFromLidarr: (typeof import("../src/services/starrImport.js"))["importArtistsFromLidarr"];
 let importAuthorsFromReadarr: (typeof import("../src/services/starrImport.js"))["importAuthorsFromReadarr"];
+let fetchWhisparrLibrary: (typeof import("../src/services/starrImport.js"))["fetchWhisparrLibrary"];
+let importAdultFromWhisparr: (typeof import("../src/services/starrImport.js"))["importAdultFromWhisparr"];
+let previewStarrCustomFormats: (typeof import("../src/services/starrImport.js"))["previewStarrCustomFormats"];
+let importStarrCustomFormats: (typeof import("../src/services/starrImport.js"))["importStarrCustomFormats"];
+let previewStarrQualityProfiles: (typeof import("../src/services/starrImport.js"))["previewStarrQualityProfiles"];
+let importStarrQualityProfiles: (typeof import("../src/services/starrImport.js"))["importStarrQualityProfiles"];
 let rootFolderId: number;
 let bookRootFolderId: number;
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
-  ({ fetchRadarrMovies, importMoviesFromRadarr, fetchSonarrSeries, importSeriesFromSonarr, importArtistsFromLidarr, importAuthorsFromReadarr } =
-    await import("../src/services/starrImport.js"));
+  ({
+    fetchRadarrMovies,
+    importMoviesFromRadarr,
+    fetchSonarrSeries,
+    importSeriesFromSonarr,
+    importArtistsFromLidarr,
+    importAuthorsFromReadarr,
+    fetchWhisparrLibrary,
+    importAdultFromWhisparr,
+    previewStarrCustomFormats,
+    importStarrCustomFormats,
+    previewStarrQualityProfiles,
+    importStarrQualityProfiles,
+  } = await import("../src/services/starrImport.js"));
   // root_folder_id is a real FK (ON DELETE SET NULL) — a literal like 1 only works if a root
   // folder with that id actually exists.
   rootFolderId = Number(
@@ -309,6 +327,53 @@ describe("importSeriesFromSonarr", () => {
   });
 });
 
+describe("fetchWhisparrLibrary / importAdultFromWhisparr", () => {
+  it("groups scenes under their studio as one show, numbering them sequentially since Whisparr has no season/episode numbers of its own", async () => {
+    mockStarrApi({
+      "/api/v3/movie": [
+        { id: 1, title: "Scene One", studioTitle: "Test Studio", studioForeignId: "studio-1", hasFile: true, movieFile: { path: "/adult/Test Studio/Scene One.mp4" } },
+        { id: 2, title: "Scene Two", studioTitle: "Test Studio", studioForeignId: "studio-1", hasFile: false },
+      ],
+    });
+
+    const { shows, episodes } = await fetchWhisparrLibrary("http://whisparr:6969", "key");
+
+    expect(shows.size).toBe(1);
+    expect(shows.get("studio:studio-1")).toMatchObject({ title: "Test Studio" });
+    expect(episodes).toEqual([
+      { showId: "studio:studio-1", path: "/adult/Test Studio/Scene One.mp4", seasonNumber: 1, episodeNumber: 1, title: "Scene One", overview: null },
+      { showId: "studio:studio-1", path: null, seasonNumber: 1, episodeNumber: 2, title: "Scene Two", overview: null },
+    ]);
+  });
+
+  it("treats a scene with no studio as its own single-episode show", async () => {
+    mockStarrApi({
+      "/api/v3/movie": [{ id: 5, title: "Standalone Scene", overview: "No studio here.", tpdbId: "tpdb-5", hasFile: false }],
+    });
+
+    const { shows, episodes } = await fetchWhisparrLibrary("http://whisparr:6969", "key");
+
+    expect(shows.get("solo:5")).toMatchObject({ title: "Standalone Scene", overview: "No studio here.", externalIds: { tpdb: "tpdb-5" } });
+    expect(episodes).toEqual([{ showId: "solo:5", path: null, seasonNumber: 1, episodeNumber: 1, title: "Standalone Scene", overview: "No studio here." }]);
+  });
+
+  it("importAdultFromWhisparr creates the show and its episodes as type adult", async () => {
+    mockStarrApi({
+      "/api/v3/movie": [
+        { id: 1, title: "Scene A", studioTitle: "Import Studio", studioForeignId: "studio-import", hasFile: true, movieFile: { path: "/adult/Import Studio/A.mp4" } },
+      ],
+    });
+
+    const result = await importAdultFromWhisparr("http://whisparr:6969", "key", rootFolderId);
+
+    expect(result).toEqual({ showsMatched: 0, showsCreated: 1, episodesMatched: 0, episodesCreated: 1, episodesSkipped: 0 });
+    const show = (await db.prepare("SELECT * FROM media_items WHERE title = 'Import Studio'").get()) as any;
+    expect(show.type).toBe("adult");
+    const ep = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").get(show.id)) as any;
+    expect(ep).toMatchObject({ season_number: 1, episode_number: 1, title: "Scene A", file_path: "/adult/Import Studio/A.mp4" });
+  });
+});
+
 describe("importAuthorsFromReadarr", () => {
   it("creates a new author and book when nothing matches, using goodreads as the external provider", async () => {
     mockStarrApi({
@@ -349,5 +414,167 @@ describe("importAuthorsFromReadarr", () => {
     expect(result.parentsCreated).toBe(0);
     const row = (await db.prepare("SELECT title FROM media_items WHERE id = ?").get(existingId)) as any;
     expect(row.title).toBe("Old Author Name"); // matching never renames the existing row
+  });
+});
+
+describe("previewStarrCustomFormats / importStarrCustomFormats", () => {
+  it("reports translatable vs. unsupported formats without creating anything", async () => {
+    mockStarrApi({
+      "/api/v3/customformat": [
+        { id: 1, name: "x265", specifications: [{ implementation: "ReleaseTitleSpecification", fields: { value: "x265" } }] },
+        { id: 2, name: "German Only", specifications: [{ implementation: "LanguageSpecification", fields: { value: 7 } }] },
+      ],
+    });
+
+    const preview = await previewStarrCustomFormats("http://radarr:7878", "key", "radarr");
+
+    expect(preview).toEqual([
+      { sourceId: 1, name: "x265", translatable: true, skipped: [] },
+      { sourceId: 2, name: "German Only", translatable: false, skipped: ["LanguageSpecification"] },
+    ]);
+    const count = (await db.prepare("SELECT COUNT(*) AS c FROM custom_formats").get()) as { c: number };
+    expect(count.c).toBe(0);
+  });
+
+  it("imports only the selected source ids, scoped to the app's own media types", async () => {
+    mockStarrApi({
+      "/api/v3/customformat": [
+        { id: 10, name: "Radarr Remux", specifications: [{ implementation: "SizeSpecification", fields: { min: 20, max: 60 } }] },
+        { id: 11, name: "Radarr Not Wanted", specifications: [{ implementation: "ReleaseTitleSpecification", fields: { value: "not-wanted" } }] },
+      ],
+    });
+
+    const result = await importStarrCustomFormats("http://radarr:7878", "key", "radarr", [10]);
+
+    expect(result).toEqual({ added: 1, skipped: [] });
+    const row = (await db.prepare("SELECT * FROM custom_formats WHERE name = 'Radarr Remux'").get()) as any;
+    expect(row).toBeTruthy();
+    expect(JSON.parse(row.media_types)).toEqual(["movie", "ppv"]);
+    const notImported = await db.prepare("SELECT * FROM custom_formats WHERE name = 'Radarr Not Wanted'").get();
+    expect(notImported).toBeUndefined();
+  });
+
+  it("skips a selected format with no translatable conditions, and reports a name collision instead of duplicating", async () => {
+    await db.prepare("INSERT INTO custom_formats (name, patterns) VALUES ('Already Exists', '[]')").run();
+    mockStarrApi({
+      "/api/v3/customformat": [
+        { id: 20, name: "Already Exists", specifications: [{ implementation: "ReleaseTitleSpecification", fields: { value: "x" } }] },
+        { id: 21, name: "Nothing Translatable", specifications: [{ implementation: "IndexerFlagSpecification", fields: { value: 1 } }] },
+      ],
+    });
+
+    const result = await importStarrCustomFormats("http://sonarr:8989", "key", "sonarr", [20, 21]);
+
+    expect(result.added).toBe(0);
+    expect(result.skipped.map((s) => s.name).sort()).toEqual(["Already Exists", "Nothing Translatable"]);
+  });
+});
+
+describe("previewStarrQualityProfiles / importStarrQualityProfiles", () => {
+  it("maps allowed leaf qualities by name, skipping disallowed and unmappable ones", async () => {
+    mockStarrApi({
+      "/api/v3/qualityprofile": [
+        {
+          id: 1,
+          name: "HD",
+          cutoff: 3,
+          minFormatScore: 0,
+          items: [
+            { quality: { id: 1, name: "SD" }, allowed: false },
+            { quality: { id: 2, name: "HDTV-720p" }, allowed: true },
+            { quality: { id: 3, name: "WEBDL-1080p" }, allowed: true },
+            { quality: { id: 4, name: "Raw-HD" }, allowed: true }, // Radarr-only, no AoNarr equivalent
+          ],
+        },
+      ],
+    });
+
+    const [preview] = await previewStarrQualityProfiles("http://radarr:7878", "key", "radarr");
+
+    expect(preview.mappedQualities.sort()).toEqual(["HDTV-720p", "WEBDL-1080p"]);
+    expect(preview.unmappedQualities).toEqual(["Raw-HD"]);
+    expect(preview.cutoff).toBe("WEBDL-1080p");
+  });
+
+  it("resolves a group cutoff (no quality key of its own) to its highest-ranked mapped member", async () => {
+    mockStarrApi({
+      "/api/v3/qualityprofile": [
+        {
+          id: 2,
+          name: "Grouped Cutoff",
+          cutoff: 100, // the group's own id, not a leaf quality id
+          items: [
+            { quality: { id: 1, name: "HDTV-720p" }, allowed: true },
+            {
+              id: 100,
+              name: "My Custom Group", // an admin-picked name — never matches any AoNarr quality
+              allowed: true,
+              items: [
+                { quality: { id: 2, name: "WEBDL-1080p" }, allowed: true },
+                { quality: { id: 3, name: "Bluray-1080p" }, allowed: true },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    const [preview] = await previewStarrQualityProfiles("http://radarr:7878", "key", "radarr");
+
+    expect(preview.mappedQualities.sort()).toEqual(["Bluray-1080p", "HDTV-720p", "WEBDL-1080p"]);
+    // Bluray-1080p outranks WEBDL-1080p in AoNarr's own DEFAULT_QUALITY_ORDER, so it wins as the
+    // substitute even though it's not literally the group's own name.
+    expect(preview.cutoff).toBe("Bluray-1080p");
+  });
+
+  it("imports selected profiles and carries over format scores for formats that already exist in AoNarr by name", async () => {
+    await db.prepare("INSERT INTO custom_formats (name, patterns) VALUES ('Already Imported Format', '[]')").run();
+    const existingFormat = (await db.prepare("SELECT id FROM custom_formats WHERE name = 'Already Imported Format'").get()) as { id: number };
+    mockStarrApi({
+      "/api/v3/qualityprofile": [
+        {
+          id: 5,
+          name: "Imported Profile",
+          cutoff: 1,
+          minFormatScore: 10,
+          items: [{ quality: { id: 1, name: "Bluray-1080p" }, allowed: true }],
+          formatItems: [
+            { format: 900, name: "Already Imported Format", score: 50 },
+            { format: 901, name: "Never Imported Format", score: 25 },
+          ],
+        },
+      ],
+    });
+
+    const result = await importStarrQualityProfiles("http://radarr:7878", "key", "radarr", [5]);
+
+    expect(result).toEqual({ added: 1, skipped: [] });
+    const profile = (await db.prepare("SELECT * FROM quality_profiles WHERE name = 'Imported Profile'").get()) as any;
+    expect(JSON.parse(profile.allowed_qualities)).toEqual(["Bluray-1080p"]);
+    expect(profile.cutoff).toBe("Bluray-1080p");
+    expect(profile.min_format_score).toBe(10);
+    const score = (await db
+      .prepare("SELECT score FROM quality_profile_format_scores WHERE quality_profile_id = ? AND custom_format_id = ?")
+      .get(profile.id, existingFormat.id)) as { score: number } | undefined;
+    expect(score?.score).toBe(50);
+    const scoreCount = (await db.prepare("SELECT COUNT(*) AS c FROM quality_profile_format_scores WHERE quality_profile_id = ?").get(profile.id)) as {
+      c: number;
+    };
+    expect(scoreCount.c).toBe(1); // "Never Imported Format" has no matching AoNarr custom format, so no row for it
+  });
+
+  it("skips a profile with no mappable qualities instead of creating an empty/unusable one", async () => {
+    mockStarrApi({
+      "/api/v3/qualityprofile": [
+        { id: 6, name: "Nothing Maps", cutoff: 1, items: [{ quality: { id: 1, name: "Raw-HD" }, allowed: true }] },
+      ],
+    });
+
+    const result = await importStarrQualityProfiles("http://radarr:7878", "key", "radarr", [6]);
+
+    expect(result.added).toBe(0);
+    expect(result.skipped).toEqual([{ name: "Nothing Maps", reason: "none of its allowed qualities have an AoNarr equivalent" }]);
+    const row = await db.prepare("SELECT * FROM quality_profiles WHERE name = 'Nothing Maps'").get();
+    expect(row).toBeUndefined();
   });
 });

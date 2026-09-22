@@ -881,8 +881,8 @@ export function LibraryItemGrid({
     }
   }
 
-  const starrImportable = type === "movie" || type === "series" || type === "anime" || type === "artist" || type === "author";
-  const starrAppName = type === "movie" ? "Radarr" : type === "artist" ? "Lidarr" : type === "author" ? "Readarr" : "Sonarr";
+  const starrImportable = type === "movie" || type === "series" || type === "anime" || type === "artist" || type === "author" || type === "adult";
+  const starrAppName = type === "movie" ? "Radarr" : type === "artist" ? "Lidarr" : type === "author" ? "Readarr" : type === "adult" ? "Whisparr" : "Sonarr";
 
   async function openStarrImport() {
     const folders = await api.get<RootFolder[]>("/root-folders");
@@ -902,6 +902,8 @@ export function LibraryItemGrid({
         await api.post("/starr-import/artists", { url: starrUrl.trim(), apiKey: starrApiKey.trim(), rootFolderId: starrImportFolderId });
       } else if (type === "author") {
         await api.post("/starr-import/authors", { url: starrUrl.trim(), apiKey: starrApiKey.trim(), rootFolderId: starrImportFolderId });
+      } else if (type === "adult") {
+        await api.post("/starr-import/adult", { url: starrUrl.trim(), apiKey: starrApiKey.trim(), rootFolderId: starrImportFolderId });
       } else {
         await api.post("/starr-import/series", {
           url: starrUrl.trim(),

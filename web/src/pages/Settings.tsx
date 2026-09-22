@@ -5,7 +5,20 @@ import NamingSetupModal from "../components/NamingSetupModal.js";
 import SettingsProviderTiles, { type SettingsProviderDef } from "../components/SettingsProviderTiles.js";
 import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
-import type { BlocklistEntry, CustomFormat, DelayProfile, ImportExclusion, MediaType, MediaTypeInfo, Quality, QualityProfile, ReleaseProfile, RootFolder, Tag } from "../types.js";
+import type {
+  BlocklistEntry,
+  CustomFormat,
+  DelayProfile,
+  ImportExclusion,
+  MediaType,
+  MediaTypeInfo,
+  Quality,
+  QualityProfile,
+  ReleaseProfile,
+  RootFolder,
+  StarrQualityProfilePreview,
+  Tag,
+} from "../types.js";
 import { formatBytes } from "../utils/format.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { TrashIcon, FolderIcon, ArrowUpIcon, ArrowDownIcon } from "../components/ActionIcons.js";
@@ -517,6 +530,20 @@ export default function Settings() {
   const [trashJson, setTrashJson] = useState("");
   const [trashError, setTrashError] = useState<string | null>(null);
   const [trashSyncing, setTrashSyncing] = useState<"radarr" | "sonarr" | null>(null);
+  const [starrFormatApp, setStarrFormatApp] = useState<"radarr" | "sonarr" | "whisparr">("radarr");
+  const [starrFormatUrl, setStarrFormatUrl] = useState("");
+  const [starrFormatApiKey, setStarrFormatApiKey] = useState("");
+  const [starrFormatPreview, setStarrFormatPreview] = useState<{ sourceId: number; name: string; translatable: boolean; skipped: string[] }[] | null>(null);
+  const [starrFormatSelected, setStarrFormatSelected] = useState<Set<number>>(new Set());
+  const [starrFormatBusy, setStarrFormatBusy] = useState(false);
+  const [starrFormatError, setStarrFormatError] = useState<string | null>(null);
+  const [starrProfileApp, setStarrProfileApp] = useState<"radarr" | "sonarr" | "whisparr">("radarr");
+  const [starrProfileUrl, setStarrProfileUrl] = useState("");
+  const [starrProfileApiKey, setStarrProfileApiKey] = useState("");
+  const [starrProfilePreview, setStarrProfilePreview] = useState<StarrQualityProfilePreview[] | null>(null);
+  const [starrProfileSelected, setStarrProfileSelected] = useState<Set<number>>(new Set());
+  const [starrProfileBusy, setStarrProfileBusy] = useState(false);
+  const [starrProfileError, setStarrProfileError] = useState<string | null>(null);
   const [testReleaseTitle, setTestReleaseTitle] = useState("");
   const [testReleaseSizeMb, setTestReleaseSizeMb] = useState("");
   const [testQualityProfileId, setTestQualityProfileId] = useState("");
@@ -835,6 +862,116 @@ export default function Settings() {
       notify.error((e as Error).message);
     } finally {
       setTrashSyncing(null);
+    }
+  }
+
+  async function fetchStarrFormatPreview() {
+    if (!starrFormatUrl.trim() || !starrFormatApiKey.trim()) return;
+    setStarrFormatBusy(true);
+    setStarrFormatError(null);
+    setStarrFormatPreview(null);
+    try {
+      const preview = await api.post<{ sourceId: number; name: string; translatable: boolean; skipped: string[] }[]>("/starr-import/custom-formats/preview", {
+        url: starrFormatUrl.trim(),
+        apiKey: starrFormatApiKey.trim(),
+        app: starrFormatApp,
+      });
+      setStarrFormatPreview(preview);
+      setStarrFormatSelected(new Set(preview.filter((p) => p.translatable).map((p) => p.sourceId)));
+    } catch (e) {
+      setStarrFormatError((e as Error).message);
+    } finally {
+      setStarrFormatBusy(false);
+    }
+  }
+
+  function toggleStarrFormatSelected(sourceId: number) {
+    setStarrFormatSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(sourceId)) next.delete(sourceId);
+      else next.add(sourceId);
+      return next;
+    });
+  }
+
+  async function importSelectedStarrFormats() {
+    if (starrFormatSelected.size === 0) return;
+    setStarrFormatBusy(true);
+    setStarrFormatError(null);
+    try {
+      const result = await api.post<{ added: number; skipped: { name: string; reason: string }[] }>("/starr-import/custom-formats", {
+        url: starrFormatUrl.trim(),
+        apiKey: starrFormatApiKey.trim(),
+        app: starrFormatApp,
+        sourceIds: [...starrFormatSelected],
+      });
+      notify.info(
+        result.skipped.length > 0
+          ? `Imported ${result.added} format(s) — skipped: ${result.skipped.map((s) => s.name).join(", ")}`
+          : `Imported ${result.added} format(s)`
+      );
+      setStarrFormatPreview(null);
+      setStarrFormatSelected(new Set());
+      load();
+    } catch (e) {
+      setStarrFormatError((e as Error).message);
+    } finally {
+      setStarrFormatBusy(false);
+    }
+  }
+
+  async function fetchStarrProfilePreview() {
+    if (!starrProfileUrl.trim() || !starrProfileApiKey.trim()) return;
+    setStarrProfileBusy(true);
+    setStarrProfileError(null);
+    setStarrProfilePreview(null);
+    try {
+      const preview = await api.post<StarrQualityProfilePreview[]>("/starr-import/quality-profiles/preview", {
+        url: starrProfileUrl.trim(),
+        apiKey: starrProfileApiKey.trim(),
+        app: starrProfileApp,
+      });
+      setStarrProfilePreview(preview);
+      setStarrProfileSelected(new Set(preview.filter((p) => p.mappedQualities.length > 0 && p.cutoff).map((p) => p.sourceId)));
+    } catch (e) {
+      setStarrProfileError((e as Error).message);
+    } finally {
+      setStarrProfileBusy(false);
+    }
+  }
+
+  function toggleStarrProfileSelected(sourceId: number) {
+    setStarrProfileSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(sourceId)) next.delete(sourceId);
+      else next.add(sourceId);
+      return next;
+    });
+  }
+
+  async function importSelectedStarrProfiles() {
+    if (starrProfileSelected.size === 0) return;
+    setStarrProfileBusy(true);
+    setStarrProfileError(null);
+    try {
+      const result = await api.post<{ added: number; skipped: { name: string; reason: string }[] }>("/starr-import/quality-profiles", {
+        url: starrProfileUrl.trim(),
+        apiKey: starrProfileApiKey.trim(),
+        app: starrProfileApp,
+        sourceIds: [...starrProfileSelected],
+      });
+      notify.info(
+        result.skipped.length > 0
+          ? `Imported ${result.added} profile(s) — skipped: ${result.skipped.map((s) => s.name).join(", ")}`
+          : `Imported ${result.added} profile(s)`
+      );
+      setStarrProfilePreview(null);
+      setStarrProfileSelected(new Set());
+      load();
+    } catch (e) {
+      setStarrProfileError((e as Error).message);
+    } finally {
+      setStarrProfileBusy(false);
     }
   }
 
@@ -3047,6 +3184,86 @@ export default function Settings() {
               </form>
             ),
           },
+          {
+            key: "importStarrQualityProfiles",
+            label: "Import from Radarr/Sonarr/Whisparr",
+            description: "Pull already-configured quality profiles from a live instance",
+            maxWidth: 520,
+            render: () => (
+              <div className="form-panel">
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Pulls quality profiles from a running Radarr/Sonarr/Whisparr instance and maps each
+                  one's allowed qualities/cutoff onto AoNarr's own quality list by name. A quality with
+                  no AoNarr equivalent (e.g. a resolution/source tier AoNarr doesn't model) is left out
+                  of that profile rather than failing the whole import — reported below so you know
+                  what didn't carry over. Lidarr and Readarr aren't offered here for the same reason as
+                  Custom Formats: their quality tiers don't map onto AoNarr's model at all.
+                </p>
+                <label htmlFor="settings-starr-profile-app">App</label>
+                <select
+                  id="settings-starr-profile-app"
+                  value={starrProfileApp}
+                  onChange={(e) => {
+                    setStarrProfileApp(e.target.value as typeof starrProfileApp);
+                    setStarrProfilePreview(null);
+                  }}
+                >
+                  <option value="radarr">Radarr</option>
+                  <option value="sonarr">Sonarr</option>
+                  <option value="whisparr">Whisparr</option>
+                </select>
+                <label htmlFor="settings-starr-profile-url">URL</label>
+                <input
+                  id="settings-starr-profile-url"
+                  value={starrProfileUrl}
+                  onChange={(e) => setStarrProfileUrl(e.target.value)}
+                  placeholder="http://localhost:7878"
+                />
+                <label htmlFor="settings-starr-profile-key">API key</label>
+                <input id="settings-starr-profile-key" value={starrProfileApiKey} onChange={(e) => setStarrProfileApiKey(e.target.value)} type="password" />
+                {starrProfileError && <p style={{ color: "var(--danger)" }}>{starrProfileError}</p>}
+                <button type="button" onClick={fetchStarrProfilePreview} disabled={starrProfileBusy || !starrProfileUrl.trim() || !starrProfileApiKey.trim()}>
+                  {starrProfileBusy && !starrProfilePreview ? "Fetching..." : "Fetch profiles"}
+                </button>
+
+                {starrProfilePreview && (
+                  <>
+                    {starrProfilePreview.length === 0 ? (
+                      <p style={{ color: "var(--muted)" }}>This instance has no quality profiles configured.</p>
+                    ) : (
+                      <div role="group" aria-label="Profiles to import" style={{ maxHeight: 260, overflowY: "auto", margin: "8px 0" }}>
+                        {starrProfilePreview.map((p) => {
+                          const importable = p.mappedQualities.length > 0 && !!p.cutoff;
+                          return (
+                            <label key={p.sourceId} style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: "0.85rem", margin: "4px 0" }}>
+                              <input
+                                type="checkbox"
+                                checked={starrProfileSelected.has(p.sourceId)}
+                                onChange={() => toggleStarrProfileSelected(p.sourceId)}
+                                disabled={!importable}
+                                style={{ width: "auto", marginTop: 2 }}
+                              />
+                              <span>
+                                {p.name}
+                                {!importable && <span style={{ color: "var(--muted)" }}> — none of its qualities have an AoNarr equivalent</span>}
+                                {importable && <span style={{ color: "var(--muted)" }}> — cutoff: {p.cutoff}</span>}
+                                {p.unmappedQualities.length > 0 && (
+                                  <span style={{ color: "var(--muted)" }}> — skips: {p.unmappedQualities.join(", ")}</span>
+                                )}
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <button type="button" onClick={importSelectedStarrProfiles} disabled={starrProfileBusy || starrProfileSelected.size === 0}>
+                      {starrProfileBusy ? "Importing..." : `Import ${starrProfileSelected.size} selected`}
+                    </button>
+                  </>
+                )}
+              </div>
+            ),
+          },
           ...delayProfiles.map((d) => ({
             key: `delayProfile-${d.id}`,
             label: d.tagId == null ? "Delay Profile: Default" : `Delay Profile: ${tags.find((t) => t.id === d.tagId)?.name ?? "unknown tag"}`,
@@ -3325,6 +3542,74 @@ export default function Settings() {
                       {trashSyncing === "sonarr" ? "Syncing..." : "Sync Sonarr formats"}
                     </button>
                   </div>
+                </div>
+
+                <div className="form-panel">
+                  <label>Import from a live Radarr/Sonarr/Whisparr instance</label>
+                  <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                    Pulls the custom formats already configured on a running Radarr/Sonarr/Whisparr
+                    instance directly, so you don't have to export/paste each one by hand. Lidarr and
+                    Readarr aren't offered here — their quality tiers are audio/ebook format names, not
+                    the video resolution/source tiers AoNarr's own custom formats are built around.
+                  </p>
+                  <label htmlFor="settings-starr-format-app">App</label>
+                  <select
+                    id="settings-starr-format-app"
+                    value={starrFormatApp}
+                    onChange={(e) => {
+                      setStarrFormatApp(e.target.value as typeof starrFormatApp);
+                      setStarrFormatPreview(null);
+                    }}
+                  >
+                    <option value="radarr">Radarr</option>
+                    <option value="sonarr">Sonarr</option>
+                    <option value="whisparr">Whisparr</option>
+                  </select>
+                  <label htmlFor="settings-starr-format-url">URL</label>
+                  <input
+                    id="settings-starr-format-url"
+                    value={starrFormatUrl}
+                    onChange={(e) => setStarrFormatUrl(e.target.value)}
+                    placeholder="http://localhost:7878"
+                  />
+                  <label htmlFor="settings-starr-format-key">API key</label>
+                  <input id="settings-starr-format-key" value={starrFormatApiKey} onChange={(e) => setStarrFormatApiKey(e.target.value)} type="password" />
+                  {starrFormatError && <p style={{ color: "var(--danger)" }}>{starrFormatError}</p>}
+                  <button type="button" onClick={fetchStarrFormatPreview} disabled={starrFormatBusy || !starrFormatUrl.trim() || !starrFormatApiKey.trim()}>
+                    {starrFormatBusy && !starrFormatPreview ? "Fetching..." : "Fetch formats"}
+                  </button>
+
+                  {starrFormatPreview && (
+                    <>
+                      {starrFormatPreview.length === 0 ? (
+                        <p style={{ color: "var(--muted)" }}>This instance has no custom formats configured.</p>
+                      ) : (
+                        <div role="group" aria-label="Formats to import" style={{ maxHeight: 260, overflowY: "auto", margin: "8px 0" }}>
+                          {starrFormatPreview.map((p) => (
+                            <label key={p.sourceId} style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: "0.85rem", margin: "4px 0" }}>
+                              <input
+                                type="checkbox"
+                                checked={starrFormatSelected.has(p.sourceId)}
+                                onChange={() => toggleStarrFormatSelected(p.sourceId)}
+                                disabled={!p.translatable}
+                                style={{ width: "auto", marginTop: 2 }}
+                              />
+                              <span>
+                                {p.name}
+                                {!p.translatable && <span style={{ color: "var(--muted)" }}> — none of its conditions are supported</span>}
+                                {p.translatable && p.skipped.length > 0 && (
+                                  <span style={{ color: "var(--muted)" }}> — skips: {p.skipped.join(", ")}</span>
+                                )}
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                      <button type="button" onClick={importSelectedStarrFormats} disabled={starrFormatBusy || starrFormatSelected.size === 0}>
+                        {starrFormatBusy ? "Importing..." : `Import ${starrFormatSelected.size} selected`}
+                      </button>
+                    </>
+                  )}
                 </div>
 
                 <div className="form-panel">

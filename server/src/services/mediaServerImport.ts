@@ -207,11 +207,15 @@ export async function importSeriesFromMediaServer(
 }
 
 /** Core matching/creation logic shared by every series-library source (Plex/Jellyfin/Emby via
- * fetchMediaServerSeries above, Sonarr via starrImport.ts) — same reasoning as importMovieItems. */
+ * fetchMediaServerSeries above, Sonarr/Whisparr via starrImport.ts) — same reasoning as
+ * importMovieItems. "adult" is Whisparr-only (no media-server source imports adult content) —
+ * Whisparr's own flat Studio+Movie/Scene model has no real season/episode numbering, so
+ * starrImport.ts's fetchWhisparrLibrary synthesizes season 1 + sequential numbers per studio the
+ * same way a locally-scanned adult folder's sequentialEpisodeFallback already does. */
 export async function importSeriesData(
   shows: MediaServerSeriesLibrary["shows"],
   episodes: MediaServerSeriesLibrary["episodes"],
-  type: "series" | "anime" | "sports",
+  type: "series" | "anime" | "sports" | "adult",
   rootFolderId: number,
   signal?: AbortSignal
 ): Promise<MediaServerSeriesImportResult> {
