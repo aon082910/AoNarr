@@ -5,7 +5,7 @@ import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { rootFolderFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { isValidMediaType } from "../services/mediaTypes.js";
+import { getMediaTypeConfig, isValidMediaType } from "../services/mediaTypes.js";
 import { deleteMediaItemCascade } from "./media.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { renameOneMediaItem, removeEmptyParents } from "../services/importer.js";
@@ -113,6 +113,9 @@ rootFoldersRouter.post(
       throw new HttpError(400, `Can't move ${source.media_type} items into a ${destination.media_type} folder`);
     }
     if (source.id === destination.id) throw new HttpError(400, "Source and destination are the same folder");
+    if (isValidMediaType(source.media_type) && getMediaTypeConfig(source.media_type).multiFilePerChild) {
+      throw new HttpError(400, `Moving a ${getMediaTypeConfig(source.media_type).label} root folder isn't supported — its album/book folders can't be relocated automatically`);
+    }
 
     const items = (await db.prepare("SELECT id, title FROM media_items WHERE root_folder_id = ?").all(source.id)) as {
       id: number;
@@ -125,6 +128,7 @@ rootFoldersRouter.post(
 
     (async () => {
       let moved = 0;
+      let failed = 0;
       for (const item of items) {
         try {
           // Every file path this item currently owns, captured *before* renameOneMediaItem moves
@@ -144,7 +148,21 @@ rootFoldersRouter.post(
           ).map((r) => r.path);
 
           await db.prepare("UPDATE media_items SET root_folder_id = ? WHERE id = ?").run(destination.id, item.id);
-          await renameOneMediaItem(item.id);
+          const result = await renameOneMediaItem(item.id);
+          // A failed or unsupported file move is reported in the result rather than thrown (a throw
+          // from the rename's own setup is handled by the catch below). Leaving the item repointed
+          // would claim it lives where its files never went, so point it back at the source and
+          // return any files that did make it across.
+          if (result.errors.length > 0 || result.skippedMusic > 0) {
+            await db.prepare("UPDATE media_items SET root_folder_id = ? WHERE id = ?").run(source.id, item.id);
+            if (result.renamed.length > 0) await renameOneMediaItem(item.id);
+            failed++;
+            log.warn(
+              `[rootFolders] didn't move "${item.title}" to "${destination.path}":`,
+              result.errors.map((e) => e.error).join("; ") || "its files can't be relocated automatically"
+            );
+            continue;
+          }
 
           for (const oldPath of oldPaths) {
             try {
@@ -155,12 +173,25 @@ rootFoldersRouter.post(
           }
           moved++;
         } catch (err) {
+          failed++;
+          // A throw out of renameOneMediaItem comes before it moves any file, so the item's files
+          // are all still under the source folder — the pointer has to go back there too.
+          try {
+            await db.prepare("UPDATE media_items SET root_folder_id = ? WHERE id = ?").run(source.id, item.id);
+          } catch {
+            // best-effort — the failure below is logged and counted either way
+          }
           log.warn(`[rootFolders] failed to move "${item.title}" to "${destination.path}":`, (err as Error).message);
         }
       }
       log.info(`[rootFolders] moved ${moved}/${items.length} item(s) from "${source.path}" to "${destination.path}"`);
       const actor = auditActor(req);
-      logAuditEvent(actor.userId, actor.username, "root_folder_moved", `${source.path} → ${destination.path} (${moved} item(s))`);
+      logAuditEvent(
+        actor.userId,
+        actor.username,
+        "root_folder_moved",
+        `${source.path} → ${destination.path} (${moved} item(s)${failed > 0 ? `, ${failed} failed` : ""})`
+      );
     })().catch((err) => log.warn("[rootFolders] move-to background task failed:", err.message));
 
     res.json({ started: true, itemCount: items.length });

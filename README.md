@@ -335,7 +335,11 @@ logic actually branches on — not the specific type. Adding an 11th library is 
   Jellyfin/Emby's Webhook plugin) and a "recently watched" item shows up on the Dashboard
   immediately instead of waiting for the next scheduled poll; supports Plex's `media.scrobble`
   event and Jellyfin/Emby-style `PlaybackStop` JSON, matched to a library file the same way
-  auto-archival's poller already does.
+  auto-archival's poller already does. A playback stop only counts as watched when it played to
+  completion, so a Jellyfin webhook template must include
+  `"PlayedToCompletion": "{{PlayedToCompletion}}"` (alongside `NotificationType` and `Path`), or
+  enable "Send All Properties"; Emby sends `PlaybackInfo.PlayedToCompletion` on its own, and its
+  `item.markplayed` event also counts.
 - **Self-hosted API docs** — Swagger UI at `/api-docs`, served from `GET /api/openapi.json`
   (no external CDN), covering the core resources for anyone scripting against AoNarr directly.
 - **Download queue reordering** — a "Prioritize" action on a queued/downloading item calls through

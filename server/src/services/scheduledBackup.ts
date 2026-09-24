@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,7 +14,7 @@ import { db as sqliteDb } from "../db/client.js";
 import { config } from "../config.js";
 import { getSetting, setSetting } from "./settingsStore.js";
 import { uploadBackupToRemote } from "./remoteBackup.js";
-import { ENCRYPTION_KEY_PATH } from "./encryption.js";
+import { ENCRYPTION_KEY_PATH, decryptValue } from "./encryption.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -97,11 +98,13 @@ export async function writeBackup(destPath: string): Promise<void> {
  * session-level `SET` preamble commands for GUCs that only exist on the newer server
  * (`transaction_timeout`, added in 17) — harmless to skip, but `--single-transaction` implies
  * `--exit-on-error` and aborts the *entire* restore over that one cosmetic statement.
- * `pg_restore`'s own default (continue past errors, report a count at the end) tolerates it. */
+ * `pg_restore`'s own default (continue past errors, report a count at the end) tolerates it.
+ * `--no-owner --no-privileges`: a dump from another install names that install's roles in its
+ * OWNER TO / GRANT statements, which fail here ("role does not exist") after the data is in. */
 export async function restorePostgres(srcPath: string): Promise<void> {
   if (!config.databaseUrl) throw new Error("AONARR_DATABASE_URL is not set");
   try {
-    await execFileAsync("pg_restore", ["--clean", "--if-exists", `--dbname=${config.databaseUrl}`, srcPath]);
+    await execFileAsync("pg_restore", ["--clean", "--if-exists", "--no-owner", "--no-privileges", `--dbname=${config.databaseUrl}`, srcPath]);
   } catch (err) {
     // pg_restore exits non-zero whenever it skipped ANY statement, even the harmless
     // `unrecognized configuration parameter "transaction_timeout"` case above — a real newer-
@@ -116,6 +119,72 @@ export async function restorePostgres(srcPath: string): Promise<void> {
     if (!ignoredMatch || realErrors.length > 0) throw err;
     log.warn(`[backup] pg_restore skipped ${ignoredMatch[1]} harmless statement(s) (client/server version mismatch) — restore otherwise succeeded`);
   }
+}
+
+const ENCRYPTED_COLUMNS: [table: string, column: string][] = [
+  ["settings", "value"],
+  ["indexers", "api_key"],
+  ["download_clients", "password"],
+  ["download_clients", "api_key"],
+  ["irc_feeds", "sasl_pass"],
+  ["ai_providers", "api_key"],
+  ["subtitle_providers", "api_key"],
+];
+
+/** A few `enc1:` values from every encrypted column, so no single stale or re-encrypted row decides. */
+async function sampleEncryptedValues(): Promise<string[]> {
+  const samples: string[] = [];
+  for (const [table, column] of ENCRYPTED_COLUMNS) {
+    try {
+      const rows = (await db.prepare(`SELECT ${column} AS v FROM ${table} WHERE ${column} LIKE ? LIMIT 5`).all("enc1:%")) as { v: string }[];
+      for (const row of rows) if (row.v) samples.push(row.v);
+    } catch {
+      // table missing after a partial restore
+    }
+  }
+  return samples;
+}
+
+/** encryption.ts's `enc1:` AES-256-GCM format, tried with a key other than the installed one. */
+function decryptsWithKey(key: Buffer, value: string): boolean {
+  try {
+    const raw = Buffer.from(value.slice(value.indexOf(":") + 1), "base64");
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, raw.subarray(0, 12));
+    decipher.setAuthTag(raw.subarray(12, 28));
+    decipher.update(raw.subarray(28));
+    decipher.final();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * After a Postgres restore attempt, whether the backup bundle's key should replace the installed
+ * one. pg_restore's exit status doesn't say which key the live data needs: it can fail before
+ * touching anything (old DB still live, still on the current key) or after all the data is in
+ * (restored rows encrypted with the bundle's key). So the encrypted values actually in the database
+ * decide, by which key opens more of them, and only when there are none does the restore's own exit
+ * status.
+ */
+export async function restoredDbNeedsBundleKey(keyBuffer: Buffer, restoreSucceeded: boolean): Promise<boolean> {
+  const samples = await sampleEncryptedValues();
+  if (samples.length === 0) return restoreSucceeded;
+  const bundleKeyHex = keyBuffer.toString("utf-8").trim();
+  if (!/^[0-9a-f]{64}$/i.test(bundleKeyHex)) return false;
+  const bundleKey = Buffer.from(bundleKeyHex, "hex");
+  let bundleOk = 0;
+  let currentOk = 0;
+  for (const value of samples) {
+    if (decryptsWithKey(bundleKey, value)) bundleOk++;
+    try {
+      decryptValue(value);
+      currentOk++;
+    } catch {
+      // not the installed key's
+    }
+  }
+  return bundleOk > currentOk;
 }
 
 /** Called hourly; only actually backs up once `backupIntervalHours` have elapsed since the last

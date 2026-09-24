@@ -96,6 +96,9 @@ export default function SearchMatchModal({
       await onSelect(result);
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      // Also after a normal return: a caller that reports its own failure (and keeps this modal
+      // open) would otherwise leave every result and the search button disabled for good.
       setApplying(false);
     }
   }

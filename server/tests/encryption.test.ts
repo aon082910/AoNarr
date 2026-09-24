@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -95,6 +95,36 @@ describe("encryption", () => {
     const regenerated = fs.readFileSync(keyPath, "utf-8").trim();
     expect(regenerated).toMatch(/^[0-9a-f]{64}$/i);
     expect(regenerated).not.toBe("not-a-valid-hex-key");
+
+    // The unreadable original is moved aside, not destroyed, so a partly-damaged real key can
+    // still be recovered by hand.
+    const movedAside = fs.readdirSync(configDir).filter((f) => f.startsWith("encryption.key.bad-"));
+    expect(movedAside.map((f) => fs.readFileSync(path.join(configDir, f), "utf-8"))).toContain("not-a-valid-hex-key");
+  });
+
+  it("refuses to generate a new key (and leaves the real one intact) when the key file exists but can't be read", async () => {
+    const { encryptValue, decryptValue, reloadEncryptionKey } = await import("../src/services/encryption.js");
+    const keyPath = path.join(configDir, "encryption.key");
+    const realKey = crypto.randomBytes(32).toString("hex");
+    fs.writeFileSync(keyPath, realKey, { mode: 0o600 });
+    reloadEncryptionKey();
+
+    const readSpy = vi.spyOn(fs, "readFileSync").mockImplementationOnce(() => {
+      throw Object.assign(new Error("EIO: i/o error, read"), { code: "EIO" });
+    });
+    try {
+      expect(() => encryptValue("during a transient read failure")).toThrow(/EIO/);
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    expect(fs.readFileSync(keyPath, "utf-8")).toBe(realKey);
+    // Nothing was cached from the failed attempt, so the next call picks up the real key — proven
+    // by decrypting after a fresh re-read of the (unchanged) file.
+    const encrypted = encryptValue("after the read recovers");
+    reloadEncryptionKey();
+    expect(decryptValue(encrypted)).toBe("after the read recovers");
+    expect(fs.readFileSync(keyPath, "utf-8")).toBe(realKey);
   });
 
   it("decryptValue throws on a truncated/malformed encrypted value, not just a wrong-key one", async () => {

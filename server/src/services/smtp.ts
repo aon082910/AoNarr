@@ -20,6 +20,13 @@ export interface SmtpConfig {
 // one such host wedges the entire grab pipeline, not just email delivery.
 const SMTP_IDLE_TIMEOUT_MS = 30_000;
 
+/** Notification bodies come from templates using bare "\n". A bare LF (or CR) in DATA violates RFC
+ * 5321, is rejected outright by strict relays (Postfix 3.9+'s smtpd_forbid_bare_newline), and
+ * hides a "."-leading line from dot-stuffing — so every line ending is normalized to CRLF first. */
+function toCrlf(text: string): string {
+  return text.replace(/\r\n|\r|\n/g, "\r\n");
+}
+
 function armIdleTimeout(socket: net.Socket, cfg: SmtpConfig): void {
   socket.setTimeout(SMTP_IDLE_TIMEOUT_MS);
   socket.once("timeout", () => {
@@ -123,7 +130,7 @@ export async function sendEmail(cfg: SmtpConfig, subject: string, body: string):
       `Subject: ${subject}`,
       `Content-Type: text/plain; charset=utf-8`,
       "",
-      body,
+      toCrlf(body),
     ].join("\r\n");
     // Escaped on the fully-assembled message, not on `body` in isolation — a body starting with
     // "." needs the \r\n that precedes it (from the join above) to already be in place for the
@@ -167,7 +174,7 @@ export async function sendEmailWithAttachment(cfg: SmtpConfig, subject: string, 
       `--${boundary}`,
       `Content-Type: text/plain; charset=utf-8`,
       "",
-      body,
+      toCrlf(body),
       "",
       `--${boundary}`,
       `Content-Type: ${attachment.contentType}; name="${attachment.filename}"`,

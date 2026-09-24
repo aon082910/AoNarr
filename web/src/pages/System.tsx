@@ -299,16 +299,30 @@ export default function System() {
     }
   }
 
+  const logsRequestRef = useRef(0);
   function loadLogs() {
+    const requestId = ++logsRequestRef.current;
     setLogsLoading(true);
     const params = new URLSearchParams();
     if (logLevelFilter) params.set("level", logLevelFilter);
     if (logSearch.trim()) params.set("search", logSearch.trim());
     api
       .get<LogEntry[]>(`/system/logs${params.toString() ? `?${params.toString()}` : ""}`)
-      .then(setLogs)
-      .finally(() => setLogsLoading(false));
+      .then((entries) => {
+        if (logsRequestRef.current === requestId) setLogs(entries);
+      })
+      .finally(() => {
+        if (logsRequestRef.current === requestId) setLogsLoading(false);
+      });
   }
+
+  // The level filter is applied server-side, so changing it must refetch the loaded batch — otherwise
+  // older lines of other levels stay mixed in with the newly filtered live tail. The request guard
+  // above keeps a slower response for a previous level from replacing the current one.
+  useEffect(() => {
+    if (logs !== null || logsLoading) loadLogs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [logLevelFilter]);
 
   function downloadLogs() {
     if (!logs) return;
@@ -556,6 +570,14 @@ export default function System() {
     if (tab === "backups") loadBackups();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
+
+  /** The listed backups live in the configured directory, and download/delete resolve names against
+   * whatever directory is saved now — so the list has to follow a directory change. */
+  async function saveBackupDir(dir: string) {
+    if (dir === (settings.backupDir ?? "")) return;
+    await saveSetting("backupDir", dir);
+    loadBackups();
+  }
 
   async function downloadBackup() {
     setBackingUp(true);
@@ -1019,7 +1041,7 @@ export default function System() {
                     key={settings.backupDir ?? "backup-dir-empty"}
                     defaultValue={settings.backupDir ?? ""}
                     placeholder="/backups"
-                    onBlur={(e) => saveSetting("backupDir", e.target.value)}
+                    onBlur={(e) => saveBackupDir(e.target.value)}
                     style={{ flex: 1 }}
                   />
                   <button type="button" className="icon-button" onClick={() => setShowBackupDirPicker(true)} title="Browse..." aria-label="Browse for a folder">
@@ -1031,7 +1053,7 @@ export default function System() {
                     initialPath={settings.backupDir || "/"}
                     onClose={() => setShowBackupDirPicker(false)}
                     onSelect={(p) => {
-                      saveSetting("backupDir", p);
+                      saveBackupDir(p);
                       setShowBackupDirPicker(false);
                     }}
                   />

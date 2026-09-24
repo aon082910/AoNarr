@@ -32,14 +32,29 @@ async function runCustomScript(event: string, tokens: Record<string, string>): P
   }
 }
 
+// Import/grab paths await fanOut, so a target that accepts the connection but never answers must
+// not be left to undici's 300s default.
+const NOTIFY_TIMEOUT_MS = 15_000;
+
+/** Webhook URLs (Discord/Slack/generic) and the Telegram API URL embed the credential itself, and
+ * these errors land in the persistent log — so they name only the host, never the full URL. */
+function describeTarget(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "the configured URL";
+  }
+}
+
 async function postJson(url: string, body: unknown): Promise<void> {
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
   });
   if (!res.ok) {
-    throw new Error(`Webhook POST to ${url} failed: HTTP ${res.status}`);
+    throw new Error(`Webhook POST to ${describeTarget(url)} failed: HTTP ${res.status}`);
   }
 }
 
@@ -48,9 +63,10 @@ async function postForm(url: string, params: Record<string, string>): Promise<vo
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(params),
+    signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
   });
   if (!res.ok) {
-    throw new Error(`POST to ${url} failed: HTTP ${res.status}`);
+    throw new Error(`POST to ${describeTarget(url)} failed: HTTP ${res.status}`);
   }
 }
 
@@ -145,6 +161,7 @@ async function fanOut(content: NotificationContent): Promise<void> {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ msgtype: "m.text", body: `${content.title}\n${content.text}` }),
+          signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
         });
         if (!res.ok) throw new Error(`Matrix send failed: HTTP ${res.status}`);
       })()
@@ -165,6 +182,7 @@ async function fanOut(content: NotificationContent): Promise<void> {
             "Content-Type": "application/x-www-form-urlencoded",
           },
           body: new URLSearchParams({ From: twilioFrom, To: twilioTo, Body: `${content.title}: ${content.text}` }),
+          signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
         });
         if (!res.ok) throw new Error(`SMS (Twilio) send failed: HTTP ${res.status}`);
       })()
@@ -374,6 +392,7 @@ export async function sendTestNotification(providerKey: string): Promise<void> {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ msgtype: "m.text", body: `${title}\n${text}` }),
+        signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
       });
       if (!res.ok) throw new Error(`Matrix send failed: HTTP ${res.status}`);
       return;
@@ -391,6 +410,7 @@ export async function sendTestNotification(providerKey: string): Promise<void> {
           "Content-Type": "application/x-www-form-urlencoded",
         },
         body: new URLSearchParams({ From: from, To: to, Body: `${title}: ${text}` }),
+        signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
       });
       if (!res.ok) throw new Error(`SMS (Twilio) send failed: HTTP ${res.status}`);
       return;

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { db } from "../db/index.js";
 import { getSetting } from "./settingsStore.js";
 import { log } from "./logger.js";
@@ -18,13 +19,38 @@ export async function checkForDeletedFiles(): Promise<{ checked: number; missing
   let checked = 0;
   let missing = 0;
 
+  // An unmounted/offline share (NAS reboot, dropped SMB/NFS, a stopped rclone/Zurg mount) looks
+  // exactly like "every file in it was deleted". Sonarr/Radarr skip a root folder that's missing
+  // or empty rather than mass-flagging its whole contents — without this, one brief outage at
+  // check time wiped every path (and, with unmonitorDeletedFiles, every monitored flag) under it,
+  // and the next auto-search started re-grabbing the entire library.
+  const roots = ((await db.prepare("SELECT path FROM root_folders").all()) as { path: string }[]).map((r) => {
+    const resolved = path.resolve(r.path);
+    let available = false;
+    try {
+      available = fs.statSync(resolved).isDirectory() && fs.readdirSync(resolved).length > 0;
+    } catch {
+      available = false;
+    }
+    return { path: resolved, available };
+  });
+  const unavailableRoots = roots.filter((r) => !r.available);
+  for (const r of unavailableRoots) log.warn(`[deletedFileCheck] root folder "${r.path}" is missing or empty — skipping its files this run`);
+  const isOnUnavailableRoot = (filePath: string) => {
+    const resolved = path.resolve(filePath);
+    const owner = roots
+      .filter((r) => resolved.startsWith(r.path + path.sep))
+      .sort((a, b) => b.path.length - a.path.length)[0];
+    return !!owner && !owner.available;
+  };
+
   const items = (await db.prepare("SELECT id, path FROM media_items WHERE has_file = 1 AND path IS NOT NULL").all()) as {
     id: number;
     path: string;
   }[];
   for (const row of items) {
     checked++;
-    if (fs.existsSync(row.path)) continue;
+    if (fs.existsSync(row.path) || isOnUnavailableRoot(row.path)) continue;
     missing++;
     await db
       .prepare(`UPDATE media_items SET has_file = 0, path = NULL${unmonitor ? ", monitored = 0" : ""} WHERE id = ?`)
@@ -36,7 +62,7 @@ export async function checkForDeletedFiles(): Promise<{ checked: number; missing
     .all()) as { id: number; file_path: string }[];
   for (const row of episodes) {
     checked++;
-    if (fs.existsSync(row.file_path)) continue;
+    if (fs.existsSync(row.file_path) || isOnUnavailableRoot(row.file_path)) continue;
     missing++;
     await db
       .prepare(`UPDATE episodes SET has_file = 0, file_path = NULL${unmonitor ? ", monitored = 0" : ""} WHERE id = ?`)
@@ -48,7 +74,7 @@ export async function checkForDeletedFiles(): Promise<{ checked: number; missing
     .all()) as { id: number; file_path: string }[];
   for (const row of subItems) {
     checked++;
-    if (fs.existsSync(row.file_path)) continue;
+    if (fs.existsSync(row.file_path) || isOnUnavailableRoot(row.file_path)) continue;
     missing++;
     await db
       .prepare(`UPDATE sub_items SET has_file = 0, file_path = NULL${unmonitor ? ", monitored = 0" : ""} WHERE id = ?`)

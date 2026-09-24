@@ -15,10 +15,13 @@ let analyzeCompatibility: (typeof import("../src/services/mediaAnalysis.js"))["a
 let runLibraryAnalysis: (typeof import("../src/services/mediaAnalysis.js"))["runLibraryAnalysis"];
 let normalizeLanguage: (typeof import("../src/services/mediaAnalysis.js"))["normalizeLanguage"];
 let resolutionTier: (typeof import("../src/services/mediaAnalysis.js"))["resolutionTier"];
+let getAnalysisProgress: (typeof import("../src/services/mediaAnalysis.js"))["getAnalysisProgress"];
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
-  ({ analyzeCompatibility, runLibraryAnalysis, normalizeLanguage, resolutionTier } = await import("../src/services/mediaAnalysis.js"));
+  ({ analyzeCompatibility, runLibraryAnalysis, normalizeLanguage, resolutionTier, getAnalysisProgress } = await import(
+    "../src/services/mediaAnalysis.js"
+  ));
 });
 
 function audio(overrides: Partial<AudioStreamInfo> = {}): AudioStreamInfo {
@@ -410,6 +413,21 @@ describe("runLibraryAnalysis", () => {
 
     const row = (await db.prepare("SELECT media_info FROM media_items WHERE id = ?").get(parentId)) as { media_info: string | null };
     expect(row.media_info).toBeNull();
+  });
+
+  it("marks itself running before its first await, so a second run started right after is refused instead of probing concurrently", async () => {
+    const type = uniqueType();
+    await insertMediaItem(type, "Probed Once", "/fake/once.mkv");
+    probeMediaInfo.mockResolvedValue(mediaInfo());
+
+    const first = runLibraryAnalysis(type);
+    // Same tick as the route's own getAnalysisProgress().running check for a double-clicked POST.
+    expect(getAnalysisProgress().running).toBe(true);
+    await expect(runLibraryAnalysis(type)).rejects.toThrow(/already in progress/);
+
+    expect(await first).toEqual({ probed: 1, failed: 0 });
+    expect(probeMediaInfo).toHaveBeenCalledTimes(1);
+    expect(getAnalysisProgress()).toMatchObject({ running: false, total: 1, done: 1 });
   });
 
   it("stops mid-scan once the signal aborts between rows, leaving the remaining row unprobed", async () => {

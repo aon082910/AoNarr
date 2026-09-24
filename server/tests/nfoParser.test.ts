@@ -85,6 +85,49 @@ describe("parseNfo", () => {
     expect(result.episode).toBe(1);
   });
 
+  it("keeps season 0 (Kodi/Jellyfin specials) and episode 0 instead of treating them as missing", async () => {
+    const special = await parseNfo(`<episodedetails><title>Behind the Scenes</title><season>0</season><episode>3</episode></episodedetails>`);
+    expect(special.season).toBe(0);
+    expect(special.episode).toBe(3);
+
+    const zeroEpisode = await parseNfo(`<episodedetails><title>Prologue</title><season>2</season><episode>0</episode></episodedetails>`);
+    expect(zeroEpisode.season).toBe(2);
+    expect(zeroEpisode.episode).toBe(0);
+  });
+
+  it("still returns null season/episode for non-numeric values", async () => {
+    const result = await parseNfo(`<episodedetails><title>X</title><season>abc</season><episode></episode></episodedetails>`);
+    expect(result.season).toBeNull();
+    expect(result.episode).toBeNull();
+  });
+
+  it("normalizes Kodi's 'Rated ' prefix and a country prefix on <mpaa> to the canonical rating", async () => {
+    const rating = async (mpaa: string) => (await parseNfo(`<movie><title>X</title><mpaa>${mpaa}</mpaa></movie>`)).contentRating;
+    expect(await rating("Rated R")).toBe("R");
+    expect(await rating("Rated PG-13")).toBe("PG-13");
+    expect(await rating("US:R")).toBe("R");
+    expect(await rating("US:TV-MA")).toBe("TV-MA");
+    expect(await rating("rated nc-17")).toBe("NC-17");
+    expect(await rating("US:Rated R")).toBe("R");
+    expect(await rating("US:Rated PG-13")).toBe("PG-13");
+    expect(await rating("GB:15 / US:R")).toBe("R");
+  });
+
+  it("prefers the US part of a multi-country <mpaa> over another country's same-named label", async () => {
+    const rating = async (mpaa: string) => (await parseNfo(`<movie><title>X</title><mpaa>${mpaa}</mpaa></movie>`)).contentRating;
+    expect(await rating("GB:PG / US:PG-13")).toBe("PG-13");
+    expect(await rating("GB:PG / Rated R")).toBe("R");
+    // With no US part at all, another country's matching label is still better than unranked.
+    expect(await rating("CA:PG / GB:15")).toBe("PG");
+  });
+
+  it("keeps an <mpaa> value that isn't a recognizable rating as written", async () => {
+    const rating = async (mpaa: string) => (await parseNfo(`<tvshow><title>X</title><mpaa>${mpaa}</mpaa></tvshow>`)).contentRating;
+    expect(await rating("All Ages")).toBe("All Ages");
+    expect(await rating("Explicit")).toBe("Explicit");
+    expect(await rating("GB:15")).toBe("GB:15");
+  });
+
   it("extracts content rating (<mpaa>) and every <genre> tag", async () => {
     const xml = `<movie>
   <title>X</title>

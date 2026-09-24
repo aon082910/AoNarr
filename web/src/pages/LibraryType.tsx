@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
 import { Link, useLocation, useNavigate, useNavigationType, useParams, useSearchParams } from "react-router-dom";
 import { api, downloadFile, uploadFormFile } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
@@ -27,6 +27,8 @@ type StatusFilter = "all" | "monitored" | "unmonitored" | "missing" | "downloade
  * rows come down per request, not what's considered a match. */
 const PAGE_SIZE_OPTIONS = [30, 60, 100, 250] as const;
 const DEFAULT_PAGE_SIZE = 60;
+/** Mirrors POST /search/bulk's per-request target cap (server/src/routes/search.ts). */
+const BULK_SEARCH_MAX_TARGETS = 100;
 const ALPHABET_LETTERS = ["#", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("")];
 
 interface LibraryStats {
@@ -614,7 +616,7 @@ export function LibraryItemGrid({
   // faster one for the current view and overwrite it (same out-of-order guard the library-sizes
   // effect below already has).
   const loadRequestRef = useRef(0);
-  function load() {
+  function load(keepSelection = false) {
     setLoading(true);
     const requestId = ++loadRequestRef.current;
     const params = scopeParams();
@@ -631,15 +633,20 @@ export function LibraryItemGrid({
         if (requestId !== loadRequestRef.current) return;
         setItems(data.items);
         setFilteredTotal(data.total);
-        setSelected(new Set());
+        if (keepSelection) setSelected((prev) => new Set(data.items.filter((i) => prev.has(i.id)).map((i) => i.id)));
+        else setSelected(new Set());
       })
       .finally(() => {
         if (requestId === loadRequestRef.current) setLoading(false);
       });
   }
 
+  const loadStatsRequestRef = useRef(0);
   function loadStats() {
-    api.get<LibraryStats>(`/media/stats?${scopeParams().toString()}`).then(setStats);
+    const requestId = ++loadStatsRequestRef.current;
+    api.get<LibraryStats>(`/media/stats?${scopeParams().toString()}`).then((data) => {
+      if (requestId === loadStatsRequestRef.current) setStats(data);
+    });
   }
 
   useEffect(load, [type, groupId, tagFilter, statusFilter, contentRatingFilter, genreFilter, searchQuery, sortKey, page, pageSize, systemFilter]);
@@ -657,29 +664,68 @@ export function LibraryItemGrid({
   useEffect(loadStats, [type, groupId, tagFilter, systemFilter]);
 
   // Remembers where the user was scrolled to on this exact URL (type/group/filters/page all live
-  // in the URL already) so navigating to a show and hitting the browser Back button returns to the
-  // same spot in the list instead of resetting to the top — the effect's cleanup fires the instant
-  // this component unmounts, i.e. exactly when navigating away to a media item's page.
+  // in the URL already) so navigating to an item and hitting the browser Back button returns to the
+  // same spot in the list instead of the top. Saved continuously — on every scroll, and immediately
+  // on any click/keypress that might navigate away — never at unmount: by the time an unmount
+  // cleanup runs, the next page's shorter DOM has already replaced this one (clamping
+  // window.scrollY) and App's ScrollToTop has reset it, so the old unmount-time save always
+  // recorded 0 or a clamped value, which the restore below then dutifully scrolled back to.
+  // Saving is paused while this page is loading/restoring (it's short then, and ScrollToTop or the
+  // browser's own restoration attempt would overwrite the real position) and stops for good the
+  // moment this page starts unmounting — a layout-effect cleanup runs before the old DOM goes.
+  const scrollKey = `aonarr_library_scroll:${location.pathname}${location.search}`;
+  const scrollSaveEnabledRef = useRef(false);
+  useLayoutEffect(
+    () => () => {
+      scrollSaveEnabledRef.current = false;
+    },
+    []
+  );
   useEffect(() => {
-    const key = `aonarr_library_scroll:${location.pathname}${location.search}`;
-    return () => {
-      sessionStorage.setItem(key, String(window.scrollY));
+    const save = () => {
+      if (scrollSaveEnabledRef.current) sessionStorage.setItem(scrollKey, String(window.scrollY));
     };
-  }, [location.pathname, location.search]);
+    let frame = 0;
+    const onScroll = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        save();
+      });
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    document.addEventListener("click", save, true);
+    document.addEventListener("keydown", save, true);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      document.removeEventListener("click", save, true);
+      document.removeEventListener("keydown", save, true);
+      cancelAnimationFrame(frame);
+    };
+  }, [scrollKey]);
 
   // Only restores on an actual browser Back/Forward (navigationType === "POP") — a fresh visit or
   // a filter/sort change should still land at the top like normal. Waits for loading to finish so
-  // the page already has its real height before scrolling, and only fires once per mount.
+  // the page already has its real height, and only restores once per URL per mount. Applied
+  // directly (the list is already committed when this effect runs) and once more after the next
+  // frame for any late layout shift, rather than only inside requestAnimationFrame — rAF never
+  // fires in a hidden/background tab.
   useEffect(() => {
-    if (navigationType !== "POP" || loading) return;
-    const key = `${location.pathname}${location.search}`;
-    if (restoredScrollRef.current === key) return;
-    const saved = sessionStorage.getItem(`aonarr_library_scroll:${key}`);
-    if (saved == null) return;
-    restoredScrollRef.current = key;
-    const y = Number(saved);
-    requestAnimationFrame(() => requestAnimationFrame(() => window.scrollTo(0, y)));
-  }, [loading, navigationType, location.pathname, location.search]);
+    if (loading) {
+      scrollSaveEnabledRef.current = false;
+      return;
+    }
+    if (navigationType === "POP" && restoredScrollRef.current !== scrollKey) {
+      restoredScrollRef.current = scrollKey;
+      const saved = sessionStorage.getItem(scrollKey);
+      if (saved != null) {
+        const y = Number(saved);
+        window.scrollTo(0, y);
+        requestAnimationFrame(() => window.scrollTo(0, y));
+      }
+    }
+    scrollSaveEnabledRef.current = true;
+  }, [loading, navigationType, scrollKey]);
 
   // Powers the A-Z jump sidebar below — a flat {id, letter} index across every item matching the
   // current filters (not just the current page), fetched separately from the paginated `items`
@@ -715,7 +761,7 @@ export function LibraryItemGrid({
     return () => {
       cancelled = true;
     };
-  }, [type, groupId, tagFilter, statusFilter, contentRatingFilter, genreFilter, sortKey, searchQuery]);
+  }, [type, groupId, tagFilter, statusFilter, contentRatingFilter, genreFilter, sortKey, searchQuery, systemFilter]);
 
   // Once a letter jump has moved to a different page, waits for that page's items to actually
   // arrive before scrolling — the target row doesn't exist in the DOM until then.
@@ -754,7 +800,7 @@ export function LibraryItemGrid({
       return;
     }
     setPage(0);
-  }, [type, groupId, tagFilter, statusFilter, contentRatingFilter, genreFilter, sortKey, pageSize]);
+  }, [type, groupId, tagFilter, statusFilter, contentRatingFilter, genreFilter, sortKey, pageSize, systemFilter]);
   useEffect(() => {
     // Guarded against out-of-order responses: switching libraries quickly could let an earlier
     // type's slower-to-resolve request land after a later type's faster one, overwriting the
@@ -1022,13 +1068,23 @@ export function LibraryItemGrid({
   }
 
   async function bulkMonitor(monitored: boolean) {
-    await api.post("/media/bulk/monitor", { mediaItemIds: Array.from(selected), monitored });
-    load();
+    try {
+      await api.post("/media/bulk/monitor", { mediaItemIds: Array.from(selected), monitored });
+      load();
+    } catch (e) {
+      notify.error((e as Error).message);
+    }
   }
 
   async function toggleItemMonitored(item: MediaItem) {
-    const updated = await api.patch<MediaItem>(`/media/${item.id}`, { monitored: item.monitored ? 0 : 1 });
-    setItems((prev) => prev.map((i) => (i.id === item.id ? updated : i)));
+    try {
+      const updated = await api.patch<MediaItem>(`/media/${item.id}`, { monitored: item.monitored ? 0 : 1 });
+      // Only the flag is merged: the PATCH response is the bare row, without the list route's
+      // childCount/childHaveCount that the Partial banner and progress bars are drawn from.
+      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, monitored: updated.monitored } : i)));
+    } catch (e) {
+      notify.error((e as Error).message);
+    }
   }
 
   const [bulkEditProfiles, setBulkEditProfiles] = useState<QualityProfile[]>([]);
@@ -1046,11 +1102,15 @@ export function LibraryItemGrid({
     const body: Record<string, unknown> = { mediaItemIds: Array.from(selected) };
     if (bulkEditQualityProfileId) body.qualityProfileId = bulkEditQualityProfileId;
     if (bulkEditRootFolderId) body.rootFolderId = bulkEditRootFolderId;
-    await api.post("/media/bulk/edit", body);
-    setBulkEditQualityProfileId("");
-    setBulkEditRootFolderId("");
-    load();
-    notify.success(`Updated ${selected.size} item(s).`);
+    try {
+      await api.post("/media/bulk/edit", body);
+      setBulkEditQualityProfileId("");
+      setBulkEditRootFolderId("");
+      load();
+      notify.success(`Updated ${selected.size} item(s).`);
+    } catch (e) {
+      notify.error((e as Error).message);
+    }
   }
 
   async function bulkTag() {
@@ -1117,9 +1177,19 @@ export function LibraryItemGrid({
 
   async function bulkSearch() {
     const targets = Array.from(selected).map((mediaItemId) => ({ mediaItemId }));
-    const results = await api.post<{ grabbed: boolean; error?: string }[]>("/search/bulk", { targets });
-    const grabbedCount = results.filter((r) => r.grabbed).length;
-    notify.success(`Grabbed ${grabbedCount} of ${results.length} selected item(s).`);
+    const results: { grabbed: boolean; error?: string }[] = [];
+    try {
+      // The server rejects more than 100 targets per request, but a page can hold 250.
+      for (let i = 0; i < targets.length; i += BULK_SEARCH_MAX_TARGETS) {
+        const batch = targets.slice(i, i + BULK_SEARCH_MAX_TARGETS);
+        results.push(...(await api.post<{ grabbed: boolean; error?: string }[]>("/search/bulk", { targets: batch })));
+      }
+      const grabbedCount = results.filter((r) => r.grabbed).length;
+      notify.success(`Grabbed ${grabbedCount} of ${results.length} selected item(s).`);
+    } catch (e) {
+      const grabbedCount = results.filter((r) => r.grabbed).length;
+      notify.error(`${grabbedCount > 0 ? `Grabbed ${grabbedCount} item(s) before the search failed: ` : ""}${(e as Error).message}`);
+    }
     load();
   }
 
@@ -1128,13 +1198,28 @@ export function LibraryItemGrid({
   // load()/loadStats() a few times over the minute or so most jobs finish within, then gives up.
   // Without this, the list/stats only ever reflected pre-job state until the user manually
   // reloaded or navigated away and back, even though the job itself had long since finished.
+  // Each tick calls the latest render's load()/loadStats() through refs: the click-time closures
+  // hold that render's type/filters/page and, being the newest request, would overwrite whatever
+  // library or filter the admin has moved on to. The job is per-type, so polling stops on a type
+  // change or unmount, and ticks keep any bulk selection that's still on the page.
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const loadStatsRef = useRef(loadStats);
+  loadStatsRef.current = loadStats;
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  function stopPolling() {
+    if (pollIntervalRef.current != null) clearInterval(pollIntervalRef.current);
+    pollIntervalRef.current = null;
+  }
+  useEffect(() => stopPolling, [type]);
   function pollAfterBackgroundJob() {
+    stopPolling();
     let attempts = 0;
-    const interval = setInterval(() => {
-      load();
-      loadStats();
+    pollIntervalRef.current = setInterval(() => {
+      loadRef.current(true);
+      loadStatsRef.current();
       attempts++;
-      if (attempts >= 12) clearInterval(interval);
+      if (attempts >= 12) stopPolling();
     }, 5000);
   }
 
@@ -1689,7 +1774,7 @@ export function LibraryItemGrid({
                     justifyContent: "center",
                   }}
                 >
-                  <MonitorToggle monitored={!!item.monitored} onToggle={() => toggleItemMonitored(item)} />
+                  <MonitorToggle monitored={!!item.monitored} onToggle={() => toggleItemMonitored(item)} readOnly={!auth.isAdmin} />
                 </div>
                 <div className={`poster-banner ${posterBanner(item).cls}`}>{posterBanner(item).label}</div>
               </div>
@@ -1739,7 +1824,7 @@ export function LibraryItemGrid({
                     onChange={() => {}}
                   />
                 )}
-                <MonitorToggle monitored={!!item.monitored} onToggle={() => toggleItemMonitored(item)} />
+                <MonitorToggle monitored={!!item.monitored} onToggle={() => toggleItemMonitored(item)} readOnly={!auth.isAdmin} />
                 <div className="poster-thumb" style={item.posterUrl ? { backgroundImage: `url(${item.posterUrl})` } : undefined} />
                 <div className="overview-main">
                   <div className="overview-title">{item.title}</div>
@@ -1833,7 +1918,7 @@ export function LibraryItemGrid({
                       </td>
                     ) : f === "monitored" ? (
                       <td key={f}>
-                        <MonitorToggle monitored={!!item.monitored} onToggle={() => toggleItemMonitored(item)} />
+                        <MonitorToggle monitored={!!item.monitored} onToggle={() => toggleItemMonitored(item)} readOnly={!auth.isAdmin} />
                       </td>
                     ) : (
                       <td key={f}>{fieldValue(item, f, customColumnsForType)}</td>

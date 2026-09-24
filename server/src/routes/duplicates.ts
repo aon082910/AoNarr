@@ -23,7 +23,8 @@ duplicatesRouter.get(
  * file/metadata, reassigns episodes/sub-items/tags/collection-membership/history/etc. that don't
  * collide with something the keeper already has, then deletes the losers. `deleteFiles` recycles
  * any loser file that wasn't adopted (a second copy, a colliding episode/sub-item's file) instead
- * of leaving it on disk untracked. */
+ * of leaving it on disk untracked. `skippedShapeMismatch` lists loser ids left unmerged because
+ * one side is a not-yet-converted legacy item and the other isn't. */
 duplicatesRouter.post(
   "/merge",
   asyncHandler(async (req, res) => {
@@ -33,7 +34,13 @@ duplicatesRouter.post(
     }
     const result = await mergeMediaItems(Number(keeperId), loserIds.map(Number), !!deleteFiles);
     const actor = auditActor(req);
-    logAuditEvent(actor.userId, actor.username, "media_duplicates_merged", `merged ${result.merged} duplicate(s) into item ${keeperId}`);
+    const skipped = result.skippedShapeMismatch.length;
+    logAuditEvent(
+      actor.userId,
+      actor.username,
+      "media_duplicates_merged",
+      `merged ${result.merged} duplicate(s) into item ${keeperId}${skipped > 0 ? ` (${skipped} skipped: shape mismatch)` : ""}`
+    );
     res.json(result);
   })
 );

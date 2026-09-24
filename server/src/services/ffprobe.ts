@@ -118,26 +118,37 @@ async function runFfprobe(filePath: string): Promise<{ stdout: string }> {
   });
 }
 
+async function probeJson(filePath: string): Promise<any> {
+  // "-v error" (not "quiet") — quiet suppresses ffprobe's own explanation of *why* it failed
+  // along with the routine info it's actually meant to silence, so a real failure came back with
+  // empty stderr and nothing to log beyond "the command failed." error-level still says nothing
+  // for a file that probes fine, but keeps the actual reason for one that doesn't.
+  let result;
+  try {
+    result = await runFfprobe(filePath);
+  } catch (err) {
+    const stderr = (err as NodeJS.ErrnoException & { stderr?: string }).stderr ?? "";
+    if (RETRYABLE_FFPROBE_PATTERNS.some((p) => p.test(stderr))) {
+      await new Promise((r) => setTimeout(r, 2000));
+      result = await runFfprobe(filePath);
+    } else {
+      throw err;
+    }
+  }
+  return JSON.parse(result.stdout);
+}
+
+function logProbeFailure(filePath: string, err: unknown): void {
+  // execFile's promisified error carries the real reason on .stderr — the .message alone is
+  // just "Command failed: ffprobe <args>", which repeats the command back without saying why it
+  // failed (unsupported/corrupt codec, DRM, a genuinely broken file, etc).
+  const stderr = (err as NodeJS.ErrnoException & { stderr?: string }).stderr?.trim();
+  log.warn(`[ffprobe] could not probe "${filePath}":`, stderr || (err as Error).message);
+}
+
 export async function probeMediaInfo(filePath: string): Promise<MediaInfo | null> {
   try {
-    // "-v error" (not "quiet") — quiet suppresses ffprobe's own explanation of *why* it failed
-    // along with the routine info it's actually meant to silence, so a real failure came back with
-    // empty stderr and nothing to log beyond "the command failed." error-level still says nothing
-    // for a file that probes fine, but keeps the actual reason for one that doesn't.
-    let result;
-    try {
-      result = await runFfprobe(filePath);
-    } catch (err) {
-      const stderr = (err as NodeJS.ErrnoException & { stderr?: string }).stderr ?? "";
-      if (RETRYABLE_FFPROBE_PATTERNS.some((p) => p.test(stderr))) {
-        await new Promise((r) => setTimeout(r, 2000));
-        result = await runFfprobe(filePath);
-      } else {
-        throw err;
-      }
-    }
-    const { stdout } = result;
-    const data = JSON.parse(stdout);
+    const data = await probeJson(filePath);
     const streams: any[] = data.streams ?? [];
     const videoStream = streams.find((s) => s.codec_type === "video");
     const audioStreams = extractAudioStreams(streams);
@@ -167,11 +178,20 @@ export async function probeMediaInfo(filePath: string): Promise<MediaInfo | null
       subtitleStreams: extractSubtitleStreams(streams),
     };
   } catch (err) {
-    // execFile's promisified error carries the real reason on .stderr — the .message alone is
-    // just "Command failed: ffprobe <args>", which repeats the command back without saying why it
-    // failed (unsupported/corrupt codec, DRM, a genuinely broken file, etc).
-    const stderr = (err as NodeJS.ErrnoException & { stderr?: string }).stderr?.trim();
-    log.warn(`[ffprobe] could not probe "${filePath}":`, stderr || (err as Error).message);
+    logProbeFailure(filePath, err);
+    return null;
+  }
+}
+
+/** The container duration in seconds, unrounded. probeMediaInfo's durationSeconds is rounded to
+ * whole seconds, which is fine for display but drifts by up to half a second per file when summed
+ * into chapter offsets. Returns null (never throws), like probeMediaInfo. */
+export async function probeDurationSeconds(filePath: string): Promise<number | null> {
+  try {
+    const duration = Number((await probeJson(filePath)).format?.duration);
+    return Number.isFinite(duration) && duration > 0 ? duration : null;
+  } catch (err) {
+    logProbeFailure(filePath, err);
     return null;
   }
 }

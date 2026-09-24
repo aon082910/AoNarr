@@ -210,7 +210,10 @@ export async function createApp(): Promise<Express> {
     res.setHeader("X-Request-Id", reqId);
     const startedAt = Date.now();
     res.on("finish", () => {
-      const route = req.route?.path ? `${req.baseUrl}${req.route.path}` : req.path;
+      // A request no route ever matched (a 401 from requireAuth, a router-level 403, a 404) has
+      // no req.route — its raw path must not become a metrics key, or any unauthenticated client
+      // could grow httpMetrics' never-pruned map one junk URL at a time until the heap runs out.
+      const route = req.route?.path ? `${req.baseUrl}${req.route.path}` : "<unmatched>";
       recordHttpRequest(req.method, route, res.statusCode, Date.now() - startedAt);
     });
     runWithRequestId(reqId, next);
@@ -219,13 +222,19 @@ export async function createApp(): Promise<Express> {
   // the Discord interactions webhook (routes/discordInteractions.ts), which must verify an
   // Ed25519 signature over the literal bytes Discord sent; re-serializing the parsed JSON
   // wouldn't byte-for-byte match the original body, so the parsed object alone isn't enough.
+  const stashRawBody = (req: any, _res: unknown, buf: Buffer) => {
+    req.rawBody = buf;
+  };
+  // A settings template exported from an instance with the TRaSH custom formats synced runs well
+  // past body-parser's 100kb default; the general parser below skips a body already parsed here.
+  // Auth runs first so an unauthenticated client can't make the server buffer and parse 10mb.
   app.use(
-    express.json({
-      verify: (req: any, _res, buf) => {
-        req.rawBody = buf;
-      },
-    })
+    "/api/settings/template/import",
+    asyncHandler(requireAuth),
+    requireAdmin,
+    express.json({ limit: "10mb", verify: stashRawBody })
   );
+  app.use(express.json({ verify: stashRawBody }));
   app.use("/api", asyncHandler(requireAuth));
 
   app.get("/api/health", (_req, res) => res.json({ status: "ok" }));

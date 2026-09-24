@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import crypto from "node:crypto";
 import { db } from "../db/index.js";
 import { nowOffsetExpr } from "../db/asyncDb.js";
 import { config } from "../config.js";
@@ -41,8 +42,11 @@ export async function recycleFile(filePath: string, mediaType: string, title: st
     const stat = await fsp.stat(filePath);
     const destDir = path.join(recycleBinRoot(), mediaType);
     await fsp.mkdir(destDir, { recursive: true });
-    const stamp = Date.now();
-    const dest = path.join(destDir, `${stamp}-${path.basename(filePath)}`);
+    // A random component too, not just the millisecond: deleting an item recycles its files in a
+    // tight loop, and two same-named files ("Lesson 1/video.mp4", "Lesson 2/video.mp4") recycled in
+    // the same millisecond used to land on the same destination — rename()/cp() replace silently,
+    // so the first file was destroyed while both recycle_bin rows pointed at the second.
+    const dest = path.join(destDir, `${Date.now()}-${crypto.randomBytes(4).toString("hex")}-${path.basename(filePath)}`);
     await moveFileAsync(filePath, dest);
     await db
       .prepare(
@@ -96,6 +100,11 @@ export async function startRestoreFromRecycleBin(id: number): Promise<void> {
 
   (async () => {
     try {
+      // rename()/cp() would silently replace whatever is there now — typically a newer download of
+      // the same item that landed at the same templated path after this one was recycled.
+      if (fs.existsSync(row.original_path)) {
+        throw new Error("A file already exists at the original location — move or remove it first, then restore again");
+      }
       await fsp.mkdir(path.dirname(row.original_path), { recursive: true });
       await moveFileAsync(row.recycle_path, row.original_path);
       await db.prepare("DELETE FROM recycle_bin WHERE id = ?").run(id);
@@ -112,10 +121,19 @@ export async function startRestoreFromRecycleBin(id: number): Promise<void> {
  * kicks each restore off via the same fire-and-forget path so a many-GB file doesn't hold this up. */
 export async function restoreAllFromRecycleBin(mediaType?: string): Promise<{ started: number; skipped: number }> {
   const rows = (await (mediaType
-    ? db.prepare("SELECT id FROM recycle_bin WHERE media_type = ? AND restoring = 0").all(mediaType)
-    : db.prepare("SELECT id FROM recycle_bin WHERE restoring = 0").all())) as { id: number }[];
+    ? db.prepare("SELECT id, original_path FROM recycle_bin WHERE media_type = ? AND restoring = 0 ORDER BY id DESC").all(mediaType)
+    : db.prepare("SELECT id, original_path FROM recycle_bin WHERE restoring = 0 ORDER BY id DESC").all())) as {
+    id: number;
+    original_path: string;
+  }[];
   let started = 0;
+  // The same original path recycled more than once over time (recycled, re-downloaded, recycled
+  // again) would otherwise have its restores race each other to the same destination — only the
+  // most recent entry for a path is restored; the rest are left for the admin to decide.
+  const claimedPaths = new Set<string>();
   for (const row of rows) {
+    if (claimedPaths.has(row.original_path)) continue;
+    claimedPaths.add(row.original_path);
     try {
       await startRestoreFromRecycleBin(row.id);
       started++;

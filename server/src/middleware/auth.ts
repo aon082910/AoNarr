@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import { getSetting } from "../services/settingsStore.js";
 import { getSessionUser, type SessionUser } from "../services/auth.js";
-import { checkRateLimit, recordFailure, recordSuccess } from "../services/rateLimiter.js";
+import { checkRateLimit, recordFailure } from "../services/rateLimiter.js";
 
 /** Same-length check first (timingSafeEqual throws on mismatched lengths — that's a length leak,
  * not a content one, and the expected key's length is fixed/public anyway), then a constant-time
@@ -94,17 +94,9 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     return;
   }
 
-  const rateLimitKey = `authkey:${clientIp(req)}`;
-  const rateLimit = checkRateLimit(rateLimitKey);
-  if (!rateLimit.allowed) {
-    res.status(429).json({ error: "Too many failed attempts. Try again later.", retryAfterSeconds: rateLimit.retryAfterSeconds });
-    return;
-  }
-
   const expectedApiKey = getSetting("apiKey");
   const providedApiKey = (req.header("X-Api-Key") ?? (req.query.apikey as string | undefined)) ?? "";
   if (expectedApiKey && providedApiKey && safeEqual(providedApiKey, expectedApiKey)) {
-    recordSuccess(rateLimitKey);
     req.auth = { isAdmin: true };
     next();
     return;
@@ -117,11 +109,23 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   if (sessionToken) {
     const user = await getSessionUser(sessionToken);
     if (user) {
-      recordSuccess(rateLimitKey);
       req.auth = { isAdmin: user.role === "admin", user };
       next();
       return;
     }
+  }
+
+  // The lockout only ever applies to a request that FAILED to authenticate — valid credentials are
+  // checked first. The bucket is per client IP, and behind a second reverse proxy (SWAG, NPM,
+  // Traefik, a Cloudflare tunnel) every client shares one IP, so checking the lockout first let ten
+  // junk requests from anyone 429 every real user's valid session for 15 minutes, on repeat. An API
+  // key or session token is far too long to brute-force, so validating it before the lockout
+  // gives nothing away.
+  const rateLimitKey = `authkey:${clientIp(req)}`;
+  const rateLimit = checkRateLimit(rateLimitKey);
+  if (!rateLimit.allowed) {
+    res.status(429).json({ error: "Too many failed attempts. Try again later.", retryAfterSeconds: rateLimit.retryAfterSeconds });
+    return;
   }
 
   // Only count it as a failed *credential-guessing* attempt when credentials were actually

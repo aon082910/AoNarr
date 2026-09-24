@@ -36,22 +36,31 @@ export function reloadEncryptionKey(): void {
 
 function loadOrCreateKey(): Buffer {
   if (cachedKey) return cachedKey;
+  let existing: string | null = null;
   try {
-    const hex = fs.readFileSync(KEY_PATH, "utf-8").trim();
+    existing = fs.readFileSync(KEY_PATH, "utf-8");
+  } catch (err) {
+    // Only a missing file means "first boot". Any other read failure (EIO/ESTALE on a network-
+    // mounted config dir, EACCES, EMFILE) says nothing about whether the real key is still there,
+    // so generating a new one would overwrite it — fail this call instead and retry on the next.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  if (existing !== null) {
+    const hex = existing.trim();
     if (/^[0-9a-f]{64}$/i.test(hex)) {
       cachedKey = Buffer.from(hex, "hex");
       return cachedKey;
     }
     // The file exists but its content isn't a well-formed key (truncated, corrupted, edited by
-    // hand) — this is a materially different, much more dangerous case than "no key file yet"
-    // below: every value already encrypted with the real key becomes permanently undecryptable
-    // the moment a fresh one is generated over it. Loud on purpose, unlike the silent first-boot
-    // case, so an admin has a chance to notice and restore the real key file before that happens.
+    // hand) — this is a materially different, much more dangerous case than "no key file yet":
+    // every value already encrypted with the real key becomes undecryptable once a fresh one is
+    // in use. The unreadable file is moved aside rather than overwritten so whatever is left of
+    // the real key can still be recovered from it.
+    const badPath = `${KEY_PATH}.bad-${Date.now()}`;
+    fs.renameSync(KEY_PATH, badPath);
     log.error(
-      `[encryption] ${KEY_PATH} exists but its content isn't a valid key — generating a new one. Every already-encrypted setting (indexer/download-client credentials, etc.) will need to be re-entered. If this file was supposed to still be the real key, restore it from backup before restarting instead.`
+      `[encryption] ${KEY_PATH} exists but its content isn't a valid key — moved it to ${badPath} and generated a new one. Every already-encrypted setting (indexer/download-client credentials, etc.) will need to be re-entered, unless the real key is restored (from ${badPath} or a backup) before restarting.`
     );
-  } catch {
-    // no key file yet — fall through and create one
   }
   const key = crypto.randomBytes(32);
   fs.mkdirSync(path.dirname(KEY_PATH), { recursive: true });

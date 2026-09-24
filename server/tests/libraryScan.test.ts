@@ -90,6 +90,7 @@ beforeEach(async () => {
   // same as before refreshOneItem started trying an id-based lookup first.
   fetchByExternalId.mockReset().mockRejectedValue(new Error("not mocked"));
   fetchSeriesEpisodesFor.mockReset().mockResolvedValue([]);
+  fetchSeriesEpisodesForProvider.mockReset().mockResolvedValue([]);
   fetchSeriesSeasonsFor.mockReset().mockResolvedValue([]);
   fetchArtistAlbumsFor.mockReset().mockResolvedValue(null);
   fetchCollectionChildrenFor.mockReset().mockResolvedValue({ provider: null, children: [] });
@@ -212,6 +213,11 @@ describe("detectSeasonEpisode", () => {
     expect(detectSeasonEpisode("S03", "E07")).toEqual({ season: 3, episodes: [7] });
   });
 
+  it("reads a 'Specials' folder as Season 0", () => {
+    expect(detectSeasonEpisode("Specials", "E03")).toEqual({ season: 0, episodes: [3] });
+    expect(detectSeasonEpisode("specials", "E01")).toEqual({ season: 0, episodes: [1] });
+  });
+
   it("returns nulls/empty when no season/episode can be determined at all", () => {
     expect(detectSeasonEpisode("Random Folder", "randomfile")).toEqual({ season: null, episodes: [] });
   });
@@ -280,6 +286,25 @@ describe("scanAndImportLibrary — movie (single shape)", () => {
     expect(rows[0].path).toBe(originalPath);
   });
 
+  it("attaches a file to the same-titled movie whose year matches when several share the title (a remake)", async () => {
+    const folder = await insertRootFolder("movie");
+    const it1990 = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('movie','It','it',1990,1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    const it2017 = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('movie','It','it',2017,1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    const filePath = writeFile(folder.path, "It.2017.1080p.mkv");
+
+    const result = await scanAndImportLibrary("movie");
+
+    expect(result).toMatchObject({ matched: 1, created: 0 });
+    expect((await db.prepare("SELECT * FROM media_items WHERE id = ?").get(it2017)) as any).toMatchObject({ has_file: 1, path: filePath });
+    expect((await db.prepare("SELECT * FROM media_items WHERE id = ?").get(it1990)) as any).toMatchObject({ has_file: 0, path: null });
+  });
+
   it("stores probed media info alongside a new movie", async () => {
     const folder = await insertRootFolder("movie");
     probeMediaInfo.mockResolvedValue({ videoCodec: "h264", width: 1920, height: 1080 });
@@ -311,6 +336,53 @@ describe("scanAndImportLibrary — series (episodic shape)", () => {
     expect(show).toMatchObject({ title: "Breaking Bad", overview: "A teacher turns to crime.", year: 2008, has_file: 1 });
     const ep = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").get(show.id)) as any;
     expect(ep).toMatchObject({ season_number: 1, episode_number: 1, has_file: 1, file_path: filePath });
+  });
+
+  it("never searches with a daily show's air-date year, and enriches from the hit whose title agrees rather than the first", async () => {
+    const folder = await insertRootFolder("series");
+    writeFile(path.join(folder.path, "The Daily Show", "Season 28"), "The.Daily.Show.S28E50.2023.05.01.1080p.mkv");
+    searchMetadata.mockResolvedValue([
+      { title: "The Daily Show Spinoff", year: 2023, overview: "Wrong show", posterUrl: null, externalIds: { tmdb: "999" } },
+      { title: "The Daily Show", year: 1996, overview: "Right show", posterUrl: null, externalIds: { tmdb: "2224" } },
+    ]);
+
+    await scanAndImportLibrary("series");
+
+    expect(searchMetadata).toHaveBeenCalledWith("series", "The Daily Show", undefined, null);
+    const show = (await db.prepare("SELECT * FROM media_items WHERE type='series'").get()) as any;
+    expect(show).toMatchObject({ title: "The Daily Show", overview: "Right show", year: 1996 });
+    expect(fetchSeriesEpisodesFor).toHaveBeenCalledWith({ tmdb: "2224" });
+  });
+
+  it("creates a new show without enrichment when no search hit's title and year agree with the file", async () => {
+    const folder = await insertRootFolder("series");
+    writeFile(path.join(folder.path, "Doctor Who", "Season 01"), "Doctor.Who.2005.S01E01.mkv");
+    searchMetadata.mockResolvedValue([
+      { title: "Doctor Who", year: 1963, overview: "The classic series", posterUrl: null, externalIds: { tmdb: "121" } },
+      { title: "Doctor Who Confidential", year: 2005, overview: "A spin-off", posterUrl: null, externalIds: { tmdb: "5" } },
+    ]);
+
+    const result = await scanAndImportLibrary("series");
+
+    expect(result.matched).toBe(1);
+    expect(searchMetadata).toHaveBeenCalledWith("series", "Doctor Who", undefined, 2005);
+    const show = (await db.prepare("SELECT * FROM media_items WHERE type='series'").get()) as any;
+    expect(show).toMatchObject({ title: "Doctor Who", overview: null, year: null });
+    expect(fetchSeriesEpisodesFor).not.toHaveBeenCalled();
+    const ep = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").get(show.id)) as any;
+    expect(ep).toMatchObject({ season_number: 1, episode_number: 1, has_file: 1 });
+  });
+
+  it("enriches from a hit whose title only differs by the punctuation a scene filename drops", async () => {
+    const folder = await insertRootFolder("series");
+    writeFile(path.join(folder.path, "Greys Anatomy", "Season 01"), "Greys.Anatomy.S01E01.1080p.mkv");
+    searchMetadata.mockResolvedValue([{ title: "Grey's Anatomy", year: 2005, overview: "Surgeons.", posterUrl: null, externalIds: { tmdb: "1416" } }]);
+
+    await scanAndImportLibrary("series");
+
+    const show = (await db.prepare("SELECT * FROM media_items WHERE type='series'").get()) as any;
+    expect(show).toMatchObject({ title: "Greys Anatomy", overview: "Surgeons.", year: 2005 });
+    expect(fetchSeriesEpisodesFor).toHaveBeenCalledWith({ tmdb: "1416" });
   });
 
   it("matches an existing series by exact title instead of creating a duplicate", async () => {
@@ -447,7 +519,7 @@ describe("scanAndImportLibrary — course/adult (folder-as-show, sequentialEpiso
     // throw and be swallowed — mocked here as an empty result, same net effect) — the second file
     // finds the already-created show and never repeats it.
     expect(searchMetadata).toHaveBeenCalledTimes(1);
-    expect(searchMetadata).toHaveBeenCalledWith("course", "Intro to Python");
+    expect(searchMetadata).toHaveBeenCalledWith("course", "Intro to Python", undefined, null);
     const show = (await db.prepare("SELECT * FROM media_items WHERE type='course'").get()) as any;
     expect(show.title).toBe("Intro to Python");
     const episodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ? ORDER BY episode_number").all(show.id)) as any[];
@@ -473,6 +545,36 @@ describe("scanAndImportLibrary — course/adult (folder-as-show, sequentialEpiso
     expect(shows[0].title).toBe("Intro to Python");
     const episodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ? ORDER BY episode_number").all(shows[0].id)) as any[];
     expect(episodes.map((e) => e.title)).toEqual(["Getting Started", "Advanced Topics"]);
+  });
+
+  it("course: a root saved with a trailing separator still groups Module subfolders under the one course", async () => {
+    const rootPath = path.join(tmpRoot, "course") + path.sep;
+    fs.mkdirSync(rootPath, { recursive: true });
+    await db.prepare("INSERT INTO root_folders (path, media_type, name) VALUES (?, 'course', 'course')").run(rootPath);
+    writeFile(path.join(rootPath, "Intro to Python", "Module 1"), "01 - Getting Started.mp4");
+    writeFile(path.join(rootPath, "Intro to Python", "Module 2"), "02 - Advanced Topics.mp4");
+
+    const result = await scanAndImportLibrary("course");
+
+    expect(result.matched).toBe(2);
+    const shows = (await db.prepare("SELECT * FROM media_items WHERE type='course'").all()) as any[];
+    expect(shows.map((s) => s.title)).toEqual(["Intro to Python"]);
+  });
+
+  it("course: the course folder's tvshow.nfo titles lessons in its Module subfolders too, so one course stays one show", async () => {
+    const folder = await insertRootFolder("course");
+    const courseDir = path.join(folder.path, "rust-course");
+    writeFile(courseDir, "tvshow.nfo", `<tvshow><title>Intro to Rust</title></tvshow>`);
+    writeFile(courseDir, "01 intro.mp4");
+    writeFile(path.join(courseDir, "Module 2"), "05 traits.mp4");
+
+    const result = await scanAndImportLibrary("course");
+
+    expect(result.matched).toBe(2);
+    const shows = (await db.prepare("SELECT * FROM media_items WHERE type='course'").all()) as any[];
+    expect(shows.map((s) => s.title)).toEqual(["Intro to Rust"]);
+    const episodes = (await db.prepare("SELECT episode_number FROM episodes WHERE media_item_id = ? ORDER BY episode_number").all(shows[0].id)) as any[];
+    expect(episodes.map((e) => e.episode_number)).toEqual([1, 5]);
   });
 
   it("course: a lesson file with no leading number at all still becomes an episode instead of being skipped, appended after the current highest episode", async () => {
@@ -611,6 +713,30 @@ describe("scanAndImportLibrary — collection, multi-file-per-child (audiobook)"
     expect(album.title).toBe("Solo Author");
   });
 
+  it("keeps each file under its own root when one root's path is a string prefix of another's (/x/music vs /x/music-lossless)", async () => {
+    const insertNamedRoot = async (name: string) => {
+      const p = path.join(tmpRoot, name);
+      fs.mkdirSync(p, { recursive: true });
+      return { id: Number((await db.prepare("INSERT INTO root_folders (path, media_type, name) VALUES (?, 'artist', ?)").run(p, name)).lastInsertRowid), path: p };
+    };
+    const music = await insertNamedRoot("music");
+    const lossless = await insertNamedRoot("music-lossless");
+    writeFile(path.join(music.path, "Artist A", "Album A"), "01 - One.mp3");
+    const losslessAlbumDir = path.join(lossless.path, "Artist B", "Album B");
+    writeFile(losslessAlbumDir, "01 - One.flac");
+
+    const result = await scanAndImportLibrary("artist");
+
+    expect(result.skipped).toBe(0);
+    const artists = (await db.prepare("SELECT * FROM media_items WHERE type='artist' ORDER BY title").all()) as any[];
+    expect(artists.map((a) => ({ title: a.title, root: a.root_folder_id }))).toEqual([
+      { title: "Artist A", root: music.id },
+      { title: "Artist B", root: lossless.id },
+    ]);
+    const album = (await db.prepare("SELECT * FROM sub_items WHERE media_item_id = ?").get(artists[1].id)) as any;
+    expect(album).toMatchObject({ title: "Album B", file_path: losslessAlbumDir });
+  });
+
   it("keeps a multi-disc album's two 'CD1/CD2' subfolders as one album, pointed at the shared album directory", async () => {
     const folder = await insertRootFolder("audiobook");
     const authorDir = path.join(folder.path, "Author");
@@ -664,6 +790,38 @@ describe("scanAndImportLibrary — per-item scoping", () => {
     expect(shows).toHaveLength(1); // attached to the existing show, no "The Office" twin created
     const ep = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").get(showId)) as any;
     expect(ep).toBeTruthy();
+  });
+
+  it("a per-item scan on a short title ('Go') never claims files from a folder that merely contains it as a substring ('Django for Beginners')", async () => {
+    const folder = await insertRootFolder("course");
+    const goId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('course','Go','go',1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    writeFile(path.join(folder.path, "Django for Beginners"), "01 - Intro.mp4");
+
+    const result = await scanAndImportOneMediaItem(goId);
+
+    expect(result).toEqual({ matched: 0, created: 0, skipped: 0, skippedFiles: [] });
+    expect(await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").all(goId)).toEqual([]);
+    expect((await db.prepare("SELECT * FROM media_items WHERE type = 'course'").all()) as any[]).toHaveLength(1);
+  });
+
+  it("a per-item movie scan never falls back to its target for a loosely-matching file whose year contradicts it", async () => {
+    const folder = await insertRootFolder("movie");
+    const thingId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('movie','The Thing (1982)','the thing (1982)',1982,1,0,'missing')`)
+          .run()
+      ).lastInsertRowid
+    );
+    writeFile(folder.path, "The.Thing.2011.1080p.mkv");
+
+    const result = await scanAndImportOneMediaItem(thingId);
+
+    expect(result.matched).toBe(0);
+    expect((await db.prepare("SELECT * FROM media_items WHERE id = ?").get(thingId)) as any).toMatchObject({ has_file: 0, path: null });
   });
 
   it("onlySeasonNumber skips files from other seasons", async () => {
@@ -1021,6 +1179,87 @@ describe("refreshLibraryMetadata / refreshOneMediaItem", () => {
     expect(episodes.some((e) => e.episode_number === 2 && e.has_file === 1)).toBe(true);
   });
 
+  it("searches an unmatched item's title with its known year and skips a same-titled hit from another year", async () => {
+    const id = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('movie','Halloween','halloween',1978,1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    searchMetadata.mockResolvedValue([
+      { title: "Halloween", year: 2018, overview: "The 2018 film", posterUrl: "2018.jpg", externalIds: { tmdb: "424139" } },
+      { title: "Halloween", year: 1978, overview: "The 1978 film", posterUrl: "1978.jpg", externalIds: { tmdb: "948" } },
+    ]);
+
+    const result = await refreshOneMediaItem(id);
+
+    expect(result.ok).toBe(true);
+    expect(searchMetadata).toHaveBeenCalledWith("movie", "Halloween", undefined, 1978);
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(id)) as any;
+    expect(row).toMatchObject({ year: 1978, overview: "The 1978 film", poster_url: "1978.jpg" });
+    expect(JSON.parse(row.external_ids)).toEqual({ tmdb: "948" });
+  });
+
+  it("fails rather than matching an unmatched item to a hit whose year contradicts its known year", async () => {
+    const id = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('movie','Halloween','halloween',1978,1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    searchMetadata.mockResolvedValue([{ title: "Halloween", year: 2018, overview: "The 2018 film", posterUrl: null, externalIds: { tmdb: "424139" } }]);
+
+    const result = await refreshOneMediaItem(id);
+
+    expect(result).toEqual({ ok: false, childrenAdded: 0 });
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(id)) as any;
+    expect(row.year).toBe(1978);
+    expect(row.external_ids).toBeNull();
+  });
+
+  it("adult: Refresh of an unmatched show never renames it to a ThePornDB scene title, and still picks up new clips", async () => {
+    const folder = await insertRootFolder("adult");
+    const showDir = path.join(folder.path, "StudioX");
+    const firstClip = writeFile(showDir, "clip1.mp4");
+    writeFile(showDir, "clip2.mp4");
+    const showId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('adult','StudioX','studiox',?,1,1,'unknown')`)
+          .run(folder.id)
+      ).lastInsertRowid
+    );
+    await db
+      .prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path) VALUES (?,1,1,'clip1',1,1,?)`)
+      .run(showId, firstClip);
+    searchMetadata.mockResolvedValue([{ title: "Some Scene Title", year: null, overview: "scene overview", posterUrl: null, externalIds: { theporndb: "abc" } }]);
+
+    const result = await refreshOneMediaItem(showId);
+
+    expect(result.ok).toBe(true);
+    const show = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(showId)) as any;
+    expect(show).toMatchObject({ title: "StudioX", sort_title: "studiox", overview: "scene overview" });
+    expect(JSON.parse(show.external_ids)).toEqual({ theporndb: "abc" });
+    const episodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").all(showId)) as any[];
+    expect(episodes).toHaveLength(2);
+    expect((await db.prepare("SELECT * FROM media_items WHERE type = 'adult'").all()) as any[]).toHaveLength(1);
+  });
+
+  it("course: Refresh of a course titled by its tvshow.nfo picks up a new lesson in a Module subfolder and keeps the NFO title", async () => {
+    const folder = await insertRootFolder("course");
+    const courseDir = path.join(folder.path, "rust-course");
+    writeFile(courseDir, "tvshow.nfo", `<tvshow><title>Intro to Rust</title></tvshow>`);
+    writeFile(courseDir, "01 intro.mp4");
+    await scanAndImportLibrary("course");
+    const show = (await db.prepare("SELECT * FROM media_items WHERE type='course'").get()) as any;
+    expect(show.title).toBe("Intro to Rust");
+    writeFile(path.join(courseDir, "Module 2"), "05 traits.mp4");
+
+    const result = await refreshOneMediaItem(show.id);
+
+    expect(result.ok).toBe(true);
+    const shows = (await db.prepare("SELECT * FROM media_items WHERE type='course'").all()) as any[];
+    expect(shows).toHaveLength(1);
+    expect(shows[0].title).toBe("Intro to Rust");
+    const episodes = (await db.prepare("SELECT episode_number FROM episodes WHERE media_item_id = ? ORDER BY episode_number").all(show.id)) as any[];
+    expect(episodes.map((e) => e.episode_number)).toEqual([1, 5]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1152,7 +1391,7 @@ describe("mergeEpisodesIntoItem", () => {
     expect(added).toBe(1);
     const episodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ? ORDER BY season_number, episode_number").all(showId)) as any[];
     expect(episodes).toHaveLength(3);
-    expect(episodes.find((e) => e.season_number === 0)).toMatchObject({ title: "Special" });
+    expect(episodes.find((e) => e.season_number === 0)).toMatchObject({ title: "Special", monitored: 1 });
     expect(episodes.find((e) => e.season_number === 1 && e.episode_number === 1).title).toBe("Real Pilot");
     expect(episodes.find((e) => e.season_number === 1 && e.episode_number === 2).title).toBe("Real Title");
   });
@@ -1197,7 +1436,9 @@ describe("matchAdditionalProviders", () => {
           .run(JSON.stringify({ tmdb: "1", tvdb: "9" }))
       ).lastInsertRowid
     );
-    searchMetadata.mockResolvedValue([{ title: "X", year: 2020, overview: null, posterUrl: null, externalIds: { tvdb: "999", trakt: "5" } }]);
+    searchMetadata.mockResolvedValue([
+      { title: "Already Matched Show", year: 2020, overview: null, posterUrl: null, externalIds: { tvdb: "999", trakt: "5" } },
+    ]);
     fetchSeriesEpisodesForProvider.mockResolvedValue([]);
 
     await matchAdditionalProviders(showId);
@@ -1240,19 +1481,141 @@ describe("matchAdditionalProviders", () => {
     expect(await matchAdditionalProviders(id)).toEqual([]);
     expect(searchMetadata).not.toHaveBeenCalled();
   });
+
+  it("skips a search hit whose title or year disagrees with the item, taking a later hit that agrees", async () => {
+    const showId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, external_ids, status) VALUES ('series','Halloween','halloween',1978,1,0,?,'missing')`)
+          .run(JSON.stringify({ tmdb: "1" }))
+      ).lastInsertRowid
+    );
+    searchMetadata.mockImplementation(async (_type: string, _query: string, provider: string) => {
+      if (provider === "tvdb") return [{ title: "Halloween", year: 2018, overview: null, posterUrl: null, externalIds: { tvdb: "2" } }];
+      if (provider === "tvmaze")
+        return [
+          { title: "Halloween Kills", year: 1978, overview: null, posterUrl: null, externalIds: { tvmaze: "9" } },
+          { title: "Halloween", year: 1978, overview: null, posterUrl: null, externalIds: { tvmaze: "3" } },
+        ];
+      return [];
+    });
+    fetchSeriesEpisodesForProvider.mockResolvedValue([]);
+
+    const results = await matchAdditionalProviders(showId);
+
+    expect(results.map((r) => r.provider)).toEqual(["tvmaze"]);
+    expect(fetchSeriesEpisodesForProvider).not.toHaveBeenCalledWith("tvdb", expect.anything());
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(showId)) as any;
+    expect(JSON.parse(row.external_ids)).toEqual({ tmdb: "1", tvmaze: "3" });
+  });
+
+  it("merges only another provider's Season 0 specials, never its other seasons", async () => {
+    const showId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, external_ids, status) VALUES ('series','Specials Show','specials show',1,0,?,'missing')`)
+          .run(JSON.stringify({ tmdb: "1" }))
+      ).lastInsertRowid
+    );
+    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored) VALUES (?,1,1,'Pilot',1)`).run(showId);
+    searchMetadata.mockImplementation(async (_type: string, _query: string, provider: string) =>
+      provider === "tvdb" ? [{ title: "Specials Show", year: null, overview: null, posterUrl: null, externalIds: { tvdb: "42" } }] : []
+    );
+    fetchSeriesEpisodesForProvider.mockImplementation(async (provider: string) =>
+      provider === "tvdb"
+        ? [
+            { seasonNumber: 0, episodeNumber: 1, title: "Special", airDate: null, overview: null },
+            { seasonNumber: 2, episodeNumber: 1, title: "Other Numbering S2", airDate: null, overview: null },
+            { seasonNumber: 3, episodeNumber: 1, title: "Other Numbering S3", airDate: null, overview: null },
+          ]
+        : []
+    );
+
+    const results = await matchAdditionalProviders(showId);
+
+    expect(results).toEqual([{ provider: "tvdb", episodesAdded: 1 }]);
+    const episodes = (await db.prepare("SELECT season_number, episode_number FROM episodes WHERE media_item_id = ? ORDER BY season_number").all(showId)) as any[];
+    expect(episodes).toEqual([
+      { season_number: 0, episode_number: 1 },
+      { season_number: 1, episode_number: 1 },
+    ]);
+  });
+
+  it("adds another provider's specials unmonitored, so a 'Future'/'None' add doesn't queue them as wanted", async () => {
+    const showId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, external_ids, status) VALUES ('series','Future Only Show','future only show',1,0,?,'missing')`)
+          .run(JSON.stringify({ tmdb: "1" }))
+      ).lastInsertRowid
+    );
+    // The Add's own strategy left this regular episode unmonitored; the merge must not change it either.
+    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored) VALUES (?,1,1,'Pilot',0)`).run(showId);
+    searchMetadata.mockImplementation(async (_type: string, _query: string, provider: string) =>
+      provider === "tvdb" ? [{ title: "Future Only Show", year: null, overview: null, posterUrl: null, externalIds: { tvdb: "42" } }] : []
+    );
+    fetchSeriesEpisodesForProvider.mockImplementation(async (provider: string) =>
+      provider === "tvdb"
+        ? [
+            { seasonNumber: 0, episodeNumber: 1, title: "Special One", airDate: null, overview: null },
+            { seasonNumber: 0, episodeNumber: 2, title: "Special Two", airDate: null, overview: null },
+          ]
+        : []
+    );
+
+    await matchAdditionalProviders(showId);
+
+    const episodes = (await db.prepare("SELECT season_number, episode_number, monitored FROM episodes WHERE media_item_id = ? ORDER BY season_number, episode_number").all(showId)) as any[];
+    expect(episodes).toEqual([
+      { season_number: 0, episode_number: 1, monitored: 0 },
+      { season_number: 0, episode_number: 2, monitored: 0 },
+      { season_number: 1, episode_number: 1, monitored: 0 },
+    ]);
+  });
+
+  it("gives an AniList-numbered anime no other provider's ids or episodes (AniList numbers every cour as season 1)", async () => {
+    const animeId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, external_ids, status) VALUES ('anime','Attack on Titan','attack on titan',2013,1,0,?,'missing')`)
+          .run(JSON.stringify({ anilist: "16498" }))
+      ).lastInsertRowid
+    );
+    searchMetadata.mockImplementation(async (_type: string, _query: string, provider: string) =>
+      provider === "tvdb"
+        ? [{ title: "Attack on Titan", year: 2013, overview: null, posterUrl: null, externalIds: { tvdb: "267440", tmdb: "1429" } }]
+        : []
+    );
+    fetchSeriesEpisodesForProvider.mockResolvedValue([
+      { seasonNumber: 0, episodeNumber: 1, title: "OVA", airDate: null, overview: null },
+      { seasonNumber: 2, episodeNumber: 1, title: "Season 2 Premiere", airDate: null, overview: null },
+    ]);
+
+    const results = await matchAdditionalProviders(animeId);
+
+    expect(fetchSeriesEpisodesForProvider).not.toHaveBeenCalled();
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(animeId)) as any;
+    expect(JSON.parse(row.external_ids)).toEqual({ anilist: "16498" });
+    expect(await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").all(animeId)).toEqual([]);
+    // Still staged for review, but with no id merged it isn't reported as a matched provider.
+    expect(JSON.parse(row.extra_metadata).tvdb).toMatchObject({ title: "Attack on Titan" });
+    expect(results).toEqual([]);
+  });
 });
 
 describe("matchProvidersForLibrary", () => {
   it("runs matchAdditionalProviders across every item of a type and totals the results", async () => {
     await db.prepare(`DELETE FROM media_items WHERE type = 'anime'`).run();
+    // TMDB-numbered, not AniList-only (whose hits are only staged, never counted as matches).
     await db
       .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, external_ids, status) VALUES ('anime','Anime One','anime one',1,0,?,'missing')`)
-      .run(JSON.stringify({ anilist: "1" }));
+      .run(JSON.stringify({ anilist: "1", tmdb: "11" }));
     await db
       .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, external_ids, status) VALUES ('anime','Anime Two','anime two',1,0,?,'missing')`)
-      .run(JSON.stringify({ anilist: "2" }));
-    searchMetadata.mockImplementation(async (_type: string, _query: string, provider: string) =>
-      provider === "tvdb" ? [{ title: "X", year: null, overview: null, posterUrl: null, externalIds: { tvdb: "1" } }] : []
+      .run(JSON.stringify({ anilist: "2", tmdb: "22" }));
+    // A hit is only accepted when its title agrees with the item's, so each item's search echoes it.
+    searchMetadata.mockImplementation(async (_type: string, query: string, provider: string) =>
+      provider === "tvdb" ? [{ title: query, year: null, overview: null, posterUrl: null, externalIds: { tvdb: "1" } }] : []
     );
     fetchSeriesEpisodesForProvider.mockResolvedValue([]);
 

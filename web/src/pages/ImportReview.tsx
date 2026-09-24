@@ -8,6 +8,7 @@ import { XIcon } from "../components/ActionIcons.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
 import Pagination, { DEFAULT_PAGE_SIZE_OPTIONS } from "../components/Pagination.js";
+import { formatServerTimestamp } from "../utils/format.js";
 
 interface ReviewItem {
   id: number;
@@ -43,6 +44,12 @@ export default function ImportReview() {
   function load() {
     const offset = (page - 1) * pageSize;
     api.get<ReviewListResponse>(`/import-review?status=pending&limit=${pageSize}&offset=${offset}`).then((data) => {
+      // Matching/dismissing the last item on a later page leaves this offset past the end — step
+      // back rather than showing "Nothing needs review" with no pagination while items remain.
+      if (data.items.length === 0 && page > 1) {
+        setPage(Math.min(page - 1, Math.max(1, Math.ceil(data.total / pageSize))));
+        return;
+      }
       setItems(data.items);
       setTotal(data.total);
     });
@@ -139,7 +146,7 @@ export default function ImportReview() {
                   <td>{item.year ?? "-"}</td>
                   <td>{labelFor(item.type)}</td>
                   <td>{item.source === "watchlist" ? "Watchlist Import" : item.source}</td>
-                  <td>{new Date(item.createdAt).toLocaleString()}</td>
+                  <td>{formatServerTimestamp(item.createdAt)}</td>
                   <td style={{ display: "flex", gap: 6 }}>
                     <button type="button" className="icon-button" onClick={() => setMatching(item)} title="Match..." aria-label="Match">
                       <SearchIcon />

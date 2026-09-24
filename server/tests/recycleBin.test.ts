@@ -27,6 +27,17 @@ function forceNextRenameToLookCrossDevice(): void {
   vi.spyOn(fsp, "rename").mockRejectedValueOnce(Object.assign(new Error("cross-device link"), { code: "EXDEV" }));
 }
 
+/** Restores run detached — polls until the entry is gone (restored) or no longer marked restoring
+ * (failed), and returns whatever row is left. */
+async function waitForRestoreToSettle(id: number): Promise<any> {
+  for (let i = 0; i < 200; i++) {
+    const row = (await db.prepare("SELECT * FROM recycle_bin WHERE id = ?").get(id)) as any;
+    if (!row || Number(row.restoring) === 0) return row;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error(`recycle_bin entry ${id} never finished restoring`);
+}
+
 describe("recycleFile / restore / purge — files", () => {
   it("moves a file into the recycle bin and records it", async () => {
     const { recycleFile } = await import("../src/services/recycleBin.js");
@@ -68,6 +79,45 @@ describe("recycleFile / restore / purge — files", () => {
     expect(fs.existsSync(src)).toBe(true);
     expect(fs.readFileSync(src, "utf-8")).toBe("restore content");
     expect(await db.prepare("SELECT id FROM recycle_bin WHERE id = ?").get(row.id)).toBeUndefined();
+  });
+
+  it("gives two same-named files recycled in the same millisecond distinct destinations, so neither overwrites the other", async () => {
+    const { recycleFile } = await import("../src/services/recycleBin.js");
+    const course = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-src-"));
+    const first = path.join(course, "Lesson 1", "video.mp4");
+    const second = path.join(course, "Lesson 2", "video.mp4");
+    fs.mkdirSync(path.dirname(first));
+    fs.mkdirSync(path.dirname(second));
+    fs.writeFileSync(first, "lesson one");
+    fs.writeFileSync(second, "lesson two");
+    vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+
+    await recycleFile(first, "course", "Course", null);
+    await recycleFile(second, "course", "Course", null);
+
+    const firstRow = (await db.prepare("SELECT * FROM recycle_bin WHERE original_path = ?").get(first)) as any;
+    const secondRow = (await db.prepare("SELECT * FROM recycle_bin WHERE original_path = ?").get(second)) as any;
+    expect(firstRow.recycle_path).not.toBe(secondRow.recycle_path);
+    expect(fs.readFileSync(firstRow.recycle_path, "utf-8")).toBe("lesson one");
+    expect(fs.readFileSync(secondRow.recycle_path, "utf-8")).toBe("lesson two");
+  });
+
+  it("refuses to restore over a file that now exists at the original path — records restore_error and keeps the entry", async () => {
+    const { recycleFile, startRestoreFromRecycleBin } = await import("../src/services/recycleBin.js");
+    const src = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-src-")), "redownloaded.mkv");
+    fs.writeFileSync(src, "old recycled copy");
+    await recycleFile(src, "movie", "Redownloaded Movie", null);
+    const row = (await db.prepare("SELECT * FROM recycle_bin WHERE original_path = ?").get(src)) as any;
+    fs.writeFileSync(src, "newer download"); // a fresh copy landed at the same templated path
+
+    await startRestoreFromRecycleBin(row.id);
+    const settled = await waitForRestoreToSettle(row.id);
+
+    expect(settled).toBeDefined();
+    expect(settled.restoring).toBe(0);
+    expect(settled.restore_error).toMatch(/already exists/i);
+    expect(fs.readFileSync(src, "utf-8")).toBe("newer download");
+    expect(fs.readFileSync(row.recycle_path, "utf-8")).toBe("old recycled copy");
   });
 
   it("purges a recycled file", async () => {
@@ -191,6 +241,29 @@ describe("restoreAllFromRecycleBin / purgeAllRecycleBinEntries", () => {
 
     expect(result.started).toBe(1);
     expect(fs.existsSync(normal.src)).toBe(true);
+  });
+
+  it("restores only the newest entry when the same original path was recycled more than once", async () => {
+    const { recycleFile, restoreAllFromRecycleBin } = await import("../src/services/recycleBin.js");
+    const src = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-src-")), "recycled-twice.mkv");
+    fs.writeFileSync(src, "first download");
+    await recycleFile(src, "movie", "Recycled Twice", null);
+    fs.writeFileSync(src, "second download");
+    await recycleFile(src, "movie", "Recycled Twice", null);
+    const [older, newer] = (await db.prepare("SELECT * FROM recycle_bin WHERE original_path = ? ORDER BY id").all(src)) as any[];
+
+    const result = await restoreAllFromRecycleBin("movie");
+    await waitForRestoreToSettle(newer.id);
+
+    expect(result).toEqual({ started: 1, skipped: 1 });
+    expect(fs.readFileSync(src, "utf-8")).toBe("second download");
+    expect(await db.prepare("SELECT id FROM recycle_bin WHERE id = ?").get(newer.id)).toBeUndefined();
+    // The older copy is left in the bin for the admin to decide on, not raced onto the same path.
+    const olderRow = (await db.prepare("SELECT * FROM recycle_bin WHERE id = ?").get(older.id)) as any;
+    expect(olderRow).toBeDefined();
+    expect(Number(olderRow.restoring)).toBe(0);
+    expect(olderRow.restore_error).toBeNull();
+    expect(fs.readFileSync(older.recycle_path, "utf-8")).toBe("first download");
   });
 
   it("purges every entry of the given media type and leaves other types alone", async () => {

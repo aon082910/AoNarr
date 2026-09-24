@@ -512,8 +512,15 @@ async function searchSeriesTvdb(query: string): Promise<MetadataSearchResult[]> 
 }
 
 async function fetchSeriesEpisodesTvdb(tvdbId: string): Promise<MetadataEpisode[]> {
-  const body = await tvdbFetch(`/v4/series/${tvdbId}/episodes/default`);
-  const episodes = body.data?.episodes ?? [];
+  // This endpoint is paged (500 episodes per page); without following links.next, a long-running
+  // show's later seasons are never created. The page cap only guards against a runaway `next`.
+  const episodes: any[] = [];
+  for (let page = 0; page < 100; page++) {
+    const body = await tvdbFetch(`/v4/series/${tvdbId}/episodes/default`, { page: String(page) });
+    const pageEpisodes: any[] = body.data?.episodes ?? [];
+    episodes.push(...pageEpisodes);
+    if (!body.links?.next || pageEpisodes.length === 0) break;
+  }
   return episodes.map((e: any) => ({
     seasonNumber: e.seasonNumber,
     episodeNumber: e.number,
@@ -800,12 +807,36 @@ async function fetchArtistAlbumsDeezer(deezerArtistId: string): Promise<Metadata
 }
 
 async function fetchAlbumTracksDeezer(deezerAlbumId: string): Promise<MetadataTrack[]> {
-  const res = await fetchWithTimeout(`https://api.deezer.com/album/${deezerAlbumId}/tracks`);
-  if (!res.ok) throw new Error(`Deezer track lookup failed: HTTP ${res.status}`);
-  const body: any = await res.json();
+  const rows: any[] = [];
+  for (let page = 0; page < 20; page++) {
+    const res = await fetchWithTimeout(`https://api.deezer.com/album/${deezerAlbumId}/tracks?limit=500&index=${rows.length}`);
+    if (!res.ok) throw new Error(`Deezer track lookup failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+    const pageRows: any[] = body.data ?? [];
+    rows.push(...pageRows);
+    if (!body.next || pageRows.length === 0) break;
+  }
 
-  return (body.data ?? []).map((t: any, idx: number) => ({
-    trackNumber: t.track_position ?? idx + 1,
+  // track_position restarts at 1 on every disc, and `tracks` is keyed UNIQUE(sub_item_id,
+  // track_number) — so, like the MusicBrainz fetch, number continuously by offsetting each disc
+  // past every lower disc's highest track number.
+  const discOf = (t: any): number => Number(t.disk_number) || 1;
+  const highestOnDisc = new Map<number, number>();
+  const numberOnDisc = rows.map((t) => {
+    const disc = discOf(t);
+    const n = Number(t.track_position) || (highestOnDisc.get(disc) ?? 0) + 1;
+    highestOnDisc.set(disc, Math.max(highestOnDisc.get(disc) ?? 0, n));
+    return n;
+  });
+  const discOffset = new Map<number, number>();
+  let running = 0;
+  for (const disc of [...highestOnDisc.keys()].sort((a, b) => a - b)) {
+    discOffset.set(disc, running);
+    running += highestOnDisc.get(disc)!;
+  }
+
+  return rows.map((t, i) => ({
+    trackNumber: discOffset.get(discOf(t))! + numberOnDisc[i],
     title: t.title,
     durationSeconds: t.duration ?? null,
   }));

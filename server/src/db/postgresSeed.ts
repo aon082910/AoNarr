@@ -18,8 +18,10 @@ export async function seedPostgresDefaults(db: AsyncDb): Promise<void> {
     }
   }
 
-  const defaultProfile = await db.prepare("SELECT id FROM quality_profiles WHERE name = ?").get("Any");
-  if (!defaultProfile) {
+  // Seeded only into an EMPTY table, never "whenever no profile is named Any" — that re-created
+  // the default profile on every restart after an admin renamed or deleted it.
+  const profileCount = Number(((await db.prepare("SELECT COUNT(*) AS c FROM quality_profiles").get()) as { c: number }).c);
+  if (profileCount === 0) {
     await db
       .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff) VALUES (?, ?, ?)")
       .run(

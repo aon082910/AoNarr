@@ -4,18 +4,22 @@ import path from "node:path";
 import os from "node:os";
 import { setupTestDb } from "./helpers/testDb.js";
 
-const probeMediaInfo = vi.fn();
+const probeDurationSeconds = vi.fn();
 vi.mock("../src/services/ffprobe.js", () => ({
-  probeMediaInfo: (...args: unknown[]) => probeMediaInfo(...args),
+  probeDurationSeconds: (...args: unknown[]) => probeDurationSeconds(...args),
 }));
 
 type ExecFileCallback = (err: Error | null, result?: { stdout: string; stderr: string }) => void;
 let ffmpegShouldFail = false;
 const ffmpegCalls: string[][] = [];
+// The chapter file is deleted as soon as ffmpeg returns, so its content is captured mid-call.
+const chapterMetadata: string[] = [];
 
 vi.mock("node:child_process", () => ({
   execFile: (_file: string, args: string[], _options: unknown, callback: ExecFileCallback) => {
     ffmpegCalls.push(args);
+    const metaPath = args.find((a) => a.includes(".aonarr-chapters-"));
+    if (metaPath) chapterMetadata.push(fs.readFileSync(metaPath, "utf-8"));
     if (ffmpegShouldFail) {
       callback(new Error("ffmpeg merge failed"));
       return;
@@ -37,8 +41,9 @@ beforeAll(async () => {
 afterEach(() => {
   ffmpegShouldFail = false;
   ffmpegCalls.length = 0;
-  probeMediaInfo.mockReset();
-  probeMediaInfo.mockResolvedValue({ durationSeconds: 60 });
+  chapterMetadata.length = 0;
+  probeDurationSeconds.mockReset();
+  probeDurationSeconds.mockResolvedValue(60);
 });
 
 async function insertAuthorAndBook(title: string, bookDir: string): Promise<number> {
@@ -117,7 +122,7 @@ describe("convertSubItemToM4b — validation", () => {
     const subId = await insertAuthorAndBook("No Duration Book", dir);
     await insertTrack(subId, 1, "Chapter 1", realTrackFile(dir, "01.mp3"));
     await insertTrack(subId, 2, "Chapter 2", realTrackFile(dir, "02.mp3"));
-    probeMediaInfo.mockResolvedValueOnce({ durationSeconds: 60 }).mockResolvedValueOnce({ durationSeconds: null });
+    probeDurationSeconds.mockResolvedValueOnce(60).mockResolvedValueOnce(null);
 
     await expect(convertSubItemToM4b(subId)).rejects.toThrow(/Couldn't read duration/);
   });
@@ -142,7 +147,7 @@ describe("convertSubItemToM4b — success", () => {
     const track2Path = realTrackFile(dir, "02.mp3");
     await insertTrack(subId, 1, "Chapter 1", track1Path);
     await insertTrack(subId, 2, "Chapter 2", track2Path);
-    probeMediaInfo.mockResolvedValueOnce({ durationSeconds: 60 }).mockResolvedValueOnce({ durationSeconds: 90 });
+    probeDurationSeconds.mockResolvedValueOnce(60).mockResolvedValueOnce(90);
 
     const result = await convertSubItemToM4b(subId);
 
@@ -169,6 +174,27 @@ describe("convertSubItemToM4b — success", () => {
     expect(args).toContain(path.join(dir, "01.mp3"));
     expect(args).toContain(path.join(dir, "02.mp3"));
     expect(args.some((a) => a.includes("concat=n=2"))).toBe(true);
+  });
+
+  it("places chapter markers from the exact (fractional) track durations, without cumulative drift", async () => {
+    const dir = bookDir("fractional-chapters-book");
+    const subId = await insertAuthorAndBook("Fractional Chapters Book", dir);
+    await insertTrack(subId, 1, "Chapter 1", realTrackFile(dir, "01.mp3"));
+    await insertTrack(subId, 2, "Chapter 2", realTrackFile(dir, "02.mp3"));
+    await insertTrack(subId, 3, "Chapter 3", realTrackFile(dir, "03.mp3"));
+    // Whole-second rounding would have made these 300/300/0 — shifting chapter 3 by 800ms and
+    // rejecting the sub-half-second last track outright.
+    probeDurationSeconds.mockResolvedValueOnce(300.4).mockResolvedValueOnce(300.4).mockResolvedValueOnce(0.3);
+
+    await convertSubItemToM4b(subId);
+
+    expect(chapterMetadata).toHaveLength(1);
+    const meta = chapterMetadata[0];
+    expect(meta).toContain("START=0\nEND=300400");
+    expect(meta).toContain("START=300400\nEND=600800");
+    expect(meta).toContain("START=600800\nEND=601100");
+    const tracks = (await db.prepare("SELECT duration_seconds FROM tracks WHERE sub_item_id = ?").all(subId)) as any[];
+    expect(tracks[0].duration_seconds).toBe(601);
   });
 
   it("cleans up the chapter metadata temp file after a successful merge", async () => {

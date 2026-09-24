@@ -42,6 +42,27 @@ describe("findIsbnInText", () => {
     expect(findIsbnInText(`ISBN: ${invalid}`)).toBeNull();
   });
 
+  it("finds a labeled ISBN-13 followed by a printer's key (digits after a space)", () => {
+    expect(findIsbnInText(`ISBN ${REAL_ISBN_13} 10 9 8 7 6 5 4 3 2 1`)).toBe(REAL_ISBN_13);
+  });
+
+  it("finds a bare ISBN-13 followed by a printer's key", () => {
+    expect(findIsbnInText(`Printed in the United States of America ${REAL_ISBN_13} 10 9 8 7 6 5 4 3 2 1`)).toBe(REAL_ISBN_13);
+  });
+
+  it("finds an ISBN-10 followed by a printer's key and converts it", () => {
+    expect(findIsbnInText(`ISBN-10: ${REAL_ISBN_10} 10 9 8 7 6 5 4 3 2 1`)).toBe(REAL_ISBN_13);
+  });
+
+  it("finds a hyphenated ISBN-10 followed by other numbers", () => {
+    expect(findIsbnInText("ISBN 0-13-235088-2 10 9")).toBe(REAL_ISBN_13);
+  });
+
+  it("prefers the ISBN-10 over a longer 13-digit slice that only passes the checksum by accident", () => {
+    // "0132350882" + "10" + "1" happens to satisfy the ISBN-13 checksum, but has no 978/979 prefix.
+    expect(findIsbnInText(`ISBN ${REAL_ISBN_10} 10 1`)).toBe(REAL_ISBN_13);
+  });
+
   it("returns null when there's nothing ISBN-shaped in the text", () => {
     expect(findIsbnInText("Just some ordinary book jacket copy with no numbers at all.")).toBeNull();
   });

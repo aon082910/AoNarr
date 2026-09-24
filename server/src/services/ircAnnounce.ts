@@ -56,6 +56,9 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
     const item = mediaItemFromRow(row);
     if (getMediaTypeConfig(item.type).shape !== "single") continue;
     if (!titlesMatch(baseTitle, item.title)) continue;
+    // baseTitle has the year stripped, so without this a same-title remake (or the original) from
+    // another year would be grabbed for this item. One year of slack, as libraryScan's matching allows.
+    if (parsed.year != null && item.year != null && Math.abs(parsed.year - item.year) > 1) continue;
     if (await isAlreadyQueued(item.id, null, null)) continue;
     await tryGrabMatch(item, null, null, releaseTitle, downloadUrl, parsed.quality, feed, targetClient);
     return; // one announce maps to at most one grab

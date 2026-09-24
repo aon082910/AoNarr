@@ -225,8 +225,8 @@ describe("mergeMediaItems: guard branches", () => {
     const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
     const keeperId = await insertMovie("Guard Test", 2020, 1);
 
-    expect(await mergeMediaItems(keeperId, [], false)).toEqual({ merged: 0 });
-    expect(await mergeMediaItems(keeperId, [keeperId, keeperId], false)).toEqual({ merged: 0 });
+    expect(await mergeMediaItems(keeperId, [], false)).toEqual({ merged: 0, skippedShapeMismatch: [] });
+    expect(await mergeMediaItems(keeperId, [keeperId, keeperId], false)).toEqual({ merged: 0, skippedShapeMismatch: [] });
   });
 
   it("throws when the keeper doesn't exist", async () => {
@@ -243,7 +243,7 @@ describe("mergeMediaItems: guard branches", () => {
 
     const result = await mergeMediaItems(keeperId, [999999, wrongTypeId], false);
 
-    expect(result).toEqual({ merged: 0 });
+    expect(result).toEqual({ merged: 0, skippedShapeMismatch: [] });
     expect(await db.prepare("SELECT id FROM media_items WHERE id = ?").get(wrongTypeId)).toBeDefined(); // untouched, not deleted
   });
 
@@ -255,7 +255,7 @@ describe("mergeMediaItems: guard branches", () => {
 
     const result = await mergeMediaItems(keeperId, [loser1, loser2], false);
 
-    expect(result).toEqual({ merged: 2 });
+    expect(result).toEqual({ merged: 2, skippedShapeMismatch: [] });
     expect(await db.prepare("SELECT id FROM media_items WHERE id = ?").get(loser1)).toBeUndefined();
     expect(await db.prepare("SELECT id FROM media_items WHERE id = ?").get(loser2)).toBeUndefined();
   });
@@ -301,7 +301,8 @@ describe("mergeMediaItems: collection shape (sub_items)", () => {
     await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file, file_path) VALUES (?, 'Same Album', 1, '/music/dupe2.mp3')").run(loserId);
 
     await mergeMediaItems(keeperId, [loserId], true);
-    expect(recycleFile).toHaveBeenCalledWith("/music/dupe2.mp3", "artist", expect.stringContaining("Same Album"), loserId);
+    // null: recycling runs after the merge commits, when the loser row no longer exists to reference.
+    expect(recycleFile).toHaveBeenCalledWith("/music/dupe2.mp3", "artist", expect.stringContaining("Same Album"), null);
   });
 });
 
@@ -322,7 +323,7 @@ describe("mergeMediaItems: file recycling (single-shape) and episode-collision r
     await db.prepare("UPDATE media_items SET path = '/movies/loser2.mkv' WHERE id = ?").run(loserId);
 
     await mergeMediaItems(keeperId, [loserId], true);
-    expect(recycleFile).toHaveBeenCalledWith("/movies/loser2.mkv", "movie", "Both Have Files 2", loserId);
+    expect(recycleFile).toHaveBeenCalledWith("/movies/loser2.mkv", "movie", "Both Have Files 2", null);
     // The keeper's own file is untouched by the merge.
     expect(((await db.prepare("SELECT path FROM media_items WHERE id = ?").get(keeperId)) as any).path).toBe("/movies/keeper2.mkv");
   });
@@ -340,7 +341,151 @@ describe("mergeMediaItems: file recycling (single-shape) and episode-collision r
 
     await mergeMediaItems(keeperId, [loserId], true);
 
-    expect(recycleFile).toHaveBeenCalledWith("/tv/dupe.mkv", "series", expect.stringContaining("Collision Show"), loserId);
+    expect(recycleFile).toHaveBeenCalledWith("/tv/dupe.mkv", "series", expect.stringContaining("Collision Show"), null);
+  });
+
+  it("recycles only after the merge transaction has committed, never while it is still open", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertMovie("Recycle After Commit", 2020, 1);
+    await db.prepare("UPDATE media_items SET path = '/movies/rac-keeper.mkv' WHERE id = ?").run(keeperId);
+    const loserId = await insertMovie("Recycle After Commit", 2020, 1);
+    await db.prepare("UPDATE media_items SET path = '/movies/rac-loser.mkv' WHERE id = ?").run(loserId);
+
+    let loserRowDuringRecycle: unknown = "recycleFile never ran";
+    recycleFile.mockImplementationOnce(async () => {
+      loserRowDuringRecycle = await db.prepare("SELECT id FROM media_items WHERE id = ?").get(loserId);
+    });
+
+    await mergeMediaItems(keeperId, [loserId], true);
+
+    expect(recycleFile).toHaveBeenCalledTimes(1);
+    // Inside the transaction the loser row would still be visible; after COMMIT it's gone.
+    expect(loserRowDuringRecycle).toBeUndefined();
+  });
+});
+
+describe("mergeMediaItems: not-yet-converted (legacy_shape) course/adult items", () => {
+  async function insertLegacy(type: "adult" | "course", title: string, legacyShape: string | null, hasFile: 0 | 1, path: string | null = null) {
+    return Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, path, status, legacy_shape) VALUES (?, ?, ?, 2020, 1, ?, ?, 'unknown', ?)`
+          )
+          .run(type, title, title.toLowerCase(), hasFile, path, legacyShape)
+      ).lastInsertRowid
+    );
+  }
+
+  it("a legacy single-file adult item adopts the loser's file instead of looking for episodes it doesn't have", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertLegacy("adult", "Legacy Adult Merge", "single", 0);
+    const loserId = await insertLegacy("adult", "Legacy Adult Merge", "single", 1, "/adult/legacy-clip.mp4");
+
+    expect(await mergeMediaItems(keeperId, [loserId], false)).toEqual({ merged: 1, skippedShapeMismatch: [] });
+
+    const keeperRow = (await db.prepare("SELECT has_file, path FROM media_items WHERE id = ?").get(keeperId)) as any;
+    expect(keeperRow.has_file).toBe(1);
+    expect(keeperRow.path).toBe("/adult/legacy-clip.mp4");
+  });
+
+  it("a legacy collection-shaped course moves the loser's lessons (sub_items) to the keeper instead of cascade-deleting them", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertLegacy("course", "Legacy Course Merge", "collection", 0);
+    const loserId = await insertLegacy("course", "Legacy Course Merge", "collection", 1);
+    await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file) VALUES (?, 'Lesson 1', 0)").run(keeperId);
+    await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file, file_path) VALUES (?, 'Lesson 1', 1, '/courses/dupe-lesson1.mp4')").run(loserId);
+    const lesson2Id = Number(
+      (await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file, file_path) VALUES (?, 'Lesson 2', 1, '/courses/lesson2.mp4')").run(loserId))
+        .lastInsertRowid
+    );
+
+    await mergeMediaItems(keeperId, [loserId], true);
+
+    const moved = (await db.prepare("SELECT media_item_id FROM sub_items WHERE id = ?").get(lesson2Id)) as any;
+    expect(moved?.media_item_id).toBe(keeperId);
+    expect(recycleFile).toHaveBeenCalledWith("/courses/dupe-lesson1.mp4", "course", expect.stringContaining("Lesson 1"), null);
+    // Rolled up from sub_items (the legacy shape's children), not from the empty episodes table.
+    expect(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(keeperId)) as any).has_file).toBe(1);
+  });
+
+  it("skips a loser whose effective shape differs from the keeper's (legacy vs converted) rather than deleting its data", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const convertedKeeperId = await insertLegacy("adult", "Mixed Shape Adult", null, 0);
+    const legacyLoserId = await insertLegacy("adult", "Mixed Shape Adult", "single", 1, "/adult/mixed.mp4");
+
+    expect(await mergeMediaItems(convertedKeeperId, [legacyLoserId], false)).toEqual({ merged: 0, skippedShapeMismatch: [legacyLoserId] });
+    expect(await db.prepare("SELECT id FROM media_items WHERE id = ?").get(legacyLoserId)).toBeDefined();
+  });
+
+  // The Duplicates page offers mixed-shape items as one group, so the caller has to be told which
+  // losers were left behind or a Merge that changes nothing looks like it silently failed.
+  it("reports only the shape-mismatched losers as skipped when merging them alongside a compatible one", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertLegacy("adult", "Partly Mixed Adult", null, 0);
+    const compatibleLoserId = await insertLegacy("adult", "Partly Mixed Adult", null, 0);
+    const legacyLoserId = await insertLegacy("adult", "Partly Mixed Adult", "single", 1, "/adult/partly-mixed.mp4");
+
+    const result = await mergeMediaItems(keeperId, [compatibleLoserId, legacyLoserId], false);
+
+    expect(result).toEqual({ merged: 1, skippedShapeMismatch: [legacyLoserId] });
+    expect(await db.prepare("SELECT id FROM media_items WHERE id = ?").get(compatibleLoserId)).toBeUndefined();
+    const legacyRow = (await db.prepare("SELECT path FROM media_items WHERE id = ?").get(legacyLoserId)) as any;
+    expect(legacyRow?.path).toBe("/adult/partly-mixed.mp4");
+  });
+
+  it("findDuplicateGroups counts a legacy course's lessons from sub_items when picking the suggested keeper", async () => {
+    const { findDuplicateGroups } = await import("../src/services/duplicateCheck.js");
+    const emptyId = await insertLegacy("course", "Legacy Course Counts", "collection", 0);
+    const withLessonsId = await insertLegacy("course", "Legacy Course Counts", "collection", 0);
+    await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file) VALUES (?, 'Lesson A', 0)").run(withLessonsId);
+    await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file) VALUES (?, 'Lesson B', 0)").run(withLessonsId);
+
+    const group = (await findDuplicateGroups("course")).find((g) => g.title === "Legacy Course Counts")!;
+    expect(group).toBeDefined();
+    expect(group.items.find((i) => i.id === withLessonsId)).toMatchObject({ childCount: 2, suggestedKeeper: true });
+    expect(group.items.find((i) => i.id === emptyId)).toMatchObject({ childCount: 0, suggestedKeeper: false });
+  });
+});
+
+describe("mergeMediaItems: global search index (SQLite FTS)", () => {
+  async function insertParent(type: "series" | "artist", title: string): Promise<number> {
+    return Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES (?, ?, ?, 1, 0, 'unknown')`)
+          .run(type, title, title.toLowerCase())
+      ).lastInsertRowid
+    );
+  }
+
+  async function idsMatchingSearch(q: string): Promise<number[]> {
+    const { buildMediaQuery } = await import("../src/services/mediaQuery.js");
+    const query = await buildMediaQuery({ q, allowedTypes: null });
+    const rows = (await db.prepare(`SELECT m.id FROM ${query.fromClause} WHERE ${query.where}`).all(...query.params)) as { id: number }[];
+    return rows.map((r) => Number(r.id));
+  }
+
+  it("a moved episode or sub-item is found by its own title under the keeper, not the deleted loser", async () => {
+    // Postgres has no FTS index; its q filter matches the item's own title only.
+    if (db.dialect === "postgres") return;
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+
+    const seriesKeeperId = await insertParent("series", "FTS Merge Show");
+    const seriesLoserId = await insertParent("series", "FTS Merge Show");
+    await db
+      .prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?, 1, 7, 'Quokka Harbour Finale', 1, 0)")
+      .run(seriesLoserId);
+
+    const artistKeeperId = await insertParent("artist", "FTS Merge Band");
+    const artistLoserId = await insertParent("artist", "FTS Merge Band");
+    await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file) VALUES (?, 'Wombat Sessions', 0)").run(artistLoserId);
+
+    await mergeMediaItems(seriesKeeperId, [seriesLoserId], false);
+    await mergeMediaItems(artistKeeperId, [artistLoserId], false);
+
+    expect(await idsMatchingSearch("Quokka Harbour")).toEqual([seriesKeeperId]);
+    expect(await idsMatchingSearch("Wombat Sessions")).toEqual([artistKeeperId]);
   });
 });
 

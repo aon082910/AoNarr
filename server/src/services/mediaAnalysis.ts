@@ -343,35 +343,29 @@ export function getAnalysisProgress(): AnalysisProgress {
  * the only writes are to AoNarr's own media_info column and the module-level `progress` above. */
 export async function runLibraryAnalysis(type?: string, signal?: AbortSignal): Promise<RunAnalysisResult> {
   if (progress.running) throw new Error("An analysis run is already in progress");
+  // Claimed before the first await: on Postgres the queries below are real I/O, and a second run
+  // started in that gap would pass the check above and probe the whole library concurrently.
+  progress = { running: true, type: type ?? null, total: 0, done: 0, failed: 0, startedAt: Date.now(), finishedAt: null };
 
   let probed = 0;
   let failed = 0;
 
-  const singleWhere = type ? "WHERE has_file = 1 AND path IS NOT NULL AND type = ?" : "WHERE has_file = 1 AND path IS NOT NULL";
-  const singleRows = (await db.prepare(`SELECT id, path FROM media_items ${singleWhere}`).all(...(type ? [type] : []))) as {
-    id: number;
-    path: string;
-  }[];
-  const epWhere = type ? "WHERE e.has_file = 1 AND e.file_path IS NOT NULL AND m.type = ?" : "WHERE e.has_file = 1 AND e.file_path IS NOT NULL";
-  const epRows = (await db
-    .prepare(`SELECT e.id, e.file_path FROM episodes e JOIN media_items m ON m.id = e.media_item_id ${epWhere}`)
-    .all(...(type ? [type] : []))) as { id: number; file_path: string }[];
-  const subWhere = type ? "WHERE s.has_file = 1 AND s.file_path IS NOT NULL AND m.type = ?" : "WHERE s.has_file = 1 AND s.file_path IS NOT NULL";
-  const subRows = (await db
-    .prepare(`SELECT s.id, s.file_path FROM sub_items s JOIN media_items m ON m.id = s.media_item_id ${subWhere}`)
-    .all(...(type ? [type] : []))) as { id: number; file_path: string }[];
-
-  progress = {
-    running: true,
-    type: type ?? null,
-    total: singleRows.length + epRows.length + subRows.length,
-    done: 0,
-    failed: 0,
-    startedAt: Date.now(),
-    finishedAt: null,
-  };
-
   try {
+    const singleWhere = type ? "WHERE has_file = 1 AND path IS NOT NULL AND type = ?" : "WHERE has_file = 1 AND path IS NOT NULL";
+    const singleRows = (await db.prepare(`SELECT id, path FROM media_items ${singleWhere}`).all(...(type ? [type] : []))) as {
+      id: number;
+      path: string;
+    }[];
+    const epWhere = type ? "WHERE e.has_file = 1 AND e.file_path IS NOT NULL AND m.type = ?" : "WHERE e.has_file = 1 AND e.file_path IS NOT NULL";
+    const epRows = (await db
+      .prepare(`SELECT e.id, e.file_path FROM episodes e JOIN media_items m ON m.id = e.media_item_id ${epWhere}`)
+      .all(...(type ? [type] : []))) as { id: number; file_path: string }[];
+    const subWhere = type ? "WHERE s.has_file = 1 AND s.file_path IS NOT NULL AND m.type = ?" : "WHERE s.has_file = 1 AND s.file_path IS NOT NULL";
+    const subRows = (await db
+      .prepare(`SELECT s.id, s.file_path FROM sub_items s JOIN media_items m ON m.id = s.media_item_id ${subWhere}`)
+      .all(...(type ? [type] : []))) as { id: number; file_path: string }[];
+    progress.total = singleRows.length + epRows.length + subRows.length;
+
     for (const row of singleRows) {
       if (signal?.aborted) return { probed, failed };
       if (!isProbeableFile(row.path)) {

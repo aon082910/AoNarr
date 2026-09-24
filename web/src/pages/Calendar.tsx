@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client.js";
 import { describeCalendarEntry } from "../utils/calendarDescriptions.js";
@@ -66,8 +66,12 @@ export default function Calendar() {
   const [newEventTitle, setNewEventTitle] = useState("");
   const [newEventDate, setNewEventDate] = useState("");
   const [newEventNote, setNewEventNote] = useState("");
+  // Paging months quickly fires overlapping requests; an older one landing last would otherwise
+  // fill the current grid with the previous range's entries.
+  const loadSeq = useRef(0);
 
   function load() {
+    const seq = ++loadSeq.current;
     let start: string, end: string;
     if (mode === "month") {
       const { gridStart, gridEnd } = gridBounds(viewMonth);
@@ -81,7 +85,9 @@ export default function Calendar() {
       start = toIsoDate(s);
       end = toIsoDate(e);
     }
-    api.get<CalendarEntry[]>(`/wanted/calendar?start=${start}&end=${end}`).then(setEntries);
+    api.get<CalendarEntry[]>(`/wanted/calendar?start=${start}&end=${end}`).then((res) => {
+      if (seq === loadSeq.current) setEntries(res);
+    });
   }
 
   useEffect(load, [mode, viewMonth, daysBack, daysForward]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -121,6 +127,12 @@ export default function Calendar() {
     load();
   }
 
+  /** Also drops the selected day — its detail panel only has entries for the grid being shown. */
+  function changeMonth(update: (m: Date) => Date) {
+    setViewMonth(update);
+    setSelectedDay(null);
+  }
+
   function openEntry(entry: CalendarEntry) {
     if (entry.kind === "media") navigate(`/media/${entry.mediaItemId}`);
   }
@@ -152,17 +164,17 @@ export default function Calendar() {
                 <ToolbarButton
                   icon={<ChevronLeftIcon />}
                   label="Previous"
-                  onClick={() => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))}
+                  onClick={() => changeMonth((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))}
                   title="Previous month"
                 />
                 <strong style={{ minWidth: 140, textAlign: "center" }}>{monthLabel}</strong>
                 <ToolbarButton
                   icon={<ChevronRightIcon />}
                   label="Next"
-                  onClick={() => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))}
+                  onClick={() => changeMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))}
                   title="Next month"
                 />
-                <ToolbarButton icon={<CalendarIcon />} label="Today" onClick={() => setViewMonth(startOfMonth(new Date()))} title="Jump to today" />
+                <ToolbarButton icon={<CalendarIcon />} label="Today" onClick={() => changeMonth(() => startOfMonth(new Date()))} title="Jump to today" />
               </>
             ) : (
               <>

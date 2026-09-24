@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import { PlusCircleIcon } from "../components/NavIcons.js";
@@ -69,6 +69,10 @@ export default function IptvPlaylists() {
   const [clipUrl, setClipUrl] = useState("");
   const [clipCategory, setClipCategory] = useState("");
 
+  // The playlist whose items/fillers the edit modal is showing — a response for a playlist opened
+  // earlier (still in flight when another one was opened) is dropped instead of replacing its lists.
+  const activePlaylistId = useRef<number | null>(null);
+
   function load() {
     api.get<Playlist[]>("/iptv/playlists").then(setPlaylists);
     api.get<FillerClip[]>("/iptv/filler-clips").then(setFillerClips);
@@ -77,11 +81,15 @@ export default function IptvPlaylists() {
   useEffect(load, []);
 
   function loadItems(playlistId: number) {
-    api.get<PlaylistItem[]>(`/iptv/playlists/${playlistId}/items`).then(setItems);
+    api.get<PlaylistItem[]>(`/iptv/playlists/${playlistId}/items`).then((res) => {
+      if (activePlaylistId.current === playlistId) setItems(res);
+    });
   }
 
   function loadFillers(playlistId: number) {
-    api.get<AttachedFiller[]>(`/iptv/playlists/${playlistId}/fillers`).then(setAttachedFillers);
+    api.get<AttachedFiller[]>(`/iptv/playlists/${playlistId}/fillers`).then((res) => {
+      if (activePlaylistId.current === playlistId) setAttachedFillers(res);
+    });
   }
 
   function resetForm() {
@@ -102,14 +110,20 @@ export default function IptvPlaylists() {
   }
 
   function openAdd() {
+    activePlaylistId.current = null;
     resetForm();
     setMode("add");
   }
 
   function openEdit(p: Playlist) {
+    activePlaylistId.current = p.id;
     setName(p.name);
     setInsertAfterMinutes(p.insertAfterMinutes != null ? String(p.insertAfterMinutes) : "");
     setInsertAfterEachItem(!!p.insertAfterEachItem);
+    setItems(null);
+    setAttachedFillers(null);
+    setFillerToAttach("");
+    resetItemForm();
     setMode(p.id);
     loadItems(p.id);
     loadFillers(p.id);
@@ -126,6 +140,7 @@ export default function IptvPlaylists() {
     try {
       if (mode === "add") {
         const created = await api.post<Playlist>("/iptv/playlists", body);
+        activePlaylistId.current = created.id;
         setMode(created.id);
         loadItems(created.id);
         loadFillers(created.id);
@@ -187,7 +202,7 @@ export default function IptvPlaylists() {
     if (typeof mode !== "number") return;
     try {
       const updated = await api.post<PlaylistItem[]>(`/iptv/playlists/${mode}/items/${itemId}/move`, { direction });
-      setItems(updated);
+      if (activePlaylistId.current === mode) setItems(updated);
     } catch (e) {
       notify.error((e as Error).message);
     }

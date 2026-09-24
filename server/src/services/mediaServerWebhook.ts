@@ -26,15 +26,37 @@ export async function parsePlexPayload(payload: any): Promise<WebhookWatchSignal
   return file ? { filePath: file } : null;
 }
 
+/** A boolean field as either plugin can render it: a real JSON boolean, or a templated string
+ * ("True" from Jellyfin's Handlebars rendering of a .NET bool, "true" from a hand-written one). */
+function isTrueFlag(value: unknown): boolean {
+  return value === true || (typeof value === "string" && value.trim().toLowerCase() === "true");
+}
+
+let loggedMissingCompletionFlag = false;
+
 /**
  * Jellyfin's "Webhook" plugin and Emby's "Webhooks" plugin both send configurable JSON — this
  * reads the field names their default templates use (`NotificationType`/`Path` for Jellyfin's
- * plugin, `Item.Path` as a fallback for templates that nest it). Treated as "watched" only on a
- * playback-stop notification, since a bare "PlaybackProgress" fires continuously during a stream.
+ * plugin, `Event`/`Item.Path` for Emby's). A playback-stop notification fires on every stop, even
+ * a few seconds in, so it only counts as "watched" when the payload says playback reached the end
+ * (`PlayedToCompletion`, top-level for Jellyfin, under `PlaybackInfo` for Emby). Emby's explicit
+ * `item.markplayed` event is a watched signal on its own. A Jellyfin Generic-destination template
+ * has to include `"PlayedToCompletion": "{{PlayedToCompletion}}"` (or enable "Send All
+ * Properties"); one without it records nothing, logged once so the template is diagnosable.
  */
 export function parseJellyfinEmbyPayload(body: any): WebhookWatchSignal | null {
-  const notificationType = body?.NotificationType ?? body?.Event;
-  if (notificationType && !/stop|finish|watched/i.test(String(notificationType))) return null;
+  const notificationType = String(body?.NotificationType ?? body?.Event ?? "");
+  const explicitlyMarkedPlayed = /markplayed/i.test(notificationType);
+  if (!explicitlyMarkedPlayed) {
+    if (notificationType && !/stop|finish|watched/i.test(notificationType)) return null;
+    if (body?.PlayedToCompletion === undefined && body?.PlaybackInfo?.PlayedToCompletion === undefined && !loggedMissingCompletionFlag) {
+      loggedMissingCompletionFlag = true;
+      log.info(
+        `[webhook] a Jellyfin/Emby playback-stop event had no PlayedToCompletion field, so it can't be counted as watched — add "PlayedToCompletion": "{{PlayedToCompletion}}" to the Jellyfin webhook template (or enable "Send All Properties")`
+      );
+    }
+    if (!isTrueFlag(body?.PlayedToCompletion) && !isTrueFlag(body?.PlaybackInfo?.PlayedToCompletion)) return null;
+  }
 
   const file = body?.Path ?? body?.Item?.Path;
   return typeof file === "string" && file ? { filePath: file } : null;
@@ -125,6 +147,36 @@ export async function syncWatchStatusFromMediaServer(): Promise<{ recorded: numb
   const episodesByTail = firstMatchByTail(episodes, (r) => pathTail(r.file_path));
   const subItemsByTail = firstMatchByTail(subItems, (r) => pathTail(r.file_path));
 
+  // The cursor below stays pinned before any still-unmatched file, so matched files played after it
+  // come back on every run: each watch is stored at its real play time (same 'YYYY-MM-DD HH:MM:SS'
+  // UTC shape as the column default) and skipped when that exact watch is already recorded.
+  async function recordOnce(
+    ids: { mediaItemId: number; episodeId: number | null; subItemId: number | null },
+    playedAt: Date
+  ): Promise<boolean> {
+    const watchedAt = playedAt.toISOString().slice(0, 19).replace("T", " ");
+    const conditions = ["media_item_id = ?", "watched_at = ?"];
+    const params: unknown[] = [ids.mediaItemId, watchedAt];
+    if (ids.episodeId === null) {
+      conditions.push("episode_id IS NULL");
+    } else {
+      conditions.push("episode_id = ?");
+      params.push(ids.episodeId);
+    }
+    if (ids.subItemId === null) {
+      conditions.push("sub_item_id IS NULL");
+    } else {
+      conditions.push("sub_item_id = ?");
+      params.push(ids.subItemId);
+    }
+    const existing = await db.prepare(`SELECT id FROM watch_events WHERE ${conditions.join(" AND ")}`).get(...params);
+    if (existing) return false;
+    await db
+      .prepare("INSERT INTO watch_events (media_item_id, episode_id, sub_item_id, watched_at) VALUES (?, ?, ?, ?)")
+      .run(ids.mediaItemId, ids.episodeId, ids.subItemId, watchedAt);
+    return true;
+  }
+
   let recorded = 0;
   let maxSeen = lastSync;
   // The earliest still-unmatched file's timestamp in this batch, if any — the cursor below must
@@ -136,17 +188,16 @@ export async function syncWatchStatusFromMediaServer(): Promise<{ recorded: numb
     const episode = !item ? episodesByTail.get(tail) : undefined;
     const subItem = !item && !episode ? subItemsByTail.get(tail) : undefined;
 
-    if (item) {
-      await db.prepare("INSERT INTO watch_events (media_item_id) VALUES (?)").run(item.id);
-      recorded++;
-      if (file.lastPlayedAt > maxSeen) maxSeen = file.lastPlayedAt;
-    } else if (episode) {
-      await db.prepare("INSERT INTO watch_events (media_item_id, episode_id) VALUES (?, ?)").run(episode.media_item_id, episode.id);
-      recorded++;
-      if (file.lastPlayedAt > maxSeen) maxSeen = file.lastPlayedAt;
-    } else if (subItem) {
-      await db.prepare("INSERT INTO watch_events (media_item_id, sub_item_id) VALUES (?, ?)").run(subItem.media_item_id, subItem.id);
-      recorded++;
+    const ids = item
+      ? { mediaItemId: item.id, episodeId: null, subItemId: null }
+      : episode
+        ? { mediaItemId: episode.media_item_id, episodeId: episode.id, subItemId: null }
+        : subItem
+          ? { mediaItemId: subItem.media_item_id, episodeId: null, subItemId: subItem.id }
+          : null;
+
+    if (ids) {
+      if (await recordOnce(ids, file.lastPlayedAt)) recorded++;
       if (file.lastPlayedAt > maxSeen) maxSeen = file.lastPlayedAt;
     } else if (earliestUnmatched === null || file.lastPlayedAt < earliestUnmatched) {
       earliestUnmatched = file.lastPlayedAt;

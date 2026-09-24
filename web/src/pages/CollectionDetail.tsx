@@ -31,7 +31,12 @@ export default function CollectionDetail() {
   }
 
   async function removeItem(mediaItemId: number) {
-    await api.del(`/collections/${id}/items/${mediaItemId}`);
+    try {
+      await api.del(`/collections/${id}/items/${mediaItemId}`);
+    } catch (e) {
+      notify.error((e as Error).message);
+      return;
+    }
     load();
   }
 
@@ -55,10 +60,14 @@ export default function CollectionDetail() {
 
   async function exportList(format: "m3u" | "json") {
     if (!collection) return;
-    if (format === "m3u") {
-      await downloadFile(`/collections/${id}/export?format=m3u`, `${collection.name}.m3u`);
-    } else {
-      await downloadFile(`/collections/${id}/export?format=json`, `${collection.name}.json`);
+    try {
+      if (format === "m3u") {
+        await downloadFile(`/collections/${id}/export?format=m3u`, `${collection.name}.m3u`);
+      } else {
+        await downloadFile(`/collections/${id}/export?format=json`, `${collection.name}.json`);
+      }
+    } catch (e) {
+      notify.error((e as Error).message);
     }
   }
 
@@ -112,7 +121,7 @@ export default function CollectionDetail() {
         </div>
       )}
 
-      {collection.items.length > 0 && (
+      {auth.isAdmin && collection.items.length > 0 && (
         <PageToolbar
           left={
             <>
@@ -142,7 +151,7 @@ export default function CollectionDetail() {
               <div className="sub">
                 {item.year ?? ""} · {labelFor(item.type)}
               </div>
-              {!collection.smartFilter && (
+              {auth.isAdmin && !collection.smartFilter && (
                 <>
                   <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
                     <button

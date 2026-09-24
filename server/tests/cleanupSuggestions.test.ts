@@ -138,6 +138,44 @@ describe("findDuplicateFiles", () => {
     expect(group!.files.find((f) => f.path === epPathB)!.label).toBe("Dupe Show — S01E04");
   });
 
+  it("does not report a multi-episode file (one path stored on every episode it covers) as a duplicate of itself", async () => {
+    const { findDuplicateFiles } = await import("../src/services/cleanupSuggestions.js");
+    const showId = await insertMediaItem({ type: "series", title: "Multi Episode Show" });
+    const multiEpPath = writeFile("multi-ep-s01e05-e06.mkv", "one physical double-episode file");
+    for (const episode of [5, 6]) {
+      await db
+        .prepare(
+          "INSERT INTO episodes (media_item_id, season_number, episode_number, monitored, has_file, file_path) VALUES (?, 1, ?, 1, 1, ?)"
+        )
+        .run(showId, episode, multiEpPath);
+    }
+
+    const groups = await findDuplicateFiles();
+    expect(groups.some((g) => g.files.some((f) => f.path === multiEpPath))).toBe(false);
+  });
+
+  it("lists a multi-episode file once, labeled with every episode it covers, when it does have a real copy elsewhere", async () => {
+    const { findDuplicateFiles } = await import("../src/services/cleanupSuggestions.js");
+    const showId = await insertMediaItem({ type: "series", title: "Copied Multi Show" });
+    const multiEpPath = writeFile("copied-multi-ep.mkv", "double-episode file that also exists as a stray copy");
+    const strayCopyPath = writeFile("stray-copy.mkv", "double-episode file that also exists as a stray copy");
+    for (const episode of [7, 8]) {
+      await db
+        .prepare(
+          "INSERT INTO episodes (media_item_id, season_number, episode_number, monitored, has_file, file_path) VALUES (?, 1, ?, 1, 1, ?)"
+        )
+        .run(showId, episode, multiEpPath);
+    }
+    await insertMediaItem({ title: "Stray Copy Movie", hasFile: 1, path: strayCopyPath });
+
+    const groups = await findDuplicateFiles();
+    const group = groups.find((g) => g.files.some((f) => f.path === multiEpPath));
+    expect(group).toBeDefined();
+    expect(group!.files.map((f) => f.path).sort()).toEqual([multiEpPath, strayCopyPath].sort());
+    const multiEpLabel = group!.files.find((f) => f.path === multiEpPath)!.label;
+    expect(multiEpLabel.split(", ").sort()).toEqual(["Copied Multi Show — S01E07", "Copied Multi Show — S01E08"]);
+  });
+
   it("includes sub-item files (e.g. albums), labeled with parent and child title", async () => {
     const { findDuplicateFiles } = await import("../src/services/cleanupSuggestions.js");
     const artistId = await insertMediaItem({ type: "artist", title: "Dupe Artist" });

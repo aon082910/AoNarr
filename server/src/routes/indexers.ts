@@ -9,6 +9,7 @@ import { syncFromProwlarr } from "../services/prowlarrSync.js";
 import { syncFromJackett } from "../services/jackettSync.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { encryptValue } from "../services/encryption.js";
+import { removeReleaseProfileScopeId } from "./tags.js";
 
 export const indexersRouter = Router();
 indexersRouter.use(requireAdmin);
@@ -122,8 +123,13 @@ indexersRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
     const existing = (await db.prepare("SELECT name FROM indexers WHERE id = ?").get(req.params.id)) as { name: string } | undefined;
-    const result = await db.prepare("DELETE FROM indexers WHERE id = ?").run(req.params.id);
-    if (result.changes === 0) throw new HttpError(404, "Indexer not found");
+    let deleted = false;
+    await db.transaction(async () => {
+      const result = await db.prepare("DELETE FROM indexers WHERE id = ?").run(req.params.id);
+      deleted = result.changes > 0;
+      if (deleted) await removeReleaseProfileScopeId("indexer_ids", Number(req.params.id));
+    });
+    if (!deleted) throw new HttpError(404, "Indexer not found");
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "indexer_removed", existing?.name);
     res.status(204).send();

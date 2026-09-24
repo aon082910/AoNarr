@@ -11,6 +11,7 @@ let refreshMediaServerLibrary: (typeof import("../src/services/mediaServer.js"))
 let triggerFullMediaServerScan: (typeof import("../src/services/mediaServer.js"))["triggerFullMediaServerScan"];
 let resolvePlexFilePath: (typeof import("../src/services/mediaServer.js"))["resolvePlexFilePath"];
 let pushWatchState: (typeof import("../src/services/mediaServer.js"))["pushWatchState"];
+let fetchMediaServerArtwork: (typeof import("../src/services/mediaServer.js"))["fetchMediaServerArtwork"];
 let setSetting: (typeof import("../src/services/settingsStore.js"))["setSetting"];
 
 beforeAll(async () => {
@@ -27,6 +28,7 @@ beforeAll(async () => {
     triggerFullMediaServerScan,
     resolvePlexFilePath,
     pushWatchState,
+    fetchMediaServerArtwork,
   } = await import("../src/services/mediaServer.js"));
   ({ setSetting } = await import("../src/services/settingsStore.js"));
 });
@@ -126,6 +128,25 @@ describe("fetchWatchedFiles / fetchAllLibraryFiles", () => {
 
     const all = await fetchAllLibraryFiles();
     expect(all.map((f) => f.path).sort()).toEqual(["/movies/Unwatched.mkv", "/movies/Watched.mkv"]);
+  });
+
+  it("Plex: only the watched fetch asks Plex for watched items (unwatched=0); the full-library fetch doesn't", async () => {
+    configurePlex();
+    const fetchMock = routedFetch([
+      { test: (u) => u.includes("/library/sections?"), response: ok({ MediaContainer: { Directory: [{ key: "1", type: "movie" }] } }) },
+      { test: (u) => u.includes("/library/sections/1/all"), response: ok({ MediaContainer: { Metadata: [] } }) },
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchWatchedFiles();
+    const watchedCall = fetchMock.mock.calls.map((c) => String(c[0])).find((u) => u.includes("/library/sections/1/all"));
+    expect(watchedCall).toContain("unwatched=0");
+
+    fetchMock.mockClear();
+    await fetchAllLibraryFiles();
+    const allCall = fetchMock.mock.calls.map((c) => String(c[0])).find((u) => u.includes("/library/sections/1/all"));
+    expect(allCall).toBeDefined();
+    expect(allCall).not.toContain("unwatched");
   });
 
   it("Plex: a failed per-section items request is skipped, not fatal", async () => {
@@ -259,7 +280,7 @@ describe("fetchMediaServerMovies", () => {
         title: "A Movie",
         year: 2020,
         overview: "An overview.",
-        posterUrl: "http://plex.local:32400/thumb/100?X-Plex-Token=plex-token",
+        posterUrl: "mediaserver:/thumb/100", // server-relative, never carrying the token
         externalIds: { tmdb: "603" },
       },
     ]);
@@ -319,7 +340,7 @@ describe("fetchMediaServerMovies", () => {
         title: "B Movie",
         year: 2019,
         overview: "Overview B",
-        posterUrl: "http://jellyfin.local:8096/Items/200/Images/Primary?api_key=jf-token",
+        posterUrl: "mediaserver:/Items/200/Images/Primary", // server-relative, never carrying the api_key
         externalIds: { tmdb: "700", imdb: "tt700" },
       },
     ]);
@@ -362,7 +383,7 @@ describe("fetchMediaServerSeries", () => {
       title: "A Show",
       year: 2018,
       overview: "S",
-      posterUrl: "http://plex.local:32400/t/300?X-Plex-Token=plex-token",
+      posterUrl: "mediaserver:/t/300",
       externalIds: { tvdb: "55" },
     });
     expect(library.episodes).toEqual([
@@ -433,6 +454,82 @@ describe("fetchMediaServerSeries", () => {
 
     expect(library.shows.size).toBe(0);
     expect(library.episodes).toHaveLength(1);
+  });
+});
+
+describe("fetchMediaServerArtwork", () => {
+  function image() {
+    return { ok: true, body: {}, headers: new Headers({ "content-type": "image/jpeg" }) };
+  }
+
+  function jellyfinMovieRoutes(prefix: string): Route[] {
+    return [
+      { test: (u) => u.endsWith(`${prefix}/Users`), response: ok([{ Id: "u1" }]) },
+      {
+        test: (u) => u.includes(`${prefix}/Users/u1/Items`),
+        response: ok({ Items: [{ Id: "200", Path: "/movies/b.mkv", Name: "B Movie", ImageTags: { Primary: "abc" } }] }),
+      },
+      { test: (u) => u.includes("/Images/Primary"), response: image() },
+    ];
+  }
+
+  it("returns null without fetching when unconfigured or when the ref isn't a server-relative path", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    unconfigure();
+    expect(await fetchMediaServerArtwork("mediaserver:/library/metadata/1/thumb/2")).toBeNull();
+    configurePlex();
+    expect(await fetchMediaServerArtwork("mediaserver:http://elsewhere/x.jpg")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns null when the upstream response isn't an image", async () => {
+    configurePlex();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, body: {}, headers: new Headers({ "content-type": "text/html" }) }));
+
+    expect(await fetchMediaServerArtwork("mediaserver:/library/metadata/1/thumb/2")).toBeNull();
+  });
+
+  it("Plex: requests the thumb under the configured URL with the token as a header, not in the URL", async () => {
+    configurePlex();
+    const fetchMock = vi.fn().mockResolvedValue(image());
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await fetchMediaServerArtwork("mediaserver:/library/metadata/1/thumb/2")).not.toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://plex.local:32400/library/metadata/1/thumb/2",
+      expect.objectContaining({ headers: { "X-Plex-Token": "plex-token" } })
+    );
+  });
+
+  it("Jellyfin behind a Base URL: an imported poster ref resolves to the image URL under that sub-path, once", async () => {
+    setSetting("mediaServerType", "jellyfin");
+    setSetting("mediaServerUrl", "http://jf.local:8096/jellyfin/");
+    setSetting("mediaServerToken", "jf-token");
+    const fetchMock = routedFetch(jellyfinMovieRoutes("/jellyfin"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const [movie] = await fetchMediaServerMovies();
+    expect(movie.posterUrl).toBe("mediaserver:/Items/200/Images/Primary");
+
+    expect(await fetchMediaServerArtwork(movie.posterUrl!)).not.toBeNull();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "http://jf.local:8096/jellyfin/Items/200/Images/Primary",
+      expect.objectContaining({ headers: { "X-Emby-Token": "jf-token" } })
+    );
+  });
+
+  it("Emby: an imported poster ref keeps the /emby prefix all Emby requests go through", async () => {
+    configureEmby();
+    const fetchMock = routedFetch(jellyfinMovieRoutes("/emby"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const [movie] = await fetchMediaServerMovies();
+    expect(movie.posterUrl).toBe("mediaserver:/emby/Items/200/Images/Primary");
+
+    expect(await fetchMediaServerArtwork(movie.posterUrl!)).not.toBeNull();
+    expect(fetchMock).toHaveBeenLastCalledWith("http://emby.local:8096/emby/Items/200/Images/Primary", expect.anything());
   });
 });
 
@@ -569,6 +666,26 @@ describe("pushWatchState", () => {
     const scrobbleCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("/:/scrobble"));
     expect(scrobbleCall).toBeTruthy();
     expect(String(scrobbleCall![0])).toContain("key=42");
+  });
+
+  it("Plex: resolves the match against the whole library, not just already-watched items", async () => {
+    configurePlex();
+    const fetchMock = routedFetch([
+      { test: (u) => u.includes("/library/sections?"), response: ok({ MediaContainer: { Directory: [{ key: "1", type: "movie" }] } }) },
+      {
+        test: (u) => u.includes("/library/sections/1/all"),
+        // An unwatched item (no viewCount) is only in the response when no watched-only filter is sent.
+        response: (url: string) =>
+          ok({ MediaContainer: { Metadata: url.includes("unwatched=0") ? [] : [{ ratingKey: "7", Media: [{ Part: [{ file: "/m/Movies/New (2024)/New.mkv" }] }] }] } }),
+      },
+      { test: (u) => u.includes("/:/scrobble"), response: ok({}) },
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await pushWatchState("/data/Movies/New (2024)/New.mkv", true);
+
+    const scrobbleCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("/:/scrobble"));
+    expect(String(scrobbleCall![0])).toContain("key=7");
   });
 
   it("Plex: a failed per-section items request while resolving the match is skipped, not fatal", async () => {

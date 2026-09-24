@@ -5,7 +5,7 @@ import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useCustomizableLayout } from "../hooks/useCustomizableLayout.js";
 import type { MediaItem } from "../types.js";
-import { formatBytes } from "../utils/format.js";
+import { formatBytes, formatServerTimestamp } from "../utils/format.js";
 import { SlidersIcon } from "../components/NavIcons.js";
 import { ArrowUpIcon, ArrowDownIcon, ArrowRightIcon, ChevronsDownIcon, ChevronsUpIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
@@ -126,8 +126,10 @@ export default function Dashboard() {
 
       // Surfaces the same checks the System page computes on demand, right where an admin will
       // actually see them without having to think to go look — Radarr shows health warnings as a
-      // banner near the top of its own dashboard for the same reason.
-      if (auth.isAdmin) {
+      // banner near the top of its own dashboard for the same reason. Initial load only: the route
+      // makes a live request to every indexer/download client, so polling it with the 60s refresh
+      // would burn indexer API-hit limits for as long as the tab stays open.
+      if (auth.isAdmin && showSpinner) {
         api.get<HealthSummary>("/system/health").then(setHealth).catch(() => setHealth(null));
       }
     }
@@ -275,7 +277,7 @@ export default function Dashboard() {
                     </td>
                     <td>{labelFor(entry.type)}</td>
                     <td>{RECENT_EVENT_LABELS[entry.eventType] ?? entry.eventType}</td>
-                    <td>{new Date(entry.timestamp).toLocaleString()}</td>
+                    <td>{formatServerTimestamp(entry.timestamp)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -315,7 +317,9 @@ export default function Dashboard() {
                           </td>
                           <td>{entry.kind === "event" ? "Custom date" : labelFor(entry.type)}</td>
                           <td>
-                            <span className={`badge ${entry.hasFile ? "ok" : ""}`}>{entry.hasFile ? "Downloaded" : "Missing"}</span>
+                            {entry.kind !== "event" && (
+                              <span className={`badge ${entry.hasFile ? "ok" : ""}`}>{entry.hasFile ? "Downloaded" : "Missing"}</span>
+                            )}
                           </td>
                         </tr>
                       ))}

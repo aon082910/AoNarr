@@ -233,7 +233,11 @@ export async function runAutoArchival(): Promise<void> {
     if (match.lastPlayedAt.getTime() > cutoffMs) continue;
     try {
       await moveOrDelete(item.path, archiveFolder, permanentDelete, item.type, item.title, item.id);
-      await db.prepare("UPDATE media_items SET has_file = 0, path = NULL, quality = NULL WHERE id = ?").run(item.id);
+      // Also unmonitored (here and for episodes/sub-items below): the file was watched and
+      // deliberately cleared out, so auto-search — which only skips unmonitored or has_file rows —
+      // mustn't treat it as missing and re-download it on its next pass, which the media server
+      // would then report as watched again and the next archival run would archive again, forever.
+      await db.prepare("UPDATE media_items SET has_file = 0, path = NULL, quality = NULL, monitored = 0 WHERE id = ?").run(item.id);
       await logArchival(item.id, item.title, permanentDelete ? "deleted" : "archived");
     } catch (err) {
       log.warn(`[archival] failed to archive "${item.title}":`, (err as Error).message);
@@ -257,7 +261,7 @@ export async function runAutoArchival(): Promise<void> {
     const label = `${ep.media_title} S${String(ep.season_number).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}`;
     try {
       await moveOrDelete(ep.file_path, archiveFolder, permanentDelete, ep.media_type, label, ep.media_item_id);
-      await db.prepare("UPDATE episodes SET has_file = 0, file_path = NULL, quality = NULL WHERE id = ?").run(ep.id);
+      await db.prepare("UPDATE episodes SET has_file = 0, file_path = NULL, quality = NULL, monitored = 0 WHERE id = ?").run(ep.id);
       await logArchival(ep.media_item_id, label, permanentDelete ? "deleted" : "archived");
     } catch (err) {
       log.warn(`[archival] failed to archive "${label}":`, (err as Error).message);
@@ -281,7 +285,7 @@ export async function runAutoArchival(): Promise<void> {
     const label = `${sub.media_title} - ${sub.title}`;
     try {
       await moveOrDelete(sub.file_path, archiveFolder, permanentDelete, sub.media_type, label, sub.media_item_id);
-      await db.prepare("UPDATE sub_items SET has_file = 0, file_path = NULL, quality = NULL WHERE id = ?").run(sub.id);
+      await db.prepare("UPDATE sub_items SET has_file = 0, file_path = NULL, quality = NULL, monitored = 0 WHERE id = ?").run(sub.id);
       await logArchival(sub.media_item_id, label, permanentDelete ? "deleted" : "archived");
     } catch (err) {
       log.warn(`[archival] failed to archive "${label}":`, (err as Error).message);

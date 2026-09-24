@@ -30,7 +30,8 @@ export interface SidecarMetadata {
   localBackdropPath?: string | null;
 }
 
-const SEASON_FOLDER = /^season\s*0*(\d{1,3})$|^s0*(\d{1,3})$/i;
+// "Specials" is Kodi/Plex/Jellyfin's Season 0 folder, so its show's tvshow.nfo is one level up too.
+const SEASON_FOLDER = /^season\s*0*(\d{1,3})$|^s0*(\d{1,3})$|^specials$/i;
 
 /** Same "parent is just a Season NN folder → use its own parent instead" logic
  * libraryScan.ts's guessShowTitleFromFolder already has — duplicated here (rather than imported)

@@ -97,9 +97,9 @@ function ok(body: unknown, extra: Record<string, unknown> = {}) {
 function notOk(status: number, body: unknown = {}) {
   return { ok: false, status, json: async () => body, text: async () => "" };
 }
-function fileResponse(content: string) {
+function fileResponse(content: string, headers: Record<string, string> = {}) {
   // HttpDownloadAdapter reads res.headers.get("content-length") for progress tracking.
-  return { ok: true, status: 200, headers: new Headers({ "content-length": String(content.length) }), body: new Response(content).body };
+  return { ok: true, status: 200, headers: new Headers({ "content-length": String(content.length), ...headers }), body: new Response(content).body };
 }
 
 async function insertClient(overrides: Record<string, unknown> = {}): Promise<any> {
@@ -307,18 +307,135 @@ describe("QBittorrentAdapter", () => {
     expect(result).toEqual([]);
   });
 
-  it("addDownload posts the URL and category, returning the URL itself as the tracking id", async () => {
-    const fetchMock = routedFetch([
-      { test: (u) => u.includes("/auth/login"), response: ok({}, { headers: new Headers({ "set-cookie": "SID=abc; Path=/" }) }) },
-      { test: (u) => u.includes("/torrents/add"), response: ok({}) },
-    ]);
+  const INFO_HASH = "c12fe1c06bba254a9dc9f519b335aa7c1367a88a";
+  const INFO_HASH_BASE32 = "YEX6DQDLXISUVHOJ6UM3GNNKPQJWPKEK"; // the same 20 bytes, base32-encoded
+  const loginRoute = { test: (u: string) => u.includes("/auth/login"), response: ok({}, { headers: new Headers({ "set-cookie": "SID=abc; Path=/" }) }) };
+
+  it("addDownload returns a hex-btih magnet's own hash (lowercased) without any tag polling", async () => {
+    const fetchMock = routedFetch([loginRoute, { test: (u) => u.includes("/torrents/add"), response: ok({}) }]);
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await adapter().addDownload(await insertClient({ type: "qbittorrent" }), "magnet:?xt=x", "movies");
+    const result = await adapter().addDownload(
+      await insertClient({ type: "qbittorrent" }),
+      `magnet:?xt=urn:btih:${INFO_HASH.toUpperCase()}&dn=Some.Release`,
+      "movies"
+    );
 
-    expect(result.downloadId).toBe("magnet:?xt=x");
+    expect(result.downloadId).toBe(INFO_HASH);
     const addCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("/torrents/add"));
     expect(addCall![1].body.get("category")).toBe("movies");
+    expect(addCall![1].body.get("tags")).toBe("aonarr");
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("/torrents/info"))).toBe(false);
+  });
+
+  it("addDownload converts a base32-btih magnet to the hex hash qBittorrent reports", async () => {
+    vi.stubGlobal("fetch", routedFetch([loginRoute, { test: (u) => u.includes("/torrents/add"), response: ok({}) }]));
+
+    const result = await adapter().addDownload(await insertClient({ type: "qbittorrent" }), `magnet:?xt=urn:btih:${INFO_HASH_BASE32}&dn=x`, null);
+
+    expect(result.downloadId).toBe(INFO_HASH);
+  });
+
+  it("addDownload resolves a .torrent URL's hash through its pending tag, then removes that tag", async () => {
+    vi.useFakeTimers();
+    const fetchMock = routedFetch([
+      loginRoute,
+      { test: (u) => u.includes("/torrents/add"), response: ok({}) },
+      {
+        test: (u) => u.includes("/torrents/info?tag="),
+        response: (u: string) => {
+          const tag = new URL(u).searchParams.get("tag");
+          // The decoy is what a pre-4.2 qBittorrent (which ignores ?tag=) would put first.
+          return ok([
+            { hash: "decoy", tags: "" },
+            { hash: INFO_HASH, tags: `aonarr, ${tag}` },
+          ]);
+        },
+      },
+      { test: (u) => u.includes("/torrents/removeTags"), response: ok({}) },
+      { test: (u) => u.includes("/torrents/deleteTags"), response: ok({}) },
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = await insertClient({ type: "qbittorrent" });
+
+    const pending = adapter().addDownload(client, "https://indexer/get/123.torrent", "tv");
+    await vi.advanceTimersByTimeAsync(1000);
+    const result = await pending;
+
+    expect(result.downloadId).toBe(INFO_HASH);
+    const addForm = fetchMock.mock.calls.find((c) => String(c[0]).includes("/torrents/add"))![1].body as URLSearchParams;
+    const [permanentTag, pendingTag] = addForm.get("tags")!.split(",");
+    expect(permanentTag).toBe("aonarr");
+    expect(pendingTag).toMatch(/^aonarr-pending-[0-9a-f]+$/);
+    const removeForm = fetchMock.mock.calls.find((c) => String(c[0]).includes("/torrents/removeTags"))![1].body as URLSearchParams;
+    expect(removeForm.get("hashes")).toBe(INFO_HASH);
+    expect(removeForm.get("tags")).toBe(pendingTag);
+    const deleteForm = fetchMock.mock.calls.find((c) => String(c[0]).includes("/torrents/deleteTags"))![1].body as URLSearchParams;
+    expect(deleteForm.get("tags")).toBe(pendingTag);
+  });
+
+  it("addDownload falls back to a tag: placeholder id when the torrent never shows up", async () => {
+    vi.useFakeTimers();
+    const fetchMock = routedFetch([
+      loginRoute,
+      { test: (u) => u.includes("/torrents/add"), response: ok({}) },
+      { test: (u) => u.includes("/torrents/info?tag="), response: ok([]) },
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = await insertClient({ type: "qbittorrent" });
+
+    const pending = adapter().addDownload(client, "https://indexer/get/456.torrent", null);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const result = await pending;
+
+    const addForm = fetchMock.mock.calls.find((c) => String(c[0]).includes("/torrents/add"))![1].body as URLSearchParams;
+    expect(result.downloadId).toBe(`tag:${addForm.get("tags")!.split(",")[1]}`);
+  });
+
+  it("getStatus reports a pending-tag or legacy-magnet queue id as an alias resolved to the real hash", async () => {
+    const legacyMagnet = `magnet:?xt=urn:btih:${INFO_HASH_BASE32}&dn=Show.S01E01`;
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        loginRoute,
+        {
+          test: (u) => u.includes("/torrents/info"),
+          response: ok([{ hash: INFO_HASH, progress: 0.3, state: "downloading", tags: "aonarr, aonarr-pending-0a1b2c" }]),
+        },
+      ])
+    );
+
+    const updates = await adapter().getStatus(await insertClient({ type: "qbittorrent" }), ["tag:aonarr-pending-0a1b2c", legacyMagnet]);
+
+    expect(updates).toContainEqual({ downloadId: INFO_HASH, progress: 0.3, status: "downloading", remotePath: undefined });
+    expect(updates).toContainEqual({
+      downloadId: "tag:aonarr-pending-0a1b2c",
+      resolvedDownloadId: INFO_HASH,
+      progress: 0.3,
+      status: "downloading",
+      remotePath: undefined,
+    });
+    expect(updates).toContainEqual({ downloadId: legacyMagnet, resolvedDownloadId: INFO_HASH, progress: 0.3, status: "downloading", remotePath: undefined });
+  });
+
+  it("getStatus resolves a v1-hash or magnet queue id to a hybrid torrent's own id via infohash_v1", async () => {
+    const torrentId = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"; // libtorrent-2.x: a hybrid torrent's truncated v2 id
+    const magnet = `magnet:?xt=urn:btih:${INFO_HASH}&dn=Hybrid.Release`;
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        loginRoute,
+        { test: (u) => u.includes("/torrents/info"), response: ok([{ hash: torrentId, infohash_v1: INFO_HASH, progress: 0.4, state: "downloading", tags: "aonarr" }]) },
+      ])
+    );
+
+    const updates = await adapter().getStatus(await insertClient({ type: "qbittorrent" }), [INFO_HASH, magnet, torrentId]);
+
+    const own = { progress: 0.4, status: "downloading", remotePath: undefined };
+    expect(updates).toHaveLength(3);
+    expect(updates).toContainEqual({ downloadId: torrentId, ...own });
+    expect(updates).toContainEqual({ downloadId: INFO_HASH, resolvedDownloadId: torrentId, ...own });
+    expect(updates).toContainEqual({ downloadId: magnet, resolvedDownloadId: torrentId, ...own });
   });
 
   it("getStatus prefers content_path over save_path, and maps progress/state to a status", async () => {
@@ -371,9 +488,9 @@ describe("QBittorrentAdapter", () => {
       {
         test: (u) => u.includes("/torrents/info"),
         response: ok([
-          { hash: "still-downloading", state: "downloading", ratio: 5 }, // not seeding yet, must never be removed despite a huge ratio
-          { hash: "seeding-goal-met", state: "uploading", ratio: 3 },
-          { hash: "seeding-goal-not-met", state: "stalledUP", ratio: 0.1, seeding_time: 60 },
+          { hash: "still-downloading", state: "downloading", ratio: 5, tags: "aonarr" }, // not seeding yet, must never be removed despite a huge ratio
+          { hash: "seeding-goal-met", state: "uploading", ratio: 3, tags: "aonarr" },
+          { hash: "seeding-goal-not-met", state: "stalledUP", ratio: 0.1, seeding_time: 60, tags: "aonarr" },
         ]),
       },
       { test: (u) => u.includes("/torrents/delete"), response: ok({}) },
@@ -385,6 +502,29 @@ describe("QBittorrentAdapter", () => {
     expect(removed).toBe(1);
     const deleteCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("/torrents/delete"));
     expect(deleteCall![1].body.get("hashes")).toBe("seeding-goal-met");
+  });
+
+  it("removeSeededTorrents only touches AoNarr's own torrents (its tag or its category), never other apps'", async () => {
+    const fetchMock = routedFetch([
+      loginRoute,
+      {
+        test: (u) => u.includes("/torrents/info"),
+        response: ok([
+          { hash: "ours-by-tag", state: "uploading", ratio: 3, tags: "aonarr, aonarr-pending-x", category: "" },
+          { hash: "ours-by-category", state: "uploading", ratio: 3, tags: "", category: "aonarr-movies" },
+          { hash: "sonarrs", state: "uploading", ratio: 3, tags: "", category: "tv-sonarr" },
+          { hash: "manual-untagged", state: "uploading", ratio: 3 },
+        ]),
+      },
+      { test: (u) => u.includes("/torrents/delete"), response: ok({}) },
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const removed = await adapter().removeSeededTorrents!(await insertClient({ type: "qbittorrent", category: "aonarr-movies" }), 2, null);
+
+    expect(removed).toBe(2);
+    const deleteCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("/torrents/delete"));
+    expect(deleteCall![1].body.get("hashes")).toBe("ours-by-tag|ours-by-category");
   });
 
   it("removeDownload posts the hash and deleteFiles flag", async () => {
@@ -460,6 +600,27 @@ describe("SabnzbdAdapter", () => {
     expect(updates).toEqual([{ downloadId: "id1", progress: 1, status: "failed", remotePath: undefined }]);
   });
 
+  it("keeps reporting 'downloading' for a history entry that's still post-processing", async () => {
+    const stages = ["QuickCheck", "Verifying", "Repairing", "Fetching", "Extracting", "Moving", "Running", "Queued"];
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u.includes("mode=queue"), response: ok({ queue: { slots: [] } }) },
+        {
+          test: (u) => u.includes("mode=history"),
+          response: ok({ history: { slots: stages.map((status, i) => ({ nzo_id: `pp${i}`, status, storage: "/sab/incomplete/x" })) } }),
+        },
+      ])
+    );
+
+    const updates = await adapter().getStatus(
+      await insertClient({ type: "sabnzbd" }),
+      stages.map((_, i) => `pp${i}`)
+    );
+
+    expect(updates).toEqual(stages.map((_, i) => ({ downloadId: `pp${i}`, progress: 0.99, status: "downloading" })));
+  });
+
   it("removeDownload tries both the queue and history locations", async () => {
     const fetchMock = routedFetch([
       { test: (u) => u.includes("mode=queue") && u.includes("name=delete"), response: ok({}) },
@@ -517,6 +678,63 @@ describe("HttpDownloadAdapter", () => {
     });
 
     expect(await adapter().getStatus({} as any, ["never-existed"])).toEqual([]);
+  });
+
+  it("takes the file extension from Content-Disposition or Content-Type when the URL has no usable one", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        {
+          test: (u) => u === "https://ddl.example/download/12345",
+          response: () => fileResponse("bytes", { "content-disposition": 'attachment; filename="Some.Movie.2020.1080p.WEB-DL.mkv"' }),
+        },
+        { test: (u) => u === "https://ddl.example/get.php?id=9", response: () => fileResponse("bytes", { "content-type": "video/mp4; charset=binary" }) },
+        // A real media extension in the URL outranks a generic content type (a .cbz served as application/zip).
+        { test: (u) => u === "https://ddl.example/files/Issue.001.cbz", response: () => fileResponse("bytes", { "content-type": "application/zip" }) },
+      ])
+    );
+    const client = await insertClient({ type: "http" });
+    const cases = [
+      { url: "https://ddl.example/download/12345", title: "DDL Disposition Release", expected: "DDL Disposition Release.mkv" },
+      { url: "https://ddl.example/get.php?id=9", title: "DDL ContentType Release", expected: "DDL ContentType Release.mp4" },
+      { url: "https://ddl.example/files/Issue.001.cbz", title: "DDL UrlPath Release", expected: "DDL UrlPath Release.cbz" },
+    ];
+
+    for (const c of cases) {
+      const { downloadId } = await adapter().addDownload(client, c.url, null, c.title);
+      await vi.waitFor(async () => {
+        const [status] = await adapter().getStatus({} as any, [downloadId]);
+        expect(status.status).toBe("completed");
+      });
+    }
+
+    const files = fs.readdirSync(config.downloadsDir);
+    for (const c of cases) {
+      expect(files).toContain(c.expected);
+      fs.rmSync(path.join(config.downloadsDir, c.expected), { force: true });
+    }
+  });
+
+  it("keeps the requested URL's extension when the link redirects to an extensionless CDN URL", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        {
+          test: (u) => u === "https://ddl.example/dl/Movie.2020.mkv",
+          // fetch() follows the redirect itself, so only the final URL shows up on the response.
+          response: () => ({ ...fileResponse("bytes", { "content-type": "application/octet-stream" }), url: "https://cdn.example/f/8a3f9c?sig=abc" }),
+        },
+      ])
+    );
+
+    const { downloadId } = await adapter().addDownload(await insertClient({ type: "http" }), "https://ddl.example/dl/Movie.2020.mkv", null, "DDL Redirect Release");
+    await vi.waitFor(async () => {
+      const [status] = await adapter().getStatus({} as any, [downloadId]);
+      expect(status.status).toBe("completed");
+    });
+
+    expect(fs.readdirSync(config.downloadsDir)).toContain("DDL Redirect Release.mkv");
+    fs.rmSync(path.join(config.downloadsDir, "DDL Redirect Release.mkv"), { force: true });
   });
 });
 
@@ -611,6 +829,45 @@ describe("RealDebridAdapter", () => {
     });
 
     expect(fs.existsSync(path.join(config.downloadsDir, "Movie.mkv"))).toBe(true); // hardcoded write target, see the http adapter test's comment above
+  });
+
+  it("saves a multi-file job into a folder named for the release and reports that folder as its path", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u.includes("/torrents/addMagnet"), response: ok({ id: "rd-multi" }) },
+        { test: (u) => u.includes("/torrents/selectFiles"), response: ok({}) },
+        { test: (u) => u.includes("/torrents/info/rd-multi"), response: ok({ status: "downloaded", links: ["https://rd/t1", "https://rd/t2"] }) },
+        {
+          test: (u) => u.includes("/unrestrict/link"),
+          response: (_u: string, init: any) => {
+            const n = String(init.body).endsWith(encodeURIComponent("https://rd/t1")) ? 1 : 2;
+            return ok({ download: `https://rd/direct-t${n}`, filename: `0${n} - Track.flac` });
+          },
+        },
+        { test: (u) => u.startsWith("https://rd/direct-t"), response: () => fileResponse("track bytes") },
+      ])
+    );
+    const client = await insertClient({ type: "realdebrid", api_key: "key" });
+    const releaseTitle = "Some Artist - Some Album (2020) [FLAC]";
+    const albumDir = path.join(config.downloadsDir, releaseTitle);
+    fs.rmSync(albumDir, { recursive: true, force: true });
+
+    const { downloadId } = await adapter().addDownload(client, "magnet:?xt=urn:btih:multi", null, releaseTitle);
+    let status: any;
+    await vi.waitFor(async () => {
+      [status] = await adapter().getStatus(client, [downloadId]);
+      expect(status.status).toBe("completed");
+    });
+
+    expect(status.remotePath).toBe(albumDir);
+    expect(fs.readdirSync(albumDir).sort()).toEqual(["01 - Track.flac", "02 - Track.flac"]);
+    expect(fs.existsSync(path.join(config.downloadsDir, "01 - Track.flac"))).toBe(false);
+    // The importer finds the job's files inside that folder whether or not it's given the path.
+    const { findDownloadedFile } = await import("../src/services/importer.js");
+    expect(path.dirname(findDownloadedFile(releaseTitle, "artist", undefined, status.remotePath)!)).toBe(albumDir);
+    expect(path.dirname(findDownloadedFile(releaseTitle, "artist")!)).toBe(albumDir);
+    fs.rmSync(albumDir, { recursive: true, force: true });
   });
 
   it("resolves a non-magnet download URL (proxy redirecting to a magnet) before uploading", async () => {
@@ -1096,6 +1353,35 @@ describe("SlskdAdapter", () => {
 
     expect(updates).toContainEqual({ downloadId: "someuser song.mp3", progress: 1, status: "completed" });
     expect(updates).toContainEqual({ downloadId: "someuser other.mp3", progress: 0.25, status: "downloading" });
+  });
+
+  it("getStatus maps every terminal state other than Succeeded to failed", async () => {
+    const terminal = ["Completed, Rejected", "Completed, TimedOut", "Completed, Errored", "Completed, Cancelled", "Completed, Aborted"];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        ok([
+          {
+            username: "peer",
+            directories: [
+              {
+                files: [
+                  ...terminal.map((state, i) => ({ filename: `t${i}.flac`, state, size: 100, bytesTransferred: 0 })),
+                  { filename: "waiting.flac", state: "Queued, Remotely", size: 100, bytesTransferred: 0 },
+                ],
+              },
+            ],
+          },
+        ])
+      )
+    );
+
+    const updates = await adapter().getStatus({} as any, [...terminal.map((_, i) => `peer t${i}.flac`), "peer waiting.flac"]);
+
+    for (let i = 0; i < terminal.length; i++) {
+      expect(updates).toContainEqual({ downloadId: `peer t${i}.flac`, progress: 0, status: "failed" });
+    }
+    expect(updates).toContainEqual({ downloadId: "peer waiting.flac", progress: 0, status: "downloading" });
   });
 
   it("getStatus ignores transfers that weren't asked about", async () => {

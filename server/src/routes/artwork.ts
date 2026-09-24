@@ -35,18 +35,20 @@ artworkRouter.post(
     // is being replaced is no longer local art — clears its local_*_path/token (see
     // services/localArtwork.ts) rather than leaving them pointing at a file the UI no longer
     // references at all.
-    const result = await db
-      .prepare(
-        `UPDATE media_items SET
-           poster_url = COALESCE(?, poster_url),
-           local_poster_path = CASE WHEN ? IS NOT NULL THEN NULL ELSE local_poster_path END,
-           local_poster_token = CASE WHEN ? IS NOT NULL THEN NULL ELSE local_poster_token END,
-           backdrop_url = COALESCE(?, backdrop_url),
-           local_backdrop_path = CASE WHEN ? IS NOT NULL THEN NULL ELSE local_backdrop_path END,
-           local_backdrop_token = CASE WHEN ? IS NOT NULL THEN NULL ELSE local_backdrop_token END
-         WHERE id = ?`
-      )
-      .run(posterUrl ?? null, posterUrl ?? null, posterUrl ?? null, backdropUrl ?? null, backdropUrl ?? null, backdropUrl ?? null, req.params.id);
+    // The SET list is built here rather than with `CASE WHEN ? IS NOT NULL ...` — Postgres can't
+    // infer a type for a parameter used only in an IS NULL test and rejected that statement
+    // outright ("could not determine data type of parameter $2"), so no pick ever saved there.
+    const sets: string[] = [];
+    const values: unknown[] = [];
+    if (posterUrl) {
+      sets.push("poster_url = ?", "local_poster_path = NULL", "local_poster_token = NULL");
+      values.push(posterUrl);
+    }
+    if (backdropUrl) {
+      sets.push("backdrop_url = ?", "local_backdrop_path = NULL", "local_backdrop_token = NULL");
+      values.push(backdropUrl);
+    }
+    const result = await db.prepare(`UPDATE media_items SET ${sets.join(", ")} WHERE id = ?`).run(...values, req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Media item not found");
 
     const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);

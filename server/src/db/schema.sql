@@ -752,8 +752,11 @@ CREATE TRIGGER IF NOT EXISTS trg_fts_episodes_ai AFTER INSERT ON episodes BEGIN
   INSERT INTO library_search_fts(media_item_id, match_type, source_id, match_detail, title)
   VALUES (new.media_item_id, 'episode', new.id, new.title, new.title);
 END;
-CREATE TRIGGER IF NOT EXISTS trg_fts_episodes_au AFTER UPDATE OF title ON episodes BEGIN
-  UPDATE library_search_fts SET title = new.title, match_detail = new.title WHERE match_type = 'episode' AND source_id = old.id;
+-- The episode/sub_item update triggers also fire on media_item_id so a re-parented row (duplicate
+-- merge, series split) stays searchable under its new item. db/client.ts replaces older title-only
+-- versions of these two triggers on existing databases.
+CREATE TRIGGER IF NOT EXISTS trg_fts_episodes_au AFTER UPDATE OF title, media_item_id ON episodes BEGIN
+  UPDATE library_search_fts SET title = new.title, match_detail = new.title, media_item_id = new.media_item_id WHERE match_type = 'episode' AND source_id = old.id;
 END;
 CREATE TRIGGER IF NOT EXISTS trg_fts_episodes_ad AFTER DELETE ON episodes BEGIN
   DELETE FROM library_search_fts WHERE match_type = 'episode' AND source_id = old.id;
@@ -763,8 +766,8 @@ CREATE TRIGGER IF NOT EXISTS trg_fts_sub_items_ai AFTER INSERT ON sub_items BEGI
   INSERT INTO library_search_fts(media_item_id, match_type, source_id, match_detail, title)
   VALUES (new.media_item_id, 'child', new.id, new.title, new.title);
 END;
-CREATE TRIGGER IF NOT EXISTS trg_fts_sub_items_au AFTER UPDATE OF title ON sub_items BEGIN
-  UPDATE library_search_fts SET title = new.title, match_detail = new.title WHERE match_type = 'child' AND source_id = old.id;
+CREATE TRIGGER IF NOT EXISTS trg_fts_sub_items_au AFTER UPDATE OF title, media_item_id ON sub_items BEGIN
+  UPDATE library_search_fts SET title = new.title, match_detail = new.title, media_item_id = new.media_item_id WHERE match_type = 'child' AND source_id = old.id;
 END;
 CREATE TRIGGER IF NOT EXISTS trg_fts_sub_items_ad AFTER DELETE ON sub_items BEGIN
   DELETE FROM library_search_fts WHERE match_type = 'child' AND source_id = old.id;

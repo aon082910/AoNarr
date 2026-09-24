@@ -1,16 +1,24 @@
-import { describe, it, expect, beforeAll, beforeEach, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { setupTestDb } from "./helpers/testDb.js";
 import type { MediaServerLibraryItem, MediaServerShowInfo, MediaServerEpisodeItem } from "../src/services/mediaServer.js";
 
-// Only importMoviesFromMediaServer/importSeriesFromMediaServer (thin wrappers) call these -- the
-// core importMovieItems/importSeriesData functions take already-fetched items directly and never
-// touch mediaServer.js, so mocking it here is inert for every other test in this file.
+// Only importMoviesFromMediaServer/importSeriesFromMediaServer (thin wrappers) call these two
+// fetchers -- the core importMovieItems/importSeriesData functions take already-fetched items
+// directly, so mocking them here is inert for every other test in this file (the rest of
+// mediaServer.js, e.g. the artwork-ref helpers, stays real).
 const fetchMediaServerMovies = vi.fn();
 const fetchMediaServerSeries = vi.fn();
-vi.mock("../src/services/mediaServer.js", () => ({
-  fetchMediaServerMovies: (...args: unknown[]) => fetchMediaServerMovies(...args),
-  fetchMediaServerSeries: (...args: unknown[]) => fetchMediaServerSeries(...args),
-}));
+vi.mock("../src/services/mediaServer.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/services/mediaServer.js")>();
+  return {
+    ...actual,
+    fetchMediaServerMovies: (...args: unknown[]) => fetchMediaServerMovies(...args),
+    fetchMediaServerSeries: (...args: unknown[]) => fetchMediaServerSeries(...args),
+  };
+});
 
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let defaultQualityProfileId: (typeof import("../src/services/mediaServerImport.js"))["defaultQualityProfileId"];
@@ -18,12 +26,20 @@ let importMovieItems: (typeof import("../src/services/mediaServerImport.js"))["i
 let importSeriesData: (typeof import("../src/services/mediaServerImport.js"))["importSeriesData"];
 let importMoviesFromMediaServer: (typeof import("../src/services/mediaServerImport.js"))["importMoviesFromMediaServer"];
 let importSeriesFromMediaServer: (typeof import("../src/services/mediaServerImport.js"))["importSeriesFromMediaServer"];
+let migrateCredentialedMediaServerPosters: (typeof import("../src/services/mediaServerImport.js"))["migrateCredentialedMediaServerPosters"];
+let setSetting: (typeof import("../src/services/settingsStore.js"))["setSetting"];
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
-  ({ defaultQualityProfileId, importMovieItems, importSeriesData, importMoviesFromMediaServer, importSeriesFromMediaServer } = await import(
-    "../src/services/mediaServerImport.js"
-  ));
+  ({
+    defaultQualityProfileId,
+    importMovieItems,
+    importSeriesData,
+    importMoviesFromMediaServer,
+    importSeriesFromMediaServer,
+    migrateCredentialedMediaServerPosters,
+  } = await import("../src/services/mediaServerImport.js"));
+  ({ setSetting } = await import("../src/services/settingsStore.js"));
 });
 
 beforeEach(async () => {
@@ -381,6 +397,231 @@ describe("importSeriesData", () => {
     const result = await importSeriesData(shows, [episodeItem()], "series", null, controller.signal);
 
     expect(result).toEqual({ showsMatched: 0, showsCreated: 0, episodesMatched: 0, episodesCreated: 0, episodesSkipped: 0 });
+  });
+});
+
+describe("importSeriesData with synthesized episode numbers (Whisparr)", () => {
+  const synthesized = { synthesizedEpisodeNumbers: true };
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-msi-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function scene(title: string, filePath: string | null, episodeNumber = 1): MediaServerEpisodeItem {
+    return episodeItem({ showId: "studio:s", title, path: filePath, episodeNumber, overview: null });
+  }
+
+  async function studioEpisodes(): Promise<{ episode_number: number; title: string; has_file: number; file_path: string | null }[]> {
+    return (await db
+      .prepare("SELECT e.episode_number, e.title, e.has_file, e.file_path FROM episodes e JOIN media_items m ON m.id = e.media_item_id WHERE m.title = 'Studio' ORDER BY e.episode_number")
+      .all()) as any[];
+  }
+
+  it("re-import after a Whisparr upgrade/rename repoints the scene's own row instead of appending a duplicate", async () => {
+    const shows = new Map([["studio:s", showInfo({ title: "Studio", externalIds: {} })]]);
+    const oldPath = path.join(tmpDir, "Studio", "Scene A WEBDL-1080p.mp4"); // never created: Whisparr deleted it
+    const newPath = path.join(tmpDir, "Studio", "Scene A WEBDL-2160p.mp4");
+
+    await importSeriesData(shows, [scene("Scene A", oldPath)], "adult", null, undefined, synthesized);
+    const result = await importSeriesData(shows, [scene("Scene A", newPath)], "adult", null, undefined, synthesized);
+
+    expect(result).toMatchObject({ episodesMatched: 1, episodesCreated: 0 });
+    expect(await studioEpisodes()).toEqual([{ episode_number: 1, title: "Scene A", has_file: 1, file_path: newPath }]);
+  });
+
+  it("repoints a same-titled row already marked missing (has_file = 0) even if a stale path is still recorded", async () => {
+    const shows = new Map([["studio:s", showInfo({ title: "Studio", externalIds: {} })]]);
+    const stalePath = path.join(tmpDir, "stale.mp4");
+    fs.writeFileSync(stalePath, "x");
+    await importSeriesData(shows, [scene("Scene A", stalePath)], "adult", null, undefined, synthesized);
+    await db.prepare("UPDATE episodes SET has_file = 0").run();
+
+    const newPath = path.join(tmpDir, "fresh.mp4");
+    await importSeriesData(shows, [scene("Scene A", newPath)], "adult", null, undefined, synthesized);
+
+    expect(await studioEpisodes()).toEqual([{ episode_number: 1, title: "Scene A", has_file: 1, file_path: newPath }]);
+  });
+
+  it("appends a new episode when every same-titled row still holds a different file that exists", async () => {
+    const shows = new Map([["studio:s", showInfo({ title: "Studio", externalIds: {} })]]);
+    const firstPath = path.join(tmpDir, "first", "Scene A.mp4");
+    fs.mkdirSync(path.dirname(firstPath), { recursive: true });
+    fs.writeFileSync(firstPath, "x");
+    const secondPath = path.join(tmpDir, "second", "Scene A.mp4");
+
+    await importSeriesData(shows, [scene("Scene A", firstPath)], "adult", null, undefined, synthesized);
+    const result = await importSeriesData(shows, [scene("Scene A", secondPath)], "adult", null, undefined, synthesized);
+
+    expect(result).toMatchObject({ episodesMatched: 0, episodesCreated: 1 });
+    expect((await studioEpisodes()).map((e) => [e.episode_number, e.file_path])).toEqual([
+      [1, firstPath],
+      [2, secondPath],
+    ]);
+  });
+
+  it("two same-titled scenes in one run each keep their own row, even when neither file is visible on this machine", async () => {
+    const shows = new Map([["studio:s", showInfo({ title: "Studio", externalIds: {} })]]);
+    const a = path.join(tmpDir, "a", "Scene A.mp4");
+    const b = path.join(tmpDir, "b", "Scene A.mp4");
+
+    const result = await importSeriesData(shows, [scene("Scene A", a, 1), scene("Scene A", b, 2)], "adult", null, undefined, synthesized);
+
+    expect(result).toMatchObject({ episodesMatched: 0, episodesCreated: 2 });
+    expect((await studioEpisodes()).map((e) => e.file_path)).toEqual([a, b]);
+  });
+});
+
+describe("media-server artwork never stores the server's credential in poster_url", () => {
+  const PROXIED = /^\/api\/media\/local-artwork\/([0-9a-f]{40})$/;
+
+  it("a new movie with a media-server poster gets the token-gated proxy URL, the server-relative path kept aside", async () => {
+    await importMovieItems([movieItem({ posterUrl: "mediaserver:/library/metadata/77/thumb/1700000000" })], null);
+
+    const row = (await db.prepare("SELECT poster_url, local_poster_path, local_poster_token FROM media_items WHERE title = 'A Movie'").get()) as any;
+    expect(row.poster_url).toMatch(PROXIED);
+    expect(row.poster_url).not.toMatch(/token=|api_key|plex/i);
+    expect(row.local_poster_path).toBe("mediaserver:/library/metadata/77/thumb/1700000000");
+    expect(row.local_poster_token).toBe(PROXIED.exec(row.poster_url)![1]);
+  });
+
+  it("a matched movie with no poster gets the proxied one, while one that already has a poster keeps it", async () => {
+    const noPosterId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, external_ids, monitored, status) VALUES ('movie','No Poster','no poster', ?, 1, 'unknown')`)
+          .run(JSON.stringify({ tmdb: "301" }))
+      ).lastInsertRowid
+    );
+    const hasPosterId = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, external_ids, poster_url, monitored, status) VALUES ('movie','Has Poster','has poster', ?, 'https://image.tmdb.org/t/p/w500/kept.jpg', 1, 'unknown')`
+          )
+          .run(JSON.stringify({ tmdb: "302" }))
+      ).lastInsertRowid
+    );
+
+    await importMovieItems(
+      [
+        movieItem({ path: "/movies/NoPoster.mkv", externalIds: { tmdb: "301" }, posterUrl: "mediaserver:/library/metadata/301/thumb/1" }),
+        movieItem({ path: "/movies/HasPoster.mkv", externalIds: { tmdb: "302" }, posterUrl: "mediaserver:/library/metadata/302/thumb/1" }),
+      ],
+      null
+    );
+
+    const noPoster = (await db.prepare("SELECT poster_url, local_poster_path FROM media_items WHERE id = ?").get(noPosterId)) as any;
+    expect(noPoster.poster_url).toMatch(PROXIED);
+    expect(noPoster.local_poster_path).toBe("mediaserver:/library/metadata/301/thumb/1");
+    const hasPoster = (await db.prepare("SELECT poster_url, local_poster_path FROM media_items WHERE id = ?").get(hasPosterId)) as any;
+    expect(hasPoster.poster_url).toBe("https://image.tmdb.org/t/p/w500/kept.jpg");
+    expect(hasPoster.local_poster_path).toBeNull();
+  });
+
+  it("a new show with a Jellyfin/Emby poster gets the proxied URL too", async () => {
+    const shows = new Map([["ms-show-1", showInfo({ posterUrl: "mediaserver:/emby/Items/abc123/Images/Primary" })]]);
+
+    await importSeriesData(shows, [episodeItem()], "series", null);
+
+    const row = (await db.prepare("SELECT poster_url, local_poster_path FROM media_items WHERE title = 'A Show'").get()) as any;
+    expect(row.poster_url).toMatch(PROXIED);
+    expect(row.local_poster_path).toBe("mediaserver:/emby/Items/abc123/Images/Primary");
+  });
+
+  it("an ordinary public poster URL is stored as-is", async () => {
+    await importMovieItems([movieItem({ posterUrl: "https://image.tmdb.org/t/p/w500/public.jpg" })], null);
+
+    const row = (await db.prepare("SELECT poster_url, local_poster_path FROM media_items WHERE title = 'A Movie'").get()) as any;
+    expect(row.poster_url).toBe("https://image.tmdb.org/t/p/w500/public.jpg");
+    expect(row.local_poster_path).toBeNull();
+  });
+});
+
+describe("migrateCredentialedMediaServerPosters", () => {
+  async function insertWithPoster(title: string, posterUrl: string): Promise<number> {
+    return Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, poster_url, monitored, status) VALUES ('movie', ?, ?, ?, 1, 'unknown')`)
+          .run(title, title.toLowerCase(), posterUrl)
+      ).lastInsertRowid
+    );
+  }
+
+  function configureMediaServer(type: string, url: string): void {
+    setSetting("mediaServerType", type);
+    setSetting("mediaServerUrl", url);
+    setSetting("mediaServerToken", "owner-token");
+  }
+
+  async function posterRow(id: number): Promise<{ poster_url: string; local_poster_path: string | null; local_poster_token: string | null }> {
+    return (await db.prepare("SELECT poster_url, local_poster_path, local_poster_token FROM media_items WHERE id = ?").get(id)) as any;
+  }
+
+  function unconfigureMediaServer(): void {
+    for (const key of ["mediaServerType", "mediaServerUrl", "mediaServerToken"]) setSetting(key, "");
+  }
+
+  afterEach(unconfigureMediaServer);
+
+  it("does nothing when no media server is configured", async () => {
+    unconfigureMediaServer();
+    const posterUrl = "http://plex:32400/library/metadata/1/thumb/2?X-Plex-Token=abc";
+    const id = await insertWithPoster("Old Plex Import", posterUrl);
+
+    expect(await migrateCredentialedMediaServerPosters()).toBe(0);
+    expect(await posterRow(id)).toEqual({ poster_url: posterUrl, local_poster_path: null, local_poster_token: null });
+  });
+
+  it("Plex: moves the configured server's artwork URLs behind the proxy and leaves every other poster alone", async () => {
+    configureMediaServer("plex", "http://plex:32400/");
+    const plexId = await insertWithPoster("Old Plex Import", "http://plex:32400/library/metadata/1/thumb/2?X-Plex-Token=abc");
+    const otherServerId = await insertWithPoster("Other Server", "http://elsewhere:32400/library/metadata/1/thumb/2?X-Plex-Token=abc");
+    const nonArtworkUrl = "http://plex:32400/library/sections/all/refresh?X-Plex-Token=x"; // e.g. a household user's request poster
+    const nonArtworkId = await insertWithPoster("Not Artwork", nonArtworkUrl);
+    const tmdbId = await insertWithPoster("TMDB Poster", "https://image.tmdb.org/t/p/w500/abc.jpg");
+    const unrelatedId = await insertWithPoster("Unrelated Api Key", "https://example.com/poster.jpg?api_key=public-cdn-key");
+
+    expect(await migrateCredentialedMediaServerPosters()).toBe(1);
+
+    const plex = await posterRow(plexId);
+    expect(plex.poster_url).toMatch(/^\/api\/media\/local-artwork\/[0-9a-f]{40}$/);
+    expect(plex.local_poster_path).toBe("mediaserver:/library/metadata/1/thumb/2"); // no query string, so no token
+    expect(plex.poster_url).toBe(`/api/media/local-artwork/${plex.local_poster_token}`);
+
+    expect((await posterRow(otherServerId)).poster_url).toBe("http://elsewhere:32400/library/metadata/1/thumb/2?X-Plex-Token=abc");
+    expect(await posterRow(nonArtworkId)).toEqual({ poster_url: nonArtworkUrl, local_poster_path: null, local_poster_token: null });
+    expect(await posterRow(tmdbId)).toEqual({ poster_url: "https://image.tmdb.org/t/p/w500/abc.jpg", local_poster_path: null, local_poster_token: null });
+    expect((await posterRow(unrelatedId)).poster_url).toBe("https://example.com/poster.jpg?api_key=public-cdn-key");
+
+    expect(await migrateCredentialedMediaServerPosters()).toBe(0); // idempotent once converted
+  });
+
+  it("Jellyfin behind a Base URL: the ref is relative to the configured URL, so the proxy doesn't double the sub-path", async () => {
+    configureMediaServer("jellyfin", "http://jf:8096/jellyfin");
+    const id = await insertWithPoster("Sub-path Jellyfin", "http://jf:8096/jellyfin/Items/x/Images/Primary?api_key=k");
+    const outsideBaseId = await insertWithPoster("Outside Base", "http://jf:8096/Items/y/Images/Primary?api_key=k");
+
+    expect(await migrateCredentialedMediaServerPosters()).toBe(1);
+
+    expect((await posterRow(id)).local_poster_path).toBe("mediaserver:/Items/x/Images/Primary");
+    expect((await posterRow(outsideBaseId)).local_poster_path).toBeNull();
+  });
+
+  it("Emby: keeps the /emby prefix every Emby artwork URL was built with", async () => {
+    configureMediaServer("emby", "http://emby:8096");
+    const id = await insertWithPoster("Old Emby Import", "http://emby:8096/emby/Items/9/Images/Primary?api_key=k");
+    const nonArtworkId = await insertWithPoster("Emby Non-Artwork", "http://emby:8096/emby/Users?api_key=k");
+
+    expect(await migrateCredentialedMediaServerPosters()).toBe(1);
+
+    expect((await posterRow(id)).local_poster_path).toBe("mediaserver:/emby/Items/9/Images/Primary");
+    expect((await posterRow(nonArtworkId)).poster_url).toBe("http://emby:8096/emby/Users?api_key=k");
   });
 });
 

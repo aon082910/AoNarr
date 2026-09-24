@@ -80,15 +80,28 @@ remoteInstancesRouter.get(
     if (!row) throw new HttpError(404, "Remote instance not found");
 
     const type = req.query.type as string | undefined;
-    const url = `${row.url}/api/media${type ? `?type=${encodeURIComponent(type)}` : ""}`;
     try {
-      const remoteRes = await fetch(url, { headers: { "X-Api-Key": row.api_key }, signal: AbortSignal.timeout(15_000) });
-      if (!remoteRes.ok) throw new Error(`Remote instance returned HTTP ${remoteRes.status}`);
-      const body = (await remoteRes.json()) as { items?: unknown };
-      // The remote's own GET /api/media always returns a paginated { items, total } envelope, but
-      // this proxy's caller (RemoteLibrary.tsx) expects a bare array — unwrap it here rather than
-      // forwarding the envelope verbatim.
-      res.json(body?.items ?? body);
+      // The remote's GET /api/media is paginated ({ items, total }, 60 per page by default) while
+      // this proxy's caller (RemoteLibrary.tsx) expects the whole library as a bare array — walk
+      // every page instead of returning only the newest 60.
+      const items: unknown[] = [];
+      for (;;) {
+        const qs = new URLSearchParams({ limit: "500", offset: String(items.length) });
+        if (type) qs.set("type", type);
+        const remoteRes = await fetch(`${row.url}/api/media?${qs.toString()}`, {
+          headers: { "X-Api-Key": row.api_key },
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!remoteRes.ok) throw new Error(`Remote instance returned HTTP ${remoteRes.status}`);
+        const body = (await remoteRes.json()) as { items?: unknown; total?: unknown };
+        if (!Array.isArray(body?.items)) {
+          res.json(body);
+          return;
+        }
+        items.push(...body.items);
+        if (body.items.length === 0 || items.length >= Number(body.total ?? 0)) break;
+      }
+      res.json(items);
     } catch (err) {
       throw new HttpError(502, `Could not reach remote instance "${row.name}": ${(err as Error).message}`);
     }

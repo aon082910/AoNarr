@@ -1,35 +1,15 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
-import type { LibraryGroup, MediaType, MetadataSearchResult } from "../types.js";
+import type { MediaType, MetadataSearchResult } from "../types.js";
 import type { AddPreviewState } from "./AddPreview.js";
-
-/** Hostname → the "Site" group name to file a scraped course under, so the group picker doesn't
- * make the user re-type "Coursera"/"Udemy"/"edX" for every course from the same platform. */
-const COURSE_SITE_NAMES: Record<string, string> = {
-  "coursera.org": "Coursera",
-  "udemy.com": "Udemy",
-  "edx.org": "edX",
-};
 
 // Matches server/src/services/nfoParser.ts's actual root-tag whitelist (movie/tvshow/
 // episodedetails/artist/album — real Kodi/Jellyfin scraper conventions). Every other type has no
 // established single-file NFO convention to parse, so offering the control for them just silently
 // prefills nothing instead of erroring.
 const NFO_SUPPORTED_TYPES = new Set<MediaType>(["movie", "series", "anime", "sports", "artist"]);
-
-function detectCourseSite(url: string): { name: string; domain: string } | null {
-  try {
-    const hostname = new URL(url).hostname.replace(/^www\./, "");
-    for (const [domain, name] of Object.entries(COURSE_SITE_NAMES)) {
-      if (hostname === domain || hostname.endsWith(`.${domain}`)) return { name, domain };
-    }
-  } catch {
-    // not a valid URL — caller already validated this before getting here
-  }
-  return null;
-}
 
 const PROVIDER_LABELS: Record<string, string> = {
   tmdb: "TMDB",
@@ -85,6 +65,10 @@ export default function AddMedia() {
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<MetadataSearchResult[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Bumped by every search and by a Type change, so a response for a superseded search (e.g. a
+  // movie search still in flight when Type switches to Series) is dropped instead of being shown
+  // — and then added — under the new type.
+  const searchSeq = useRef(0);
 
   const [nfoPath, setNfoPath] = useState("");
   const [nfoLoading, setNfoLoading] = useState(false);
@@ -116,18 +100,26 @@ export default function AddMedia() {
   // press the search button for a query that's already filled in.
   useEffect(() => {
     if (!prefillQuery || !provider || results !== null) return;
+    const seq = ++searchSeq.current;
     setSearching(true);
     setError(null);
     api
       .get<MetadataSearchResult[]>(`/metadata/search?type=${type}&query=${encodeURIComponent(prefillQuery)}&provider=${provider}`)
-      .then(setResults)
-      .catch((e) => setError((e as Error).message))
-      .finally(() => setSearching(false));
+      .then((res) => seq === searchSeq.current && setResults(res))
+      .catch((e) => seq === searchSeq.current && setError((e as Error).message))
+      .finally(() => seq === searchSeq.current && setSearching(false));
   }, [prefillQuery, provider]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  function goToPreview(result: MetadataSearchResult, manual: boolean, initialGroupChain?: (number | null)[]) {
-    const state: AddPreviewState = { type, result, manual, initialGroupChain };
+  function goToPreview(result: MetadataSearchResult, manual: boolean) {
+    const state: AddPreviewState = { type, result, manual };
     navigate("/add/preview", { state });
+  }
+
+  function changeType(next: MediaType) {
+    searchSeq.current++;
+    setType(next);
+    setResults(null);
+    setSearching(false);
   }
 
   function goManual() {
@@ -137,6 +129,7 @@ export default function AddMedia() {
   async function runSearch(e: FormEvent) {
     e.preventDefault();
     if (!query.trim()) return;
+    const seq = ++searchSeq.current;
     setSearching(true);
     setError(null);
     setResults(null);
@@ -146,17 +139,18 @@ export default function AddMedia() {
           searchYear.trim() ? `&year=${encodeURIComponent(searchYear.trim())}` : ""
         }`
       );
-      setResults(res);
+      if (seq === searchSeq.current) setResults(res);
     } catch (e) {
-      setError((e as Error).message);
+      if (seq === searchSeq.current) setError((e as Error).message);
     } finally {
-      setSearching(false);
+      if (seq === searchSeq.current) setSearching(false);
     }
   }
 
   async function runIdMatch(e: FormEvent) {
     e.preventDefault();
     if (!idInput.trim()) return;
+    const seq = ++searchSeq.current;
     setSearching(true);
     setError(null);
     setResults(null);
@@ -164,11 +158,11 @@ export default function AddMedia() {
       const res = await api.get<MetadataSearchResult[]>(
         `/metadata/match?type=${type}&input=${encodeURIComponent(idInput.trim())}&provider=${provider}`
       );
-      setResults(res);
+      if (seq === searchSeq.current) setResults(res);
     } catch (e) {
-      setError((e as Error).message);
+      if (seq === searchSeq.current) setError((e as Error).message);
     } finally {
-      setSearching(false);
+      if (seq === searchSeq.current) setSearching(false);
     }
   }
 
@@ -194,26 +188,7 @@ export default function AddMedia() {
     setError(null);
     try {
       const parsed = await api.post<MetadataSearchResult>("/import/course-url", { url: courseUrl.trim() });
-      let initialGroupChain: (number | null)[] | undefined;
-      const site = detectCourseSite(courseUrl.trim());
-      if (site) {
-        const groups = await api.get<LibraryGroup[]>("/library-groups?mediaType=course");
-        const existing = groups.find((g) => g.name.toLowerCase() === site.name.toLowerCase());
-        // A Site group created before this feature existed has no logo yet — backfill it here
-        // rather than leaving it tile-less forever until someone happens to edit the group by hand.
-        const group =
-          existing && !existing.logoUrl
-            ? await api.patch<LibraryGroup>(`/library-groups/${existing.id}`, { name: existing.name, website: site.domain })
-            : existing ??
-              (await api.post<LibraryGroup>("/library-groups", {
-                mediaType: "course",
-                kind: "site",
-                name: site.name,
-                website: site.domain,
-              }));
-        initialGroupChain = [group.id, ...(activeTypeInfo?.groupLevels.slice(1).map(() => null) ?? [])];
-      }
-      goToPreview(parsed, true, initialGroupChain);
+      goToPreview(parsed, true);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -227,7 +202,7 @@ export default function AddMedia() {
 
       <div className="form-panel">
         <label htmlFor="addmedia-type-1">Type</label>
-        <select id="addmedia-type-1" value={type} onChange={(e) => { setType(e.target.value as MediaType); setResults(null); }}>
+        <select id="addmedia-type-1" value={type} onChange={(e) => changeType(e.target.value as MediaType)}>
           {mediaTypes.map((t) => (
             <option key={t.key} value={t.key}>
               {t.label}

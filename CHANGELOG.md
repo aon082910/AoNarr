@@ -3,6 +3,204 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 347 — Full-codebase bug audit (security, downloads, scans, settings, UI)
+
+A 12-partition multi-agent audit of every server and web file (plus a dedicated pass over the
+last twelve rounds' changes), with every finding independently re-verified against the code before
+anything was touched. Each fix was then adversarially reviewed, and the review's own findings were
+fixed and reviewed again.
+
+### Security
+
+- **Fixed an unauthenticated arbitrary-file read.** The public local-artwork route served whatever
+  path an NFO's `<thumb>` (or a poster/fanart name) resolved to, so `<thumb>../../config/aonarr.db`
+  exposed the database. Artwork now only resolves to a regular image file (.jpg/.jpeg/.png/.webp/.gif)
+  whose real path stays inside the sidecar's own folder — traversal, absolute paths and symlinks
+  pointing outside are refused.
+- **Media-server posters no longer embed your Plex token / Jellyfin-Emby API key.** Poster URLs used
+  to carry the credential in their query string (visible to every household account and in page
+  source). They are now proxied through AoNarr with the credential sent as a header; existing
+  posters are converted on startup (only same-origin artwork paths of the configured server,
+  sub-path installs such as `http://host/jellyfin` included).
+- **Settings template import can no longer overwrite `authRequired`/the API key** — only naming
+  templates are imported from a template's naming section.
+- **Household accounts no longer see indexer download URLs/magnets/API keys** in an item's history.
+- **Login lockout fixes:** failures are bucketed per IP *and* username (a successful login to one
+  account no longer clears failures against another); a successful TOTP step no longer resets its
+  bucket; a valid API key/session is still accepted while an IP is locked out (only failures are
+  blocked).
+- **First-run setup can't be re-run once any user exists** (setup-status only reports "needs setup"
+  for an empty users table; `POST /auth/setup` then requires the API key).
+- **Requests:** a household account can no longer request a media type it isn't allowed, and only a
+  pending request can be rejected.
+- **The large (10 MB) JSON body limit for template import now applies only after authentication**,
+  and both bundled nginx configs allow it.
+- **Notification errors no longer write webhook URLs / Telegram bot tokens into the logs** (only
+  the host is named), and every notification provider call has a 15 s timeout so an unresponsive
+  target can't stall grabs/imports.
+- **HTTP metrics no longer record raw unmatched paths**, so an unauthenticated scanner can't grow
+  the in-memory metrics map one junk URL at a time.
+- **The encryption key is never regenerated over an unreadable key file** (only when it truly
+  doesn't exist); an invalid key file is set aside as `encryption.key.bad-<ts>` instead of being
+  overwritten.
+- **Postgres restore keeps credentials readable:** the backup's key is installed only when it's the
+  one that decrypts the restored data, and `pg_restore` runs with `--no-owner --no-privileges` so a
+  restore from another install no longer fails on role/ownership lines.
+
+### Downloads & grabbing
+
+- **qBittorrent: downloads are now tracked by their real info-hash** (parsed from a magnet, or found
+  through a unique per-add tag for a .torrent URL), so status, priority and remove work from the
+  first poll; older queue rows keyed by a magnet URL are migrated automatically. A download that
+  can't be resolved within 30 minutes is matched to the torrent by name (qBittorrent silently drops
+  a duplicate add of something it's still seeding), and otherwise failed and retried instead of
+  sitting "queued" forever. Hybrid v1/v2 torrents are matched on their v1 hash too.
+- **qBittorrent seed-goal cleanup only removes AoNarr's own torrents** (tagged `aonarr`, or in its
+  configured category) — never Sonarr/Radarr's or your manual ones on a shared client.
+- **SABnzbd:** a job still post-processing (verifying/repairing/extracting/moving) is no longer
+  imported early.
+- **slskd:** Rejected/TimedOut/Aborted/other non-Succeeded terminal states now count as failed
+  instead of "downloading" forever.
+- **Direct HTTP downloads get the right file extension** (from Content-Disposition, the final or
+  original URL, or the content type) instead of `.bin`, so the importer finds them.
+- **Real-Debrid/AllDebrid/TorBox multi-file jobs are saved into their own folder** instead of loose in
+  the downloads root.
+- **Season packs:** a queued season pack now counts as covering that season's episodes (no more
+  grabbing each episode on top of it), and a pack grabbed for one episode now imports the whole
+  season; a single-episode grab from a season search (or another season's pack) no longer blocks
+  the whole season, and a failed pack is only replaced by another full pack of that season.
+- **Daily shows** are searched by air date in bulk search, auto-upgrade and failed-grab retries.
+- **Online Videos/Podcasts:** an automatically-failed yt-dlp/RSS grab is no longer retried every
+  30 minutes (a 24-hour cooldown per title); a video/episode you blocklisted yourself stays
+  blocked.
+- **Auto-search intervals of 60+ minutes now actually run at that interval** (cron steps above 59
+  used to collapse to hourly/irregular runs).
+
+### Importing
+
+- **A shared downloads folder is no longer treated as one release:** an album or season pack loose
+  in the downloads root or a client category folder only takes files that belong to it (other
+  shows' episodes and other albums' tracks stay put), and the download's data is kept whenever
+  anything was left behind; a partially-imported album raises a "manual interaction" notification.
+- **Season packs laid out as per-episode folders, or extracted from per-episode RARs, import every
+  episode** (recursive, samples skipped); extras/NCOP/NCED/specials no longer block cleanup.
+- **Upgrades recycle the replaced file** instead of leaving it orphaned in the library.
+- **Scene-numbered episodes no longer mark the wrong TVDB episode downloaded.**
+- **An episode is never imported from another show's download** that merely has the same episode
+  number or air date; an obfuscated file inside a properly named release folder is still found.
+- **Hardlink upgrades land atomically** over the existing library file.
+
+### Library scan, refresh & metadata
+
+- **Same-titled items (remakes/reboots) are told apart by year** on scan, and a per-item scan no
+  longer claims a different year's file; loose title matching is whole-word ("Go" no longer matches
+  "Django for Beginners").
+- **Root folders that share a prefix** (`/data/music` vs `/data/music-lossless`) and roots saved with
+  a trailing slash are handled correctly.
+- **Refresh no longer lets a stale NFO undo a "Different Match"** — a matched item is refreshed by
+  its own ids; the title-search fallback is year-checked ("Halloween" 1978 stays 1978).
+- **Course/Adult shows keep their folder/NFO title on Refresh** (a ThePornDB scene hit no longer
+  renames the show and spawns duplicates), and a course's `tvshow.nfo` is read from its top-level
+  folder for lessons in any module subfolder.
+- **Multi-episode files** keep all their episodes on scan and no longer get one NFO title copied
+  onto every episode on Refresh.
+- **Specials:** NFO season 0 is honoured, a `Specials` folder counts as season 0, and specials
+  merged from a second provider are added unmonitored.
+- **Matching additional providers** verifies title and year before merging ids, and only merges
+  Season 0 specials (AniList-numbered anime is never given another provider's episode list).
+- **A show created by Scan & Import is only enriched from a search hit whose title and year agree
+  with it** (punctuation-tolerant: "Greys.Anatomy" still matches "Grey's Anatomy"), instead of
+  taking whatever ranked first — a daily show's air-date year is no longer used as its premiere
+  year, and a Specials file's own title is never mistaken for the show's.
+- **Books/Comics:** a Calibre `metadata.opf` or `ComicInfo.xml` no longer renames the author/series to
+  one book's/issue's title on Refresh.
+- **TVDB long-running shows get every season** (the episode list is paged); **Deezer multi-disc
+  albums** number tracks continuously (and page past 25 tracks).
+- **ISBN detection** survives a printer's key or other numbers after the ISBN.
+- **NFO content ratings** such as "Rated R" or "US:PG-13" are normalized so household rating limits
+  apply to them.
+- **Archived items are unmonitored**, and **the deleted-file check skips an unavailable (unmounted
+  or empty) root folder** instead of flagging its whole library missing.
+
+### Library data & routes
+
+- **Duplicate merge** respects legacy (not yet converted) Adult/Course items, recycles files only
+  after the database commit, tells you when an item couldn't be merged, and moved episodes/tracks
+  stay findable in search.
+- **Library pages sort deterministically** on both SQLite and Postgres (no rows repeated/skipped
+  across pages).
+- **Bulk delete** no longer holds the database transaction open while moving files.
+- **Rematch** resets content rating/genres and refreshes the item.
+- **Exports:** non-Latin titles no longer 500, and same-titled items no longer overwrite each
+  other inside the zip.
+- **Household accounts can view an album's/audiobook's tracks**; Discover no longer reveals titles
+  above an account's rating limit.
+- **Orphaned-file scan** understands music/audiobook track files.
+- **Root-folder "move to"** reverts an item whose files couldn't be moved, and refuses Music/
+  Audiobooks.
+- **Deleting a tag or indexer** removes it from release profiles' restrictions.
+- **Library groups created before Round 344** can be opened again.
+- **Users:** renaming a user works (409 on a duplicate name) and a rejected edit no longer applies
+  half of it.
+- **Quality tiers:** deleting one moves every affected profile's cutoff to the nearest allowed tier
+  below it; renaming a tier is refused (profiles reference them by name); 480p/576p releases map to
+  real tiers and CAM/Telesync/Telecine/Workprint parse as Unknown.
+- **The default "Any" quality profile is no longer recreated** after you delete or rename it.
+- **Settings template import** inserts new quality tiers after their nearest template neighbour
+  instead of colliding on rank.
+- **Upgrade candidates** skip unmonitored items and items whose quality tier no longer exists.
+- **TRaSH/Starr custom formats import with the right logic** (specs of one kind are OR'd, kinds are
+  AND'd, required specs are honoured; live-API field arrays are understood).
+- **Integrations:** media-server watch sync no longer re-records old watches every run; Plex
+  "mark watched" finds unwatched items; Jellyfin/Emby stop events only count when played to
+  completion (add `"PlayedToCompletion": "{{PlayedToCompletion}}"` to a Jellyfin webhook template);
+  Plex watchlist sync resolves TMDB/IMDb ids and pages; DDL indexer health checks send the API key;
+  IRC announces check the year; Whisparr re-imports no longer renumber/duplicate scenes; Starr
+  quality-profile group cutoffs map correctly.
+- **Dashboard:** an unreachable media server no longer breaks the dashboard; music/audiobook library
+  sizes are counted; recently-watched ordering is correct; the health check no longer re-probes
+  every indexer/client every minute.
+- **Calendar feed** skips year-only release dates and no longer drops tonight's items after UTC
+  midnight. **OPDS** links keep the port/scheme behind the bundled proxy. **Remote libraries** and
+  the MCP `list_media` tool page past 60 items; MCP `add_media` populates episodes/albums.
+- **Remote (S3) backups** only rotate this instance's own backups; SMTP bodies are sent with proper
+  line endings; audiobook chapter marks no longer drift; the media-analysis run can't start twice.
+
+### Web UI
+
+- **Returning from an item to its library restores your scroll position** (the Round 346 fix saved
+  the position too late, after the page had already scrolled to the top).
+- **Timestamps** (history, blocklist, recycle bin, import review, audit log, sessions, invites,
+  dashboard) are shown in your local time instead of being read as local when they're UTC.
+- **Stale-response guards** on Media, Episode, Sub-item and Track pages, Add Media search, Media
+  Analyzer, Calendar, History, IPTV playlists and Remote Library — a slow earlier request can no
+  longer overwrite what's on screen.
+- **Bulk search** (Library, Missing, Cutoff Unmet, Media Analyzer) is sent in batches of 100 instead
+  of failing silently above the server's limit; failures now show an error everywhere.
+- **Manual Import for movies** no longer requires a target, and imports one file at a time.
+- **Settings:** score inputs follow the selected profile; the media-server type, default metadata
+  provider and quiet-hours/search-window/permission defaults are saved as shown; regex terms with
+  commas/colons survive in release profiles and custom formats; regenerating the API key no
+  longer logs out a password session; profile cutoffs stay within the allowed qualities; Starr
+  imports go to the instance the preview came from.
+- **Wrong login password / TOTP code shows an error** instead of reloading the page.
+- **Household accounts** see read-only monitored icons, and admin-only collection/Discover actions
+  are hidden from them; pages show the server's error instead of "Loading..." forever.
+- Also: pagination steps back when the last row of a page is removed (Activity, Import Review,
+  Blocklist), the Duplicates page keys groups correctly, a modal no longer closes when a text
+  selection drag ends outside it, the sidebar recovers if the first media-types request fails, the
+  Account page shows an admin's real username, and System's backup list/log level filter refresh
+  when changed.
+
+### Deferred (needs a decision or a larger change)
+
+- Trusting `X-Real-IP` from any private-network peer (affects rate limiting when AoNarr is exposed
+  without the bundled proxy) — needs a deployment decision (a "trusted proxies" setting).
+- Loose audio files directly in an artist folder (no album subfolder) during a music scan.
+- Mapping XEM scene numbering onto TMDB-numbered shows.
+- A process-wide lock around async SQLite transactions (the known file-I/O-inside-transaction
+  cases were moved out of their transactions this round instead).
+
 ## Round 346 — Bug fixes + Custom Format/Release Profile parity with the *Arr apps
 
 - **Fixed: deleting a media item from its own page sent you to the Dashboard.** Now navigates back

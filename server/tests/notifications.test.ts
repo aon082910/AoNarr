@@ -606,3 +606,83 @@ describe("sendTestNotification", () => {
     await expect(sendTestNotification("carrier-pigeon")).rejects.toThrow('Unknown notification provider "carrier-pigeon"');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Provider HTTP calls: bounded by a timeout, and credential-bearing URLs kept out of errors/logs
+// ---------------------------------------------------------------------------
+
+describe("provider HTTP calls: timeout", () => {
+  it("every fetch-based provider passes an abort signal, so a silent target can't stall fanOut for undici's 300s default", async () => {
+    configureDiscord();
+    configureSlack();
+    configureGeneric();
+    configureTelegram();
+    configurePushover();
+    configureMatrix();
+    configureTwilio();
+    const fetchMock = vi.fn(async (_url: string, _init?: any) => ok());
+    vi.stubGlobal("fetch", fetchMock);
+
+    await notifyGrabbed("X", "Y");
+
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+    for (const [, init] of fetchMock.mock.calls) expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("a target that never answers is aborted by its signal: fanOut still resolves and a Test send rejects", async () => {
+    configureGeneric();
+    // Stands in for the real timer so the test doesn't wait: the signal each call gets is already
+    // expired, and the hung fetch below only ever settles by honoring it.
+    const timeoutSpy = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation(() => AbortSignal.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")));
+    const hungFetch = vi.fn(
+      (_url: string, init?: any) =>
+        new Promise((_resolve, reject) => {
+          const signal: AbortSignal = init.signal;
+          if (signal.aborted) reject(signal.reason);
+          else signal.addEventListener("abort", () => reject(signal.reason));
+        })
+    );
+    vi.stubGlobal("fetch", hungFetch);
+    try {
+      await expect(notifyGrabbed("X", "Y")).resolves.toBeUndefined();
+      await expect(sendTestNotification("generic")).rejects.toThrow(/timeout/i);
+      expect(timeoutSpy).toHaveBeenCalled();
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+});
+
+describe("provider HTTP calls: credential redaction", () => {
+  it("a failing webhook's error names only the host, never the secret-bearing URL", async () => {
+    setSetting("discordWebhookUrl", "https://discord.example/api/webhooks/123/super-secret-token");
+    vi.stubGlobal("fetch", vi.fn(async () => notOk(429)));
+
+    const err = await sendTestNotification("discord").catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain("discord.example");
+    expect((err as Error).message).toContain("HTTP 429");
+    expect((err as Error).message).not.toContain("super-secret-token");
+  });
+
+  it("a failing Telegram send doesn't leak the bot token into the error or fanOut's warn log", async () => {
+    configureTelegram();
+    vi.stubGlobal("fetch", vi.fn(async () => notOk(429)));
+    const { log } = await import("../src/services/logger.js");
+    const warnSpy = vi.spyOn(log, "warn");
+    try {
+      const err = await sendTestNotification("telegram").catch((e: Error) => e);
+      expect((err as Error).message).toMatch(/api\.telegram\.org.*HTTP 429/);
+      expect((err as Error).message).not.toContain("bot-tok");
+
+      await notifyGrabbed("X", "Y");
+      const logged = warnSpy.mock.calls.map((args) => args.map(String).join(" ")).join("\n");
+      expect(logged).toContain("HTTP 429");
+      expect(logged).not.toContain("bot-tok");
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});

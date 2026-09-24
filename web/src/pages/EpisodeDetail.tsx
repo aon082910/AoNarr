@@ -72,14 +72,29 @@ export default function EpisodeDetail() {
   // — without a request-ordering guard, a slower response for a previous episode could land after a
   // newer one and overwrite it. The search-results and manual-import-browse panels aren't blocking
   // overlays here either, so they also need to reset on id change, or a stale result/file list
-  // stays visible (and grabbable/importable) against whatever episode is now showing.
+  // stays visible (and grabbable/importable) against whatever episode is now showing. load() reads
+  // the ids from a ref so a reload issued after a slow import/grab fetches the episode on screen
+  // now, not the one its click-time closure captured.
   const loadRequestRef = useRef(0);
+  const idsRef = useRef({ mediaId, episodeId });
+  idsRef.current = { mediaId, episodeId };
+  const [loadError, setLoadError] = useState<string | null>(null);
   function load() {
     const requestId = ++loadRequestRef.current;
     setEpisode(null);
-    api.get<EpisodeDetailResponse>(`/media/${mediaId}/episodes/${episodeId}`).then((data) => {
-      if (loadRequestRef.current === requestId) setEpisode(data);
-    });
+    setLoadError(null);
+    api.get<EpisodeDetailResponse>(`/media/${idsRef.current.mediaId}/episodes/${idsRef.current.episodeId}`).then(
+      (data) => {
+        if (loadRequestRef.current === requestId) setEpisode(data);
+      },
+      (e) => {
+        if (loadRequestRef.current === requestId) setLoadError((e as Error).message);
+      }
+    );
+  }
+  /** Applies a post-await update only while that same episode is still the one on screen. */
+  function patchEpisode(id: number, update: (prev: EpisodeDetailResponse) => EpisodeDetailResponse) {
+    setEpisode((prev) => (prev && prev.id === id ? update(prev) : prev));
   }
   useEffect(load, [mediaId, episodeId]);
   useEffect(() => {
@@ -97,10 +112,14 @@ export default function EpisodeDetail() {
 
   async function toggleMonitored() {
     if (!episode) return;
-    const updated = await api.patch<EpisodeDetailResponse>(`/media/${mediaId}/episodes/${episodeId}`, {
-      monitored: episode.monitored ? 0 : 1,
-    });
-    setEpisode({ ...episode, monitored: updated.monitored });
+    try {
+      const updated = await api.patch<EpisodeDetailResponse>(`/media/${mediaId}/episodes/${episodeId}`, {
+        monitored: episode.monitored ? 0 : 1,
+      });
+      patchEpisode(episode.id, (prev) => ({ ...prev, monitored: updated.monitored }));
+    } catch (e) {
+      notify.error((e as Error).message);
+    }
   }
 
   async function markAsMissing() {
@@ -117,7 +136,7 @@ export default function EpisodeDetail() {
       filePath: null,
       quality: null,
     });
-    setEpisode({ ...episode, hasFile: updated.hasFile, filePath: updated.filePath, quality: updated.quality });
+    patchEpisode(episode.id, (prev) => ({ ...prev, hasFile: updated.hasFile, filePath: updated.filePath, quality: updated.quality }));
   }
 
   async function browse(nextPath: string, anyFolderOverride?: boolean) {
@@ -214,7 +233,7 @@ export default function EpisodeDetail() {
     }
   }
 
-  if (!episode) return <p className="empty">Loading...</p>;
+  if (!episode) return <p className="empty">{loadError ?? "Loading..."}</p>;
 
   const label = `S${String(episode.seasonNumber).padStart(2, "0")}E${String(episode.episodeNumber).padStart(2, "0")}`;
 
@@ -262,7 +281,7 @@ export default function EpisodeDetail() {
 
       <div className="detail-pills">
         <span className="pill">
-          <MonitorToggle monitored={!!episode.monitored} onToggle={toggleMonitored} />
+          <MonitorToggle monitored={!!episode.monitored} onToggle={toggleMonitored} readOnly={!isAdmin} />
           {episode.monitored ? "Monitored" : "Unmonitored"}
         </span>
         <span className="pill">

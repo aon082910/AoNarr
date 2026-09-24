@@ -74,6 +74,35 @@ usersRouter.patch(
     const actor = auditActor(req);
 
     const b = req.body ?? {};
+    // Every field is validated before the first write — a 400 thrown partway through the writes
+    // would otherwise keep the earlier ones (a rename, a password reset) without auditing them.
+    let username: string | undefined;
+    if (b.username !== undefined) {
+      username = typeof b.username === "string" ? b.username.trim() : "";
+      if (!username) throw new HttpError(400, "username can't be empty");
+    }
+    if (b.maxContentRating !== undefined && b.maxContentRating !== null && !CONTENT_RATING_ORDER.includes(b.maxContentRating)) {
+      throw new HttpError(400, `Unknown content rating "${b.maxContentRating}"`);
+    }
+    if (Array.isArray(b.allowedTypes)) {
+      for (const t of b.allowedTypes) {
+        if (!isValidMediaType(t)) throw new HttpError(400, `Unknown media type "${t}"`);
+      }
+    }
+    if (b.maxPendingRequests !== undefined && b.maxPendingRequests !== null) {
+      const n = Number(b.maxPendingRequests);
+      if (!Number.isInteger(n) || n < 0) throw new HttpError(400, "maxPendingRequests must be a whole number of 0 or more, or null");
+    }
+
+    const permissionChanges: string[] = [];
+    if (username !== undefined && username !== (existing as any).username) {
+      try {
+        await db.prepare("UPDATE users SET username = ? WHERE id = ?").run(username, req.params.id);
+      } catch {
+        throw new HttpError(409, "Username already exists");
+      }
+      permissionChanges.push(`username → ${username}`);
+    }
     if (b.password) {
       await db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hashPassword(b.password), req.params.id);
       // A password reset should invalidate any session issued under the old password — otherwise
@@ -81,7 +110,6 @@ usersRouter.patch(
       await db.prepare("DELETE FROM sessions WHERE user_id = ?").run(req.params.id);
       logAuditEvent(actor.userId, actor.username, "user_password_reset", (existing as any).username);
     }
-    const permissionChanges: string[] = [];
     if (b.maxPendingRequests !== undefined) {
       await db
         .prepare("UPDATE users SET max_pending_requests = ? WHERE id = ?")
@@ -93,16 +121,10 @@ usersRouter.patch(
       permissionChanges.push(`auto-approve → ${b.autoApprove ? "on" : "off"}`);
     }
     if (b.maxContentRating !== undefined) {
-      if (b.maxContentRating !== null && !CONTENT_RATING_ORDER.includes(b.maxContentRating)) {
-        throw new HttpError(400, `Unknown content rating "${b.maxContentRating}"`);
-      }
       await db.prepare("UPDATE users SET max_content_rating = ? WHERE id = ?").run(b.maxContentRating, req.params.id);
       permissionChanges.push(`max content rating → ${b.maxContentRating ?? "none"}`);
     }
     if (Array.isArray(b.allowedTypes)) {
-      for (const t of b.allowedTypes) {
-        if (!isValidMediaType(t)) throw new HttpError(400, `Unknown media type "${t}"`);
-      }
       // Transactional so a DB error mid-loop can't leave a user with access deleted but only
       // partially re-granted — an admin's intended replacement set either fully applies or the
       // user keeps whatever access they had before this request.

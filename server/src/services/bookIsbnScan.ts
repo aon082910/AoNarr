@@ -27,7 +27,7 @@ function isValidIsbn10(digits: string): boolean {
 }
 
 function isValidIsbn13(digits: string): boolean {
-  if (digits.length !== 13 || !/^\d{13}$/.test(digits)) return false;
+  if (!/^97[89]\d{10}$/.test(digits)) return false;
   let sum = 0;
   for (let i = 0; i < 13; i++) sum += Number(digits[i]) * (i % 2 === 0 ? 1 : 3);
   return sum % 10 === 0;
@@ -66,11 +66,25 @@ export function findIsbnInText(text: string): string | null {
   if (bare) candidates.push(...bare);
 
   for (const raw of candidates) {
-    const cleaned = raw.replace(/[^\dXx]/g, "").toUpperCase();
-    if (cleaned.length === 13 && isValidIsbn13(cleaned)) return cleaned;
-    if (cleaned.length === 10 && isValidIsbn10(cleaned)) return isbn10To13(cleaned);
+    const found = isbnFromCandidate(raw);
+    if (found) return found;
   }
   return null;
+}
+
+/** Both patterns are greedy across spaces, so an ISBN followed by other numbers ("9780306406157
+ * 10 9 8 7" — a printer's key) is captured as one over-long run that is never exactly 10/13 digits.
+ * Tries every whitespace-aligned leading slice of the run, preferring an ISBN-13 over an ISBN-10. */
+function isbnFromCandidate(raw: string): string | null {
+  let prefix = "";
+  let isbn10: string | null = null;
+  for (const group of raw.trim().split(/\s+/)) {
+    prefix += group.replace(/[^\dXx]/g, "").toUpperCase();
+    if (prefix.length === 13 && isValidIsbn13(prefix)) return prefix;
+    if (prefix.length === 10 && isValidIsbn10(prefix)) isbn10 = prefix;
+    if (prefix.length >= 13) break;
+  }
+  return isbn10 ? isbn10To13(isbn10) : null;
 }
 
 /** EPUB is a zip archive; its OPF manifest (found via META-INF/container.xml) carries the book's

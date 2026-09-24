@@ -147,16 +147,49 @@ settingsRouter.post(
       namingImported = 0;
 
     await db.transaction(async () => {
-      for (const q of b.qualities ?? []) {
-        await db
-          .prepare(
-            `INSERT INTO qualities (name, rank, min_size_mb, max_size_mb, preferred_size_mb)
-             VALUES (@name, @rank, @min_size_mb, @max_size_mb, @preferred_size_mb)
-             ON CONFLICT(name) DO UPDATE SET min_size_mb = excluded.min_size_mb, max_size_mb = excluded.max_size_mb,
-               preferred_size_mb = excluded.preferred_size_mb`
-          )
-          .run({ ...q, preferred_size_mb: q.preferred_size_mb ?? null });
+      // qualities.rank is UNIQUE too, not just name — a quality this instance doesn't have yet
+      // can't reuse the source instance's rank, since after any delete/reorder here that rank is
+      // usually already taken (a UNIQUE violation used to abort the entire import). New ones go in
+      // at the end first, then get slotted in right after their nearest template-order predecessor
+      // that this instance already has; existing qualities keep their own order untouched.
+      const templateQualities = [...(b.qualities ?? [])].sort((x: any, y: any) => Number(x.rank) - Number(y.rank));
+      const existingNames = new Set(((await db.prepare("SELECT name FROM qualities").all()) as { name: string }[]).map((r) => r.name));
+      for (const q of templateQualities) {
+        if (existingNames.has(q.name)) {
+          await db
+            .prepare("UPDATE qualities SET min_size_mb = ?, max_size_mb = ?, preferred_size_mb = ? WHERE name = ?")
+            .run(q.min_size_mb ?? null, q.max_size_mb ?? null, q.preferred_size_mb ?? null, q.name);
+        } else {
+          await db
+            .prepare(
+              `INSERT INTO qualities (name, rank, min_size_mb, max_size_mb, preferred_size_mb)
+               VALUES (?, (SELECT COALESCE(MAX(rank), -1) + 1 FROM qualities), ?, ?, ?)`
+            )
+            .run(q.name, q.min_size_mb ?? null, q.max_size_mb ?? null, q.preferred_size_mb ?? null);
+        }
         qualitiesImported++;
+      }
+      const newNames = templateQualities.map((q: any) => q.name).filter((name: string) => !existingNames.has(name));
+      if (newNames.length > 0) {
+        const all = (await db.prepare("SELECT id, name FROM qualities ORDER BY rank").all()) as { id: number; name: string }[];
+        const idByName = new Map(all.map((r) => [r.name, r.id]));
+        const order = all.map((r) => r.name).filter((name) => existingNames.has(name));
+        const templateOrder = templateQualities.map((q: any) => q.name as string);
+        for (const name of newNames) {
+          let insertAt = 0;
+          for (let i = templateOrder.indexOf(name) - 1; i >= 0; i--) {
+            const predecessor = order.indexOf(templateOrder[i]);
+            if (predecessor !== -1) {
+              insertAt = predecessor + 1;
+              break;
+            }
+          }
+          order.splice(insertAt, 0, name);
+        }
+        // Staged through negative placeholders, same as POST /qualities/reorder, so no
+        // intermediate write collides with another row's not-yet-updated rank.
+        for (let i = 0; i < order.length; i++) await db.prepare("UPDATE qualities SET rank = ? WHERE id = ?").run(-(i + 1), idByName.get(order[i]));
+        for (let i = 0; i < order.length; i++) await db.prepare("UPDATE qualities SET rank = ? WHERE id = ?").run(i, idByName.get(order[i]));
       }
 
       for (const p of b.qualityProfiles ?? []) {
@@ -200,7 +233,11 @@ settingsRouter.post(
         scoresImported++;
       }
 
+      // Only naming* keys, matching what export emits — templates are advertised as safe to share
+      // between instances, so an unfiltered loop here let a downloaded template flip any setting at
+      // all (authRequired=0, a known apiKey, a proxy URL for all outbound traffic).
       for (const [key, value] of Object.entries(b.namingTemplates ?? {})) {
+        if (!key.startsWith("naming")) continue;
         setSetting(key, String(value));
         namingImported++;
       }

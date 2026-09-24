@@ -2,6 +2,9 @@ import { Router } from "express";
 import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { streamFileWithRangeSupport } from "../services/rangeStream.js";
+import { isLocalArtworkExtension } from "../services/localArtwork.js";
+import { fetchMediaServerArtwork, isMediaServerArtworkRef } from "../services/mediaServer.js";
+import { Readable } from "node:stream";
 
 /**
  * Serves a local poster/backdrop file a sidecar resolved (see services/localArtwork.ts) — looked
@@ -27,7 +30,20 @@ localArtworkRouter.get(
       | undefined;
     if (!row) throw new HttpError(404, "No artwork found for this token");
     const filePath = row.local_poster_token === req.params.token ? row.local_poster_path : row.local_backdrop_path;
-    if (!filePath) throw new HttpError(404, "No artwork found for this token");
+    // A media server's own artwork (see mediaServer.ts's MEDIA_SERVER_ARTWORK_PREFIX) is proxied
+    // with the server's credential sent as a header — never handed to the browser in a URL.
+    if (isMediaServerArtworkRef(filePath)) {
+      const upstream = await fetchMediaServerArtwork(filePath).catch(() => null);
+      if (!upstream?.body) throw new HttpError(404, "No artwork found for this token");
+      res.setHeader("Content-Type", upstream.headers.get("content-type") ?? "image/jpeg");
+      res.setHeader("Cache-Control", "private, max-age=86400");
+      Readable.fromWeb(upstream.body as any).pipe(res);
+      return;
+    }
+    // Re-checked here too, not just at resolve time: this route is unauthenticated, and a row
+    // written before resolveLocalArtwork gained its containment/extension check could still hold
+    // a traversal path like "../../config/aonarr.db".
+    if (!filePath || !isLocalArtworkExtension(filePath)) throw new HttpError(404, "No artwork found for this token");
     streamFileWithRangeSupport(req, res, filePath);
   })
 );

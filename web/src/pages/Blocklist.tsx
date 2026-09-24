@@ -8,6 +8,7 @@ import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
 import Pagination, { DEFAULT_PAGE_SIZE_OPTIONS } from "../components/Pagination.js";
+import { formatServerTimestamp } from "../utils/format.js";
 
 interface BlocklistResponse {
   items: BlocklistEntry[];
@@ -24,10 +25,25 @@ export default function Blocklist() {
 
   function load() {
     const offset = (page - 1) * pageSize;
-    api.get<BlocklistResponse>(`/blocklist?limit=${pageSize}&offset=${offset}`).then(setData);
+    api.get<BlocklistResponse>(`/blocklist?limit=${pageSize}&offset=${offset}`).then((res) => {
+      // Past the end (the last entries on this page were removed) — step back instead of showing
+      // "Nothing blocklisted." with no pagination while entries remain on earlier pages.
+      if (res.items.length === 0 && page > 1) {
+        setPage(Math.min(page - 1, Math.max(1, Math.ceil(res.total / pageSize))));
+        return;
+      }
+      setData(res);
+    });
   }
 
   useEffect(load, [page, pageSize]);
+
+  // Removing entries only filters the local copy, so once every visible row is gone the page must
+  // be refetched to pull in whatever remains on the server.
+  const pageEmptied = !!data && data.items.length === 0 && data.total > 0;
+  useEffect(() => {
+    if (pageEmptied) load();
+  }, [pageEmptied]);
 
   useEffect(() => {
     localStorage.setItem("aonarr_blocklist_page_size", String(pageSize));
@@ -102,7 +118,7 @@ export default function Blocklist() {
                   </td>
                   <td style={{ wordBreak: "break-all" }}>{e.releaseTitle}</td>
                   <td>{e.reason ?? "—"}</td>
-                  <td>{new Date(e.createdAt).toLocaleString()}</td>
+                  <td>{formatServerTimestamp(e.createdAt)}</td>
                   <td>
                     <button type="button" className="icon-button" onClick={() => remove(e.id)} title="Remove" aria-label="Remove">
                       <TrashIcon />

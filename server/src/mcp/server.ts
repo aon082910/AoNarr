@@ -5,6 +5,7 @@ import type { Request, Response } from "express";
 import { config } from "../config.js";
 import { getSetting } from "../services/settingsStore.js";
 import { log } from "../services/logger.js";
+import { isValidMediaType } from "../services/mediaTypes.js";
 
 /**
  * Every tool below is a thin proxy onto AoNarr's own REST API (loopback, authenticated with the
@@ -82,15 +83,18 @@ export function createAoNarrMcpServer(): McpServer {
     "list_media",
     {
       title: "List media items",
-      description: "Lists media items in one library type, optionally filtered by status (e.g. 'missing').",
+      description:
+        "Lists media items in one library type, optionally filtered by status (e.g. 'missing'). Returns { items, total } — when total exceeds the items returned, call again with a higher offset to page through the rest.",
       inputSchema: {
         type: z.string().describe("Library type key, e.g. movie, series, author, audiobook, comic, manga, podcast, artist, rom"),
         status: z.string().optional().describe("Optional status filter, e.g. 'missing'"),
+        limit: z.number().int().min(1).max(500).optional().default(500).describe("Page size (max 500)"),
+        offset: z.number().int().min(0).optional().default(0).describe("Number of items to skip, for paging"),
       },
     },
-    async ({ type, status }) => {
+    async ({ type, status, limit, offset }) => {
       try {
-        const qs = new URLSearchParams({ type, ...(status ? { status } : {}) });
+        const qs = new URLSearchParams({ type, ...(status ? { status } : {}), limit: String(limit), offset: String(offset) });
         return textResult(await callApi("GET", `/api/media?${qs.toString()}`));
       } catch (err) {
         return errorResult(err);
@@ -147,6 +151,14 @@ export function createAoNarrMcpServer(): McpServer {
         overview: z.string().optional(),
         posterUrl: z.string().optional(),
         externalIds: z.record(z.string(), z.string()).optional().describe("From a search_metadata result — required for the item to auto-populate its children"),
+        releaseDate: z.string().optional().describe("From a search_metadata result, when present"),
+        backdropUrl: z.string().optional().describe("From a search_metadata result, when present"),
+        rating: z.number().optional().describe("From a search_metadata result, when present"),
+        runtimeMinutes: z.number().optional().describe("From a search_metadata result, when present"),
+        studio: z.string().optional().describe("From a search_metadata result, when present"),
+        contentRating: z.string().optional().describe("From a search_metadata result, when present"),
+        genres: z.array(z.string()).optional().describe("From a search_metadata result, when present"),
+        performers: z.array(z.string()).optional().describe("From a search_metadata result, when present"),
         rootFolderId: z.number().optional().describe("Omit to auto-select the first root folder configured for this type"),
         qualityProfileId: z.number().optional(),
         monitored: z.boolean().optional().default(true),
@@ -154,10 +166,16 @@ export function createAoNarrMcpServer(): McpServer {
     },
     async (args) => {
       try {
+        if (!isValidMediaType(args.type)) throw new Error(`Unknown media type "${args.type}" — see list_media_types`);
         // better-sqlite3 can't bind a raw JS boolean — coerce to 1/0 the same way set_monitored
-        // already does for this exact field before it reaches POST /api/media.
+        // already does for this exact field.
         const { monitored, ...rest } = args;
-        return textResult(await callApi("POST", "/api/media", { ...rest, monitored: monitored ? 1 : 0 }));
+        // Only /api/metadata/import fetches episodes/albums/books from the externalIds (the web
+        // UI's add-from-search path); POST /api/media is the bare manual-add route and creates an
+        // item with no children. Same split AddPreview.tsx makes.
+        const hasExternalIds = !!rest.externalIds && Object.keys(rest.externalIds).length > 0;
+        const route = hasExternalIds ? "/api/metadata/import" : "/api/media";
+        return textResult(await callApi("POST", route, { ...rest, monitored: monitored ? 1 : 0 }));
       } catch (err) {
         return errorResult(err);
       }

@@ -5,6 +5,7 @@ import { stopAllJobs, cancelJob, listJobs } from "./services/jobRegistry.js";
 import { restartIrcFeeds } from "./services/ircFeedManager.js";
 import { createApp } from "./app.js";
 import { db } from "./db/index.js";
+import { migrateCredentialedMediaServerPosters } from "./services/mediaServerImport.js";
 
 // Without these, an unhandled rejection or a synchronous throw outside Express's own request
 // cycle (a background job, a stray unawaited promise, an event-emitter callback) crashes the
@@ -25,6 +26,8 @@ process.on("unhandledRejection", (reason) => {
 });
 
 const app = await createApp();
+
+await migrateCredentialedMediaServerPosters().catch((err) => log.warn("[startup] media-server poster migration failed:", err.message));
 
 const server = app.listen(config.port, () => {
   log.info(`AoNarr server listening on port ${config.port}`);

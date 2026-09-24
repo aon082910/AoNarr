@@ -29,6 +29,7 @@ export default function Modal({
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const pressStartedOnBackdrop = useRef(false);
   const titleId = useRef(`modal-title-${Math.random().toString(36).slice(2)}`).current;
   const instance = useRef(Symbol("modal")).current;
 
@@ -105,7 +106,17 @@ export default function Modal({
 
   return (
     <div
-      onClick={onClose}
+      // A drag that starts inside the panel (e.g. selecting text in an input) and is released over
+      // the backdrop fires its click on the backdrop itself — only a press that also began on the
+      // backdrop counts as "click outside to close", or that drag would discard the form.
+      onMouseDown={(e) => {
+        pressStartedOnBackdrop.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        const startedOnBackdrop = pressStartedOnBackdrop.current;
+        pressStartedOnBackdrop.current = false;
+        if (startedOnBackdrop && e.target === e.currentTarget) onClose();
+      }}
       style={{
         position: "fixed",
         inset: 0,

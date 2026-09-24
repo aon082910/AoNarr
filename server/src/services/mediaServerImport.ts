@@ -1,7 +1,33 @@
+import crypto from "node:crypto";
+import fs from "node:fs";
 import { db } from "../db/index.js";
 import { pathTail } from "./archival.js";
-import { fetchMediaServerMovies, fetchMediaServerSeries, type MediaServerLibraryItem, type MediaServerSeriesLibrary } from "./mediaServer.js";
+import {
+  fetchMediaServerMovies,
+  fetchMediaServerSeries,
+  getMediaServerConfig,
+  isMediaServerArtworkPath,
+  isMediaServerArtworkRef,
+  MEDIA_SERVER_ARTWORK_PREFIX,
+  type MediaServerLibraryItem,
+  type MediaServerSeriesLibrary,
+} from "./mediaServer.js";
 import { log } from "./logger.js";
+
+/** A poster value safe to put straight into poster_url: a media server's own artwork reference is
+ * never one (it needs that server's credential, see mediaServer.ts's MEDIA_SERVER_ARTWORK_PREFIX) —
+ * storeMediaServerPoster routes it through the token-gated local-artwork proxy instead. */
+function publicPoster(url: string | null): string | null {
+  return isMediaServerArtworkRef(url) ? null : url;
+}
+
+async function storeMediaServerPoster(mediaItemId: number, ref: string | null): Promise<void> {
+  if (!isMediaServerArtworkRef(ref)) return;
+  const token = crypto.randomBytes(20).toString("hex");
+  await db
+    .prepare("UPDATE media_items SET poster_url = ?, local_poster_path = ?, local_poster_token = ? WHERE id = ? AND poster_url IS NULL")
+    .run(`/api/media/local-artwork/${token}`, ref, token, mediaItemId);
+}
 
 function normalizeForMatch(s: string): string {
   return s
@@ -131,7 +157,8 @@ export async function importMovieItems(
              overview = COALESCE(overview, ?), external_ids = COALESCE(NULLIF(external_ids, '{}'), ?)
              WHERE id = ?`
           )
-          .run(item.path, item.posterUrl, item.overview, JSON.stringify(item.externalIds), match.id);
+          .run(item.path, publicPoster(item.posterUrl), item.overview, JSON.stringify(item.externalIds), match.id);
+        await storeMediaServerPoster(match.id, item.posterUrl);
         match.has_file = 1;
         result.matched++;
       } else {
@@ -141,7 +168,8 @@ export async function importMovieItems(
              external_ids = COALESCE(NULLIF(external_ids, '{}'), ?)
              WHERE id = ?`
           )
-          .run(item.posterUrl, item.overview, JSON.stringify(item.externalIds), match.id);
+          .run(publicPoster(item.posterUrl), item.overview, JSON.stringify(item.externalIds), match.id);
+        await storeMediaServerPoster(match.id, item.posterUrl);
         result.matched++;
       }
     } else {
@@ -156,13 +184,14 @@ export async function importMovieItems(
           item.title.toLowerCase(),
           item.year,
           item.overview,
-          item.posterUrl,
+          publicPoster(item.posterUrl),
           JSON.stringify(item.externalIds),
           item.path,
           rootFolderId,
           qualityProfileId,
           item.path ? 1 : 0
         );
+      await storeMediaServerPoster(Number(insertResult.lastInsertRowid), item.posterUrl);
       // Pushed into the same array this import matches against — without this, two media-server
       // items for the same new movie in one batch each create their own row instead of the second
       // one matching the first's.
@@ -217,7 +246,8 @@ export async function importSeriesData(
   episodes: MediaServerSeriesLibrary["episodes"],
   type: "series" | "anime" | "sports" | "adult",
   rootFolderId: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options: { synthesizedEpisodeNumbers?: boolean } = {}
 ): Promise<MediaServerSeriesImportResult> {
   const result: MediaServerSeriesImportResult = { showsMatched: 0, showsCreated: 0, episodesMatched: 0, episodesCreated: 0, episodesSkipped: 0 };
 
@@ -236,6 +266,7 @@ export async function importSeriesData(
   // Resolves (creating if needed) the AoNarr media_item id for one media-server show — memoized
   // per show id since every one of its episodes needs the same lookup.
   const resolvedShowIds = new Map<string, number>();
+  const episodesFiledThisRun = new Set<number>();
 
   async function resolveShow(showId: string): Promise<number | null> {
     if (resolvedShowIds.has(showId)) return resolvedShowIds.get(showId)!;
@@ -258,7 +289,8 @@ export async function importSeriesData(
           `UPDATE media_items SET poster_url = COALESCE(poster_url, ?), overview = COALESCE(overview, ?),
            external_ids = COALESCE(NULLIF(external_ids, '{}'), ?) WHERE id = ?`
         )
-        .run(info.posterUrl, info.overview, JSON.stringify(info.externalIds), match.id);
+        .run(publicPoster(info.posterUrl), info.overview, JSON.stringify(info.externalIds), match.id);
+      await storeMediaServerPoster(match.id, info.posterUrl);
       result.showsMatched++;
       resolvedShowIds.set(showId, match.id);
       return match.id;
@@ -269,8 +301,9 @@ export async function importSeriesData(
         `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, has_file, status)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 'unknown')`
       )
-      .run(type, info.title, info.title.toLowerCase(), info.year, info.overview, info.posterUrl, JSON.stringify(info.externalIds), rootFolderId, qualityProfileId);
+      .run(type, info.title, info.title.toLowerCase(), info.year, info.overview, publicPoster(info.posterUrl), JSON.stringify(info.externalIds), rootFolderId, qualityProfileId);
     const newId = Number(insertResult.lastInsertRowid);
+    await storeMediaServerPoster(newId, info.posterUrl);
     result.showsCreated++;
     resolvedShowIds.set(showId, newId);
     existingShows.push({ id: newId, title: info.title, year: info.year, external_ids: JSON.stringify(info.externalIds) });
@@ -289,9 +322,27 @@ export async function importSeriesData(
       continue;
     }
 
-    const existingEp = (await db
-      .prepare("SELECT id FROM episodes WHERE media_item_id = ? AND season_number = ? AND episode_number = ?")
-      .get(mediaItemId, ep.seasonNumber, ep.episodeNumber)) as { id: number } | undefined;
+    // A synthesized number (Whisparr's per-run counter) says nothing about which row is which —
+    // matching on it would repoint an unrelated episode at another scene's file. Such an episode
+    // matches a same-titled row instead: a fileless one first, else one whose file is gone (Whisparr
+    // upgraded/renamed it) — never a row still holding another existing file, or one given its file
+    // earlier in this same run — and anything new is appended after the show's last episode.
+    let existingEp: { id: number } | undefined;
+    if (options.synthesizedEpisodeNumbers) {
+      const sameTitle = (await db
+        .prepare("SELECT id, has_file, file_path FROM episodes WHERE media_item_id = ? AND season_number = ? AND title = ? ORDER BY id")
+        .all(mediaItemId, ep.seasonNumber, ep.title)) as { id: number; has_file: number | string | null; file_path: string | null }[];
+      existingEp = !ep.path
+        ? sameTitle[0]
+        : (sameTitle.find((r) => r.file_path === null) ??
+          sameTitle.find(
+            (r) => !episodesFiledThisRun.has(r.id) && (Number(r.has_file) === 0 || !fs.existsSync(r.file_path as string))
+          ));
+    } else {
+      existingEp = (await db
+        .prepare("SELECT id FROM episodes WHERE media_item_id = ? AND season_number = ? AND episode_number = ?")
+        .get(mediaItemId, ep.seasonNumber, ep.episodeNumber)) as { id: number } | undefined;
+    }
 
     if (existingEp) {
       // Same reasoning as importMovieItems' match branch — a Starr-sourced monitored-but-missing
@@ -303,6 +354,7 @@ export async function importSeriesData(
             "UPDATE episodes SET has_file = 1, file_path = ?, title = COALESCE(title, ?), overview = COALESCE(overview, ?) WHERE id = ?"
           )
           .run(ep.path, ep.title, ep.overview, existingEp.id);
+        episodesFiledThisRun.add(existingEp.id);
         result.episodesMatched++;
       } else {
         await db
@@ -311,12 +363,20 @@ export async function importSeriesData(
         result.episodesMatched++;
       }
     } else {
-      await db
+      let episodeNumber = ep.episodeNumber;
+      if (options.synthesizedEpisodeNumbers) {
+        const last = (await db
+          .prepare("SELECT MAX(episode_number) AS n FROM episodes WHERE media_item_id = ? AND season_number = ?")
+          .get(mediaItemId, ep.seasonNumber)) as { n: number | string | null } | undefined;
+        episodeNumber = Number(last?.n ?? 0) + 1;
+      }
+      const inserted = await db
         .prepare(
           `INSERT INTO episodes (media_item_id, season_number, episode_number, title, overview, monitored, has_file, file_path)
            VALUES (?, ?, ?, ?, ?, 1, ?, ?)`
         )
-        .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.overview, ep.path ? 1 : 0, ep.path);
+        .run(mediaItemId, ep.seasonNumber, episodeNumber, ep.title, ep.overview, ep.path ? 1 : 0, ep.path);
+      if (ep.path) episodesFiledThisRun.add(Number(inserted.lastInsertRowid));
       result.episodesCreated++;
     }
   }
@@ -333,4 +393,51 @@ export async function importSeriesData(
     `[mediaServerImport] ${type}: shows matched ${result.showsMatched}, created ${result.showsCreated}; episodes matched ${result.episodesMatched}, created ${result.episodesCreated}, skipped ${result.episodesSkipped}`
   );
   return result;
+}
+
+/** One-time cleanup for rows imported before media-server artwork went through the token-gated
+ * proxy: poster_url still holds the raw media-server URL with its credential embedded (Plex's
+ * X-Plex-Token, Jellyfin/Emby's api_key), readable by every household user and public share link.
+ * Each is converted in place to the same proxied form a fresh import now produces. Cheap and
+ * idempotent — a converted row no longer matches the LIKE filters.
+ *
+ * Only an artwork path on the configured server itself is converted, relative to that server's
+ * URL (a Jellyfin Base URL or reverse-proxy sub-path is already part of cfg.url, which
+ * fetchMediaServerArtwork prefixes again). poster_url can also come from a household user's
+ * request, and the proxy fetches with the owner's credential, so anything else is left alone. */
+export async function migrateCredentialedMediaServerPosters(): Promise<number> {
+  const cfg = getMediaServerConfig();
+  if (!cfg) return 0;
+  let server: URL;
+  try {
+    server = new URL(cfg.url);
+  } catch {
+    return 0;
+  }
+  const basePath = server.pathname.replace(/\/+$/, "");
+  const credentialParam = cfg.type === "plex" ? "X-Plex-Token" : "api_key";
+
+  const rows = (await db
+    .prepare("SELECT id, poster_url FROM media_items WHERE poster_url LIKE '%X-Plex-Token=%' OR poster_url LIKE '%api_key=%'")
+    .all()) as { id: number; poster_url: string }[];
+  let converted = 0;
+  for (const row of rows) {
+    let url: URL;
+    try {
+      url = new URL(row.poster_url);
+    } catch {
+      continue;
+    }
+    if (url.origin !== server.origin || !url.searchParams.has(credentialParam)) continue;
+    if (basePath && !url.pathname.startsWith(`${basePath}/`)) continue;
+    const relativePath = url.pathname.slice(basePath.length);
+    if (!isMediaServerArtworkPath(cfg.type, relativePath)) continue;
+    const token = crypto.randomBytes(20).toString("hex");
+    await db
+      .prepare("UPDATE media_items SET poster_url = ?, local_poster_path = ?, local_poster_token = ? WHERE id = ?")
+      .run(`/api/media/local-artwork/${token}`, `${MEDIA_SERVER_ARTWORK_PREFIX}${relativePath}`, token, row.id);
+    converted++;
+  }
+  if (converted > 0) log.info(`[mediaServerImport] moved ${converted} media-server poster URL(s) behind the artwork proxy (their credential is no longer exposed)`);
+  return converted;
 }

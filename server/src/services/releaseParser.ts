@@ -196,8 +196,16 @@ function detectFlags(title: string): ReleaseFlag[] {
 }
 
 function detectQuality(title: string): QualityName | "Unknown" {
-  const suffix = detectResolution(title);
+  // Only the resolutions the quality ladder actually has tiers for — 480p/576p are exposed on
+  // `resolution` for custom-format conditions, but "WEBDL-480p" isn't a quality: a 576i DVD rip
+  // must still grade as plain "DVD" (anything else sub-720p stays "Unknown", as it always has).
+  const resolution = detectResolution(title);
+  const suffix = resolution === "2160p" || resolution === "1080p" || resolution === "720p" ? resolution : null;
   const source = detectSource(title);
+  // A theatrical capture is never a real WEB/Bluray tier, whatever resolution it claims — falling
+  // through to the WEBDL default below graded "Movie.1080p.HDCAM" as WEBDL-1080p, which any
+  // profile allowing that tier would happily auto-grab.
+  if (source === "Cam" || source === "Telesync" || source === "Telecine" || source === "Workprint") return "Unknown";
   if (!suffix) {
     if (source === "DVD") return "DVD";
     return "Unknown";

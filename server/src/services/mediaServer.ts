@@ -24,6 +24,39 @@ function pickJellyfinAdminUserId(users: { Id: string; Policy?: { IsAdministrator
   return users.find((u) => u.Policy?.IsAdministrator)?.Id ?? users[0]?.Id ?? null;
 }
 
+/** A media server's own artwork needs that server's credential (Plex's owner X-Plex-Token,
+ * Jellyfin/Emby's admin api_key) to load — so it's never stored as a URL a browser can use as-is,
+ * which put the credential in poster_url for every household user and public share link to read.
+ * Instead the credential-free path on that server is stored behind this prefix, served through the
+ * token-gated /api/media/local-artwork/:token route, which proxies it server-side with the
+ * credential sent as a header (see fetchMediaServerArtwork). */
+export const MEDIA_SERVER_ARTWORK_PREFIX = "mediaserver:";
+
+export function isMediaServerArtworkRef(value: string | null | undefined): value is string {
+  return !!value && value.startsWith(MEDIA_SERVER_ARTWORK_PREFIX);
+}
+
+/** Proxies one media-server image for the local-artwork route. Null when no media server is
+ * configured anymore, the stored path isn't a server-relative path, or the response isn't an image. */
+/** Only real artwork endpoints are ever fetched with the server's credential — a poster URL can
+ * come from a household user's request, and a GET on some other endpoint (a library refresh) with
+ * the owner's token would still run even though its response is thrown away. */
+export function isMediaServerArtworkPath(type: MediaServerConfig["type"], upstreamPath: string): boolean {
+  return type === "plex"
+    ? /^\/library\/metadata\/\d+\/(?:thumb|art|banner|clearLogo|squareArt|poster)(\/\d+)?$/i.test(upstreamPath)
+    : /^(\/emby)?\/Items\/[\w-]+\/Images\/[a-z]+$/i.test(upstreamPath);
+}
+
+export async function fetchMediaServerArtwork(ref: string): Promise<Response | null> {
+  const cfg = getMediaServerConfig();
+  const upstreamPath = ref.slice(MEDIA_SERVER_ARTWORK_PREFIX.length);
+  if (!cfg || !isMediaServerArtworkPath(cfg.type, upstreamPath)) return null;
+  const headers: Record<string, string> = cfg.type === "plex" ? { "X-Plex-Token": cfg.token } : { "X-Emby-Token": cfg.token };
+  const res = await fetch(`${cfg.url}${upstreamPath}`, { headers, signal: AbortSignal.timeout(15_000) });
+  if (!res.ok || !res.body || !(res.headers.get("content-type") ?? "").startsWith("image/")) return null;
+  return res;
+}
+
 export function getMediaServerConfig(): MediaServerConfig | null {
   const type = getSetting("mediaServerType") as MediaServerConfig["type"] | null;
   const url = getSetting("mediaServerUrl");
@@ -43,8 +76,10 @@ async function fetchPlexFiles(cfg: MediaServerConfig, onlyWatched: boolean): Pro
   for (const section of sections) {
     if (section.type !== "movie" && section.type !== "show") continue;
     const itemType = section.type === "movie" ? 1 : 4; // 1 = movie, 4 = episode
+    // Plex reads `unwatched=0` as "watched only", so it must not be sent for the full-library fetch.
+    const watchedFilter = onlyWatched ? "&unwatched=0" : "";
     const itemsRes = await fetch(
-      `${cfg.url}/library/sections/${section.key}/all?type=${itemType}&unwatched=0&X-Plex-Token=${cfg.token}`,
+      `${cfg.url}/library/sections/${section.key}/all?type=${itemType}${watchedFilter}&X-Plex-Token=${cfg.token}`,
       { headers }
     );
     if (!itemsRes.ok) continue;
@@ -186,7 +221,7 @@ async function fetchPlexMovieDetails(cfg: MediaServerConfig): Promise<MediaServe
         title: item.title,
         year: item.year ?? null,
         overview: item.summary || null,
-        posterUrl: item.thumb ? `${cfg.url}${item.thumb}?X-Plex-Token=${cfg.token}` : null,
+        posterUrl: item.thumb ? `${MEDIA_SERVER_ARTWORK_PREFIX}${item.thumb}` : null,
         externalIds: parsePlexExternalIds(item),
       });
     }
@@ -222,7 +257,7 @@ async function fetchJellyfinMovieDetails(cfg: MediaServerConfig, basePath: strin
       title: item.Name,
       year: item.ProductionYear ?? null,
       overview: item.Overview || null,
-      posterUrl: item.ImageTags?.Primary ? `${cfg.url}${basePath}/Items/${item.Id}/Images/Primary?api_key=${cfg.token}` : null,
+      posterUrl: item.ImageTags?.Primary ? `${MEDIA_SERVER_ARTWORK_PREFIX}${basePath}/Items/${item.Id}/Images/Primary` : null,
       externalIds,
     });
   }
@@ -291,7 +326,7 @@ async function fetchPlexSeriesLibrary(cfg: MediaServerConfig): Promise<MediaServ
           title: show.title,
           year: show.year ?? null,
           overview: show.summary || null,
-          posterUrl: show.thumb ? `${cfg.url}${show.thumb}?X-Plex-Token=${cfg.token}` : null,
+          posterUrl: show.thumb ? `${MEDIA_SERVER_ARTWORK_PREFIX}${show.thumb}` : null,
           externalIds: parsePlexExternalIds(show),
         });
       }
@@ -343,7 +378,7 @@ async function fetchJellyfinSeriesLibrary(cfg: MediaServerConfig, basePath: stri
         title: show.Name,
         year: show.ProductionYear ?? null,
         overview: show.Overview || null,
-        posterUrl: show.ImageTags?.Primary ? `${cfg.url}${basePath}/Items/${show.Id}/Images/Primary?api_key=${cfg.token}` : null,
+        posterUrl: show.ImageTags?.Primary ? `${MEDIA_SERVER_ARTWORK_PREFIX}${basePath}/Items/${show.Id}/Images/Primary` : null,
         externalIds,
       });
     }
@@ -392,10 +427,7 @@ async function fetchPlexItems(cfg: MediaServerConfig): Promise<MediaServerItem[]
   for (const section of sections) {
     if (section.type !== "movie" && section.type !== "show") continue;
     const itemType = section.type === "movie" ? 1 : 4;
-    const itemsRes = await fetch(
-      `${cfg.url}/library/sections/${section.key}/all?type=${itemType}&unwatched=0&X-Plex-Token=${cfg.token}`,
-      { headers }
-    );
+    const itemsRes = await fetch(`${cfg.url}/library/sections/${section.key}/all?type=${itemType}&X-Plex-Token=${cfg.token}`, { headers });
     if (!itemsRes.ok) continue;
     const itemsBody = (await itemsRes.json()) as any;
     const metadata: any[] = itemsBody?.MediaContainer?.Metadata ?? [];

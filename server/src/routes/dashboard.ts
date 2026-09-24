@@ -6,6 +6,7 @@ import { asyncHandler } from "../middleware/errorHandler.js";
 import { fetchWatchedFiles, getMediaServerConfig } from "../services/mediaServer.js";
 import { findWatchedMatch } from "../services/archival.js";
 import { isRatingBlocked } from "../services/contentRatings.js";
+import { log } from "../services/logger.js";
 
 export const dashboardRouter = Router();
 
@@ -106,17 +107,22 @@ dashboardRouter.get(
 );
 
 /** Actual on-disk file sizes, grouped by library type — sums media_items.path plus every
- * episode/sub_item file_path, statting each file directly rather than trusting the stored
+ * episode/sub_item/track file_path, statting each file directly rather than trusting the stored
  * `size_bytes` column (populated at import time, but can drift if a file is replaced/edited on
  * disk outside AoNarr afterward). Cached for 10 minutes since this stats every file in the
  * library on a cache miss. */
 let sizeCache: { at: number; sizes: Record<string, number> } | null = null;
 const SIZE_CACHE_TTL_MS = 10 * 60 * 1000;
 
-function addSize(sizes: Record<string, number>, type: string, filePath: string | null) {
+function addSize(sizes: Record<string, number>, type: string, filePath: string | null, folderSizeBytes: number | null = null) {
   if (!filePath) return;
   try {
-    sizes[type] = (sizes[type] ?? 0) + fs.statSync(filePath).size;
+    const stat = fs.statSync(filePath);
+    // A folder's own stat size is only its directory entry (~4 KB), not its contents — an album's
+    // or audiobook's files are counted through their own `tracks` rows instead, or through the
+    // size recorded at import when no track row holds them.
+    const bytes = stat.isFile() ? stat.size : folderSizeBytes;
+    if (bytes) sizes[type] = (sizes[type] ?? 0) + bytes;
   } catch {
     // file listed in the DB but missing on disk — skip rather than crash the whole computation
   }
@@ -141,12 +147,26 @@ async function computeLibrarySizes(): Promise<Record<string, number>> {
     .all()) as any[]) {
     addSize(sizes, sizeKey(row.type, row.content_rating), row.file_path);
   }
+  // Multi-file sub-items (a Music album, an Audiobook) keep the album folder in file_path and each
+  // real file in `tracks` — sum those, and don't also count the sub-item's own path for them.
+  const subItemsWithTracks = new Set<number>();
   for (const row of (await db
     .prepare(
-      `SELECT m.type, s.file_path, m.content_rating FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE s.has_file = 1`
+      `SELECT t.sub_item_id, t.file_path, m.type, m.content_rating FROM tracks t
+       JOIN sub_items s ON s.id = t.sub_item_id JOIN media_items m ON m.id = s.media_item_id
+       WHERE t.has_file = 1 AND t.file_path IS NOT NULL`
     )
     .all()) as any[]) {
+    subItemsWithTracks.add(Number(row.sub_item_id));
     addSize(sizes, sizeKey(row.type, row.content_rating), row.file_path);
+  }
+  for (const row of (await db
+    .prepare(
+      `SELECT s.id, m.type, s.file_path, s.size_bytes, m.content_rating FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE s.has_file = 1`
+    )
+    .all()) as any[]) {
+    if (subItemsWithTracks.has(Number(row.id))) continue;
+    addSize(sizes, sizeKey(row.type, row.content_rating), row.file_path, row.size_bytes == null ? null : Number(row.size_bytes));
   }
   return sizes;
 }
@@ -169,6 +189,14 @@ dashboardRouter.get(
     res.json(sizes);
   })
 );
+
+/** watch_events.watched_at is 'YYYY-MM-DD HH:MM:SS' UTC text while poll matches are toISOString()
+ * — mixed, the string compare/sort below ranked any same-day poll entry above a newer webhook one
+ * (' ' < 'T'), and the client read the zone-less form as local time. */
+function isoFromSqlTimestamp(value: string): string {
+  const parsed = new Date(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value) ? `${value.replace(" ", "T")}Z` : value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
+}
 
 /**
  * Cross-references the configured media server's "watched" list (same source as auto-archival)
@@ -205,7 +233,10 @@ dashboardRouter.get(
         ? `${ev.parent_title} — ${ev.sub_title}`
         : ev.parent_title;
       const key = `${ev.media_item_id}-${ev.episode_id ?? ""}-${ev.sub_item_id ?? ""}`;
-      keyed.set(key, { mediaItemId: ev.media_item_id, type: ev.parent_type, label, watchedAt: ev.watched_at });
+      // Rows arrive newest first — keep that one rather than letting an older watch of the same
+      // item overwrite it.
+      if (keyed.has(key)) continue;
+      keyed.set(key, { mediaItemId: ev.media_item_id, type: ev.parent_type, label, watchedAt: isoFromSqlTimestamp(ev.watched_at) });
     }
 
     if (!getMediaServerConfig()) {
@@ -213,7 +244,15 @@ dashboardRouter.get(
       res.json(results.slice(0, 12));
       return;
     }
-    const watched = await fetchWatchedFiles();
+    let watched: Awaited<ReturnType<typeof fetchWatchedFiles>>;
+    try {
+      watched = await fetchWatchedFiles();
+    } catch (err) {
+      // An unreachable media server must only cost this widget its poll results — a 500 here fails
+      // the whole dashboard page, which loads every widget in one batch.
+      log.warn("[dashboard] recently-watched: media server request failed, showing webhook-recorded watches only:", (err as Error).message);
+      watched = [];
+    }
     if (watched.length === 0) {
       const results = Array.from(keyed.values()).sort((a, b) => (a.watchedAt < b.watchedAt ? 1 : -1));
       res.json(results.slice(0, 12));

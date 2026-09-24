@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import { FolderIcon } from "../components/ActionIcons.js";
@@ -40,6 +40,7 @@ export default function RemoteLibrary() {
   const [items, setItems] = useState<RemoteMediaItem[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const browseRequestRef = useRef(0);
 
   function load() {
     api.get<RemoteInstance[]>("/remote-instances").then(setInstances);
@@ -89,26 +90,41 @@ export default function RemoteLibrary() {
     // stale after switching the dropdown, until "Browse" was clicked again.
     setItems(null);
     setError(null);
+    setRemoteTypes([]);
+    // Any Browse still in flight belongs to the previous instance — drop its result when it lands.
+    browseRequestRef.current++;
+    setLoading(false);
     if (selectedId === "") return;
+    let cancelled = false;
     api
       .get<RemoteMediaTypeInfo[]>(`/remote-instances/${selectedId}/media-types`)
-      .then(setRemoteTypes)
-      .catch((e) => setError((e as Error).message));
+      .then((types) => {
+        if (!cancelled) setRemoteTypes(types);
+      })
+      .catch((e) => {
+        if (!cancelled) setError((e as Error).message);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedId]);
 
   async function browse() {
     if (selectedId === "") return;
+    const requestId = ++browseRequestRef.current;
     setLoading(true);
     setError(null);
     try {
       const qs = typeFilter !== "all" ? `?type=${typeFilter}` : "";
       const result = await api.get<RemoteMediaItem[]>(`/remote-instances/${selectedId}/media${qs}`);
-      setItems(result);
+      if (browseRequestRef.current === requestId) setItems(result);
     } catch (e) {
-      setError((e as Error).message);
-      setItems(null);
+      if (browseRequestRef.current === requestId) {
+        setError((e as Error).message);
+        setItems(null);
+      }
     } finally {
-      setLoading(false);
+      if (browseRequestRef.current === requestId) setLoading(false);
     }
   }
 

@@ -242,7 +242,8 @@ export async function fetchWhisparrLibrary(
       : null;
     // Whisparr has no season/episode numbering of its own (nothing to number scenes by within a
     // studio) — synthesized as season 1 + sequential, the exact same fallback a locally-scanned
-    // adult folder's sequentialEpisodeFallback already uses for an un-numbered file.
+    // adult folder's sequentialEpisodeFallback already uses for an un-numbered file. Only a
+    // placeholder: importAdultFromWhisparr has importSeriesData match by title and append instead.
     const episodeNumber = (episodeCounters.get(showId) ?? 0) + 1;
     episodeCounters.set(showId, episodeNumber);
 
@@ -266,7 +267,7 @@ export async function importAdultFromWhisparr(
   signal?: AbortSignal
 ): Promise<MediaServerSeriesImportResult> {
   const { shows, episodes } = await fetchWhisparrLibrary(baseUrl, apiKey);
-  return importSeriesData(shows, episodes, "adult", rootFolderId, signal);
+  return importSeriesData(shows, episodes, "adult", rootFolderId, signal, { synthesizedEpisodeNumbers: true });
 }
 
 // ---- Lidarr (artist/album) and Readarr (author/book) — both "collection" shape: a parent
@@ -710,6 +711,10 @@ function collectAllowedQualityNames(items: StarrQualityProfileItem[]): string[] 
   return names;
 }
 
+function collectQualityNames(items: StarrQualityProfileItem[]): string[] {
+  return items.flatMap((item) => (item.quality ? [item.quality.name] : collectQualityNames(item.items ?? [])));
+}
+
 function findQualityProfileItemById(items: StarrQualityProfileItem[], id: number): StarrQualityProfileItem | null {
   for (const item of items) {
     if (item.id === id || item.quality?.id === id) return item;
@@ -735,9 +740,9 @@ async function fetchStarrQualityProfiles(baseUrl: string, apiKey: string, app: S
 }
 
 /** Maps one source profile's allowed qualities/cutoff onto AoNarr's own `qualities` vocabulary —
- * `rankByName` decides what's mappable, and (when the cutoff itself doesn't map, e.g. it's a
- * group's own custom name) also picks the highest-ranked mapped quality as a substitute, so a
- * profile with an unresolvable cutoff still gets a sensible one rather than none at all. */
+ * `rankByName` decides what's mappable. A group cutoff resolves through its own members; only when
+ * the cutoff can't be mapped at all does the highest-ranked mapped quality stand in, so a profile
+ * with an unresolvable cutoff still gets a sensible one rather than none at all. */
 function translateStarrQualityProfile(profile: StarrQualityProfile, rankByName: Map<string, number>): StarrQualityProfilePreview {
   const allowedNames = collectAllowedQualityNames(profile.items);
   const mappedQualities = [...new Set(allowedNames.filter((n) => rankByName.has(n)))];
@@ -745,6 +750,13 @@ function translateStarrQualityProfile(profile: StarrQualityProfile, rankByName: 
 
   const cutoffItem = findQualityProfileItemById(profile.items, profile.cutoff);
   let cutoff = cutoffItem?.quality?.name ?? null;
+  if (!cutoff && cutoffItem?.items) {
+    // Radarr/Sonarr rank a group's members as equal, so ANY member meets a group cutoff — the
+    // single-quality equivalent is the group's lowest-ranked mapped member, not the profile's top.
+    const allowedMembers = collectAllowedQualityNames([cutoffItem]).filter((n) => rankByName.has(n));
+    const members = allowedMembers.length > 0 ? allowedMembers : collectQualityNames(cutoffItem.items).filter((n) => rankByName.has(n));
+    if (members.length > 0) cutoff = members.reduce((lowest, n) => (rankByName.get(n)! < rankByName.get(lowest)! ? n : lowest));
+  }
   if (!cutoff || !rankByName.has(cutoff)) {
     cutoff = mappedQualities.length > 0 ? mappedQualities.reduce((best, n) => (rankByName.get(n)! > rankByName.get(best)! ? n : best)) : null;
   }

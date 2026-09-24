@@ -15,6 +15,7 @@ import {
   readBackupBundle,
   looksLikeBackupBundle,
   restorePostgres,
+  restoredDbNeedsBundleKey,
 } from "../services/scheduledBackup.js";
 import { ENCRYPTION_KEY_PATH, reloadEncryptionKey } from "../services/encryption.js";
 import { config } from "../config.js";
@@ -461,6 +462,12 @@ systemRouter.get(
   asyncHandler(async (req, res) => {
     const full = req.query.full === "1";
     const folders = ((await db.prepare("SELECT * FROM root_folders").all()) as any[]).map(rootFolderFromRow);
+    const subItemRows = (await db
+      .prepare(
+        "SELECT s.file_path, m.path AS parent_path FROM sub_items s LEFT JOIN media_items m ON m.id = s.media_item_id WHERE s.file_path IS NOT NULL"
+      )
+      .all()) as { file_path: string; parent_path: string | null }[];
+    const subItemPaths = subItemRows.map((r) => r.file_path);
     const knownPaths = new Set<string>([
       ...((await db.prepare("SELECT path FROM media_items WHERE path IS NOT NULL").all()) as { path: string }[]).map(
         (r) => r.path
@@ -468,10 +475,27 @@ systemRouter.get(
       ...((await db.prepare("SELECT file_path FROM episodes WHERE file_path IS NOT NULL").all()) as { file_path: string }[]).map(
         (r) => r.file_path
       ),
-      ...((await db.prepare("SELECT file_path FROM sub_items WHERE file_path IS NOT NULL").all()) as { file_path: string }[]).map(
+      ...subItemPaths,
+      ...((await db.prepare("SELECT file_path FROM tracks WHERE file_path IS NOT NULL").all()) as { file_path: string }[]).map(
         (r) => r.file_path
       ),
     ]);
+    // A Music/Audiobook album's sub_items.file_path is its folder, not a file: its tracks are
+    // listed individually above, but a file imported into that folder without a matching track row
+    // (no leading track number, or no track list fetched yet) still belongs to the album. A flat
+    // "Artist/track.mp3" album's folder is the artist folder itself, which would cover every other
+    // album under it too, so that one is left to the track rows. Scan-created artists have no path
+    // of their own, so such a folder is also recognized by sitting directly under a root folder.
+    const rootPaths = new Set(folders.map((f) => path.resolve(f.path)));
+    const knownDirs = new Set(
+      subItemRows
+        .filter(
+          (r) =>
+            !rootPaths.has(path.dirname(path.resolve(r.file_path))) &&
+            (!r.parent_path || path.resolve(r.file_path) !== path.resolve(r.parent_path))
+        )
+        .map((r) => path.resolve(r.file_path))
+    );
 
     const scanStartedAt = new Date().toISOString();
     const orphaned: { path: string; sizeBytes: number }[] = [];
@@ -481,7 +505,8 @@ systemRouter.get(
       const extensions = getMediaTypeConfig(folder.mediaType).extensions;
       const since = !full && folder.lastScannedAt ? new Date(folder.lastScannedAt).getTime() : null;
 
-      const walk = (dir: string) => {
+      const walk = (dir: string, insideKnownDir = false) => {
+        const allKnown = insideKnownDir || knownDirs.has(path.resolve(dir));
         let entries: fs.Dirent[];
         try {
           entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -507,9 +532,10 @@ systemRouter.get(
         for (const entry of entries) {
           const full = path.join(dir, entry.name);
           if (entry.isDirectory()) {
-            walk(full);
+            walk(full, allKnown);
           } else if (
             scanOwnFiles &&
+            !allKnown &&
             extensions.includes(path.extname(entry.name).toLowerCase()) &&
             !knownPaths.has(full)
           ) {
@@ -678,6 +704,15 @@ systemRouter.delete(
   })
 );
 
+function saveKeyBeforeRestore(): void {
+  if (fs.existsSync(ENCRYPTION_KEY_PATH)) fs.copyFileSync(ENCRYPTION_KEY_PATH, `${ENCRYPTION_KEY_PATH}.pre-restore`);
+}
+
+function writeRestoredKey(keyBuffer: Buffer): void {
+  fs.mkdirSync(path.dirname(ENCRYPTION_KEY_PATH), { recursive: true });
+  fs.writeFileSync(ENCRYPTION_KEY_PATH, keyBuffer, { mode: 0o600 });
+}
+
 /**
  * SQLite restore means replacing the live DB file out from under a running process, which is
  * only safe if we stop touching it first — so this checkpoints + closes the connection, swaps
@@ -690,11 +725,13 @@ systemRouter.delete(
  *
  * Accepts both a current bundle (zip: db snapshot + encryption.key, see writeBackupBundle) and a
  * legacy single-file `.db`/`.dump` upload from before bundling existed, for backward compatibility
- * with old downloads sitting on someone's disk. A bundle's key, when present, is written to
- * `encryption.key` BEFORE the DB swap — on the Postgres path this instance keeps running against
- * the restored DB immediately after, so the key must already be in place and its cache dropped
- * (reloadEncryptionKey) for the very first post-restore decrypt to succeed; on the SQLite path the
- * process exits and restarts anyway, so a plain file write is enough.
+ * with old downloads sitting on someone's disk. A bundle's key, when present, replaces
+ * `encryption.key`, and the key being replaced is kept as `encryption.key.pre-restore` — the
+ * credentials in the old DB (the SQLite `.pre-restore` copy) are only decryptable with it. On the
+ * Postgres path the key is swapped only when the data now in the database needs it (see
+ * restoredDbNeedsBundleKey — pg_restore can fail both before and after the data is in) and its
+ * cache dropped (reloadEncryptionKey) so this still-running instance's next decrypt uses it; on
+ * the SQLite path the process exits and restarts anyway, so a plain file write is enough.
  */
 systemRouter.post(
   "/backup/restore",
@@ -722,18 +759,27 @@ systemRouter.post(
       const actor = auditActor(req);
       log.warn(`[system] database restore initiated by ${actor.username} (postgres)`);
       res.json({ restored: true, message: "Restoring — this may take a moment, the app keeps running." });
+      let restoreSucceeded = false;
       try {
-        if (keyBuffer) {
-          fs.mkdirSync(path.dirname(ENCRYPTION_KEY_PATH), { recursive: true });
-          fs.writeFileSync(ENCRYPTION_KEY_PATH, keyBuffer, { mode: 0o600 });
-          reloadEncryptionKey();
-        }
         await restorePostgres(tmpFile);
+        restoreSucceeded = true;
         log.info("[system] postgres restore completed");
       } catch (err) {
         log.error("[system] postgres restore failed:", (err as Error).message);
       } finally {
         fs.unlink(tmpFile, () => {});
+      }
+      if (keyBuffer) {
+        try {
+          if (await restoredDbNeedsBundleKey(keyBuffer, restoreSucceeded)) {
+            saveKeyBeforeRestore();
+            writeRestoredKey(keyBuffer);
+            reloadEncryptionKey();
+            log.info(`[system] installed the backup's encryption key (previous key kept as ${ENCRYPTION_KEY_PATH}.pre-restore)`);
+          }
+        } catch (err) {
+          log.error("[system] couldn't install the backup's encryption key:", (err as Error).message);
+        }
       }
       return;
     }
@@ -750,6 +796,7 @@ systemRouter.post(
     sqliteDb.pragma("wal_checkpoint(TRUNCATE)");
     const preRestorePath = `${config.dbPath}.pre-restore`;
     fs.copyFileSync(config.dbPath, preRestorePath);
+    saveKeyBeforeRestore();
 
     // Not logged to audit_log: a restore replaces the entire DB file, including the audit_log
     // table itself, so an entry written here wouldn't exist in the database anyone actually looks
@@ -760,10 +807,7 @@ systemRouter.post(
     res.json({ restored: true, message: "Restoring — the app will restart momentarily." });
 
     setTimeout(() => {
-      if (keyBuffer) {
-        fs.mkdirSync(path.dirname(ENCRYPTION_KEY_PATH), { recursive: true });
-        fs.writeFileSync(ENCRYPTION_KEY_PATH, keyBuffer, { mode: 0o600 });
-      }
+      if (keyBuffer) writeRestoredKey(keyBuffer);
       sqliteDb.close();
       fs.writeFileSync(config.dbPath, dbBuffer);
       for (const suffix of ["-wal", "-shm"]) {

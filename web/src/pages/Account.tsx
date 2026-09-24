@@ -33,7 +33,7 @@ export default function Account() {
   const [avatarVersion, setAvatarVersion] = useState(0);
 
   const enabled = !!auth.user?.totpEnabled;
-  const username = auth.isAdmin ? "admin" : auth.user?.username ?? "";
+  const username = auth.user?.username ?? "";
 
   async function startSetup() {
     setError(null);

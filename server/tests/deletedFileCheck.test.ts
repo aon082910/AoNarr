@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -184,5 +184,113 @@ describe("checkForDeletedFiles — episodes and sub-items", () => {
 
     expect(result.checked).toBeGreaterThanOrEqual(4);
     expect(result.missing).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// An unmounted/offline share looks exactly like "every file in it was deleted" — its files must be
+// left alone for this run rather than mass-flagged (and, with unmonitorDeletedFiles, unmonitored).
+describe("checkForDeletedFiles — unavailable root folders", () => {
+  async function insertRootFolder(rootPath: string): Promise<void> {
+    await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, 'movie')").run(rootPath);
+  }
+
+  function newRootPath(): string {
+    return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-deletedcheck-root-")), "library");
+  }
+
+  /** One movie, one episode and one album sub-item, all with files under `root` that don't exist. */
+  async function insertRowsUnder(root: string): Promise<{ movieId: number; epId: number; subId: number }> {
+    const movieId = await insertMovie(path.join(root, "Movie (2020)", "movie.mkv"));
+    const showId = await insertSeries(1);
+    const epId = await insertEpisode(showId, 1, 1, path.join(root, "Show", "Season 01", "S01E01.mkv"));
+    const artistId = await insertArtist();
+    const subId = await insertSubItem(artistId, path.join(root, "Artist", "Album"));
+    return { movieId, epId, subId };
+  }
+
+  async function expectUntouched(root: string, ids: { movieId: number; epId: number; subId: number }): Promise<void> {
+    expect(await db.prepare("SELECT has_file, path, monitored FROM media_items WHERE id = ?").get(ids.movieId)).toMatchObject({
+      has_file: 1,
+      path: path.join(root, "Movie (2020)", "movie.mkv"),
+      monitored: 1,
+    });
+    expect(await db.prepare("SELECT has_file, file_path, monitored FROM episodes WHERE id = ?").get(ids.epId)).toMatchObject({
+      has_file: 1,
+      file_path: path.join(root, "Show", "Season 01", "S01E01.mkv"),
+      monitored: 1,
+    });
+    expect(await db.prepare("SELECT has_file, file_path, monitored FROM sub_items WHERE id = ?").get(ids.subId)).toMatchObject({
+      has_file: 1,
+      file_path: path.join(root, "Artist", "Album"),
+      monitored: 1,
+    });
+  }
+
+  beforeEach(async () => {
+    // Flags whatever vanished-file rows earlier tests left behind, so `missing` below counts only
+    // this test's own rows.
+    const { checkForDeletedFiles } = await import("../src/services/deletedFileCheck.js");
+    await checkForDeletedFiles();
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    setSetting("unmonitorDeletedFiles", "1");
+  });
+
+  it("skips every file under a root folder that doesn't exist at all (an unmounted share)", async () => {
+    const { checkForDeletedFiles } = await import("../src/services/deletedFileCheck.js");
+    const root = newRootPath(); // never created
+    await insertRootFolder(root);
+    const ids = await insertRowsUnder(root);
+
+    const result = await checkForDeletedFiles();
+
+    expect(result.missing).toBe(0);
+    await expectUntouched(root, ids);
+  });
+
+  it("skips every file under a root folder that exists but is empty (a mount point with nothing mounted)", async () => {
+    const { checkForDeletedFiles } = await import("../src/services/deletedFileCheck.js");
+    const root = newRootPath();
+    fs.mkdirSync(root);
+    await insertRootFolder(root);
+    const ids = await insertRowsUnder(root);
+
+    const result = await checkForDeletedFiles();
+
+    expect(result.missing).toBe(0);
+    await expectUntouched(root, ids);
+  });
+
+  it("skips every file under a root path that isn't a directory", async () => {
+    const { checkForDeletedFiles } = await import("../src/services/deletedFileCheck.js");
+    const root = newRootPath();
+    fs.writeFileSync(root, "not a directory");
+    await insertRootFolder(root);
+    const ids = await insertRowsUnder(root);
+
+    const result = await checkForDeletedFiles();
+
+    expect(result.missing).toBe(0);
+    await expectUntouched(root, ids);
+  });
+
+  it("still flags (and unmonitors) a vanished file under an available, non-empty root folder", async () => {
+    const { checkForDeletedFiles } = await import("../src/services/deletedFileCheck.js");
+    const root = newRootPath();
+    fs.mkdirSync(path.join(root, "Other Movie (2019)"), { recursive: true });
+    const survivor = path.join(root, "Other Movie (2019)", "other.mkv");
+    fs.writeFileSync(survivor, "x");
+    await insertRootFolder(root);
+    const survivorId = await insertMovie(survivor);
+    const goneId = await insertMovie(path.join(root, "Gone Movie (2021)", "gone.mkv"));
+
+    const result = await checkForDeletedFiles();
+
+    expect(result.missing).toBe(1);
+    expect(await db.prepare("SELECT has_file, path, monitored FROM media_items WHERE id = ?").get(goneId)).toMatchObject({
+      has_file: 0,
+      path: null,
+      monitored: 0,
+    });
+    expect(await db.prepare("SELECT has_file, path FROM media_items WHERE id = ?").get(survivorId)).toMatchObject({ has_file: 1, path: survivor });
   });
 });

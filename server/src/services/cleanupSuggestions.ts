@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import crypto from "node:crypto";
 import { db } from "../db/index.js";
 
@@ -108,10 +109,18 @@ export interface DuplicateFileGroup {
  * one being cleaned up (e.g. after a naming template change). On-demand only, like the orphaned-
  * file scan; not run automatically. */
 export async function findDuplicateFiles(): Promise<DuplicateFileGroup[]> {
-  const refs = await collectFileRefs();
+  // A multi-episode file (S01E01-E02) is stored on every episode row it covers; collapse refs to
+  // one per physical path so such a file isn't reported as a duplicate of itself.
+  const byPath = new Map<string, FileRef>();
+  for (const ref of await collectFileRefs()) {
+    const key = path.resolve(ref.path);
+    const existing = byPath.get(key);
+    if (existing) existing.label += `, ${ref.label}`;
+    else byPath.set(key, { ...ref });
+  }
   const bySize = new Map<number, FileRef[]>();
 
-  for (const ref of refs) {
+  for (const ref of byPath.values()) {
     let size: number;
     try {
       size = fs.statSync(ref.path).size;

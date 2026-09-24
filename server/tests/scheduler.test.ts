@@ -77,6 +77,7 @@ let startScheduler: (typeof import("../src/services/scheduler.js"))["startSchedu
 let ImportSkippedError: (typeof import("../src/services/importer.js"))["ImportSkippedError"];
 let chooseBestResult: (typeof import("../src/services/scheduler.js"))["chooseBestResult"];
 let matchTierFor: (typeof import("../src/services/scheduler.js"))["matchTierFor"];
+let autoSearchCronSchedule: (typeof import("../src/services/scheduler.js"))["autoSearchCronSchedule"];
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
@@ -102,6 +103,7 @@ beforeAll(async () => {
     startScheduler,
     chooseBestResult,
     matchTierFor,
+    autoSearchCronSchedule,
   } = await import("../src/services/scheduler.js"));
 });
 
@@ -199,6 +201,20 @@ function fakeAdapter(overrides: Partial<Record<string, any>> = {}) {
   return { addDownload: vi.fn().mockResolvedValue({ downloadId: "dl-1" }), getStatus: vi.fn().mockResolvedValue([]), ...overrides };
 }
 
+async function insertSeries(title = "Show", seriesType: string | null = null): Promise<number> {
+  const result = await db
+    .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, series_type, status) VALUES ('series', ?, ?, 1, 0, ?, 'missing')`)
+    .run(title, title.toLowerCase(), seriesType);
+  return Number(result.lastInsertRowid);
+}
+
+async function insertEpisode(showId: number, season: number, episode: number, airDate: string | null = null): Promise<number> {
+  const result = await db
+    .prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, air_date) VALUES (?, ?, ?, 'Ep', 1, 0, ?)`)
+    .run(showId, season, episode, airDate);
+  return Number(result.lastInsertRowid);
+}
+
 // ---------------------------------------------------------------------------
 // Pure / simple helpers
 // ---------------------------------------------------------------------------
@@ -290,6 +306,55 @@ describe("isAlreadyQueued", () => {
 
     expect(await isAlreadyQueued(movie.id, null, null)).toBe(false);
   });
+
+  it("treats an in-flight season pack as covering every episode of that season only", async () => {
+    const showId = await insertSeries();
+    const s1e1 = await insertEpisode(showId, 1, 1);
+    const s2e1 = await insertEpisode(showId, 2, 1);
+    await db.prepare("INSERT INTO queue (media_item_id, season_number, title, status) VALUES (?, 1, 'Show.S01.1080p.WEB-DL', 'downloading')").run(showId);
+
+    expect(await isAlreadyQueued(showId, s1e1, null)).toBe(true);
+    expect(await isAlreadyQueued(showId, s2e1, null)).toBe(false);
+  });
+
+  it("ignores a season pack that has already failed", async () => {
+    const showId = await insertSeries();
+    const s1e1 = await insertEpisode(showId, 1, 1);
+    await db.prepare("INSERT INTO queue (media_item_id, season_number, title, status) VALUES (?, 1, 'Show.S01.1080p.WEB-DL', 'failed')").run(showId);
+
+    expect(await isAlreadyQueued(showId, s1e1, null)).toBe(false);
+  });
+
+  it("counts a single-episode release grabbed from a season search as covering only that episode", async () => {
+    const showId = await insertSeries();
+    const s2e5 = await insertEpisode(showId, 2, 5);
+    const s2e6 = await insertEpisode(showId, 2, 6);
+    await db.prepare("INSERT INTO queue (media_item_id, season_number, title, status) VALUES (?, 2, 'Show.S02E05.1080p.WEB-DL', 'queued')").run(showId);
+
+    expect(await isAlreadyQueued(showId, s2e5, null)).toBe(true);
+    expect(await isAlreadyQueued(showId, s2e6, null)).toBe(false);
+  });
+
+  it("treats a season pack grabbed for one episode as covering the rest of its season", async () => {
+    const showId = await insertSeries();
+    const s1e1 = await insertEpisode(showId, 1, 1);
+    const s1e2 = await insertEpisode(showId, 1, 2);
+    const s2e1 = await insertEpisode(showId, 2, 1);
+    await db
+      .prepare("INSERT INTO queue (media_item_id, episode_id, season_number, title, status) VALUES (?, ?, 1, 'Show.S01.1080p.WEB-DL', 'downloading')")
+      .run(showId, s1e1);
+
+    expect(await isAlreadyQueued(showId, s1e2, null)).toBe(true);
+    expect(await isAlreadyQueued(showId, s2e1, null)).toBe(false);
+  });
+
+  it("doesn't count another season's pack recorded against this season as covering it", async () => {
+    const showId = await insertSeries();
+    const s1e1 = await insertEpisode(showId, 1, 1);
+    await db.prepare("INSERT INTO queue (media_item_id, season_number, title, status) VALUES (?, 1, 'Show.S02.1080p.WEB-DL', 'queued')").run(showId);
+
+    expect(await isAlreadyQueued(showId, s1e1, null)).toBe(false);
+  });
 });
 
 describe("pickClientForProtocol", () => {
@@ -338,6 +403,24 @@ describe("grab", () => {
     const historyRow = (await db.prepare("SELECT * FROM history WHERE media_item_id = ?").get(movie.id)) as any;
     expect(historyRow.event_type).toBe("grabbed");
     expect(notifyGrabbed).toHaveBeenCalledWith(movie.title, fakeResult().title);
+  });
+
+  it("records the season of a full-season pack grabbed for one episode, but not of a single-episode release", async () => {
+    const showId = await insertSeries();
+    const s3e1 = await insertEpisode(showId, 3, 1);
+    const s3e2 = await insertEpisode(showId, 3, 2);
+    const client = await insertClient();
+    getDownloadClientAdapter.mockReturnValue(fakeAdapter());
+    const show = { id: showId, title: "Show" } as any;
+
+    await grab(client, show, s3e1, null, { result: fakeResult({ title: "Show.S03.1080p.WEB-DL-GRP" }), quality: "WEBDL-1080p" });
+    await grab(client, show, s3e2, null, { result: fakeResult({ title: "Show.S03E02.1080p.WEB-DL-GRP" }), quality: "WEBDL-1080p" });
+
+    const rows = (await db.prepare("SELECT episode_id, season_number FROM queue WHERE media_item_id = ? ORDER BY id").all(showId)) as any[];
+    expect(rows).toEqual([
+      { episode_id: s3e1, season_number: 3 },
+      { episode_id: s3e2, season_number: null },
+    ]);
   });
 });
 
@@ -452,6 +535,24 @@ describe("searchAndGrabTargets", () => {
 
     expect(result.grabbed).toBe(true);
     expect(searchAllIndexers.mock.calls[0][1]).toBe("Breaking Bad S01E05");
+  });
+
+  it("searches a daily series' episode by air date and grabs a date-named release", async () => {
+    const showId = await insertSeries("Daily Show", "daily");
+    const epId = await insertEpisode(showId, 2024, 101, "2024-08-25");
+    await insertClient();
+    const adapter = fakeAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    searchAllIndexers.mockResolvedValue([
+      fakeResult({ title: "Daily.Show.2024.08.24.1080p.WEB-DL-GRP", seeders: 500, downloadUrl: "magnet:?xt=wrong-day" }),
+      fakeResult({ title: "Daily.Show.2024.08.25.1080p.WEB-DL-GRP", seeders: 5, downloadUrl: "magnet:?xt=right-day" }),
+    ]);
+
+    const [result] = await searchAndGrabTargets([{ mediaItemId: showId, episodeId: epId }]);
+
+    expect(result.grabbed).toBe(true);
+    expect(searchAllIndexers.mock.calls[0][1]).toBe("Daily Show 2024-08-25");
+    expect(adapter.addDownload.mock.calls[0][1]).toBe("magnet:?xt=right-day");
   });
 
   it("continues past one target's exception and still reports the rest", async () => {
@@ -615,6 +716,120 @@ describe("runAutoSearch", () => {
 
     expect(searchAllIndexers).not.toHaveBeenCalled();
     expect(adapter.addDownload).toHaveBeenCalledWith(expect.objectContaining({ id: ytClient.id }), "https://www.youtube.com/watch?v=abc123", null, "A Video", "http");
+  });
+
+  it("doesn't re-grab a YouTube video whose direct grab failed and was blocklisted within the last day", async () => {
+    await insertClient({ type: "ytdlp" });
+    const adapter = fakeAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    const channelId = (
+      await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('video','Channel','channel',1,0,'missing')`).run()
+    ).lastInsertRowid as number;
+    await db
+      .prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, external_provider, external_id) VALUES (?, 'Members Only', 1, 0, 'youtube', 'locked1')")
+      .run(channelId);
+    await db
+      .prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, external_provider, external_id) VALUES (?, 'Public Video', 1, 0, 'youtube', 'open1')")
+      .run(channelId);
+    await db.prepare("INSERT INTO blocklist (media_item_id, release_title) VALUES (?, 'Members Only')").run(channelId);
+
+    await runAutoSearch();
+
+    expect(adapter.addDownload).toHaveBeenCalledTimes(1);
+    expect(adapter.addDownload.mock.calls[0][1]).toBe("https://www.youtube.com/watch?v=open1");
+  });
+
+  it("doesn't re-grab a podcast episode whose enclosure download failed and was blocklisted within the last day", async () => {
+    await insertClient({ type: "http" });
+    const adapter = fakeAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    const podcastId = (
+      await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('podcast','Cast','cast',1,0,'missing')`).run()
+    ).lastInsertRowid as number;
+    await db
+      .prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, external_provider, external_id) VALUES (?, 'Dead Link', 1, 0, 'rss', 'https://cdn/gone.mp3')")
+      .run(podcastId);
+    await db.prepare("INSERT INTO blocklist (media_item_id, release_title) VALUES (?, 'Dead Link')").run(podcastId);
+
+    await runAutoSearch();
+
+    expect(adapter.addDownload).not.toHaveBeenCalled();
+  });
+
+  it("retries a failed direct grab once its blocklist entry is over a day old", async () => {
+    await insertClient({ type: "ytdlp" });
+    await insertClient({ type: "http" });
+    const adapter = fakeAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    const channelId = (
+      await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('video','Channel','channel',1,0,'missing')`).run()
+    ).lastInsertRowid as number;
+    await db
+      .prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, external_provider, external_id) VALUES (?, 'Failed During Outage', 1, 0, 'youtube', 'vid9')")
+      .run(channelId);
+    const podcastId = (
+      await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('podcast','Cast','cast',1,0,'missing')`).run()
+    ).lastInsertRowid as number;
+    await db
+      .prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, external_provider, external_id) VALUES (?, 'CDN Hiccup', 1, 0, 'rss', 'https://cdn/ep9.mp3')")
+      .run(podcastId);
+    for (const [mediaItemId, title] of [
+      [channelId, "Failed During Outage"],
+      [podcastId, "CDN Hiccup"],
+    ] as const) {
+      await db
+        .prepare(`INSERT INTO blocklist (media_item_id, release_title, reason, created_at) VALUES (?, ?, 'Download failed at the download client', ${nowOffsetHoursExpr(db, -25)})`)
+        .run(mediaItemId, title);
+    }
+
+    await runAutoSearch();
+
+    const grabbedUrls = adapter.addDownload.mock.calls.map((c: any[]) => c[1]);
+    expect(grabbedUrls).toEqual(expect.arrayContaining(["https://www.youtube.com/watch?v=vid9", "https://cdn/ep9.mp3"]));
+    expect(grabbedUrls).toHaveLength(2);
+  });
+
+  it("keeps honouring an admin's own blocklisting of a video or episode however old it is", async () => {
+    await insertClient({ type: "ytdlp" });
+    await insertClient({ type: "http" });
+    const adapter = fakeAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    const channelId = (
+      await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('video','Channel','channel',1,0,'missing')`).run()
+    ).lastInsertRowid as number;
+    await db
+      .prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, external_provider, external_id) VALUES (?, 'Unwanted Upload', 1, 0, 'youtube', 'vid10')")
+      .run(channelId);
+    const podcastId = (
+      await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('podcast','Cast','cast',1,0,'missing')`).run()
+    ).lastInsertRowid as number;
+    await db
+      .prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, external_provider, external_id) VALUES (?, 'Unwanted Episode', 1, 0, 'rss', 'https://cdn/ep10.mp3')")
+      .run(podcastId);
+    await db
+      .prepare(`INSERT INTO blocklist (media_item_id, release_title, created_at) VALUES (?, 'Unwanted Upload', ${nowOffsetHoursExpr(db, -72)})`)
+      .run(channelId);
+    await db
+      .prepare(`INSERT INTO blocklist (media_item_id, release_title, reason, created_at) VALUES (?, 'Unwanted Episode', 'Removed from queue by admin', ${nowOffsetHoursExpr(db, -72)})`)
+      .run(podcastId);
+
+    await runAutoSearch();
+
+    expect(adapter.addDownload).not.toHaveBeenCalled();
+  });
+
+  it("doesn't search episodes of a season whose pack is already downloading", async () => {
+    await insertClient();
+    const showId = await insertSeries();
+    await insertEpisode(showId, 1, 1);
+    await insertEpisode(showId, 1, 2);
+    await insertEpisode(showId, 2, 1);
+    await db.prepare("INSERT INTO queue (media_item_id, season_number, title, status) VALUES (?, 1, 'Show.S01.1080p.WEB-DL', 'downloading')").run(showId);
+
+    await runAutoSearch();
+
+    expect(searchAllIndexers).toHaveBeenCalledTimes(1);
+    expect(searchAllIndexers.mock.calls[0][1]).toBe("Show S02E01");
   });
 
   it("continues past one item's exception and still processes the rest", async () => {
@@ -826,6 +1041,96 @@ describe("pollQueue", () => {
 
     expect(getDownloadClientAdapter).not.toHaveBeenCalled();
   });
+
+  it("rewrites a provisional download id to the one the client resolved it to", async () => {
+    const client = await insertClient();
+    getDownloadClientAdapter.mockReturnValue(
+      fakeAdapter({
+        getStatus: vi.fn().mockResolvedValue([{ downloadId: "tag:aonarr-pending-abc", resolvedDownloadId: "c12fe1c06bba254a9dc9f519b335aa7c1367a88a", progress: 0.2, status: "downloading" }]),
+      })
+    );
+    const { id } = await insertQueueItem(client.id, { download_id: "tag:aonarr-pending-abc" });
+
+    await pollQueue();
+
+    const row = (await db.prepare("SELECT * FROM queue WHERE id = ?").get(id)) as any;
+    expect(row).toMatchObject({ download_id: "c12fe1c06bba254a9dc9f519b335aa7c1367a88a", progress: 0.2 });
+  });
+
+  it("fails and retries a qBittorrent add whose placeholder id never resolved within 30 minutes", async () => {
+    const client = await insertClient();
+    getDownloadClientAdapter.mockReturnValue(fakeAdapter({ getStatus: vi.fn().mockResolvedValue([]) }));
+    const stuck = await insertMovie({ title: "Stuck", sort_title: "stuck" });
+    const fresh = await insertMovie({ title: "Fresh", sort_title: "fresh" });
+    const stuckId = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO queue (media_item_id, title, download_client_id, download_id, status, added_at) VALUES (?, 'Stuck.2020.1080p', ?, 'tag:aonarr-pending-old', 'queued', ${nowOffsetHoursExpr(db, -1)})`
+          )
+          .run(stuck.id, client.id)
+      ).lastInsertRowid
+    );
+    const freshId = Number(
+      (
+        await db
+          .prepare("INSERT INTO queue (media_item_id, title, download_client_id, download_id, status) VALUES (?, 'Fresh.2020.1080p', ?, 'tag:aonarr-pending-new', 'queued')")
+          .run(fresh.id, client.id)
+      ).lastInsertRowid
+    );
+
+    await pollQueue();
+
+    expect(((await db.prepare("SELECT status FROM queue WHERE id = ?").get(stuckId)) as any).status).toBe("failed");
+    expect(((await db.prepare("SELECT status FROM queue WHERE id = ?").get(freshId)) as any).status).toBe("queued");
+    const blocklisted = (await db.prepare("SELECT release_title FROM blocklist WHERE media_item_id = ?").all(stuck.id)) as any[];
+    expect(blocklisted).toEqual([{ release_title: "Stuck.2020.1080p" }]);
+    expect(notifyFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-keys an unresolved placeholder to a torrent qBittorrent already has under the release's name", async () => {
+    const client = await insertClient();
+    const hash = "c12fe1c06bba254a9dc9f519b335aa7c1367a88a";
+    getDownloadClientAdapter.mockReturnValue(
+      fakeAdapter({ getStatus: vi.fn().mockResolvedValue([{ downloadId: hash, clientTitle: "Seeding.Show.S01.1080p", progress: 1, status: "completed" }]) })
+    );
+    const show = await insertMovie({ title: "Seeding", sort_title: "seeding" });
+    const id = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO queue (media_item_id, title, download_client_id, download_id, status, added_at) VALUES (?, 'Seeding.Show.S01.1080p', ?, 'tag:aonarr-pending-dupe', 'queued', ${nowOffsetHoursExpr(db, -1)})`
+          )
+          .run(show.id, client.id)
+      ).lastInsertRowid
+    );
+
+    await pollQueue();
+
+    expect(await db.prepare("SELECT download_id, status FROM queue WHERE id = ?").get(id)).toEqual({ download_id: hash, status: "queued" });
+    expect(await db.prepare("SELECT * FROM blocklist WHERE media_item_id = ?").all(show.id)).toEqual([]);
+  });
+
+  it("fails a legacy .torrent-URL-keyed row it can't find, without blocklisting or re-grabbing", async () => {
+    const client = await insertClient();
+    getDownloadClientAdapter.mockReturnValue(fakeAdapter({ getStatus: vi.fn().mockResolvedValue([]) }));
+    const movie = await insertMovie({ title: "Legacy", sort_title: "legacy" });
+    const id = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO queue (media_item_id, title, download_client_id, download_id, status, added_at) VALUES (?, 'Legacy.2020.1080p', ?, 'https://indexer.example/dl/1.torrent', 'queued', ${nowOffsetHoursExpr(db, -48)})`
+          )
+          .run(movie.id, client.id)
+      ).lastInsertRowid
+    );
+
+    await pollQueue();
+
+    expect(((await db.prepare("SELECT status FROM queue WHERE id = ?").get(id)) as any).status).toBe("failed");
+    expect(await db.prepare("SELECT * FROM blocklist WHERE media_item_id = ?").all(movie.id)).toEqual([]);
+    expect(searchAllIndexers).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -933,6 +1238,96 @@ describe("retryFailedGrab", () => {
 
     expect(notifyFailed).toHaveBeenCalledWith(movie.title, expect.stringContaining("no other releases found"));
   });
+
+  it("replaces a failed season pack only with another full pack of the same season, keeping its season number", async () => {
+    const showId = await insertSeries();
+    await insertClient();
+    const adapter = fakeAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    searchAllIndexers.mockResolvedValue([
+      fakeResult({ title: "Show.S04E07.1080p.WEB-DL-GRP", seeders: 1000, downloadUrl: "magnet:?xt=other-episode" }),
+      fakeResult({ title: "Show.S02E03.1080p.WEB-DL-GRP", seeders: 900, downloadUrl: "magnet:?xt=single-episode" }),
+      fakeResult({ title: "Show.S03.1080p.WEB-DL-GRP", seeders: 800, downloadUrl: "magnet:?xt=other-season" }),
+      fakeResult({ title: "Show.S02.1080p.WEB-DL-GOOD", seeders: 5, downloadUrl: "magnet:?xt=right-pack" }),
+    ]);
+    const queueId = Number(
+      (await db.prepare("INSERT INTO queue (media_item_id, season_number, title, status, retry_count) VALUES (?, 2, 'Show.S02.1080p.WEB-DL-BAD', 'failed', 0)").run(showId))
+        .lastInsertRowid
+    );
+
+    await retryFailedGrab(
+      { id: queueId, mediaItemId: showId, title: "Show.S02.1080p.WEB-DL-BAD", episodeId: null, subItemId: null, seasonNumber: 2, retryCount: 0 } as any,
+      "No matching file found"
+    );
+
+    expect(searchAllIndexers.mock.calls[0][1]).toBe("Show S02");
+    expect(adapter.addDownload).toHaveBeenCalledTimes(1);
+    expect(adapter.addDownload.mock.calls[0][1]).toBe("magnet:?xt=right-pack");
+    const rows = (await db.prepare("SELECT * FROM queue WHERE media_item_id = ?").all(showId)) as any[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ title: "Show.S02.1080p.WEB-DL-GOOD", season_number: 2, episode_id: null, sub_item_id: null, retry_count: 1 });
+  });
+
+  it("notifies rather than grabbing an unrelated episode when no replacement season pack exists", async () => {
+    const showId = await insertSeries();
+    await insertClient();
+    const adapter = fakeAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    searchAllIndexers.mockResolvedValue([fakeResult({ title: "Show.S04E07.2160p.WEB-DL-GRP" })]);
+
+    await retryFailedGrab(
+      { id: 1, mediaItemId: showId, title: "Show.S02.1080p.WEB-DL-BAD", episodeId: null, subItemId: null, seasonNumber: 2, retryCount: 0 } as any,
+      "Download failed at the download client"
+    );
+
+    expect(adapter.addDownload).not.toHaveBeenCalled();
+    expect(notifyFailed).toHaveBeenCalledWith("Show", expect.stringContaining("no other releases found"));
+  });
+
+  it("replaces a failed single-episode grab from a season search with another release of that episode", async () => {
+    const showId = await insertSeries();
+    await insertClient();
+    const adapter = fakeAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    searchAllIndexers.mockResolvedValue([
+      fakeResult({ title: "Show.S02E06.1080p.WEB-DL-GRP", seeders: 1000, downloadUrl: "magnet:?xt=next-episode" }),
+      fakeResult({ title: "Show.S03E05.1080p.WEB-DL-GRP", seeders: 900, downloadUrl: "magnet:?xt=other-season" }),
+      fakeResult({ title: "Show.S02E05.1080p.WEB-DL-GOOD", seeders: 5, downloadUrl: "magnet:?xt=same-episode" }),
+    ]);
+    const queueId = Number(
+      (await db.prepare("INSERT INTO queue (media_item_id, season_number, title, status, retry_count) VALUES (?, 2, 'Show.S02E05.1080p.WEB-DL-BAD', 'failed', 0)").run(showId))
+        .lastInsertRowid
+    );
+
+    await retryFailedGrab(
+      { id: queueId, mediaItemId: showId, title: "Show.S02E05.1080p.WEB-DL-BAD", episodeId: null, subItemId: null, seasonNumber: 2, retryCount: 0 } as any,
+      "Download failed at the download client"
+    );
+
+    expect(searchAllIndexers.mock.calls[0][1]).toBe("Show S02E05");
+    expect(adapter.addDownload).toHaveBeenCalledTimes(1);
+    expect(adapter.addDownload.mock.calls[0][1]).toBe("magnet:?xt=same-episode");
+    const rows = (await db.prepare("SELECT * FROM queue WHERE media_item_id = ?").all(showId)) as any[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ title: "Show.S02E05.1080p.WEB-DL-GOOD", season_number: 2, episode_id: null });
+  });
+
+  it("retries a failed daily-series episode by air date", async () => {
+    const showId = await insertSeries("Daily Show", "daily");
+    const epId = await insertEpisode(showId, 2024, 101, "2024-08-25");
+    await insertClient();
+    const adapter = fakeAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    searchAllIndexers.mockResolvedValue([fakeResult({ title: "Daily.Show.2024.08.25.720p.WEB-DL-OTHER" })]);
+
+    await retryFailedGrab(
+      { id: 1, mediaItemId: showId, title: "Daily.Show.2024.08.25.1080p.WEB-DL-BAD", episodeId: epId, subItemId: null, seasonNumber: null, retryCount: 0 } as any,
+      "corrupt file"
+    );
+
+    expect(searchAllIndexers.mock.calls[0][1]).toBe("Daily Show 2024-08-25");
+    expect(adapter.addDownload).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1004,6 +1399,32 @@ describe("startScheduler", () => {
     expect(new Set(keys).size).toBe(keys.length); // every job key is unique
     expect(keys).toContain("autoSearch");
     expect(keys).toContain("queuePoll");
+  });
+});
+
+describe("autoSearchCronSchedule", () => {
+  it("keeps sub-hour intervals that divide an hour evenly in the minute field", () => {
+    expect(autoSearchCronSchedule(30)).toBe("*/30 * * * *");
+    expect(autoSearchCronSchedule(15)).toBe("*/15 * * * *");
+  });
+
+  it("moves intervals of an hour or more into the hour field instead of collapsing them to hourly", () => {
+    expect(autoSearchCronSchedule(60)).toBe("0 */1 * * *");
+    expect(autoSearchCronSchedule(120)).toBe("0 */2 * * *");
+    expect(autoSearchCronSchedule(360)).toBe("0 */6 * * *");
+  });
+
+  it("rounds an interval its field can't divide evenly up, never down", () => {
+    expect(autoSearchCronSchedule(7)).toBe("*/10 * * * *");
+    expect(autoSearchCronSchedule(45)).toBe("0 */1 * * *");
+    expect(autoSearchCronSchedule(90)).toBe("0 */2 * * *");
+    expect(autoSearchCronSchedule(300)).toBe("0 */6 * * *");
+  });
+
+  it("uses the day field for a day or longer, and falls back to 30 minutes for a non-number", () => {
+    expect(autoSearchCronSchedule(1440)).toBe("0 0 */1 * *");
+    expect(autoSearchCronSchedule(2880)).toBe("0 0 */2 * *");
+    expect(autoSearchCronSchedule(Number.NaN)).toBe("*/30 * * * *");
   });
 });
 

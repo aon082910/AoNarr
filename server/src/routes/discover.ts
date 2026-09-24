@@ -2,6 +2,7 @@ import { Router } from "express";
 import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { fetchTrendingMovies, fetchTrendingSeries } from "../services/metadata.js";
+import { isRatingBlocked } from "../services/contentRatings.js";
 
 export const discoverRouter = Router();
 
@@ -34,17 +35,29 @@ discoverRouter.get(
         wantSeries ? fetchTrendingSeries() : Promise.resolve([]),
       ]);
 
-      const libraryRows = (await db.prepare("SELECT id, type, external_ids FROM media_items WHERE type IN ('movie','series')").all()) as {
+      const libraryRows = (await db
+        .prepare("SELECT id, type, external_ids, content_rating FROM media_items WHERE type IN ('movie','series')")
+        .all()) as {
         id: number;
         type: string;
         external_ids: string | null;
+        content_rating: string | null;
       }[];
       // Maps to the item's real id (not just a membership flag) so the client can link a result
       // that's already in the library straight to its detail page instead of just labeling it.
+      // A title above the viewer's content-rating cap is left out, same as people.ts — otherwise
+      // its "In library" badge and link reveal an item that user can't open.
+      const maxContentRating = req.auth?.user?.maxContentRating ?? null;
       const idByExternalId = new Map<string, number>();
       for (const r of libraryRows) {
-        const ids = r.external_ids ? JSON.parse(r.external_ids) : {};
-        if (ids.tmdb) idByExternalId.set(`${r.type}:${ids.tmdb}`, r.id);
+        if (!r.external_ids) continue;
+        if (maxContentRating && isRatingBlocked(r.content_rating, maxContentRating)) continue;
+        try {
+          const ids = JSON.parse(r.external_ids);
+          if (ids?.tmdb) idByExternalId.set(`${r.type}:${ids.tmdb}`, r.id);
+        } catch {
+          // malformed external_ids on an old row — skip it rather than fail the whole page
+        }
       }
 
       const annotate = (type: "movie" | "series", results: typeof movies) =>

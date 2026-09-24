@@ -52,24 +52,68 @@ describe("parsePlexPayload", () => {
 });
 
 describe("parseJellyfinEmbyPayload", () => {
+  // Must stay the first test in this file to parse a stop event with no completion field — the
+  // hint is logged once per process.
+  it("logs a template hint once when a stop event carries no PlayedToCompletion field at all", async () => {
+    const { log } = await import("../src/services/logger.js");
+    const info = vi.spyOn(log, "info").mockImplementation(() => {});
+    try {
+      parseJellyfinEmbyPayload({ NotificationType: "PlaybackStop", PlayedToCompletion: "False", Path: "/media/x.mkv" });
+      parseJellyfinEmbyPayload({ NotificationType: "PlaybackProgress", Path: "/media/x.mkv" });
+      expect(info).not.toHaveBeenCalled(); // a present-but-false flag or a non-stop event isn't a template problem
+
+      expect(parseJellyfinEmbyPayload({ NotificationType: "PlaybackStop", Path: "/media/x.mkv" })).toBeNull();
+      parseJellyfinEmbyPayload({ NotificationType: "PlaybackStop", Path: "/media/x.mkv" });
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(String(info.mock.calls[0][0])).toContain('"PlayedToCompletion": "{{PlayedToCompletion}}"');
+    } finally {
+      info.mockRestore();
+    }
+  });
+
   it("returns null for a continuous playback-progress notification", () => {
     expect(parseJellyfinEmbyPayload({ NotificationType: "PlaybackProgress", Path: "/media/x.mkv" })).toBeNull();
   });
 
-  it("returns the file path for a playback-stop notification", () => {
-    expect(parseJellyfinEmbyPayload({ NotificationType: "PlaybackStop", Path: "/media/x.mkv" })).toEqual({ filePath: "/media/x.mkv" });
+  it("returns the file path for a playback-stop notification that played to completion", () => {
+    expect(parseJellyfinEmbyPayload({ NotificationType: "PlaybackStop", PlayedToCompletion: true, Path: "/media/x.mkv" })).toEqual({
+      filePath: "/media/x.mkv",
+    });
   });
 
-  it("falls back to Item.Path when Path is absent", () => {
-    expect(parseJellyfinEmbyPayload({ Event: "media.stop", Item: { Path: "/media/y.mkv" } })).toEqual({ filePath: "/media/y.mkv" });
+  it("returns null for a playback-stop notification that stopped early", () => {
+    expect(parseJellyfinEmbyPayload({ NotificationType: "PlaybackStop", PlayedToCompletion: false, Path: "/media/x.mkv" })).toBeNull();
+    expect(parseJellyfinEmbyPayload({ NotificationType: "PlaybackStop", Path: "/media/x.mkv" })).toBeNull();
   });
 
-  it("treats a missing notification type field as acceptable, not as a filter failure", () => {
-    expect(parseJellyfinEmbyPayload({ Path: "/media/z.mkv" })).toEqual({ filePath: "/media/z.mkv" });
+  it("accepts a templated string completion flag, as Jellyfin's plugin renders a .NET bool", () => {
+    expect(parseJellyfinEmbyPayload({ NotificationType: "PlaybackStop", PlayedToCompletion: "True", Path: "/media/x.mkv" })).toEqual({
+      filePath: "/media/x.mkv",
+    });
+    expect(parseJellyfinEmbyPayload({ NotificationType: "PlaybackStop", PlayedToCompletion: "False", Path: "/media/x.mkv" })).toBeNull();
+  });
+
+  it("reads Emby's nested PlaybackInfo.PlayedToCompletion and falls back to Item.Path", () => {
+    expect(
+      parseJellyfinEmbyPayload({ Event: "playback.stop", PlaybackInfo: { PlayedToCompletion: true }, Item: { Path: "/media/y.mkv" } })
+    ).toEqual({ filePath: "/media/y.mkv" });
+    expect(
+      parseJellyfinEmbyPayload({ Event: "playback.stop", PlaybackInfo: { PlayedToCompletion: false }, Item: { Path: "/media/y.mkv" } })
+    ).toBeNull();
+  });
+
+  it("treats Emby's explicit item.markplayed event as watched, but not item.markunplayed", () => {
+    expect(parseJellyfinEmbyPayload({ Event: "item.markplayed", Item: { Path: "/media/m.mkv" } })).toEqual({ filePath: "/media/m.mkv" });
+    expect(parseJellyfinEmbyPayload({ Event: "item.markunplayed", Item: { Path: "/media/m.mkv" } })).toBeNull();
+  });
+
+  it("with no notification type field, still requires the completion flag", () => {
+    expect(parseJellyfinEmbyPayload({ Path: "/media/z.mkv", PlayedToCompletion: true })).toEqual({ filePath: "/media/z.mkv" });
+    expect(parseJellyfinEmbyPayload({ Path: "/media/z.mkv" })).toBeNull();
   });
 
   it("returns null when there's no path anywhere in the payload", () => {
-    expect(parseJellyfinEmbyPayload({ NotificationType: "PlaybackStop" })).toBeNull();
+    expect(parseJellyfinEmbyPayload({ NotificationType: "PlaybackStop", PlayedToCompletion: true })).toBeNull();
   });
 });
 
@@ -187,6 +231,63 @@ describe("syncWatchStatusFromMediaServer", () => {
 
     expect(result).toEqual({ recorded: 1 });
     expect(getSetting("watchStatusSyncLastRunAt")).toBe(matchedAt.toISOString());
+  });
+
+  it("stores the watch at the media server's play time, not the sync time", async () => {
+    const id = await insertMovie("Play Time Movie", "/media/movies/Play Time Movie/movie.mkv");
+    fetchWatchedFiles.mockResolvedValueOnce([
+      { path: "/mnt/aonarr/movies/Play Time Movie/movie.mkv", lastPlayedAt: new Date("2023-03-04T05:06:07.890Z") },
+    ]);
+
+    await syncWatchStatusFromMediaServer();
+
+    const rows = (await db.prepare("SELECT watched_at FROM watch_events WHERE media_item_id = ?").all(id)) as { watched_at: string }[];
+    expect(rows.map((r) => r.watched_at)).toEqual(["2023-03-04 05:06:07"]);
+  });
+
+  it("doesn't re-insert an already-recorded watch while an older unmatched file keeps the cursor pinned", async () => {
+    const { getSetting } = await import("../src/services/settingsStore.js");
+    const movieId = await insertMovie("Pinned Cursor Movie", "/media/movies/Pinned Cursor Movie/movie.mkv");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('series', 'Pinned Show', 'pinned show', 1, 1, 'unknown')`).run())
+        .lastInsertRowid
+    );
+    const episodeId = Number(
+      (
+        await db
+          .prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, monitored, has_file, file_path) VALUES (?, 1, 1, 1, 1, ?)")
+          .run(showId, "/media/tv/Pinned Show/Season 01/ep1.mkv")
+      ).lastInsertRowid
+    );
+    const unmatchedAt = new Date("2025-01-01T00:00:00Z");
+    const batch = () => [
+      { path: "/home-videos/untracked/clip.mkv", lastPlayedAt: unmatchedAt },
+      { path: "/mnt/aonarr/movies/Pinned Cursor Movie/movie.mkv", lastPlayedAt: new Date("2025-02-01T00:00:00Z") },
+      { path: "/mnt/aonarr/tv/Pinned Show/Season 01/ep1.mkv", lastPlayedAt: new Date("2025-03-01T00:00:00Z") },
+    ];
+
+    fetchWatchedFiles.mockResolvedValueOnce(batch());
+    expect(await syncWatchStatusFromMediaServer()).toEqual({ recorded: 2 });
+    expect(new Date(getSetting("watchStatusSyncLastRunAt")!).getTime()).toBe(unmatchedAt.getTime() - 1);
+
+    fetchWatchedFiles.mockResolvedValueOnce(batch());
+    expect(await syncWatchStatusFromMediaServer()).toEqual({ recorded: 0 });
+
+    const movieRows = (await db.prepare("SELECT COUNT(*) AS c FROM watch_events WHERE media_item_id = ?").get(movieId)) as { c: number };
+    const episodeRows = (await db.prepare("SELECT COUNT(*) AS c FROM watch_events WHERE episode_id = ?").get(episodeId)) as { c: number };
+    expect(Number(movieRows.c)).toBe(1);
+    expect(Number(episodeRows.c)).toBe(1);
+  });
+
+  it("records a genuine re-watch of an already-recorded file as a new event", async () => {
+    const id = await insertMovie("Rewatched Movie", "/media/movies/Rewatched Movie/movie.mkv");
+    fetchWatchedFiles.mockResolvedValueOnce([{ path: "/mnt/aonarr/movies/Rewatched Movie/movie.mkv", lastPlayedAt: new Date("2025-04-01T00:00:00Z") }]);
+    await syncWatchStatusFromMediaServer();
+    fetchWatchedFiles.mockResolvedValueOnce([{ path: "/mnt/aonarr/movies/Rewatched Movie/movie.mkv", lastPlayedAt: new Date("2025-05-01T00:00:00Z") }]);
+
+    expect(await syncWatchStatusFromMediaServer()).toEqual({ recorded: 1 });
+    const rows = (await db.prepare("SELECT COUNT(*) AS c FROM watch_events WHERE media_item_id = ?").get(id)) as { c: number };
+    expect(Number(rows.c)).toBe(2);
   });
 
   it("doesn't reprocess a file whose lastPlayedAt is at or before the stored cursor", async () => {

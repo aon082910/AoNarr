@@ -6,11 +6,12 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useContentRatings } from "../hooks/useContentRatings.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { Invite, RequestStats, Session, User } from "../types.js";
-import { formatBytes } from "../utils/format.js";
+import { formatBytes, formatServerTimestamp } from "../utils/format.js";
 import { XIcon, TrashIcon } from "../components/ActionIcons.js";
 import { PlusCircleIcon } from "../components/NavIcons.js";
 import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
+import { notify } from "../utils/notify.js";
 
 export default function Users() {
   const mediaTypes = useMediaTypes();
@@ -47,12 +48,18 @@ export default function Users() {
 
   async function createInvite(e: FormEvent) {
     e.preventDefault();
-    const created = await api.post<Invite>("/users/invites", {
-      allowedTypes: inviteAllowedTypes,
-      maxContentRating: inviteMaxContentRating || null,
-      role: inviteRole,
-      expiresInDays: inviteExpiresInDays ? Number(inviteExpiresInDays) : null,
-    });
+    let created: Invite;
+    try {
+      created = await api.post<Invite>("/users/invites", {
+        allowedTypes: inviteAllowedTypes,
+        maxContentRating: inviteMaxContentRating || null,
+        role: inviteRole,
+        expiresInDays: inviteExpiresInDays ? Number(inviteExpiresInDays) : null,
+      });
+    } catch (err) {
+      notify.error((err as Error).message);
+      return;
+    }
     setNewInviteUrl(`${window.location.origin}/invite/${created.token}`);
     setInviteAllowedTypes([]);
     setInviteMaxContentRating("");
@@ -63,13 +70,21 @@ export default function Users() {
   }
 
   async function revokeInvite(id: number) {
-    await api.del(`/users/invites/${id}`);
-    load();
+    try {
+      await api.del(`/users/invites/${id}`);
+      load();
+    } catch (err) {
+      notify.error((err as Error).message);
+    }
   }
 
   async function revokeSession(token: string) {
-    await api.del(`/users/sessions/${token}`);
-    setSessions((prev) => prev.filter((s) => s.token !== token));
+    try {
+      await api.del(`/users/sessions/${token}`);
+      setSessions((prev) => prev.filter((s) => s.token !== token));
+    } catch (err) {
+      notify.error((err as Error).message);
+    }
   }
 
   function toggleType(key: string) {
@@ -111,10 +126,15 @@ export default function Users() {
       maxContentRating: maxContentRating || null,
       ...(password ? { password } : {}),
     };
-    if (mode === "add") {
-      await api.post("/users", body);
-    } else if (typeof mode === "number") {
-      await api.patch(`/users/${mode}`, body);
+    try {
+      if (mode === "add") {
+        await api.post("/users", body);
+      } else if (typeof mode === "number") {
+        await api.patch(`/users/${mode}`, body);
+      }
+    } catch (err) {
+      notify.error((err as Error).message);
+      return;
     }
     setMode(null);
     load();
@@ -122,7 +142,12 @@ export default function Users() {
 
   async function removeUser(id: number) {
     if (!(await confirmDialog({ title: "Delete user", message: "Delete this user account? This cannot be undone.", danger: true }))) return;
-    await api.del(`/users/${id}`);
+    try {
+      await api.del(`/users/${id}`);
+    } catch (err) {
+      notify.error((err as Error).message);
+      return;
+    }
     setMode(null);
     load();
   }
@@ -351,7 +376,7 @@ function InvitesTable({ invites, onRevoke }: { invites: Invite[]; onRevoke: (id:
           <tr key={i.id}>
             <td>{i.allowedTypes.length === 0 ? "no library access" : `${i.allowedTypes.length} librar${i.allowedTypes.length === 1 ? "y" : "ies"}`}</td>
             <td>{i.role === "admin" ? "Admin" : "Household user"}</td>
-            <td>{new Date(i.createdAt).toLocaleString()}</td>
+            <td>{formatServerTimestamp(i.createdAt)}</td>
             <td>
               {i.usedAt ? (
                 <span className="badge ok">Used</span>
@@ -398,8 +423,8 @@ function SessionsTable({ sessions, onRevoke }: { sessions: Session[]; onRevoke: 
         {sorted.map((s) => (
           <tr key={s.token}>
             <td>{s.username}</td>
-            <td>{s.lastUsedAt ? new Date(s.lastUsedAt).toLocaleString() : "-"}</td>
-            <td>{new Date(s.createdAt).toLocaleString()}</td>
+            <td>{s.lastUsedAt ? formatServerTimestamp(s.lastUsedAt) : "-"}</td>
+            <td>{formatServerTimestamp(s.createdAt)}</td>
             <td title={s.userAgent ?? undefined} style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.userAgent ?? "unknown"}</td>
             <td>
               <button type="button" className="icon-button danger" onClick={() => onRevoke(s.token)} title="Revoke" aria-label="Revoke">

@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { db } from "../db/index.js";
-import { probeMediaInfo } from "./ffprobe.js";
+import { probeDurationSeconds } from "./ffprobe.js";
 import { safeFileName } from "./metadataExport.js";
 import { log } from "./logger.js";
 
@@ -75,9 +75,9 @@ export async function convertSubItemToM4b(subItemId: number): Promise<{ path: st
 
   const durations: number[] = [];
   for (const t of tracks) {
-    const info = await probeMediaInfo(t.filePath);
-    if (!info?.durationSeconds) throw new Error(`Couldn't read duration for "${t.title}" — ffprobe returned nothing`);
-    durations.push(Math.round(info.durationSeconds * 1000));
+    const seconds = await probeDurationSeconds(t.filePath);
+    if (!seconds) throw new Error(`Couldn't read duration for "${t.title}" — ffprobe returned nothing`);
+    durations.push(Math.round(seconds * 1000));
   }
 
   const destDir = fs.statSync(subRow.file_path).isDirectory() ? subRow.file_path : path.dirname(subRow.file_path);

@@ -406,6 +406,45 @@ describe("runAutoArchival", () => {
     expect(JSON.parse(history.data).title).toBe("Show X S01E01");
   });
 
+  it("also unmonitors whatever it archives (movie, episode, sub-item) so auto-search doesn't re-grab it — an unwatched sibling stays monitored", async () => {
+    configureMediaServer();
+    setSetting("archiveEnabled", "1");
+    setSetting("archiveFolder", archiveDir);
+    const movieFile = makeFile("movies/Watched Movie.mkv");
+    const movieId = await insertMovie({ title: "Watched Movie", path: movieFile });
+    const watchedEpFile = makeFile("tv/Show X/S01E01.mkv");
+    const { showId, episodeId } = await insertShowWithEpisode({ path: watchedEpFile, season: 1, episode: 1 });
+    const unwatchedEpFile = makeFile("tv/Show X/S01E02.mkv");
+    const unwatchedEpisodeId = Number(
+      (
+        await db
+          .prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, monitored, has_file, file_path) VALUES (?, 1, 2, 1, 1, ?)")
+          .run(showId, unwatchedEpFile)
+      ).lastInsertRowid
+    );
+    await db.prepare("UPDATE episodes SET monitored = 1 WHERE id = ?").run(episodeId);
+    const albumFile = makeFile("music/Band/Album One");
+    const artistId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, protected, status) VALUES ('artist','Band','band',1,1,0,'unknown')`).run())
+        .lastInsertRowid
+    );
+    const subItemId = Number(
+      (await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, file_path) VALUES (?, 'Album One', 1, 1, ?)").run(artistId, albumFile))
+        .lastInsertRowid
+    );
+    fetchWatchedFiles.mockResolvedValue([watchedNow(movieFile, 60), watchedNow(watchedEpFile, 60), watchedNow(albumFile, 60)]);
+
+    await runAutoArchival();
+
+    expect(((await db.prepare("SELECT has_file, monitored FROM media_items WHERE id = ?").get(movieId)) as any)).toMatchObject({ has_file: 0, monitored: 0 });
+    expect(((await db.prepare("SELECT has_file, monitored FROM episodes WHERE id = ?").get(episodeId)) as any)).toMatchObject({ has_file: 0, monitored: 0 });
+    expect(((await db.prepare("SELECT has_file, monitored FROM sub_items WHERE id = ?").get(subItemId)) as any)).toMatchObject({ has_file: 0, monitored: 0 });
+    expect(((await db.prepare("SELECT has_file, monitored FROM episodes WHERE id = ?").get(unwatchedEpisodeId)) as any)).toMatchObject({ has_file: 1, monitored: 1 });
+    // Only the archived child is unmonitored, never its parent series/artist.
+    expect(((await db.prepare("SELECT monitored FROM media_items WHERE id = ?").get(showId)) as any).monitored).toBe(1);
+    expect(((await db.prepare("SELECT monitored FROM media_items WHERE id = ?").get(artistId)) as any).monitored).toBe(1);
+  });
+
   it("a parent's has_file rolls back to 0 once its last remaining episode is archived, but not while others still have files", async () => {
     configureMediaServer();
     setSetting("archiveEnabled", "1");

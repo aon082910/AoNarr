@@ -196,6 +196,10 @@ requestsRouter.post(
     const b = req.body ?? {};
     if (!b.type || !b.title) throw new HttpError(400, "type and title are required");
     if (!isValidMediaType(b.type)) throw new HttpError(400, `Unknown media type "${b.type}"`);
+    // Same per-library gate every read path applies — the Requests form only hides disallowed
+    // types client-side, and with auto-approve a request for one would add a monitored item to a
+    // library this account can't even see, downloaded with no admin ever reviewing it.
+    if (!(user.allowedTypes ?? []).includes(b.type)) throw new HttpError(403, "You don't have access to this library");
 
     if (!b.confirmDuplicate) {
       const needle = String(b.title).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -292,9 +296,13 @@ requestsRouter.post(
   asyncHandler(async (req, res) => {
     const request = await db.prepare("SELECT * FROM requests WHERE id = ?").get(req.params.id);
     if (!request) throw new HttpError(404, "Request not found");
-    await db
-      .prepare(`UPDATE requests SET status = 'rejected', resolved_at = ${nowExpr(db)} WHERE id = ?`)
+    // Conditional on still being pending, same as approve — a stale second tab (or another admin)
+    // could otherwise flip an already-approved request, whose item was added, to "rejected" and
+    // push the requester a false rejection.
+    const result = await db
+      .prepare(`UPDATE requests SET status = 'rejected', resolved_at = ${nowExpr(db)} WHERE id = ? AND status = 'pending'`)
       .run(req.params.id);
+    if (result.changes === 0) throw new HttpError(400, "Only a pending request can be rejected");
     logAuditEvent(null, "admin", "request_rejected", (request as any).title);
     sendPush("Request rejected", (request as any).title, (request as any).user_id).catch(() => {});
     const row = await db.prepare("SELECT * FROM requests WHERE id = ?").get(req.params.id);

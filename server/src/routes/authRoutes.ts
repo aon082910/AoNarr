@@ -5,7 +5,8 @@ import multer from "multer";
 import { db } from "../db/index.js";
 import { config } from "../config.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { clientIp } from "../middleware/auth.js";
+import { clientIp, safeEqual } from "../middleware/auth.js";
+import { getSetting } from "../services/settingsStore.js";
 import {
   consumePendingLogin,
   createPendingLogin,
@@ -38,8 +39,8 @@ const avatarUpload = multer({
 authRouter.get(
   "/setup-status",
   asyncHandler(async (_req, res) => {
-    const admin = await db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
-    res.json({ needsSetup: !admin });
+    const anyUser = await db.prepare("SELECT id FROM users LIMIT 1").get();
+    res.json({ needsSetup: !anyUser });
   })
 );
 
@@ -53,6 +54,15 @@ authRouter.post(
   asyncHandler(async (req, res) => {
     const existingAdmin = await db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
     if (existingAdmin) throw new HttpError(403, "An admin account already exists");
+    // An instance with household accounts but no admin-role user yet (run on the API key alone) is
+    // already in use, not a fresh install — creating its first admin account then takes the API
+    // key, or anyone who could reach the login screen could mint themselves admin.
+    const anyUser = await db.prepare("SELECT id FROM users LIMIT 1").get();
+    const expectedApiKey = getSetting("apiKey");
+    const providedApiKey = req.header("X-Api-Key") ?? "";
+    if (anyUser && !(expectedApiKey && providedApiKey && safeEqual(providedApiKey, expectedApiKey))) {
+      throw new HttpError(403, "This instance already has user accounts — sign in with the API key to create the first admin");
+    }
 
     const { username, password } = req.body ?? {};
     if (!username || typeof username !== "string" || username.trim().length < 1) {
@@ -86,7 +96,11 @@ authRouter.post(
     const { username, password } = req.body ?? {};
     if (!username || !password) throw new HttpError(400, "username and password are required");
 
-    const rateLimitKey = `login:${clientIp(req)}`;
+    // Keyed per target username too, not just per IP: with an IP-only bucket, any account's
+    // successful login (recordSuccess below) wiped every earlier failure from that address — nine
+    // guesses at "admin" plus one login to your own household account, repeated forever, never
+    // hit the lockout.
+    const rateLimitKey = `login:${clientIp(req)}:${String(username).trim().toLowerCase()}`;
     const rateLimit = checkRateLimit(rateLimitKey);
     if (!rateLimit.allowed) {
       res.status(429).json({ error: "Too many failed attempts. Try again later.", retryAfterSeconds: rateLimit.retryAfterSeconds });
@@ -149,7 +163,9 @@ authRouter.post(
       recordFailure(rateLimitKey);
       throw new HttpError(401, "Invalid or expired code — log in again");
     }
-    recordSuccess(rateLimitKey);
+    // No recordSuccess here: this bucket is per IP only, so a success clearing it would let a
+    // second TOTP-enabled account's valid login reset failures accumulated guessing another's
+    // code. Failures simply age out of the window instead.
     logAuditEvent(user.id, user.username, "login");
 
     const allowedTypes = (

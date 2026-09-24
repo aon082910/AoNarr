@@ -123,6 +123,25 @@ describe("sendEmail", () => {
     expect(activeServer.dataPayloads[0]).toContain("line three");
   });
 
+  it("normalizes bare LF line endings in the body to CRLF, which strict relays require in DATA", async () => {
+    activeServer = await startFakeSmtpServer();
+
+    // The shape the default notification templates produce ("{mediaTitle}\n{releaseTitle}").
+    await sendEmail(baseConfig(activeServer.port), "Subject", "Movie Title\nRelease.Name.1080p");
+
+    const payload = activeServer.dataPayloads[0];
+    expect(payload).toContain("Movie Title\r\nRelease.Name.1080p\r\n");
+    expect(payload).not.toMatch(/(^|[^\r])\n/);
+  });
+
+  it("dot-stuffs a '.' line that follows a bare LF, not just one after CRLF", async () => {
+    activeServer = await startFakeSmtpServer();
+
+    await sendEmail(baseConfig(activeServer.port), "Subject", "line one\n.\nline three");
+
+    expect(activeServer.dataPayloads[0]).toContain("line one\r\n..\r\nline three");
+  });
+
   it("rejects with the SMTP error when a command is refused", async () => {
     activeServer = await startFakeSmtpServer({ rejectCommand: "MAIL FROM" });
 
@@ -143,5 +162,16 @@ describe("sendEmailWithAttachment", () => {
     expect(payload).toContain("Content-Transfer-Encoding: base64");
     expect(payload).toContain(Buffer.from("fake epub bytes").toString("base64"));
     expect(payload).toContain("Enjoy your book");
+  });
+
+  it("normalizes bare LF line endings in the text part to CRLF", async () => {
+    activeServer = await startFakeSmtpServer();
+    const attachment = { filename: "book.epub", content: Buffer.from("fake epub bytes"), contentType: "application/epub+zip" };
+
+    await sendEmailWithAttachment(baseConfig(activeServer.port), "Send to Kindle", "Enjoy\nyour book", attachment);
+
+    const payload = activeServer.dataPayloads[0];
+    expect(payload).toContain("Enjoy\r\nyour book\r\n");
+    expect(payload).not.toMatch(/(^|[^\r])\n/);
   });
 });

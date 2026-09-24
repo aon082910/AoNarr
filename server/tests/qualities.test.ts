@@ -39,7 +39,7 @@ describe("DELETE /api/qualities/:id", () => {
     expect(await db.prepare("SELECT id FROM qualities WHERE id = ?").get(id)).toBeTruthy();
   });
 
-  it("drops the deleted quality from every profile's allowed list, falling back to the highest-ranked remaining quality if that empties it, and moves the cutoff down when it was the deleted quality", async () => {
+  it("drops the deleted quality from every profile's allowed list (falling back to the nearest lower tier if that empties it), and moves a cutoff that was the deleted quality DOWN", async () => {
     await db.prepare("DELETE FROM quality_profiles").run();
     await db.prepare("DELETE FROM qualities").run();
     await db.prepare("INSERT INTO qualities (name, rank) VALUES ('Low', 0)").run();
@@ -66,10 +66,13 @@ describe("DELETE /api/qualities/:id", () => {
 
     const updated = (await db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(profile)) as any;
     expect(JSON.parse(updated.allowed_qualities)).toEqual(["Low", "High"]);
-    expect(updated.cutoff).toBe("High"); // moved down from the deleted "Mid" to the highest-ranked remaining allowed quality
+    // Moved DOWN to the best allowed tier below the deleted one — never up to "High", which would
+    // turn every file at the old cutoff into an upgrade target.
+    expect(updated.cutoff).toBe("Low");
 
     const soleUpdated = (await db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(soleAllowedProfile)) as any;
-    expect(JSON.parse(soleUpdated.allowed_qualities)).toEqual(["High"]); // emptied, so falls back to the overall highest-ranked remaining quality
-    expect(soleUpdated.cutoff).toBe("High");
+    // Emptied, so replaced by the nearest tier — lower first.
+    expect(JSON.parse(soleUpdated.allowed_qualities)).toEqual(["Low"]);
+    expect(soleUpdated.cutoff).toBe("Low");
   });
 });

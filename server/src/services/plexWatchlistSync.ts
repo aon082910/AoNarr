@@ -14,12 +14,45 @@ function plexThumbUrl(thumb: unknown): string | null {
   return /^https?:\/\//i.test(thumb) ? thumb : `https://metadata-static.plex.tv${thumb}`;
 }
 
+const WATCHLIST_PAGE_SIZE = 100;
+const WATCHLIST_MAX_PAGES = 100;
+
 async function fetchWatchlistItems(token: string): Promise<any[]> {
-  const url = `${DISCOVER_BASE}/library/sections/watchlist/all?includeCollections=1&includeExternalMedia=1`;
-  const res = await fetch(url, { headers: { Accept: "application/json", "X-Plex-Token": token } });
-  if (!res.ok) throw new Error(`Plex watchlist request failed: HTTP ${res.status}`);
+  const url = `${DISCOVER_BASE}/library/sections/watchlist/all?includeCollections=1&includeExternalMedia=1&includeGuids=1`;
+  const items: any[] = [];
+  let start = 0;
+  for (let page = 0; page < WATCHLIST_MAX_PAGES; page++) {
+    const res = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "X-Plex-Token": token,
+        "X-Plex-Container-Start": String(start),
+        "X-Plex-Container-Size": String(WATCHLIST_PAGE_SIZE),
+      },
+    });
+    if (!res.ok) throw new Error(`Plex watchlist request failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+    const metadata: any[] = body?.MediaContainer?.Metadata ?? [];
+    items.push(...metadata);
+    start += metadata.length;
+    const total = Number(body?.MediaContainer?.totalSize);
+    if (metadata.length === 0 || (Number.isFinite(total) ? start >= total : metadata.length < WATCHLIST_PAGE_SIZE)) break;
+  }
+  return items;
+}
+
+/** Watchlist listing entries identify an item only by Plex's own `plex://movie/...` guid — the
+ * tmdb/imdb ids are on the item's full Discover metadata record, fetched here when missing. */
+async function resolveExternalIds(token: string, item: any): Promise<Record<string, string>> {
+  const ids = parsePlexExternalIds(item);
+  if (ids.tmdb || !item.ratingKey) return ids;
+  const res = await fetch(`${DISCOVER_BASE}/library/metadata/${encodeURIComponent(String(item.ratingKey))}`, {
+    headers: { Accept: "application/json", "X-Plex-Token": token },
+  });
+  if (!res.ok) throw new Error(`Plex metadata request for "${item.title}" failed: HTTP ${res.status}`);
   const body: any = await res.json();
-  return body?.MediaContainer?.Metadata ?? [];
+  const detail = body?.MediaContainer?.Metadata?.[0];
+  return detail ? { ...ids, ...parsePlexExternalIds(detail) } : ids;
 }
 
 async function existingTmdbIds(type: string): Promise<Set<string>> {
@@ -72,7 +105,8 @@ export async function runPlexWatchlistSync(): Promise<{ added: number; error?: s
 
   for (const item of items) {
     try {
-      const ids = parsePlexExternalIds(item);
+      if (item.type !== "movie" && item.type !== "show") continue;
+      const ids = await resolveExternalIds(token, item);
       const tmdbId = ids.tmdb;
       if (!tmdbId) continue; // no reliable id to match against — skip rather than guess by title
 

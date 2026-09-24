@@ -105,6 +105,31 @@ describe("checkIndexerHealth", () => {
     expect(fetchMock.mock.calls[0][0]).toBe("https://feed.example.com/rss.xml");
   });
 
+  it("ddl: probes the substituted template with the same bearer key a search sends, never via FlareSolverr", async () => {
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    setSetting("flaresolverrUrl", "http://fs.local");
+    try {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
+      vi.stubGlobal("fetch", fetchMock);
+      const indexer = makeIndexer({ protocol: "ddl", url: "https://ddl.example.com/search?q={query}", apiKey: "ddl-key", useFlareSolverr: 1 });
+
+      await expect(checkIndexerHealth(indexer)).resolves.toEqual({ ok: true });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][0]).toBe("https://ddl.example.com/search?q=test");
+      expect((fetchMock.mock.calls[0][1] as any).headers.Authorization).toBe("Bearer ddl-key");
+    } finally {
+      setSetting("flaresolverrUrl", "");
+    }
+  });
+
+  it("ddl: reports the HTTP status when the API rejects the probe", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 401 }));
+    const indexer = makeIndexer({ protocol: "ddl", url: "https://ddl.example.com/search?q={query}" });
+
+    await expect(checkIndexerHealth(indexer)).resolves.toEqual({ ok: false, error: "HTTP 401" });
+  });
+
   it("returns ok:false with the HTTP status on a non-OK response", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 503, text: async () => "" }));
 

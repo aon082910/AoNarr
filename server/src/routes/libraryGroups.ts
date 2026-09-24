@@ -100,9 +100,11 @@ libraryGroupsRouter.get(
       cur = cur.parent_group_id ? await db.prepare("SELECT * FROM library_groups WHERE id = ?").get(cur.parent_group_id) : null;
     }
 
-    const levels = getMediaTypeConfig(row.media_type).groupLevels ?? [];
-    const depth = levelIndex(row.media_type, row.kind);
-    const isDeepest = depth === levels.length - 1;
+    // Groups created before a type dropped (or changed) its groupLevels still exist and are still
+    // referenced by media_items.group_id — show them as a leaf rather than 400ing on read.
+    const levels = (isValidMediaType(row.media_type) ? getMediaTypeConfig(row.media_type).groupLevels : undefined) ?? [];
+    const depth = levels.indexOf(row.kind);
+    const isDeepest = depth === -1 || depth === levels.length - 1;
     const counts = (await groupCounts(row.media_type)).get(row.id) ?? { total: 0, have: 0 };
 
     res.json({
@@ -121,6 +123,9 @@ libraryGroupsRouter.post(
     const { mediaType, kind, name, parentGroupId, website, logoUrl } = req.body ?? {};
     if (!mediaType || !isValidMediaType(mediaType)) throw new HttpError(400, "mediaType is required");
     if (!name || typeof name !== "string") throw new HttpError(400, "name is required");
+    if ((getMediaTypeConfig(mediaType).groupLevels ?? []).length === 0) {
+      throw new HttpError(410, `Library groups are no longer supported for media type "${mediaType}"`);
+    }
     const depth = levelIndex(mediaType, kind);
 
     if (depth === 0 && parentGroupId) throw new HttpError(400, "Top-level groups can't have a parent");

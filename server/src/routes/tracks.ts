@@ -8,15 +8,8 @@ import { fetchAlbumTracksFor } from "../services/metadata.js";
 export const tracksRouter = Router();
 tracksRouter.use(requireAdmin);
 
-tracksRouter.get(
-  "/subitems/:subItemId/tracks",
-  asyncHandler(async (req, res) => {
-    const rows = await db
-      .prepare("SELECT * FROM tracks WHERE sub_item_id = ? ORDER BY track_number")
-      .all(req.params.subItemId);
-    res.json(rows.map(trackFromRow));
-  })
-);
+// The read-only track list (GET /subitems/:subItemId/tracks) lives in media.ts, behind the same
+// per-item visibility gate household accounts get on the album page — not this router's admin gate.
 
 /** Lazily fetches (and caches) the track list for an album from MusicBrainz. */
 tracksRouter.post(

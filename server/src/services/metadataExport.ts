@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { getMediaTypeConfig } from "./mediaTypes.js";
 import { log } from "./logger.js";
+import { fetchMediaServerArtwork, isMediaServerArtworkRef } from "./mediaServer.js";
 
 function escapeXml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -143,6 +144,14 @@ export async function fetchPosterBuffer(posterUrl: string | null, localPath?: st
   // route, which `posterUrl` would otherwise point at. `fetch()` also can't resolve that route's
   // path-only URL at all outside a browser (no scheme/host to resolve it against), so this isn't
   // just an optimization — without it, every local-poster item's export silently got no poster.jpg.
+  if (isMediaServerArtworkRef(localPath)) {
+    try {
+      const res = await fetchMediaServerArtwork(localPath);
+      return res ? Buffer.from(await res.arrayBuffer()) : null;
+    } catch {
+      return null;
+    }
+  }
   if (localPath) {
     try {
       return fs.readFileSync(localPath);

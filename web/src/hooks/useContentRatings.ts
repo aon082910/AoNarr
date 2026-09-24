@@ -10,6 +10,11 @@ async function loadContentRatings(): Promise<string[]> {
     inflight = api.get<string[]>("/content-ratings").then((data) => {
       cache = data;
       return data;
+    }).catch((e) => {
+      // Forget the failed attempt so the next caller retries instead of reusing this rejection
+      // for the rest of the session.
+      inflight = null;
+      throw e;
     });
   }
   return inflight;
@@ -21,9 +26,11 @@ export function useContentRatings(): string[] {
 
   useEffect(() => {
     let cancelled = false;
-    loadContentRatings().then((data) => {
-      if (!cancelled) setRatings(data);
-    });
+    loadContentRatings()
+      .then((data) => {
+        if (!cancelled) setRatings(data);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };

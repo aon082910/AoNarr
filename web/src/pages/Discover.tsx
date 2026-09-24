@@ -62,6 +62,9 @@ export default function Discover() {
       navigate(`/media/${item.mediaItemId}`);
       return;
     }
+    // /add/preview is an admin-only route; a household account would fall through to the
+    // catch-all redirect and be dumped on the Dashboard. Its card's Request button is the action.
+    if (!auth.isAdmin) return;
     const state: AddPreviewState = {
       type: item.type,
       result: {
@@ -145,8 +148,14 @@ export default function Discover() {
           {visible.map((item) => {
             const key = keyFor(item);
             const alreadyRequested = requested.has(key);
+            const clickable = auth.isAdmin || (item.inLibrary && !!item.mediaItemId);
             return (
-              <div key={key} className="card" onClick={() => openPreview(item)}>
+              <div
+                key={key}
+                className={clickable ? "card" : "card static"}
+                style={clickable ? undefined : { cursor: "default" }}
+                onClick={() => openPreview(item)}
+              >
                 <div className="poster" style={item.posterUrl ? { backgroundImage: `url(${item.posterUrl})` } : undefined}>
                   {!item.posterUrl && "No poster"}
                 </div>

@@ -350,3 +350,75 @@ describe("buildMediaQuery", () => {
     expect(result.params).toEqual(["12"]);
   });
 });
+
+// SQLite only: Postgres has no FTS index, and its q filter matches an item's own title only.
+describe("free-text search follows episodes/sub-items moved to a different item", () => {
+  async function insertParent(type: "series" | "artist", title: string): Promise<number> {
+    return Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES (?, ?, ?, 1, 0, 'unknown')`)
+          .run(type, title, title.toLowerCase())
+      ).lastInsertRowid
+    );
+  }
+
+  async function insertSubItem(mediaItemId: number, title: string): Promise<number> {
+    return Number((await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file) VALUES (?, ?, 0)").run(mediaItemId, title)).lastInsertRowid);
+  }
+
+  async function idsMatchingSearch(q: string): Promise<number[]> {
+    const query = await buildMediaQuery({ q, allowedTypes: null });
+    const rows = (await db.prepare(`SELECT m.id FROM ${query.fromClause} WHERE ${query.where}`).all(...query.params)) as { id: number }[];
+    return rows.map((r) => Number(r.id));
+  }
+
+  it("a re-parented episode or sub-item is found under its new item, not the old one (e.g. a series split)", async () => {
+    if (db.dialect === "postgres") return;
+    const oldShow = await insertParent("series", "Split Source Show");
+    const newShow = await insertParent("series", "Split Target Show");
+    const episodeId = Number(
+      (
+        await db
+          .prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?, 2, 1, 'Platypus Reunion', 1, 0)")
+          .run(oldShow)
+      ).lastInsertRowid
+    );
+    await db.prepare("UPDATE episodes SET media_item_id = ? WHERE id = ?").run(newShow, episodeId);
+    expect(await idsMatchingSearch("Platypus Reunion")).toEqual([newShow]);
+
+    const oldArtist = await insertParent("artist", "Move Source Band");
+    const newArtist = await insertParent("artist", "Move Target Band");
+    const subItemId = await insertSubItem(oldArtist, "Echidna Anthology");
+    await db.prepare("UPDATE sub_items SET media_item_id = ? WHERE id = ?").run(newArtist, subItemId);
+    expect(await idsMatchingSearch("Echidna Anthology")).toEqual([newArtist]);
+  });
+
+  it("the startup upgrade replaces an outdated title-only trigger and re-points entries that already drifted", async () => {
+    if (db.dialect === "postgres") return;
+    const { db: rawDb, upgradeFtsReparentTriggers } = await import("../src/db/client.js");
+    // The trigger as it shipped before it tracked media_item_id.
+    rawDb.exec(`
+      DROP TRIGGER trg_fts_sub_items_au;
+      CREATE TRIGGER trg_fts_sub_items_au AFTER UPDATE OF title ON sub_items BEGIN
+        UPDATE library_search_fts SET title = new.title, match_detail = new.title WHERE match_type = 'child' AND source_id = old.id;
+      END;
+    `);
+    const from = await insertParent("artist", "Drift Source Band");
+    const to = await insertParent("artist", "Drift Target Band");
+    const subItemId = await insertSubItem(from, "Numbat Rarities");
+    await db.prepare("UPDATE sub_items SET media_item_id = ? WHERE id = ?").run(to, subItemId);
+    expect(await idsMatchingSearch("Numbat Rarities")).toEqual([from]); // the stale entry the old trigger left behind
+
+    upgradeFtsReparentTriggers();
+
+    const trigger = rawDb.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_fts_sub_items_au'").get() as { sql: string };
+    expect(trigger.sql).toContain("media_item_id");
+    expect(await idsMatchingSearch("Numbat Rarities")).toEqual([to]);
+
+    // Idempotent, and later moves are tracked by the recreated trigger.
+    upgradeFtsReparentTriggers();
+    await db.prepare("UPDATE sub_items SET media_item_id = ? WHERE id = ?").run(from, subItemId);
+    expect(await idsMatchingSearch("Numbat Rarities")).toEqual([from]);
+  });
+});

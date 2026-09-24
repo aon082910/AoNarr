@@ -66,8 +66,43 @@ describe("POST /api/custom-formats — validateAndNormalizeGroups", () => {
     const res = await request(app)
       .post("/api/custom-formats")
       .set("X-Api-Key", apiKey)
-      .send({ name: "Extended Source CF", conditionGroups: [{ type: "source", sources: ["Cam", "Telesync"], negate: false }] });
+      .send({ name: "Extended Source CF", conditionGroups: [{ type: "source", sources: ["Cam", "Telesync", "Telecine", "Workprint"], negate: false }] });
     expect(res.status).toBe(201);
+    expect(res.body.conditionGroups[0].sources).toEqual(["Cam", "Telesync", "Telecine", "Workprint"]);
+  });
+
+  it("PATCH runs the same normalization — edition/qualityModifier/releaseType groups survive an edit instead of collapsing to title", async () => {
+    const created = await request(app)
+      .post("/api/custom-formats")
+      .set("X-Api-Key", apiKey)
+      .send({ name: "Patched CF", conditionGroups: [{ type: "title", patterns: ["x265"], negate: false }] });
+    expect(created.status).toBe(201);
+
+    const res = await request(app)
+      .patch(`/api/custom-formats/${created.body.id}`)
+      .set("X-Api-Key", apiKey)
+      .send({
+        conditionGroups: [
+          { type: "edition", patterns: ["criterion"], negate: true },
+          { type: "qualityModifier", qualityModifiers: ["BRDISK"], negate: false },
+          { type: "releaseType", releaseTypes: ["Multi"], negate: false },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.conditionGroups).toEqual([
+      { type: "edition", patterns: ["criterion"], negate: true },
+      { type: "qualityModifier", qualityModifiers: ["brdisk"], negate: false },
+      { type: "releaseType", releaseTypes: ["multi"], negate: false },
+    ]);
+  });
+
+  it("rejects a resolution outside the vocabulary", async () => {
+    const res = await request(app)
+      .post("/api/custom-formats")
+      .set("X-Api-Key", apiKey)
+      .send({ name: "Bad Resolution CF", conditionGroups: [{ type: "resolution", resolutions: ["540p"], negate: false }] });
+    expect(res.status).toBe(400);
   });
 
   it("accepts the extended resolution vocabulary (480p/576p)", async () => {

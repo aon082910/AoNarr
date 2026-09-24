@@ -190,15 +190,26 @@ mediaRouter.post(
     // a multi-item delete can't leave some rows removed and others not; reuses the same cascade
     // helper the single-item DELETE /:id route already uses instead of duplicating its recycle/
     // exclusion/delete logic a second time.
+    //
+    // The files are recycled only after COMMIT: a cross-device recycle can take minutes, and on
+    // SQLite an open BEGIN on the one shared connection makes every other request's
+    // db.transaction() throw for that whole time (and a rollback can't un-move a file). By then the
+    // rows are gone, so the recycle_bin entries get a null media_item_id — what ON DELETE SET NULL
+    // leaves them with anyway.
     let deleted = 0;
+    const toRecycle: { row: any; files: string[] }[] = [];
     await db.transaction(async () => {
       for (const id of mediaItemIds) {
         const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(id)) as any;
         if (!row) continue;
-        await deleteMediaItemCascade(row, !!deleteFiles, !!addExclusion);
+        const files = await deleteMediaItemCascade(row, !!deleteFiles, !!addExclusion, { deferRecycle: true });
+        if (files.length > 0) toRecycle.push({ row, files });
         deleted++;
       }
     });
+    for (const { row, files } of toRecycle) {
+      for (const file of files) await recycleFile(file, row.type, row.title, null);
+    }
 
     if (deleted > 0) {
       const actor = auditActor(req);
@@ -685,20 +696,22 @@ mediaRouter.get(
     const fmt = format === "json" ? "json" : format === "plexmatch" ? "plexmatch" : "nfo";
 
     const rows = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[];
+    const names = uniqueExportNames(rows);
     const zip = new AdmZip();
-    for (const row of rows) {
+    for (const [i, row] of rows.entries()) {
       const item = toExportable(row);
+      const name = names[i];
       if (fmt === "plexmatch") {
         // Must be named exactly ".plexmatch" inside the item's own folder — never per-title-named
         // like .nfo/.json, since that's not a filename Plex looks for.
-        zip.addFile(`${safeFileName(item.title)}/.plexmatch`, Buffer.from(buildPlexMatch(item), "utf-8"));
+        zip.addFile(`${name}/.plexmatch`, Buffer.from(buildPlexMatch(item), "utf-8"));
         const poster = await fetchPosterBuffer(item.posterUrl, row.local_poster_path);
-        if (poster) zip.addFile(`${safeFileName(item.title)}/poster.jpg`, poster);
+        if (poster) zip.addFile(`${name}/poster.jpg`, poster);
       } else {
         const body = fmt === "json" ? buildJson(item) : buildNfo(item);
-        zip.addFile(`${safeFileName(item.title)}.${fmt}`, Buffer.from(body, "utf-8"));
+        zip.addFile(`${name}.${fmt}`, Buffer.from(body, "utf-8"));
         const poster = await fetchPosterBuffer(item.posterUrl, row.local_poster_path);
-        if (poster) zip.addFile(`${safeFileName(item.title)}-poster.jpg`, poster);
+        if (poster) zip.addFile(`${name}-poster.jpg`, poster);
       }
     }
     res.setHeader("Content-Disposition", `attachment; filename="aonarr-${type}-metadata.zip"`);
@@ -717,12 +730,13 @@ mediaRouter.get(
     if (!type) throw new HttpError(400, "type is required");
 
     const rows = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[];
+    const names = uniqueExportNames(rows);
     const zip = new AdmZip();
-    for (const row of rows) {
+    for (const [i, row] of rows.entries()) {
       const item = toExportable(row);
-      zip.addFile(`${safeFileName(item.title)}/metadata.opf`, Buffer.from(buildCalibreOpf(item), "utf-8"));
+      zip.addFile(`${names[i]}/metadata.opf`, Buffer.from(buildCalibreOpf(item), "utf-8"));
       const cover = await fetchPosterBuffer(item.posterUrl, row.local_poster_path);
-      if (cover) zip.addFile(`${safeFileName(item.title)}/cover.jpg`, cover);
+      if (cover) zip.addFile(`${names[i]}/cover.jpg`, cover);
     }
     res.setHeader("Content-Disposition", `attachment; filename="aonarr-${type}-calibre.zip"`);
     res.setHeader("Content-Type", "application/zip");
@@ -779,6 +793,26 @@ function toExportable(row: any): ExportableItem {
   };
 }
 
+/** One zip entry base name per row for the bulk exports. adm-zip's addFile silently replaces an
+ * existing entry of the same name, so same-titled items ("Dune" 1984 and 2021) used to collapse
+ * into one sidecar/poster: a shared title gets its year, and a still-shared name gets the id.
+ * Compared case-insensitively since the zip is usually extracted onto a case-insensitive disk. */
+function uniqueExportNames(rows: any[]): string[] {
+  const titleCounts = new Map<string, number>();
+  for (const row of rows) {
+    const key = safeFileName(row.title).toLowerCase();
+    titleCounts.set(key, (titleCounts.get(key) ?? 0) + 1);
+  }
+  const used = new Set<string>();
+  return rows.map((row) => {
+    const base = safeFileName(row.title);
+    let name = (titleCounts.get(base.toLowerCase()) ?? 0) > 1 && row.year ? `${base} (${row.year})` : base;
+    if (used.has(name.toLowerCase())) name = `${name} [${row.id}]`;
+    used.add(name.toLowerCase());
+    return name;
+  });
+}
+
 /** Individual metadata export — ?format=nfo (default, Kodi/Jellyfin/Emby-compatible sidecar,
  * round-trips through Add Media's "Load NFO"), ?format=json, or ?format=plexmatch (Plex's own
  * match-override file; unlike the other two, it must be renamed to exactly ".plexmatch" and
@@ -794,7 +828,9 @@ mediaRouter.get(
     const format = req.query.format === "json" ? "json" : req.query.format === "plexmatch" ? "plexmatch" : "nfo";
     const body = format === "json" ? buildJson(item) : format === "plexmatch" ? buildPlexMatch(item) : buildNfo(item);
     const filename = format === "plexmatch" ? ".plexmatch" : `${safeFileName(item.title)}.${format}`;
-    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    // res.attachment adds an RFC 5987 filename* — a raw non-Latin-1 title (a CJK artist name) in a
+    // plain filename="..." makes setHeader throw ERR_INVALID_CHAR.
+    res.attachment(filename);
     res.setHeader("Content-Type", format === "json" ? "application/json" : "text/plain");
     res.send(body);
   })
@@ -972,9 +1008,36 @@ mediaRouter.get(
     const rows = await db
       .prepare("SELECT * FROM history WHERE media_item_id = ? ORDER BY created_at DESC LIMIT 200")
       .all(req.params.id);
-    res.json(rows.map(historyEventFromRow));
+    const events = rows.map(historyEventFromRow);
+    res.json(req.auth?.isAdmin ? events : events.map((e) => ({ ...e, data: redactHistoryData(e.data) })));
   })
 );
+
+/** A 'grabbed' event's data is the whole release object, whose downloadUrl carries the indexer's
+ * API key (Newznab/Prowlarr ?apikey=, Jackett's jackett_apikey=) or a private tracker's passkey —
+ * fine for the admin-only Activity page, but this per-item route is also open to household
+ * accounts, so every URL-ish field is dropped for them. Unparseable data is dropped outright
+ * rather than passed through unchecked. */
+function redactHistoryData(data: string | null): string | null {
+  if (!data) return data;
+  const isUrl = (v: unknown) => typeof v === "string" && /^(https?|magnet|ftp):/i.test(v);
+  const strip = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.filter((v) => !isUrl(v)).map(strip);
+    if (!value || typeof value !== "object") return value;
+    const out: Record<string, unknown> = {};
+    for (const [key, v] of Object.entries(value)) {
+      if (/url|link|magnet|guid/i.test(key) || isUrl(v)) continue;
+      out[key] = strip(v);
+    }
+    return out;
+  };
+  try {
+    const parsed: unknown = JSON.parse(data);
+    return isUrl(parsed) ? null : JSON.stringify(strip(parsed));
+  } catch {
+    return null;
+  }
+}
 
 /** On-demand corrupt-file check for a "single" shape item (movie/rom/adult) — the full library
  * scan lives in the scheduled Corrupt Media Check job; this is for checking just this one item
@@ -1283,6 +1346,12 @@ mediaRouter.post(
 
     const b = req.body ?? {};
     if (!b.title) throw new HttpError(400, "title is required");
+    // The old match's content rating/genres describe a different title — keeping them left the
+    // household rating gate and the genre facets judging this item by what it used to be matched to.
+    // Search results rarely carry either, so they're usually cleared and the refresh kicked off
+    // below fills them in from the new match's by-id lookup.
+    const contentRating = typeof b.contentRating === "string" && CONTENT_RATING_ORDER.includes(b.contentRating) ? b.contentRating : null;
+    const genres = Array.isArray(b.genres) ? b.genres.filter((g: unknown) => typeof g === "string") : [];
 
     await db
       .prepare(
@@ -1290,7 +1359,7 @@ mediaRouter.post(
         // token this item may have had (services/localArtwork.ts) is now stale, orphaned against
         // an old match, so it's cleared here rather than left pointing at a file the new match's
         // own poster_url no longer references.
-        "UPDATE media_items SET title = ?, sort_title = ?, year = ?, overview = ?, poster_url = ?, local_poster_path = NULL, local_poster_token = NULL, external_ids = ?, release_date = ?, backdrop_url = ?, local_backdrop_path = NULL, local_backdrop_token = NULL, rating = ?, runtime_minutes = ?, studio = ? WHERE id = ?"
+        "UPDATE media_items SET title = ?, sort_title = ?, year = ?, overview = ?, poster_url = ?, local_poster_path = NULL, local_poster_token = NULL, external_ids = ?, release_date = ?, backdrop_url = ?, local_backdrop_path = NULL, local_backdrop_token = NULL, rating = ?, runtime_minutes = ?, studio = ?, content_rating = ?, genres = ? WHERE id = ?"
       )
       .run(
         b.title,
@@ -1304,6 +1373,8 @@ mediaRouter.post(
         b.rating ?? null,
         b.runtimeMinutes ?? null,
         b.studio ?? null,
+        contentRating,
+        genres.length > 0 ? JSON.stringify(genres) : null,
         req.params.id
       );
 
@@ -1320,6 +1391,7 @@ mediaRouter.post(
     }
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "media_rematched", `"${(existing as any).title}" → "${b.title}"`);
+    refreshOneMediaItem(row.id).catch((err) => log.warn(`[rematch] follow-up refresh of item ${row.id} failed:`, (err as Error).message));
     res.json(mediaItemFromRow(row));
   })
 );
@@ -1449,21 +1521,33 @@ async function addImportExclusion(row: any): Promise<void> {
     .run(row.type, row.title, row.year ?? null, externalId, externalProvider, "Excluded on delete");
 }
 
-/** Shared by the single-item DELETE route below and the root-folder cascade-delete option
- * (routes/rootFolders.ts) — same "untrack only by default, ?deleteFiles=1 also recycles the
- * file(s)" behavior either way. */
-export async function deleteMediaItemCascade(row: any, deleteFiles: boolean, addExclusion = false): Promise<void> {
+/** Shared by the single-item DELETE route below, the bulk remove above and the root-folder
+ * cascade-delete option (routes/rootFolders.ts) — same "untrack only by default, ?deleteFiles=1
+ * also recycles the file(s)" behavior either way. With `deferRecycle`, nothing on disk is touched:
+ * the file paths that should be recycled are returned instead, for a caller running inside a DB
+ * transaction to recycle once it has committed. */
+export async function deleteMediaItemCascade(
+  row: any,
+  deleteFiles: boolean,
+  addExclusion = false,
+  options: { deferRecycle?: boolean } = {}
+): Promise<string[]> {
   if (addExclusion) await addImportExclusion(row);
+  const files: string[] = [];
   if (deleteFiles) {
-    if (row.path) await recycleFile(row.path, row.type, row.title, row.id);
+    if (row.path) files.push(row.path);
     const children = (
       (await db.prepare("SELECT file_path FROM episodes WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id)) as any[]
     ).concat(
       (await db.prepare("SELECT file_path FROM sub_items WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id)) as any[]
     );
-    for (const child of children) await recycleFile(child.file_path, row.type, row.title, row.id);
+    for (const child of children) files.push(child.file_path);
+  }
+  if (!options.deferRecycle) {
+    for (const file of files) await recycleFile(file, row.type, row.title, row.id);
   }
   await db.prepare("DELETE FROM media_items WHERE id = ?").run(row.id);
+  return options.deferRecycle ? files : [];
 }
 
 mediaRouter.delete(
@@ -1693,6 +1777,22 @@ mediaRouter.get(
       subItem: { id: subItemRow.id, title: subItemRow.title },
       parent: { id: parentRow.id, title: parentRow.title, type: parentRow.type },
     });
+  })
+);
+
+/** An album's/audiobook's track list, for the sub-item detail page — the only way a household
+ * account can reach the track route above, so it gets the same parent visibility gate rather than
+ * tracksRouter's blanket admin-only one. */
+mediaRouter.get(
+  "/subitems/:subItemId/tracks",
+  asyncHandler(async (req, res) => {
+    const subItemRow = (await db.prepare("SELECT media_item_id FROM sub_items WHERE id = ?").get(req.params.subItemId)) as
+      | { media_item_id: number }
+      | undefined;
+    if (!subItemRow) throw new HttpError(404, "Sub-item not found");
+    await loadVisibleParent(req, String(subItemRow.media_item_id));
+    const rows = await db.prepare("SELECT * FROM tracks WHERE sub_item_id = ? ORDER BY track_number").all(req.params.subItemId);
+    res.json(rows.map(trackFromRow));
   })
 );
 

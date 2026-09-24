@@ -301,13 +301,30 @@ export default function MediaDetail() {
   // Item -> item navigation (a TMDB collection part, a series sibling) reuses this mounted
   // component rather than remounting it, so a slower response for the previous id resolving after
   // a newer navigation would otherwise overwrite the new item's header/episodes with the old one's.
+  // load() reads the id from a ref, not its render's closure: a handler that awaited a slow
+  // mutation calls the load() it captured at click time, which would otherwise refetch the item
+  // the admin has since navigated away from and win the ordering guard as the newest request.
   const loadRequestRef = useRef(0);
+  const idRef = useRef(id);
+  idRef.current = id;
+  const [loadError, setLoadError] = useState<string | null>(null);
   function load() {
     const requestId = ++loadRequestRef.current;
     setItem(null);
-    api.get<MediaDetailResponse>(`/media/${id}`).then((data) => {
-      if (loadRequestRef.current === requestId) setItem(data);
-    });
+    setLoadError(null);
+    api.get<MediaDetailResponse>(`/media/${idRef.current}`).then(
+      (data) => {
+        if (loadRequestRef.current === requestId) setItem(data);
+      },
+      (e) => {
+        if (loadRequestRef.current === requestId) setLoadError((e as Error).message);
+      }
+    );
+  }
+
+  /** Applies a post-await update only while that same item is still the one on screen. */
+  function patchItem(itemId: number, update: (prev: MediaDetailResponse) => MediaDetailResponse) {
+    setItem((prev) => (prev && prev.id === itemId ? update(prev) : prev));
   }
 
   useEffect(load, [id]);
@@ -367,7 +384,8 @@ export default function MediaDetail() {
     if (isAdmin) api.get<RootFolder[]>("/root-folders").then(setRootFolders);
     if (isAdmin) api.get<QualityProfile[]>("/quality-profiles").then(setQualityProfiles);
     if (isAdmin) api.get<Record<string, string>>("/settings").then((s) => setExternalUrl(s.externalUrl ?? ""));
-    api.get<Collection[]>("/collections").then(setAllCollections);
+    // Smart collections compute their own membership, so the add route rejects them.
+    if (isAdmin) api.get<Collection[]>("/collections").then((all) => setAllCollections(all.filter((c) => !c.smartFilter)));
   }, [isAdmin]);
 
   useEffect(() => {
@@ -384,9 +402,13 @@ export default function MediaDetail() {
 
   async function addToCollection() {
     if (!item || !collectionToAdd) return;
-    await api.post(`/collections/${collectionToAdd}/items`, { mediaItemId: item.id });
-    setCollectionToAdd("");
-    notify.success("Added to collection.");
+    try {
+      await api.post(`/collections/${collectionToAdd}/items`, { mediaItemId: item.id });
+      setCollectionToAdd("");
+      notify.success("Added to collection.");
+    } catch (e) {
+      notify.error((e as Error).message);
+    }
   }
 
   async function addCollectionPart(part: TmdbCollectionPart) {
@@ -415,26 +437,30 @@ export default function MediaDetail() {
   async function addTagToItem() {
     if (!item || !tagToAdd) return;
     const updatedTags = await api.post<Tag[]>(`/media/${item.id}/tags`, { tagId: tagToAdd });
-    setItem({ ...item, tags: updatedTags });
+    patchItem(item.id, (prev) => ({ ...prev, tags: updatedTags }));
     setTagToAdd("");
   }
 
   async function removeTagFromItem(tagId: number) {
     if (!item) return;
     await api.del(`/media/${item.id}/tags/${tagId}`);
-    setItem({ ...item, tags: item.tags.filter((t) => t.id !== tagId) });
+    patchItem(item.id, (prev) => ({ ...prev, tags: prev.tags.filter((t) => t.id !== tagId) }));
   }
 
   async function toggleMonitored() {
     if (!item) return;
-    const updated = await api.patch<MediaItem>(`/media/${item.id}`, { monitored: item.monitored ? 0 : 1 });
-    setItem({ ...item, monitored: updated.monitored });
+    try {
+      const updated = await api.patch<MediaItem>(`/media/${item.id}`, { monitored: item.monitored ? 0 : 1 });
+      patchItem(item.id, (prev) => ({ ...prev, monitored: updated.monitored }));
+    } catch (e) {
+      notify.error((e as Error).message);
+    }
   }
 
   async function toggleProtected() {
     if (!item) return;
     const updated = await api.patch<MediaItem>(`/media/${item.id}`, { protected: item.protected ? 0 : 1 });
-    setItem({ ...item, protected: updated.protected });
+    patchItem(item.id, (prev) => ({ ...prev, protected: updated.protected }));
   }
 
   async function applyRematch(result: MetadataSearchResult) {
@@ -451,8 +477,8 @@ export default function MediaDetail() {
       runtimeMinutes: result.runtimeMinutes,
       studio: result.studio,
     });
-    setItem({
-      ...item,
+    patchItem(item.id, (prev) => ({
+      ...prev,
       title: updated.title,
       year: updated.year,
       overview: updated.overview,
@@ -462,8 +488,17 @@ export default function MediaDetail() {
       rating: updated.rating,
       runtimeMinutes: updated.runtimeMinutes,
       studio: updated.studio,
-    });
+      contentRating: updated.contentRating,
+      genres: updated.genres,
+    }));
     setShowSearchMatch(false);
+    // The server drops the old match's rating/genres/local artwork and refreshes from the new match
+    // in the background, so refetch the full item rather than keep showing what it used to be.
+    // Best-effort: the rematch itself already succeeded.
+    api
+      .get<MediaDetailResponse>(`/media/${item.id}`)
+      .then((fresh) => patchItem(item.id, () => fresh))
+      .catch(() => {});
   }
 
   async function toggleWatched() {
@@ -473,6 +508,7 @@ export default function MediaDetail() {
     const result = await api.patch<{ watched: boolean; mediaServerError: string | null }>(`/media/${item.id}/watch-state`, {
       watched: next,
     });
+    if (String(item.id) !== idRef.current) return;
     setWatched(result.watched);
     if (result.mediaServerError) setWatchStateError(`Marked in AoNarr, but couldn't update the media server: ${result.mediaServerError}`);
   }
@@ -480,13 +516,13 @@ export default function MediaDetail() {
   async function updateContentRating(rating: string | null) {
     if (!item) return;
     const updated = await api.patch<MediaItem>(`/media/${item.id}`, { contentRating: rating });
-    setItem({ ...item, contentRating: updated.contentRating });
+    patchItem(item.id, (prev) => ({ ...prev, contentRating: updated.contentRating }));
   }
 
   // Item → item navigation (a TMDB collection part, a series sibling) reuses this mounted
   // component, so per-item panels must reset or B's page opens with A's history listed under it —
-  // or worse, with A's still-open edit-metadata/artwork/move/split modal silently applying its
-  // stale fields to B on save.
+  // or worse, with A's still-open edit-metadata/artwork/move/split/import modal silently applying
+  // its stale fields (e.g. A's episode ids as import targets) to B on save.
   useEffect(() => {
     setHistory(null);
     setShowHistory(false);
@@ -506,6 +542,24 @@ export default function MediaDetail() {
     setTarget(null);
     setSearching(false);
     setError(null);
+    setShowImport(false);
+    setImportTargets({});
+    setImportChecked({});
+    setImportOnlyEpisodeId(null);
+    setImportOnlySeasonNumber(null);
+    setImportSubItemId("");
+    setBrowseEntries([]);
+    setBrowsePath("");
+    setBrowseAnyFolder(false);
+    setBrowseParent(null);
+    setCustomFolderInput("");
+    setAiGuesses({});
+    setShowMetadataSources(false);
+    setSourcesError(null);
+    setMergeChoice({ title: "current", year: "current", overview: "current", posterUrl: "current" });
+    setShowSearchMatch(false);
+    setShowRenamePreview(false);
+    setCollectionToAdd("");
   }, [id]);
 
   // Opens the History modal — Modal's own close button/overlay-click/Escape handles hiding it
@@ -568,7 +622,7 @@ export default function MediaDetail() {
       // item has a file on disk) — see writeNfoSidecar in routes/media.ts, so a media server
       // picks up the correction on its next scan instead of only AoNarr knowing about it.
       const updated = await api.patch<MediaItem>(`/media/${item.id}`, payload);
-      setItem({ ...item, ...updated });
+      patchItem(item.id, (prev) => ({ ...prev, ...updated }));
       setShowEditMetadata(false);
     } catch (e) {
       setError((e as Error).message);
@@ -776,11 +830,16 @@ export default function MediaDetail() {
     setSourcesError(null);
     try {
       const updated = await api.post<MediaDetailResponse & { episodesAdded?: number }>(`/media/${item.id}/metadata/fetch`, { provider });
-      setItem({ ...item, extraMetadata: updated.extraMetadata, externalIds: updated.externalIds });
+      patchItem(item.id, (prev) => ({ ...prev, extraMetadata: updated.extraMetadata, externalIds: updated.externalIds }));
       // Episodes merge in immediately (non-destructive add-only, so there's no "which source wins"
       // choice to make first) — the 4-field merge table above still needs an explicit Apply, so
-      // only the episode side effect gets a toast here.
-      if (updated.episodesAdded) notify.success(`${provider}: added ${updated.episodesAdded} missing episode(s)`);
+      // only the episode side effect gets a toast here. The fetch response is the bare item row,
+      // so the newly added episodes only reach the season list/import targets via a refetch.
+      if (updated.episodesAdded) {
+        notify.success(`${provider}: added ${updated.episodesAdded} missing episode(s)`);
+        const fresh = await api.get<MediaDetailResponse>(`/media/${item.id}`);
+        patchItem(item.id, () => fresh);
+      }
     } catch (err) {
       // Shown inside the Metadata Sources modal itself (sourcesError), not the shared page-level
       // `error` banner — that banner sits in the page body, which this modal's own overlay covers,
@@ -805,6 +864,7 @@ export default function MediaDetail() {
     setApplyingMerge(true);
     setSourcesError(null);
     try {
+      const providers = metadataProviders[item.type] ?? [];
       const payload = {
         title: mergedValue(item, "title", mergeChoice.title),
         year: mergedValue(item, "year", mergeChoice.year),
@@ -812,11 +872,13 @@ export default function MediaDetail() {
         posterUrl: mergedValue(item, "posterUrl", mergeChoice.posterUrl),
         // Clears the fetched-from-other-providers scratch data now that it's been folded into the
         // item's own fields — without this the merge table kept showing the same stale fetch
-        // results forever, looking like "Apply" hadn't done anything.
-        extraMetadata: {},
+        // results forever, looking like "Apply" hadn't done anything. Only the provider keys go:
+        // extra_metadata also holds non-provider data (an Adult item's `performers`), which has
+        // no other source to be rebuilt from once erased.
+        extraMetadata: Object.fromEntries(Object.entries(item.extraMetadata).filter(([key]) => !providers.includes(key))),
       };
       await api.patch(`/media/${item.id}`, payload);
-      setItem({ ...item, ...payload });
+      patchItem(item.id, (prev) => ({ ...prev, ...payload }));
       setMergeChoice({ title: "current", year: "current", overview: "current", posterUrl: "current" });
     } catch (err) {
       setSourcesError((err as Error).message);
@@ -828,7 +890,7 @@ export default function MediaDetail() {
   async function saveGroup() {
     if (!item || !pendingGroupId) return;
     const updated = await api.patch<{ groupId: number | null }>(`/media/${item.id}`, { groupId: pendingGroupId });
-    setItem({ ...item, groupId: updated.groupId });
+    patchItem(item.id, (prev) => ({ ...prev, groupId: updated.groupId }));
     setShowMove(false);
   }
 
@@ -867,32 +929,44 @@ export default function MediaDetail() {
 
   async function toggleSeasonMonitor(seasonNumber: number, monitored: boolean) {
     if (!item) return;
-    const updated = await api.patch<Episode[]>(`/media/${item.id}/season/${seasonNumber}/monitor`, { monitored });
-    setItem({
-      ...item,
-      children: (item.children as Episode[]).map((ep) => {
-        const replacement = updated.find((u) => u.id === ep.id);
-        return replacement ?? ep;
-      }),
-    });
+    try {
+      const updated = await api.patch<Episode[]>(`/media/${item.id}/season/${seasonNumber}/monitor`, { monitored });
+      patchItem(item.id, (prev) => ({
+        ...prev,
+        children: (prev.children as Episode[]).map((ep) => {
+          const replacement = updated.find((u) => u.id === ep.id);
+          return replacement ?? ep;
+        }),
+      }));
+    } catch (e) {
+      notify.error((e as Error).message);
+    }
   }
 
   async function toggleEpisodeMonitored(ep: Episode) {
     if (!item) return;
-    const updated = await api.patch<Episode>(`/media/${item.id}/episodes/${ep.id}`, { monitored: ep.monitored ? 0 : 1 });
-    setItem({
-      ...item,
-      children: (item.children as Episode[]).map((e) => (e.id === ep.id ? updated : e)),
-    });
+    try {
+      const updated = await api.patch<Episode>(`/media/${item.id}/episodes/${ep.id}`, { monitored: ep.monitored ? 0 : 1 });
+      patchItem(item.id, (prev) => ({
+        ...prev,
+        children: (prev.children as Episode[]).map((e) => (e.id === ep.id ? updated : e)),
+      }));
+    } catch (e) {
+      notify.error((e as Error).message);
+    }
   }
 
   async function toggleSubItemMonitored(si: SubItem) {
     if (!item) return;
-    const updated = await api.patch<SubItem>(`/media/${item.id}/subitems/${si.id}`, { monitored: si.monitored ? 0 : 1 });
-    setItem({
-      ...item,
-      children: (item.children as SubItem[]).map((c) => (c.id === si.id ? updated : c)),
-    });
+    try {
+      const updated = await api.patch<SubItem>(`/media/${item.id}/subitems/${si.id}`, { monitored: si.monitored ? 0 : 1 });
+      patchItem(item.id, (prev) => ({
+        ...prev,
+        children: (prev.children as SubItem[]).map((c) => (c.id === si.id ? updated : c)),
+      }));
+    } catch (e) {
+      notify.error((e as Error).message);
+    }
   }
 
   async function syncSceneNumbering() {
@@ -924,7 +998,7 @@ export default function MediaDetail() {
     try {
       const params = new URLSearchParams();
       if (t?.episodeId) params.set("episodeId", String(t.episodeId));
-      else if (t?.seasonNumber) params.set("seasonNumber", String(t.seasonNumber));
+      else if (t?.seasonNumber != null) params.set("seasonNumber", String(t.seasonNumber));
       if (t?.subItemId) params.set("subItemId", String(t.subItemId));
       const qs = params.toString();
       const res = await api.get<SearchResult[]>(`/search/${id}${qs ? `?${qs}` : ""}`);
@@ -1023,7 +1097,7 @@ export default function MediaDetail() {
       `/media/${item.id}/artwork/select`,
       as === "poster" ? { posterUrl: url } : { backdropUrl: url }
     );
-    setItem({ ...item, posterUrl: updated.posterUrl, backdropUrl: updated.backdropUrl });
+    patchItem(item.id, (prev) => ({ ...prev, posterUrl: updated.posterUrl, backdropUrl: updated.backdropUrl }));
     setShowArtwork(false);
   }
 
@@ -1068,15 +1142,24 @@ export default function MediaDetail() {
     if (onlySeasonNumber != null) episodes = episodes.filter((ep) => ep.seasonNumber === onlySeasonNumber);
     const nextTargets: Record<string, number | ""> = {};
     const nextChecked: Record<string, boolean> = {};
+    const mediaFileCount = res.entries.filter((e) => e.isMediaFile).length;
     for (const e of res.entries) {
       if (!e.isMediaFile) continue;
       const target =
         onlyEpisodeId != null ? onlyEpisodeId : shape === "episodic" ? guessEpisodeIdForFile(e.name, episodes) : subItemDefault;
       nextTargets[e.path] = target;
-      nextChecked[e.path] = target !== "";
+      // A single-file item (movie/ROM/...) has no per-row target to pick, so only a folder's
+      // lone media file is pre-checked — never every unrelated file sitting beside it.
+      nextChecked[e.path] = shape === "single" ? mediaFileCount === 1 : target !== "";
     }
     setImportTargets(nextTargets);
     setImportChecked(nextChecked);
+  }
+
+  /** Whether a browsed file counts toward "Import checked files" — a single-shape item imports
+   * straight onto the item itself, so it needs no episode/child target the way the others do. */
+  function isImportable(path: string) {
+    return !!importChecked[path] && (shape === "single" || (importTargets[path] ?? "") !== "");
   }
 
   /** Opens Manual Import pre-targeted at one sub-item (Album/Book/Lesson/etc.), same role
@@ -1174,7 +1257,7 @@ export default function MediaDetail() {
   async function manualImportBatch() {
     if (!item) return;
     const files = browseEntries
-      .filter((e) => e.isMediaFile && importChecked[e.path] && importTargets[e.path] !== "")
+      .filter((e) => e.isMediaFile && isImportable(e.path))
       .map((e) => ({
         sourcePath: e.path,
         episodeId: shape === "episodic" ? (importTargets[e.path] as number) : null,
@@ -1204,7 +1287,7 @@ export default function MediaDetail() {
     }
   }
 
-  if (!item) return <p className="empty">Loading...</p>;
+  if (!item) return <p className="empty">{loadError ?? "Loading..."}</p>;
 
   const typeInfo = mediaTypes.find((t) => t.key === item.type);
   // legacyShape (see MediaItem.legacyShape) is only ever set on a not-yet-converted course/adult
@@ -1787,7 +1870,7 @@ export default function MediaDetail() {
         </div>
       )}
 
-      {allCollections.length > 0 && (
+      {isAdmin && allCollections.length > 0 && (
         <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 12 }}>
           <select
             value={collectionToAdd}
@@ -1850,7 +1933,7 @@ export default function MediaDetail() {
                   value={item.minimumAvailability ?? "announced"}
                   onChange={async (e) => {
                     const updated = await api.patch<MediaItem>(`/media/${item.id}`, { minimumAvailability: e.target.value });
-                    setItem({ ...item, minimumAvailability: updated.minimumAvailability });
+                    patchItem(item.id, (prev) => ({ ...prev, minimumAvailability: updated.minimumAvailability }));
                   }}
                 >
                   <option value="announced">Announced — search immediately</option>
@@ -1867,7 +1950,7 @@ export default function MediaDetail() {
                   value={item.seriesType ?? "standard"}
                   onChange={async (e) => {
                     const updated = await api.patch<MediaItem>(`/media/${item.id}`, { seriesType: e.target.value });
-                    setItem({ ...item, seriesType: updated.seriesType });
+                    patchItem(item.id, (prev) => ({ ...prev, seriesType: updated.seriesType }));
                   }}
                   title="Daily searches/matches releases by air date (e.g. talk shows, news) instead of season/episode"
                 >
@@ -2007,9 +2090,9 @@ export default function MediaDetail() {
               </button>
             ))}
           </div>
-          {Object.keys(item.extraMetadata).length > 0 &&
+          {Object.keys(item.extraMetadata).some((key) => metadataProviders[item.type].includes(key)) &&
             (() => {
-              const providers = Object.entries(item.extraMetadata);
+              const providers = Object.entries(item.extraMetadata).filter(([key]) => metadataProviders[item.type].includes(key));
               const row = (
                 field: "title" | "year" | "overview" | "posterUrl",
                 label: string,
@@ -2240,7 +2323,14 @@ export default function MediaDetail() {
                         <input
                           type="checkbox"
                           checked={!!importChecked[e.path]}
-                          onChange={(ev) => setImportChecked((prev) => ({ ...prev, [e.path]: ev.target.checked }))}
+                          onChange={(ev) => {
+                            const checked = ev.target.checked;
+                            // Every file for a single-file item lands on the same destination path,
+                            // so a second checked file would silently overwrite the first.
+                            setImportChecked((prev) =>
+                              shape === "single" ? (checked ? { [e.path]: true } : {}) : { ...prev, [e.path]: checked }
+                            );
+                          }}
                         />
                       )}
                     </td>
@@ -2319,12 +2409,12 @@ export default function MediaDetail() {
             <button
               type="button"
               style={{ marginTop: 8 }}
-              disabled={importingBatch || Object.entries(importChecked).filter(([p, c]) => c && importTargets[p] !== "").length === 0}
+              disabled={importingBatch || browseEntries.filter((e) => e.isMediaFile && isImportable(e.path)).length === 0}
               onClick={manualImportBatch}
             >
               {importingBatch
                 ? "Importing..."
-                : `Import ${Object.entries(importChecked).filter(([p, c]) => c && importTargets[p] !== "").length} checked file(s)`}
+                : `Import ${browseEntries.filter((e) => e.isMediaFile && isImportable(e.path)).length} checked file(s)`}
             </button>
           </div>
         </Modal>
@@ -2673,7 +2763,7 @@ export default function MediaDetail() {
                             </td>
                             <td>{ep.airDate ?? "-"}</td>
                             <td>
-                              <MonitorToggle monitored={!!ep.monitored} onToggle={() => toggleEpisodeMonitored(ep)} />
+                              <MonitorToggle monitored={!!ep.monitored} onToggle={() => toggleEpisodeMonitored(ep)} readOnly={!isAdmin} />
                             </td>
                             <td>
                               <span className={`badge ${ep.hasFile ? "ok" : ""}`}>{ep.hasFile ? "Downloaded" : "Missing"}</span>
@@ -2783,7 +2873,7 @@ export default function MediaDetail() {
                   <td>{si.title}</td>
                   <td>{si.releaseDate ?? "-"}</td>
                   <td onClick={(e) => e.stopPropagation()}>
-                    <MonitorToggle monitored={!!si.monitored} onToggle={() => toggleSubItemMonitored(si)} />
+                    <MonitorToggle monitored={!!si.monitored} onToggle={() => toggleSubItemMonitored(si)} readOnly={!isAdmin} />
                   </td>
                   <td>
                     <span className={`badge ${si.hasFile ? "ok" : ""}`}>{si.hasFile ? "Downloaded" : "Missing"}</span>

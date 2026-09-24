@@ -36,6 +36,8 @@ function toTarget(r: CutoffUnmetRow) {
   return { mediaItemId: r.mediaItemId, episodeId: r.episodeId, subItemId: r.subItemId };
 }
 
+const BULK_SEARCH_CHUNK = 100;
+
 /** Radarr/Sonarr-style "Cutoff Unmet" page — everything already downloaded whose current quality
  * still ranks below its own quality profile's cutoff, with the same per-row/bulk re-search flow
  * Missing.tsx uses for items with no file at all. */
@@ -72,11 +74,19 @@ export default function CutoffUnmet() {
   async function searchRows(targets: CutoffUnmetRow[]) {
     setSearching(true);
     try {
-      const results = await api.post<{ grabbed: boolean; error?: string }[]>("/search/bulk", {
-        targets: targets.map(toTarget),
-      });
-      const grabbedCount = results.filter((r) => r.grabbed).length;
-      notify.success(`Grabbed ${grabbedCount} of ${results.length} item(s).`);
+      // POST /search/bulk rejects more than BULK_SEARCH_CHUNK targets per request, and a page can
+      // hold up to 250 rows.
+      let grabbedCount = 0;
+      for (let i = 0; i < targets.length; i += BULK_SEARCH_CHUNK) {
+        const results = await api.post<{ grabbed: boolean; error?: string }[]>("/search/bulk", {
+          targets: targets.slice(i, i + BULK_SEARCH_CHUNK).map(toTarget),
+        });
+        grabbedCount += results.filter((r) => r.grabbed).length;
+      }
+      notify.success(`Grabbed ${grabbedCount} of ${targets.length} item(s).`);
+      load();
+    } catch (e) {
+      notify.error((e as Error).message);
       load();
     } finally {
       setSearching(false);

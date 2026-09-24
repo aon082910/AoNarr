@@ -1061,6 +1061,29 @@ describe("fetchSeriesEpisodesFor", () => {
     expect(await metadata.fetchSeriesEpisodesFor({ tvdb: "9" })).toEqual([{ seasonNumber: 1, episodeNumber: 1, title: null, airDate: null, overview: null }]);
   });
 
+  it("TVDB: follows links.next across pages instead of stopping at the first page of episodes", async () => {
+    setSetting("tvdbApiKey", "k");
+    const fetchMock = stub([
+      { test: (u) => u.includes("/v4/login"), response: ok({ data: { token: "t" } }) },
+      {
+        test: (u) => u.includes("/v4/series/9/episodes/default"),
+        response: (u: string) => {
+          const page = new URL(u).searchParams.get("page");
+          if (page === "0") {
+            return ok({ data: { episodes: [{ seasonNumber: 1, number: 1 }] }, links: { next: "https://api4.thetvdb.com/v4/series/9/episodes/default?page=1" } });
+          }
+          if (page === "1") return ok({ data: { episodes: [{ seasonNumber: 30, number: 5 }] }, links: { next: null } });
+          throw new Error(`unexpected TVDB page ${page}`);
+        },
+      },
+    ]);
+    expect(await metadata.fetchSeriesEpisodesFor({ tvdb: "9" })).toEqual([
+      { seasonNumber: 1, episodeNumber: 1, title: null, airDate: null, overview: null },
+      { seasonNumber: 30, episodeNumber: 5, title: null, airDate: null, overview: null },
+    ]);
+    expect(fetchMock.mock.calls.filter((c) => String(c[0]).includes("/episodes/default"))).toHaveLength(2);
+  });
+
   it("Trakt: aggregates episodes across multiple real seasons, and defaults title/overview to null when absent", async () => {
     setSetting("traktClientId", "cid");
     stub([
@@ -1242,6 +1265,55 @@ describe("fetchAlbumTracksFor", () => {
   it("Deezer: maps track fields with a positional fallback", async () => {
     stub([{ test: (u) => u.includes("api.deezer.com/album/9/tracks"), response: ok({ data: [{ title: "T1", duration: 200 }, { track_position: 5, title: "T2", duration: 180 }] }) }]);
     expect(await metadata.fetchAlbumTracksFor("deezer", "9")).toEqual([{ trackNumber: 1, title: "T1", durationSeconds: 200 }, { trackNumber: 5, title: "T2", durationSeconds: 180 }]);
+  });
+
+  it("Deezer: numbers a multi-disc album continuously instead of restarting at 1 on every disc", async () => {
+    stub([
+      {
+        test: (u) => u.includes("api.deezer.com/album/11/tracks"),
+        response: ok({
+          data: [
+            { disk_number: 1, track_position: 1, title: "D1T1", duration: 100 },
+            { disk_number: 1, track_position: 2, title: "D1T2", duration: 100 },
+            { disk_number: 1, track_position: 3, title: "D1T3", duration: 100 },
+            { disk_number: 2, track_position: 1, title: "D2T1", duration: 100 },
+            { disk_number: 2, track_position: 2, title: "D2T2", duration: 100 },
+          ],
+        }),
+      },
+    ]);
+    const tracks = await metadata.fetchAlbumTracksFor("deezer", "11");
+    expect(tracks.map((t) => [t.trackNumber, t.title])).toEqual([
+      [1, "D1T1"],
+      [2, "D1T2"],
+      [3, "D1T3"],
+      [4, "D2T1"],
+      [5, "D2T2"],
+    ]);
+  });
+
+  it("Deezer: requests a large page and follows `next` so a long album isn't cut off", async () => {
+    const fetchMock = stub([
+      {
+        test: (u) => u.includes("api.deezer.com/album/12/tracks"),
+        response: (u: string) => {
+          const index = new URL(u).searchParams.get("index");
+          if (index === "0") {
+            return ok({ data: [{ track_position: 1, title: "A" }, { track_position: 2, title: "B" }], total: 3, next: "https://api.deezer.com/album/12/tracks?index=2" });
+          }
+          if (index === "2") return ok({ data: [{ track_position: 3, title: "C" }], total: 3 });
+          throw new Error(`unexpected Deezer index ${index}`);
+        },
+      },
+    ]);
+    const tracks = await metadata.fetchAlbumTracksFor("deezer", "12");
+    expect(tracks.map((t) => [t.trackNumber, t.title])).toEqual([
+      [1, "A"],
+      [2, "B"],
+      [3, "C"],
+    ]);
+    expect(fetchMock.mock.calls).toHaveLength(2);
+    expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get("limit")).toBe("500");
   });
 
   it("throws for a provider with no track-listing implementation", async () => {

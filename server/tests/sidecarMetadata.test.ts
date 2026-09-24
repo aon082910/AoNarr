@@ -48,6 +48,15 @@ describe("findShowSidecar", () => {
     expect(result?.title).toBe("Breaking Bad");
   });
 
+  it("treats a 'Specials' folder as a season folder, finding the show's tvshow.nfo one level up", async () => {
+    const showDir = tmpDir();
+    const specialsDir = path.join(showDir, "Specials");
+    fs.mkdirSync(specialsDir);
+    fs.writeFileSync(path.join(showDir, "tvshow.nfo"), TVSHOW_NFO);
+    const result = await findShowSidecar(specialsDir);
+    expect(result?.title).toBe("Breaking Bad");
+  });
+
   it("returns null when no tvshow.nfo exists at either level", async () => {
     const dir = tmpDir();
     expect(await findShowSidecar(dir)).toBeNull();

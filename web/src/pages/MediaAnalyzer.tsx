@@ -202,11 +202,16 @@ export default function MediaAnalyzer() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(() => Number(localStorage.getItem("aonarr_media_analyzer_page_size")) || 60);
   const { sortRows, sortableHeader } = useSortableTable<AnalysisItem, "title">("title");
+  // The all-libraries request is much slower than a single-type one, so switching type right after
+  // opening the page could otherwise let it land last and overwrite the selected type's data.
+  const loadSeq = useRef(0);
 
   function load() {
+    const seq = ++loadSeq.current;
     setLoading(true);
     setStatFilter(null);
     setSelected(new Set());
+    setPage(1);
     setLoadError(null);
     // Cleared up front, not just on success — otherwise a failed reload after switching type kept
     // showing the previous type's stats/file list with no indication it's stale/wrong-type data.
@@ -214,9 +219,9 @@ export default function MediaAnalyzer() {
     const qs = type ? `?type=${type}` : "";
     api
       .get<AnalysisResponse>(`/media-analysis${qs}`)
-      .then(setData)
-      .catch((e) => setLoadError((e as Error).message))
-      .finally(() => setLoading(false));
+      .then((res) => seq === loadSeq.current && setData(res))
+      .catch((e) => seq === loadSeq.current && setLoadError((e as Error).message))
+      .finally(() => seq === loadSeq.current && setLoading(false));
   }
 
   /** Clicking the same row again clears the filter instead of re-applying it — a quick "toggle off". */
@@ -254,6 +259,8 @@ export default function MediaAnalyzer() {
         grabbed += results.filter((r) => r.grabbed).length;
       }
       notify.success(`Grabbed ${grabbed} of ${targets.length} item(s).`);
+    } catch (e) {
+      notify.error((e as Error).message);
     } finally {
       setSearching(false);
     }

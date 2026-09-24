@@ -121,8 +121,10 @@ export async function checkIndexerHealth(indexer: Indexer): Promise<{ ok: boolea
     } else if (indexer.protocol === "ddl") {
       // A DDL indexer's URL is a template containing the literal "{query}" placeholder (enforced by
       // the admin UI) — substitute a real search term the same way searchDdl does, rather than
-      // hitting the un-substituted template verbatim.
-      url = indexer.url.replace("{query}", encodeURIComponent("test"));
+      // hitting the un-substituted template verbatim. Sent exactly as searchDdl sends it (bearer
+      // key, never via FlareSolverr), or an auth-protected API that searches fine reads as down.
+      const res = await fetchDdl(indexer, indexer.url.replace("{query}", encodeURIComponent("test")), 10_000);
+      return res.ok ? { ok: true } : { ok: false, error: `HTTP ${res.status}` };
     } else {
       url = indexer.url;
     }
@@ -257,6 +259,15 @@ function getByDotPath(obj: any, dotPath: string | null | undefined): any {
   return dotPath.split(".").reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
 }
 
+function fetchDdl(indexer: Indexer, url: string, timeoutMs: number): Promise<Response> {
+  return withNetworkRetry(() =>
+    fetch(url, {
+      headers: indexer.apiKey ? { Authorization: `Bearer ${indexer.apiKey}` } : {},
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+  );
+}
+
 /** Generic JSON search API adapter. The admin supplies `indexer.url` as a template containing
  * `{query}` (URL-encoded on substitution) and `indexer.config` as a DdlIndexerConfig describing
  * where the results array lives in the response and which fields map to what — this makes it
@@ -274,12 +285,7 @@ async function searchDdl(indexer: Indexer, query: string): Promise<SearchResult[
   }
 
   const url = indexer.url.replace("{query}", encodeURIComponent(query));
-  const res = await withNetworkRetry(() =>
-    fetch(url, {
-      headers: indexer.apiKey ? { Authorization: `Bearer ${indexer.apiKey}` } : {},
-      signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
-    })
-  );
+  const res = await fetchDdl(indexer, url, SEARCH_TIMEOUT_MS);
   if (!res.ok) throw new Error(`Indexer "${indexer.name}" returned HTTP ${res.status}`);
   const body = await res.json();
 

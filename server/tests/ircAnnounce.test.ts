@@ -32,14 +32,14 @@ async function insertProfile(overrides: { allowedQualities?: string[]; minFormat
   );
 }
 
-async function insertMovie(title: string, qualityProfileId: number | null): Promise<number> {
+async function insertMovie(title: string, qualityProfileId: number | null, year: number | null = null): Promise<number> {
   return Number(
     (
       await db
         .prepare(
-          `INSERT INTO media_items (type, title, sort_title, monitored, has_file, status, quality_profile_id) VALUES ('movie', ?, ?, 1, 0, 'unknown', ?)`
+          `INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status, quality_profile_id) VALUES ('movie', ?, ?, ?, 1, 0, 'unknown', ?)`
         )
-        .run(title, title.toLowerCase(), qualityProfileId)
+        .run(title, title.toLowerCase(), year, qualityProfileId)
     ).lastInsertRowid
   );
 }
@@ -134,6 +134,39 @@ describe("handleAnnounce — movies", () => {
     await handleAnnounce(FEED, announceText(releaseTitle));
 
     expect(grab).not.toHaveBeenCalled();
+  });
+
+  it("does not grab a same-title release from a different year", async () => {
+    const profileId = await insertProfile();
+    await insertMovie("Remade Movie", profileId, 2021);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Remade.Movie.1984.1080p.WEBDL-GRP"));
+
+    expect(grab).not.toHaveBeenCalled();
+  });
+
+  it("grabs for the item whose year matches when an original and its remake are both missing", async () => {
+    const profileId = await insertProfile();
+    await insertMovie("Twice Made Movie", profileId, 1984);
+    const remakeId = await insertMovie("Twice Made Movie", profileId, 2021);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Twice.Made.Movie.2021.1080p.WEBDL-GRP"));
+
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect((grab.mock.calls[0][1] as any).id).toBe(remakeId);
+  });
+
+  it("allows one year of slack between the release and the item", async () => {
+    const profileId = await insertProfile();
+    const id = await insertMovie("Festival Year Movie", profileId, 2020);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Festival.Year.Movie.2021.1080p.WEBDL-GRP"));
+
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect((grab.mock.calls[0][1] as any).id).toBe(id);
   });
 
   it("does not grab when the release scores below the profile's minimum format score", async () => {

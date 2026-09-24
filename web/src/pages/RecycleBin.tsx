@@ -3,7 +3,7 @@ import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { CorruptMediaReviewEntry, RecycleBinEntry } from "../types.js";
-import { formatBytes } from "../utils/format.js";
+import { formatBytes, formatServerTimestamp } from "../utils/format.js";
 import { RotateCcwIcon } from "../components/NavIcons.js";
 import { TrashIcon, XIcon } from "../components/ActionIcons.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
@@ -127,7 +127,7 @@ export default function RecycleBin() {
                   <td>{r.title}</td>
                   <td>{r.reason}</td>
                   <td title={r.filePath} style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.filePath}</td>
-                  <td>{new Date(r.detectedAt).toLocaleString()}</td>
+                  <td>{formatServerTimestamp(r.detectedAt)}</td>
                   <td style={{ display: "flex", gap: 6 }}>
                     <button type="button" className="icon-button danger" onClick={() => recycleReviewItem(r.id, r.title)} title="Recycle" aria-label="Recycle">
                       <TrashIcon />
@@ -225,7 +225,7 @@ function RecycledFilesTable({
             </td>
             <td title={e.originalPath} style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.originalPath}</td>
             <td>{formatBytes(e.sizeBytes)}</td>
-            <td>{new Date(e.deletedAt).toLocaleString()}</td>
+            <td>{formatServerTimestamp(e.deletedAt)}</td>
             <td style={{ display: "flex", gap: 6 }}>
               <button type="button" className="icon-button" onClick={() => onRestore(e.id)} disabled={e.restoring} title={e.restoring ? "Restoring..." : e.restoreError ? "Retry restore" : "Restore"} aria-label="Restore">
                 <RotateCcwIcon />

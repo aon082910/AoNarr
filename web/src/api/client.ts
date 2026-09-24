@@ -69,7 +69,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new ApiError(res.status, body, body.error ?? `Request failed: ${res.status}`);
   }
   if (res.status === 204) return undefined as T;
-  return res.json();
+  // A 2xx can still carry an empty body (e.g. a bare res.status(201).send()), which res.json()
+  // would reject on after the server already committed the change.
+  const text = await res.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 export const api = {

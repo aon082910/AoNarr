@@ -11,6 +11,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { decodeSlskdDownloadUrl } from "./soulseek.js";
 import { getSetting } from "./settingsStore.js";
+import { MEDIA_TYPES } from "./mediaTypes.js";
 
 /** Streams a fetch() body to disk with backpressure, and on any failure closes the write stream
  * and removes the partial file — a leftover partial in downloadsDir would otherwise be picked up
@@ -38,6 +39,14 @@ export interface GrabResult {
 
 export interface QueueStatusUpdate {
   downloadId: string;
+  /** Set when `downloadId` is a provisional id the adapter could only resolve now (qBittorrent: a
+   * magnet URL or a `tag:` placeholder standing in for a torrent hash it didn't have yet at add
+   * time) — the scheduler rewrites queue.download_id to this so every later poll, reprioritize,
+   * and remove call addresses the download by its real id. */
+  resolvedDownloadId?: string;
+  /** The download's own name at the client (qBittorrent's torrent name) — lets a queue row whose id
+   * can't be resolved any other way be matched back to it by release title. */
+  clientTitle?: string;
   progress: number; // 0-1
   status: "downloading" | "completed" | "failed";
   /** Absolute path this download's data lives at, in the CLIENT's own filesystem namespace — as
@@ -222,7 +231,39 @@ export async function testDownloadClientConnection(client: DownloadClient): Prom
   }
 }
 
-/** qBittorrent Web API (v4.1+) adapter. */
+const QBIT_TAG = "aonarr";
+const QBIT_PENDING_TAG_PREFIX = "aonarr-pending-";
+
+function base32ToHex(value: string): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = "";
+  for (const c of value.toUpperCase()) bits += alphabet.indexOf(c).toString(2).padStart(5, "0");
+  let hex = "";
+  for (let i = 0; i + 4 <= bits.length; i += 4) hex += parseInt(bits.slice(i, i + 4), 2).toString(16);
+  return hex;
+}
+
+/** A magnet link's v1 info-hash in the form qBittorrent reports it (40 lowercase hex chars) —
+ * magnets carry it either as hex or as 32-char base32. Null for anything else. */
+export function magnetInfoHash(url: string): string | null {
+  const match = /^magnet:\?.*?\bxt=urn:btih:([a-z0-9]+)/i.exec(url);
+  if (!match) return null;
+  if (/^[0-9a-f]{40}$/i.test(match[1])) return match[1].toLowerCase();
+  if (/^[a-z2-7]{32}$/i.test(match[1])) return base32ToHex(match[1]);
+  return null;
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** qBittorrent Web API (v4.1+) adapter.
+ *
+ * qBittorrent's add call returns no hash, but every status/priority/remove call is keyed by one —
+ * so the real info-hash is resolved at add time: parsed straight out of a magnet link, or (for a
+ * .torrent URL, which qBittorrent fetches itself, asynchronously) found again through a unique
+ * per-add tag. A torrent that still hasn't shown up by the end of that short wait keeps a
+ * `tag:<tag>` placeholder id that getStatus reports alongside the real hash, so the next queue poll
+ * rewrites it. Every add also carries a plain "aonarr" tag, which is what scopes seed-goal cleanup
+ * to AoNarr's own torrents on a client shared with other apps. */
 class QBittorrentAdapter implements DownloadClientAdapter {
   private cookieCache = new Map<number, string>();
 
@@ -263,47 +304,102 @@ class QBittorrentAdapter implements DownloadClientAdapter {
     return sid;
   }
 
-  async addDownload(client: DownloadClient, downloadUrl: string, category: string | null): Promise<GrabResult> {
-    const form = new URLSearchParams({ urls: downloadUrl });
-    if (category) form.set("category", category);
-
-    const res = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/add`, {
+  private async postForm(client: DownloadClient, endpoint: string, form: Record<string, string>): Promise<Response> {
+    return this.authedFetch(client, `${baseUrl(client)}/api/v2/${endpoint}`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: form,
+      body: new URLSearchParams(form),
     });
-    if (!res.ok) throw new Error(`qBittorrent add failed: HTTP ${res.status}`);
-
-    // qBittorrent doesn't return a hash on add; the caller tracks by downloadUrl until
-    // the next queue poll resolves it against /torrents/info.
-    return { downloadId: downloadUrl };
   }
 
-  async getStatus(client: DownloadClient, _downloadIds: string[]): Promise<QueueStatusUpdate[]> {
+  private async hashForTag(client: DownloadClient, tag: string): Promise<string | null> {
+    const res = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/info?tag=${encodeURIComponent(tag)}`);
+    if (!res.ok) return null;
+    const torrents = (await res.json()) as any[];
+    // Re-checked rather than trusting the filter: qBittorrent before 4.2 has no tags at all and
+    // silently ignores ?tag=, returning every torrent — the first of which isn't this one.
+    const match = torrents.find((t) =>
+      String(t.tags ?? "")
+        .split(",")
+        .map((s: string) => s.trim())
+        .includes(tag)
+    );
+    return typeof match?.hash === "string" ? match.hash : null;
+  }
+
+  /** The real hash behind whatever id a queue row holds — a hash as-is, a magnet's own btih, or a
+   * pending tag looked up live. A legacy .torrent-URL id (from before hashes were resolved at add
+   * time) has no way back to its torrent and comes back unchanged. */
+  private async resolveHash(client: DownloadClient, downloadId: string): Promise<string> {
+    if (downloadId.startsWith("tag:")) return (await this.hashForTag(client, downloadId.slice(4))) ?? downloadId;
+    return magnetInfoHash(downloadId) ?? downloadId;
+  }
+
+  async addDownload(client: DownloadClient, downloadUrl: string, category: string | null): Promise<GrabResult> {
+    const knownHash = magnetInfoHash(downloadUrl);
+    const pendingTag = knownHash ? null : `${QBIT_PENDING_TAG_PREFIX}${crypto.randomBytes(6).toString("hex")}`;
+    const form: Record<string, string> = { urls: downloadUrl, tags: pendingTag ? `${QBIT_TAG},${pendingTag}` : QBIT_TAG };
+    if (category) form.category = category;
+
+    const res = await this.postForm(client, "torrents/add", form);
+    if (!res.ok) throw new Error(`qBittorrent add failed: HTTP ${res.status}`);
+    if (knownHash) return { downloadId: knownHash };
+
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await sleep(attempt === 0 ? 250 : 750);
+      const hash = await this.hashForTag(client, pendingTag!).catch(() => null);
+      if (hash) {
+        await this.postForm(client, "torrents/removeTags", { hashes: hash, tags: pendingTag! }).catch(() => {});
+        await this.postForm(client, "torrents/deleteTags", { tags: pendingTag! }).catch(() => {});
+        return { downloadId: hash };
+      }
+    }
+    return { downloadId: `tag:${pendingTag}` };
+  }
+
+  async getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
     const res = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/info`);
     if (!res.ok) throw new Error(`qBittorrent status failed: HTTP ${res.status}`);
     const torrents = (await res.json()) as any[];
 
-    return torrents.map((t) => ({
-      downloadId: t.hash,
-      progress: t.progress ?? 0,
-      status: t.progress >= 1 ? "completed" : t.state === "error" ? "failed" : "downloading",
-      // content_path (API v2.8.4+) points straight at the torrent's actual file/folder; save_path
-      // is only the download root it was saved under. Older qBittorrent builds lack content_path
-      // entirely, so fall back to save_path rather than reporting no path at all.
-      remotePath: t.content_path || t.save_path || undefined,
-    }));
+    const updates: QueueStatusUpdate[] = [];
+    const byHash = new Map<string, QueueStatusUpdate>();
+    // libtorrent-2.x builds report a hybrid v1+v2 torrent's `hash` as its truncated v2 id; the v1
+    // hash a magnet's btih carries (and so a queue row keyed by it) only shows up as infohash_v1.
+    const byV1Hash = new Map<string, QueueStatusUpdate>();
+    for (const t of torrents) {
+      const update: QueueStatusUpdate = {
+        downloadId: t.hash,
+        progress: t.progress ?? 0,
+        status: t.progress >= 1 ? "completed" : t.state === "error" ? "failed" : "downloading",
+        // content_path (API v2.8.4+) points straight at the torrent's actual file/folder; save_path
+        // is only the download root it was saved under. Older qBittorrent builds lack content_path
+        // entirely, so fall back to save_path rather than reporting no path at all.
+        remotePath: t.content_path || t.save_path || undefined,
+        clientTitle: typeof t.name === "string" ? t.name : undefined,
+      };
+      updates.push(update);
+      byHash.set(String(t.hash).toLowerCase(), update);
+      if (t.infohash_v1) byV1Hash.set(String(t.infohash_v1).toLowerCase(), update);
+      for (const tag of String(t.tags ?? "").split(",").map((s) => s.trim())) {
+        if (tag.startsWith(QBIT_PENDING_TAG_PREFIX)) updates.push({ ...update, downloadId: `tag:${tag}`, resolvedDownloadId: t.hash });
+      }
+    }
+    // Queue rows still keyed by a magnet URL (grabbed before hashes were resolved at add time) are
+    // matched through the magnet's own btih, and a v1 hash through infohash_v1.
+    for (const id of downloadIds) {
+      const hash = magnetInfoHash(id) ?? (/^[0-9a-f]{40}$/i.test(id) ? id.toLowerCase() : null);
+      const update = hash ? (byHash.get(hash) ?? byV1Hash.get(hash)) : undefined;
+      if (update && update.downloadId !== id) updates.push({ ...update, downloadId: id, resolvedDownloadId: update.downloadId });
+    }
+    return updates;
   }
 
   /** qBittorrent orders torrents by queue position; `topPrio`/`bottomPrio` move one to either end
    * (there's no direct "set numeric priority" call in the Web API). */
   async setPriority(client: DownloadClient, downloadId: string, priority: "top" | "normal"): Promise<void> {
     const endpoint = priority === "top" ? "topPrio" : "bottomPrio";
-    const res = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/${endpoint}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ hashes: downloadId }),
-    });
+    const res = await this.postForm(client, `torrents/${endpoint}`, { hashes: await this.resolveHash(client, downloadId) });
     if (!res.ok) throw new Error(`qBittorrent ${endpoint} failed: HTTP ${res.status}`);
   }
 
@@ -348,8 +444,16 @@ class QBittorrentAdapter implements DownloadClientAdapter {
     // "uploading"/"stalledUP"/"queuedUP"/"pausedUP" states) is eligible — same reasoning as
     // qBittorrent's own state machine, so this can't accidentally remove an in-progress download.
     const seedingStates = new Set(["uploading", "stalledUP", "queuedUP", "pausedUP", "forcedUP"]);
+    // Only AoNarr's own torrents — its tag, or its configured category — never everything on a
+    // qBittorrent shared with Sonarr/Radarr or the user's own manual torrents (removing those on
+    // AoNarr's seed goal can mean hit-and-run penalties on their private trackers).
+    const isOwn = (t: any) =>
+      String(t.tags ?? "")
+        .split(",")
+        .map((s: string) => s.trim())
+        .includes(QBIT_TAG) || (!!client.category && t.category === client.category);
     const eligible = torrents.filter((t) => {
-      if (!seedingStates.has(t.state)) return false;
+      if (!isOwn(t) || !seedingStates.has(t.state)) return false;
       const ratioMet = ratioGoal !== null && (t.ratio ?? 0) >= ratioGoal;
       const timeMet = seedTimeGoalMinutes !== null && (t.seeding_time ?? 0) / 60 >= seedTimeGoalMinutes;
       return ratioMet || timeMet;
@@ -366,10 +470,9 @@ class QBittorrentAdapter implements DownloadClientAdapter {
   }
 
   async removeDownload(client: DownloadClient, downloadId: string, deleteFiles: boolean): Promise<void> {
-    const res = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/delete`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ hashes: downloadId, deleteFiles: deleteFiles ? "true" : "false" }),
+    const res = await this.postForm(client, "torrents/delete", {
+      hashes: await this.resolveHash(client, downloadId),
+      deleteFiles: deleteFiles ? "true" : "false",
     });
     if (!res.ok) throw new Error(`qBittorrent torrents/delete failed: HTTP ${res.status}`);
   }
@@ -437,6 +540,15 @@ class SabnzbdAdapter implements DownloadClientAdapter {
         const historyBody: any = await historyRes.json();
         const historySlots: any[] = historyBody?.history?.slots ?? [];
         for (const h of historySlots) {
+          // A job moves to history BEFORE post-processing finishes — it sits there as QuickCheck/
+          // Verifying/Repairing/Fetching/Extracting/Moving/Running/Queued until it's truly
+          // Completed or Failed (Sonarr/Radarr treat every one of those as still downloading too).
+          // Importing on any of them raced the extraction and either failed the grab or imported a
+          // half-written file.
+          if (h.status !== "Completed" && h.status !== "Failed") {
+            updates.push({ downloadId: h.nzo_id, progress: 0.99, status: "downloading" });
+            continue;
+          }
           updates.push({
             downloadId: h.nzo_id,
             progress: 1,
@@ -502,6 +614,88 @@ class SabnzbdAdapter implements DownloadClientAdapter {
 interface InProcessJob {
   progress: number;
   status: "downloading" | "completed" | "failed";
+  remotePath?: string;
+}
+
+/** Where an in-process job saves its files. A multi-file job (an album, a season pack) gets a folder
+ * of its own named for the release: loose in the downloads root, the importer can't tell its files
+ * from every other download's and imports only the one it matched. A single file stays in the root. */
+function inProcessJobDir(fileCount: number, releaseTitle: string | undefined, downloadId: string): string {
+  let dir = config.downloadsDir;
+  if (fileCount > 1) {
+    const name = sanitizeFilename(releaseTitle ?? "");
+    dir = path.join(config.downloadsDir, /^\.*$/.test(name) ? downloadId : name);
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** The job's completed state, pointing the importer at its own folder when it has one. */
+function completedJob(dir: string): InProcessJob {
+  return dir === config.downloadsDir ? { progress: 1, status: "completed" } : { progress: 1, status: "completed", remotePath: dir };
+}
+
+const EXTENSION_BY_CONTENT_TYPE: Record<string, string> = {
+  "video/x-matroska": ".mkv",
+  "video/mp4": ".mp4",
+  "video/x-m4v": ".m4v",
+  "video/x-msvideo": ".avi",
+  "video/avi": ".avi",
+  "video/quicktime": ".mov",
+  "video/x-ms-wmv": ".wmv",
+  "audio/mpeg": ".mp3",
+  "audio/mp3": ".mp3",
+  "audio/mp4": ".m4a",
+  "audio/x-m4a": ".m4a",
+  "audio/x-m4b": ".m4b",
+  "audio/flac": ".flac",
+  "audio/x-flac": ".flac",
+  "audio/ogg": ".ogg",
+  "audio/wav": ".wav",
+  "audio/x-wav": ".wav",
+  "application/epub+zip": ".epub",
+  "application/x-mobipocket-ebook": ".mobi",
+  "application/pdf": ".pdf",
+  "application/vnd.comicbook+zip": ".cbz",
+  "application/vnd.comicbook-rar": ".cbr",
+  "application/zip": ".zip",
+  "application/x-zip-compressed": ".zip",
+  "application/vnd.rar": ".rar",
+  "application/x-rar-compressed": ".rar",
+  "application/x-7z-compressed": ".7z",
+};
+
+// Everything the importer can pick up: a media type's own extensions, plus the archives it unpacks.
+const IMPORTABLE_EXTENSIONS = new Set([...Object.values(MEDIA_TYPES).flatMap((t) => t.extensions), ".zip", ".7z", ".rar"]);
+
+function filenameFromContentDisposition(header: string | null): string | null {
+  if (!header) return null;
+  const encoded = /filename\*\s*=\s*(?:[\w-]+'[^']*')?"?([^";]+)"?/i.exec(header);
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded[1].trim());
+    } catch {
+      return encoded[1].trim();
+    }
+  }
+  const plain = /filename\s*=\s*(?:"([^"]*)"|([^;]+))/i.exec(header);
+  return plain ? (plain[1] ?? plain[2]).trim() : null;
+}
+
+/** A DDL link like ".../download/12345" or ".../get.php?id=9" says nothing about what it serves, and
+ * the importer never looks at a ".bin"/".php" file — so an importable extension from the server's
+ * own filename or a URL wins, then the content type, and only then whatever a URL ends in. Both the
+ * final (post-redirect) URL and the requested one count: a named link commonly redirects to a signed
+ * CDN URL with no extension at all. */
+function downloadedFileExtension(res: Response, downloadUrl: string): string {
+  const clean = (ext: string) => (/^\.[a-z0-9]{1,5}$/i.test(ext) ? ext.toLowerCase() : "");
+  const named = [
+    clean(path.extname(filenameFromContentDisposition(res.headers.get("content-disposition")) ?? "")),
+    clean(path.extname(new URL(res.url || downloadUrl).pathname)),
+    clean(path.extname(new URL(downloadUrl).pathname)),
+  ];
+  const contentType = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  return named.find((ext) => IMPORTABLE_EXTENSIONS.has(ext)) ?? EXTENSION_BY_CONTENT_TYPE[contentType] ?? (named.find(Boolean) || ".bin");
 }
 
 /**
@@ -525,7 +719,7 @@ class HttpDownloadAdapter implements DownloadClientAdapter {
       try {
         const res = await fetch(downloadUrl);
         if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
-        const ext = path.extname(new URL(downloadUrl).pathname) || ".bin";
+        const ext = downloadedFileExtension(res, downloadUrl);
         const filename = sanitizeFilename(releaseTitle || path.basename(new URL(downloadUrl).pathname) || downloadId) + ext;
         fs.mkdirSync(config.downloadsDir, { recursive: true });
         const dest = path.join(config.downloadsDir, filename);
@@ -685,7 +879,7 @@ class RealDebridAdapter implements DownloadClientAdapter {
         }
         if (links.length === 0) throw new Error("Real-Debrid reported no files");
 
-        fs.mkdirSync(config.downloadsDir, { recursive: true });
+        const dir = inProcessJobDir(links.length, releaseTitle, downloadId);
         for (const link of links) {
           const unrestrictRes = await fetch(`${this.base}/unrestrict/link`, {
             method: "POST",
@@ -698,11 +892,11 @@ class RealDebridAdapter implements DownloadClientAdapter {
           const fileRes = await fetch(unrestricted.download);
           if (!fileRes.ok || !fileRes.body) throw new Error(`Downloading unrestricted link failed: HTTP ${fileRes.status}`);
           const filename = sanitizeFilename(unrestricted.filename || releaseTitle || downloadId);
-          const dest = path.join(config.downloadsDir, filename);
+          const dest = path.join(dir, filename);
           await saveBodyToFile(fileRes.body, dest);
         }
 
-        this.jobs.set(downloadId, { progress: 1, status: "completed" });
+        this.jobs.set(downloadId, completedJob(dir));
       } catch (err) {
         log.warn(`[real-debrid] failed for "${releaseTitle ?? downloadUrl}":`, (err as Error).message);
         this.jobs.set(downloadId, { progress: 0, status: "failed" });
@@ -810,7 +1004,7 @@ class TorBoxAdapter implements DownloadClientAdapter {
         }
         if (files.length === 0) throw new Error("TorBox reported no files");
 
-        fs.mkdirSync(config.downloadsDir, { recursive: true });
+        const dir = inProcessJobDir(files.length, releaseTitle, downloadId);
         for (const file of files) {
           const dlRes = await fetch(
             `${this.base}/${kind}/requestdl?token=${encodeURIComponent(client.apiKey ?? "")}&${idParam}=${itemId}&file_id=${file.id}`
@@ -823,11 +1017,11 @@ class TorBoxAdapter implements DownloadClientAdapter {
           const fileRes = await fetch(downloadLink);
           if (!fileRes.ok || !fileRes.body) throw new Error(`Downloading TorBox link failed: HTTP ${fileRes.status}`);
           const filename = sanitizeFilename(file.name || releaseTitle || downloadId);
-          const dest = path.join(config.downloadsDir, filename);
+          const dest = path.join(dir, filename);
           await saveBodyToFile(fileRes.body, dest);
         }
 
-        this.jobs.set(downloadId, { progress: 1, status: "completed" });
+        this.jobs.set(downloadId, completedJob(dir));
       } catch (err) {
         log.warn(`[torbox] failed for "${releaseTitle ?? downloadUrl}":`, (err as Error).message);
         this.jobs.set(downloadId, { progress: 0, status: "failed" });
@@ -1029,7 +1223,7 @@ class AllDebridAdapter implements DownloadClientAdapter {
         }
         if (links.length === 0) throw new Error("AllDebrid reported no files");
 
-        fs.mkdirSync(config.downloadsDir, { recursive: true });
+        const dir = inProcessJobDir(links.length, releaseTitle, downloadId);
         for (const { link, filename: remoteFilename } of links) {
           const unlockData = await this.call(client, "/link/unlock", { link });
           const directLink = unlockData?.link;
@@ -1038,11 +1232,11 @@ class AllDebridAdapter implements DownloadClientAdapter {
           const fileRes = await fetch(directLink);
           if (!fileRes.ok || !fileRes.body) throw new Error(`Downloading unlocked link failed: HTTP ${fileRes.status}`);
           const filename = sanitizeFilename(unlockData.filename || remoteFilename || releaseTitle || downloadId);
-          const dest = path.join(config.downloadsDir, filename);
+          const dest = path.join(dir, filename);
           await saveBodyToFile(fileRes.body, dest);
         }
 
-        this.jobs.set(downloadId, { progress: 1, status: "completed" });
+        this.jobs.set(downloadId, completedJob(dir));
       } catch (err) {
         log.warn(`[alldebrid] failed for "${releaseTitle ?? downloadUrl}":`, (err as Error).message);
         this.jobs.set(downloadId, { progress: 0, status: "failed" });
@@ -1149,7 +1343,12 @@ class SlskdAdapter implements DownloadClientAdapter {
           const downloadId = `${u.username} ${f.filename}`;
           if (!wanted.has(downloadId)) continue;
           const state = String(f.state ?? "");
-          const status = state.includes("Succeeded") ? "completed" : state.includes("Errored") || state.includes("Cancelled") ? "failed" : "downloading";
+          // slskd's terminal states are all "Completed, <reason>" — only Succeeded is a real
+          // completion; Rejected (peer not sharing it / queue full), TimedOut, Aborted, Errored and
+          // Cancelled are all terminal failures that used to fall through to "downloading" forever,
+          // never reaching stalled cleanup (no progress change) and blocking any re-search.
+          const failed = /Errored|Cancelled|Rejected|TimedOut|Aborted/.test(state) || (state.includes("Completed") && !state.includes("Succeeded"));
+          const status = state.includes("Succeeded") ? "completed" : failed ? "failed" : "downloading";
           const progress = f.size > 0 ? Math.min((f.bytesTransferred ?? 0) / f.size, 1) : 0;
           updates.push({ downloadId, progress, status });
         }

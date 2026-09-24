@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { api, downloadFile, setApiKey } from "../api/client.js";
+import { Link } from "react-router-dom";
+import { api, downloadFile, getApiKey, setApiKey } from "../api/client.js";
 import FolderPicker from "../components/FolderPicker.js";
 import NamingSetupModal from "../components/NamingSetupModal.js";
 import SettingsProviderTiles, { type SettingsProviderDef } from "../components/SettingsProviderTiles.js";
@@ -133,7 +134,15 @@ function TagsTable({
   );
 }
 
-function FormatScoresTable({ scores, onSaveScore }: { scores: FormatScore[]; onSaveScore: (id: number, score: number) => void }) {
+function FormatScoresTable({
+  profileId,
+  scores,
+  onSaveScore,
+}: {
+  profileId: number | "";
+  scores: FormatScore[];
+  onSaveScore: (id: number, score: number) => void;
+}) {
   const { sortRows, sortableHeader } = useSortableTable<FormatScore, "format" | "score">("format");
   const sorted = sortRows(scores, (a, b, key) => (key === "format" ? a.name.localeCompare(b.name) : a.score - b.score));
   return (
@@ -149,7 +158,18 @@ function FormatScoresTable({ scores, onSaveScore }: { scores: FormatScore[]; onS
           <tr key={f.id}>
             <td>{f.name}</td>
             <td>
-              <input type="number" defaultValue={f.score} style={{ width: 80 }} onBlur={(e) => onSaveScore(f.id, Number(e.target.value))} />
+              {/* Keyed on the profile and the loaded score: every profile lists the same format ids, so
+                  an input keyed only on the id would keep showing (and re-save) the previous profile's value. */}
+              <input
+                key={`${profileId}-${f.id}-${f.score}`}
+                type="number"
+                defaultValue={f.score}
+                style={{ width: 80 }}
+                onBlur={(e) => {
+                  const score = Number(e.target.value);
+                  if (score !== f.score) onSaveScore(f.id, score);
+                }}
+              />
             </td>
           </tr>
         ))}
@@ -462,6 +482,80 @@ const METADATA_PROVIDERS: SettingsProviderDef[] = [
   },
 ];
 
+/** Positions of the commas that separate regex patterns in a custom-format condition line. A comma
+ * that is escaped (`\,`), inside a [...] class, inside (...) or part of a {m,n} quantifier belongs
+ * to the regex itself — splitting there turned e.g. `\bS\d{1,2}\b` into two broken patterns. */
+function topLevelCommaIndexes(text: string): number[] {
+  const indexes: number[] = [];
+  let depth = 0;
+  let inClass = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\\") {
+      i++;
+      continue;
+    }
+    if (inClass) {
+      if (c === "]") inClass = false;
+      continue;
+    }
+    if (c === "[") inClass = true;
+    else if (c === "(") depth++;
+    else if (c === ")") depth = Math.max(0, depth - 1);
+    else if (c === "{") {
+      const quantifier = /^\{\d*,\d*\}/.exec(text.slice(i));
+      if (quantifier) i += quantifier[0].length - 1;
+    } else if (c === "," && depth === 0) indexes.push(i);
+  }
+  return indexes;
+}
+
+function splitPatternList(text: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  for (const i of topLevelCommaIndexes(text)) {
+    parts.push(text.slice(start, i));
+    start = i + 1;
+  }
+  parts.push(text.slice(start));
+  return parts.map((p) => p.trim()).filter(Boolean);
+}
+
+/** Inverse of splitPatternList: a pattern's own top-level comma is written as `\,` (the same regex
+ * in non-unicode mode), so rendering then re-parsing a format never changes its patterns. */
+function joinPatternList(patterns: string[]): string {
+  return patterns
+    .map((p) =>
+      topLevelCommaIndexes(p)
+        .reverse()
+        .reduce((out, i) => `${out.slice(0, i)}\\${out.slice(i)}`, p)
+    )
+    .join(", ");
+}
+
+/** Release-profile Must (Not) Contain list: plain terms split on every comma, but a `/regex/flags`
+ * term keeps its own commas (e.g. `/\d{2,3}p/i`). */
+function splitTermList(text: string): string[] {
+  const terms: string[] = [];
+  let rest = text.trim();
+  while (rest) {
+    const regexTerm = /^\/(?:\\.|[^\\])*?\/[a-zA-Z]*(?=\s*(?:,|$))/.exec(rest);
+    const comma = rest.indexOf(",");
+    const term = regexTerm ? regexTerm[0] : comma === -1 ? rest : rest.slice(0, comma);
+    if (term.trim()) terms.push(term.trim());
+    rest = rest.slice(term.length).replace(/^\s*,/, "").trim();
+  }
+  return terms;
+}
+
+/** Release-profile Preferred line `term: score`. The score is split off at the LAST colon, and only
+ * when it is numeric — a regex term such as `/(?:x265|hevc)/i` has colons of its own. */
+function parsePreferredLine(line: string): { term: string; score: number } {
+  const m = /^(.*):\s*([-+]?\d+(?:\.\d+)?)?\s*$/.exec(line);
+  if (!m) return { term: line.trim(), score: 0 };
+  return { term: m[1].trim(), score: m[2] ? Number(m[2]) : 0 };
+}
+
 export default function Settings() {
   const mediaTypes = useMediaTypes();
   const [rootFolders, setRootFolders] = useState<RootFolder[]>([]);
@@ -488,6 +582,7 @@ export default function Settings() {
     artist: ["musicbrainz"],
     author: ["openlibrary"],
   });
+  const [defaultMetadataProviders, setDefaultMetadataProviders] = useState<Partial<Record<MediaType, string | null>>>({});
   const [qualities, setQualities] = useState<Quality[]>([]);
   const [profileName, setProfileName] = useState("");
   const [profileCutoff, setProfileCutoff] = useState("WEBDL-1080p");
@@ -508,6 +603,7 @@ export default function Settings() {
   const [tagName, setTagName] = useState("");
 
   const [blocklist, setBlocklist] = useState<BlocklistEntry[]>([]);
+  const [blocklistTotal, setBlocklistTotal] = useState(0);
   const [exclusions, setExclusions] = useState<ImportExclusion[]>([]);
   const [webhookUrl, setWebhookUrl] = useState<string | null>(null);
   const [overseerrWebhookUrl, setOverseerrWebhookUrl] = useState<string | null>(null);
@@ -535,6 +631,9 @@ export default function Settings() {
   const [starrFormatUrl, setStarrFormatUrl] = useState("");
   const [starrFormatApiKey, setStarrFormatApiKey] = useState("");
   const [starrFormatPreview, setStarrFormatPreview] = useState<{ sourceId: number; name: string; translatable: boolean; skipped: string[] }[] | null>(null);
+  // Source ids are per-instance, so an import must go to the instance the preview came from, not to
+  // whatever URL/key is typed into the form by then.
+  const [starrFormatSource, setStarrFormatSource] = useState<{ url: string; apiKey: string; app: "radarr" | "sonarr" | "whisparr" } | null>(null);
   const [starrFormatSelected, setStarrFormatSelected] = useState<Set<number>>(new Set());
   const [starrFormatBusy, setStarrFormatBusy] = useState(false);
   const [starrFormatError, setStarrFormatError] = useState<string | null>(null);
@@ -542,6 +641,7 @@ export default function Settings() {
   const [starrProfileUrl, setStarrProfileUrl] = useState("");
   const [starrProfileApiKey, setStarrProfileApiKey] = useState("");
   const [starrProfilePreview, setStarrProfilePreview] = useState<StarrQualityProfilePreview[] | null>(null);
+  const [starrProfileSource, setStarrProfileSource] = useState<{ url: string; apiKey: string; app: "radarr" | "sonarr" | "whisparr" } | null>(null);
   const [starrProfileSelected, setStarrProfileSelected] = useState<Set<number>>(new Set());
   const [starrProfileBusy, setStarrProfileBusy] = useState(false);
   const [starrProfileError, setStarrProfileError] = useState<string | null>(null);
@@ -583,16 +683,21 @@ export default function Settings() {
     api.get<Indexer[]>("/indexers").then(setIndexers);
     api.get<QualityProfile[]>("/quality-profiles").then((p) => {
       setProfiles(p);
-      if (p.length > 0 && scoreProfileId === "") setScoreProfileId(p[0].id);
+      // A selected profile that was just deleted must not linger: the select would show another
+      // profile's name while scores/tests still target the deleted id.
+      setScoreProfileId((cur) => (cur !== "" && p.some((x) => x.id === cur) ? cur : (p[0]?.id ?? "")));
+      setTestQualityProfileId((cur) => (cur === "" || p.some((x) => String(x.id) === cur) ? cur : ""));
     });
     api.get<SubtitleProvider[]>("/subtitles/providers").then(setProviders);
     api.get<Tag[]>("/tags").then(setTags);
     api.get<CustomFormat[]>("/custom-formats").then(setCustomFormats);
     // /blocklist now returns a paginated { items, total } page instead of a bare array (see
-    // Blocklist.tsx's own dedicated, paginated page) — this Settings tile just wants "the whole
-    // list" for its summary badge/table, so ask for the max page size rather than adding a second
-    // pagination UI here too.
-    api.get<{ items: BlocklistEntry[]; total: number }>("/blocklist?limit=500").then((r) => setBlocklist(r.items));
+    // Blocklist.tsx's own dedicated, paginated page) — this Settings tile shows the newest max-size
+    // page plus the real total, and links to that page for anything beyond it.
+    api.get<{ items: BlocklistEntry[]; total: number }>("/blocklist?limit=500").then((r) => {
+      setBlocklist(r.items);
+      setBlocklistTotal(Number(r.total) || r.items.length);
+    });
     api.get<ImportExclusion[]>("/import-exclusions").then(setExclusions);
     api.get<Quality[]>("/qualities").then((q) => {
       setQualities(q);
@@ -600,6 +705,7 @@ export default function Settings() {
     });
     api.get<Record<string, string>>("/settings").then(setSettings);
     api.get<Record<MediaType, string[]>>("/metadata/providers").then(setMetadataProviders);
+    api.get<Record<MediaType, string | null>>("/metadata/default-providers").then(setDefaultMetadataProviders);
     api.get<DelayProfile[]>("/delay-profiles").then(setDelayProfiles);
     api.get<ReleaseProfile[]>("/release-profiles").then(setReleaseProfiles);
   }
@@ -638,19 +744,24 @@ export default function Settings() {
     load();
   }
 
+  /** Applied locally before the PATCH so a second checkbox click, made before the save + reload
+   * round-trip finishes, builds its full array on top of the first click instead of dropping it. */
+  function patchReleaseProfileOptimistically(id: number, patch: Partial<ReleaseProfile>) {
+    setReleaseProfiles((prev) => prev.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+    updateReleaseProfile(id, patch).catch((e) => {
+      notify.error((e as Error).message);
+      load();
+    });
+  }
+
   function toggleReleaseProfileIndexer(rp: ReleaseProfile, indexerId: number) {
     const next = rp.indexerIds.includes(indexerId) ? rp.indexerIds.filter((id) => id !== indexerId) : [...rp.indexerIds, indexerId];
-    updateReleaseProfile(rp.id, { indexerIds: next });
+    patchReleaseProfileOptimistically(rp.id, { indexerIds: next });
   }
 
   function toggleReleaseProfileTag(rp: ReleaseProfile, tagId: number) {
     const next = rp.tagIds.includes(tagId) ? rp.tagIds.filter((id) => id !== tagId) : [...rp.tagIds, tagId];
-    updateReleaseProfile(rp.id, { tagIds: next });
-  }
-
-  async function renameQuality(id: number, name: string) {
-    await api.patch(`/qualities/${id}`, { name });
-    load();
+    patchReleaseProfileOptimistically(rp.id, { tagIds: next });
   }
 
   async function saveQualitySize(id: number, field: "minSizeMb" | "maxSizeMb" | "preferredSizeMb", value: string) {
@@ -693,7 +804,8 @@ export default function Settings() {
   }, [scoreProfileId, customFormats]);
 
   /**
-   * One condition group per line: comma-separated patterns are OR'd within the group; a line
+   * One condition group per line: comma-separated patterns are OR'd within the group (only
+   * top-level commas separate regex patterns — see splitPatternList); a line
    * starting with "NOT " negates the group. Special prefixes switch the condition type:
    *   SIZE: min-max        release size in MB (either bound optional, e.g. "SIZE: 2000-")
    *   LANG: french, multi  any of these detected language tags
@@ -733,7 +845,7 @@ export default function Settings() {
 
         const groupMatch = rest.match(/^GROUP:\s*(.+)$/i);
         if (groupMatch) {
-          const patterns = groupMatch[1].split(",").map((p) => p.trim()).filter(Boolean);
+          const patterns = splitPatternList(groupMatch[1]);
           return { type: "releaseGroup" as const, patterns, negate };
         }
 
@@ -770,7 +882,7 @@ export default function Settings() {
 
         const editionMatch = rest.match(/^EDITION:\s*(.+)$/i);
         if (editionMatch) {
-          const patterns = editionMatch[1].split(",").map((p) => p.trim()).filter(Boolean);
+          const patterns = splitPatternList(editionMatch[1]);
           return { type: "edition" as const, patterns, negate };
         }
 
@@ -786,10 +898,7 @@ export default function Settings() {
           return { type: "releaseType" as const, releaseTypes, negate };
         }
 
-        const patterns = rest
-          .split(",")
-          .map((p) => p.trim())
-          .filter(Boolean);
+        const patterns = splitPatternList(rest);
         return { type: "title" as const, patterns, negate };
       })
       .filter((g) => {
@@ -818,15 +927,15 @@ export default function Settings() {
         if (g.type === "size") return `${prefix}SIZE: ${g.minMb ?? ""}-${g.maxMb ?? ""}`;
         if (g.type === "year") return `${prefix}YEAR: ${g.minYear ?? ""}-${g.maxYear ?? ""}`;
         if (g.type === "language") return `${prefix}LANG: ${(g.languages ?? []).join(", ")}`;
-        if (g.type === "releaseGroup") return `${prefix}GROUP: ${(g.patterns ?? []).join(", ")}`;
+        if (g.type === "releaseGroup") return `${prefix}GROUP: ${joinPatternList(g.patterns ?? [])}`;
         if (g.type === "source") return `${prefix}SOURCE: ${(g.sources ?? []).join(", ")}`;
         if (g.type === "resolution") return `${prefix}RESOLUTION: ${(g.resolutions ?? []).join(", ")}`;
         if (g.type === "releaseFlags") return `${prefix}FLAGS: ${(g.flags ?? []).join(", ")}`;
         if (g.type === "indexerFlag") return `${prefix}INDEXERFLAG: ${(g.indexerFlags ?? []).join(", ")}`;
-        if (g.type === "edition") return `${prefix}EDITION: ${(g.patterns ?? []).join(", ")}`;
+        if (g.type === "edition") return `${prefix}EDITION: ${joinPatternList(g.patterns ?? [])}`;
         if (g.type === "qualityModifier") return `${prefix}QUALITYMODIFIER: ${(g.qualityModifiers ?? []).join(", ")}`;
         if (g.type === "releaseType") return `${prefix}RELEASETYPE: ${(g.releaseTypes ?? []).join(", ")}`;
-        return `${prefix}${(g.patterns ?? []).join(", ")}`;
+        return `${prefix}${joinPatternList(g.patterns ?? [])}`;
       })
       .join("\n");
   }
@@ -874,7 +983,13 @@ export default function Settings() {
   }
 
   async function saveCustomFormatMediaTypes(id: number, mediaTypes: MediaType[]) {
-    await api.patch(`/custom-formats/${id}`, { mediaTypes });
+    // Local first, so a quick second checkbox click builds on this one instead of the pre-save list.
+    setCustomFormats((prev) => prev.map((f) => (f.id === id ? { ...f, mediaTypes } : f)));
+    try {
+      await api.patch(`/custom-formats/${id}`, { mediaTypes });
+    } catch (e) {
+      notify.error((e as Error).message);
+    }
     load();
   }
 
@@ -916,12 +1031,13 @@ export default function Settings() {
     setStarrFormatError(null);
     setStarrFormatPreview(null);
     try {
-      const preview = await api.post<{ sourceId: number; name: string; translatable: boolean; skipped: string[] }[]>("/starr-import/custom-formats/preview", {
-        url: starrFormatUrl.trim(),
-        apiKey: starrFormatApiKey.trim(),
-        app: starrFormatApp,
-      });
+      const source = { url: starrFormatUrl.trim(), apiKey: starrFormatApiKey.trim(), app: starrFormatApp };
+      const preview = await api.post<{ sourceId: number; name: string; translatable: boolean; skipped: string[] }[]>(
+        "/starr-import/custom-formats/preview",
+        source
+      );
       setStarrFormatPreview(preview);
+      setStarrFormatSource(source);
       setStarrFormatSelected(new Set(preview.filter((p) => p.translatable).map((p) => p.sourceId)));
     } catch (e) {
       setStarrFormatError((e as Error).message);
@@ -940,14 +1056,12 @@ export default function Settings() {
   }
 
   async function importSelectedStarrFormats() {
-    if (starrFormatSelected.size === 0) return;
+    if (starrFormatSelected.size === 0 || !starrFormatSource) return;
     setStarrFormatBusy(true);
     setStarrFormatError(null);
     try {
       const result = await api.post<{ added: number; skipped: { name: string; reason: string }[] }>("/starr-import/custom-formats", {
-        url: starrFormatUrl.trim(),
-        apiKey: starrFormatApiKey.trim(),
-        app: starrFormatApp,
+        ...starrFormatSource,
         sourceIds: [...starrFormatSelected],
       });
       notify.info(
@@ -971,12 +1085,10 @@ export default function Settings() {
     setStarrProfileError(null);
     setStarrProfilePreview(null);
     try {
-      const preview = await api.post<StarrQualityProfilePreview[]>("/starr-import/quality-profiles/preview", {
-        url: starrProfileUrl.trim(),
-        apiKey: starrProfileApiKey.trim(),
-        app: starrProfileApp,
-      });
+      const source = { url: starrProfileUrl.trim(), apiKey: starrProfileApiKey.trim(), app: starrProfileApp };
+      const preview = await api.post<StarrQualityProfilePreview[]>("/starr-import/quality-profiles/preview", source);
       setStarrProfilePreview(preview);
+      setStarrProfileSource(source);
       setStarrProfileSelected(new Set(preview.filter((p) => p.mappedQualities.length > 0 && p.cutoff).map((p) => p.sourceId)));
     } catch (e) {
       setStarrProfileError((e as Error).message);
@@ -995,14 +1107,12 @@ export default function Settings() {
   }
 
   async function importSelectedStarrProfiles() {
-    if (starrProfileSelected.size === 0) return;
+    if (starrProfileSelected.size === 0 || !starrProfileSource) return;
     setStarrProfileBusy(true);
     setStarrProfileError(null);
     try {
       const result = await api.post<{ added: number; skipped: { name: string; reason: string }[] }>("/starr-import/quality-profiles", {
-        url: starrProfileUrl.trim(),
-        apiKey: starrProfileApiKey.trim(),
-        app: starrProfileApp,
+        ...starrProfileSource,
         sourceIds: [...starrProfileSelected],
       });
       notify.info(
@@ -1183,13 +1293,35 @@ export default function Settings() {
     setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, name: name.trim() } : p)));
   }
 
+  /** A cutoff outside the allowed set can never be reached, leaving every item "cutoff unmet" and
+   * auto-search hunting upgrades forever. Moves down to the best allowed tier below it (else the
+   * lowest allowed), like the server's quality-delete route; an unknown name gets the best allowed. */
+  function cutoffWithinAllowed(allowed: string[], cutoff: string): string {
+    if (allowed.includes(cutoff)) return cutoff;
+    const allowedRanked = qualities.filter((q) => allowed.includes(q.name)).map((q) => q.name); // worst → best
+    const cutoffRank = qualities.findIndex((q) => q.name === cutoff);
+    if (cutoffRank === -1) return allowedRanked[allowedRanked.length - 1] ?? cutoff;
+    const below = allowedRanked.filter((name) => qualities.findIndex((q) => q.name === name) < cutoffRank);
+    return below[below.length - 1] ?? allowedRanked[0] ?? cutoff;
+  }
+
   async function toggleProfileAllowedQuality(profile: QualityProfile, qualityName: string) {
     const allowedQualities = profile.allowedQualities.includes(qualityName)
       ? profile.allowedQualities.filter((q) => q !== qualityName)
       : [...profile.allowedQualities, qualityName];
     if (allowedQualities.length === 0) return; // a profile must always allow at least one quality
-    await api.patch(`/quality-profiles/${profile.id}`, { allowedQualities });
-    setProfiles((prev) => prev.map((p) => (p.id === profile.id ? { ...p, allowedQualities } : p)));
+    const patch: Partial<QualityProfile> =
+      qualityName === profile.cutoff && !allowedQualities.includes(qualityName)
+        ? { allowedQualities, cutoff: cutoffWithinAllowed(allowedQualities, profile.cutoff) }
+        : { allowedQualities };
+    // Local first, so a quick second checkbox click builds on this one instead of the pre-save list.
+    setProfiles((prev) => prev.map((p) => (p.id === profile.id ? { ...p, ...patch } : p)));
+    try {
+      await api.patch(`/quality-profiles/${profile.id}`, patch);
+    } catch (e) {
+      notify.error((e as Error).message);
+      load();
+    }
   }
 
   async function saveProfileCutoff(profileId: number, cutoff: string) {
@@ -1226,7 +1358,9 @@ export default function Settings() {
     )
       return;
     const result = await api.post<{ key: string; value: string }>("/settings/api-key/regenerate");
-    setApiKey(result.value);
+    // Only an API-key login has to switch to the new key; setApiKey would also drop a
+    // username/password session token that is still valid, leaving the admin with no user identity.
+    if (getApiKey() !== null) setApiKey(result.value);
     setSettings((prev) => ({ ...prev, apiKey: result.value }));
   }
 
@@ -1315,6 +1449,28 @@ export default function Settings() {
     }
   }
 
+  /** The server treats an unset time/chmod field as "feature off", so turning a feature on also
+   * persists the values shown next to it that were never saved (they only save on blur). It reads
+   * what each input holds right now, because a value typed just before toggling may still be in
+   * its blur save and must not be overwritten by the pre-filled default. */
+  async function saveEnabledWithDefaults(
+    enabledKey: string,
+    value: string,
+    shownFields: Record<string, { inputId: string; fallback: string }>
+  ) {
+    if (value === "1") {
+      const unsaved = Object.entries(shownFields)
+        .filter(([key]) => settings[key] == null)
+        .map(([key, { inputId, fallback }]): [string, string] => {
+          const current = (document.getElementById(inputId) as HTMLInputElement | null)?.value.trim();
+          return [key, current || fallback];
+        });
+      for (const [key, shownValue] of unsaved) await api.put(`/settings/${key}`, { value: shownValue });
+      if (unsaved.length > 0) setSettings((prev) => ({ ...prev, ...Object.fromEntries(unsaved) }));
+    }
+    await saveSetting(enabledKey, value);
+  }
+
   async function addFolder(e: FormEvent) {
     e.preventDefault();
     if (!folderPath) return;
@@ -1364,13 +1520,18 @@ export default function Settings() {
     load();
   }
 
+  // The form's cutoff is always one of its allowed qualities, even when the remembered pick (or the
+  // initial "WEBDL-1080p") was unchecked, renamed or deleted since.
+  const newProfileAllowed = qualities.filter((q) => profileQualities.has(q.name)).map((q) => q.name);
+  const newProfileCutoff = cutoffWithinAllowed(newProfileAllowed, profileCutoff);
+
   async function addProfile(e: FormEvent) {
     e.preventDefault();
-    if (!profileName || profileQualities.size === 0) return;
+    if (!profileName || newProfileAllowed.length === 0) return;
     await api.post("/quality-profiles", {
       name: profileName,
-      allowedQualities: qualities.filter((q) => profileQualities.has(q.name)).map((q) => q.name),
-      cutoff: profileCutoff,
+      allowedQualities: newProfileAllowed,
+      cutoff: newProfileCutoff,
     });
     setProfileName("");
     load();
@@ -1738,8 +1899,7 @@ export default function Settings() {
               <div key={t.key}>
                 <label htmlFor={`settings-default-provider-${t.key}`}>{t.label}</label>
                 <select id={`settings-default-provider-${t.key}`}
-                  key={settings[key] ?? `${key}-empty`}
-                  defaultValue={settings[key] ?? metadataProviders[t.key]?.[0]}
+                  value={settings[key] ?? defaultMetadataProviders[t.key] ?? metadataProviders[t.key]?.[0] ?? ""}
                   onChange={(e) => saveSetting(key, e.target.value)}
                 >
                   {(metadataProviders[t.key] ?? []).map((p) => (
@@ -1945,11 +2105,15 @@ export default function Settings() {
                   <option value="1">Enabled</option>
                 </select>
                 <label htmlFor="settings-media-server-26">Media server</label>
+                {/* No pre-selected fallback: the server ignores URL/token until a type is actually
+                    saved, and re-picking an option that is already shown fires no change event. */}
                 <select id="settings-media-server-26"
-                  key={settings.mediaServerType ?? "media-server-type-empty"}
-                  defaultValue={settings.mediaServerType ?? "plex"}
+                  value={settings.mediaServerType ?? ""}
                   onChange={(e) => saveSetting("mediaServerType", e.target.value)}
                 >
+                  <option value="" disabled>
+                    Choose a media server...
+                  </option>
                   <option value="plex">Plex</option>
                   <option value="jellyfin">Jellyfin</option>
                   <option value="emby">Emby</option>
@@ -2018,7 +2182,10 @@ export default function Settings() {
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
                   Optional: paste this URL into Plex's Settings → Webhooks (or Jellyfin/Emby's Webhook
                   plugin) so a "recently watched" item shows up on the Dashboard immediately instead of
-                  waiting for the next scheduled poll.
+                  waiting for the next scheduled poll. A Jellyfin/Emby playback stop only counts as
+                  watched when the payload says it played to completion, so a Jellyfin webhook template
+                  must include <code>{'"PlayedToCompletion": "{{PlayedToCompletion}}"'}</code> (or have
+                  "Send All Properties" enabled) — without it, Jellyfin stops are never recorded as watched.
                 </p>
                 <button type="button" className="secondary" onClick={showWebhookUrl}>
                   Show webhook URL...
@@ -2140,8 +2307,8 @@ export default function Settings() {
             key: "blocklist",
             label: "Blocklist",
             description: "Releases never auto-grabbed again for their item",
-            badge: `${blocklist.length} entr${blocklist.length === 1 ? "y" : "ies"}`,
-            badgeOk: blocklist.length > 0,
+            badge: `${blocklistTotal} entr${blocklistTotal === 1 ? "y" : "ies"}`,
+            badgeOk: blocklistTotal > 0,
             maxWidth: 720,
             render: () => (
               <div>
@@ -2155,6 +2322,12 @@ export default function Settings() {
                     <button type="button" className="danger" onClick={clearBlocklist} style={{ marginBottom: 8 }}>
                       Clear all
                     </button>
+                    {blocklistTotal > blocklist.length && (
+                      <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
+                        Showing the newest {blocklist.length} of {blocklistTotal} — see the <Link to="/blocklist">Blocklist</Link> page
+                        for the full list.
+                      </p>
+                    )}
                     <BlocklistTable entries={blocklist} onRemove={removeBlocklistEntry} />
                   </>
                 )}
@@ -2168,22 +2341,25 @@ export default function Settings() {
           const t = mediaTypes.find((mt) => mt.key === namingModalType)!;
           const templateKey = `naming${t.key.charAt(0).toUpperCase()}${t.key.slice(1)}Template`;
           const enabledKey = `namingEnabled${t.key.charAt(0).toUpperCase()}${t.key.slice(1)}`;
+          // Must match the server's DEFAULT_SHAPE_TEMPLATES (services/naming.ts): it is shown when no
+          // override is saved and is what "Reset to default" loads, so a mismatch gets saved as one.
           const shapeDefault =
             t.shape === "single"
               ? "{title} ({year})/{title} ({year})"
               : t.shape === "episodic"
-              ? "{parentTitle}/Season {season:00}/{parentTitle} - S{season:00}E{episode:00}"
+              ? "{parentTitle}/Season {season:00}/{parentTitle} - S{season:00}E{episode:00} - {episodeTitle}"
               : "{parentTitle}/{childTitle}";
+          const initialTemplate = settings[templateKey] ?? shapeDefault;
           return (
             <NamingSetupModal
               typeLabel={t.label}
               shape={t.shape}
               defaultTemplate={shapeDefault}
-              initialTemplate={settings[templateKey] ?? shapeDefault}
+              initialTemplate={initialTemplate}
               initialEnabled={settings[enabledKey] !== "0"}
               onClose={() => setNamingModalType(null)}
               onSave={async (template, enabled) => {
-                await saveSetting(templateKey, template);
+                if (template !== initialTemplate) await saveSetting(templateKey, template);
                 await saveSetting(enabledKey, enabled ? "1" : "0");
               }}
             />
@@ -2335,7 +2511,10 @@ export default function Settings() {
                 <select id="settings-enable-quiet-hours-45"
                   key={settings.quietHoursEnabled ?? "quiet-hours-enabled-empty"}
                   defaultValue={settings.quietHoursEnabled ?? "0"}
-                  onChange={(e) => saveSetting("quietHoursEnabled", e.target.value)}
+                  onChange={(e) => saveEnabledWithDefaults("quietHoursEnabled", e.target.value, {
+                    quietHoursStart: { inputId: "settings-start-24h-local-time-46", fallback: "22:00" },
+                    quietHoursEnd: { inputId: "settings-end-24h-local-time-47", fallback: "06:00" },
+                  })}
                 >
                   <option value="0">Disabled</option>
                   <option value="1">Enabled</option>
@@ -2373,7 +2552,10 @@ export default function Settings() {
                 <select id="settings-enable-search-window-48"
                   key={settings.searchWindowEnabled ?? "search-window-enabled-empty"}
                   defaultValue={settings.searchWindowEnabled ?? "0"}
-                  onChange={(e) => saveSetting("searchWindowEnabled", e.target.value)}
+                  onChange={(e) => saveEnabledWithDefaults("searchWindowEnabled", e.target.value, {
+                    searchWindowStart: { inputId: "settings-start-24h-local-time-49", fallback: "02:00" },
+                    searchWindowEnd: { inputId: "settings-end-24h-local-time-50", fallback: "06:00" },
+                  })}
                 >
                   <option value="0">Disabled</option>
                   <option value="1">Enabled</option>
@@ -2762,7 +2944,10 @@ export default function Settings() {
                 <select id="settings-enable-67"
                   key={settings.setPermissionsEnabled ?? "set-perms-enabled-empty"}
                   defaultValue={settings.setPermissionsEnabled ?? "0"}
-                  onChange={(e) => saveSetting("setPermissionsEnabled", e.target.value)}
+                  onChange={(e) => saveEnabledWithDefaults("setPermissionsEnabled", e.target.value, {
+                    fileChmod: { inputId: "settings-file-chmod-octal-e-g-644-68", fallback: "644" },
+                    folderChmod: { inputId: "settings-folder-chmod-octal-e-g-755-69", fallback: "755" },
+                  })}
                 >
                   <option value="0">Disabled</option>
                   <option value="1">Enabled</option>
@@ -3108,10 +3293,7 @@ export default function Settings() {
                   quality.
                 </p>
                 <label htmlFor="settings-name-88">Name</label>
-                <input id="settings-name-88"
-                  defaultValue={q.name}
-                  onBlur={(e) => e.target.value !== q.name && renameQuality(q.id, e.target.value)}
-                />
+                <input id="settings-name-88" value={q.name} readOnly title="Quality names are fixed — they must match what the release parser detects" />
                 <label htmlFor="settings-min-size-mb-89">Min size (MB)</label>
                 <input id="settings-min-size-mb-89"
                   type="number"
@@ -3175,11 +3357,14 @@ export default function Settings() {
                 </div>
                 <label htmlFor="settings-cutoff-stop-upgrading-at-94">Cutoff (stop upgrading at)</label>
                 <select id="settings-cutoff-stop-upgrading-at-94" value={p.cutoff} onChange={(e) => saveProfileCutoff(p.id, e.target.value)}>
-                  {qualities.map((q) => (
-                    <option key={q.id} value={q.name}>
-                      {q.name}
-                    </option>
-                  ))}
+                  {qualities
+                    .filter((q) => p.allowedQualities.includes(q.name) || q.name === p.cutoff)
+                    .map((q) => (
+                      <option key={q.id} value={q.name}>
+                        {q.name}
+                        {p.allowedQualities.includes(q.name) ? "" : " (not allowed)"}
+                      </option>
+                    ))}
                 </select>
                 <label htmlFor="settings-min-format-score-95">Min format score</label>
                 <input id="settings-min-format-score-95"
@@ -3227,10 +3412,14 @@ export default function Settings() {
                   ))}
                 </div>
                 <label htmlFor="settings-cutoff-stop-upgrading-at-98">Cutoff (stop upgrading at)</label>
-                <select id="settings-cutoff-stop-upgrading-at-98" value={profileCutoff} onChange={(e) => setProfileCutoff(e.target.value)}>
-                  {qualities.map((q) => (
-                    <option key={q.id} value={q.name}>
-                      {q.name}
+                <select
+                  id="settings-cutoff-stop-upgrading-at-98"
+                  value={newProfileCutoff}
+                  onChange={(e) => setProfileCutoff(e.target.value)}
+                >
+                  {newProfileAllowed.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
                     </option>
                   ))}
                 </select>
@@ -3270,11 +3459,22 @@ export default function Settings() {
                 <input
                   id="settings-starr-profile-url"
                   value={starrProfileUrl}
-                  onChange={(e) => setStarrProfileUrl(e.target.value)}
+                  onChange={(e) => {
+                    setStarrProfileUrl(e.target.value);
+                    setStarrProfilePreview(null);
+                  }}
                   placeholder="http://localhost:7878"
                 />
                 <label htmlFor="settings-starr-profile-key">API key</label>
-                <input id="settings-starr-profile-key" value={starrProfileApiKey} onChange={(e) => setStarrProfileApiKey(e.target.value)} type="password" />
+                <input
+                  id="settings-starr-profile-key"
+                  value={starrProfileApiKey}
+                  onChange={(e) => {
+                    setStarrProfileApiKey(e.target.value);
+                    setStarrProfilePreview(null);
+                  }}
+                  type="password"
+                />
                 {starrProfileError && <p style={{ color: "var(--danger)" }}>{starrProfileError}</p>}
                 <button type="button" onClick={fetchStarrProfilePreview} disabled={starrProfileBusy || !starrProfileUrl.trim() || !starrProfileApiKey.trim()}>
                   {starrProfileBusy && !starrProfilePreview ? "Fetching..." : "Fetch profiles"}
@@ -3428,35 +3628,36 @@ export default function Settings() {
                 <input id="settings-name-102" defaultValue={rp.name} onBlur={(e) => e.target.value !== rp.name && updateReleaseProfile(rp.id, { name: e.target.value })} />
                 <label htmlFor="settings-must-contain-comma-separated-103">Must Contain (comma-separated)</label>
                 <input id="settings-must-contain-comma-separated-103"
+                  key={`rp-must-contain-${rp.id}-${JSON.stringify(rp.mustContain)}`}
                   defaultValue={rp.mustContain.join(", ")}
-                  onBlur={(e) =>
-                    updateReleaseProfile(rp.id, {
-                      mustContain: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
-                    })
-                  }
+                  onBlur={(e) => {
+                    const mustContain = splitTermList(e.target.value);
+                    if (JSON.stringify(mustContain) !== JSON.stringify(rp.mustContain)) updateReleaseProfile(rp.id, { mustContain });
+                  }}
                 />
                 <label htmlFor="settings-must-not-contain-comma-separated-104">Must Not Contain (comma-separated)</label>
                 <input id="settings-must-not-contain-comma-separated-104"
+                  key={`rp-must-not-contain-${rp.id}-${JSON.stringify(rp.mustNotContain)}`}
                   defaultValue={rp.mustNotContain.join(", ")}
-                  onBlur={(e) =>
-                    updateReleaseProfile(rp.id, {
-                      mustNotContain: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
-                    })
-                  }
+                  onBlur={(e) => {
+                    const mustNotContain = splitTermList(e.target.value);
+                    if (JSON.stringify(mustNotContain) !== JSON.stringify(rp.mustNotContain)) updateReleaseProfile(rp.id, { mustNotContain });
+                  }}
                 />
+                <p style={{ color: "var(--muted)", fontSize: "0.78rem", marginTop: 0 }}>
+                  Commas inside a <code>/regex/</code> term (e.g. <code>/\d{"{2,3}"}p/i</code>) stay part of that term.
+                </p>
                 <label htmlFor="settings-preferred-one-term-score-per-line-105">Preferred (one "term: score" per line)</label>
                 <textarea id="settings-preferred-one-term-score-per-line-105"
+                  key={`rp-preferred-${rp.id}-${JSON.stringify(rp.preferred)}`}
                   rows={4}
                   defaultValue={rp.preferred.map((p) => `${p.term}: ${p.score}`).join("\n")}
                   onBlur={(e) => {
                     const preferred = e.target.value
                       .split("\n")
-                      .map((line) => {
-                        const [term, score] = line.split(":");
-                        return { term: (term ?? "").trim(), score: Number((score ?? "").trim()) || 0 };
-                      })
+                      .map(parsePreferredLine)
                       .filter((p) => p.term.length > 0);
-                    updateReleaseProfile(rp.id, { preferred });
+                    if (JSON.stringify(preferred) !== JSON.stringify(rp.preferred)) updateReleaseProfile(rp.id, { preferred });
                   }}
                 />
                 <label id={`settings-release-profile-indexers-${rp.id}`}>Indexers (blank = all)</label>
@@ -3536,9 +3737,11 @@ export default function Settings() {
                 <textarea
                   id="settings-conditions-108"
                   rows={4}
-                  key={`format-conditions-${f.id}`}
+                  key={`format-conditions-${f.id}-${conditionGroupsToText(f.conditionGroups)}`}
                   defaultValue={conditionGroupsToText(f.conditionGroups)}
-                  onBlur={(e) => saveCustomFormatConditions(f.id, e.target.value)}
+                  onBlur={(e) => {
+                    if (e.target.value !== conditionGroupsToText(f.conditionGroups)) saveCustomFormatConditions(f.id, e.target.value);
+                  }}
                 />
                 <label id="settings-release-profile-applies-to-label">Applies to (leave all unchecked for every library)</label>
                 <div role="group" aria-labelledby="settings-release-profile-applies-to-label" style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 8 }}>
@@ -3575,7 +3778,10 @@ export default function Settings() {
                   release-group, source, resolution, year, release-flag, edition, quality-modifier, or
                   release-type conditions — the same set Radarr/Sonarr/Lidarr/Readarr/Whisparr's own Custom
                   Formats collectively support. One condition per line; comma-separated patterns on a line
-                  are OR'd, all lines are AND'd, and a line starting with <code>NOT</code> negates it.
+                  are OR'd, all lines are AND'd, and a line starting with <code>NOT</code> negates it. A
+                  comma inside a regex's <code>( )</code>, <code>[ ]</code> or <code>{"{m,n}"}</code> (e.g.{" "}
+                  <code>\bS\d{"{1,2}"}\b</code>) stays part of that pattern; write <code>\,</code> for any
+                  other literal comma.
                   Prefixes switch the condition type —{" "}
                   <code>SIZE: 4000-15000</code> (either bound optional), <code>LANG: french, multi</code>{" "}
                   (detected language tags), <code>GROUP: RARBG, EVO</code> (regex against the parsed
@@ -3670,11 +3876,22 @@ export default function Settings() {
                   <input
                     id="settings-starr-format-url"
                     value={starrFormatUrl}
-                    onChange={(e) => setStarrFormatUrl(e.target.value)}
+                    onChange={(e) => {
+                      setStarrFormatUrl(e.target.value);
+                      setStarrFormatPreview(null);
+                    }}
                     placeholder="http://localhost:7878"
                   />
                   <label htmlFor="settings-starr-format-key">API key</label>
-                  <input id="settings-starr-format-key" value={starrFormatApiKey} onChange={(e) => setStarrFormatApiKey(e.target.value)} type="password" />
+                  <input
+                    id="settings-starr-format-key"
+                    value={starrFormatApiKey}
+                    onChange={(e) => {
+                      setStarrFormatApiKey(e.target.value);
+                      setStarrFormatPreview(null);
+                    }}
+                    type="password"
+                  />
                   {starrFormatError && <p style={{ color: "var(--danger)" }}>{starrFormatError}</p>}
                   <button type="button" onClick={fetchStarrFormatPreview} disabled={starrFormatBusy || !starrFormatUrl.trim() || !starrFormatApiKey.trim()}>
                     {starrFormatBusy && !starrFormatPreview ? "Fetching..." : "Fetch formats"}
@@ -3833,7 +4050,7 @@ export default function Settings() {
                         </option>
                       ))}
                     </select>
-                    <FormatScoresTable scores={formatScores} onSaveScore={saveFormatScore} />
+                    <FormatScoresTable profileId={scoreProfileId} scores={formatScores} onSaveScore={saveFormatScore} />
                   </>
                 )}
               </div>

@@ -22,11 +22,12 @@ vi.mock("node:child_process", () => ({
 }));
 
 let probeMediaInfo: (typeof import("../src/services/ffprobe.js"))["probeMediaInfo"];
+let probeDurationSeconds: (typeof import("../src/services/ffprobe.js"))["probeDurationSeconds"];
 
 beforeAll(async () => {
   // ffprobe.ts imports logger.js, which touches config.js/db/index.js transitively.
   await setupTestDb();
-  ({ probeMediaInfo } = await import("../src/services/ffprobe.js"));
+  ({ probeMediaInfo, probeDurationSeconds } = await import("../src/services/ffprobe.js"));
 });
 
 afterEach(() => {
@@ -242,5 +243,30 @@ describe("probeMediaInfo — retry and failure handling", () => {
     mockResponses.push({ stdout: "this is not json" });
 
     await expect(probeMediaInfo("/fake/x.mkv")).resolves.toBeNull();
+  });
+});
+
+describe("probeDurationSeconds", () => {
+  it("returns the container duration unrounded, unlike probeMediaInfo's whole-second durationSeconds", async () => {
+    queueSuccess({ format: { duration: "300.412" }, streams: [audioStream()] });
+
+    await expect(probeDurationSeconds("/fake/track.mp3")).resolves.toBe(300.412);
+  });
+
+  it("returns null for a missing, zero, or non-numeric duration", async () => {
+    queueSuccess({ format: {}, streams: [audioStream()] });
+    queueSuccess({ format: { duration: "0" }, streams: [audioStream()] });
+    queueSuccess({ format: { duration: "N/A" }, streams: [audioStream()] });
+
+    await expect(probeDurationSeconds("/fake/a.mp3")).resolves.toBeNull();
+    await expect(probeDurationSeconds("/fake/b.mp3")).resolves.toBeNull();
+    await expect(probeDurationSeconds("/fake/c.mp3")).resolves.toBeNull();
+  });
+
+  it("returns null (never throws) when ffprobe fails, without retrying a non-transient error", async () => {
+    queueFailure("spawn ffprobe ENOENT");
+
+    await expect(probeDurationSeconds("/fake/x.mp3")).resolves.toBeNull();
+    expect(execFileCallCount).toBe(1);
   });
 });

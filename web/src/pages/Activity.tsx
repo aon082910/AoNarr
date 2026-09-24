@@ -166,6 +166,10 @@ export default function Activity() {
     api.get<{ items: QueueItem[]; total: number }>(`/activity/queue?${params.toString()}`).then((data) => {
       setQueue(data.items);
       setQueueTotal(data.total);
+      // Imported/removed downloads leave the queue, so the page being viewed can empty out from
+      // under a refresh — step back to the last page that still has rows instead of stranding the
+      // view on an empty page.
+      if (data.items.length === 0 && queuePage > 1) setQueuePage(Math.max(1, Math.ceil(data.total / queuePageSize)));
     });
   }
 
@@ -524,7 +528,7 @@ export default function Activity() {
           </tbody>
         </table>
       )}
-      {queue.length > 0 && (
+      {queueTotal > 0 && (
         <Pagination
           page={queuePage}
           totalPages={queueTotalPages}

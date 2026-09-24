@@ -1,10 +1,23 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { api } from "../api/client.js";
 import { hasCredentials, setApiKey, setSessionToken } from "../api/client.js";
 import { AuthProvider } from "../context/AuthContext.js";
 import { MediaAnalysisProvider } from "../context/MediaAnalysisContext.js";
 
 type Mode = "admin" | "user" | "apikey";
+
+/** The login routes answer a wrong password/code with 401, which api.post() treats as an expired
+ * session (clear credentials + full page reload) — that would wipe this form and never show the
+ * server's error, so they go through a plain fetch instead. */
+async function postLogin<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`/api${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? `Login failed: ${res.status}`);
+  return data as T;
+}
 
 export default function ApiKeyGate({ children }: { children: ReactNode }) {
   const [hasCreds, setHasCreds] = useState(hasCredentials());
@@ -115,7 +128,7 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
     setChecking(true);
     setError(null);
     try {
-      const result = await api.post<{ token?: string; totpRequired?: boolean; pendingToken?: string }>(
+      const result = await postLogin<{ token?: string; totpRequired?: boolean; pendingToken?: string }>(
         "/auth/login",
         { username: username.trim(), password }
       );
@@ -138,7 +151,7 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
     setChecking(true);
     setError(null);
     try {
-      const result = await api.post<{ token: string }>("/auth/login/totp", {
+      const result = await postLogin<{ token: string }>("/auth/login/totp", {
         pendingToken: pendingSessionTotp,
         code: sessionTotpCode,
       });

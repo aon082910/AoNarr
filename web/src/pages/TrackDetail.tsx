@@ -21,12 +21,26 @@ export default function TrackDetail() {
   const { mediaId, subItemId, trackId } = useParams<{ mediaId: string; subItemId: string; trackId: string }>();
   const navigate = useNavigate();
   const [track, setTrack] = useState<TrackDetailResponse | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    api.get<TrackDetailResponse>(`/media/${mediaId}/subitems/${subItemId}/tracks/${trackId}`).then(setTrack);
+    let cancelled = false;
+    setTrack(null);
+    setLoadError(null);
+    api.get<TrackDetailResponse>(`/media/${mediaId}/subitems/${subItemId}/tracks/${trackId}`).then(
+      (data) => {
+        if (!cancelled) setTrack(data);
+      },
+      (e) => {
+        if (!cancelled) setLoadError((e as Error).message);
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
   }, [mediaId, subItemId, trackId]);
 
-  if (!track) return <p className="empty">Loading...</p>;
+  if (!track) return <p className="empty">{loadError ?? "Loading..."}</p>;
 
   const duration = track.durationSeconds
     ? `${Math.floor(track.durationSeconds / 60)}:${String(track.durationSeconds % 60).padStart(2, "0")}`

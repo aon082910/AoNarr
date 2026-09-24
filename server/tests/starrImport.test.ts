@@ -357,6 +357,94 @@ describe("fetchWhisparrLibrary / importAdultFromWhisparr", () => {
     expect(episodes).toEqual([{ showId: "solo:5", path: null, seasonNumber: 1, episodeNumber: 1, title: "Standalone Scene", overview: "No studio here." }]);
   });
 
+  it("re-importing after a scene was removed appends the new scene instead of overwriting a neighbour's file", async () => {
+    const scene = (id: number, title: string) => ({
+      id,
+      title,
+      studioTitle: "Renumber Studio",
+      studioForeignId: "studio-renumber",
+      hasFile: true,
+      movieFile: { path: `/adult/Renumber Studio/${title}.mp4` },
+    });
+    mockStarrApi({ "/api/v3/movie": [scene(1, "Scene A"), scene(2, "Scene B"), scene(3, "Scene C")] });
+    await importAdultFromWhisparr("http://whisparr:6969", "key", rootFolderId);
+
+    mockStarrApi({ "/api/v3/movie": [scene(1, "Scene A"), scene(3, "Scene C"), scene(4, "Scene D")] });
+    const result = await importAdultFromWhisparr("http://whisparr:6969", "key", rootFolderId);
+
+    expect(result).toMatchObject({ showsMatched: 1, episodesSkipped: 2, episodesCreated: 1, episodesMatched: 0 });
+    const show = (await db.prepare("SELECT id FROM media_items WHERE title = 'Renumber Studio'").get()) as any;
+    const eps = (await db
+      .prepare("SELECT episode_number, title, file_path FROM episodes WHERE media_item_id = ? ORDER BY episode_number")
+      .all(show.id)) as any[];
+    expect(eps).toEqual([
+      { episode_number: 1, title: "Scene A", file_path: "/adult/Renumber Studio/Scene A.mp4" },
+      { episode_number: 2, title: "Scene B", file_path: "/adult/Renumber Studio/Scene B.mp4" },
+      { episode_number: 3, title: "Scene C", file_path: "/adult/Renumber Studio/Scene C.mp4" },
+      { episode_number: 4, title: "Scene D", file_path: "/adult/Renumber Studio/Scene D.mp4" },
+    ]);
+  });
+
+  it("never repoints a locally-scanned studio's existing episode at a Whisparr scene's file", async () => {
+    const showId = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, monitored, has_file, status, external_ids) VALUES ('adult', 'Local Scan Studio', 'local scan studio', 1, 1, 'unknown', '{}')`
+          )
+          .run()
+      ).lastInsertRowid
+    );
+    await db
+      .prepare(
+        "INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path) VALUES (?, 1, 1, 'Scene Local', 1, 1, ?)"
+      )
+      .run(showId, "/adult/Local Scan Studio/01 - Scene Local.mp4");
+    mockStarrApi({
+      "/api/v3/movie": [
+        {
+          id: 1,
+          title: "Scene X",
+          studioTitle: "Local Scan Studio",
+          studioForeignId: "studio-local",
+          hasFile: true,
+          movieFile: { path: "/whisparr/Local Scan Studio/X.mp4" },
+        },
+      ],
+    });
+
+    const result = await importAdultFromWhisparr("http://whisparr:6969", "key", rootFolderId);
+
+    expect(result).toMatchObject({ showsMatched: 1, episodesCreated: 1, episodesMatched: 0 });
+    const eps = (await db
+      .prepare("SELECT episode_number, title, file_path FROM episodes WHERE media_item_id = ? ORDER BY episode_number")
+      .all(showId)) as any[];
+    expect(eps).toEqual([
+      { episode_number: 1, title: "Scene Local", file_path: "/adult/Local Scan Studio/01 - Scene Local.mp4" },
+      { episode_number: 2, title: "Scene X", file_path: "/whisparr/Local Scan Studio/X.mp4" },
+    ]);
+  });
+
+  it("fills in a still-missing scene's file on re-import instead of adding it again, and never duplicates a still-missing one", async () => {
+    const missing = { id: 1, title: "Scene Later", studioTitle: "Later Studio", studioForeignId: "studio-later", hasFile: false };
+    const other = { id: 2, title: "Scene Never", studioTitle: "Later Studio", studioForeignId: "studio-later", hasFile: false };
+    mockStarrApi({ "/api/v3/movie": [missing, other] });
+    await importAdultFromWhisparr("http://whisparr:6969", "key", rootFolderId);
+
+    mockStarrApi({ "/api/v3/movie": [{ ...missing, hasFile: true, movieFile: { path: "/adult/Later Studio/Scene Later.mp4" } }, other] });
+    const result = await importAdultFromWhisparr("http://whisparr:6969", "key", rootFolderId);
+
+    expect(result).toMatchObject({ episodesMatched: 2, episodesCreated: 0 });
+    const show = (await db.prepare("SELECT id FROM media_items WHERE title = 'Later Studio'").get()) as any;
+    const eps = (await db
+      .prepare("SELECT episode_number, title, has_file, file_path FROM episodes WHERE media_item_id = ? ORDER BY episode_number")
+      .all(show.id)) as any[];
+    expect(eps).toEqual([
+      { episode_number: 1, title: "Scene Later", has_file: 1, file_path: "/adult/Later Studio/Scene Later.mp4" },
+      { episode_number: 2, title: "Scene Never", has_file: 0, file_path: null },
+    ]);
+  });
+
   it("importAdultFromWhisparr creates the show and its episodes as type adult", async () => {
     mockStarrApi({
       "/api/v3/movie": [
@@ -454,6 +542,34 @@ describe("previewStarrCustomFormats / importStarrCustomFormats", () => {
     expect(notImported).toBeUndefined();
   });
 
+  it("translates the live API's array-shaped specification fields, not just the TRaSH/export object shape", async () => {
+    mockStarrApi({
+      "/api/v3/customformat": [
+        {
+          id: 30,
+          name: "Live API x265",
+          specifications: [
+            {
+              implementation: "ReleaseTitleSpecification",
+              negate: false,
+              required: false,
+              fields: [{ order: 0, name: "value", label: "Regular Expression", value: "x265" }],
+            },
+          ],
+        },
+      ],
+    });
+
+    const [preview] = await previewStarrCustomFormats("http://radarr:7878", "key", "radarr");
+    expect(preview).toEqual({ sourceId: 30, name: "Live API x265", translatable: true, skipped: [] });
+
+    const result = await importStarrCustomFormats("http://radarr:7878", "key", "radarr", [30]);
+
+    expect(result).toEqual({ added: 1, skipped: [] });
+    const row = (await db.prepare("SELECT * FROM custom_formats WHERE name = 'Live API x265'").get()) as any;
+    expect(JSON.parse(row.patterns)).toEqual([{ type: "title", patterns: ["x265"], negate: false }]);
+  });
+
   it("skips a selected format with no translatable conditions, and reports a name collision instead of duplicating", async () => {
     await db.prepare("INSERT INTO custom_formats (name, patterns) VALUES ('Already Exists', '[]')").run();
     mockStarrApi({
@@ -496,7 +612,7 @@ describe("previewStarrQualityProfiles / importStarrQualityProfiles", () => {
     expect(preview.cutoff).toBe("WEBDL-1080p");
   });
 
-  it("resolves a group cutoff (no quality key of its own) to its highest-ranked mapped member", async () => {
+  it("resolves a group cutoff (no quality key of its own) to its lowest-ranked mapped member", async () => {
     mockStarrApi({
       "/api/v3/qualityprofile": [
         {
@@ -522,8 +638,59 @@ describe("previewStarrQualityProfiles / importStarrQualityProfiles", () => {
     const [preview] = await previewStarrQualityProfiles("http://radarr:7878", "key", "radarr");
 
     expect(preview.mappedQualities.sort()).toEqual(["Bluray-1080p", "HDTV-720p", "WEBDL-1080p"]);
-    // Bluray-1080p outranks WEBDL-1080p in AoNarr's own DEFAULT_QUALITY_ORDER, so it wins as the
-    // substitute even though it's not literally the group's own name.
+    // Radarr/Sonarr treat every member of a group as equal, so a WEBDL-1080p file already meets
+    // this group cutoff there — WEBDL-1080p is the member AoNarr's own ranking puts lowest.
+    expect(preview.cutoff).toBe("WEBDL-1080p");
+  });
+
+  it("keeps a mid-profile group cutoff instead of jumping to the profile's top quality", async () => {
+    mockStarrApi({
+      "/api/v3/qualityprofile": [
+        {
+          id: 3,
+          name: "WEB Cutoff",
+          cutoff: 1001,
+          items: [
+            { quality: { id: 9, name: "HDTV-1080p" }, allowed: true },
+            {
+              id: 1001,
+              name: "WEB 1080p",
+              allowed: true,
+              items: [
+                { quality: { id: 3, name: "WEBDL-1080p" }, allowed: true },
+                { quality: { id: 15, name: "WEBRip-1080p" }, allowed: true },
+              ],
+            },
+            { quality: { id: 7, name: "Bluray-1080p" }, allowed: true },
+            { quality: { id: 30, name: "Remux-1080p" }, allowed: true },
+          ],
+        },
+      ],
+    });
+
+    const [preview] = await previewStarrQualityProfiles("http://radarr:7878", "key", "radarr");
+
+    expect(preview.cutoff).toBe("WEBRip-1080p");
+  });
+
+  it("falls back to the profile's highest mapped quality only when none of a group cutoff's members map", async () => {
+    mockStarrApi({
+      "/api/v3/qualityprofile": [
+        {
+          id: 4,
+          name: "Unmappable Group Cutoff",
+          cutoff: 1002,
+          items: [
+            { quality: { id: 1, name: "HDTV-720p" }, allowed: true },
+            { quality: { id: 2, name: "Bluray-1080p" }, allowed: true },
+            { id: 1002, name: "Raw Group", allowed: true, items: [{ quality: { id: 20, name: "Raw-HD" }, allowed: true }] },
+          ],
+        },
+      ],
+    });
+
+    const [preview] = await previewStarrQualityProfiles("http://radarr:7878", "key", "radarr");
+
     expect(preview.cutoff).toBe("Bluray-1080p");
   });
 

@@ -186,6 +186,17 @@ describe("parseReleaseTitle", () => {
     expect(parseReleaseTitle("Show.Name.S01E01.576i.DVDRip.x264-GROUP").resolution).toBe("576p");
   });
 
+  it("keeps grading a 480p/576p DVD rip as plain 'DVD' quality — there's no WEBDL-480p tier", () => {
+    expect(parseReleaseTitle("Show.Name.S01E01.576i.DVDRip.x264-GROUP").quality).toBe("DVD");
+    expect(parseReleaseTitle("Movie.2003.480p.DVDRip.x264-GROUP").quality).toBe("DVD");
+    expect(parseReleaseTitle("Show.Name.S01E01.480p.WEBRip.x264-GROUP").quality).toBe("Unknown");
+  });
+
+  it("grades a theatrical capture as Unknown quality, never as the WEBDL fallback for its resolution", () => {
+    expect(parseReleaseTitle("Movie.Name.2023.1080p.HDCAM.x264-GROUP").quality).toBe("Unknown");
+    expect(parseReleaseTitle("Movie.Name.2023.720p.TELESYNC.x264-GROUP").quality).toBe("Unknown");
+  });
+
   it("detects a quality modifier", () => {
     expect(parseReleaseTitle("Movie.Name.2023.REGIONAL.1080p-GROUP").qualityModifier).toBe("regional");
     expect(parseReleaseTitle("Movie.Name.2023.SCREENER.1080p-GROUP").qualityModifier).toBe("screener");

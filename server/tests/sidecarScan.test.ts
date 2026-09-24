@@ -162,6 +162,111 @@ describe("scanAndImportLibrary — sidecar matching (episodic: series and course
     expect(fetchByExternalId).toHaveBeenCalledWith("series", "tmdb", "1396");
   });
 
+  it("a per-episode .nfo never collapses a multi-episode filename (S01E01-E02) to its single <episode>", async () => {
+    // Jellyfin writes ONE root for a multi-episode file, with <episodenumberend> AoNarr doesn't read.
+    const folder = await insertRootFolder("series");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('series','Show','show',1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,1,'Ep1',1,0)`).run(showId);
+    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,2,'Ep2',1,0)`).run(showId);
+    const seasonDir = path.join(folder.path, "Show", "Season 01");
+    const filePath = writeFile(seasonDir, "Show.S01E01-E02.mkv");
+    writeFile(
+      seasonDir,
+      "Show.S01E01-E02.nfo",
+      `<episodedetails><title>Part One</title><season>1</season><episode>1</episode><episodenumberend>2</episodenumberend></episodedetails>`
+    );
+
+    const result = await scanAndImportLibrary("series");
+
+    expect(result.matched).toBe(2);
+    const episodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ? ORDER BY episode_number").all(showId)) as any[];
+    expect(episodes.map((e) => ({ episode: e.episode_number, title: e.title, hasFile: e.has_file, filePath: e.file_path }))).toEqual([
+      { episode: 1, title: "Ep1", hasFile: 1, filePath },
+      { episode: 2, title: "Ep2", hasFile: 1, filePath },
+    ]);
+  });
+
+  it("attaches a marker-less file in a 'Specials' folder, numbered only by its .nfo, to the show folder's existing show", async () => {
+    const folder = await insertRootFolder("series");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('series','Show','show',1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    const specialsDir = path.join(folder.path, "Show", "Specials");
+    const filePath = writeFile(specialsDir, "Behind the Scenes.mkv");
+    writeFile(specialsDir, "Behind the Scenes.nfo", `<episodedetails><title>Behind the Scenes</title><season>0</season><episode>3</episode></episodedetails>`);
+
+    const result = await scanAndImportLibrary("series");
+
+    expect(result).toMatchObject({ matched: 1, skipped: 0 });
+    const shows = (await db.prepare("SELECT id FROM media_items WHERE type='series'").all()) as any[];
+    expect(shows.map((s) => s.id)).toEqual([showId]);
+    expect(searchMetadata).not.toHaveBeenCalled();
+    const ep = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").get(showId)) as any;
+    expect(ep).toMatchObject({ season_number: 0, episode_number: 3, title: "Behind the Scenes", has_file: 1, file_path: filePath });
+  });
+
+  it("titles a new show from its folder (not the episode filename) when only the .nfo numbers the file", async () => {
+    const folder = await insertRootFolder("series");
+    writeFile(path.join(folder.path, "Some Show", "Season 00"), "Behind the Scenes.mkv");
+    writeFile(
+      path.join(folder.path, "Some Show", "Season 00"),
+      "Behind the Scenes.nfo",
+      `<episodedetails><title>Behind the Scenes</title><season>0</season><episode>3</episode></episodedetails>`
+    );
+
+    await scanAndImportLibrary("series");
+
+    const shows = (await db.prepare("SELECT * FROM media_items WHERE type='series'").all()) as any[];
+    expect(shows.map((s) => s.title)).toEqual(["Some Show"]);
+    expect(searchMetadata).toHaveBeenCalledWith("series", "Some Show", undefined, null);
+    expect(searchMetadata).not.toHaveBeenCalledWith("series", "Behind the Scenes", expect.anything(), expect.anything());
+  });
+
+  it("titles a show from its folder when a Specials file's only marker is a bare folder-relative episode number", async () => {
+    const folder = await insertRootFolder("series");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('series','Show','show',1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    writeFile(path.join(folder.path, "Show", "Specials"), "Behind the Scenes E03.mkv");
+
+    await scanAndImportLibrary("series");
+
+    const shows = (await db.prepare("SELECT id FROM media_items WHERE type='series'").all()) as any[];
+    expect(shows.map((s) => s.id)).toEqual([showId]);
+    const ep = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").get(showId)) as any;
+    expect(ep).toMatchObject({ season_number: 0, episode_number: 3, has_file: 1 });
+  });
+
+  it("finds the show folder's tvshow.nfo for a file in its 'Specials' folder", async () => {
+    const folder = await insertRootFolder("series");
+    const showDir = path.join(folder.path, "Wrong Folder Name");
+    writeFile(showDir, "tvshow.nfo", `<tvshow><title>Real Show</title></tvshow>`);
+    writeFile(path.join(showDir, "Specials"), "Extra.mkv");
+    writeFile(path.join(showDir, "Specials"), "Extra.nfo", `<episodedetails><title>Extra</title><season>0</season><episode>1</episode></episodedetails>`);
+
+    await scanAndImportLibrary("series");
+
+    const shows = (await db.prepare("SELECT * FROM media_items WHERE type='series'").all()) as any[];
+    expect(shows.map((s) => s.title)).toEqual(["Real Show"]);
+  });
+
+  it("skips a marker-less file loose in the library root rather than naming a show after the root folder or the file", async () => {
+    const folder = await insertRootFolder("series");
+    writeFile(folder.path, "Behind the Scenes.mkv");
+    writeFile(folder.path, "Behind the Scenes.nfo", `<episodedetails><title>Behind the Scenes</title><season>0</season><episode>3</episode></episodedetails>`);
+
+    const result = await scanAndImportLibrary("series");
+
+    expect(result).toMatchObject({ matched: 0, skipped: 1 });
+    expect(result.skippedFiles[0].reason).toContain("couldn't guess a series title");
+    expect(await db.prepare("SELECT * FROM media_items WHERE type='series'").all()).toEqual([]);
+  });
+
   it("enriches a sequentialEpisodeFallback type (course) from its sidecar despite having no metadata provider at all", async () => {
     const folder = await insertRootFolder("course");
     const courseDir = path.join(folder.path, "Wrong Course Folder Name");
@@ -234,11 +339,13 @@ describe("scanAndImportLibrary — sidecar matching (collection: comic)", () => 
 });
 
 describe("refreshOneMediaItem — sidecar matching", () => {
-  it("prefers a sidecar's own provider id over an item's existing (different) external_ids", async () => {
+  it("an already-matched item keeps using its own id when its sidecar carries a different one", async () => {
+    // A stale/mis-scraped NFO id must not put another title's overview/poster back over the
+    // item's own match (e.g. one just corrected via Different Match).
     const folder = await insertRootFolder("movie");
     const dir = path.join(folder.path, "Some Movie");
     const filePath = writeFile(dir, "movie.mkv");
-    writeFile(dir, "movie.nfo", `<movie><title>Corrected Title</title><uniqueid type="tmdb">999</uniqueid></movie>`);
+    writeFile(dir, "movie.nfo", `<movie><title>Wrong Title</title><uniqueid type="tmdb">999</uniqueid></movie>`);
     const movieId = Number(
       (
         await db
@@ -250,20 +357,136 @@ describe("refreshOneMediaItem — sidecar matching", () => {
       ).lastInsertRowid
     );
     fetchByExternalId.mockImplementation(async (_type: string, _provider: string, id: string) => {
-      if (id === "999") return { title: "Corrected Title", overview: "From the sidecar's own id.", externalIds: { tmdb: "999" } };
+      if (id === "111") return { title: "Some Movie", overview: "From the item's own id.", externalIds: { tmdb: "111" } };
       throw new Error("wrong id used");
     });
 
     const result = await refreshOneMediaItem(movieId);
 
     expect(result.ok).toBe(true);
-    expect(fetchByExternalId).toHaveBeenCalledWith("movie", "tmdb", "999");
+    expect(fetchByExternalId).toHaveBeenCalledWith("movie", "tmdb", "111");
+    expect(fetchByExternalId).not.toHaveBeenCalledWith("movie", "tmdb", "999");
     const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(movieId)) as any;
-    expect(row.overview).toBe("From the sidecar's own id.");
-    // The already-matched guard still applies regardless of where `best` came from — the item's
-    // own title/external_ids stay exactly as they were, only overview/poster/etc. get updated.
+    expect(row.overview).toBe("From the item's own id.");
     expect(row.title).toBe("Some Movie");
     expect(JSON.parse(row.external_ids)).toEqual({ tmdb: "111" });
+  });
+
+  it("an already-matched show ignores a stale tvshow.nfo id and refreshes from its own id", async () => {
+    const folder = await insertRootFolder("series");
+    const seasonDir = path.join(folder.path, "Right Show", "Season 01");
+    const epFile = writeFile(seasonDir, "Right.Show.S01E01.mkv");
+    writeFile(path.dirname(seasonDir), "tvshow.nfo", `<tvshow><title>Wrong Show</title><uniqueid type="tmdb">999</uniqueid></tvshow>`);
+    const showId = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status, external_ids, overview, poster_url)
+             VALUES ('series','Right Show','right show',?,1,1,'continuing',?,'old overview','old.jpg')`
+          )
+          .run(folder.id, JSON.stringify({ tmdb: "111" }))
+      ).lastInsertRowid
+    );
+    await db
+      .prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path) VALUES (?,1,1,'Pilot',1,1,?)`)
+      .run(showId, epFile);
+    fetchByExternalId.mockImplementation(async (_type: string, _provider: string, id: string) => {
+      if (id === "111") return { title: "Right Show", overview: "Right overview", posterUrl: "right.jpg", externalIds: { tmdb: "111" } };
+      if (id === "999") return { title: "Wrong Show", overview: "Wrong overview", posterUrl: "wrong.jpg", externalIds: { tmdb: "999" } };
+      throw new Error("unexpected id");
+    });
+
+    const result = await refreshOneMediaItem(showId);
+
+    expect(result.ok).toBe(true);
+    expect(fetchByExternalId).not.toHaveBeenCalledWith("series", "tmdb", "999");
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(showId)) as any;
+    expect(row).toMatchObject({ title: "Right Show", overview: "Right overview", poster_url: "right.jpg" });
+    expect(JSON.parse(row.external_ids)).toEqual({ tmdb: "111" });
+  });
+
+  it("still uses a sidecar whose id agrees with the item's own when the id lookup itself fails", async () => {
+    const folder = await insertRootFolder("movie");
+    const dir = path.join(folder.path, "Offline Match");
+    const filePath = writeFile(dir, "movie.mkv");
+    writeFile(dir, "movie.nfo", `<movie><title>Offline Match</title><plot>From the NFO.</plot><uniqueid type="imdb">tt0000001</uniqueid></movie>`);
+    const movieId = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, path, root_folder_id, monitored, has_file, status, external_ids)
+             VALUES ('movie','Offline Match','offline match',?,?,1,1,'downloaded',?)`
+          )
+          .run(filePath, folder.id, JSON.stringify({ imdb: "tt0000001" }))
+      ).lastInsertRowid
+    );
+    // fetchByExternalId rejects by default (no network), same as an offline install.
+
+    const result = await refreshOneMediaItem(movieId);
+
+    expect(result.ok).toBe(true);
+    expect(searchMetadata).not.toHaveBeenCalled();
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(movieId)) as any;
+    expect(row.overview).toBe("From the NFO.");
+  });
+
+  it("Refresh of an author whose book has a metadata.opf keeps the author's own title and uses the provider lookup", async () => {
+    // metadata.opf describes one book, never its author — it must not become the parent's metadata.
+    const folder = await insertRootFolder("author");
+    const authorDir = path.join(folder.path, "Some Author");
+    const bookPath = writeFile(authorDir, "book.epub");
+    writeFile(
+      authorDir,
+      "metadata.opf",
+      `<package><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>The Hobbit</dc:title><dc:creator>Some Author</dc:creator></metadata></package>`
+    );
+    const authorId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('author','Some Author','some author',?,1,1,'unknown')`)
+          .run(folder.id)
+      ).lastInsertRowid
+    );
+    await db.prepare(`INSERT INTO sub_items (media_item_id, title, monitored, has_file, file_path) VALUES (?, 'The Hobbit', 1, 1, ?)`).run(authorId, bookPath);
+    searchMetadata.mockResolvedValue([{ title: "Some Author", year: null, overview: "Author bio", posterUrl: null, externalIds: { openlibrary: "OL1A" } }]);
+
+    const result = await refreshOneMediaItem(authorId);
+
+    expect(result.ok).toBe(true);
+    expect(searchMetadata).toHaveBeenCalledWith("author", "Some Author", undefined, null);
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(authorId)) as any;
+    expect(row).toMatchObject({ title: "Some Author", overview: "Author bio" });
+    expect(JSON.parse(row.external_ids)).toEqual({ openlibrary: "OL1A" });
+  });
+
+  it("Refresh of a comic series whose issue carries ComicInfo.xml keeps the series' own title", async () => {
+    const folder = await insertRootFolder("comic");
+    const dir = path.join(folder.path, "The Amazing Spider-Man");
+    const zip = new AdmZip();
+    zip.addFile("ComicInfo.xml", Buffer.from(`<ComicInfo><Series>The Amazing Spider-Man</Series><Title>Issue One</Title><Number>1</Number></ComicInfo>`, "utf-8"));
+    fs.mkdirSync(dir, { recursive: true });
+    const issuePath = path.join(dir, "issue1.cbz");
+    zip.writeZip(issuePath);
+    const seriesId = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('comic','The Amazing Spider-Man','the amazing spider-man',?,1,1,'unknown')`
+          )
+          .run(folder.id)
+      ).lastInsertRowid
+    );
+    await db.prepare(`INSERT INTO sub_items (media_item_id, title, monitored, has_file, file_path) VALUES (?, 'Issue One', 1, 1, ?)`).run(seriesId, issuePath);
+    searchMetadata.mockResolvedValue([
+      { title: "The Amazing Spider-Man", year: null, overview: "Series overview", posterUrl: null, externalIds: { comicvine: "2127" } },
+    ]);
+
+    const result = await refreshOneMediaItem(seriesId);
+
+    expect(result.ok).toBe(true);
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(seriesId)) as any;
+    expect(row).toMatchObject({ title: "The Amazing Spider-Man", overview: "Series overview" });
+    expect(JSON.parse(row.external_ids)).toEqual({ comicvine: "2127" });
   });
 
   it("falls back to the existing id-lookup/title-search path when there's no sidecar at all", async () => {
@@ -320,6 +543,36 @@ describe("refreshOneMediaItem — per-episode sidecar re-sync", () => {
     expect(result.ok).toBe(true);
     const ep = (await db.prepare("SELECT title, overview FROM episodes WHERE media_item_id = ?").get(show.id)) as any;
     expect(ep).toMatchObject({ title: "Refreshed Title", overview: "Refreshed overview." });
+  });
+
+  it("never copies one multi-episode file's .nfo title onto every episode that shares the file", async () => {
+    const folder = await insertRootFolder("series");
+    const seasonDir = path.join(folder.path, "Show", "Season 01");
+    const sharedFile = writeFile(seasonDir, "Show.S01E01-E02.mkv");
+    writeFile(seasonDir, "Show.S01E01-E02.nfo", `<episodedetails><title>Part One</title><season>1</season><episode>1</episode></episodedetails>`);
+    const singleFile = writeFile(seasonDir, "Show.S01E03.mkv");
+    writeFile(seasonDir, "Show.S01E03.nfo", `<episodedetails><title>Third</title><season>1</season><episode>3</episode></episodedetails>`);
+    const showId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status, external_ids) VALUES ('series','Show','show',?,1,1,'continuing',?)`)
+          .run(folder.id, JSON.stringify({ tmdb: "5" }))
+      ).lastInsertRowid
+    );
+    const insertEp = (episode: number, title: string, filePath: string) =>
+      db
+        .prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path) VALUES (?,1,?,?,1,1,?)`)
+        .run(showId, episode, title, filePath);
+    await insertEp(1, "Ep1", sharedFile);
+    await insertEp(2, "Ep2", sharedFile);
+    await insertEp(3, "Ep3", singleFile);
+    fetchByExternalId.mockResolvedValue({ title: "Show", overview: "O", posterUrl: null, externalIds: { tmdb: "5" } });
+
+    const result = await refreshOneMediaItem(showId);
+
+    expect(result.ok).toBe(true);
+    const titles = (await db.prepare("SELECT title FROM episodes WHERE media_item_id = ? ORDER BY episode_number").all(showId)) as any[];
+    expect(titles.map((t) => t.title)).toEqual(["Ep1", "Ep2", "Third"]);
   });
 
   it("re-applies an edited per-episode .nfo for a sequentialEpisodeFallback type (course) too", async () => {

@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client.js";
+import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { LayersIcon, PlusCircleIcon } from "../components/NavIcons.js";
 import { TrashIcon } from "../components/ActionIcons.js";
@@ -12,6 +13,7 @@ import { confirmDialog } from "../utils/confirmDialog.js";
 
 export default function Collections() {
   const navigate = useNavigate();
+  const { auth } = useAuth();
   const mediaTypes = useMediaTypes();
   const [collections, setCollections] = useState<Collection[]>([]);
   const [showAdd, setShowAdd] = useState(false);
@@ -79,9 +81,11 @@ export default function Collections() {
         soundtrack album, all in one place.
       </p>
 
-      <PageToolbar
-        left={<ToolbarButton icon={<PlusCircleIcon />} label="Add" onClick={() => setShowAdd(true)} title="Add collection" />}
-      />
+      {auth.isAdmin && (
+        <PageToolbar
+          left={<ToolbarButton icon={<PlusCircleIcon />} label="Add" onClick={() => setShowAdd(true)} title="Add collection" />}
+        />
+      )}
 
       {showAdd && (
         <Modal title="New Collection" onClose={() => setShowAdd(false)}>
@@ -171,19 +175,21 @@ export default function Collections() {
                 {c.description ? ` · ${c.description}` : ""}
               </div>
             </div>
-            <button
-              type="button"
-              className="icon-button danger"
-              onClick={(e) => {
-                e.stopPropagation();
-                removeCollection(c.id);
-              }}
-              style={{ margin: "0 12px 12px" }}
-              title="Delete"
-              aria-label="Delete"
-            >
-              <TrashIcon />
-            </button>
+            {auth.isAdmin && (
+              <button
+                type="button"
+                className="icon-button danger"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  removeCollection(c.id);
+                }}
+                style={{ margin: "0 12px 12px" }}
+                title="Delete"
+                aria-label="Delete"
+              >
+                <TrashIcon />
+              </button>
+            )}
           </div>
         ))}
       </div>

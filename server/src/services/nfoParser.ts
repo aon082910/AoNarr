@@ -1,4 +1,5 @@
 import { parseStringPromise } from "xml2js";
+import { CONTENT_RATING_ORDER } from "./contentRatings.js";
 
 export interface ParsedNfo {
   title: string | null;
@@ -24,6 +25,23 @@ function allText(value: unknown): string[] {
   if (value === undefined || value === null) return [];
   const arr = Array.isArray(value) ? value : [value];
   return arr.map((v) => firstText(v)).filter((v): v is string => !!v);
+}
+
+/** Kodi writes <mpaa> with its "Rated " prefix ("Rated R") and other NFO writers use a country
+ * prefix ("US:R", "US:Rated PG-13", "GB:15 / US:R"). Stored verbatim those are unranked, so a
+ * household max-content-rating restriction never blocks them. The canonical vocabulary is the US
+ * one, so a US (or unprefixed) part wins over another country's same-named label ("GB:PG / US:PG-13"
+ * is PG-13, not the UK's PG). Anything that doesn't reduce to the vocabulary (a course's "All Ages",
+ * an artist's "Explicit") is kept as written. */
+function normalizeNfoRating(raw: string | null): string | null {
+  if (!raw) return null;
+  const parts = raw.split("/").map((part) => {
+    const m = part.trim().match(/^(?:rated\s+)?(?:([a-z]{2,3})\s*:\s*)?(?:rated\s+)?(.*)$/i);
+    return { country: m?.[1]?.toUpperCase() ?? null, bare: (m?.[2] ?? "").trim().toUpperCase() };
+  });
+  const isUs = (country: string | null) => country === null || country === "US" || country === "USA";
+  const pick = (candidates: typeof parts) => candidates.find((p) => CONTENT_RATING_ORDER.includes(p.bare))?.bare;
+  return pick(parts.filter((p) => isUs(p.country))) ?? pick(parts) ?? raw;
 }
 
 /**
@@ -62,7 +80,7 @@ export async function parseNfo(xml: string): Promise<ParsedNfo> {
   const imdbId = firstText(root.imdbid ?? root.imdb_id);
   if (imdbId && !externalIds.imdb) externalIds.imdb = imdbId;
 
-  const contentRating = firstText(root.mpaa);
+  const contentRating = normalizeNfoRating(firstText(root.mpaa));
   const genres = allText(root.genre);
 
   const seasonText = firstText(root.season);
@@ -78,7 +96,8 @@ export async function parseNfo(xml: string): Promise<ParsedNfo> {
     externalIds,
     contentRating,
     genres,
-    season: season && !Number.isNaN(season) ? season : null,
-    episode: episode && !Number.isNaN(episode) ? episode : null,
+    // Season 0 is Kodi/Jellyfin's specials season, so 0 must survive (not be treated as falsy).
+    season: season !== null && !Number.isNaN(season) ? season : null,
+    episode: episode !== null && !Number.isNaN(episode) ? episode : null,
   };
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
@@ -6,6 +6,7 @@ import { useSortableTable } from "../hooks/useSortableTable.js";
 import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 import { XIcon } from "../components/ActionIcons.js";
 import Pagination, { DEFAULT_PAGE_SIZE_OPTIONS } from "../components/Pagination.js";
+import { formatServerTimestamp } from "../utils/format.js";
 
 interface HistoryRow {
   id: number;
@@ -33,10 +34,27 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
 function eventDetail(row: HistoryRow): string {
   try {
     const parsed = row.data ? JSON.parse(row.data) : null;
-    return parsed?.title ?? parsed?.fileName ?? parsed?.reason ?? "—";
+    return (
+      parsed?.title ??
+      parsed?.fileName ??
+      parsed?.fileLabel ??
+      parsed?.destPath ??
+      parsed?.destFolder ??
+      parsed?.language ??
+      parsed?.reason ??
+      "—"
+    );
   } catch {
     return "—";
   }
+}
+
+/** The date filter is a local calendar day, but history.created_at is UTC "YYYY-MM-DD HH:MM:SS"
+ * text compared as a string — send local midnight in that same UTC form so the boundary is the
+ * viewer's midnight rather than UTC's. */
+function localDateToServerBound(date: string): string {
+  const localMidnight = new Date(`${date}T00:00:00`);
+  return Number.isNaN(localMidnight.getTime()) ? date : localMidnight.toISOString().slice(0, 19).replace("T", " ");
 }
 
 /** Radarr/Sonarr-style global History page — every grab/import/failure event across the whole
@@ -53,15 +71,19 @@ export default function HistoryPage() {
   const [since, setSince] = useState(() => localStorage.getItem("aonarr_history_since") ?? "");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(() => Number(localStorage.getItem("aonarr_history_page_size")) || 100);
+  const requestRef = useRef(0);
 
   function load() {
     const params = new URLSearchParams();
     if (eventType !== "all") params.set("eventType", eventType);
     if (mediaType !== "all") params.set("mediaType", mediaType);
-    if (since) params.set("since", since);
+    if (since) params.set("since", localDateToServerBound(since));
     params.set("limit", String(pageSize));
     params.set("offset", String((page - 1) * pageSize));
-    api.get<HistoryResponse>(`/activity/history?${params.toString()}`).then(setData);
+    const requestId = ++requestRef.current;
+    api.get<HistoryResponse>(`/activity/history?${params.toString()}`).then((res) => {
+      if (requestRef.current === requestId) setData(res);
+    });
   }
 
   useEffect(load, [eventType, mediaType, since, page, pageSize]);
@@ -69,9 +91,14 @@ export default function HistoryPage() {
   useEffect(() => localStorage.setItem("aonarr_history_mediaType", mediaType), [mediaType]);
   useEffect(() => localStorage.setItem("aonarr_history_since", since), [since]);
   useEffect(() => localStorage.setItem("aonarr_history_page_size", String(pageSize)), [pageSize]);
+
   // A changed filter narrows/changes the result set entirely — staying on page 4 of the old results
-  // would otherwise show a confusing empty or wrong page (matches LibraryType.tsx's own convention).
-  useEffect(() => setPage(1), [eventType, mediaType, since]);
+  // would otherwise show a confusing empty or wrong page. Reset in the same update as the filter
+  // (not a follow-up effect) so only one request goes out, for page 1.
+  function changeFilter(update: () => void) {
+    update();
+    setPage(1);
+  }
 
   const totalPages = Math.max(1, Math.ceil((data?.total ?? 0) / pageSize));
 
@@ -82,7 +109,7 @@ export default function HistoryPage() {
       <PageToolbar
         right={
           <>
-            <select value={eventType} onChange={(e) => setEventType(e.target.value)} style={{ maxWidth: 200 }}>
+            <select value={eventType} onChange={(e) => changeFilter(() => setEventType(e.target.value))} style={{ maxWidth: 200 }}>
               <option value="all">All events</option>
               {Object.entries(EVENT_TYPE_LABELS).map(([key, label]) => (
                 <option key={key} value={key}>
@@ -90,7 +117,7 @@ export default function HistoryPage() {
                 </option>
               ))}
             </select>
-            <select value={mediaType} onChange={(e) => setMediaType(e.target.value)} style={{ maxWidth: 200 }}>
+            <select value={mediaType} onChange={(e) => changeFilter(() => setMediaType(e.target.value))} style={{ maxWidth: 200 }}>
               <option value="all">All libraries</option>
               {mediaTypes.map((t) => (
                 <option key={t.key} value={t.key}>
@@ -98,16 +125,23 @@ export default function HistoryPage() {
                 </option>
               ))}
             </select>
-            <input type="date" value={since} onChange={(e) => setSince(e.target.value)} title="Only show events on or after this date" />
+            <input
+              type="date"
+              value={since}
+              onChange={(e) => changeFilter(() => setSince(e.target.value))}
+              title="Only show events on or after this date"
+            />
             {(eventType !== "all" || mediaType !== "all" || since) && (
               <ToolbarButton
                 icon={<XIcon />}
                 label="Clear Filters"
-                onClick={() => {
-                  setEventType("all");
-                  setMediaType("all");
-                  setSince("");
-                }}
+                onClick={() =>
+                  changeFilter(() => {
+                    setEventType("all");
+                    setMediaType("all");
+                    setSince("");
+                  })
+                }
               />
             )}
           </>
@@ -171,7 +205,7 @@ function HistoryTable({ rows }: { rows: HistoryRow[] }) {
                   <Link to={`/media/${r.mediaItemId}`}>{r.mediaTitle}</Link>
                 </td>
                 <td>{eventDetail(r)}</td>
-                <td>{new Date(r.createdAt).toLocaleString()}</td>
+                <td>{formatServerTimestamp(r.createdAt)}</td>
               </tr>
         ))}
       </tbody>

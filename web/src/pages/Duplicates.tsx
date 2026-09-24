@@ -51,10 +51,6 @@ export default function Duplicates() {
   const [deleteFiles, setDeleteFiles] = useState(true);
   const [merging, setMerging] = useState<string | null>(null);
 
-  function groupKey(g: DuplicateGroup): string {
-    return `${g.type}::${g.title}::${g.year ?? ""}`;
-  }
-
   function load() {
     api.get<DuplicateGroup[]>(`/duplicates${typeFilter ? `?type=${typeFilter}` : ""}`).then((data) => {
       setGroups(data);
@@ -63,8 +59,8 @@ export default function Duplicates() {
       setKeeperByGroup((prev) => {
         const next = { ...prev };
         for (const g of data) {
-          const key = groupKey(g);
-          if (next[key] === undefined) {
+          const key = g.key;
+          if (!g.items.some((i) => i.id === next[key])) {
             next[key] = g.items.find((i) => i.suggestedKeeper)?.id ?? g.items[0].id;
           }
         }
@@ -108,8 +104,12 @@ export default function Duplicates() {
   }
 
   async function merge(g: DuplicateGroup) {
-    const key = groupKey(g);
+    const key = g.key;
     const keeperId = keeperByGroup[key];
+    if (!g.items.some((i) => i.id === keeperId)) {
+      notify.error("Pick which item in this group to keep first.");
+      return;
+    }
     const loserIds = g.items.filter((i) => i.id !== keeperId).map((i) => i.id);
     if (
       !(await confirmDialog({
@@ -123,7 +123,18 @@ export default function Duplicates() {
     }
     setMerging(key);
     try {
-      await api.post("/duplicates/merge", { keeperId, loserIds, deleteFiles });
+      const result = await api.post<{ merged?: number; skippedShapeMismatch?: number[] }>("/duplicates/merge", {
+        keeperId,
+        loserIds,
+        deleteFiles,
+      });
+      const skipped = result?.skippedShapeMismatch?.length ?? 0;
+      if (skipped > 0) {
+        const label = mediaTypes.find((t) => t.key === g.type)?.label ?? g.type;
+        notify.error(
+          `${skipped} item(s) not merged: a not-yet-converted legacy item can't merge with a converted one. Run "Convert to Episodic" on the ${label} library first.`
+        );
+      }
       load();
     } catch (e) {
       notify.error((e as Error).message);
@@ -167,7 +178,7 @@ export default function Duplicates() {
       {groups !== null && groups.length === 0 && <p className="empty">No duplicates found.</p>}
 
       {groups?.map((g) => {
-        const key = groupKey(g);
+        const key = g.key;
         const groupTypeInfo = mediaTypes.find((t) => t.key === g.type);
         const typeLabel = groupTypeInfo?.label ?? g.type;
         // Same reasoning as LibraryType.tsx's SINGLE_SHAPE_ONLY_FIELDS — media_items.quality is only

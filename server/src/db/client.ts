@@ -279,7 +279,8 @@ function ensureUsersAdminRole() {
     | undefined;
   if (!row || row.sql.includes("'admin'")) return;
 
-  const cols = (db.prepare(`PRAGMA table_info(users)`).all() as { name: string }[]).map((c) => c.name);
+  const colInfo = db.prepare(`PRAGMA table_info(users)`).all() as { name: string; type: string }[];
+  const cols = colInfo.map((c) => c.name);
   db.pragma("legacy_alter_table = ON");
   db.transaction(() => {
     db.exec(`ALTER TABLE users RENAME TO users_pre_migration`);
@@ -293,8 +294,20 @@ function ensureUsersAdminRole() {
        auto_approve INTEGER NOT NULL DEFAULT 0,
        max_content_rating TEXT,
        totp_secret TEXT,
-       totp_enabled INTEGER NOT NULL DEFAULT 0
+       totp_enabled INTEGER NOT NULL DEFAULT 0,
+       display_name TEXT,
+       avatar_path TEXT,
+       bio TEXT,
+       social_links TEXT
      )`);
+    // Every ensureColumn("users", ...) above runs BEFORE this, so the old table can already carry
+    // columns the hardcoded CREATE here doesn't list — copying all of `cols` then failed with
+    // "table users has no column named ..." and aborted startup. Any such column is re-added
+    // (same declared type) before the copy, so its data survives too.
+    const newCols = new Set((db.prepare(`PRAGMA table_info(users)`).all() as { name: string }[]).map((c) => c.name));
+    for (const c of colInfo) {
+      if (!newCols.has(c.name)) db.exec(`ALTER TABLE users ADD COLUMN ${c.name} ${c.type || "TEXT"}`);
+    }
     db.exec(`INSERT INTO users (${cols.join(", ")}) SELECT ${cols.join(", ")} FROM users_pre_migration`);
     db.exec(`DROP TABLE users_pre_migration`);
   })();
@@ -428,10 +441,10 @@ if (qualityCount === 0) {
   insertMany(DEFAULT_QUALITY_SEED);
 }
 
-const defaultProfile = db
-  .prepare("SELECT id FROM quality_profiles WHERE name = ?")
-  .get("Any");
-if (!defaultProfile) {
+// Seeded only into an EMPTY table, never "whenever no profile is named Any" — that re-created the
+// default profile on every restart after an admin renamed or deleted it.
+const profileCount = (db.prepare("SELECT COUNT(*) as c FROM quality_profiles").get() as { c: number }).c;
+if (profileCount === 0) {
   db.prepare(
     "INSERT INTO quality_profiles (name, allowed_qualities, cutoff) VALUES (?, ?, ?)"
   ).run(
@@ -480,3 +493,39 @@ if (!existingApiKey) {
     console.log("[startup] backfilled library_search_fts for existing library rows");
   }
 }
+
+/**
+ * The episode/sub_item FTS update triggers used to fire on a title change only, so re-parenting a
+ * row (duplicate merge, series split) left its search entry pointing at the old, often deleted,
+ * item. CREATE TRIGGER IF NOT EXISTS never replaces an existing trigger, so an outdated one is
+ * recreated from schema.sql here and entries that already drifted are re-pointed.
+ */
+export function upgradeFtsReparentTriggers(): void {
+  const targets = [
+    { trigger: "trg_fts_episodes_au", table: "episodes", matchType: "episode" },
+    { trigger: "trg_fts_sub_items_au", table: "sub_items", matchType: "child" },
+  ];
+  const outdated = targets.filter(({ trigger }) => {
+    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(trigger) as
+      | { sql: string }
+      | undefined;
+    return !row || !row.sql.includes("media_item_id");
+  });
+  if (outdated.length === 0) return;
+
+  db.transaction(() => {
+    for (const { trigger, table, matchType } of outdated) {
+      const createSql = schemaSql.match(new RegExp(`CREATE TRIGGER IF NOT EXISTS ${trigger}\\b[\\s\\S]*?\\bEND;`))?.[0];
+      if (!createSql) throw new Error(`schema.sql has no definition for trigger ${trigger}`);
+      db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+      db.exec(createSql);
+      db.prepare(
+        `UPDATE library_search_fts
+         SET media_item_id = (SELECT t.media_item_id FROM ${table} t WHERE t.id = library_search_fts.source_id)
+         WHERE match_type = ?
+           AND EXISTS (SELECT 1 FROM ${table} t WHERE t.id = library_search_fts.source_id AND t.media_item_id IS NOT library_search_fts.media_item_id)`
+      ).run(matchType);
+    }
+  })();
+}
+upgradeFtsReparentTriggers();

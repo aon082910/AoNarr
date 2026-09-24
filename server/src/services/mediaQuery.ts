@@ -325,25 +325,31 @@ END`;
 // instead of an alphabetical string sort (which puts e.g. NC-17 second, right after G).
 const CONTENT_RATING_SORT_EXPR = `CASE m.content_rating ${CONTENT_RATING_ORDER.map((r, idx) => `WHEN '${r}' THEN ${idx}`).join(" ")} ELSE -1 END`;
 
+// The Library page fetches with LIMIT/OFFSET, so every sort ends in a unique tiebreaker — Postgres
+// returns tied rows in no fixed order, which let consecutive pages repeat some items and skip others.
+// NULL placement is spelled out because the dialects default to opposite ends (SQLite treats NULL as
+// the smallest value; that ordering is kept on both).
+const SORT_TIEBREAKER = "m.sort_title ASC, m.id ASC";
+
 export const MEDIA_SORT_COLUMNS: Record<string, string> = {
-  title: "m.sort_title ASC",
-  year: "m.year DESC",
-  status: `${STATUS_SORT_EXPR} DESC`,
-  monitored: "m.monitored DESC",
+  title: SORT_TIEBREAKER,
+  year: `m.year DESC NULLS LAST, ${SORT_TIEBREAKER}`,
+  status: `${STATUS_SORT_EXPR} DESC, ${SORT_TIEBREAKER}`,
+  monitored: `m.monitored DESC, ${SORT_TIEBREAKER}`,
   // Joined against the admin-configurable qualities table's own rank column instead of an
   // alphabetical string sort, matching the same ranking qualityRank() uses for every actual
   // search/grab/upgrade decision.
-  quality: "(SELECT q.rank FROM qualities q WHERE q.name = m.quality) ASC",
-  contentRating: `${CONTENT_RATING_SORT_EXPR} ASC`,
+  quality: `(SELECT q.rank FROM qualities q WHERE q.name = m.quality) ASC NULLS FIRST, ${SORT_TIEBREAKER}`,
+  contentRating: `${CONTENT_RATING_SORT_EXPR} ASC, ${SORT_TIEBREAKER}`,
   // No fixed severity order to sort by (unlike content rating) — sorting the raw JSON-array text
   // alphabetically still clusters items by their first-listed genre, since a JSON array's first
   // element sits immediately after the opening `["` in both dialects, with no JSON-extraction
   // function needed on either database.
-  genres: "m.genres ASC",
+  genres: `m.genres ASC NULLS FIRST, ${SORT_TIEBREAKER}`,
   added: "m.id DESC",
-  releaseDate: "m.release_date DESC",
-  path: "m.path ASC",
-  sizeOnDisk: "m.size_bytes DESC",
+  releaseDate: `m.release_date DESC NULLS LAST, ${SORT_TIEBREAKER}`,
+  path: `m.path ASC NULLS FIRST, ${SORT_TIEBREAKER}`,
+  sizeOnDisk: `m.size_bytes DESC NULLS LAST, ${SORT_TIEBREAKER}`,
 };
 
 export function clampLimit(raw: unknown, fallback = 60, max = 500): number {

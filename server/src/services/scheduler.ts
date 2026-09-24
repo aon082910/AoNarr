@@ -196,9 +196,35 @@ function isEligibleForDelay(quality: string, cutoff: string, result: SearchResul
 
 export async function isAlreadyQueued(mediaItemId: number, episodeId: number | null, subItemId: number | null): Promise<boolean> {
   if (episodeId) {
-    return !!(await db
-      .prepare("SELECT id FROM queue WHERE episode_id = ? AND status NOT IN ('failed')")
-      .get(episodeId));
+    if (await db.prepare("SELECT id FROM queue WHERE episode_id = ? AND status NOT IN ('failed')").get(episodeId)) return true;
+    const ep = (await db
+      .prepare("SELECT media_item_id, season_number, episode_number, scene_season_number, scene_episode_number, air_date FROM episodes WHERE id = ?")
+      .get(episodeId)) as
+      | {
+          media_item_id: number;
+          season_number: number;
+          episode_number: number;
+          scene_season_number: number | null;
+          scene_episode_number: number | null;
+          air_date: string | null;
+        }
+      | undefined;
+    if (!ep) return false;
+    // Another in-flight grab for this season covers this episode only when its release does: a
+    // pack of this very season (from a season search, or grabbed for a sibling episode), or one
+    // naming this episode. A season search can grab a single-episode release — or another season's
+    // pack — too, which must not hold up the rest of the season.
+    const sameSeason = (await db
+      .prepare("SELECT title FROM queue WHERE media_item_id = ? AND season_number = ? AND status NOT IN ('failed')")
+      .all(ep.media_item_id, ep.season_number)) as { title: string }[];
+    return sameSeason.some(({ title }) => {
+      const parsed = parseReleaseTitle(title);
+      if (parsed.isFullSeason) return parsed.seasonNumber == null || parsed.seasonNumber === ep.season_number;
+      return (
+        releaseMatchesEpisode(parsed, ep.season_number, ep.episode_number, ep.scene_season_number, ep.scene_episode_number) ||
+        (!!ep.air_date && releaseMatchesAirDate(parsed, ep.air_date))
+      );
+    });
   }
   if (subItemId) {
     return !!(await db
@@ -210,6 +236,20 @@ export async function isAlreadyQueued(mediaItemId: number, episodeId: number | n
       "SELECT id FROM queue WHERE media_item_id = ? AND episode_id IS NULL AND sub_item_id IS NULL AND status NOT IN ('failed')"
     )
     .get(mediaItemId));
+}
+
+/** An automatic failure entry only holds a direct (yt-dlp/RSS) grab back for `hours` — the failure
+ * is often transient (a yt-dlp that needs updating, a CDN error) and there's no other release to
+ * fall back to. An admin's own blocklisting (no reason, from Interactive Search, or "Remove and
+ * Blocklist" in Activity) stays permanent. */
+async function titlesBlocklistedWithinHours(mediaItemId: number, hours: number): Promise<Set<string>> {
+  const rows = (await db
+    .prepare(
+      `SELECT release_title FROM blocklist WHERE media_item_id = ?
+       AND (reason IS NULL OR reason = 'Removed from queue by admin' OR created_at >= ${nowOffsetHoursExpr(db, -hours)})`
+    )
+    .all(mediaItemId)) as { release_title: string }[];
+  return new Set(rows.map((r) => r.release_title));
 }
 
 export interface ChosenResult {
@@ -246,6 +286,31 @@ export function matchTierFor(result: SearchResult, identity: TargetIdentity | nu
   return 0;
 }
 
+type ReleaseTarget =
+  | { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null; absoluteEpisode?: number | null }
+  | { airDate: string };
+
+/** The indexer query and release-match target for one episode row. A daily series' releases are
+ * named by air date ("Show.2024.08.25..."), which never parse to a season/episode, so an SxxEyy
+ * target would reject every one of them. */
+async function episodeSearchFor(item: MediaItem, ep: any): Promise<{ query: string; target: ReleaseTarget }> {
+  if (item.seriesType === "daily" && ep.air_date) {
+    return { query: `${item.title} ${ep.air_date}`, target: { airDate: ep.air_date } };
+  }
+  const searchSeason = ep.scene_season_number ?? ep.season_number;
+  const searchEpisode = ep.scene_episode_number ?? ep.episode_number;
+  return {
+    query: `${item.title} S${String(searchSeason).padStart(2, "0")}E${String(searchEpisode).padStart(2, "0")}`,
+    target: {
+      season: ep.season_number,
+      episode: ep.episode_number,
+      sceneSeason: ep.scene_season_number,
+      sceneEpisode: ep.scene_episode_number,
+      absoluteEpisode: item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, ep.season_number, ep.episode_number) : null,
+    },
+  };
+}
+
 /**
  * Picks the best result for a target: filters to allowed qualities, prefers matching
  * episode/season, ranks by quality first, then by custom-format score, then seeders. Releases
@@ -258,10 +323,7 @@ export async function chooseBestResult(
   cutoff: string,
   qualityProfileId: number | null,
   minFormatScore: number,
-  target:
-    | { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null; absoluteEpisode?: number | null }
-    | { airDate: string }
-    | null,
+  target: ReleaseTarget | null,
   blocklisted: Set<string>,
   mediaType: string,
   delayProfile: DelayProfile | null = null,
@@ -340,21 +402,32 @@ export async function grab(
   episodeId: number | null,
   subItemId: number | null,
   chosen: ChosenResult,
-  retryCount = 0
+  retryCount = 0,
+  seasonNumber: number | null = null
 ): Promise<void> {
   const { result: best, quality } = chosen;
+  // A season pack grabbed for one episode covers the rest of its season too — recording the season
+  // is what lets isAlreadyQueued see that, rather than the same pack being grabbed once per episode.
+  let packSeason = seasonNumber;
+  const parsedBest = parseReleaseTitle(best.title);
+  if (episodeId && packSeason == null && parsedBest.isFullSeason) {
+    const ep = (await db.prepare("SELECT season_number FROM episodes WHERE id = ?").get(episodeId)) as { season_number: number } | undefined;
+    // A scene-numbered pack of another season ("Show.S02" for TVDB S01E13) doesn't cover this one.
+    if (ep && (parsedBest.seasonNumber == null || parsedBest.seasonNumber === ep.season_number)) packSeason = ep.season_number;
+  }
   const adapter = getDownloadClientAdapter(client.type);
   const grabResult = await adapter.addDownload(client, best.downloadUrl, client.category, best.title, best.protocol);
 
   await db
     .prepare(
-      `INSERT INTO queue (media_item_id, episode_id, sub_item_id, title, indexer_id, download_client_id, download_id, size, quality, status, retry_count)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`
+      `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, indexer_id, download_client_id, download_id, size, quality, status, retry_count)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`
     )
     .run(
       mediaItem.id,
       episodeId,
       subItemId,
+      packSeason,
       best.title,
       best.indexerId,
       client.id,
@@ -576,6 +649,11 @@ export async function runAutoSearch(signal?: AbortSignal) {
         const subItems = (await db
           .prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND monitored = 1 AND has_file = 0")
           .all(item.id)) as any[];
+        // A direct grab (yt-dlp, an RSS enclosure) has no other release to fall back to: re-grabbing
+        // a failed one every pass would just fail and re-notify, but skipping it for good would
+        // strand everything that failed during a transient outage (an outdated yt-dlp, a CDN 5xx).
+        const recentDirectFailures =
+          item.type === "video" || item.type === "podcast" ? await titlesBlocklistedWithinHours(item.id, 24) : new Set<string>();
 
         for (const sub of subItems) {
           if (await isAlreadyQueued(item.id, null, sub.id)) continue;
@@ -583,6 +661,7 @@ export async function runAutoSearch(signal?: AbortSignal) {
           // Online Videos aren't on Torznab/Newznab indexers at all — a YouTube-sourced video is
           // grabbed directly via yt-dlp using the video id already stored at import time.
           if (item.type === "video" && sub.external_provider === "youtube" && sub.external_id) {
+            if (recentDirectFailures.has(sub.title)) continue;
             const ytClient = clients.find((c) => c.type === "ytdlp");
             if (!ytClient) {
               log.warn(`[scheduler] no yt-dlp download client configured, skipping "${sub.title}"`);
@@ -609,6 +688,7 @@ export async function runAutoSearch(signal?: AbortSignal) {
           // Podcast episodes aren't indexer-searched either — the RSS enclosure URL stored at
           // discovery time (checkPodcastFeeds) is already a direct, downloadable file.
           if (item.type === "podcast" && sub.external_provider === "rss" && sub.external_id) {
+            if (recentDirectFailures.has(sub.title)) continue;
             const httpClient = clients.find((c) => c.type === "http");
             if (!httpClient) {
               log.warn(`[scheduler] no "http" download client configured, skipping "${sub.title}"`);
@@ -698,9 +778,7 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
       const delayProfile = pickDelayProfile(delayProfiles, await tagIdsForMediaItem(item.id));
 
       let query: string;
-      let episodeTarget:
-        | { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null; absoluteEpisode?: number | null }
-        | null = null;
+      let episodeTarget: ReleaseTarget | null = null;
       let identity: TargetIdentity | null = null;
       if (t.episodeId) {
         const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(t.episodeId)) as any;
@@ -708,16 +786,7 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
           results.push({ ...t, grabbed: false, error: "Episode not found" });
           continue;
         }
-        episodeTarget = {
-          season: ep.season_number,
-          episode: ep.episode_number,
-          sceneSeason: ep.scene_season_number,
-          sceneEpisode: ep.scene_episode_number,
-          absoluteEpisode: item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, ep.season_number, ep.episode_number) : null,
-        };
-        const searchSeason = ep.scene_season_number ?? ep.season_number;
-        const searchEpisode = ep.scene_episode_number ?? ep.episode_number;
-        query = `${item.title} S${String(searchSeason).padStart(2, "0")}E${String(searchEpisode).padStart(2, "0")}`;
+        ({ query, target: episodeTarget } = await episodeSearchFor(item, ep));
       } else if (t.subItemId) {
         const sub = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(t.subItemId)) as any;
         if (!sub) {
@@ -995,35 +1064,44 @@ export async function retryFailedGrab(match: QueueItem, reason: string): Promise
     const profile = await getQualityProfile(item.qualityProfileId);
     const blocklisted = await getBlocklistedTitles(item.id);
 
-    let episodeTarget:
-      | { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null; absoluteEpisode?: number | null }
-      | null = null;
+    let episodeTarget: ReleaseTarget | null = null;
     let identity: TargetIdentity | null = null;
+    let seasonPack: number | null = null;
+    let seasonEpisodes: number[] | null = null;
     let query: string;
     if (match.episodeId) {
       const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(match.episodeId)) as any;
       if (!ep) throw new Error("episode no longer exists");
-      episodeTarget = {
-        season: ep.season_number,
-        episode: ep.episode_number,
-        sceneSeason: ep.scene_season_number,
-        sceneEpisode: ep.scene_episode_number,
-        absoluteEpisode: item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, ep.season_number, ep.episode_number) : null,
-      };
-      const searchSeason = ep.scene_season_number ?? ep.season_number;
-      const searchEpisode = ep.scene_episode_number ?? ep.episode_number;
-      query = `${item.title} S${String(searchSeason).padStart(2, "0")}E${String(searchEpisode).padStart(2, "0")}`;
+      ({ query, target: episodeTarget } = await episodeSearchFor(item, ep));
     } else if (match.subItemId) {
       const sub = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(match.subItemId)) as any;
       if (!sub) throw new Error("sub-item no longer exists");
       query = `${item.title} ${sub.title}`;
+    } else if (match.seasonNumber != null && getMediaTypeConfig(item.type).shape === "episodic") {
+      seasonPack = match.seasonNumber;
+      // A season search can grab a single-episode release too. Its replacement only has to cover
+      // the same episode(s) — a still-airing season often has no full pack to offer yet.
+      const failed = parseReleaseTitle(match.title);
+      if (!failed.isFullSeason && failed.episodeNumbers?.length) seasonEpisodes = failed.episodeNumbers;
+      query = `${item.title} S${String(seasonPack).padStart(2, "0")}${seasonEpisodes ? `E${String(seasonEpisodes[0]).padStart(2, "0")}` : ""}`;
     } else {
       query = item.year ? `${item.title} ${item.year}` : item.title;
       identity = { year: item.year, externalIds: item.externalIds ? JSON.parse(item.externalIds) : {} };
     }
 
     const indexers = await rowsToIndexers();
-    const results = await searchAllIndexers(indexers, query, item.type, false, identity?.externalIds);
+    const searchResults = await searchAllIndexers(indexers, query, item.type, false, identity?.externalIds);
+    // A season-search grab's replacement has to be a full pack of that same season (or cover the
+    // same episodes): with no target, chooseBestResult would accept any release of the show, which
+    // the importer can't place.
+    const results =
+      seasonPack === null
+        ? searchResults
+        : searchResults.filter((r) => {
+            const parsed = parseReleaseTitle(r.title);
+            if (parsed.seasonNumber !== seasonPack) return false;
+            return parsed.isFullSeason || (!!seasonEpisodes && seasonEpisodes.every((e) => parsed.episodeNumbers?.includes(e)));
+          });
     const delayProfiles = await loadDelayProfiles();
     const delayProfile = pickDelayProfile(delayProfiles, await tagIdsForMediaItem(item.id));
     const best = await chooseBestResult(
@@ -1052,7 +1130,7 @@ export async function retryFailedGrab(match: QueueItem, reason: string): Promise
       return;
     }
 
-    await grab(targetClient, item, match.episodeId, match.subItemId, best, match.retryCount + 1);
+    await grab(targetClient, item, match.episodeId, match.subItemId, best, match.retryCount + 1, seasonPack);
     // grab() just inserted a brand-new queue row for the replacement release — this old row (still
     // sitting at status='failed', its own download already dealt with by the caller above) is now
     // superseded and would otherwise linger in the queue forever alongside the active retry, which
@@ -1065,6 +1143,8 @@ export async function retryFailedGrab(match: QueueItem, reason: string): Promise
     await notifyFailed(mediaTitle, reason);
   }
 }
+
+const UNRESOLVED_TORRENT_TIMEOUT_MS = 30 * 60 * 1000;
 
 /** Poll download clients for progress on active queue items, and import completed ones. */
 export async function pollQueue() {
@@ -1087,6 +1167,9 @@ export async function pollQueue() {
       for (const status of statuses) {
         const match = relevant.find((q) => q.downloadId === status.downloadId);
         if (!match) continue;
+        if (status.resolvedDownloadId && status.resolvedDownloadId !== match.downloadId) {
+          await db.prepare("UPDATE queue SET download_id = ? WHERE id = ?").run(status.resolvedDownloadId, match.id);
+        }
         // Translated through any configured remote path mapping before it's ever stored, so
         // nothing downstream (importer.ts included) has to know or care whether one applies —
         // undefined (the common case: no mapping configured, or this adapter doesn't report a
@@ -1143,6 +1226,39 @@ export async function pollQueue() {
             await removeQueueItemDownload(match, true);
           }
           await retryFailedGrab(match, "Download failed at the download client");
+        }
+      }
+
+      // qBittorrent fetches a .torrent URL on its own after accepting the add: when that fetch fails,
+      // or it already has the torrent and drops the duplicate untagged, the placeholder id never
+      // resolves and the row would sit at 'queued' forever, holding up every search for its target.
+      if (client.type === "qbittorrent") {
+        const cutoff = new Date(Date.now() - UNRESOLVED_TORRENT_TIMEOUT_MS).toISOString().slice(0, 19).replace("T", " ");
+        const comparable = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+        for (const q of relevant) {
+          if (!q.downloadId || statuses.some((s) => s.downloadId === q.downloadId)) continue;
+          // A pending tag, or a .torrent URL a row was keyed by before hashes were resolved at add time.
+          const legacyUrl = /^https?:\/\//i.test(q.downloadId);
+          if (!q.downloadId.startsWith("tag:") && !legacyUrl) continue;
+          if (!q.addedAt || q.addedAt > cutoff) continue;
+          // qBittorrent drops a duplicate add (a release it's still seeding) without applying the new
+          // tags, so the torrent can be there all along under its own name.
+          const byName = statuses.find(
+            (s) =>
+              !s.resolvedDownloadId &&
+              !!s.clientTitle &&
+              comparable(s.clientTitle) === comparable(q.title) &&
+              !relevant.some((other) => other.id !== q.id && other.downloadId === s.downloadId)
+          );
+          if (byName) {
+            await db.prepare("UPDATE queue SET download_id = ? WHERE id = ?").run(byName.downloadId, q.id);
+            continue;
+          }
+          await db.prepare(`UPDATE queue SET status = 'failed', updated_at = ${nowExpr(db)} WHERE id = ?`).run(q.id);
+          notifyQueueChanged();
+          // A legacy row's torrent was most likely added and may well have finished — failing it just
+          // stops it holding up searches, without blocklisting a release that probably worked.
+          if (!legacyUrl) await retryFailedGrab(q, "qBittorrent never added the torrent");
         }
       }
     } catch (err) {
@@ -1274,17 +1390,30 @@ async function checkAndNotifyUpdate(): Promise<void> {
   await notifyUpdateAvailable(`Round ${result.latestRound} — ${result.latestTitle ?? "see CHANGELOG.md"}`);
 }
 
+// A cron step only counts within its own field: a minute step of 120 runs hourly at :00, and one
+// that doesn't divide 60 (45 -> :00 and :45) runs more often than asked, burning indexer quota.
+// Round up to a step that divides its field evenly, moving to the hour/day field past 30 minutes.
+export function autoSearchCronSchedule(intervalMinutes: number): string {
+  const minutes = Number.isFinite(intervalMinutes) ? Math.max(1, Math.ceil(intervalMinutes)) : 30;
+  const minuteStep = [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30].find((s) => s >= minutes);
+  if (minuteStep) return `*/${minuteStep} * * * *`;
+  const hourStep = [1, 2, 3, 4, 6, 8, 12].find((s) => s * 60 >= minutes);
+  if (hourStep) return `0 */${hourStep} * * *`;
+  return `0 0 */${Math.min(28, Math.ceil(minutes / 1440))} * *`;
+}
+
 let started = false;
 
 export function startScheduler() {
   if (started) return;
   started = true;
 
+  const autoSearchSchedule = autoSearchCronSchedule(config.searchIntervalMinutes);
   registerJob({
     key: "autoSearch",
     name: "Auto Search",
     scheduleType: "cron",
-    defaultSchedule: `*/${Math.max(1, config.searchIntervalMinutes)} * * * *`,
+    defaultSchedule: autoSearchSchedule,
     run: (signal) => runAutoSearch(signal),
   });
 
@@ -1551,6 +1680,6 @@ export function startScheduler() {
   startAllJobs();
 
   log.info(
-    `[scheduler] started: auto-search every ${config.searchIntervalMinutes}m, queue poll every ${config.queuePollIntervalSeconds}s`
+    `[scheduler] started: auto-search "${autoSearchSchedule}" (interval ${config.searchIntervalMinutes}m), queue poll every ${config.queuePollIntervalSeconds}s`
   );
 }

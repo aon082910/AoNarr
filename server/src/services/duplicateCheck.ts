@@ -1,6 +1,6 @@
 import { db } from "../db/index.js";
 import { log } from "./logger.js";
-import { getMediaTypeConfig, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
+import { effectiveShape, getMediaTypeConfig, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
 import { recycleFile } from "./recycleBin.js";
 import { notifyDuplicatesFound } from "./notifications.js";
 import { attachChildCounts } from "./childCounts.js";
@@ -169,7 +169,12 @@ export async function findDuplicateGroups(type?: string): Promise<DuplicateGroup
 
   for (const t of types) {
     const shape = getMediaTypeConfig(t).shape;
-    const rows = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(t)) as any[];
+    // attachChildCounts reads camelCase legacyShape — without it a not-yet-converted course item is
+    // counted from the (empty) episodes table instead of its sub_items.
+    const rows = ((await db.prepare("SELECT * FROM media_items WHERE type = ?").all(t)) as any[]).map((r) => ({
+      ...r,
+      legacyShape: r.legacy_shape,
+    }));
     // One batched grouped query for every row of this type up front, instead of a per-row
     // COUNT(*) issued only for the (hopefully rare) rows that turn out to be duplicates — same
     // pattern as the Library page's own child-count attachment.
@@ -262,25 +267,42 @@ const REASSIGN_TABLES = ["queue", "history", "corrupt_media_review", "share_link
  *   Its own row is not spared, though: once the loser's media_items row is deleted below, the
  *   collided episode/sub_item row goes with it via ON DELETE CASCADE, so AoNarr stops tracking
  *   that file even when its bytes were deliberately left alone.
+ * A loser whose effective shape differs from the keeper's (a not-yet-converted legacy_shape item
+ * next to a converted one) is left untouched and its id returned in `skippedShapeMismatch`.
  */
-export async function mergeMediaItems(keeperId: number, loserIds: number[], deleteFiles: boolean): Promise<{ merged: number }> {
+export async function mergeMediaItems(
+  keeperId: number,
+  loserIds: number[],
+  deleteFiles: boolean
+): Promise<{ merged: number; skippedShapeMismatch: number[] }> {
   const ids = [...new Set(loserIds)].filter((id) => id !== keeperId);
-  if (ids.length === 0) return { merged: 0 };
+  if (ids.length === 0) return { merged: 0, skippedShapeMismatch: [] };
 
   let keeper = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(keeperId)) as any;
   if (!keeper) throw new Error("Keeper item not found");
-  const shape = getMediaTypeConfig(keeper.type).shape;
+  const shape = effectiveShape({ type: keeper.type, legacyShape: keeper.legacy_shape });
 
   const upsertIgnore = (table: string, cols: string, values: string) =>
     db.dialect === "postgres"
       ? `INSERT INTO ${table} (${cols}) ${values} ON CONFLICT DO NOTHING`
       : `INSERT OR IGNORE INTO ${table} (${cols}) ${values}`;
 
+  // Recycling moves files (a cross-device move is a full copy), so it runs only after the
+  // transaction commits: awaiting it inside would hold the shared connection mid-transaction, and a
+  // rollback would leave the file moved with no recycle_bin row pointing at it.
+  const toRecycle: { path: string; type: string; title: string }[] = [];
   let merged = 0;
+  const skippedShapeMismatch: number[] = [];
   await db.transaction(async () => {
     for (const loserId of ids) {
       const loser = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(loserId)) as any;
       if (!loser || loser.type !== keeper.type) continue;
+      // A not-yet-converted (legacy_shape) item keeps its files in a different table than a
+      // converted one, so neither merge path could carry the loser's files/children over.
+      if (effectiveShape({ type: loser.type, legacyShape: loser.legacy_shape }) !== shape) {
+        skippedShapeMismatch.push(loserId);
+        continue;
+      }
 
       if (shape === "episodic") {
         const loserEpisodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").all(loserId)) as any[];
@@ -291,7 +313,7 @@ export async function mergeMediaItems(keeperId: number, loserIds: number[], dele
           if (!collision) {
             await db.prepare("UPDATE episodes SET media_item_id = ? WHERE id = ?").run(keeperId, ep.id);
           } else if (deleteFiles && ep.file_path) {
-            await recycleFile(ep.file_path, keeper.type, `${loser.title} S${ep.season_number}E${ep.episode_number}`, loserId).catch(() => {});
+            toRecycle.push({ path: ep.file_path, type: keeper.type, title: `${loser.title} S${ep.season_number}E${ep.episode_number}` });
           }
         }
       } else if (shape === "collection") {
@@ -302,7 +324,7 @@ export async function mergeMediaItems(keeperId: number, loserIds: number[], dele
           if (!collision) {
             await db.prepare("UPDATE sub_items SET media_item_id = ? WHERE id = ?").run(keeperId, sub.id);
           } else if (deleteFiles && sub.file_path) {
-            await recycleFile(sub.file_path, keeper.type, `${loser.title} — ${sub.title}`, loserId).catch(() => {});
+            toRecycle.push({ path: sub.file_path, type: keeper.type, title: `${loser.title} — ${sub.title}` });
           }
         }
       } else if (!keeper.has_file && loser.has_file) {
@@ -311,7 +333,7 @@ export async function mergeMediaItems(keeperId: number, loserIds: number[], dele
           .run(loser.path, loser.quality, loser.media_info, keeperId);
         keeper = { ...keeper, has_file: 1, path: loser.path, quality: loser.quality, media_info: loser.media_info };
       } else if (keeper.has_file && loser.has_file && loser.path && loser.path !== keeper.path && deleteFiles) {
-        await recycleFile(loser.path, loser.type, loser.title, loserId).catch(() => {});
+        toRecycle.push({ path: loser.path, type: loser.type, title: loser.title });
       }
 
       // Fill in metadata the keeper is missing from whichever loser has it — helps when the
@@ -361,8 +383,13 @@ export async function mergeMediaItems(keeperId: number, loserIds: number[], dele
     }
   });
 
+  // The loser rows are deleted by now, so their recycle_bin entries can't reference them.
+  for (const r of toRecycle) {
+    await recycleFile(r.path, r.type, r.title, null).catch(() => {});
+  }
+
   log.info(`[duplicateCheck] merged ${merged} duplicate(s) of "${keeper.title}" into item ${keeperId}`);
-  return { merged };
+  return { merged, skippedShapeMismatch };
 }
 
 /**

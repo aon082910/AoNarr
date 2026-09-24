@@ -23,8 +23,12 @@ qualitiesRouter.patch(
     const sets: string[] = [];
     const values: any[] = [];
     if (b.name !== undefined) {
-      sets.push("name = ?");
-      values.push(b.name);
+      // Quality names are a fixed vocabulary, not labels: the release parser emits exactly these
+      // strings ("Bluray-1080p", ...), and profiles and every file's quality column reference them
+      // by name. A renamed tier matched nothing ever again — its releases ranked below SD and its
+      // existing files turned "cutoff unmet" — so renaming is refused rather than half-applied.
+      const current = (await db.prepare("SELECT name FROM qualities WHERE id = ?").get(req.params.id)) as { name: string } | undefined;
+      if (current && b.name !== current.name) throw new HttpError(400, "Quality names can't be changed — they must match what the release parser detects");
     }
     if (b.minSizeMb !== undefined) {
       sets.push("min_size_mb = ?");
@@ -84,9 +88,12 @@ qualitiesRouter.post(
  * Deletes one of the seeded/custom quality tiers (e.g. "Remux-2160p"). allowed_qualities and
  * cutoff on quality_profiles reference qualities by NAME, not a foreign key, so nothing cascades
  * automatically — every profile that allowed or cut off at this quality is patched here instead:
- * the name is dropped from its allowed list (falling back to the single highest-ranked remaining
- * quality if that empties the list entirely), and its cutoff is moved down to the highest-ranked
- * quality still in that list whenever the old cutoff no longer is.
+ * the name is dropped from its allowed list (replaced by the nearest-ranked remaining tier, lower
+ * first, if that empties the list), and a cutoff that WAS this tier moves DOWN to the best allowed
+ * tier ranked below it (else the lowest allowed one). Picking the top of the list instead — the
+ * first version of this route — could turn a 1080p profile's cutoff into Remux-2160p and mark the
+ * whole library "cutoff unmet". Files still recorded at the deleted tier become unranked, which
+ * upgradeCandidates.ts deliberately never treats as below cutoff.
  */
 qualitiesRouter.delete(
   "/:id",
@@ -95,13 +102,17 @@ qualitiesRouter.delete(
     if (!quality) throw new HttpError(404, "Quality not found");
 
     const { c: totalCount } = (await db.prepare("SELECT COUNT(*) as c FROM qualities").get()) as { c: number };
-    if (totalCount <= 1) throw new HttpError(400, "Can't delete the last remaining quality");
+    if (Number(totalCount) <= 1) throw new HttpError(400, "Can't delete the last remaining quality");
+    const deletedRank = Number(quality.rank);
 
     await db.transaction(async () => {
       await db.prepare("DELETE FROM qualities WHERE id = ?").run(req.params.id);
 
-      const remaining = (await db.prepare("SELECT name FROM qualities ORDER BY rank DESC").all()) as { name: string }[];
-      const highestOverall = remaining[0].name;
+      const remaining = ((await db.prepare("SELECT name, rank FROM qualities ORDER BY rank DESC").all()) as { name: string; rank: number }[]).map(
+        (r) => ({ name: r.name, rank: Number(r.rank) })
+      );
+      // Highest-ranked below the deleted tier, else the lowest-ranked above it.
+      const nearest = remaining.find((r) => r.rank < deletedRank) ?? [...remaining].reverse().find((r) => r.rank > deletedRank) ?? remaining[0];
       const profiles = (await db.prepare("SELECT * FROM quality_profiles").all()) as any[];
 
       for (const profile of profiles) {
@@ -109,10 +120,12 @@ qualitiesRouter.delete(
         if (!allowed.includes(quality.name) && profile.cutoff !== quality.name) continue;
 
         let newAllowed = allowed.filter((name: string) => name !== quality.name);
-        if (newAllowed.length === 0) newAllowed = [highestOverall];
+        const emptied = newAllowed.length === 0;
+        if (emptied) newAllowed = [nearest.name];
         let newCutoff = profile.cutoff;
-        if (!newAllowed.includes(newCutoff)) {
-          newCutoff = remaining.find((r) => newAllowed.includes(r.name))?.name ?? highestOverall;
+        if (profile.cutoff === quality.name || emptied) {
+          const allowedRanked = remaining.filter((r) => newAllowed.includes(r.name));
+          newCutoff = (allowedRanked.find((r) => r.rank < deletedRank) ?? allowedRanked[allowedRanked.length - 1] ?? nearest).name;
         }
 
         await db

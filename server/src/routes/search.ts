@@ -272,7 +272,15 @@ searchRouter.post(
 
     const adapter = getDownloadClientAdapter(client.type);
     const grab = await adapter.addDownload(client, b.downloadUrl, client.category, b.title, protocol);
-    const quality = parseReleaseTitle(b.title ?? "").quality;
+    const parsedTitle = parseReleaseTitle(b.title ?? "");
+    const quality = parsedTitle.quality;
+    // A full-season pack grabbed for one episode is recorded against its season too, so the rest of
+    // that season counts as queued (see scheduler.ts isAlreadyQueued) and the importer places it all.
+    let seasonNumber: number | null = b.episodeId ? null : (b.seasonNumber ?? null);
+    if (b.episodeId && parsedTitle.isFullSeason) {
+      const ep = (await db.prepare("SELECT season_number FROM episodes WHERE id = ?").get(b.episodeId)) as { season_number: number } | undefined;
+      if (ep && (parsedTitle.seasonNumber == null || parsedTitle.seasonNumber === ep.season_number)) seasonNumber = ep.season_number;
+    }
 
     const result = await db
       .prepare(
@@ -283,7 +291,7 @@ searchRouter.post(
         req.params.mediaItemId,
         b.episodeId ?? null,
         b.subItemId ?? null,
-        b.episodeId ? null : (b.seasonNumber ?? null),
+        seasonNumber,
         b.title ?? "Unknown release",
         b.indexerId ?? null,
         client.id,

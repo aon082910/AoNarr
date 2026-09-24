@@ -93,14 +93,29 @@ export default function SubItemDetail() {
   // reuses this mounted component — without a request-ordering guard, a slower response for a
   // previous sub-item could land after a newer one and overwrite it. The search-results modal isn't
   // itself a blocking overlay here, so it also needs to reset on id change, or a stale result list
-  // stays visible (and grabbable) against whatever sub-item is now showing.
+  // stays visible (and grabbable) against whatever sub-item is now showing. load() reads the ids
+  // from a ref so a reload issued after a slow action (Convert to M4B can take minutes) fetches
+  // the sub-item on screen now, not the one its click-time closure captured.
   const loadRequestRef = useRef(0);
+  const idsRef = useRef({ mediaId, subItemId });
+  idsRef.current = { mediaId, subItemId };
+  const [loadError, setLoadError] = useState<string | null>(null);
   function load() {
     const requestId = ++loadRequestRef.current;
     setSubItem(null);
-    api.get<SubItemDetailResponse>(`/media/${mediaId}/subitems/${subItemId}`).then((data) => {
-      if (loadRequestRef.current === requestId) setSubItem(data);
-    });
+    setLoadError(null);
+    api.get<SubItemDetailResponse>(`/media/${idsRef.current.mediaId}/subitems/${idsRef.current.subItemId}`).then(
+      (data) => {
+        if (loadRequestRef.current === requestId) setSubItem(data);
+      },
+      (e) => {
+        if (loadRequestRef.current === requestId) setLoadError((e as Error).message);
+      }
+    );
+  }
+  /** Applies a post-await update only while that same sub-item is still the one on screen. */
+  function patchSubItem(id: number, update: (prev: SubItemDetailResponse) => SubItemDetailResponse) {
+    setSubItem((prev) => (prev && prev.id === id ? update(prev) : prev));
   }
   useEffect(load, [mediaId, subItemId]);
   useEffect(() => {
@@ -114,31 +129,43 @@ export default function SubItemDetail() {
 
   useEffect(() => {
     if (!typeInfo?.multiFilePerChild || !subItemId) return;
+    let cancelled = false;
     setLoadingTracks(true);
     api
       .get<Track[]>(`/media/subitems/${subItemId}/tracks`)
-      .then(setTracks)
-      .finally(() => setLoadingTracks(false));
+      .then((rows) => {
+        if (!cancelled) setTracks(rows);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingTracks(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [typeInfo?.multiFilePerChild, mediaId, subItemId]);
 
   async function fetchTracks() {
     setLoadingTracks(true);
     try {
       const rows = await api.post<Track[]>(`/media/subitems/${subItemId}/tracks/fetch`);
-      setTracks(rows);
+      if (idsRef.current.subItemId === subItemId) setTracks(rows);
     } catch (e) {
       notify.error((e as Error).message);
     } finally {
-      setLoadingTracks(false);
+      if (idsRef.current.subItemId === subItemId) setLoadingTracks(false);
     }
   }
 
   async function toggleMonitored() {
     if (!subItem) return;
-    const updated = await api.patch<SubItemDetailResponse>(`/media/${mediaId}/subitems/${subItemId}`, {
-      monitored: subItem.monitored ? 0 : 1,
-    });
-    setSubItem({ ...subItem, monitored: updated.monitored });
+    try {
+      const updated = await api.patch<SubItemDetailResponse>(`/media/${mediaId}/subitems/${subItemId}`, {
+        monitored: subItem.monitored ? 0 : 1,
+      });
+      patchSubItem(subItem.id, (prev) => ({ ...prev, monitored: updated.monitored }));
+    } catch (e) {
+      notify.error((e as Error).message);
+    }
   }
 
   async function markAsMissing() {
@@ -155,7 +182,7 @@ export default function SubItemDetail() {
       filePath: null,
       quality: null,
     });
-    setSubItem({ ...subItem, hasFile: updated.hasFile, filePath: updated.filePath, quality: updated.quality });
+    patchSubItem(subItem.id, (prev) => ({ ...prev, hasFile: updated.hasFile, filePath: updated.filePath, quality: updated.quality }));
   }
 
   const searchRequestRef = useRef(0);
@@ -221,7 +248,8 @@ export default function SubItemDetail() {
         // The scan-isbn response is a bare sub_items row (no `parent`) — merge onto the existing
         // state rather than replacing it wholesale, or the breadcrumb and this very button (which
         // depends on subItem.parent.type) would disappear the instant a scan succeeds.
-        if (result.subItem) setSubItem({ ...subItem, ...result.subItem, parent: subItem.parent, series: subItem.series });
+        const scanned = result.subItem;
+        if (scanned) patchSubItem(subItem.id, (prev) => ({ ...prev, ...scanned, parent: prev.parent, series: prev.series }));
       }
     } catch (e) {
       notify.error((e as Error).message);
@@ -257,9 +285,10 @@ export default function SubItemDetail() {
     try {
       await api.post(`/media/${mediaId}/subitems/${subItemId}/convert-to-m4b`, {});
       notify.success("Merged into one M4B.");
+      if (idsRef.current.subItemId !== subItemId) return;
       load();
       const rows = await api.get<Track[]>(`/media/subitems/${subItemId}/tracks`);
-      setTracks(rows);
+      if (idsRef.current.subItemId === subItemId) setTracks(rows);
     } catch (e) {
       notify.error((e as Error).message);
     } finally {
@@ -280,7 +309,7 @@ export default function SubItemDetail() {
       const updated = await api.patch<SubItemDetailResponse>(`/media/${mediaId}/subitems/${subItemId}`, {
         posterUrl: url.trim() || null,
       });
-      setSubItem({ ...subItem, posterUrl: updated.posterUrl });
+      patchSubItem(subItem.id, (prev) => ({ ...prev, posterUrl: updated.posterUrl }));
     } catch (e) {
       notify.error((e as Error).message);
     }
@@ -324,7 +353,7 @@ export default function SubItemDetail() {
     }
   }
 
-  if (!subItem) return <p className="empty">Loading...</p>;
+  if (!subItem) return <p className="empty">{loadError ?? "Loading..."}</p>;
 
   const isYoutubeVideo = subItem.parent?.type === "video" && subItem.externalProvider === "youtube";
   const trackHave = tracks?.filter((t) => t.hasFile).length ?? 0;
@@ -415,7 +444,7 @@ export default function SubItemDetail() {
 
       <div className="detail-pills">
         <span className="pill">
-          <MonitorToggle monitored={!!subItem.monitored} onToggle={toggleMonitored} />
+          <MonitorToggle monitored={!!subItem.monitored} onToggle={toggleMonitored} readOnly={!isAdmin} />
           {subItem.monitored ? "Monitored" : "Unmonitored"}
         </span>
         <span className="pill">

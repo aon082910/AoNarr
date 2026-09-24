@@ -31,6 +31,8 @@ function toTarget(r: MissingRow) {
   return { mediaItemId: r.mediaItemId, episodeId: r.episodeId, subItemId: r.subItemId };
 }
 
+const BULK_SEARCH_CHUNK = 100;
+
 function Section({
   title,
   rows,
@@ -259,11 +261,18 @@ export default function Missing() {
   async function searchRows(rows: MissingRow[]) {
     setSearching(true);
     try {
-      const results = await api.post<{ grabbed: boolean; error?: string }[]>("/search/bulk", {
-        targets: rows.map(toTarget),
-      });
-      const grabbedCount = results.filter((r) => r.grabbed).length;
-      notify.success(`Grabbed ${grabbedCount} of ${results.length} item(s).`);
+      // POST /search/bulk rejects more than BULK_SEARCH_CHUNK targets per request.
+      let grabbedCount = 0;
+      for (let i = 0; i < rows.length; i += BULK_SEARCH_CHUNK) {
+        const results = await api.post<{ grabbed: boolean; error?: string }[]>("/search/bulk", {
+          targets: rows.slice(i, i + BULK_SEARCH_CHUNK).map(toTarget),
+        });
+        grabbedCount += results.filter((r) => r.grabbed).length;
+      }
+      notify.success(`Grabbed ${grabbedCount} of ${rows.length} item(s).`);
+      load();
+    } catch (e) {
+      notify.error((e as Error).message);
       load();
     } finally {
       setSearching(false);

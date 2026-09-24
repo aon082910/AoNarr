@@ -123,8 +123,11 @@ function sendFeed(res: any, xml: string): void {
   res.set("Content-Type", "application/atom+xml; charset=utf-8").send(`${xml}\n</feed>`);
 }
 
-function origin(req: any): string {
-  return `${req.protocol}://${req.get("host")}`;
+/** Behind the shipped nginx configs, Host carries no port ($host) and req.protocol is always "http",
+ * so links built from them point at port 80 over plain http. Prefer the admin's External URL;
+ * otherwise emit root-relative links, which the reader resolves against the URL it actually used. */
+function origin(): string {
+  return (getSetting("externalUrl") ?? "").replace(/\/+$/, "");
 }
 
 /** Root — one navigation entry per book/comic/audiobook/manga type. */
@@ -133,7 +136,7 @@ opdsPublicRouter.get(
   asyncHandler(async (req, res) => {
     checkToken(req);
     const token = req.query.token as string;
-    const base = origin(req);
+    const base = origin();
     let xml = feedHeader("urn:aonarr:root", "AoNarr Library", `${base}/api/opds?token=${token}`, `${base}/api/opds?token=${token}`, "navigation");
     for (const type of OPDS_TYPES) {
       const label = getMediaTypeConfig(type).label;
@@ -151,7 +154,7 @@ opdsPublicRouter.get(
     const type = req.params.type;
     if (!(OPDS_TYPES as readonly string[]).includes(type)) throw new HttpError(400, "Not an OPDS-eligible library type");
     const token = req.query.token as string;
-    const base = origin(req);
+    const base = origin();
     const label = getMediaTypeConfig(type).label;
 
     const items = (await db.prepare("SELECT id, title FROM media_items WHERE type = ? ORDER BY sort_title").all(type)) as {
@@ -182,7 +185,7 @@ opdsPublicRouter.get(
   asyncHandler(async (req, res) => {
     checkToken(req);
     const token = req.query.token as string;
-    const base = origin(req);
+    const base = origin();
 
     const parent = (await db.prepare("SELECT id, title, type FROM media_items WHERE id = ?").get(req.params.id)) as any;
     if (!parent) throw new HttpError(404, "Item not found");
