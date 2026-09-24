@@ -402,15 +402,20 @@ export default function Dashboard() {
             <strong style={{ color: "var(--danger)" }}>
               {healthExpanded ? "Health issues" : `${healthMessages.length} health issue${healthMessages.length === 1 ? "" : "s"}`}
             </strong>
-            <button
-              type="button"
-              className="icon-button"
-              onClick={() => setHealthExpanded((v) => !v)}
-              title={healthExpanded ? "Collapse" : "Expand"}
-              aria-label={healthExpanded ? "Collapse health issues" : "Expand health issues"}
-            >
-              {healthExpanded ? <ChevronsUpIcon /> : <ChevronsDownIcon />}
-            </button>
+            <div style={{ display: "flex", gap: 4 }}>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => setHealthExpanded((v) => !v)}
+                title={healthExpanded ? "Collapse" : "Expand"}
+                aria-label={healthExpanded ? "Collapse health issues" : "Expand health issues"}
+              >
+                {healthExpanded ? <ChevronsUpIcon /> : <ChevronsDownIcon />}
+              </button>
+              <button type="button" className="icon-button" onClick={() => navigate("/system")} title="View System" aria-label="View System">
+                <ArrowRightIcon />
+              </button>
+            </div>
           </div>
           {healthExpanded && (
             <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
@@ -421,9 +426,6 @@ export default function Dashboard() {
               ))}
             </ul>
           )}
-          <button type="button" className="icon-button" style={{ marginTop: 8 }} onClick={() => navigate("/system")} title="View System" aria-label="View System">
-            <ArrowRightIcon />
-          </button>
         </div>
       )}
 

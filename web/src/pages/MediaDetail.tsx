@@ -767,7 +767,7 @@ export default function MediaDetail() {
     if (!confirmed) return;
     const params = [confirmed.values.deleteFiles && "deleteFiles=1", confirmed.values.addExclusion && "addExclusion=1"].filter(Boolean).join("&");
     await api.del(`/media/${item.id}${params ? `?${params}` : ""}`);
-    navigate("/");
+    navigate(`/library/${item.type}`);
   }
 
   async function fetchSupplemental(provider: string) {

@@ -172,6 +172,49 @@ describe("parseReleaseTitle", () => {
     const p = parseReleaseTitle("Movie.Name.2020.1080p.WEBRip.x264-GROUP");
     expect(p.imdbId).toBeNull();
   });
+
+  it("detects the movie-only low-quality theatrical-capture sources", () => {
+    expect(parseReleaseTitle("Movie.Name.2023.CAM.x264-GROUP").source).toBe("Cam");
+    expect(parseReleaseTitle("Movie.Name.2023.HDCAM.x264-GROUP").source).toBe("Cam");
+    expect(parseReleaseTitle("Movie.Name.2023.TELESYNC.x264-GROUP").source).toBe("Telesync");
+    expect(parseReleaseTitle("Movie.Name.2023.TELECINE.x264-GROUP").source).toBe("Telecine");
+    expect(parseReleaseTitle("Movie.Name.2023.WORKPRINT.x264-GROUP").source).toBe("Workprint");
+  });
+
+  it("detects 480p/576p as their own resolutions", () => {
+    expect(parseReleaseTitle("Show.Name.S01E01.480p.WEBRip.x264-GROUP").resolution).toBe("480p");
+    expect(parseReleaseTitle("Show.Name.S01E01.576i.DVDRip.x264-GROUP").resolution).toBe("576p");
+  });
+
+  it("detects a quality modifier", () => {
+    expect(parseReleaseTitle("Movie.Name.2023.REGIONAL.1080p-GROUP").qualityModifier).toBe("regional");
+    expect(parseReleaseTitle("Movie.Name.2023.SCREENER.1080p-GROUP").qualityModifier).toBe("screener");
+    expect(parseReleaseTitle("Movie.Name.2023.RAWHD-GROUP").qualityModifier).toBe("rawhd");
+    expect(parseReleaseTitle("Movie.Name.2023.BRDISK-GROUP").qualityModifier).toBe("brdisk");
+  });
+
+  it("returns a null qualityModifier when none is present", () => {
+    const p = parseReleaseTitle("Movie.Name.2023.1080p.BluRay.x264-GROUP");
+    expect(p.qualityModifier).toBeNull();
+  });
+
+  it("extracts a free-text edition phrase", () => {
+    expect(parseReleaseTitle("Movie.Name.2023.Directors.Cut.1080p-GROUP").edition).toMatch(/directors? cut/i);
+    expect(parseReleaseTitle("Movie.Name.2023.Criterion.Edition.1080p-GROUP").edition).toMatch(/criterion edition/i);
+    expect(parseReleaseTitle("Movie.Name.2023.Extended.1080p-GROUP").edition).toMatch(/extended/i);
+  });
+
+  it("returns a null edition when the title has none", () => {
+    const p = parseReleaseTitle("Movie.Name.2023.1080p.BluRay.x264-GROUP");
+    expect(p.edition).toBeNull();
+  });
+
+  it("derives releaseType from the parsed season/episode shape", () => {
+    expect(parseReleaseTitle("Show.Name.S02E05.1080p-GROUP").releaseType).toBe("single");
+    expect(parseReleaseTitle("Show.Name.S01E01-E03.720p-GROUP").releaseType).toBe("multi");
+    expect(parseReleaseTitle("Show.Name.S03.1080p-GROUP").releaseType).toBe("seasonPack");
+    expect(parseReleaseTitle("Movie.Name.2023.1080p-GROUP").releaseType).toBeNull();
+  });
 });
 
 describe("releaseMatchesEpisode", () => {

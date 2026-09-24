@@ -3,7 +3,41 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
-## Round 345 — Import Quality Profiles/Custom Formats, and library import from Whisparr
+## Round 346 — Bug fixes + Custom Format/Release Profile parity with the *Arr apps
+
+- **Fixed: deleting a media item from its own page sent you to the Dashboard.** Now navigates back
+  to that item's own library page instead.
+- **Fixed: Course library still showed a course's own subfolders (Module 1, Week 2, ...) as separate
+  courses.** The folder-to-show resolver only special-cased a literal "Season NN" parent folder,
+  treating any other subfolder name as its own show — a course's arbitrarily-named/nested category
+  folders were never covered by that. It now walks up to the true top-level folder under the
+  library root, no matter the nesting depth or naming, so every file under `Root/CourseA/**`
+  correctly becomes part of "CourseA" regardless of how it's organized underneath.
+- **Dashboard: moved the Health Issues box's "View System" arrow** next to the expand/collapse
+  chevron in its header, instead of on its own line below the (possibly collapsed) issue list.
+- **Custom Format conditions — added Edition, Quality Modifier, and Release Type**, and extended the
+  Source (Cam/Telesync/Telecine/Workprint) and Resolution (480p/576p) vocabularies — closing the
+  verified gap against Radarr/Sonarr/Lidarr/Readarr/Whisparr's combined condition set (confirmed via
+  each app's actual source: Lidarr/Readarr genuinely have nothing beyond title/group/size/indexer-
+  flag, so there's no further parity gap for them specifically).
+- **Release Profiles — added regex support, an Indexer restriction, and a Tags restriction.** A term
+  wrapped as `/pattern/flags` is now treated as regex (same auto-detection Radarr/Sonarr/Lidarr use),
+  and a profile can be scoped to specific indexers/tags instead of always applying globally —
+  confirmed via source that every app with this feature (Radarr, Sonarr, Lidarr, the now-retired
+  Readarr, and Whisparr-Eros) has exactly these two restrictions; none of them still have a
+  "preferred term + score" field (that moved to Custom Formats everywhere), so AoNarr's own
+  `preferred` list stays as a deliberate superset rather than a gap to close.
+- **The base quality tiers (SD, HDTV-720p, ...) can now be deleted**, not just reordered/resized —
+  there was no delete route for them at all before. Deleting one drops it from every quality
+  profile's allowed list (falling back to the highest-ranked remaining quality if that empties the
+  list) and moves any profile's cutoff down off of it.
+- **Fixed a spacing gap** between the Metadata Providers tile grid and the "Default provider per
+  type" panel below it on the Settings page — they had zero margin between them.
+- Investigated the reported "browser Back from a media page loses the list's scroll position"
+  bug extensively, including live end-to-end testing (poster grid, table view, and mobile layout, on
+  a freshly rebuilt image) — could not reproduce it; the existing scroll-save/restore logic already
+  in `LibraryType.tsx` worked correctly in every configuration tried. No code change made for this
+  one; revisit with exact repro steps if it recurs.
 
 Requested: a way to import Quality Profiles, Qualities, and Custom Formats from Sonarr, Radarr,
 Lidarr, Whisparr, and Readarr, plus a working library-import path for each of those apps. Turned

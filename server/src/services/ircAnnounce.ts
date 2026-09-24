@@ -103,7 +103,7 @@ async function tryGrabMatch(
   const blocklisted = await getBlocklistedTitles(item.id);
   if (blocklisted.has(releaseTitle)) return;
 
-  const { totalScore, rejected } = await scoreRelease(releaseTitle, null, item.qualityProfileId, item.type);
+  const { totalScore, rejected } = await scoreRelease(releaseTitle, null, item.qualityProfileId, item.type, null, item.id);
   if (rejected || totalScore < (profile?.minFormatScore ?? 0)) return;
 
   const result: SearchResult = {

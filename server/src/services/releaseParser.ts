@@ -28,6 +28,17 @@ export interface ParsedRelease {
    * releases don't carry one; null in that case (see indexerClient.ts for the other, more common
    * source of an id — an indexer's own Torznab response attributes, not the title text). */
   imdbId: string | null;
+  /** Free-text edition phrase (e.g. "Director's Cut", "Criterion Edition", "Remastered") — a more
+   * open-ended, regex-testable superset of the fixed directorscut/extended/unrated/imax `flags`
+   * above, matching Radarr's own "Edition" custom-format condition. Null when nothing matched. */
+  edition: string | null;
+  /** Radarr's "Quality Modifier" — scene-release vocabulary for a handful of quality tiers that
+   * aren't a plain source+resolution combination. Null when none apply. */
+  qualityModifier: "regional" | "screener" | "rawhd" | "brdisk" | null;
+  /** Sonarr's "Release Type" — derived from the same season/episode parse above, not its own
+   * pattern: a season-pack release, a multi-episode release, a single episode, or null for
+   * anything that isn't an episodic release at all (movie, album, book, full-series). */
+  releaseType: "single" | "multi" | "seasonPack" | null;
 }
 
 // Group 3 (hyphenated range end, e.g. "S01E01-E03"/"S01E01-03") and group 4 (a chain of bare
@@ -55,6 +66,8 @@ const COMMON_RESOLUTIONS = new Set([480, 576, 720, 1080, 2160]);
 const RESOLUTION_2160 = /\b(2160p|4k|uhd)\b/i;
 const RESOLUTION_1080 = /\b1080p\b/i;
 const RESOLUTION_720 = /\b720p\b/i;
+const RESOLUTION_576 = /\b576[pi]\b/i;
+const RESOLUTION_480 = /\b480[pi]\b/i;
 
 const SOURCE_REMUX = /\bremux\b/i;
 const SOURCE_BLURAY = /\b(bluray|blu-ray|bdrip)\b/i;
@@ -62,6 +75,24 @@ const SOURCE_WEBDL = /\b(web-?dl|webdl)\b/i;
 const SOURCE_WEBRIP = /\bwebrip\b/i;
 const SOURCE_HDTV = /\bhdtv\b/i;
 const SOURCE_DVD = /\bdvd(rip)?\b/i;
+// Movie-only, lowest-quality theatrical-capture sources (Radarr/Whisparr's own Source vocabulary,
+// AoNarr had no equivalent for any of these) — kept narrow ("ts"/"tc" alone are too short/ambiguous
+// to safely match as bare words against an arbitrary title.
+const SOURCE_CAM = /\b(cam|hdcam|camrip)\b/i;
+const SOURCE_TELESYNC = /\b(telesync|hdts)\b/i;
+const SOURCE_TELECINE = /\b(telecine|hdtc)\b/i;
+const SOURCE_WORKPRINT = /\bworkprint\b/i;
+
+const QUALITY_MODIFIER_REGIONAL = /\b(regional|r5)\b/i;
+const QUALITY_MODIFIER_SCREENER = /\b(screener|scr|dvdscr|bdscr)\b/i;
+const QUALITY_MODIFIER_RAWHD = /\brawhd\b/i;
+const QUALITY_MODIFIER_BRDISK = /\b(brdisk|bdmv|bd25|bd50)\b/i;
+
+// Radarr's own edition vocabulary, trimmed to the common cases — deliberately broader than (and
+// overlapping with) the fixed directorscut/extended/unrated/imax flags above, since this is meant
+// to be regex-tested rather than matched as a fixed enum.
+const EDITION_PATTERN =
+  /\b(ultimate|special|criterion|anniversary|theatrical|extended|unrated|directors?'?s?|redux|final|imax|remastered|uncut|collectors?'?s?)[\s.]?(cut|edition|version)?\b/i;
 
 // "real" is deliberately not included here — unlike proper/repack/imax/etc, it's a common English
 // word (collides constantly with ordinary titles), so it's not safe to detect with a bare regex
@@ -121,6 +152,15 @@ function detectResolution(title: string): string | null {
   if (RESOLUTION_2160.test(title)) return "2160p";
   if (RESOLUTION_1080.test(title)) return "1080p";
   if (RESOLUTION_720.test(title)) return "720p";
+  if (RESOLUTION_576.test(title)) return "576p";
+  if (RESOLUTION_480.test(title)) return "480p";
+  return null;
+}
+
+function detectReleaseType(isFullSeason: boolean, episodeNumbers: number[] | null): ParsedRelease["releaseType"] {
+  if (isFullSeason) return "seasonPack";
+  if (episodeNumbers && episodeNumbers.length > 1) return "multi";
+  if (episodeNumbers && episodeNumbers.length === 1) return "single";
   return null;
 }
 
@@ -131,7 +171,24 @@ function detectSource(title: string): string | null {
   if (SOURCE_WEBRIP.test(title)) return "WEBRip";
   if (SOURCE_HDTV.test(title)) return "HDTV";
   if (SOURCE_DVD.test(title)) return "DVD";
+  if (SOURCE_CAM.test(title)) return "Cam";
+  if (SOURCE_TELESYNC.test(title)) return "Telesync";
+  if (SOURCE_TELECINE.test(title)) return "Telecine";
+  if (SOURCE_WORKPRINT.test(title)) return "Workprint";
   return null;
+}
+
+function detectQualityModifier(title: string): ParsedRelease["qualityModifier"] {
+  if (QUALITY_MODIFIER_REGIONAL.test(title)) return "regional";
+  if (QUALITY_MODIFIER_SCREENER.test(title)) return "screener";
+  if (QUALITY_MODIFIER_RAWHD.test(title)) return "rawhd";
+  if (QUALITY_MODIFIER_BRDISK.test(title)) return "brdisk";
+  return null;
+}
+
+function detectEdition(title: string): string | null {
+  const match = title.match(EDITION_PATTERN);
+  return match ? match[0].replace(/\./g, " ").trim() : null;
 }
 
 function detectFlags(title: string): ReleaseFlag[] {
@@ -237,6 +294,9 @@ export function parseReleaseTitle(title: string): ParsedRelease {
     airDate,
     absoluteEpisode,
     imdbId: imdbMatch ? imdbMatch[0].toLowerCase() : null,
+    edition: detectEdition(title),
+    qualityModifier: detectQualityModifier(title),
+    releaseType: detectReleaseType(isFullSeason, episodeNumbers),
   };
 }
 

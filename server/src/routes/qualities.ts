@@ -79,3 +79,49 @@ qualitiesRouter.post(
     res.json(rows.map(qualityFromRow));
   })
 );
+
+/**
+ * Deletes one of the seeded/custom quality tiers (e.g. "Remux-2160p"). allowed_qualities and
+ * cutoff on quality_profiles reference qualities by NAME, not a foreign key, so nothing cascades
+ * automatically — every profile that allowed or cut off at this quality is patched here instead:
+ * the name is dropped from its allowed list (falling back to the single highest-ranked remaining
+ * quality if that empties the list entirely), and its cutoff is moved down to the highest-ranked
+ * quality still in that list whenever the old cutoff no longer is.
+ */
+qualitiesRouter.delete(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    const quality = (await db.prepare("SELECT * FROM qualities WHERE id = ?").get(req.params.id)) as any;
+    if (!quality) throw new HttpError(404, "Quality not found");
+
+    const { c: totalCount } = (await db.prepare("SELECT COUNT(*) as c FROM qualities").get()) as { c: number };
+    if (totalCount <= 1) throw new HttpError(400, "Can't delete the last remaining quality");
+
+    await db.transaction(async () => {
+      await db.prepare("DELETE FROM qualities WHERE id = ?").run(req.params.id);
+
+      const remaining = (await db.prepare("SELECT name FROM qualities ORDER BY rank DESC").all()) as { name: string }[];
+      const highestOverall = remaining[0].name;
+      const profiles = (await db.prepare("SELECT * FROM quality_profiles").all()) as any[];
+
+      for (const profile of profiles) {
+        const allowed: string[] = JSON.parse(profile.allowed_qualities);
+        if (!allowed.includes(quality.name) && profile.cutoff !== quality.name) continue;
+
+        let newAllowed = allowed.filter((name: string) => name !== quality.name);
+        if (newAllowed.length === 0) newAllowed = [highestOverall];
+        let newCutoff = profile.cutoff;
+        if (!newAllowed.includes(newCutoff)) {
+          newCutoff = remaining.find((r) => newAllowed.includes(r.name))?.name ?? highestOverall;
+        }
+
+        await db
+          .prepare("UPDATE quality_profiles SET allowed_qualities = ?, cutoff = ? WHERE id = ?")
+          .run(JSON.stringify(newAllowed), newCutoff, profile.id);
+      }
+    });
+
+    invalidateQualityRankCache();
+    res.status(204).send();
+  })
+);

@@ -124,6 +124,35 @@ describe("formatMatches (pure condition-group evaluation)", () => {
     const { formatMatches } = await import("../src/services/customFormatScoring.js");
     expect(formatMatches([], "Movie.2023.1080p-GROUP", null)).toBe(false);
   });
+
+  it("matches an edition condition group against the parsed free-text edition phrase", async () => {
+    const { formatMatches } = await import("../src/services/customFormatScoring.js");
+    const groups = [{ type: "edition" as const, patterns: ["criterion"], negate: false }];
+    expect(formatMatches(groups, "Movie.2023.Criterion.Edition.1080p-GROUP", null)).toBe(true);
+    expect(formatMatches(groups, "Movie.2023.1080p-GROUP", null)).toBe(false);
+  });
+
+  it("matches a qualityModifier condition group", async () => {
+    const { formatMatches } = await import("../src/services/customFormatScoring.js");
+    const groups = [{ type: "qualityModifier" as const, qualityModifiers: ["screener" as const], negate: false }];
+    expect(formatMatches(groups, "Movie.2023.SCREENER.1080p-GROUP", null)).toBe(true);
+    expect(formatMatches(groups, "Movie.2023.1080p-GROUP", null)).toBe(false);
+  });
+
+  it("matches a releaseType condition group", async () => {
+    const { formatMatches } = await import("../src/services/customFormatScoring.js");
+    const groups = [{ type: "releaseType" as const, releaseTypes: ["seasonPack" as const], negate: false }];
+    expect(formatMatches(groups, "Show.Name.S03.1080p-GROUP", null)).toBe(true);
+    expect(formatMatches(groups, "Show.Name.S02E05.1080p-GROUP", null)).toBe(false);
+  });
+
+  it("matches the extended source/resolution vocabulary (Cam/Telesync/etc, 480p/576p)", async () => {
+    const { formatMatches } = await import("../src/services/customFormatScoring.js");
+    expect(formatMatches([{ type: "source" as const, sources: ["Cam"], negate: false }], "Movie.2023.CAM-GROUP", null)).toBe(true);
+    expect(
+      formatMatches([{ type: "resolution" as const, resolutions: ["480p"], negate: false }], "Movie.2023.480p-GROUP", null)
+    ).toBe(true);
+  });
 });
 
 describe("scoreRelease (DB-backed custom formats + release profiles)", () => {
@@ -260,5 +289,86 @@ describe("scoreRelease (DB-backed custom formats + release profiles)", () => {
     } finally {
       await db.prepare("UPDATE quality_profiles SET max_size_gb = NULL WHERE id = ?").run(qualityProfileId);
     }
+  });
+
+  it("supports a regex release-profile term wrapped as /pattern/flags", async () => {
+    const { scoreRelease } = await import("../src/services/customFormatScoring.js");
+    await db.prepare("DELETE FROM release_profiles").run();
+    await db
+      .prepare("INSERT INTO release_profiles (name, enabled, must_contain, must_not_contain, preferred) VALUES (?, 1, '[]', ?, '[]')")
+      .run("No x26x codecs", JSON.stringify(["/x26[45]/"]));
+
+    const rejected = await scoreRelease("Movie.2023.x265.1080p-GROUP", null, qualityProfileId, "movie");
+    expect(rejected.rejected).toBe(true);
+    const accepted = await scoreRelease("Movie.2023.AV1.1080p-GROUP", null, qualityProfileId, "movie");
+    expect(accepted.rejected).toBe(false);
+  });
+
+  it("scopes a release profile to specific indexers", async () => {
+    const { scoreRelease } = await import("../src/services/customFormatScoring.js");
+    await db.prepare("DELETE FROM release_profiles").run();
+    const indexer = await db
+      .prepare("INSERT INTO indexers (name, protocol, url) VALUES (?, 'torznab', 'http://example.test')")
+      .run("Test Indexer");
+    const indexerId = Number(indexer.lastInsertRowid);
+    await db
+      .prepare(
+        "INSERT INTO release_profiles (name, enabled, must_contain, must_not_contain, preferred, indexer_ids) VALUES (?, 1, '[]', ?, '[]', ?)"
+      )
+      .run("Indexer-scoped reject", JSON.stringify(["blockme"]), JSON.stringify([indexerId]));
+
+    const fromThatIndexer = await scoreRelease("Movie.2023.BLOCKME.1080p-GROUP", null, qualityProfileId, "movie", null, null, indexerId);
+    expect(fromThatIndexer.rejected).toBe(true);
+
+    const fromOtherIndexer = await scoreRelease(
+      "Movie.2023.BLOCKME.1080p-GROUP",
+      null,
+      qualityProfileId,
+      "movie",
+      null,
+      null,
+      indexerId + 1
+    );
+    expect(fromOtherIndexer.rejected).toBe(false);
+
+    const fromUnknownIndexer = await scoreRelease("Movie.2023.BLOCKME.1080p-GROUP", null, qualityProfileId, "movie");
+    expect(fromUnknownIndexer.rejected).toBe(false);
+  });
+
+  it("scopes a release profile to specific tags on the media item", async () => {
+    const { scoreRelease } = await import("../src/services/customFormatScoring.js");
+    await db.prepare("DELETE FROM release_profiles").run();
+    const tag = await db.prepare("INSERT INTO tags (name) VALUES (?)").run("anime-only-rule");
+    const tagId = Number(tag.lastInsertRowid);
+    const item = await db
+      .prepare("INSERT INTO media_items (type, title, sort_title) VALUES ('movie', 'Tagged Movie', 'tagged movie')")
+      .run();
+    const mediaItemId = Number(item.lastInsertRowid);
+    await db.prepare("INSERT INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?)").run(mediaItemId, tagId);
+
+    await db
+      .prepare(
+        "INSERT INTO release_profiles (name, enabled, must_contain, must_not_contain, preferred, tag_ids) VALUES (?, 1, '[]', ?, '[]', ?)"
+      )
+      .run("Tag-scoped reject", JSON.stringify(["blockme"]), JSON.stringify([tagId]));
+
+    const forTaggedItem = await scoreRelease("Movie.2023.BLOCKME.1080p-GROUP", null, qualityProfileId, "movie", null, mediaItemId);
+    expect(forTaggedItem.rejected).toBe(true);
+
+    const untaggedItem = await db
+      .prepare("INSERT INTO media_items (type, title, sort_title) VALUES ('movie', 'Untagged Movie', 'untagged movie')")
+      .run();
+    const forUntaggedItem = await scoreRelease(
+      "Movie.2023.BLOCKME.1080p-GROUP",
+      null,
+      qualityProfileId,
+      "movie",
+      null,
+      Number(untaggedItem.lastInsertRowid)
+    );
+    expect(forUntaggedItem.rejected).toBe(false);
+
+    const forNoItem = await scoreRelease("Movie.2023.BLOCKME.1080p-GROUP", null, qualityProfileId, "movie");
+    expect(forNoItem.rejected).toBe(false);
   });
 });

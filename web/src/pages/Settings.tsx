@@ -10,6 +10,7 @@ import type {
   CustomFormat,
   DelayProfile,
   ImportExclusion,
+  Indexer,
   MediaType,
   MediaTypeInfo,
   Quality,
@@ -575,9 +576,11 @@ export default function Settings() {
   const [newDelayProfileTagId, setNewDelayProfileTagId] = useState<string>("");
   const [releaseProfiles, setReleaseProfiles] = useState<ReleaseProfile[]>([]);
   const [newReleaseProfileName, setNewReleaseProfileName] = useState("");
+  const [indexers, setIndexers] = useState<Indexer[]>([]);
 
   function load() {
     api.get<RootFolder[]>("/root-folders").then(setRootFolders);
+    api.get<Indexer[]>("/indexers").then(setIndexers);
     api.get<QualityProfile[]>("/quality-profiles").then((p) => {
       setProfiles(p);
       if (p.length > 0 && scoreProfileId === "") setScoreProfileId(p[0].id);
@@ -635,6 +638,16 @@ export default function Settings() {
     load();
   }
 
+  function toggleReleaseProfileIndexer(rp: ReleaseProfile, indexerId: number) {
+    const next = rp.indexerIds.includes(indexerId) ? rp.indexerIds.filter((id) => id !== indexerId) : [...rp.indexerIds, indexerId];
+    updateReleaseProfile(rp.id, { indexerIds: next });
+  }
+
+  function toggleReleaseProfileTag(rp: ReleaseProfile, tagId: number) {
+    const next = rp.tagIds.includes(tagId) ? rp.tagIds.filter((id) => id !== tagId) : [...rp.tagIds, tagId];
+    updateReleaseProfile(rp.id, { tagIds: next });
+  }
+
   async function renameQuality(id: number, name: string) {
     await api.patch(`/qualities/${id}`, { name });
     load();
@@ -651,6 +664,11 @@ export default function Settings() {
     const reordered = [...qualities];
     [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
     await api.post("/qualities/reorder", { orderedIds: reordered.map((q) => q.id) });
+    load();
+  }
+
+  async function removeQuality(id: number) {
+    await api.del(`/qualities/${id}`);
     load();
   }
 
@@ -681,6 +699,9 @@ export default function Settings() {
    *   LANG: french, multi  any of these detected language tags
    *   GROUP: RARBG, EVO    regex against the parsed release-group tag
    *   INDEXERFLAG: freeleech, halfleech   Torznab's freeleech/halfleech status
+   *   EDITION: directors cut, criterion   regex against the parsed free-text edition phrase
+   *   QUALITYMODIFIER: regional, screener, rawhd, brdisk
+   *   RELEASETYPE: single, multi, seasonPack
    * Anything else is a title regex condition. All lines/groups are AND'd together. E.g.:
    *   REMUX, BluRay
    *   NOT x265
@@ -747,6 +768,24 @@ export default function Settings() {
           return { type: "indexerFlag" as const, indexerFlags, negate };
         }
 
+        const editionMatch = rest.match(/^EDITION:\s*(.+)$/i);
+        if (editionMatch) {
+          const patterns = editionMatch[1].split(",").map((p) => p.trim()).filter(Boolean);
+          return { type: "edition" as const, patterns, negate };
+        }
+
+        const qualityModifierMatch = rest.match(/^QUALITYMODIFIER:\s*(.+)$/i);
+        if (qualityModifierMatch) {
+          const qualityModifiers = qualityModifierMatch[1].split(",").map((f) => f.trim().toLowerCase()).filter(Boolean);
+          return { type: "qualityModifier" as const, qualityModifiers, negate };
+        }
+
+        const releaseTypeMatch = rest.match(/^RELEASETYPE:\s*(.+)$/i);
+        if (releaseTypeMatch) {
+          const releaseTypes = releaseTypeMatch[1].split(",").map((t) => t.trim()).filter(Boolean);
+          return { type: "releaseType" as const, releaseTypes, negate };
+        }
+
         const patterns = rest
           .split(",")
           .map((p) => p.trim())
@@ -761,6 +800,9 @@ export default function Settings() {
         if (g.type === "resolution") return g.resolutions.length > 0;
         if (g.type === "releaseFlags") return g.flags.length > 0;
         if (g.type === "indexerFlag") return g.indexerFlags.length > 0;
+        if (g.type === "edition") return g.patterns.length > 0;
+        if (g.type === "qualityModifier") return g.qualityModifiers.length > 0;
+        if (g.type === "releaseType") return g.releaseTypes.length > 0;
         return g.patterns.length > 0;
       });
   }
@@ -781,6 +823,9 @@ export default function Settings() {
         if (g.type === "resolution") return `${prefix}RESOLUTION: ${(g.resolutions ?? []).join(", ")}`;
         if (g.type === "releaseFlags") return `${prefix}FLAGS: ${(g.flags ?? []).join(", ")}`;
         if (g.type === "indexerFlag") return `${prefix}INDEXERFLAG: ${(g.indexerFlags ?? []).join(", ")}`;
+        if (g.type === "edition") return `${prefix}EDITION: ${(g.patterns ?? []).join(", ")}`;
+        if (g.type === "qualityModifier") return `${prefix}QUALITYMODIFIER: ${(g.qualityModifiers ?? []).join(", ")}`;
+        if (g.type === "releaseType") return `${prefix}RELEASETYPE: ${(g.releaseTypes ?? []).join(", ")}`;
         return `${prefix}${(g.patterns ?? []).join(", ")}`;
       })
       .join("\n");
@@ -1678,7 +1723,7 @@ export default function Settings() {
         open-source audiobook tools already rely on.
       </p>
       <SettingsProviderTiles providers={METADATA_PROVIDERS} settings={settings} saveSetting={saveSetting} />
-      <div className="form-panel">
+      <div className="form-panel" style={{ marginTop: 16 }}>
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
           Courses has no metadata search provider — public course catalogs (Udemy, Coursera, etc.)
           don't offer an open search API, so Courses is always added manually.
@@ -3093,6 +3138,15 @@ export default function Settings() {
                     <ArrowDownIcon />
                   </button>
                 </div>
+                <button
+                  className="danger"
+                  style={{ marginTop: 8 }}
+                  disabled={qualities.length <= 1}
+                  onClick={() => removeQuality(q.id)}
+                  title={qualities.length <= 1 ? "Can't delete the last remaining quality" : undefined}
+                >
+                  Delete quality
+                </button>
               </div>
             ),
           })),
@@ -3352,10 +3406,14 @@ export default function Settings() {
             render: () => (
               <div className="form-panel">
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
-                  Plain-text term matching against a release's raw title (no regex, unlike Custom
-                  Formats). Must Not Contain rejects the release outright if any term appears. Must
-                  Contain requires at least one term to appear (leave empty for no requirement).
-                  Preferred terms each add their own score (negative to downrank) when present.
+                  Plain-text term matching against a release's raw title — wrap a term as
+                  "/pattern/flags" for regex, same auto-detection Radarr/Sonarr/Lidarr use (flags:
+                  i/m/s, always case-insensitive even without "i"). Must Not Contain rejects the
+                  release outright if any term appears. Must Contain requires at least one term to
+                  appear (leave empty for no requirement). Preferred terms each add their own score
+                  (negative to downrank) when present — the real apps moved this to Custom Formats
+                  entirely, but it stays here too since nothing about it needs to move. Leave
+                  Indexers/Tags unchecked for "applies to everything" (every app's own default).
                 </p>
                 <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <input
@@ -3401,6 +3459,44 @@ export default function Settings() {
                     updateReleaseProfile(rp.id, { preferred });
                   }}
                 />
+                <label id={`settings-release-profile-indexers-${rp.id}`}>Indexers (blank = all)</label>
+                <div
+                  role="group"
+                  aria-labelledby={`settings-release-profile-indexers-${rp.id}`}
+                  style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 8 }}
+                >
+                  {indexers.length === 0 && <span style={{ color: "var(--muted)", fontSize: "0.85rem" }}>No indexers configured.</span>}
+                  {indexers.map((ix) => (
+                    <label key={ix.id} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.85rem", margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={rp.indexerIds.includes(ix.id)}
+                        onChange={() => toggleReleaseProfileIndexer(rp, ix.id)}
+                        style={{ width: "auto" }}
+                      />
+                      {ix.name}
+                    </label>
+                  ))}
+                </div>
+                <label id={`settings-release-profile-tags-${rp.id}`}>Tags (blank = all)</label>
+                <div
+                  role="group"
+                  aria-labelledby={`settings-release-profile-tags-${rp.id}`}
+                  style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 8 }}
+                >
+                  {tags.length === 0 && <span style={{ color: "var(--muted)", fontSize: "0.85rem" }}>No tags yet.</span>}
+                  {tags.map((t) => (
+                    <label key={t.id} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.85rem", margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={rp.tagIds.includes(t.id)}
+                        onChange={() => toggleReleaseProfileTag(rp, t.id)}
+                        style={{ width: "auto" }}
+                      />
+                      {t.name}
+                    </label>
+                  ))}
+                </div>
                 <button className="danger" onClick={() => removeReleaseProfile(rp.id)}>
                   Delete release profile
                 </button>
@@ -3476,15 +3572,20 @@ export default function Settings() {
               <div>
                 <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
                   Score releases up or down by matching each release against title regex, size, language,
-                  release-group, source, resolution, year, or release-flag conditions. One condition per
-                  line; comma-separated patterns on a line are OR'd, all lines are AND'd, and a line starting
-                  with <code>NOT</code> negates it. Prefixes switch the condition type —{" "}
+                  release-group, source, resolution, year, release-flag, edition, quality-modifier, or
+                  release-type conditions — the same set Radarr/Sonarr/Lidarr/Readarr/Whisparr's own Custom
+                  Formats collectively support. One condition per line; comma-separated patterns on a line
+                  are OR'd, all lines are AND'd, and a line starting with <code>NOT</code> negates it.
+                  Prefixes switch the condition type —{" "}
                   <code>SIZE: 4000-15000</code> (either bound optional), <code>LANG: french, multi</code>{" "}
                   (detected language tags), <code>GROUP: RARBG, EVO</code> (regex against the parsed
-                  release-group tag), <code>SOURCE: Remux, Bluray, WEBDL, WEBRip, HDTV, DVD</code>,{" "}
-                  <code>RESOLUTION: 2160p, 1080p, 720p</code>, <code>YEAR: 2020-2024</code> (either bound
-                  optional), <code>FLAGS: proper, repack, extended, unrated, directorscut, imax</code> —
-                  anything else is a title regex. Example:
+                  release-group tag),{" "}
+                  <code>SOURCE: Remux, Bluray, WEBDL, WEBRip, HDTV, DVD, Cam, Telesync, Telecine, Workprint</code>,{" "}
+                  <code>RESOLUTION: 2160p, 1080p, 720p, 576p, 480p</code>, <code>YEAR: 2020-2024</code>{" "}
+                  (either bound optional), <code>FLAGS: proper, repack, extended, unrated, directorscut, imax</code>,{" "}
+                  <code>INDEXERFLAG: freeleech, halfleech</code>, <code>EDITION: directors cut, criterion</code>{" "}
+                  (regex against the parsed free-text edition phrase), <code>QUALITYMODIFIER: regional, screener, rawhd, brdisk</code>,{" "}
+                  <code>RELEASETYPE: single, multi, seasonPack</code> — anything else is a title regex. Example:
                   <br />
                   <code>SOURCE: Remux, Bluray</code>
                   <br />

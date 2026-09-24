@@ -457,6 +457,24 @@ describe("scanAndImportLibrary — course/adult (folder-as-show, sequentialEpiso
     ]);
   });
 
+  it("course: lesson files nested under arbitrary subfolders (Module 1, Week 2 — not a 'Season NN' folder) all belong to the top-level course folder, not their own separate course", async () => {
+    // Regression test: guessShowTitleFromFolder used to only walk up past a literal "Season NN"
+    // parent folder, so any other subfolder name (a course's Module/Week/Section groupings) got
+    // mistaken for its own separate course — see topLevelFolderName in libraryScan.ts.
+    const folder = await insertRootFolder("course");
+    writeFile(path.join(folder.path, "Intro to Python", "Module 1"), "01 - Getting Started.mp4");
+    writeFile(path.join(folder.path, "Intro to Python", "Module 2", "Week 1"), "02 - Advanced Topics.mp4");
+
+    const result = await scanAndImportLibrary("course");
+
+    expect(result.matched).toBe(2);
+    const shows = (await db.prepare("SELECT * FROM media_items WHERE type='course'").all()) as any[];
+    expect(shows).toHaveLength(1);
+    expect(shows[0].title).toBe("Intro to Python");
+    const episodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ? ORDER BY episode_number").all(shows[0].id)) as any[];
+    expect(episodes.map((e) => e.title)).toEqual(["Getting Started", "Advanced Topics"]);
+  });
+
   it("course: a lesson file with no leading number at all still becomes an episode instead of being skipped, appended after the current highest episode", async () => {
     const folder = await insertRootFolder("course");
     const showId = Number(

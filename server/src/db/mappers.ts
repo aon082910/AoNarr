@@ -252,6 +252,8 @@ export function releaseProfileFromRow(row: any) {
     mustNotContain: JSON.parse(row.must_not_contain ?? "[]"),
     preferred: JSON.parse(row.preferred ?? "[]"),
     mediaTypes: row.media_types ? JSON.parse(row.media_types) : [],
+    indexerIds: row.indexer_ids ? JSON.parse(row.indexer_ids) : [],
+    tagIds: row.tag_ids ? JSON.parse(row.tag_ids) : [],
   };
 }
 

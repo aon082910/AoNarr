@@ -248,7 +248,19 @@ export interface Track {
 }
 
 export interface ConditionGroup {
-  type?: "title" | "size" | "language" | "releaseGroup" | "source" | "resolution" | "year" | "releaseFlags" | "indexerFlag";
+  type?:
+    | "title"
+    | "size"
+    | "language"
+    | "releaseGroup"
+    | "source"
+    | "resolution"
+    | "year"
+    | "releaseFlags"
+    | "indexerFlag"
+    | "edition"
+    | "qualityModifier"
+    | "releaseType";
   patterns?: string[];
   minMb?: number | null;
   maxMb?: number | null;
@@ -259,6 +271,8 @@ export interface ConditionGroup {
   maxYear?: number | null;
   flags?: string[];
   indexerFlags?: string[];
+  qualityModifiers?: string[];
+  releaseTypes?: string[];
   negate: boolean;
 }
 
@@ -284,10 +298,13 @@ export interface ReleaseProfile {
   id: number;
   name: string;
   enabled: boolean;
+  // A term wrapped as "/pattern/flags" is a regex; anything else is a plain substring match.
   mustContain: string[];
   mustNotContain: string[];
   preferred: { term: string; score: number }[];
   mediaTypes: MediaType[]; // empty = applies to every library type
+  indexerIds: number[]; // empty = applies to every indexer
+  tagIds: number[]; // empty = applies to every tag
 }
 
 export interface QueueItem {

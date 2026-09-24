@@ -24,20 +24,24 @@ const VALID_PATTERN_LANGUAGES = new Set([
   "multi", "vostfr", "vff", "vfq", "french", "german", "italian", "spanish", "dutch",
   "russian", "korean", "japanese", "danish", "swedish", "norwegian", "polish", "portuguese", "english",
 ]);
-const VALID_SOURCES = new Set(["remux", "bluray", "webdl", "webrip", "hdtv", "dvd"]);
-const VALID_RESOLUTIONS = new Set(["2160p", "1080p", "720p"]);
+const VALID_SOURCES = new Set(["remux", "bluray", "webdl", "webrip", "hdtv", "dvd", "cam", "telesync", "telecine", "workprint"]);
+const VALID_RESOLUTIONS = new Set(["2160p", "1080p", "720p", "576p", "480p"]);
 const VALID_FLAGS = new Set(["proper", "repack", "extended", "unrated", "directorscut", "imax"]);
 const VALID_INDEXER_FLAGS = new Set(["freeleech", "halfleech"]);
+const VALID_QUALITY_MODIFIERS = new Set(["regional", "screener", "rawhd", "brdisk"]);
+const VALID_RELEASE_TYPES = new Set(["single", "multi", "seasonpack"]);
 
 /**
  * A custom format is a list of condition groups: title (patterns OR'd against the full title),
  * size (release size within [minMb, maxMb]), language (any of a set of detected language tags),
  * releaseGroup (patterns OR'd against the parsed trailing release-group tag), source (Remux/
- * Bluray/WEBDL/WEBRip/HDTV/DVD), resolution (2160p/1080p/720p), year (release year within
- * [minYear, maxYear]), or releaseFlags (proper/repack/extended/unrated/directorscut/imax). Across
- * groups, results are AND'd (every group must pass); a group can be negated for the opposite (e.g.
- * "must not contain x265", "must not be French").
- * Body: { name, mediaTypes?: string[], conditionGroups: [{ type?, patterns?, minMb?, maxMb?, languages?, sources?, resolutions?, minYear?, maxYear?, flags?, negate? }, ...] }
+ * Bluray/WEBDL/WEBRip/HDTV/DVD/Cam/Telesync/Telecine/Workprint), resolution (2160p/1080p/720p/
+ * 576p/480p), year (release year within [minYear, maxYear]), releaseFlags (proper/repack/extended/
+ * unrated/directorscut/imax), indexerFlag (freeleech/halfleech), edition (patterns OR'd against the
+ * parsed free-text edition phrase), qualityModifier (regional/screener/rawhd/brdisk), or releaseType
+ * (single/multi/seasonPack). Across groups, results are AND'd (every group must pass); a group can
+ * be negated for the opposite (e.g. "must not contain x265", "must not be French").
+ * Body: { name, mediaTypes?: string[], conditionGroups: [{ type?, patterns?, minMb?, maxMb?, languages?, sources?, resolutions?, minYear?, maxYear?, flags?, indexerFlags?, qualityModifiers?, releaseTypes?, negate? }, ...] }
  * mediaTypes empty/omitted means the format applies to every library type (unrestricted).
  */
 function validateAndNormalizeGroups(groups: any[]): any[] {
@@ -87,10 +91,24 @@ function validateAndNormalizeGroups(groups: any[]): any[] {
       for (const f of group.indexerFlags) {
         if (!VALID_INDEXER_FLAGS.has(String(f).toLowerCase())) throw new HttpError(400, `"${f}" is not a recognized indexer flag`);
       }
+    } else if (group.type === "qualityModifier") {
+      if (!Array.isArray(group.qualityModifiers) || group.qualityModifiers.length === 0) {
+        throw new HttpError(400, "a qualityModifier condition needs a non-empty qualityModifiers array");
+      }
+      for (const m of group.qualityModifiers) {
+        if (!VALID_QUALITY_MODIFIERS.has(String(m).toLowerCase())) throw new HttpError(400, `"${m}" is not a recognized quality modifier`);
+      }
+    } else if (group.type === "releaseType") {
+      if (!Array.isArray(group.releaseTypes) || group.releaseTypes.length === 0) {
+        throw new HttpError(400, "a releaseType condition needs a non-empty releaseTypes array");
+      }
+      for (const t of group.releaseTypes) {
+        if (!VALID_RELEASE_TYPES.has(String(t).toLowerCase())) throw new HttpError(400, `"${t}" is not a recognized release type`);
+      }
     } else {
-      // "title" and "releaseGroup" both validate as a non-empty regex-pattern array
+      // "title", "releaseGroup", and "edition" all validate as a non-empty regex-pattern array
       if (!Array.isArray(group.patterns) || group.patterns.length === 0) {
-        throw new HttpError(400, "each title/releaseGroup condition group needs a non-empty patterns array");
+        throw new HttpError(400, "each title/releaseGroup/edition condition group needs a non-empty patterns array");
       }
       for (const p of group.patterns) {
         try {
@@ -111,6 +129,10 @@ function validateAndNormalizeGroups(groups: any[]): any[] {
     if (g.type === "resolution") return { type: "resolution", resolutions: g.resolutions.map((r: string) => r.toLowerCase()), negate: !!g.negate };
     if (g.type === "releaseFlags") return { type: "releaseFlags", flags: g.flags.map((f: string) => f.toLowerCase()), negate: !!g.negate };
     if (g.type === "indexerFlag") return { type: "indexerFlag", indexerFlags: g.indexerFlags.map((f: string) => f.toLowerCase()), negate: !!g.negate };
+    if (g.type === "qualityModifier")
+      return { type: "qualityModifier", qualityModifiers: g.qualityModifiers.map((m: string) => m.toLowerCase()), negate: !!g.negate };
+    if (g.type === "releaseType") return { type: "releaseType", releaseTypes: g.releaseTypes.map((t: string) => t.toLowerCase()), negate: !!g.negate };
+    if (g.type === "edition") return { type: "edition", patterns: g.patterns, negate: !!g.negate };
     return { type: "title", patterns: g.patterns, negate: !!g.negate };
   });
 }

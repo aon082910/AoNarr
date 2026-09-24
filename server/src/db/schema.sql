@@ -347,7 +347,9 @@ CREATE TABLE IF NOT EXISTS release_profiles (
   must_contain TEXT NOT NULL DEFAULT '[]', -- JSON array of terms, OR'd (at least one must appear; empty = no requirement)
   must_not_contain TEXT NOT NULL DEFAULT '[]', -- JSON array of terms; any match rejects the release
   preferred TEXT NOT NULL DEFAULT '[]', -- JSON array of {term, score}
-  media_types TEXT -- JSON array of media_type keys; NULL/empty = every type
+  media_types TEXT, -- JSON array of media_type keys; NULL/empty = every type
+  indexer_ids TEXT, -- JSON array of indexer ids; NULL/empty = every indexer
+  tag_ids TEXT -- JSON array of tag ids; NULL/empty = every tag
 );
 
 -- Individual tracks within an album (sub_items row for an artist). Fetched lazily from

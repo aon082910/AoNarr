@@ -308,7 +308,9 @@ CREATE TABLE IF NOT EXISTS release_profiles (
   must_contain TEXT NOT NULL DEFAULT '[]',
   must_not_contain TEXT NOT NULL DEFAULT '[]',
   preferred TEXT NOT NULL DEFAULT '[]',
-  media_types TEXT
+  media_types TEXT,
+  indexer_ids TEXT,
+  tag_ids TEXT
 );
 
 -- Individual tracks within an album (sub_items row for an artist). Fetched lazily from

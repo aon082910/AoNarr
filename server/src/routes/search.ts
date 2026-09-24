@@ -198,7 +198,9 @@ searchRouter.get(
         r.size ?? null,
         item.qualityProfileId,
         item.type,
-        r.downloadVolumeFactor ?? null
+        r.downloadVolumeFactor ?? null,
+        item.id,
+        r.indexerId ?? null
       );
       return {
         ...r,

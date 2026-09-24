@@ -123,6 +123,10 @@ ensureColumn("media_items", "local_poster_path", "local_poster_path TEXT");
 ensureColumn("media_items", "local_poster_token", "local_poster_token TEXT");
 ensureColumn("media_items", "local_backdrop_path", "local_backdrop_path TEXT");
 ensureColumn("media_items", "local_backdrop_token", "local_backdrop_token TEXT");
+// JSON arrays scoping a Release Profile to specific indexers/tags — NULL/empty means "applies to
+// everything", matching every real app's own "blank restriction = global" convention.
+ensureColumn("release_profiles", "indexer_ids", "indexer_ids TEXT");
+ensureColumn("release_profiles", "tag_ids", "tag_ids TEXT");
 
 /**
  * One-time transition marker for the course/adult "collection"/"single" -> "episodic" shape change

@@ -33,11 +33,13 @@ releaseProfilesRouter.post(
     const b = req.body ?? {};
     if (!b.name) throw new HttpError(400, "name is required");
     const mediaTypes = Array.isArray(b.mediaTypes) ? b.mediaTypes : [];
+    const indexerIds = Array.isArray(b.indexerIds) ? b.indexerIds.map(Number) : [];
+    const tagIds = Array.isArray(b.tagIds) ? b.tagIds.map(Number) : [];
 
     const result = await db
       .prepare(
-        `INSERT INTO release_profiles (name, enabled, must_contain, must_not_contain, preferred, media_types)
-         VALUES (?, ?, ?, ?, ?, ?)`
+        `INSERT INTO release_profiles (name, enabled, must_contain, must_not_contain, preferred, media_types, indexer_ids, tag_ids)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         b.name,
@@ -45,7 +47,9 @@ releaseProfilesRouter.post(
         JSON.stringify(normalizeTerms(b.mustContain)),
         JSON.stringify(normalizeTerms(b.mustNotContain)),
         JSON.stringify(normalizePreferred(b.preferred)),
-        mediaTypes.length > 0 ? JSON.stringify(mediaTypes) : null
+        mediaTypes.length > 0 ? JSON.stringify(mediaTypes) : null,
+        indexerIds.length > 0 ? JSON.stringify(indexerIds) : null,
+        tagIds.length > 0 ? JSON.stringify(tagIds) : null
       );
     const row = await db.prepare("SELECT * FROM release_profiles WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(releaseProfileFromRow(row));
@@ -85,6 +89,16 @@ releaseProfilesRouter.patch(
       const mediaTypes = Array.isArray(b.mediaTypes) ? b.mediaTypes : [];
       sets.push("media_types = ?");
       values.push(mediaTypes.length > 0 ? JSON.stringify(mediaTypes) : null);
+    }
+    if (b.indexerIds !== undefined) {
+      const indexerIds = Array.isArray(b.indexerIds) ? b.indexerIds.map(Number) : [];
+      sets.push("indexer_ids = ?");
+      values.push(indexerIds.length > 0 ? JSON.stringify(indexerIds) : null);
+    }
+    if (b.tagIds !== undefined) {
+      const tagIds = Array.isArray(b.tagIds) ? b.tagIds.map(Number) : [];
+      sets.push("tag_ids = ?");
+      values.push(tagIds.length > 0 ? JSON.stringify(tagIds) : null);
     }
     if (sets.length > 0) {
       values.push(req.params.id);

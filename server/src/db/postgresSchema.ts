@@ -117,6 +117,8 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS local_poster_token TEXT`,
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS local_backdrop_path TEXT`,
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS local_backdrop_token TEXT`,
+  `ALTER TABLE release_profiles ADD COLUMN IF NOT EXISTS indexer_ids TEXT`,
+  `ALTER TABLE release_profiles ADD COLUMN IF NOT EXISTS tag_ids TEXT`,
 ];
 
 /**

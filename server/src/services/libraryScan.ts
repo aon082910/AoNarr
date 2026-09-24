@@ -238,14 +238,39 @@ export function detectSeasonEpisode(parentFolderName: string, filenameBase: stri
   return { season: null, episodes: [] };
 }
 
+/** Walks up from a file's own directory to the direct child of its library root — the folder that
+ * actually represents the "show" for a sequentialEpisodeFallback type (course/adult), no matter how
+ * many category/module/week-style subfolders the file is nested under. Returns null when the file
+ * sits loose directly in the root (no wrapping folder at all) or rootPath isn't actually an
+ * ancestor, so the caller can fall back to the old season-folder-aware guess. */
+function topLevelFolderName(fileDir: string, rootPath: string): string | null {
+  let candidate = fileDir;
+  while (candidate !== rootPath) {
+    const parent = path.dirname(candidate);
+    if (parent === candidate) return null; // hit the filesystem root without ever reaching rootPath
+    if (parent === rootPath) return path.basename(candidate);
+    candidate = parent;
+  }
+  return null; // fileDir === rootPath: no course/show folder wrapping the file at all
+}
+
 /** The parent folder's own name (or the grandparent, when the parent is just a "Season NN" folder
  * rather than the show's own) — the folder-only half of guessSeriesTitle below, extracted so a
  * sequentialEpisodeFallback type (course/adult) can use it directly without ever considering the
  * filename. For those types the filename is a LESSON/CLIP's own title, not the show's — a bare
  * lesson file like "01 - Getting Started.mp4" has nothing for guessTitleFromText to cut at, so the
  * whole filename would otherwise look "substantial" and get mistaken for the show title itself
- * (every lesson in a course folder would end up creating its own separate "show"). */
-function guessShowTitleFromFolder(parentDir: string): string {
+ * (every lesson in a course folder would end up creating its own separate "show").
+ *
+ * When `rootPath` is known, prefers walking all the way up to the library root's direct child
+ * instead of the old single-level "Season NN" special case — a course folder can have arbitrarily
+ * named/nested subfolders (Module 1, Week 2, ...) that aren't "Season NN" at all, and each one used
+ * to get mistaken for its own separate course. */
+function guessShowTitleFromFolder(parentDir: string, rootPath?: string): string {
+  if (rootPath) {
+    const topFolder = topLevelFolderName(parentDir, rootPath);
+    if (topFolder) return guessTitleFromText(topFolder);
+  }
   const parentName = path.basename(parentDir);
   const folderName = SEASON_FOLDER.test(parentName) ? path.basename(path.dirname(parentDir)) : parentName;
   return guessTitleFromText(folderName);
@@ -379,7 +404,16 @@ async function scanAndImportLibraryInner(
   ]);
 
   let files: string[] = [];
-  for (const folder of folders) walkForExtensions(folder.path, typeConfig.extensions, knownPaths, files);
+  // Tracks which root folder each file came from — sequentialEpisodeFallback types (course/adult)
+  // need this to find a file's true top-level show folder (see guessShowTitleFromFolder) no matter
+  // how many category/module subfolders it's nested under.
+  const fileRootPaths = new Map<string, string>();
+  for (const folder of folders) {
+    const folderFiles: string[] = [];
+    walkForExtensions(folder.path, typeConfig.extensions, knownPaths, folderFiles);
+    for (const f of folderFiles) fileRootPaths.set(f, folder.path);
+    files.push(...folderFiles);
+  }
 
   // multiFilePerChild sub_items track a whole album FOLDER as one file_path — a plain per-file
   // knownPaths check above wouldn't catch individual track files inside an already-known album, so
@@ -460,7 +494,9 @@ async function scanAndImportLibraryInner(
         const showSidecar = typeConfig.sidecarFormat === "kodi-video" ? await findShowSidecar(parentDir) : null;
         const guessedTitle =
           showSidecar?.title ??
-          (typeConfig.sequentialEpisodeFallback ? guessShowTitleFromFolder(parentDir) : guessSeriesTitle(parentDir, base));
+          (typeConfig.sequentialEpisodeFallback
+            ? guessShowTitleFromFolder(parentDir, fileRootPaths.get(filePath))
+            : guessSeriesTitle(parentDir, base));
         if (!guessedTitle) {
           result.skipped++;
           result.skippedFiles.push({ path: filePath, reason: "couldn't guess a series title from the filename or folder" });

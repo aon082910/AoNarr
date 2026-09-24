@@ -3,18 +3,35 @@ import { parseReleaseTitle, type ReleaseFlag } from "./releaseParser.js";
 
 export type IndexerFlag = "freeleech" | "halfleech";
 
+export type QualityModifier = "regional" | "screener" | "rawhd" | "brdisk";
+export type ReleaseTypeCondition = "single" | "multi" | "seasonPack";
+
 export interface ConditionGroup {
-  type?: "title" | "size" | "language" | "releaseGroup" | "source" | "resolution" | "year" | "releaseFlags" | "indexerFlag"; // defaults to "title" for backward compatibility
-  patterns?: string[]; // title/releaseGroup conditions: OR'd together
+  type?:
+    | "title"
+    | "size"
+    | "language"
+    | "releaseGroup"
+    | "source"
+    | "resolution"
+    | "year"
+    | "releaseFlags"
+    | "indexerFlag"
+    | "edition"
+    | "qualityModifier"
+    | "releaseType"; // defaults to "title" for backward compatibility
+  patterns?: string[]; // title/releaseGroup/edition conditions: OR'd together (regex)
   minMb?: number | null; // size conditions: inclusive lower bound
   maxMb?: number | null; // size conditions: inclusive upper bound
   languages?: string[]; // language conditions: any of these tags (see releaseParser's LANGUAGE_TAGS)
-  sources?: string[]; // source conditions: any of "Remux"/"Bluray"/"WEBDL"/"WEBRip"/"HDTV"/"DVD"
-  resolutions?: string[]; // resolution conditions: any of "2160p"/"1080p"/"720p"
+  sources?: string[]; // source conditions: any of "Remux"/"Bluray"/"WEBDL"/"WEBRip"/"HDTV"/"DVD"/"Cam"/"Telesync"/"Telecine"/"Workprint"
+  resolutions?: string[]; // resolution conditions: any of "2160p"/"1080p"/"720p"/"576p"/"480p"
   minYear?: number | null; // year conditions: inclusive lower bound
   maxYear?: number | null; // year conditions: inclusive upper bound
   flags?: ReleaseFlag[]; // releaseFlags conditions: any of proper/repack/extended/unrated/directorscut/imax
   indexerFlags?: IndexerFlag[]; // indexerFlag conditions: any of freeleech/halfleech (from Torznab's downloadvolumefactor)
+  qualityModifiers?: QualityModifier[]; // qualityModifier conditions: any of regional/screener/rawhd/brdisk
+  releaseTypes?: ReleaseTypeCondition[]; // releaseType conditions: any of single/multi/seasonPack
   negate: boolean; // if true, the group passes when it would otherwise NOT
 }
 
@@ -39,6 +56,27 @@ function testPattern(pattern: string, text: string): boolean {
   }
 }
 
+const JS_REGEX_FLAGS = new Set(["i", "m", "s"]);
+
+/** Release Profile term matching, Radarr/Sonarr/Lidarr-style: a term wrapped as `/pattern/flags` is
+ * a regex (flags outside i/m/s — e.g. .NET's `x`/`n` — are simply dropped rather than erroring,
+ * since JS has no equivalent); anything else is a plain case-insensitive substring match, matching
+ * every real app's own default term behavior. Always case-insensitive even for a regex term with no
+ * explicit `i` flag, consistent with every other pattern match already in this file. */
+function testTerm(term: string, text: string): boolean {
+  const regexMatch = term.match(/^\/(.+)\/([a-zA-Z]*)$/);
+  if (regexMatch) {
+    const flags = new Set(regexMatch[2].split("").filter((c) => JS_REGEX_FLAGS.has(c)));
+    flags.add("i");
+    try {
+      return new RegExp(regexMatch[1], Array.from(flags).join("")).test(text);
+    } catch {
+      return false; // invalid user-supplied regex; skip rather than crash the search
+    }
+  }
+  return text.toLowerCase().includes(term.toLowerCase());
+}
+
 /**
  * Evaluates one condition group against a release. Types:
  * - title: any pattern matches the full release title (OR within the group).
@@ -47,13 +85,22 @@ function testPattern(pattern: string, text: string): boolean {
  * - language: any of the group's language tags was detected in the title (see releaseParser).
  * - releaseGroup: any pattern matches the parsed trailing release-group tag (e.g. "RARBG"). No
  *   group detected never passes.
- * - source: any of the group's sources (Remux/Bluray/WEBDL/WEBRip/HDTV/DVD) matches the parsed
- *   source. No source detected never passes.
- * - resolution: any of the group's resolutions (2160p/1080p/720p) matches the parsed resolution.
+ * - source: any of the group's sources (Remux/Bluray/WEBDL/WEBRip/HDTV/DVD/Cam/Telesync/Telecine/
+ *   Workprint) matches the parsed source. No source detected never passes.
+ * - resolution: any of the group's resolutions (2160p/1080p/720p/576p/480p) matches the parsed
+ *   resolution.
  * - year: parsed year falls within [minYear, maxYear] (either bound optional). No year detected
  *   never passes.
  * - releaseFlags: any of the group's flags (proper/repack/extended/unrated/directorscut/imax) was
  *   detected in the title.
+ * - edition: any pattern matches the parsed free-text edition phrase (Radarr's "Edition" condition
+ *   — a regex-testable superset of the fixed directorscut/extended/unrated/imax flags above). No
+ *   edition detected never passes.
+ * - qualityModifier: any of the group's modifiers (regional/screener/rawhd/brdisk) matches the
+ *   parsed one. No modifier detected never passes.
+ * - releaseType: any of the group's types (single/multi/seasonPack) matches the parsed one
+ *   (Sonarr's "Release Type" — derived from the same season/episode parse, not its own pattern). A
+ *   non-episodic release (movie, album, book) never passes.
  * Every type inverts under `negate` (e.g. "must not contain x265", "must not be French").
  */
 function groupPasses(group: ConditionGroup, title: string, sizeBytes: number | null, downloadVolumeFactor: number | null): boolean {
@@ -114,6 +161,29 @@ function groupPasses(group: ConditionGroup, title: string, sizeBytes: number | n
     return group.negate ? !anyMatch : anyMatch;
   }
 
+  if (group.type === "edition") {
+    const detected = parseReleaseTitle(title).edition;
+    if (!detected) return group.negate ? true : false;
+    const anyMatch = (group.patterns ?? []).some((p) => testPattern(p, detected));
+    return group.negate ? !anyMatch : anyMatch;
+  }
+
+  if (group.type === "qualityModifier") {
+    const detected = parseReleaseTitle(title).qualityModifier;
+    if (!detected) return group.negate ? true : false;
+    const anyMatch = (group.qualityModifiers ?? []).includes(detected);
+    return group.negate ? !anyMatch : anyMatch;
+  }
+
+  if (group.type === "releaseType") {
+    const detected = parseReleaseTitle(title).releaseType;
+    if (!detected) return group.negate ? true : false;
+    // Case-insensitive, same as source/resolution above — the HTTP route lowercases stored
+    // releaseTypes on save, while the parser's own releaseType value is camelCase ("seasonPack").
+    const anyMatch = (group.releaseTypes ?? []).some((t) => t.toLowerCase() === detected.toLowerCase());
+    return group.negate ? !anyMatch : anyMatch;
+  }
+
   const anyMatch = (group.patterns ?? []).some((p) => testPattern(p, title));
   return group.negate ? !anyMatch : anyMatch;
 }
@@ -130,15 +200,19 @@ export function formatMatches(
 }
 
 /**
- * Radarr/Sonarr-style Release Profiles: plain-text (non-regex) must-contain/must-not-contain/
- * preferred term lists, evaluated independently of (and in addition to) Custom Formats. Profiles
- * are AND'd together — a release failing any single enabled profile's must-not-contain or
- * must-contain gate is rejected overall, regardless of what other profiles say; preferred-term
- * hits across every profile simply add to the score.
+ * Radarr/Sonarr/Lidarr-style Release Profiles: must-contain/must-not-contain/preferred term lists,
+ * evaluated independently of (and in addition to) Custom Formats. A term wrapped as `/pattern/flags`
+ * is a regex (see testTerm); anything else is a plain substring match. Profiles are AND'd together —
+ * a release failing any single enabled profile's must-not-contain or must-contain gate is rejected
+ * overall, regardless of what other profiles say; preferred-term hits across every profile simply
+ * add to the score. `indexerId`/`mediaItemId` scope a profile to specific indexers/tags, same as
+ * every real app's own Indexer/Tags restriction — blank (the common case) applies to everything.
  */
 async function evaluateReleaseProfiles(
   title: string,
-  mediaType: string | null
+  mediaType: string | null,
+  mediaItemId: number | null,
+  indexerId: number | null
 ): Promise<{ scoreBonus: number; rejected: boolean; rejectReason?: string }> {
   const profiles = (await db.prepare("SELECT * FROM release_profiles WHERE enabled = 1").all()) as {
     id: number;
@@ -147,9 +221,12 @@ async function evaluateReleaseProfiles(
     must_not_contain: string;
     preferred: string;
     media_types: string | null;
+    indexer_ids: string | null;
+    tag_ids: string | null;
   }[];
-  const lower = title.toLowerCase();
   let scoreBonus = 0;
+  // Lazily loaded at most once — only profiles that actually restrict by tag need it.
+  let itemTagIds: number[] | null = null;
 
   for (const p of profiles) {
     if (mediaType && p.media_types) {
@@ -160,6 +237,37 @@ async function evaluateReleaseProfiles(
         restrictedTo = [];
       }
       if (restrictedTo.length > 0 && !restrictedTo.includes(mediaType)) continue;
+    }
+
+    if (p.indexer_ids) {
+      let restrictedIndexers: number[] = [];
+      try {
+        restrictedIndexers = JSON.parse(p.indexer_ids);
+      } catch {
+        restrictedIndexers = [];
+      }
+      if (restrictedIndexers.length > 0 && (indexerId == null || !restrictedIndexers.includes(indexerId))) continue;
+    }
+
+    if (p.tag_ids) {
+      let restrictedTags: number[] = [];
+      try {
+        restrictedTags = JSON.parse(p.tag_ids);
+      } catch {
+        restrictedTags = [];
+      }
+      if (restrictedTags.length > 0) {
+        if (itemTagIds === null) {
+          itemTagIds = mediaItemId
+            ? (
+                (await db.prepare("SELECT tag_id FROM media_item_tags WHERE media_item_id = ?").all(mediaItemId)) as {
+                  tag_id: number;
+                }[]
+              ).map((r) => r.tag_id)
+            : [];
+        }
+        if (!itemTagIds.some((t) => restrictedTags.includes(t))) continue;
+      }
     }
 
     let mustContain: string[] = [];
@@ -181,11 +289,11 @@ async function evaluateReleaseProfiles(
       // ditto
     }
 
-    const forbiddenHit = mustNotContain.find((t) => t && lower.includes(t.toLowerCase()));
+    const forbiddenHit = mustNotContain.find((t) => t && testTerm(t, title));
     if (forbiddenHit) {
       return { scoreBonus: 0, rejected: true, rejectReason: `Release profile "${p.name}": contains "${forbiddenHit}"` };
     }
-    if (mustContain.length > 0 && !mustContain.some((t) => t && lower.includes(t.toLowerCase()))) {
+    if (mustContain.length > 0 && !mustContain.some((t) => t && testTerm(t, title))) {
       return {
         scoreBonus: 0,
         rejected: true,
@@ -193,7 +301,7 @@ async function evaluateReleaseProfiles(
       };
     }
     for (const pref of preferred) {
-      if (pref.term && lower.includes(pref.term.toLowerCase())) scoreBonus += Number(pref.score) || 0;
+      if (pref.term && testTerm(pref.term, title)) scoreBonus += Number(pref.score) || 0;
     }
   }
 
@@ -207,14 +315,17 @@ async function evaluateReleaseProfiles(
  * across groups, each optionally negated — and contributes whatever score the given quality
  * profile assigns it (0 if the profile has no override for that format). A format with no
  * `mediaTypes` restriction (the default) applies to every library type, matching the pre-scoping
- * behavior every existing custom format already has.
+ * behavior every existing custom format already has. `mediaItemId`/`indexerId` are only consulted
+ * for Release Profiles' own Tags/Indexer restriction (Custom Formats have no such concept).
  */
 export async function scoreRelease(
   releaseTitle: string,
   releaseSizeBytes: number | null,
   qualityProfileId: number | null,
   mediaType: string | null = null,
-  downloadVolumeFactor: number | null = null
+  downloadVolumeFactor: number | null = null,
+  mediaItemId: number | null = null,
+  indexerId: number | null = null
 ): Promise<ReleaseScore> {
   const formats = (await db.prepare("SELECT * FROM custom_formats").all()) as {
     id: number;
@@ -256,7 +367,7 @@ export async function scoreRelease(
     matches.push({ id: format.id, name: format.name, score });
   }
 
-  const profileResult = await evaluateReleaseProfiles(releaseTitle, mediaType);
+  const profileResult = await evaluateReleaseProfiles(releaseTitle, mediaType, mediaItemId, indexerId);
   let rejected = profileResult.rejected;
   let rejectReason = profileResult.rejectReason;
 

@@ -265,7 +265,8 @@ export async function chooseBestResult(
   blocklisted: Set<string>,
   mediaType: string,
   delayProfile: DelayProfile | null = null,
-  identity: TargetIdentity | null = null
+  identity: TargetIdentity | null = null,
+  mediaItemId: number | null = null
 ): Promise<ChosenResult | null> {
   const notBlocklisted = results.filter((r) => !blocklisted.has(r.title));
   const withParsed = notBlocklisted
@@ -298,7 +299,15 @@ export async function chooseBestResult(
         .map(async ({ result }) => ({
           result,
           matchTier: matchTierFor(result, identity),
-          ...(await scoreRelease(result.title, result.size ?? null, qualityProfileId, mediaType, result.downloadVolumeFactor ?? null)),
+          ...(await scoreRelease(
+            result.title,
+            result.size ?? null,
+            qualityProfileId,
+            mediaType,
+            result.downloadVolumeFactor ?? null,
+            mediaItemId,
+            result.indexerId ?? null
+          )),
         }))
     )
   ).filter((c) => c.totalScore >= minFormatScore && !c.rejected);
@@ -503,7 +512,8 @@ export async function runAutoSearch(signal?: AbortSignal) {
           blocklisted,
           item.type,
           delayProfile,
-          identity
+          identity,
+          item.id
         );
         if (best) {
           const targetClient = pickClientForProtocol(clients, best.result.protocol);
@@ -551,7 +561,9 @@ export async function runAutoSearch(signal?: AbortSignal) {
                 },
             blocklisted,
             item.type,
-            delayProfile
+            delayProfile,
+            undefined,
+            item.id
           );
           if (best) {
             const targetClient = pickClientForProtocol(clients, best.result.protocol);
@@ -631,7 +643,9 @@ export async function runAutoSearch(signal?: AbortSignal) {
             null,
             blocklisted,
             item.type,
-            delayProfile
+            delayProfile,
+            undefined,
+            item.id
           );
           if (best) {
             const targetClient = pickClientForProtocol(clients, best.result.protocol);
@@ -727,7 +741,8 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
         blocklisted,
         item.type,
         delayProfile,
-        identity
+        identity,
+        item.id
       );
       if (!best) {
         results.push({ ...t, grabbed: false, error: "No matching results" });
@@ -1021,7 +1036,8 @@ export async function retryFailedGrab(match: QueueItem, reason: string): Promise
       blocklisted,
       item.type,
       delayProfile,
-      identity
+      identity,
+      item.id
     );
     if (!best) {
       log.info(`[scheduler] retry exhausted search results for "${mediaTitle}" — notifying instead`);
