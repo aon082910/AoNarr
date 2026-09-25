@@ -1,0 +1,94 @@
+name: Docker publish
+
+# Builds Dockerfile.combined (nginx UI + node API in one image) and publishes it to Docker Hub as
+# allornothing/aonarr:combined — the tag the Unraid template pulls — plus a version tag read from
+# the VERSION file. Pull requests (and manual runs off other branches) only build, so a broken
+# Dockerfile shows up before merge.
+#
+# Required repo secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN (a Docker Hub access token with
+# read/write scope, not the account password).
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "Dockerfile.combined"
+      - "combined/**"
+      - "server/**"
+      - "web/**"
+      - "VERSION"
+      - ".github/workflows/docker-publish.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: allornothing/aonarr
+  # Only main and v* tags ever push; PRs and manual runs on other branches just build.
+  PUBLISH: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag') }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # VERSION is the single source of truth; the package.json files and any v* tag must agree
+      # with it so a release can't go out with mismatched numbers.
+      - name: Read and check version
+        id: version
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          echo "VERSION=$VERSION"
+          for pkg in server/package.json web/package.json; do
+            PKG_VERSION="$(node -p "require('./$pkg').version")"
+            if [ "$PKG_VERSION" != "$VERSION" ]; then
+              echo "::error file=$pkg::version $PKG_VERSION does not match VERSION $VERSION"
+              exit 1
+            fi
+          done
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v$VERSION" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match VERSION $VERSION (expected v$VERSION)"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=combined,enable=${{ env.PUBLISH }}
+            type=raw,value=${{ steps.version.outputs.version }},enable=${{ env.PUBLISH }}
+            type=ref,event=pr
+            type=ref,event=branch,enable=${{ env.PUBLISH != 'true' }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.combined
+          platforms: linux/amd64
+          push: ${{ env.PUBLISH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_TIME=${{ steps.version.outputs.build_time }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
