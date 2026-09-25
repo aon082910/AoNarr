@@ -580,6 +580,17 @@ your download client finishes. Check **Missing** for what's still outstanding an
 for what's coming up; use **Manual Import** on a media item's page for anything that didn't
 auto-resolve.
 
+### Releases
+
+`.github/workflows/docker-publish.yml` builds `Dockerfile.combined` and pushes it to Docker Hub as
+`allornothing/aonarr:combined` (the tag the Unraid template pulls) plus `allornothing/aonarr:<VERSION>`
+on every push to `main` and every `v*` tag. Pull requests only build the image. It needs two repo
+secrets: `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub access token).
+
+`VERSION` is the release number; `server/package.json` and `web/package.json` must match it or the
+workflow fails. To cut a release, bump all three (`npm version <x.y.z> --no-git-tag-version` in
+`server/` and `web/`), push to `main`, then tag it `v<x.y.z>`.
+
 ## Verification
 
 This has been built and smoke-tested sixteen times with `docker compose build` + live
