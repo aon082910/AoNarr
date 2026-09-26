@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import Modal from "./Modal.js";
 import { api } from "../api/client.js";
+import { displayableImageUrl } from "../utils/artwork.js";
 
 export interface MetadataSearchResult {
   title: string;
@@ -166,39 +167,42 @@ export default function SearchMatchModal({
       {results && results.length === 0 && <p className="empty">No results.</p>}
       {results && results.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: "50vh", overflowY: "auto" }}>
-          {results.map((r, i) => (
-            <div
-              key={i}
-              className="form-panel"
-              style={{ display: "flex", gap: 12, cursor: applying ? "default" : "pointer", margin: 0, opacity: applying ? 0.6 : 1 }}
-              onClick={() => !applying && pick(r)}
-            >
-              {r.posterUrl ? (
-                <img src={r.posterUrl} alt="" style={{ width: 50, height: 75, objectFit: "cover", borderRadius: 4, flexShrink: 0 }} />
-              ) : (
-                <div style={{ width: 50, height: 75, background: "var(--input-bg)", borderRadius: 4, flexShrink: 0 }} />
-              )}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <strong>{r.title}</strong> {r.year ? `(${r.year})` : ""}
-                {r.overview && (
-                  <p
-                    style={{
-                      fontSize: "0.8rem",
-                      color: "var(--muted)",
-                      margin: "4px 0 0",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      display: "-webkit-box",
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: "vertical",
-                    }}
-                  >
-                    {r.overview}
-                  </p>
+          {results.map((r, i) => {
+            const poster = displayableImageUrl(r.posterUrl);
+            return (
+              <div
+                key={i}
+                className="form-panel"
+                style={{ display: "flex", gap: 12, cursor: applying ? "default" : "pointer", margin: 0, opacity: applying ? 0.6 : 1 }}
+                onClick={() => !applying && pick(r)}
+              >
+                {poster ? (
+                  <img src={poster} alt="" style={{ width: 50, height: 75, objectFit: "cover", borderRadius: 4, flexShrink: 0 }} />
+                ) : (
+                  <div style={{ width: 50, height: 75, background: "var(--input-bg)", borderRadius: 4, flexShrink: 0 }} />
                 )}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <strong>{r.title}</strong> {r.year ? `(${r.year})` : ""}
+                  {r.overview && (
+                    <p
+                      style={{
+                        fontSize: "0.8rem",
+                        color: "var(--muted)",
+                        margin: "4px 0 0",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        display: "-webkit-box",
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: "vertical",
+                      }}
+                    >
+                      {r.overview}
+                    </p>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </Modal>

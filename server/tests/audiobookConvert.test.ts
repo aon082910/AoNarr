@@ -14,17 +14,31 @@ let ffmpegShouldFail = false;
 const ffmpegCalls: string[][] = [];
 // The chapter file is deleted as soon as ffmpeg returns, so its content is captured mid-call.
 const chapterMetadata: string[] = [];
+// When set, the next ffmpeg run doesn't finish until the test calls releaseHeldFfmpeg().
+let holdNextFfmpeg = false;
+let releaseHeldFfmpeg: (() => void) | null = null;
 
 vi.mock("node:child_process", () => ({
   execFile: (_file: string, args: string[], _options: unknown, callback: ExecFileCallback) => {
     ffmpegCalls.push(args);
     const metaPath = args.find((a) => a.includes(".aonarr-chapters-"));
     if (metaPath) chapterMetadata.push(fs.readFileSync(metaPath, "utf-8"));
-    if (ffmpegShouldFail) {
-      callback(new Error("ffmpeg merge failed"));
+    const outputPath = args[args.length - 1];
+    const finish = () => {
+      if (ffmpegShouldFail) {
+        fs.writeFileSync(outputPath, "half-written m4b");
+        callback(new Error("ffmpeg merge failed"));
+        return;
+      }
+      fs.writeFileSync(outputPath, "merged m4b");
+      callback(null, { stdout: "", stderr: "" });
+    };
+    if (holdNextFfmpeg) {
+      holdNextFfmpeg = false;
+      releaseHeldFfmpeg = finish;
       return;
     }
-    callback(null, { stdout: "", stderr: "" });
+    finish();
   },
 }));
 
@@ -40,6 +54,8 @@ beforeAll(async () => {
 
 afterEach(() => {
   ffmpegShouldFail = false;
+  holdNextFfmpeg = false;
+  releaseHeldFfmpeg = null;
   ffmpegCalls.length = 0;
   chapterMetadata.length = 0;
   probeDurationSeconds.mockReset();
@@ -152,6 +168,8 @@ describe("convertSubItemToM4b — success", () => {
     const result = await convertSubItemToM4b(subId);
 
     expect(result.path).toBe(path.join(dir, "Merge Success Book.m4b"));
+    expect(fs.readFileSync(result.path, "utf-8")).toBe("merged m4b");
+    expect(fs.readdirSync(dir).filter((f) => f.startsWith(".aonarr-"))).toEqual([]);
     const tracks = (await db.prepare("SELECT * FROM tracks WHERE sub_item_id = ?").all(subId)) as any[];
     expect(tracks).toHaveLength(1);
     expect(tracks[0].track_number).toBe(1);
@@ -218,8 +236,70 @@ describe("convertSubItemToM4b — success", () => {
     await expect(convertSubItemToM4b(subId)).rejects.toThrow(/ffmpeg merge failed/);
 
     expect(fs.existsSync(path.join(dir, `.aonarr-chapters-${subId}.txt`))).toBe(false);
+    // Nor leave ffmpeg's half-written output behind, at the real path or a temporary one.
+    expect(fs.existsSync(path.join(dir, "Cleanup On Failure Book.m4b"))).toBe(false);
+    expect(fs.readdirSync(dir).filter((f) => f.startsWith(".aonarr-"))).toEqual([]);
     // A failed merge must never touch the DB or delete the original tracks.
     const tracks = (await db.prepare("SELECT * FROM tracks WHERE sub_item_id = ?").all(subId)) as any[];
     expect(tracks).toHaveLength(2);
+  });
+});
+
+describe("convertSubItemToM4b — one conversion per audiobook at a time", () => {
+  it("refuses a second request for the same book while the first is still encoding (409)", async () => {
+    const { M4bConversionInProgressError } = await import("../src/services/audiobookConvert.js");
+    const dir = bookDir("in-progress-book");
+    const subId = await insertAuthorAndBook("In Progress Book", dir);
+    const track1 = realTrackFile(dir, "01.mp3");
+    const track2 = realTrackFile(dir, "02.mp3");
+    await insertTrack(subId, 1, "Chapter 1", track1);
+    await insertTrack(subId, 2, "Chapter 2", track2);
+    holdNextFfmpeg = true;
+
+    const first = convertSubItemToM4b(subId);
+    await vi.waitFor(() => expect(releaseHeldFfmpeg).not.toBeNull());
+
+    const second = convertSubItemToM4b(subId);
+    await expect(second).rejects.toBeInstanceOf(M4bConversionInProgressError);
+    await expect(second).rejects.toMatchObject({ status: 409, expose: true });
+    expect(ffmpegCalls).toHaveLength(1);
+    // The refused request must not have touched the running conversion's inputs.
+    expect(fs.existsSync(track1)).toBe(true);
+
+    releaseHeldFfmpeg!();
+    await expect(first).resolves.toEqual({ path: path.join(dir, "In Progress Book.m4b") });
+    const tracks = (await db.prepare("SELECT * FROM tracks WHERE sub_item_id = ?").all(subId)) as any[];
+    expect(tracks).toHaveLength(1);
+  });
+
+  it("frees the book for another attempt once a conversion fails", async () => {
+    const dir = bookDir("retry-after-failure-book");
+    const subId = await insertAuthorAndBook("Retry After Failure Book", dir);
+    await insertTrack(subId, 1, "Chapter 1", realTrackFile(dir, "01.mp3"));
+    await insertTrack(subId, 2, "Chapter 2", realTrackFile(dir, "02.mp3"));
+    ffmpegShouldFail = true;
+    await expect(convertSubItemToM4b(subId)).rejects.toThrow(/ffmpeg merge failed/);
+
+    ffmpegShouldFail = false;
+    await expect(convertSubItemToM4b(subId)).resolves.toEqual({ path: path.join(dir, "Retry After Failure Book.m4b") });
+  });
+
+  it("doesn't block a different book while one is encoding", async () => {
+    const dirA = bookDir("parallel-book-a");
+    const subA = await insertAuthorAndBook("Parallel Book A", dirA);
+    await insertTrack(subA, 1, "Chapter 1", realTrackFile(dirA, "01.mp3"));
+    await insertTrack(subA, 2, "Chapter 2", realTrackFile(dirA, "02.mp3"));
+    const dirB = bookDir("parallel-book-b");
+    const subB = await insertAuthorAndBook("Parallel Book B", dirB);
+    await insertTrack(subB, 1, "Chapter 1", realTrackFile(dirB, "01.mp3"));
+    await insertTrack(subB, 2, "Chapter 2", realTrackFile(dirB, "02.mp3"));
+    holdNextFfmpeg = true;
+
+    const first = convertSubItemToM4b(subA);
+    await vi.waitFor(() => expect(releaseHeldFfmpeg).not.toBeNull());
+    await expect(convertSubItemToM4b(subB)).resolves.toEqual({ path: path.join(dirB, "Parallel Book B.m4b") });
+
+    releaseHeldFfmpeg!();
+    await expect(first).resolves.toEqual({ path: path.join(dirA, "Parallel Book A.m4b") });
   });
 });

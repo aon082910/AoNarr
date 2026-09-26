@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
-import { api, avatarUrl } from "./api/client.js";
+import { api, useAvatarUrl } from "./api/client.js";
 import Dashboard from "./pages/Dashboard.js";
 import Onboarding, { shouldShowOnboarding } from "./pages/Onboarding.js";
 import { useAuth } from "./context/AuthContext.js";
@@ -209,6 +209,7 @@ export default function App() {
   const [navPosition, setNavPosition] = useState<"side" | "top">(
     () => (localStorage.getItem("aonarr_nav_position") as "side" | "top") || "side"
   );
+  const avatarSrc = useAvatarUrl(auth.user?.id, !!auth.user?.avatarPath);
 
   useEffect(() => {
     localStorage.setItem("aonarr_sidebar_collapsed", sidebarCollapsed ? "1" : "0");
@@ -238,12 +239,11 @@ export default function App() {
   // nav link pointing at it before Discover made that gap obvious.
   // A photo (once set — see Account.tsx) replaces the generic person icon here, the one spot in
   // the whole nav shell that identifies who's actually signed in.
-  const accountIcon =
-    auth.user?.avatarPath && avatarUrl(auth.user.id) ? (
-      <img src={avatarUrl(auth.user.id)!} alt="" style={{ width: 20, height: 20, borderRadius: "50%", objectFit: "cover" }} />
-    ) : (
-      <UserIcon />
-    );
+  const accountIcon = avatarSrc ? (
+    <img src={avatarSrc} alt="" style={{ width: 20, height: 20, borderRadius: "50%", objectFit: "cover" }} />
+  ) : (
+    <UserIcon />
+  );
   const standaloneLinks: NavLinkDef[] = isAdmin
     ? [{ to: "/account", label: "Account", icon: accountIcon }]
     : [

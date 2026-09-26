@@ -14,6 +14,9 @@ services:
       # don't already match, so this is cheap on restarts). Defaults are Unraid's nobody:users.
       - PUID=99
       - PGID=100
+      # Only for OTHER sites' pages that call the API from a browser (e.g. a dashboard widget);
+      # the web UI never needs it. Comma-separated origins, merged with Settings → Allowed CORS origins.
+      # - AONARR_CORS_ALLOWED_ORIGINS=https://dash.example.com
     volumes:
       - ./data/config:/config
       # Point these at your actual Unraid shares, e.g. /mnt/user/media and /mnt/user/downloads.

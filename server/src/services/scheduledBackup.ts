@@ -129,6 +129,8 @@ const ENCRYPTED_COLUMNS: [table: string, column: string][] = [
   ["irc_feeds", "sasl_pass"],
   ["ai_providers", "api_key"],
   ["subtitle_providers", "api_key"],
+  ["remote_instances", "api_key"],
+  ["friend_libraries", "token"],
 ];
 
 /** A few `enc1:` values from every encrypted column, so no single stale or re-encrypted row decides. */

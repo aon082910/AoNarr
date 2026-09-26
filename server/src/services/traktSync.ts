@@ -1,8 +1,9 @@
 import { log } from "./logger.js";
 import { db } from "../db/index.js";
 import { getSetting } from "./settingsStore.js";
-import { fetchSeriesEpisodesFor } from "./metadata.js";
+import { fetchSeriesEpisodesFor, isEpisodeMonitoredByDefault } from "./metadata.js";
 import { isExcluded } from "./importExclusions.js";
+import { insertUnlessTmdbIdExists, RootFolderPicker, traktListHeaders } from "./importLists.js";
 
 interface TraktListTarget {
   username: string;
@@ -22,9 +23,7 @@ async function fetchTraktListItems(target: TraktListTarget, clientId: string): P
   // extended=full is what actually puts an overview on each movie/show object — without it
   // Trakt's list endpoints only return the bare minimum (title/year/ids).
   const url = `https://api.trakt.tv/users/${target.username}/${path}?extended=full`;
-  const res = await fetch(url, {
-    headers: { "trakt-api-version": "2", "trakt-api-key": clientId, "Content-Type": "application/json" },
-  });
+  const res = await fetch(url, { headers: traktListHeaders(clientId) });
   if (!res.ok) throw new Error(`Trakt list request failed: HTTP ${res.status}`);
   return (await res.json()) as any[];
 }
@@ -54,7 +53,7 @@ async function defaultQualityProfileId(): Promise<number | null> {
 /** Adds anything new in the configured Trakt list/watchlist as a monitored library item —
  * movies as single items, shows with their full episode list fetched via TMDB (reusing the same
  * add-media pipeline every other import path uses). Never removes items the list no longer has. */
-export async function runTraktSync(): Promise<{ added: number; error?: string }> {
+export async function runTraktSync(): Promise<{ added: number; error?: string; warning?: string }> {
   if (getSetting("traktSyncEnabled") !== "1") return { added: 0 };
   const url = getSetting("traktSyncUrl");
   const clientId = getSetting("traktClientId");
@@ -73,6 +72,7 @@ export async function runTraktSync(): Promise<{ added: number; error?: string }>
   const qualityProfileId = await defaultQualityProfileId();
   const existingMovies = await existingTmdbIds("movie");
   const existingSeries = await existingTmdbIds("series");
+  const rootFolders = new RootFolderPicker();
   let added = 0;
 
   for (const entry of items) {
@@ -82,37 +82,48 @@ export async function runTraktSync(): Promise<{ added: number; error?: string }>
         const tmdbId = m.ids?.tmdb;
         if (!tmdbId || existingMovies.has(String(tmdbId))) continue;
         if (await isExcluded("movie", m.title, m.year ?? null, String(tmdbId), "tmdb")) continue;
-        await db
-          .prepare(
-            `INSERT INTO media_items (type, title, sort_title, year, overview, external_ids, quality_profile_id, monitored, status)
-             VALUES ('movie', ?, ?, ?, ?, ?, ?, 1, 'missing')`
-          )
-          .run(
-            m.title,
-            m.title.toLowerCase(),
-            m.year ?? null,
-            m.overview ?? null,
-            JSON.stringify({ tmdb: String(tmdbId), trakt: String(m.ids?.trakt ?? ""), ...(m.ids?.imdb ? { imdb: m.ids.imdb } : {}) }),
-            qualityProfileId
-          );
+        const rootFolderId = await rootFolders.pick("movie");
+        if (rootFolderId == null) continue;
+        const inserted = await insertUnlessTmdbIdExists("movie", String(tmdbId), () =>
+          db
+            .prepare(
+              `INSERT INTO media_items (type, title, sort_title, year, overview, external_ids, root_folder_id, quality_profile_id, monitored, status)
+               VALUES ('movie', ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
+            )
+            .run(
+              m.title,
+              m.title.toLowerCase(),
+              m.year ?? null,
+              m.overview ?? null,
+              JSON.stringify({ tmdb: String(tmdbId), trakt: String(m.ids?.trakt ?? ""), ...(m.ids?.imdb ? { imdb: m.ids.imdb } : {}) }),
+              rootFolderId,
+              qualityProfileId
+            )
+        );
         existingMovies.add(String(tmdbId));
-        added++;
+        if (inserted) added++;
       } else if (entry.show) {
         const s = entry.show;
         const tmdbId = s.ids?.tmdb;
         if (!tmdbId || existingSeries.has(String(tmdbId))) continue;
         if (await isExcluded("series", s.title, s.year ?? null, String(tmdbId), "tmdb")) continue;
+        const rootFolderId = await rootFolders.pick("series");
+        if (rootFolderId == null) continue;
         const externalIds = {
           tmdb: String(tmdbId),
           trakt: String(s.ids?.trakt ?? ""),
           ...(s.ids?.imdb ? { imdb: s.ids.imdb } : {}),
         };
-        const result = await db
-          .prepare(
-            `INSERT INTO media_items (type, title, sort_title, year, overview, external_ids, quality_profile_id, monitored, status)
-             VALUES ('series', ?, ?, ?, ?, ?, ?, 1, 'missing')`
-          )
-          .run(s.title, s.title.toLowerCase(), s.year ?? null, s.overview ?? null, JSON.stringify(externalIds), qualityProfileId);
+        const result = await insertUnlessTmdbIdExists("series", String(tmdbId), () =>
+          db
+            .prepare(
+              `INSERT INTO media_items (type, title, sort_title, year, overview, external_ids, root_folder_id, quality_profile_id, monitored, status)
+               VALUES ('series', ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
+            )
+            .run(s.title, s.title.toLowerCase(), s.year ?? null, s.overview ?? null, JSON.stringify(externalIds), rootFolderId, qualityProfileId)
+        );
+        existingSeries.add(String(tmdbId));
+        if (!result) continue;
 
         const mediaItemId = result.lastInsertRowid;
         const episodes = await fetchSeriesEpisodesFor(externalIds).catch(() => []);
@@ -120,12 +131,11 @@ export async function runTraktSync(): Promise<{ added: number; error?: string }>
           await db
             .prepare(
               `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-               VALUES (?, ?, ?, ?, ?, ?, 1)`
+               VALUES (?, ?, ?, ?, ?, ?, ?)`
             )
-            .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
+            .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview, isEpisodeMonitoredByDefault(ep) ? 1 : 0);
         }
 
-        existingSeries.add(String(tmdbId));
         added++;
       }
     } catch (err) {
@@ -133,5 +143,6 @@ export async function runTraktSync(): Promise<{ added: number; error?: string }>
     }
   }
 
-  return { added };
+  const warning = rootFolders.skippedSummary();
+  return warning ? { added, warning } : { added };
 }

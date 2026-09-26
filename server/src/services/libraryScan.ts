@@ -2,10 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { db } from "../db/index.js";
-import { getMediaTypeConfig, isProbeableFile, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
+import { getMediaTypeConfig, isPlaceholderParent, isProbeableFile, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
 import { rootFolderFromRow } from "../db/mappers.js";
 import { parseReleaseTitle } from "./releaseParser.js";
-import { probeMediaInfo } from "./ffprobe.js";
+import { probeAudioTags, probeMediaInfo } from "./ffprobe.js";
+import { cleanEmbeddedAuthor, cleanEmbeddedTitle, firstAuthor, readBookFileMetadata } from "./bookFileMetadata.js";
 import {
   searchMetadata,
   fetchByExternalId,
@@ -15,6 +16,9 @@ import {
   fetchArtistAlbumsFor,
   fetchCollectionChildrenFor,
   fetchMovieByTmdbId,
+  isEpisodeMonitoredByDefault,
+  proxyScreenscraperArtwork,
+  upcomingEpisodes,
   type MetadataEpisode,
   type MetadataSearchResult,
 } from "./metadata.js";
@@ -26,11 +30,31 @@ import {
   findMovieSidecar,
   findArtistSidecar,
   findAlbumSidecar,
-  findComicSidecar,
+  holdsOnlyThisItem,
+  isOsMetadataEntry,
   type SidecarMetadata,
 } from "./sidecarMetadata.js";
 
+/** Lowercased letters/digits only, Latin/Greek accents folded ("Émile" -> "emile"). Any script's
+ * letters are kept — an ASCII-only filter reduced every Cyrillic/CJK/Greek title to "", which never
+ * matches, so each such file created its own new item. Only accents on Latin/Greek letters are
+ * dropped: elsewhere a mark is part of the letter (Japanese dakuten, Devanagari vowel signs, Thai
+ * tones, Cyrillic й), and dropping it made different titles ("がき"/"かき") match. */
 export function normalizeForMatch(s: string): string {
+  // Canonical decomposition only, with fractions/superscripts dropped like any other punctuation: a
+  // compatibility decomposition turned "™" into "tm" and "½" into "1 2", so "Tetris™" stopped
+  // matching "Tetris" and a new file in a "Ranma" folder stopped matching "Ranma ½".
+  return s
+    .normalize("NFD")
+    .replace(/([\p{Script=Latin}\p{Script=Greek}])[\u0300-\u036f]+/gu, "$1")
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{M}\p{Nd}\p{Nl}]+/gu, " ")
+    .trim();
+}
+
+/** The key titles were matched by before other scripts' letters were kept: ASCII letters/digits. */
+function asciiMatchKey(s: string): string {
   return s
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
@@ -40,13 +64,19 @@ export function normalizeForMatch(s: string): string {
 export function titlesMatch(a: string, b: string): boolean {
   const na = normalizeForMatch(a);
   const nb = normalizeForMatch(b);
-  if (!na || !nb) return false;
   // Exact normalized equality only. This used to also accept a.includes(b)/b.includes(a),
   // which merged any two shows/movies/albums whose normalized titles happened to be a
   // subset of one another (e.g. "Extraction" swallowing "Extraction 2", "The Office"
   // swallowing "The Office UK") into a single media_items row during Scan & Import —
   // reported as two different TV shows in two different folders getting collapsed into one.
-  return na === nb;
+  if (na && nb && na === nb) return true;
+  // Titles that matched under the old ASCII-only key still do: a folder carrying a native-script
+  // alias ("BTS (방탄소년단)") must keep joining the item added as "BTS", not start a second one.
+  // A leftover of digits alone is only the sequel/volume number different titles share ("신과함께 2",
+  // "범죄도시 2"), so it counts only when one title is nothing but that number ("2046 (花樣年華)").
+  const la = asciiMatchKey(a);
+  if (!la || la !== asciiMatchKey(b)) return false;
+  return /[a-z]/.test(la) || la === na || la === nb;
 }
 
 /** The old (pre-exact-match) substring-inclusive comparison — deliberately kept around for just
@@ -83,11 +113,26 @@ function pickTitleMatch<T extends { title: string; year?: number | null }>(items
  * qualifier one provider adds and another doesn't ("Doctor Who (2005)" vs "Doctor Who"), and the
  * punctuation scene/clean filenames drop ("Greys Anatomy" vs "Grey's Anatomy", "Law and Order" vs
  * "Law & Order"). Never used to pick which existing item a file joins — that stays titlesMatch. */
-function sameTitleIgnoringQualifier(a: string, b: string): boolean {
+export function sameTitleIgnoringQualifier(a: string, b: string): boolean {
   const strip = (s: string) => s.replace(/\s*\([^()]*\)\s*$/, "");
   const compact = (s: string) => normalizeForMatch(s.replace(/['’`]/g, "").replace(/&/g, " and ")).replace(/ /g, "");
   const same = (x: string, y: string) => titlesMatch(x, y) || (!!compact(x) && compact(x) === compact(y));
   return same(a, b) || same(strip(a), strip(b));
+}
+
+/** The search hit that is verifiably the titled item: the same title and a year within one of its
+ * own, an exact-year hit first — a same-titled show a year apart ("Queer as Folk" UK 1999 vs US
+ * 2000) passes the ±1 check and a provider may rank it first. */
+export function pickVerifiedProviderHit<T extends { title: string; year?: number | null }>(
+  results: T[],
+  title: string,
+  year: number | null
+): T | undefined {
+  const titleHits = results.filter((r) => sameTitleIgnoringQualifier(r.title, title));
+  return (
+    (year != null ? titleHits.find((r) => r.year === year) : undefined) ??
+    titleHits.find((r) => year == null || r.year == null || Math.abs(r.year - year) <= 1)
+  );
 }
 
 /** Upserts one `tracks` row for a file inside a multiFilePerChild (Music) album folder — parses a
@@ -95,7 +140,7 @@ function sameTitleIgnoringQualifier(a: string, b: string): boolean {
  * placeAlbumFiles() in importer.ts assumes for the download-import path), falling back to the next
  * number after this album's current highest track for anything unnumbered. Shared by the live scan
  * loop and backfillMissingAlbumTracks() below so both stay in sync. */
-async function upsertTrackFromFile(subItemId: number, filePath: string): Promise<void> {
+async function upsertTrackFromFile(subItemId: number, filePath: string, title?: string): Promise<void> {
   const base = path.basename(filePath, path.extname(filePath));
   const leadingNumber = base.match(/^(\d{1,3})\b/);
   let trackNumber = leadingNumber ? Number(leadingNumber[1]) : null;
@@ -117,7 +162,7 @@ async function upsertTrackFromFile(subItemId: number, filePath: string): Promise
       .get(subItemId)) as { m: number };
     trackNumber = Number(maxRow.m) + 1;
   }
-  const trackTitle = guessTitleFromText(base.replace(/^\d{1,3}[\s._-]*/, "")) || base;
+  const trackTitle = title ?? (guessTitleFromText(base.replace(/^\d{1,3}[\s._-]*/, "")) || base);
   await db
     .prepare(
       `INSERT INTO tracks (sub_item_id, track_number, title, has_file, file_path)
@@ -338,6 +383,7 @@ function walkForExtensions(dir: string, extensions: string[], knownPaths: Set<st
     return;
   }
   for (const entry of entries) {
+    if (isOsMetadataEntry(entry.name)) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       walkForExtensions(full, extensions, knownPaths, out);
@@ -345,6 +391,450 @@ function walkForExtensions(dir: string, extensions: string[], knownPaths: Set<st
       out.push(full);
     }
   }
+}
+
+/** A collection file's parent (author/series) and child (book/issue) worked out from the file's
+ * own metadata or filename, for when the folder it sits in doesn't name its parent. */
+interface CollectionFileIdentity {
+  parentTitle: string;
+  childTitle: string;
+  /** Nothing named a parent, so parentTitle is the type's placeholder ("Unknown Author"). */
+  placeholder?: boolean;
+  /** For a placeholder child titled only by the file's own embedded metadata: that title plus the
+   * file's name. Every unidentified book shares the one placeholder parent, so a generic embedded
+   * title ("Introduction") would otherwise make an unrelated second book look like a copy of the
+   * first and skip it as a duplicate. */
+  uniqueChildTitle?: string;
+  /** The existing parent row to use — set when another format of the same book is already tracked
+   * there, so the new format joins it rather than being identified afresh. */
+  parentId?: number;
+  /** How much of this came from a sidecar or the file's own metadata rather than its name: 2 for
+   * the parent, 1 for the child's title. Picks which of one book's formats speaks for all of them. */
+  evidence?: number;
+}
+
+const FULL_EVIDENCE = 3;
+
+type LooseFileVerdict = CollectionFileIdentity | { skipReason: string };
+
+/** "(1937)"/"[2012]" at the end of a title or folder name. */
+function stripTrailingYear(text: string): string {
+  return text.replace(/\s*[([]\s*(?:19|20)\d{2}\s*[)\]]\s*$/, "").trim();
+}
+
+const AUTHOR_TITLE_SPLIT = /^(.+?)\s+[-–—]\s+(.+)$/; // on the first separator
+const TITLE_AUTHOR_SPLIT = /^(.+)\s+[-–—]\s+(.+?)$/; // on the last separator
+
+/** "Author - Title" (hyphen, en or em dash) split on its first separator — or, with
+ * order "title-author", "Title - Author" split on its last. Null unless both halves survive
+ * cleanup — and an author half with a digit in it is taken as series/volume numbering
+ * ("Discworld 01 - ...", "Book 3 - ...", "01 - Chapter One"), not a name. */
+export function splitAuthorTitleFilename(
+  base: string,
+  order: "author-title" | "title-author" = "author-title"
+): { author: string; title: string } | null {
+  const match = base.replace(/_/g, " ").match(order === "author-title" ? AUTHOR_TITLE_SPLIT : TITLE_AUTHOR_SPLIT);
+  if (!match) return null;
+  const [authorText, titleText] = order === "author-title" ? [match[1], match[2]] : [match[2], match[1]];
+  if (/\d/.test(authorText)) return null;
+  const author = firstAuthor(authorText);
+  const title = guessTitleFromText(titleText);
+  return author && title ? { author, title } : null;
+}
+
+/** The filename's author/title pair, read whichever way round the book's known author/title (from
+ * its sidecar or embedded metadata) agrees with — "Carrie - Stephen King.pdf" whose PDF title is
+ * "Carrie" is "Title - Author". "Author - Title" when nothing says otherwise, with `agreed` false. */
+function filenameAuthorTitle(
+  base: string,
+  known: { title: string | null; author: string | null }
+): { pair: { author: string; title: string } | null; agreed: boolean } {
+  const agrees = (pair: { author: string; title: string } | null) =>
+    !!pair && ((!!known.title && titlesMatch(pair.title, known.title)) || (!!known.author && titlesMatch(pair.author, known.author)));
+  const straight = splitAuthorTitleFilename(base);
+  if (agrees(straight)) return { pair: straight, agreed: true };
+  const swapped = splitAuthorTitleFilename(base, "title-author");
+  return agrees(swapped) ? { pair: swapped, agreed: true } : { pair: straight, agreed: false };
+}
+
+const YEAR_TOKEN = /^(?:19|20)\d{2}$/;
+
+/** A comic/manga series name from an issue's filename: whatever comes before its issue/volume/
+ * chapter number ("Saga 001 (2012)", "Saga #12", "One Piece v03", "Naruto Vol. 3", "Bleach Ch. 45",
+ * "Chainsaw Man - Chapter 045", "Saga.001.2012"), with "(2012)"/"[Digital]"-style tags dropped. A
+ * bare number only counts as the issue's when the name ends on it, or " - <issue title>" or an
+ * unbracketed year follows it, so a number that's part of the name itself ("2000 AD 001", "Batman
+ * 66 003", "Spider-Man 2099 001") stays in the series. With no numbering at all the whole name is
+ * the series (a one-shot). Null when nothing with a letter in it is left. */
+export function guessComicSeriesFromFilename(base: string): string | null {
+  let text = base.replace(/_/g, " ");
+  if (!/\s/.test(text)) text = text.replace(/\./g, " ");
+  text = text
+    .replace(/\([^)]*\)|\[[^\]]*\]|\{[^}]*\}/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  let series = text;
+  const marker = text.match(/\s(?:#\s*\d|v(?:ol(?:ume)?)?\.?\s*\d|ch(?:ap(?:ter)?)?\.?\s*\d|issue\s*#?\s*\d|c\d{2,4}\b)/i);
+  if (marker?.index != null) {
+    series = text.slice(0, marker.index);
+  } else {
+    const tokens = text.split(" ");
+    for (let i = 1; i < tokens.length; i++) {
+      if (!/^\d{1,4}(?:\.\d+)?$/.test(tokens[i])) continue;
+      const next = tokens[i + 1];
+      if (next === undefined || /^[-–—:]$/.test(next) || (YEAR_TOKEN.test(next) && !YEAR_TOKEN.test(tokens[i]))) {
+        series = tokens.slice(0, i).join(" ");
+        break;
+      }
+    }
+  }
+  series = series.replace(/[\s\-–—:,#]+$/, "").trim();
+  return /\p{L}/u.test(series) ? series : null;
+}
+
+type EmbeddedTitleAuthor = { title: string | null; author: string | null } | null;
+
+// A loose file can stay untracked scan after scan (a copy skipped as a duplicate, a book whose folder
+// is kept as its author) and would otherwise be re-read every time — a PDF fully re-parsed by
+// pdf.js on each scheduled scan. Keyed on path, checked against size + mtime.
+const embeddedMetadataCache = new Map<string, { size: number; mtimeMs: number; value: EmbeddedTitleAuthor }>();
+const EMBEDDED_METADATA_CACHE_MAX = 5000;
+
+async function readEmbeddedUncached(filePath: string): Promise<EmbeddedTitleAuthor> {
+  if (isProbeableFile(filePath)) {
+    const tags = await probeAudioTags(filePath);
+    if (!tags) return null;
+    // A track's own title tag is usually its chapter's ("Chapter 1", "01 - Prologue"), never the book's.
+    const trackTitle = tags.title && !looksLikeAudiobookPartName(tags.title) ? tags.title : null;
+    return {
+      author: cleanEmbeddedAuthor(tags.artist) ?? cleanEmbeddedAuthor(tags.albumArtist) ?? cleanEmbeddedAuthor(tags.author),
+      title: cleanEmbeddedTitle(tags.album) ?? cleanEmbeddedTitle(trackTitle),
+    };
+  }
+  return readBookFileMetadata(filePath);
+}
+
+/** Title/author embedded in the file itself: audio tags (via ffprobe) for an audio file, the
+ * EPUB/MOBI/PDF's own metadata for an ebook. Only ever called for files whose folder doesn't name
+ * their author — reading every book of every scan this way would be far too slow. */
+async function readEmbeddedTitleAuthor(filePath: string): Promise<EmbeddedTitleAuthor> {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    return null;
+  }
+  const cached = embeddedMetadataCache.get(filePath);
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.value;
+  const value = await readEmbeddedUncached(filePath);
+  embeddedMetadataCache.delete(filePath);
+  if (embeddedMetadataCache.size >= EMBEDDED_METADATA_CACHE_MAX) {
+    const oldest = embeddedMetadataCache.keys().next().value;
+    if (oldest !== undefined) embeddedMetadataCache.delete(oldest);
+  }
+  embeddedMetadataCache.set(filePath, { size: stat.size, mtimeMs: stat.mtimeMs, value });
+  return value;
+}
+
+/** Why a file loose in the root of a type with no placeholder parent is skipped, and how to fix it. */
+const LOOSE_ROOT_FIX: Record<string, string> = {
+  artist: `move it into an "Artist/Album/" folder so its artist and album are known`,
+  video: `move it into a folder named after its channel ("Channel/video.ext")`,
+  podcast: `move it into a folder named after its podcast ("Podcast/episode.ext")`,
+};
+
+/**
+ * Parent/child for a collection file sitting directly in a root folder, with no Author/Series
+ * folder above it. Books/Audiobooks: author and title from its own "<basename>.opf", then its
+ * embedded metadata, then an "Author - Title" filename — else the type's placeholder parent
+ * ("Unknown Author"), so the book still shows up in its library. Comics/Manga: ComicInfo.xml's
+ * <Series>, else the series named by the filename, else "Unknown Series". Types with no
+ * placeholder (Music, Online Videos, Podcasts) are skipped with a reason saying what layout to use.
+ */
+async function identifyLooseRootFile(
+  typeConfig: ReturnType<typeof getMediaTypeConfig>,
+  filePath: string,
+  fileSidecar: SidecarMetadata | null
+): Promise<LooseFileVerdict> {
+  const placeholder = typeConfig.placeholderParentTitle;
+  if (!placeholder) {
+    const fix = LOOSE_ROOT_FIX[typeConfig.key] ?? "move it into a folder named after what it belongs to";
+    return { skipReason: `sits directly in the root folder with no parent folder — ${fix}` };
+  }
+  const base = path.basename(filePath, path.extname(filePath));
+  const titleFromFilename = guessTitleFromText(base) || base.trim();
+  const withFileName = (title: string) => (titlesMatch(title, titleFromFilename) ? undefined : `${title} (${titleFromFilename})`);
+  const unidentified = (childTitle: string, evidence: number, titleFromEmbedded: boolean): CollectionFileIdentity => ({
+    parentTitle: placeholder,
+    childTitle,
+    placeholder: true,
+    uniqueChildTitle: titleFromEmbedded ? withFileName(childTitle) : undefined,
+    evidence,
+  });
+
+  if (typeConfig.sidecarFormat === "comicinfo") {
+    const series = fileSidecar?.parentTitle || guessComicSeriesFromFilename(base);
+    const childTitle = fileSidecar?.title || titleFromFilename;
+    const titleEvidence = fileSidecar?.title ? 1 : 0;
+    if (!series) return unidentified(childTitle, titleEvidence, !!fileSidecar?.title);
+    return { parentTitle: series, childTitle, evidence: (fileSidecar?.parentTitle ? 2 : 0) + titleEvidence };
+  }
+
+  const sidecarAuthor = firstAuthor(fileSidecar?.parentTitle);
+  const sidecarTitle = fileSidecar?.title ?? null;
+  const embedded = sidecarAuthor && sidecarTitle ? null : await readEmbeddedTitleAuthor(filePath);
+  const author = sidecarAuthor ?? embedded?.author ?? null;
+  const title = sidecarTitle ?? embedded?.title ?? null;
+  const evidence = (author ? 2 : 0) + (title ? 1 : 0);
+  if (author && title) return { parentTitle: author, childTitle: title, evidence };
+
+  const { pair: named, agreed } = filenameAuthorTitle(base, { author, title });
+  if (!author) {
+    // Embedded metadata naming no author tends to carry a placeholder title too ("Layout 1",
+    // "Introduction") — the filename's own Author - Title pair belongs together.
+    if (named) return { parentTitle: named.author, childTitle: sidecarTitle ?? named.title, evidence: sidecarTitle ? 1 : 0 };
+    return unidentified(title ?? titleFromFilename, evidence, !sidecarTitle && !!title);
+  }
+  // Only the author is known. The filename's halves say which one is the title only when the other
+  // is that author — "Deep Learning - Adaptive Computation.pdf" by Ian Goodfellow is titled by its
+  // whole name, not "Adaptive Computation".
+  return { parentTitle: author, childTitle: named && agreed ? named.title : titleFromFilename, evidence };
+}
+
+/**
+ * A book laid out as "Root/<Book Title>/book.epub" — a folder directly under the root that's named
+ * after the book rather than its author. When the book's per-book OPF, else its embedded metadata,
+ * gives a title matching the folder name and an author other than it, the book is filed under that
+ * author; otherwise null, and the folder is taken as the author as before. The filename is never
+ * used here: in "Stephen King/Carrie - Stephen King.epub" one half always matches the folder, and
+ * nothing says which half is the author. Only for a folder holding just this one book — see
+ * CollectionIdentifier.identifyInTitleFolder.
+ */
+async function identifyBookInTitleFolder(
+  filePath: string,
+  folderName: string,
+  fileSidecar: SidecarMetadata | null
+): Promise<CollectionFileIdentity | null> {
+  const folderTitle = stripTrailingYear(folderName);
+  const own = fileSidecar?.title
+    ? { title: fileSidecar.title, author: firstAuthor(fileSidecar.parentTitle) }
+    : await readEmbeddedTitleAuthor(filePath);
+  if (!own?.title || !own.author) return null;
+  if (!titlesMatch(stripTrailingYear(own.title), folderTitle) || titlesMatch(own.author, folderTitle)) return null;
+  return { parentTitle: own.author, childTitle: own.title, evidence: FULL_EVIDENCE };
+}
+
+/** A file's folder plus its lowercased basename — shared by one book saved in several formats
+ * ("Dune.epub", "Dune.pdf"), the same unit holdsOnlyThisItem counts as one item. */
+function formatGroupKey(filePath: string): string {
+  return `${path.dirname(filePath)}\0${path.basename(filePath, path.extname(filePath)).toLowerCase()}`;
+}
+
+// The order one book's formats are read for its metadata: the richest and cheapest first, PDF (a
+// pdf.js parse) last.
+const METADATA_FORMAT_ORDER = [".epub", ".azw3", ".mobi", ".azw", ".prc", ".cbz", ".m4b", ".m4a"];
+
+function metadataFormatRank(filePath: string): number {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".pdf") return METADATA_FORMAT_ORDER.length + 1;
+  const index = METADATA_FORMAT_ORDER.indexOf(ext);
+  return index === -1 ? METADATA_FORMAT_ORDER.length : index;
+}
+
+type CollectionIdentifier = Awaited<ReturnType<typeof createCollectionIdentifier>>;
+
+/**
+ * Identifies the collection files whose folder doesn't name their parent (identifyLooseRootFile,
+ * identifyBookInTitleFolder) once per book rather than once per file, for one scan. The formats of
+ * a book — the untracked files sharing its folder and basename — all take the verdict of the format
+ * whose sidecar/embedded metadata says the most, so "Dune.epub" (by Frank Herbert) and a bare
+ * "Dune.pdf" beside it can't land under two different authors. When a format of the book is already
+ * tracked, a new one joins that same parent and child instead (where the duplicate guard meets it),
+ * without its metadata being read at all.
+ */
+async function createCollectionIdentifier(type: string, typeConfig: ReturnType<typeof getMediaTypeConfig>, files: string[]) {
+  const formats = new Map<string, string[]>();
+  for (const f of files) {
+    const key = formatGroupKey(f);
+    formats.set(key, [...(formats.get(key) ?? []), f]);
+  }
+  for (const group of formats.values()) group.sort((a, b) => metadataFormatRank(a) - metadataFormatRank(b));
+
+  const tracked = new Map<string, CollectionFileIdentity>();
+  // Only types that identify loose files at all — the rest skip a loose file whatever sits beside it.
+  const trackedRows = !typeConfig.placeholderParentTitle
+    ? []
+    : ((await db
+        .prepare(
+          `SELECT s.file_path, s.title AS child_title, m.id AS parent_id, m.title AS parent_title, m.external_ids
+           FROM sub_items s JOIN media_items m ON m.id = s.media_item_id
+           WHERE s.file_path IS NOT NULL AND m.type = ?`
+        )
+        .all(type)) as { file_path: string; child_title: string; parent_id: number; parent_title: string; external_ids: string | null }[]);
+  for (const row of trackedRows) {
+    // Files only: a multiFilePerChild book's file_path is normally its whole folder.
+    if (!typeConfig.extensions.includes(path.extname(row.file_path).toLowerCase())) continue;
+    tracked.set(formatGroupKey(row.file_path), {
+      parentTitle: row.parent_title,
+      childTitle: row.child_title,
+      parentId: Number(row.parent_id),
+      placeholder: isPlaceholderParent({ type, title: row.parent_title, external_ids: row.external_ids }),
+      evidence: FULL_EVIDENCE,
+    });
+  }
+
+  const memo = <T>(cache: Map<string, Promise<T>>, key: string, compute: () => Promise<T>): Promise<T> => {
+    let pending = cache.get(key);
+    if (!pending) {
+      pending = compute();
+      cache.set(key, pending);
+    }
+    return pending;
+  };
+  const sidecars = new Map<string, Promise<SidecarMetadata | null>>();
+  const looseVerdicts = new Map<string, Promise<LooseFileVerdict>>();
+  const titleFolderVerdicts = new Map<string, Promise<CollectionFileIdentity | null>>();
+  const formatsOf = (filePath: string) => formats.get(formatGroupKey(filePath)) ?? [filePath];
+
+  /** The file's per-item sidecar (OPF / ComicInfo.xml), read once per scan. */
+  const sidecarFor = (filePath: string, rootPath: string) => memo(sidecars, filePath, () => findFileSidecar(typeConfig, filePath, rootPath));
+
+  return {
+    sidecarFor,
+    /** identifyLooseRootFile, for the whole book `filePath` is one format of. */
+    identifyLoose(filePath: string, rootPath: string): Promise<LooseFileVerdict> {
+      const known = tracked.get(formatGroupKey(filePath));
+      if (known) return Promise.resolve(known);
+      return memo(looseVerdicts, formatGroupKey(filePath), async () => {
+        let best: CollectionFileIdentity | null = null;
+        for (const f of formatsOf(filePath)) {
+          const verdict = await identifyLooseRootFile(typeConfig, f, await sidecarFor(f, rootPath));
+          if ("skipReason" in verdict) return verdict;
+          if (!best || (verdict.evidence ?? 0) > (best.evidence ?? 0)) best = verdict;
+          if ((best.evidence ?? 0) >= FULL_EVIDENCE) break;
+        }
+        return best!;
+      });
+    },
+    /** identifyBookInTitleFolder, for the whole book `filePath` is one format of. Only a folder
+     * holding just this one book can be that book's own folder; one holding several is an
+     * author's, whatever their metadata says. */
+    identifyInTitleFolder(filePath: string, rootPath: string, folderName: string): Promise<CollectionFileIdentity | null> {
+      const known = tracked.get(formatGroupKey(filePath));
+      if (known) return Promise.resolve(known);
+      return memo(titleFolderVerdicts, formatGroupKey(filePath), async () => {
+        if (!holdsOnlyThisItem(filePath, typeConfig.extensions)) return null;
+        for (const f of formatsOf(filePath)) {
+          const identity = await identifyBookInTitleFolder(f, folderName, await sidecarFor(f, rootPath));
+          if (identity) return identity;
+        }
+        return null;
+      });
+    },
+  };
+}
+
+const MULTI_PART_AUDIOBOOK_REASON =
+  `looks like one part of a multi-file audiobook — put all of that book's files together in an "Author/Title/" folder ` +
+  `(if it is a whole book on its own, give it its own "Author/Title/" folder or name it "Author - Title.m4b")`;
+// "Chapter 03", "Part 2", "CD1", "Track 07" — one piece of a longer book.
+const AUDIO_PART_KEYWORD = /\b(?:chapter|chap|ch|part|pt|track|trk|disc|disk|cd|section)[\s._-]*\d{1,3}\b/i;
+// A track number in front of the name: "03", "01 - Opening Credits", "007 Prologue", "7. The
+// Beginning", "1-01 Title". A plain number followed by words is a title ("100 Years of Solitude",
+// "12 Rules for Life"), as is one that is all numbers ("11-22-63"). Never applied to .m4b, the
+// single-file audiobook container, where a leading number always belongs to the title.
+const LEADING_TRACK_NUMBER = /^(?:\d{1,3}$|0\d{1,2}(?:[\s._-]|$)|\d{1,3}\s*[._-].*\p{L})/u;
+
+function looksLikeAudiobookPartName(name: string): boolean {
+  return AUDIO_PART_KEYWORD.test(name) || LEADING_TRACK_NUMBER.test(name);
+}
+
+function looksLikeAudiobookPart(filePath: string): boolean {
+  const base = path.basename(filePath, path.extname(filePath));
+  return path.extname(filePath).toLowerCase() === ".m4b" ? AUDIO_PART_KEYWORD.test(base) : looksLikeAudiobookPartName(base);
+}
+
+/**
+ * Which audio files loose in an Audiobooks root are each a whole book. A loose file has no book
+ * folder, so it is imported as a book on its own — which is only right when nothing marks it as a
+ * piece of a longer one: a chapter/part/track-style name, other loose files differing from it only
+ * in their numbers ("Dune 01.mp3", "Dune 02.mp3"), or other loose files resolving to the same author
+ * and title (tagged chapter files). Every file of such a set is skipped: importing one as the whole
+ * book leaves the rest looking like duplicates, and one book per file splits it up. The same
+ * basename in two formats is one book, not two parts, and numbered .m4b files ("Mistborn 1.m4b",
+ * "Mistborn 2.m4b") are separate books — that container holds a whole book. The filename checks
+ * come first, so a root full of chapter files is never probed.
+ */
+async function identifyLooseAudiobookFiles(
+  files: string[],
+  fileRootFolders: Map<string, { path: string }>,
+  identifier: CollectionIdentifier,
+  signal?: AbortSignal
+): Promise<Map<string, LooseFileVerdict>> {
+  const verdicts = new Map<string, LooseFileVerdict>();
+  const stem = (f: string) => path.basename(f, path.extname(f)).toLowerCase();
+  const groupBy = (items: string[], key: (f: string) => string) => {
+    const groups = new Map<string, string[]>();
+    for (const f of items) groups.set(key(f), [...(groups.get(key(f)) ?? []), f]);
+    return [...groups.values()];
+  };
+  const skipIfSeveralParts = (group: string[]) => {
+    if (new Set(group.map(stem)).size < 2) return;
+    for (const f of group) verdicts.set(f, { skipReason: MULTI_PART_AUDIOBOOK_REASON });
+  };
+
+  const byRoot = new Map<string, string[]>();
+  for (const f of files) {
+    const root = fileRootFolders.get(f);
+    if (!root || path.relative(root.path, f).split(path.sep).filter(Boolean).length >= 2) continue;
+    byRoot.set(root.path, [...(byRoot.get(root.path) ?? []), f]);
+  }
+  for (const [rootPath, loose] of byRoot) {
+    for (const f of loose) if (looksLikeAudiobookPart(f)) verdicts.set(f, { skipReason: MULTI_PART_AUDIOBOOK_REASON });
+    // A name that is nothing but numbers ("1984", "11-22-63") is a title, not a numbered part of one.
+    const numberable = loose.filter((f) => /\p{L}/u.test(stem(f)) && path.extname(f).toLowerCase() !== ".m4b");
+    groupBy(numberable, (f) => normalizeForMatch(stem(f).replace(/\d+/g, " "))).forEach(skipIfSeveralParts);
+
+    const identified: string[] = [];
+    const identities = new Map<string, CollectionFileIdentity>();
+    for (const f of loose) {
+      if (signal?.aborted) return verdicts;
+      if (verdicts.has(f)) continue;
+      const verdict = await identifier.identifyLoose(f, rootPath);
+      verdicts.set(f, verdict);
+      if ("skipReason" in verdict) continue;
+      identified.push(f);
+      identities.set(f, verdict);
+    }
+    // An .m4b holds a whole book, so unidentified ones titled only by the same embedded tag (a
+    // generic album several unrelated books share) are separate books, not parts of one.
+    const bookKey = (f: string) => {
+      const identity = identities.get(f)!;
+      const child = identity.uniqueChildTitle && path.extname(f).toLowerCase() === ".m4b" ? identity.uniqueChildTitle : identity.childTitle;
+      return `${normalizeForMatch(identity.parentTitle)}\n${normalizeForMatch(child)}`;
+    };
+    groupBy(identified, bookKey).forEach(skipIfSeveralParts);
+  }
+  return verdicts;
+}
+
+/** The existing child a collection file lands on, by title. Every unidentified book shares its
+ * root's placeholder parent, so there a clash on a title read from the file's own metadata is a
+ * generic title two unrelated books share, unless it's the same book in another format — the file
+ * then takes its own unique title instead. */
+function matchChildForFile(
+  childSubItems: any[],
+  childTitle: string,
+  identity: CollectionFileIdentity | null,
+  filePath: string
+): { childTitle: string; childMatch: any } {
+  const childMatch = childSubItems.find((s) => titlesMatch(s.title, childTitle));
+  const stem = (p: string) => path.basename(p, path.extname(p)).toLowerCase();
+  const uniqueTitle = identity?.uniqueChildTitle;
+  if (uniqueTitle && childMatch?.has_file && childMatch.file_path && childMatch.file_path !== filePath && stem(childMatch.file_path) !== stem(filePath)) {
+    return { childTitle: uniqueTitle, childMatch: childSubItems.find((s) => titlesMatch(s.title, uniqueTitle)) };
+  }
+  return { childTitle, childMatch };
 }
 
 async function defaultQualityProfileId(): Promise<number | null> {
@@ -376,6 +866,24 @@ export interface ScanImportResult {
  * just a theoretical window. */
 const scansInProgress = new Set<string>();
 
+// Every scan of a type — whole-library or per-item (the Scan & Import button, or Refresh re-scanning
+// a course/adult show) — runs one at a time. A per-item scan overlapping a whole-library one took its
+// own snapshot of known files, re-imported a lesson the other had just added, and numbered it
+// MAX(episode)+1: the same file twice, as two episodes.
+const scanQueues = new Map<string, Promise<unknown>>();
+
+function runScanExclusively<T>(type: string, task: () => Promise<T>): Promise<T> {
+  const previous = scanQueues.get(type) ?? Promise.resolve();
+  const run = previous.then(task);
+  // Never rejects, so one failed scan doesn't fail every scan queued behind it.
+  const settled = run.catch(() => undefined);
+  scanQueues.set(type, settled);
+  void settled.then(() => {
+    if (scanQueues.get(type) === settled) scanQueues.delete(type);
+  });
+  return run;
+}
+
 /**
  * Scans a library type's root folder(s) for media files not already tracked by any media_item/
  * episode/sub_item, and imports them: matches an existing "missing" item (movie) or series
@@ -387,7 +895,9 @@ const scansInProgress = new Set<string>();
  * taken as the parent item's title (Artist/Author/Creator — matched against an existing item or
  * created), and the child (Album/Book/Issue) is either the next folder down (for
  * `multiFilePerChild` types like Music, where an album is a folder of tracks — the whole folder
- * becomes one sub_item) or the file's own name (for everything else, one file per child).
+ * becomes one sub_item) or the file's own name (for everything else, one file per child). A
+ * book/audiobook/comic file loose in the root itself has no such folder and is identified from its
+ * own metadata/filename instead (see identifyLooseRootFile).
  */
 /** `onlyTitle`, when given, scopes the scan to just the one item with that title — every file
  * whose guessed title/parent-folder title doesn't match it is skipped without touching the
@@ -400,13 +910,15 @@ export async function scanAndImportLibrary(
   onlySeasonNumber?: number,
   onlyMediaItemId?: number
 ): Promise<ScanImportResult> {
-  if (!onlyTitle && scansInProgress.has(type)) {
+  // A per-item scan while a whole-library scan is running or queued is left to that scan, which
+  // walks this item's files too. Per-item scans only queue behind each other: they're short.
+  if (scansInProgress.has(type)) {
     log.warn(`[libraryScan] a scan for "${type}" is already running — skipping this overlapping request`);
     return { matched: 0, created: 0, skipped: 0, skippedFiles: [], alreadyRunning: true };
   }
   if (!onlyTitle) scansInProgress.add(type);
   try {
-    return await scanAndImportLibraryInner(type, signal, onlyTitle, onlySeasonNumber, onlyMediaItemId);
+    return await runScanExclusively(type, () => scanAndImportLibraryInner(type, signal, onlyTitle, onlySeasonNumber, onlyMediaItemId));
   } finally {
     if (!onlyTitle) scansInProgress.delete(type);
   }
@@ -492,6 +1004,17 @@ async function scanAndImportLibraryInner(
   const collectionParents =
     typeConfig.shape === "collection" ? ((await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[]) : [];
   const qualityProfileId = await defaultQualityProfileId();
+  const identifier = typeConfig.shape === "collection" ? await createCollectionIdentifier(type, typeConfig, files) : null;
+  const looseAudiobookVerdicts =
+    identifier && typeConfig.multiFilePerChild && typeConfig.placeholderParentTitle
+      ? await identifyLooseAudiobookFiles(files, fileRootFolders, identifier, signal)
+      : new Map<string, LooseFileVerdict>();
+  // The "Unknown Author"/"Unknown Series" bucket of one root folder. Each root gets its own, so
+  // Organize & Rename never moves one root's unidentified files into another root's folder.
+  const placeholderParentIn = (rootFolderId: number) =>
+    collectionParents.find(
+      (m) => Number(m.root_folder_id) === rootFolderId && isPlaceholderParent({ type, title: m.title, external_ids: m.external_ids })
+    );
 
   for (const filePath of files) {
     if (signal?.aborted) break;
@@ -631,8 +1154,8 @@ async function scanAndImportLibraryInner(
               // A local poster/backdrop (see localArtwork.ts) always wins over whatever `best`
               // resolved to, live-fetched or not — the same "an explicit local file is the most
               // deliberate signal there is" reasoning the rest of the sidecar work already applies.
-              const posterToken = showSidecar?.localPosterPath ? localArtworkToken(null) : null;
-              const backdropToken = showSidecar?.localBackdropPath ? localArtworkToken(null) : null;
+              const poster = artworkColumns(showSidecar?.localPosterPath, best.posterUrl);
+              const backdrop = artworkColumns(showSidecar?.localBackdropPath, best.backdropUrl);
               await db
                 .prepare(
                   `UPDATE media_items SET overview = ?, poster_url = ?, backdrop_url = COALESCE(?, backdrop_url), year = ?,
@@ -642,18 +1165,18 @@ async function scanAndImportLibraryInner(
                 )
                 .run(
                   best.overview ?? null,
-                  posterToken ? localArtworkUrl(posterToken) : best.posterUrl ?? null,
-                  backdropToken ? localArtworkUrl(backdropToken) : best.backdropUrl ?? null,
+                  poster.url,
+                  backdrop.url,
                   best.year ?? null,
                   JSON.stringify(best.externalIds ?? {}),
                   best.releaseDate ?? null,
                   best.contentRating ?? null,
                   best.genres && best.genres.length > 0 ? JSON.stringify(best.genres) : null,
                   best.status ?? null,
-                  showSidecar?.localPosterPath ?? null,
-                  posterToken,
-                  showSidecar?.localBackdropPath ?? null,
-                  backdropToken,
+                  poster.localPath,
+                  poster.token,
+                  backdrop.localPath,
+                  backdrop.token,
                   newId
                 );
               await syncMissingChildren(newId, typeConfig, best.externalIds ?? {});
@@ -770,39 +1293,80 @@ async function scanAndImportLibraryInner(
           continue;
         }
         const relSegments = path.relative(folder.path, filePath).split(path.sep).filter(Boolean);
-        // Needs at least "Parent/file.ext" (2 segments) to know who the file belongs to — a file
-        // sitting directly in the root folder with no parent folder at all can't be guessed at.
-        if (relSegments.length < 2) {
-          result.skipped++;
-          result.skippedFiles.push({ path: filePath, reason: "sits directly in the root folder with no parent (Artist/Author/...) folder" });
-          continue;
+        const looseInRoot = relSegments.length < 2;
+        // The per-book OPF / per-issue ComicInfo.xml — one issue's ComicInfo.xml carries both its
+        // series and its own title, so it's read once here and reused for both the parent and the
+        // child below. Books/Audiobooks' OPF is per-book only, with no author-level sidecar
+        // convention — their parent stays folder-guessed unless the folder doesn't name the author.
+        // Music's artist.nfo/album.nfo are folder-based and read separately.
+        const fileSidecar =
+          typeConfig.sidecarFormat === "opf" || typeConfig.sidecarFormat === "comicinfo"
+            ? await identifier!.sidecarFor(filePath, folder.path)
+            : null;
+        // Normally the first folder under the root names the parent. A file loose in the root has
+        // no such folder, and a book in "Root/<Book Title>/" has one named after the book itself —
+        // both are identified from the file's own metadata/filename instead.
+        let identity: CollectionFileIdentity | null = null;
+        if (looseInRoot) {
+          const loose = looseAudiobookVerdicts.get(filePath) ?? (await identifier!.identifyLoose(filePath, folder.path));
+          if ("skipReason" in loose) {
+            result.skipped++;
+            result.skippedFiles.push({ path: filePath, reason: loose.skipReason });
+            continue;
+          }
+          identity = loose;
+        } else if (relSegments.length === 2 && typeConfig.sidecarFormat === "opf" && !typeConfig.multiFilePerChild) {
+          identity = await identifier!.identifyInTitleFolder(filePath, folder.path, relSegments[0]);
         }
-        // A collection-parent-level sidecar exists in two different shapes: Music's artist.nfo
-        // (folder-based, checked directly) and Comics/Manga's ComicInfo.xml <Series> (file-based —
-        // one issue's sidecar carries both series and issue info at once, so this same parsed
-        // result is threaded through and reused again below for the child, avoiding a second read
-        // of the same file/archive entry). Books/Audiobooks' metadata.opf is per-book only, with no
-        // separate author-level sidecar convention — their parent stays folder-guessed as before.
         const artistSidecar = typeConfig.sidecarFormat === "kodi-music" ? await findArtistSidecar(path.join(folder.path, relSegments[0])) : null;
-        const comicSidecar = typeConfig.sidecarFormat === "comicinfo" ? await findComicSidecar(filePath) : null;
-        const parentTitle = artistSidecar?.title ?? comicSidecar?.parentTitle ?? guessTitleFromText(relSegments[0]);
+        const parentTitle =
+          identity?.parentTitle ??
+          artistSidecar?.title ??
+          (typeConfig.sidecarFormat === "comicinfo" ? fileSidecar?.parentTitle : null) ??
+          guessTitleFromText(relSegments[0]);
         if (!parentTitle) {
           result.skipped++;
-          result.skippedFiles.push({ path: filePath, reason: `couldn't guess a title from the parent folder name "${relSegments[0]}"` });
+          result.skippedFiles.push({
+            path: filePath,
+            reason: `couldn't guess a title from the parent folder name "${relSegments[0]}" — rename the folder to the name of the author/series/artist it holds`,
+          });
           continue;
         }
         if (onlyTitle && !looseTitlesMatch(parentTitle, onlyTitle)) continue;
 
-        let parentMatch = collectionParents.find((m) => titlesMatch(m.title, parentTitle));
-        if (!parentMatch && onlyMediaItemId) parentMatch = collectionParents.find((m) => m.id === onlyMediaItemId);
+        const folderId = Number(folder.id);
+        const isPlaceholderRow = (m: any) => isPlaceholderParent({ type, title: m.title, external_ids: m.external_ids });
+        // Unidentified files (and a folder named like the placeholder) belong in this root's own
+        // placeholder bucket. An unidentified file never joins a same-titled author/series that has
+        // since been matched to a provider — it'd be filed under a stranger.
+        const wantsPlaceholder = !!identity?.placeholder || isPlaceholderParent({ type, title: parentTitle });
+        let parentMatch =
+          (identity?.parentId != null ? collectionParents.find((m) => Number(m.id) === identity!.parentId) : undefined) ??
+          (wantsPlaceholder ? placeholderParentIn(folderId) : undefined) ??
+          (identity?.placeholder ? undefined : collectionParents.find((m) => titlesMatch(m.title, parentTitle) && !isPlaceholderRow(m)));
+        if (!parentMatch && onlyMediaItemId && !wantsPlaceholder) {
+          const target = collectionParents.find((m) => Number(m.id) === onlyMediaItemId);
+          // A parent read from the file's own metadata or name ("Stephen King - It.epub") only falls
+          // back to the target when it names the target: the loose title gate lets "Stephen King"
+          // through for an author "King", who is someone else.
+          if (identity && target && !sameTitleIgnoringQualifier(parentTitle, target.title)) continue;
+          parentMatch = target;
+        }
+        // A per-item scan never files anything outside its own item. The loose title gate above lets
+        // an unidentified file through for any item with "Unknown" in its title, but that file only
+        // belongs to a scan of its own root's placeholder bucket.
+        if (onlyMediaItemId && wantsPlaceholder && Number(parentMatch?.id) !== onlyMediaItemId) continue;
         if (!parentMatch) {
+          // The "Unknown Author"/"Unknown Series" bucket is never auto-searched: there's no real
+          // author/series to find releases for (see isPlaceholderParent).
+          const monitored = isPlaceholderParent({ type, title: parentTitle }) ? 0 : 1;
           const insertResult = await db
             .prepare(
               `INSERT INTO media_items (type, title, sort_title, root_folder_id, quality_profile_id, monitored, has_file, status)
-               VALUES (?, ?, ?, ?, ?, 1, 0, 'unknown')`
+               VALUES (?, ?, ?, ?, ?, ?, 0, 'unknown')`
             )
-            .run(type, parentTitle, parentTitle.toLowerCase(), folder.id, qualityProfileId);
-          parentMatch = { id: Number(insertResult.lastInsertRowid), title: parentTitle, has_file: 0 };
+            .run(type, parentTitle, parentTitle.toLowerCase(), folder.id, qualityProfileId, monitored);
+          parentMatch = { id: Number(insertResult.lastInsertRowid), title: parentTitle, has_file: 0, root_folder_id: folderId, external_ids: null };
           collectionParents.push(parentMatch);
 
           // Same best-effort enrichment-on-creation the episodic branch already does — a
@@ -813,8 +1377,8 @@ async function scanAndImportLibraryInner(
             try {
               const best = await resolveSidecarEnrichment(type, artistSidecar);
               if (best) {
-                const posterToken = artistSidecar.localPosterPath ? localArtworkToken(null) : null;
-                const backdropToken = artistSidecar.localBackdropPath ? localArtworkToken(null) : null;
+                const poster = artworkColumns(artistSidecar.localPosterPath, best.posterUrl);
+                const backdrop = artworkColumns(artistSidecar.localBackdropPath, best.backdropUrl);
                 await db
                   .prepare(
                     `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url),
@@ -826,17 +1390,17 @@ async function scanAndImportLibraryInner(
                   )
                   .run(
                     best.overview,
-                    posterToken ? localArtworkUrl(posterToken) : best.posterUrl,
-                    backdropToken ? localArtworkUrl(backdropToken) : best.backdropUrl ?? null,
+                    poster.url,
+                    backdrop.url,
                     best.year,
                     best.releaseDate ?? null,
                     best.contentRating ?? null,
                     best.genres && best.genres.length > 0 ? JSON.stringify(best.genres) : null,
                     JSON.stringify(best.externalIds ?? {}),
-                    artistSidecar.localPosterPath ?? null,
-                    posterToken,
-                    artistSidecar.localBackdropPath ?? null,
-                    backdropToken,
+                    poster.localPath,
+                    poster.token,
+                    backdrop.localPath,
+                    backdrop.token,
                     parentMatch.id
                   );
               }
@@ -848,7 +1412,33 @@ async function scanAndImportLibraryInner(
 
         const childSubItems = (await db.prepare("SELECT * FROM sub_items WHERE media_item_id = ?").all(parentMatch.id)) as any[];
 
-        if (typeConfig.multiFilePerChild) {
+        if (typeConfig.multiFilePerChild && identity && looseInRoot) {
+          // A single-file audiobook loose in the root: there's no book folder, so the file itself is
+          // the book's file_path (plus its one track row). Everything reading a multiFilePerChild
+          // file_path copes with a file there — Organize & Rename skips these types, moving their
+          // root folder is refused, and deletion/recycling/the missing-file check take either.
+          const { childTitle, childMatch } = matchChildForFile(childSubItems, identity.childTitle, identity, filePath);
+          if (childMatch?.has_file && childMatch.file_path !== filePath) {
+            result.skipped++;
+            result.skippedFiles.push({
+              path: filePath,
+              reason: `matched existing "${childMatch.title}" which already has a file — left in place rather than duplicating or overwriting`,
+            });
+            continue;
+          }
+          let subItemId: number;
+          if (childMatch) {
+            await db.prepare("UPDATE sub_items SET has_file = 1, file_path = ? WHERE id = ?").run(filePath, childMatch.id);
+            subItemId = childMatch.id;
+          } else {
+            const insertResult = await db
+              .prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, file_path) VALUES (?, ?, 1, 1, ?)")
+              .run(parentMatch.id, childTitle, filePath);
+            subItemId = Number(insertResult.lastInsertRowid);
+          }
+          await upsertTrackFromFile(subItemId, filePath, childTitle);
+          result.matched++;
+        } else if (typeConfig.multiFilePerChild) {
           // Album is whichever folder the file directly sits in (relSegments[0] = parent/artist,
           // so a real "Artist/Album/track.mp3" layout has the album as relSegments[1]; a flatter
           // "Artist/track.mp3" layout with no album subfolder falls back to the artist's own name
@@ -869,16 +1459,14 @@ async function scanAndImportLibraryInner(
           // types) — sub_items has no overview/poster columns to enrich further with (unlike
           // media_items), so a sidecar's contribution here is just the child's own title, matching
           // the album-folder-derived guess it otherwise falls back to.
-          const albumSidecar =
-            typeConfig.sidecarFormat === "kodi-music"
-              ? await findAlbumSidecar(albumDir)
-              : typeConfig.sidecarFormat === "opf"
-              ? await findFileSidecar(typeConfig, filePath)
-              : null;
+          const albumSidecar = typeConfig.sidecarFormat === "kodi-music" ? await findAlbumSidecar(albumDir) : fileSidecar;
           const albumTitle = albumSidecar?.title ?? guessTitleFromText(albumFolderName);
           if (!albumTitle) {
             result.skipped++;
-            result.skippedFiles.push({ path: filePath, reason: `couldn't guess an album title from the folder name "${albumFolderName}"` });
+            result.skippedFiles.push({
+              path: filePath,
+              reason: `couldn't guess an album title from the folder name "${albumFolderName}" — rename the folder to the ${(typeConfig.childLabel ?? "album").toLowerCase()}'s title`,
+            });
             continue;
           }
           let childMatch = childSubItems.find((s) => titlesMatch(s.title, albumTitle));
@@ -906,15 +1494,13 @@ async function scanAndImportLibraryInner(
           // track list the way an Add Media search + fetchAlbumTracksFor() would.
           await upsertTrackFromFile(childMatch.id, filePath);
         } else {
-          // comicSidecar was already parsed above (needed there for the parent/series title) —
-          // reused here rather than reading the same file/archive entry a second time. Books' opf
-          // is genuinely per-child only, so it's looked up fresh here.
-          const childSidecar =
-            typeConfig.sidecarFormat === "comicinfo" ? comicSidecar : typeConfig.sidecarFormat === "opf" ? await findFileSidecar(typeConfig, filePath) : null;
-          const childTitle = childSidecar?.title ?? guessTitleFromText(base);
-          if (!childTitle) {
+          const guessedChildTitle = identity?.childTitle ?? fileSidecar?.title ?? guessTitleFromText(base);
+          if (!guessedChildTitle) {
             result.skipped++;
-            result.skippedFiles.push({ path: filePath, reason: `couldn't guess a title from the filename "${base}"` });
+            result.skippedFiles.push({
+              path: filePath,
+              reason: `couldn't guess a title from the filename "${base}" — rename the file to the ${(typeConfig.childLabel ?? "item").toLowerCase()}'s title`,
+            });
             continue;
           }
           const parsed = parseReleaseTitle(base);
@@ -922,7 +1508,7 @@ async function scanAndImportLibraryInner(
           const mediaInfo = isProbeableFile(filePath) ? await probeMediaInfo(filePath) : null;
           const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
 
-          const childMatch = childSubItems.find((s) => titlesMatch(s.title, childTitle));
+          const { childTitle, childMatch } = matchChildForFile(childSubItems, guessedChildTitle, identity, filePath);
           if (childMatch?.has_file && childMatch.file_path !== filePath) {
             // Same reasoning as the episodic and "single" shape branches — don't clobber an
             // already-tracked file with an unrelated second file that merely guesses the same title.
@@ -1013,8 +1599,8 @@ async function scanAndImportLibraryInner(
             try {
               const best = await resolveSidecarEnrichment(type, movieSidecar);
               if (best) {
-                const posterToken = movieSidecar.localPosterPath ? localArtworkToken(null) : null;
-                const backdropToken = movieSidecar.localBackdropPath ? localArtworkToken(null) : null;
+                const poster = artworkColumns(movieSidecar.localPosterPath, best.posterUrl);
+                const backdrop = artworkColumns(movieSidecar.localBackdropPath, best.backdropUrl);
                 await db
                   .prepare(
                     `UPDATE media_items SET overview = ?, poster_url = ?, backdrop_url = COALESCE(?, backdrop_url),
@@ -1024,18 +1610,18 @@ async function scanAndImportLibraryInner(
                   )
                   .run(
                     best.overview ?? null,
-                    posterToken ? localArtworkUrl(posterToken) : best.posterUrl ?? null,
-                    backdropToken ? localArtworkUrl(backdropToken) : best.backdropUrl ?? null,
+                    poster.url,
+                    backdrop.url,
                     best.year ?? null,
                     JSON.stringify(best.externalIds ?? {}),
                     best.releaseDate ?? null,
                     best.contentRating ?? null,
                     best.genres && best.genres.length > 0 ? JSON.stringify(best.genres) : null,
                     best.status ?? null,
-                    movieSidecar.localPosterPath ?? null,
-                    posterToken,
-                    movieSidecar.localBackdropPath ?? null,
-                    backdropToken,
+                    poster.localPath,
+                    poster.token,
+                    backdrop.localPath,
+                    backdrop.token,
                     newId
                   );
               }
@@ -1077,6 +1663,8 @@ async function scanAndImportLibraryInner(
   return result;
 }
 
+const refreshesInProgress = new Set<string>();
+
 /** Re-pulls overview/poster/year from the same metadata provider used at add-time for every item
  * of a type. An already-matched item is looked up directly by its own stored id (see
  * refreshOneItem's REFRESH_ID_LOOKUP_PROVIDERS) rather than by title, so a shared/ambiguous title
@@ -1090,26 +1678,41 @@ async function scanAndImportLibraryInner(
  * Import's filename guess was permanent even after the item's overview/poster/year had all been
  * correctly filled in from the real provider result. An item that's already matched (has external
  * ids) keeps its title untouched — renaming something that was already correct would be a
- * surprising side effect of a button that only advertises refreshing overview/poster/year. */
-export async function refreshLibraryMetadata(type: string, signal?: AbortSignal): Promise<{ updated: number; failed: number; childrenAdded: number }> {
-  const items = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[];
-  const typeConfig = getMediaTypeConfig(type as any);
-  let updated = 0;
-  let failed = 0;
-  let childrenAdded = 0;
-
-  for (const item of items) {
-    if (signal?.aborted) break;
-    const result = await refreshOneItem(item, type, typeConfig);
-    if (result.ok) {
-      updated++;
-      childrenAdded += result.childrenAdded;
-    } else {
-      failed++;
-    }
+ * surprising side effect of a button that only advertises refreshing overview/poster/year. A show,
+ * author, artist or series keeps the title Scan matches its files by either way (see refreshOneItem). */
+export async function refreshLibraryMetadata(
+  type: string,
+  signal?: AbortSignal
+): Promise<{ updated: number; failed: number; childrenAdded: number; alreadyRunning?: boolean }> {
+  // The Library page's Refresh button and the weekly job would otherwise walk the same items twice
+  // at once, each backfilling the same children.
+  if (refreshesInProgress.has(type)) {
+    log.warn(`[libraryScan] a refresh of "${type}" is already running — skipping this overlapping request`);
+    return { updated: 0, failed: 0, childrenAdded: 0, alreadyRunning: true };
   }
+  refreshesInProgress.add(type);
+  try {
+    const items = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[];
+    const typeConfig = getMediaTypeConfig(type as any);
+    let updated = 0;
+    let failed = 0;
+    let childrenAdded = 0;
 
-  return { updated, failed, childrenAdded };
+    for (const item of items) {
+      if (signal?.aborted) break;
+      const result = await refreshOneItem(item, type, typeConfig);
+      if (result.ok) {
+        updated++;
+        childrenAdded += result.childrenAdded;
+      } else {
+        failed++;
+      }
+    }
+
+    return { updated, failed, childrenAdded };
+  } finally {
+    refreshesInProgress.delete(type);
+  }
 }
 
 /** Re-pulls one item's own overview/poster/year from its metadata provider and backfills any
@@ -1120,6 +1723,110 @@ export async function refreshLibraryMetadata(type: string, signal?: AbortSignal)
  * Deliberately not every provider `metadataProviders` can list (fetchByExternalId doesn't support
  * all of them) — an id it can't look up just falls through to the title-search fallback below. */
 const REFRESH_ID_LOOKUP_PROVIDERS = ["tmdb", "tvdb", "tvmaze", "trakt", "anilist", "imdb", "igdb", "rawg"] as const;
+
+/** extra_metadata key recording the ids matchAdditionalProviders merged into external_ids. */
+export const ADDITIONAL_PROVIDER_IDS_KEY = "additionalProviderIds";
+
+function parseExtraMetadata(extraMetadataJson: string | null | undefined): Record<string, any> {
+  try {
+    const parsed = extraMetadataJson ? JSON.parse(extraMetadataJson) : null;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    // unreadable extra_metadata — every id counts as the item's own
+    return {};
+  }
+}
+
+/** The ids merged into `externalIds` from other providers: the ADDITIONAL_PROVIDER_IDS_KEY record
+ * when there is one (even empty), else what an older merge left behind. Merges made before that
+ * record existed staged the provider's result under extra_metadata[provider], so an id equal to that
+ * result's own id for that provider was merged in — compared on the provider's own key only, since
+ * a result also carries other providers' ids (TVMaze's tvdb id) the item may have had all along.
+ * The first stored id is the item's own unless it was also the first result staged: Add, Scan and
+ * Different Match wrote the item's own ids first and a merge only ever appended, while "Fetch from
+ * X" also staged a result for the item's own provider — which made a TVDB show's tvdb id look
+ * merged too and put it on TMDB's episodes. Such a fetch stages after the merges it follows,
+ * whereas an item with no ids of its own got its first id and first staged result from the same
+ * merge; exempting that id too hid that every id was merged, so Refresh listed episodes from that
+ * one provider and let its air dates replace the ones the item had.
+ * A writer creating the record spreads this in first, so those older merges aren't forgotten. */
+export function mergedProviderIds(externalIds: Record<string, string>, extraMetadata: Record<string, any> | null | undefined): Record<string, string> {
+  const recorded = extraMetadata?.[ADDITIONAL_PROVIDER_IDS_KEY];
+  if (recorded && typeof recorded === "object") return recorded;
+  const stagedId = (key: string) => extraMetadata?.[key]?.externalIds?.[key];
+  const firstStaged = Object.keys(extraMetadata ?? {}).find((key) => stagedId(key) != null);
+  const [firstKey] = Object.keys(externalIds);
+  const inferred: Record<string, string> = {};
+  for (const [key, value] of Object.entries(externalIds)) {
+    if (key === firstKey && key !== firstStaged) continue;
+    const staged = stagedId(key);
+    if (staged != null && String(staged) === String(value)) inferred[key] = String(value);
+  }
+  return inferred;
+}
+
+function isMergedId(merged: Record<string, string>, key: string, value: string): boolean {
+  return merged[key] != null && String(merged[key]) === String(value);
+}
+
+/** The item's ids minus those merged in from other providers (unless that's all of them). The
+ * episode/album/book fetchers pick their provider by which ids are present, TMDB/MusicBrainz/Open
+ * Library first — so a merged-in id of one of those moved an item added through TVDB, Deezer or
+ * Google Books onto that provider's list on the next Refresh, adding its differently titled or
+ * numbered children beside the ones it had, all monitored. */
+function ownProviderIds(externalIds: Record<string, string>, extraMetadataJson: string | null | undefined): Record<string, string> {
+  const merged = mergedProviderIds(externalIds, parseExtraMetadata(extraMetadataJson));
+  const own = Object.fromEntries(Object.entries(externalIds).filter(([key, value]) => !isMergedId(merged, key, value)));
+  return Object.keys(own).length > 0 ? own : externalIds;
+}
+
+/** The ids metadata.ts's child-list dispatchers act on for each shape: fetchSeriesEpisodesFor,
+ * fetchArtistAlbumsFor (also used for audiobooks) and fetchCollectionChildrenFor. */
+function childListProviderKeys(typeConfig: ReturnType<typeof getMediaTypeConfig>): readonly string[] {
+  if (typeConfig.shape === "episodic") return ["tmdb", "tvdb", "tvmaze", "trakt", "anilist"];
+  if (typeConfig.shape !== "collection") return [];
+  if (typeConfig.multiFilePerChild) return ["musicbrainz", "deezer", "discogs", "lastfm"];
+  return [
+    "openlibrary",
+    "googlebooks",
+    "itunes",
+    "hardcover",
+    "goodreads",
+    "audible",
+    "comicvine",
+    "mangadex",
+    "youtube",
+    "youtubePlaylist",
+    "vimeo",
+    "podcastFeed",
+  ];
+}
+
+/** The ids an item's episodes/albums/books/videos should be listed by: its own ids (see
+ * ownProviderIds) when one of them has a child list, otherwise all of them. A manga added through
+ * AniList, or an author through Audnexus, has no list of its own — only the MangaDex/Open Library
+ * id matchAdditionalProviders merged in ever gave it chapters or books. */
+export function childListProviderIds(item: { type: string; external_ids?: string | null; extra_metadata?: string | null }): Record<string, string> {
+  let externalIds: Record<string, string> = {};
+  try {
+    externalIds = item.external_ids ? JSON.parse(item.external_ids) ?? {} : {};
+  } catch {
+    return {};
+  }
+  const own = ownProviderIds(externalIds, item.extra_metadata);
+  return childListProviderKeys(getMediaTypeConfig(item.type)).some((key) => own[key]) ? own : externalIds;
+}
+
+/** Whether `ids` (from childListProviderIds) surely list the item's own provider's children: they
+ * leave the dispatcher one child-list provider, or none of theirs was merged in. When every id
+ * looks merged, all are used and the dispatcher may pick another provider's list, whose air dates
+ * must then only fill gaps rather than replace the item's own. */
+function childListIsOwn(item: { type: string; extra_metadata?: string | null }, ids: Record<string, string>): boolean {
+  const keys = childListProviderKeys(getMediaTypeConfig(item.type)).filter((key) => ids[key]);
+  if (keys.length <= 1) return true;
+  const merged = mergedProviderIds(ids, parseExtraMetadata(item.extra_metadata));
+  return !keys.some((key) => isMergedId(merged, key, ids[key]));
+}
 
 /** Turns a parsed sidecar into the same MetadataSearchResult shape a provider search/lookup
  * returns, so every existing bit of enrichment code downstream (studio/release-dates/genres/
@@ -1172,6 +1879,27 @@ function localArtworkUrl(token: string): string {
   return `/api/media/local-artwork/${token}`;
 }
 
+/** The *_url, local_*_path and local_*_token values for one poster/backdrop: a local sidecar file
+ * wins, else the provider's value — ScreenScraper's through the local-artwork proxy, since its image
+ * URLs only load with the admin's credentials added. `stored` is the row's current path/token: its
+ * token is kept for the same file or reference, so the URL (and browser caches) stay stable. */
+function artworkColumns(
+  localFile: string | null | undefined,
+  providerValue: string | null | undefined,
+  stored: { path?: string | null; token?: string | null } = {}
+): { url: string | null; localPath: string | null; token: string | null } {
+  if (localFile) {
+    const token = localArtworkToken(stored.token);
+    return { url: localArtworkUrl(token), localPath: localFile, token };
+  }
+  const proxied = proxyScreenscraperArtwork(providerValue);
+  if (!proxied) return { url: providerValue ?? null, localPath: null, token: null };
+  if (stored.token && stored.path === proxied.localPath) {
+    return { url: localArtworkUrl(stored.token), localPath: proxied.localPath, token: stored.token };
+  }
+  return proxied;
+}
+
 /** Resolves an already-scanned item's own sidecar for Refresh — from whatever file on disk this
  * item actually has, since refreshOneItem (unlike the scan loop above) starts from a DB row, not
  * a filesystem walk. Nothing to check against for an item with no file at all yet (same as the
@@ -1213,15 +1941,27 @@ async function findItemSidecar(item: any, typeConfig: ReturnType<typeof getMedia
   return null;
 }
 
+export interface RefreshOneOptions {
+  /** The caller just gave the item its ids (Different Match), so this Refresh brings the first
+   * episode list of the title it now is: listed episodes are monitored like an Add's rather than
+   * only the recently aired ones a Refresh of an already-matched show adds. */
+  firstMatch?: boolean;
+}
+
 async function refreshOneItem(
   item: any,
   type: string,
   typeConfig: ReturnType<typeof getMediaTypeConfig>,
-  onlySeasonNumber?: number
+  onlySeasonNumber?: number,
+  opts: RefreshOneOptions = {}
 ): Promise<{ ok: true; childrenAdded: number } | { ok: false }> {
+  // Nothing to look up for the "Unknown Author"/"Unknown Series" bucket — a title search would
+  // rename it after whoever a provider ranks first for those words.
+  if (isPlaceholderParent(item)) return { ok: true, childrenAdded: 0 };
   try {
     const alreadyMatched = item.external_ids && item.external_ids !== "{}";
     const existingExternalIds: Record<string, string> = alreadyMatched ? JSON.parse(item.external_ids) : {};
+    const ownExternalIds = ownProviderIds(existingExternalIds, item.extra_metadata);
     let childrenAdded = 0;
 
     // An already-matched item must be looked up BY ITS OWN ID, not by re-running a plain title
@@ -1242,7 +1982,7 @@ async function refreshOneItem(
     // The sidecar's data only counts for an unmatched item (the same first match Scan makes), or
     // when its ids agree with the item's own. A stale tvshow.nfo/movie.nfo id otherwise put the
     // wrong title's poster/overview/year back over a Different Match fix on every Refresh. Its
-    // local poster/backdrop files still apply either way (see posterToken below).
+    // local poster/backdrop files still apply either way (see artworkColumns below).
     const sidecarDescribesItem =
       !!sidecar &&
       (!alreadyMatched ||
@@ -1250,9 +1990,9 @@ async function refreshOneItem(
 
     if (alreadyMatched) {
       for (const provider of REFRESH_ID_LOOKUP_PROVIDERS) {
-        if (!existingExternalIds[provider]) continue;
+        if (!ownExternalIds[provider]) continue;
         try {
-          best = await fetchByExternalId(type as any, provider, existingExternalIds[provider]);
+          best = await fetchByExternalId(type as any, provider, ownExternalIds[provider]);
           break;
         } catch {
           // this id's provider lookup isn't supported for this type, or the call itself failed —
@@ -1274,7 +2014,17 @@ async function refreshOneItem(
         // "Halloween" (1978) must not become the 2018 film just because TMDB ranks it first.
         const knownYear = item.year != null ? Number(item.year) : null;
         const results = await searchMetadata(type as any, item.title, undefined, knownYear);
-        best = results.find((r) => knownYear == null || r.year == null || Math.abs(r.year - knownYear) <= 1) ?? null;
+        const yearAgrees = (r: MetadataSearchResult) => knownYear == null || r.year == null || Math.abs(r.year - knownYear) <= 1;
+        // A title search can't tell two same-named authors/artists/shows apart. An already-matched
+        // item (one whose provider has no by-id lookup: MusicBrainz, Deezer, Open Library, ...) only
+        // takes a hit carrying one of its own ids — the first same-named hit put another person's
+        // bio, photo and year on it on every scheduled refresh. An unmatched show only takes a hit
+        // whose title the scan itself would have accepted.
+        const isThisItem = (r: MetadataSearchResult) =>
+          alreadyMatched
+            ? Object.entries(r.externalIds ?? {}).some(([key, value]) => ownExternalIds[key] != null && String(ownExternalIds[key]) === String(value))
+            : typeConfig.shape !== "episodic" || !!typeConfig.sequentialEpisodeFallback || sameTitleIgnoringQualifier(r.title, item.title);
+        best = results.find((r) => yearAgrees(r) && isThisItem(r)) ?? null;
       } catch {
         // No metadata provider configured at all (course) or the search call itself failed — for a
         // sequentialEpisodeFallback type (course/adult) there's still useful work for Refresh to do
@@ -1283,7 +2033,9 @@ async function refreshOneItem(
         // `!typeConfig.sequentialEpisodeFallback` check right below.
       }
     }
-    if (!best && !typeConfig.sequentialEpisodeFallback) return { ok: false };
+    // An already-matched show/artist/author with no show-level data found keeps its own and still
+    // has its episodes/children synced from its ids below.
+    if (!best && !typeConfig.sequentialEpisodeFallback && (!alreadyMatched || typeConfig.shape === "single")) return { ok: false };
     // Scoped to one season leaves the show's own overview/poster/year/title untouched — those
     // aren't season-level data, and re-writing them on a "just refresh this season" click would be
     // a surprising side effect the button never advertised.
@@ -1291,12 +2043,25 @@ async function refreshOneItem(
       // Same "an explicit local file always wins" rule Scan applies — reuses this item's own
       // existing token (already on `item`, the row this function started from) rather than
       // rotating it on every refresh, so a bookmarked/cached local-artwork URL keeps working.
-      const posterToken = sidecar?.localPosterPath ? localArtworkToken(item.local_poster_token) : null;
-      const backdropToken = sidecar?.localBackdropPath ? localArtworkToken(item.local_backdrop_token) : null;
-      // course/adult shows are titled by their folder or their own tvshow.nfo — the same title Scan
-      // matches files against — never by a provider hit: ThePornDB's search returns single scenes,
-      // and renaming the show to one made every later scan create a duplicate folder-named show.
-      const newTitle = typeConfig.sequentialEpisodeFallback ? sidecar?.title ?? null : best.title;
+      const poster = artworkColumns(sidecar?.localPosterPath, best.posterUrl, { path: item.local_poster_path, token: item.local_poster_token });
+      const backdrop = artworkColumns(sidecar?.localBackdropPath, best.backdropUrl, {
+        path: item.local_backdrop_path,
+        token: item.local_backdrop_token,
+      });
+      // A show is titled by its folder/filename or its own tvshow.nfo — the title Scan matches new
+      // episode files against, exactly — never by a provider hit, just as when Scan created it.
+      // Renamed to "Grey's Anatomy" (a "Greys Anatomy" folder) or "Frieren: Beyond Journey's End"
+      // ("Sousou no Frieren"), the next episode file created a duplicate folder-titled show, and so
+      // did every course/adult show renamed to a ThePornDB scene title. An author/artist/series is
+      // joined by its folder title the same way, so it only takes a hit's title Scan would still
+      // match ("stephen king" -> "Stephen King"): "Tolkien" renamed to "J.R.R. Tolkien" put the next
+      // book in that folder under a second, new "Tolkien".
+      const newTitle =
+        typeConfig.shape === "single"
+          ? best.title
+          : typeConfig.shape === "episodic"
+          ? sidecar?.title ?? null
+          : sidecar?.title ?? (titlesMatch(best.title, item.title) ? best.title : null);
       await db
         .prepare(
           `UPDATE media_items SET overview = COALESCE(?, overview), poster_url = COALESCE(?, poster_url), year = COALESCE(?, year),
@@ -1310,19 +2075,19 @@ async function refreshOneItem(
         )
         .run(
           best.overview,
-          posterToken ? localArtworkUrl(posterToken) : best.posterUrl,
+          poster.url,
           best.year,
           best.releaseDate ?? null,
-          backdropToken ? localArtworkUrl(backdropToken) : best.backdropUrl ?? null,
+          backdrop.url,
           best.rating ?? null,
           best.runtimeMinutes ?? null,
           best.status ?? null,
           best.contentRating ?? null,
           best.genres && best.genres.length > 0 ? JSON.stringify(best.genres) : null,
-          sidecar?.localPosterPath ?? null,
-          posterToken,
-          sidecar?.localBackdropPath ?? null,
-          backdropToken,
+          poster.localPath,
+          poster.token,
+          backdrop.localPath,
+          backdrop.token,
           ...(alreadyMatched
             ? []
             : newTitle
@@ -1359,16 +2124,19 @@ async function refreshOneItem(
       }
     }
 
-    if (best) {
-      // Backfills any episode/child the provider now lists that this item doesn't have yet —
-      // e.g. a show Scan & Import or a Starr import only ever created rows for downloaded files
-      // for, or a season that's aired since this item was first added — as monitored+missing, the
-      // same state a normal Add Media gives every episode/child up front. Never touches an
-      // existing row's has_file/file_path, so this can't un-download anything.
-      const externalIdsForChildren = alreadyMatched ? existingExternalIds : best.externalIds ?? {};
-      childrenAdded += await syncMissingChildren(item.id, typeConfig, externalIdsForChildren, onlySeasonNumber);
+    // Backfills any episode/child the provider now lists that this item doesn't have yet —
+    // e.g. a show Scan & Import or a Starr import only ever created rows for downloaded files
+    // for, or a season that's aired since this item was first added — as missing, and monitored
+    // like a normal Add Media's children (for a show matched before this Refresh that already has
+    // episodes, only its upcoming or recently aired ones — see mergeEpisodesIntoItem). Never touches
+    // an existing row's has_file/file_path, so this can't un-download anything.
+    const externalIdsForChildren = alreadyMatched ? childListProviderIds(item) : best?.externalIds ?? {};
+    if (Object.keys(externalIdsForChildren).length > 0) {
+      const fromOwnProvider = !alreadyMatched || childListIsOwn(item, externalIdsForChildren);
+      const matchedBefore = !!alreadyMatched && !opts.firstMatch;
+      childrenAdded += await syncMissingChildren(item.id, typeConfig, externalIdsForChildren, onlySeasonNumber, fromOwnProvider, matchedBefore);
 
-      if (typeConfig.shape === "episodic" && Object.keys(externalIdsForChildren).length > 0) {
+      if (typeConfig.shape === "episodic") {
         const seasons = await fetchSeriesSeasonsFor(externalIdsForChildren).catch(() => []);
         for (const s of seasons) {
           if (onlySeasonNumber != null && s.seasonNumber !== onlySeasonNumber) continue;
@@ -1444,11 +2212,15 @@ async function refreshOneItem(
  * cheaper season-only fetch for every provider — see fetchSeriesEpisodesFor), but only writes back
  * the episodes/season poster belonging to that one season, and skips the show-level
  * overview/poster/year update entirely. */
-export async function refreshOneMediaItem(mediaItemId: number, onlySeasonNumber?: number): Promise<{ ok: boolean; childrenAdded: number }> {
+export async function refreshOneMediaItem(
+  mediaItemId: number,
+  onlySeasonNumber?: number,
+  opts: RefreshOneOptions = {}
+): Promise<{ ok: boolean; childrenAdded: number }> {
   const item = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId)) as any;
   if (!item) return { ok: false, childrenAdded: 0 };
   const typeConfig = getMediaTypeConfig(item.type);
-  const result = await refreshOneItem(item, item.type, typeConfig, onlySeasonNumber);
+  const result = await refreshOneItem(item, item.type, typeConfig, onlySeasonNumber, opts);
   return result.ok ? { ok: true, childrenAdded: result.childrenAdded } : { ok: false, childrenAdded: 0 };
 }
 
@@ -1478,12 +2250,28 @@ export async function scanAndImportOneMediaItem(mediaItemId: number, signal?: Ab
  * e.g. matchAdditionalProviders below, merging in a second provider's Season 0/specials that the
  * item's primary provider doesn't report — can reuse the exact same non-destructive merge instead
  * of re-fetching through fetchSeriesEpisodesFor's one-provider priority dispatch. Returns how many
- * episodes were newly inserted. Never touches has_file/file_path on an existing row. */
+ * episodes were newly inserted. Never touches has_file/file_path on an existing row.
+ *
+ * `fromOwnProvider`: the list comes from the provider the item's episodes are fetched from (Refresh,
+ * or a new show's first sync), so its air dates replace stored ones — a premiere moved by two weeks
+ * otherwise kept its old date forever, on the Calendar and in the future-episode search gate.
+ * Another provider's list (whose numbering can differ) only fills gaps.
+ *
+ * A new Season 0 special is always added unmonitored (Sonarr's default). `onlyRecentOnceTracked`
+ * (a Refresh of an item matched before it): once the item has regular episodes, a newly listed one
+ * is monitored only if it is upcoming or aired in the last RECENTLY_AIRED_DAYS days. A provider that
+ * starts listing a long runner's back catalogue (AniList's undated episodes of an ongoing show)
+ * otherwise queued hundreds of old episodes for the missing search — even for a show added to
+ * monitor only future episodes, which isn't stored. An item with no regular episodes yet (a series
+ * request approved with none, a show whose provider listed nothing at Add) is getting its first
+ * list, which is monitored like an Add's. */
 export async function mergeEpisodesIntoItem(
   mediaItemId: number,
   episodes: MetadataEpisode[],
   onlySeasonNumber?: number,
-  monitored = true
+  monitored = true,
+  fromOwnProvider = false,
+  onlyRecentOnceTracked = false
 ): Promise<number> {
   const filtered = onlySeasonNumber != null ? episodes.filter((ep) => ep.seasonNumber === onlySeasonNumber) : episodes;
   if (filtered.length === 0) return 0;
@@ -1491,40 +2279,86 @@ export async function mergeEpisodesIntoItem(
     .prepare("SELECT id, season_number, episode_number, title, air_date FROM episodes WHERE media_item_id = ?")
     .all(mediaItemId)) as { id: number; season_number: number; episode_number: number; title: string | null; air_date: string | null }[];
   const existingByKey = new Map(existing.map((e) => [`${e.season_number}:${e.episode_number}`, e]));
+  const tracksRegularEpisodes = existing.some((e) => Number(e.season_number) !== 0);
+  const monitorNew = newEpisodeMonitor(episodes, existing, monitored, onlyRecentOnceTracked && tracksRegularEpisodes);
   let added = 0;
+  let monitoredAdded = 0;
   for (const ep of filtered) {
     const row = existingByKey.get(`${ep.seasonNumber}:${ep.episodeNumber}`);
     if (!row) {
+      const epMonitored = monitorNew(ep);
       await db
         .prepare(
           `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
            VALUES (?, ?, ?, ?, ?, ?, ?)`
         )
-        .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview, monitored ? 1 : 0);
+        .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview, epMonitored ? 1 : 0);
       added++;
+      if (epMonitored) monitoredAdded++;
       continue;
     }
-    const isPlaceholderTitle = !row.title || /^Episode \d+$/.test(row.title);
-    if (isPlaceholderTitle || !row.air_date) {
+    const storedTitle = row.title?.trim() ?? "";
+    const isPlaceholderTitle = !storedTitle || PLACEHOLDER_EPISODE_TITLE.test(storedTitle);
+    const airDate = fromOwnProvider ? ep.airDate ?? row.air_date : row.air_date ?? ep.airDate;
+    if (isPlaceholderTitle || !row.air_date || airDate !== row.air_date) {
       await db
-        .prepare("UPDATE episodes SET title = ?, air_date = COALESCE(air_date, ?), overview = COALESCE(overview, ?) WHERE id = ?")
-        .run(isPlaceholderTitle ? ep.title : row.title, ep.airDate, ep.overview, row.id);
+        .prepare("UPDATE episodes SET title = ?, air_date = ?, overview = COALESCE(overview, ?) WHERE id = ?")
+        .run(isPlaceholderTitle && ep.title ? ep.title : row.title, airDate ?? null, ep.overview, row.id);
     }
+  }
+  if (onlyRecentOnceTracked && added > 0) {
+    log.info(`[libraryScan] media item ${mediaItemId}: added ${added} episode(s) from its provider, ${monitoredAdded} of them monitored`);
   }
   return added;
 }
+
+// Tolerates a Refresh that runs late: an episode that aired since the last one is still wanted.
+const RECENTLY_AIRED_DAYS = 30;
+
+/** Whether mergeEpisodesIntoItem adds a newly listed episode monitored. */
+function newEpisodeMonitor(
+  episodes: MetadataEpisode[],
+  existing: { season_number: number; episode_number: number }[],
+  monitored: boolean,
+  onlyRecent: boolean
+): (ep: MetadataEpisode) => boolean {
+  if (!monitored) return () => false;
+  if (!onlyRecent) return (ep) => isEpisodeMonitoredByDefault(ep);
+  const today = new Date().toISOString().slice(0, 10);
+  const recentFrom = new Date(Date.now() - RECENTLY_AIRED_DAYS * 86_400_000).toISOString().slice(0, 10);
+  const upcoming = new Set(upcomingEpisodes(episodes, today).map((e) => `${e.seasonNumber}:${e.episodeNumber}`));
+  // upcomingEpisodes only sees an undated episode as aired when a dated, aired one follows it in the
+  // list, which AniList's list lacks when its airing schedule is empty. An episode the item already
+  // tracks numbered after it says the same: the undated ones before it aren't still to come.
+  const lastTracked = new Map<number, number>();
+  for (const e of existing) {
+    const season = Number(e.season_number);
+    lastTracked.set(season, Math.max(lastTracked.get(season) ?? -Infinity, Number(e.episode_number)));
+  }
+  return (ep) => {
+    if (!isEpisodeMonitoredByDefault(ep)) return false;
+    if (ep.airDate) return ep.airDate.slice(0, 10) >= recentFrom;
+    return upcoming.has(`${ep.seasonNumber}:${ep.episodeNumber}`) && ep.episodeNumber > (lastTracked.get(ep.seasonNumber) ?? -Infinity);
+  };
+}
+
+// What a provider lists before an episode is named — TMDB's "Episode 5", TVMaze/TVDB's "TBA" — and
+// Scan & Import's own "Episode N".
+const PLACEHOLDER_EPISODE_TITLE = /^(?:Episode \d+|TBA|TBD|TBC|To Be Announced)$/i;
 
 async function syncMissingChildren(
   mediaItemId: number,
   typeConfig: ReturnType<typeof getMediaTypeConfig>,
   externalIds: Record<string, string>,
-  onlySeasonNumber?: number
+  onlySeasonNumber?: number,
+  fromOwnProvider = true,
+  matchedBefore = false
 ): Promise<number> {
   if (Object.keys(externalIds).length === 0) return 0;
 
   if (typeConfig.shape === "episodic") {
     const episodes = await fetchSeriesEpisodesFor(externalIds).catch(() => []);
-    return mergeEpisodesIntoItem(mediaItemId, episodes, onlySeasonNumber);
+    return mergeEpisodesIntoItem(mediaItemId, episodes, onlySeasonNumber, true, fromOwnProvider, matchedBefore);
   }
 
   if (typeConfig.shape === "collection" && typeConfig.multiFilePerChild) {
@@ -1596,12 +2430,16 @@ export interface ProviderMatchResult {
  */
 export async function matchAdditionalProviders(mediaItemId: number): Promise<ProviderMatchResult[]> {
   const item = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId)) as any;
-  if (!item) return [];
+  if (!item || isPlaceholderParent(item)) return [];
   const typeConfig = getMediaTypeConfig(item.type);
   const externalIds: Record<string, string> = item.external_ids ? JSON.parse(item.external_ids) : {};
-  const extraMetadata: Record<string, unknown> = item.extra_metadata ? JSON.parse(item.extra_metadata) : {};
   const otherProviders = typeConfig.metadataProviders.filter((p) => !externalIds[p]);
   if (otherProviders.length === 0) return [];
+  // Each provider takes a rate-limited search and episode fetch, so a run lasts a while — long enough
+  // for a Different Match or Refresh to change the item meanwhile. Writes go onto the row as it is
+  // then, and the run stops once anything else has changed its ids: it used to write its starting
+  // snapshot back, restoring the old match's ids and merging in the old show's specials.
+  let expectedIdsJson: string | null = item.external_ids ?? null;
 
   const query = item.year ? `${item.title} ${item.year}` : item.title;
   const itemYear = item.year != null ? Number(item.year) : null;
@@ -1615,32 +2453,49 @@ export async function matchAdditionalProviders(mediaItemId: number): Promise<Pro
   for (const provider of otherProviders) {
     try {
       const searchResults = await searchMetadata(item.type, query, provider);
-      const best = searchResults.find(
-        (r) => sameTitleIgnoringQualifier(r.title, item.title) && (itemYear == null || r.year == null || Math.abs(r.year - itemYear) <= 1)
-      );
+      const best = pickVerifiedProviderHit(searchResults, item.title, itemYear);
       if (!best) continue;
 
-      extraMetadata[provider] = best;
-      let episodesAdded = 0;
+      const newIds: Record<string, string> = {};
+      let episodes: MetadataEpisode[] = [];
       if (!anilistNumbered) {
         for (const [key, value] of Object.entries(best.externalIds ?? {})) {
-          if (!externalIds[key]) externalIds[key] = value;
+          if (!externalIds[key]) newIds[key] = value;
         }
         const providerId = best.externalIds?.[provider];
         if (typeConfig.shape === "episodic" && providerId) {
-          const episodes = await fetchSeriesEpisodesForProvider(provider, providerId).catch(() => []);
-          // Unmonitored (Sonarr's default for specials): this runs after the Add, so monitoring
-          // them would override the Add's own monitor strategy ("Future"/"None") and queue the
-          // specials as wanted.
-          episodesAdded = await mergeEpisodesIntoItem(mediaItemId, episodes, 0, false);
+          episodes = await fetchSeriesEpisodesForProvider(provider, providerId).catch(() => []);
         }
       }
 
+      const current = (await db.prepare("SELECT external_ids, extra_metadata FROM media_items WHERE id = ?").get(mediaItemId)) as
+        | { external_ids: string | null; extra_metadata: string | null }
+        | undefined;
+      if (!current || (current.external_ids ?? null) !== expectedIdsJson) {
+        log.info(`[matchAdditionalProviders] "${item.title}" was changed while matching other providers — stopping`);
+        break;
+      }
+      // Unmonitored (Sonarr's default for specials): this runs after the Add, so monitoring
+      // them would override the Add's own monitor strategy ("Future"/"None") and queue the
+      // specials as wanted.
+      const episodesAdded = episodes.length > 0 ? await mergeEpisodesIntoItem(mediaItemId, episodes, 0, false) : 0;
+
+      const extraMetadata: Record<string, any> = current.extra_metadata ? JSON.parse(current.extra_metadata) : {};
+      const mergedBefore = mergedProviderIds(externalIds, extraMetadata);
+      Object.assign(externalIds, newIds);
+      extraMetadata[provider] = best;
+      // Kept apart from the item's own ids for child fetching — see ownProviderIds.
+      if (Object.keys(newIds).length > 0) {
+        extraMetadata[ADDITIONAL_PROVIDER_IDS_KEY] = { ...mergedBefore, ...newIds };
+      }
       // Persisted per-provider (not batched until the loop ends) so a crash or a later provider's
       // failure can't lose a provider that was already successfully matched.
-      await db
-        .prepare("UPDATE media_items SET external_ids = ?, extra_metadata = ? WHERE id = ?")
-        .run(JSON.stringify(externalIds), JSON.stringify(extraMetadata), mediaItemId);
+      const nextIdsJson = JSON.stringify(externalIds);
+      const write = await db
+        .prepare("UPDATE media_items SET external_ids = ?, extra_metadata = ? WHERE id = ? AND COALESCE(external_ids, '') = ?")
+        .run(nextIdsJson, JSON.stringify(extraMetadata), mediaItemId, expectedIdsJson ?? "");
+      if (write.changes === 0) break;
+      expectedIdsJson = nextIdsJson;
 
       // Staged for review only (no id merged), so it isn't a matched provider.
       if (!anilistNumbered) results.push({ provider, episodesAdded });

@@ -1,11 +1,17 @@
+import fs from "node:fs";
+import path from "node:path";
 import { log } from "./services/logger.js";
 import { config } from "./config.js";
 import { startScheduler } from "./services/scheduler.js";
-import { stopAllJobs, cancelJob, listJobs } from "./services/jobRegistry.js";
+import { stopAllJobs, cancelJob, isJobRunning, listJobs } from "./services/jobRegistry.js";
 import { restartIrcFeeds } from "./services/ircFeedManager.js";
 import { createApp } from "./app.js";
 import { db } from "./db/index.js";
 import { migrateCredentialedMediaServerPosters } from "./services/mediaServerImport.js";
+import { migrateScreenscraperArtwork } from "./services/metadata.js";
+import { resetInterruptedRestores } from "./services/recycleBin.js";
+import { removeStaleImportTemps } from "./services/importer.js";
+import { waitForQueueImports } from "./services/downloadClient.js";
 
 // Without these, an unhandled rejection or a synchronous throw outside Express's own request
 // cycle (a background job, a stray unawaited promise, an event-emitter callback) crashes the
@@ -27,12 +33,44 @@ process.on("unhandledRejection", (reason) => {
 
 const app = await createApp();
 
+// Until cleared, an entry whose restore a restart cut off shows as "Restoring..." with its
+// buttons disabled: nothing on the Recycle Bin page's own load resets it.
+await resetInterruptedRestores().catch((err) => log.warn("[startup] recycle-bin restore reset failed:", err.message));
 await migrateCredentialedMediaServerPosters().catch((err) => log.warn("[startup] media-server poster migration failed:", err.message));
+await migrateScreenscraperArtwork().catch((err) => log.warn("[startup] ScreenScraper artwork migration failed:", err.message));
+
+/** Deep enough for every library naming template's folders. */
+const STALE_TEMP_SWEEP_DEPTH = 4;
+
+/** An import cut off by a restart leaves a `.aonarr-tmp-*` partial copy beside its destination; the
+ * next import to that same file removes it, but one whose destination is never imported again
+ * would stay forever. removeStaleImportTemps only takes temps untouched for an hour and never an
+ * in-flight copy of this process, so this is safe to run alongside imports. */
+async function sweepStaleImportTemps(): Promise<void> {
+  const roots = (await db.prepare("SELECT path FROM root_folders").all()) as { path: string }[];
+  const visit = async (dir: string, depth: number): Promise<void> => {
+    removeStaleImportTemps(dir);
+    if (depth >= STALE_TEMP_SWEEP_DEPTH) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      await new Promise((resolve) => setImmediate(resolve));
+      await visit(path.join(dir, entry.name), depth + 1);
+    }
+  };
+  for (const root of roots) await visit(root.path, 0);
+}
 
 const server = app.listen(config.port, () => {
   log.info(`AoNarr server listening on port ${config.port}`);
   startScheduler();
   restartIrcFeeds().catch((err) => log.warn("[irc] failed to start feeds:", err.message));
+  sweepStaleImportTemps().catch((err) => log.warn("[startup] stale import temp sweep failed:", err.message));
 });
 
 /**
@@ -40,35 +78,43 @@ const server = app.listen(config.port, () => {
  * process just terminates, whatever it was doing (a half-copied import, an in-flight scheduled
  * job) included. This stops new scheduled runs, cooperatively cancels whatever job is already
  * mid-run (see jobRegistry.ts's AbortSignal-based cancellation — best-effort, since a job with a
- * handful of monolithic awaits can't abort mid-await), stops accepting new HTTP connections, and
- * closes the DB cleanly. Bounded by SHUTDOWN_GRACE_MS rather than waiting indefinitely: an open
- * EventSource stream (Activity page's live log tail) is a long-lived connection that
+ * handful of monolithic awaits can't abort mid-await), stops accepting new HTTP connections, lets
+ * running imports finish, and closes the DB cleanly. Bounded rather than waiting indefinitely: an
+ * open EventSource stream (Activity page's live log tail) is a long-lived connection that
  * `server.close()`'s own callback won't fire until it ends, and a stuck one shouldn't be able to
  * block the container from ever stopping.
  */
 const SHUTDOWN_GRACE_MS = 5_000;
+/** Docker sends SIGKILL 10 s after SIGTERM by default; this leaves time to close the DB first. */
+const SHUTDOWN_IMPORT_WAIT_MS = 8_000;
 let shuttingDown = false;
 
-function shutdown(signal: string): void {
+async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   log.warn(`[shutdown] ${signal} received — stopping scheduled jobs and draining connections`);
 
-  stopAllJobs();
-  for (const job of listJobs()) {
-    if (job.running) cancelJob(job.key);
-  }
-  server.close();
+  try {
+    stopAllJobs();
+    for (const job of listJobs()) {
+      if (job.running) cancelJob(job.key);
+    }
+    server.close();
 
-  setTimeout(() => {
-    db.close()
-      .catch((err) => log.error("[shutdown] error closing database:", err))
-      .finally(() => {
-        log.info("[shutdown] exiting");
-        process.exit(0);
-      });
-  }, SHUTDOWN_GRACE_MS);
+    // The grace comes first: a request still in flight can start an import during it, and a queue
+    // poll already underway keeps starting them (it doesn't stop on cancel), so both are waited out.
+    const deadline = Date.now() + SHUTDOWN_IMPORT_WAIT_MS;
+    await new Promise((resolve) => setTimeout(resolve, SHUTDOWN_GRACE_MS));
+    const importsSettled = await waitForQueueImports(Math.max(0, deadline - Date.now()), () => isJobRunning("queuePoll"));
+    if (!importsSettled) {
+      log.warn(`[shutdown] an import or queue poll was still running after ${SHUTDOWN_IMPORT_WAIT_MS / 1000}s — exiting without waiting for it`);
+    }
+    await db.close().catch((err) => log.error("[shutdown] error closing database:", err));
+  } finally {
+    log.info("[shutdown] exiting");
+    process.exit(0);
+  }
 }
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));

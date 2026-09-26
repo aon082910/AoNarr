@@ -3,6 +3,164 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 348 — Loose books in library roots, second full audit (~180 fixes), and the deferred features
+
+A second multi-agent audit pass (14 cross-cutting lenses: SQLite/Postgres parity, permissions,
+injection/SSRF, concurrency, filesystem, errors/resources, React state, metadata providers, the
+release decision engine, data integrity, download clients, integrations, the import pipeline per
+media type, and a regression review of Round 347). 182 of 183 findings were independently confirmed.
+Every fix was adversarially reviewed, re-fixed and re-reviewed, and the five items previously
+deferred are included.
+
+### Behaviour changes to know about
+
+- **Cross-origin API use needs an explicit allow-list.** With "Allowed CORS origins" empty, only
+  AoNarr's own web UI (same origin) can call the API from a browser; `*` restores the old allow-any
+  behaviour. The setting can also be given as the `AONARR_CORS_ALLOWED_ORIGINS` environment variable
+  (comma-separated), which is the recovery path if a reverse proxy rewrites the Host header. A
+  cross-site form-style request that could act without a CORS preflight is refused (403).
+- **Credentials are no longer accepted in URLs.** `?apikey=` and `?sessionToken=` are gone; use the
+  `X-Api-Key` / `X-Session-Token` headers. The web UI's live streams use short-lived single-use
+  tickets, and avatars are fetched with headers, so no long-lived credential lands in proxy or
+  container logs.
+- **A Postgres backup restore restarts the app** (as a SQLite restore already did), so migrations
+  and in-memory caches match the restored database.
+- **First-run setup only opens on a pristine instance.** Once any root folder, media item, indexer or
+  download client exists, creating the first admin requires the API key.
+- **Hardlink/symlink imports no longer remove the torrent from the client** after import (they exist
+  to keep seeding).
+- **Season packs never overwrite a better existing episode**; only real upgrades are placed.
+
+### Books, comics and audiobooks sitting directly in a library root folder
+
+- **Fixed: book files sitting at the top of the Books root folder never showed up.** The scan skipped
+  every file without an `Author/` folder before reading any metadata. A loose book is now identified
+  from its own `<name>.opf`, then its embedded metadata (EPUB OPF, MOBI/AZW/AZW3 EXTH header, PDF
+  info), then an `Author - Title` filename, and otherwise lands under an unmonitored per-root
+  "Unknown Author" (never searched, renamed or enriched), so it always appears in the library. Junk
+  embedded values (default account names like "Windows User", download-site stamps like
+  "www.it-ebooks.info", "Microsoft Word - x.docx" titles) are ignored.
+- **Comics and Manga** in the root use ComicInfo.xml's series, then the series parsed from the
+  filename, then "Unknown Series". **A single-file audiobook** (e.g. `Author - Title.m4b`) in the
+  root is imported from its tags or filename. **Music** still needs `Artist/Album/`, and the scan now
+  says so.
+- **A book folder directly under the root** (`Root/<Book Title>/book.epub`) is filed under the
+  book's real author when its metadata names one, instead of an "author" named after the book.
+- **A stray `metadata.opf` or `ComicInfo.xml` no longer gives every book or issue in a folder the
+  same title** (it only applies to a folder holding a single book; `<name>.opf` always applies).
+- The same book in several formats stays one book; macOS `._` companion files are ignored; the MOBI
+  reader is bounds-checked and never throws on truncated files.
+
+### Security
+
+- **With authentication disabled, any website you visited could drive the API** — fixed by the
+  same-origin default above.
+- **Path escapes:** a `/` or `..` in any title could create extra folders or write outside the root
+  folder; every templated destination is now confined to its root.
+- **SSRF:** a household podcast request could make the server fetch arbitrary URLs.
+- **ScreenScraper credentials** were embedded in stored artwork URLs; artwork is now proxied
+  server-side and existing rows are migrated.
+- Remote-instance API keys and friend Plex/Jellyfin tokens are now encrypted at rest; IRC announces
+  are only accepted from the configured announcer nick(s); live streams close when a session is
+  revoked, a password changes or the API key rotates; `/api/metrics` no longer exposes root-folder
+  paths or runs a full-library scan per hit; the login lockout can't be bypassed with parallel
+  requests on Postgres; Send to Kindle encodes non-ASCII subjects and filenames.
+
+### Data safety (filesystem)
+
+- **The weekly Corrupt Media Check could wipe the whole library when a mount was down**, and the
+  deleted-file check mass-flagged symlinked libraries when a debrid/rclone mount blinked — both now
+  skip unavailable roots and link targets.
+- **Post-import cleanup could delete a shared category folder**, including other downloads.
+- **Multi-disc albums in one folder overwrote their own tracks** on import.
+- Cross-device moves and upgrades are atomic (temp file + rename), so an interrupted copy never
+  destroys the existing library file; Organize & Rename never overwrites a different file and moves
+  AoNarr's own subtitles/NFOs along; auto-archival no longer overwrites same-named archived files;
+  free-space checks use space available to AoNarr; folder permissions apply to every created level;
+  the recycle bin recovers entries left "restoring" by a restart.
+- **Archives:** only the download being imported is unpacked (not the whole downloads tree), ROM
+  zips are never unpacked, extraction has size/entry limits, and failed extractions aren't retried
+  on every import. **The Docker images now include `unrar` and `7z`**, so RAR and 7z releases unpack.
+- A sample is never imported as the episode or movie (Sample folders and scene-style `-sample` names),
+  while an episode merely titled "…The Sample…" still imports.
+
+### Grabbing and the decision engine
+
+- **Automatic grabbing never worked for Music, Books, Comics, Audiobooks or ROMs** (their releases
+  have no video quality tiers) — they're now ranked by custom-format score, indexer priority and
+  seeders.
+- **Indexers added in the UI were never searched for most library types** (anime, sports, comics…);
+  new and existing indexers now default to every indexer-searchable type, with a Media types picker
+  on the Indexers form.
+- The quality tier is chosen from releases that survive every rejection; a release whose protocol
+  has no enabled client is skipped instead of blocking the grab; bulk and retry grabs only take real
+  upgrades; "Search selected" on a show/artist/author searches its missing children; 0-seeder
+  torrents are avoided; IRC instant grabs respect delay profiles, years and simultaneous announces.
+- **Release parsing:** anime `Show S2 - 05` / `Season 2 - 05` numbering, ranged fansub batches (only
+  covering their own episodes), multi-season collections (`Season 1 - 9 Complete`), `10bit` tags,
+  SD releases, and leading/trailing release-group edge cases.
+- **Online Videos (yt-dlp) downloads could never be imported** (`.webm` output) — the output path is
+  now reported and `.webm` is a recognised extension.
+- A book/album grab only accepts releases naming the right title (no "The Annotated Hobbit" for "The
+  Hobbit", no other Ed Sheeran symbol album for "÷").
+
+### Download clients and the queue
+
+- **Download clients are polled concurrently**, so one slow client no longer delays the rest (imports
+  still run one at a time).
+- **Imports cut off by a restart are retried once automatically**; imports deliberately skipped
+  (waiting for a manual import) are never re-run.
+- Stalled detection now covers downloads that never made progress or vanished from the client;
+  library-side failures (disk full, read-only destination) no longer blocklist a good release;
+  in-process (HTTP/debrid/yt-dlp) jobs cut off by a restart are re-grabbed without blocklisting;
+  qBittorrent "moving"/"checking" torrents aren't imported mid-move; SABnzbd connection tests check
+  the API key; Retry/Manual import can't run on top of the poller's import of the same row; deleting a
+  download client no longer strands its queue rows.
+
+### Metadata, lists and integrations
+
+- Long child lists are paged (books, comics, manga, artist albums over 100); currently-airing
+  AniList anime get their episodes; Trakt id lookups use the right endpoint; podcast episodes survive
+  enclosure URL changes; Refresh keeps each item on its own provider's episode list (and air dates)
+  instead of a merged second provider's; a manual "Fetch from provider" verifies by id.
+- **Import lists, Trakt sync and Plex watchlist sync created items with no root folder**, so their
+  downloads could never import. **Each import list can now have its own root folder** (default: the
+  type's root folder with the most free space); lists that skip items show a warning instead of an error.
+- **TRaSH-Guides sync results are shown in Settings** (last run, counts, and every failed or
+  unsupported format with its reason); a second sync of the same app joins the running one.
+- IMDb list bot-challenge responses, Trakt's required User-Agent, Jellyfin webhooks, Prowlarr/
+  Jackett-synced indexer edits, and Overseerr/Jellyseerr duplicate approvals are handled.
+
+### SQLite/Postgres parity
+
+- Postgres queue progress is a double (stalled detection works), paginated lists have a unique
+  tiebreaker (no repeated/skipped rows across pages), global search is no longer capped before
+  filtering on SQLite, and non-integer values no longer fail Postgres inserts after a download was
+  already sent.
+
+### Web UI
+
+- Date-only release dates no longer show a day early west of UTC; remaining server timestamps are
+  shown in local time; Media Detail refreshes in place instead of blanking; stale-response guards on
+  the remaining pages; pages show errors instead of "Loading…" forever; the What's New page renders
+  the changelog correctly; the generated invite link is visible; Watchlist Import sorts IMDb TV
+  Movies/Specials correctly; library Back/Forward between types keeps the right page.
+
+### Tests
+
+- The server suite passes on SQLite and Postgres. A test-isolation bug that let some test files
+  write into the real `data/config` folder (and caused occasional full-suite-only failures) is
+  fixed: every test file now gets its own temporary config and downloads directory.
+
+### Known limitations
+
+- A pathological PDF that makes pdf.js loop synchronously can't be interrupted (it is only read once
+  per scan and cached afterwards).
+- Picking disc 2 of an album by hand after disc 1's folder was deleted outright numbers its tracks
+  from 1.
+- An audio-only fansub title with no video marker (e.g. `[Group] Show - 05 [AAC]`) doesn't report its
+  leading group.
+
 ## Round 347 — Full-codebase bug audit (security, downloads, scans, settings, UI)
 
 A 12-partition multi-agent audit of every server and web file (plus a dedicated pass over the

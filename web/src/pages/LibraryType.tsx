@@ -4,7 +4,7 @@ import { api, downloadFile, uploadFormFile } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { CustomColumn, LibraryGroup, MediaItem, QualityProfile, RootFolder, SavedLibraryView, Tag } from "../types.js";
-import { formatBytes } from "../utils/format.js";
+import { formatBytes, formatCalendarDate, parseServerTimestamp } from "../utils/format.js";
 import DropdownMenu from "../components/DropdownMenu.js";
 import Modal from "../components/Modal.js";
 import MonitorToggle from "../components/MonitorToggle.js";
@@ -162,8 +162,8 @@ function fieldValue(item: MediaItem, field: ExtraField, customColumns: CustomCol
   if (field === "year") return item.year ? String(item.year) : "";
   if (field === "quality") return item.quality ?? "";
   if (field === "contentRating") return item.contentRating ?? "";
-  if (field === "added") return new Date(item.addedAt).toLocaleDateString();
-  if (field === "releaseDate") return item.releaseDate ? new Date(item.releaseDate).toLocaleDateString() : "";
+  if (field === "added") return parseServerTimestamp(item.addedAt).toLocaleDateString();
+  if (field === "releaseDate") return formatCalendarDate(item.releaseDate);
   if (field === "path") return item.path ?? "";
   if (field === "sizeOnDisk") return typeof item.sizeBytes === "number" ? formatBytes(item.sizeBytes) : "";
   if (field === "studio") return item.studio ?? "";
@@ -454,7 +454,10 @@ export default function LibraryType() {
     );
   }
 
-  return <LibraryItemGrid type={type} typeLabel={typeInfo.label} groupId={groupId} groupDetail={groupDetail} />;
+  // Keyed by type so Movies -> Series -> browser Back mounts a fresh grid, like returning from an
+  // item does. A reused instance saw the type change as a filter change and reset the page, which
+  // replaced the back-navigated ?page=N URL (and its saved scroll position) with page 1.
+  return <LibraryItemGrid key={type} type={type} typeLabel={typeInfo.label} groupId={groupId} groupDetail={groupDetail} />;
 }
 
 export function LibraryItemGrid({
@@ -1010,8 +1013,9 @@ export function LibraryItemGrid({
     localStorage.setItem(`aonarr_library_poster_fields_${type}`, JSON.stringify(Array.from(posterFields)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [posterFields]);
-  // The component instance is reused (not remounted) when navigating between library types on the
-  // same route (e.g. Movies -> Series both match `/library/:type`), so the lazy useState
+  // The component instance can be reused (not remounted) when navigating between library types on
+  // the same route (LibraryAll's `/library/:type/all` and LibraryUngrouped's `/ungrouped` render it
+  // unkeyed; LibraryType itself keys it by type), so the lazy useState
   // initializers above only ever run once — without this, switching type wouldn't pick up that
   // type's own remembered sort/status/page-size and would just keep showing whichever library's
   // filter was active before the switch. Runs AFTER the seven persistence effects above in every

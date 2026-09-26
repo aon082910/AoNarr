@@ -39,15 +39,17 @@ let archiveDir: string;
 beforeEach(async () => {
   for (const key of ARCHIVAL_SETTINGS) setSetting(key, "");
   fetchWatchedFiles.mockReset();
-  recycleFile.mockReset().mockResolvedValue(undefined);
+  recycleFile.mockReset().mockResolvedValue(true);
   await db.prepare("DELETE FROM episodes").run();
   await db.prepare("DELETE FROM sub_items").run();
   await db.prepare("DELETE FROM media_items").run();
   await db.prepare("DELETE FROM history").run();
   await db.prepare("DELETE FROM tags").run();
   await db.prepare("DELETE FROM collections").run();
+  await db.prepare("DELETE FROM root_folders").run();
   libraryDir = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-archival-lib-"));
   archiveDir = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-archival-arc-"));
+  await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, 'movie')").run(libraryDir);
 });
 
 afterEach(() => {
@@ -232,6 +234,23 @@ describe("getUpcomingArchivals", () => {
     expect(candidates[0].scheduledFor.getTime()).toBe(watched.lastPlayedAt.getTime() + 10 * 24 * 60 * 60 * 1000);
   });
 
+  it("honours a retention of 0 days (archive as soon as watched), and reads a blank setting as the 30-day default", async () => {
+    configureMediaServer();
+    configureArchival();
+    const file = makeFile("movies/JustWatched.mkv");
+    const watched = watchedNow(file);
+    fetchWatchedFiles.mockResolvedValue([watched]);
+    await insertMovie({ title: "Just Watched", path: file });
+
+    setSetting("archiveAfterDays", "0");
+    const [candidate] = await getUpcomingArchivals();
+    expect(candidate.scheduledFor.getTime()).toBe(watched.lastPlayedAt.getTime());
+
+    setSetting("archiveAfterDays", "");
+    const [defaulted] = await getUpcomingArchivals();
+    expect(defaulted.scheduledFor.getTime()).toBe(watched.lastPlayedAt.getTime() + 30 * 24 * 60 * 60 * 1000);
+  });
+
   it("excludes an item with a never-archive (-1) retention override", async () => {
     configureMediaServer();
     configureArchival();
@@ -314,14 +333,15 @@ describe("runAutoArchival", () => {
     const file = makeFile("movies/Old.mkv");
     fetchWatchedFiles.mockResolvedValue([watchedNow(file, 30)]); // watched 30 days ago, 10-day retention -> well past cutoff
     const itemId = await insertMovie({ title: "Old Movie", path: file, quality: "1080p" });
-    await db.prepare("UPDATE media_items SET quality = '1080p' WHERE id = ?").run(itemId);
+    await db.prepare(`UPDATE media_items SET quality = '1080p', size_bytes = 1234, media_info = '{"videoCodec":"h264"}' WHERE id = ?`).run(itemId);
 
     await runAutoArchival();
 
     expect(fs.existsSync(file)).toBe(false);
-    expect(fs.existsSync(path.join(archiveDir, "Old.mkv"))).toBe(true);
+    expect(fs.existsSync(path.join(archiveDir, "movies", "Old.mkv"))).toBe(true);
     const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId)) as any;
-    expect(row).toMatchObject({ has_file: 0, path: null, quality: null });
+    // size_bytes too: the Library's "Size on disk" column mustn't keep showing an archived file.
+    expect(row).toMatchObject({ has_file: 0, path: null, quality: null, size_bytes: null, media_info: null });
     const history = (await db.prepare("SELECT * FROM history WHERE media_item_id = ?").get(itemId)) as any;
     expect(history.event_type).toBe("auto_archived");
     expect(JSON.parse(history.data)).toEqual({ title: "Old Movie", mode: "archived" });
@@ -339,6 +359,22 @@ describe("runAutoArchival", () => {
     await runAutoArchival();
 
     expect(fs.existsSync(file)).toBe(true);
+  });
+
+  it("archives a just-watched movie right away when the retention is 0 days", async () => {
+    configureMediaServer();
+    setSetting("archiveEnabled", "1");
+    setSetting("archiveAfterDays", "0");
+    setSetting("archiveFolder", archiveDir);
+    const file = makeFile("movies/Immediate.mkv");
+    fetchWatchedFiles.mockResolvedValue([{ path: file, lastPlayedAt: new Date(Date.now() - 60 * 1000) }]);
+    const itemId = await insertMovie({ title: "Immediate", path: file });
+
+    await runAutoArchival();
+
+    expect(fs.existsSync(file)).toBe(false);
+    expect(fs.existsSync(path.join(archiveDir, "movies", "Immediate.mkv"))).toBe(true);
+    expect(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(itemId)) as any).has_file).toBe(0);
   });
 
   it("does not archive an item with a never-archive retention override", async () => {
@@ -372,6 +408,59 @@ describe("runAutoArchival", () => {
     expect(JSON.parse(history.data).mode).toBe("deleted");
   });
 
+  it("keeps the row as it was when the recycle bin couldn't remove the file", async () => {
+    configureMediaServer();
+    setSetting("archiveEnabled", "1");
+    setSetting("archivePermanentDelete", "1");
+    const file = makeFile("movies/Unreachable.mkv");
+    fetchWatchedFiles.mockResolvedValue([watchedNow(file, 60)]);
+    const itemId = await insertMovie({ title: "Unreachable", path: file });
+    recycleFile.mockResolvedValue(false);
+
+    await runAutoArchival();
+
+    expect(recycleFile).toHaveBeenCalledWith(file, "movie", "Unreachable", itemId);
+    expect(await db.prepare("SELECT has_file, monitored, path FROM media_items WHERE id = ?").get(itemId)).toMatchObject({ has_file: 1, monitored: 1, path: file });
+    expect(await db.prepare("SELECT id FROM history WHERE media_item_id = ? AND event_type = 'auto_archived'").all(itemId)).toEqual([]);
+  });
+
+  it("skips files under a root folder that is missing or empty (an unmounted share), movies, episodes and sub-items alike", async () => {
+    configureMediaServer();
+    setSetting("archiveEnabled", "1");
+    setSetting("archivePermanentDelete", "1");
+    const offlineRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-archival-offline-"));
+    try {
+      await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, 'movie')").run(offlineRoot);
+      const movieFile = path.join(offlineRoot, "movies", "Offline Movie.mkv");
+      const episodeFile = path.join(offlineRoot, "tv", "Show X", "S01E01.mkv");
+      const albumFolder = path.join(offlineRoot, "music", "Band", "Album One");
+      const movieId = await insertMovie({ title: "Offline Movie", path: movieFile });
+      const { episodeId } = await insertShowWithEpisode({ path: episodeFile });
+      const artistId = Number(
+        (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, protected, status) VALUES ('artist','Band','band',1,1,0,'unknown')`).run())
+          .lastInsertRowid
+      );
+      const subItemId = Number(
+        (await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, file_path) VALUES (?, 'Album One', 1, 1, ?)").run(artistId, albumFolder))
+          .lastInsertRowid
+      );
+      const reachableFile = makeFile("movies/Reachable.mkv");
+      const reachableId = await insertMovie({ title: "Reachable", path: reachableFile });
+      fetchWatchedFiles.mockResolvedValue([watchedNow(movieFile, 60), watchedNow(episodeFile, 60), watchedNow(albumFolder, 60), watchedNow(reachableFile, 60)]);
+
+      await runAutoArchival();
+
+      expect(recycleFile).toHaveBeenCalledTimes(1);
+      expect(recycleFile).toHaveBeenCalledWith(reachableFile, "movie", "Reachable", reachableId);
+      expect(await db.prepare("SELECT has_file, monitored, path FROM media_items WHERE id = ?").get(movieId)).toMatchObject({ has_file: 1, monitored: 1, path: movieFile });
+      expect(await db.prepare("SELECT has_file, file_path FROM episodes WHERE id = ?").get(episodeId)).toMatchObject({ has_file: 1, file_path: episodeFile });
+      expect(await db.prepare("SELECT has_file, monitored, file_path FROM sub_items WHERE id = ?").get(subItemId)).toMatchObject({ has_file: 1, monitored: 1, file_path: albumFolder });
+      expect(await db.prepare("SELECT media_item_id FROM history WHERE event_type = 'auto_archived'").all()).toEqual([{ media_item_id: reachableId }]);
+    } finally {
+      fs.rmSync(offlineRoot, { recursive: true, force: true });
+    }
+  });
+
   it("one item's archive failure is caught and logged, without stopping the rest of the run", async () => {
     configureMediaServer();
     setSetting("archiveEnabled", "1");
@@ -386,7 +475,7 @@ describe("runAutoArchival", () => {
 
     expect(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(failingId)) as any).has_file).toBe(1); // untouched, the failure didn't silently mark it archived
     expect(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(goodId)) as any).has_file).toBe(0); // the other item still succeeded
-    expect(fs.existsSync(path.join(archiveDir, "Good.mkv"))).toBe(true);
+    expect(fs.existsSync(path.join(archiveDir, "movies", "Good.mkv"))).toBe(true);
   });
 
   it("archives a watched episode with its own label, and a watched sub-item likewise", async () => {
@@ -395,13 +484,14 @@ describe("runAutoArchival", () => {
     setSetting("archiveFolder", archiveDir);
     const epFile = makeFile("tv/S01E01.mkv");
     const { showId, episodeId } = await insertShowWithEpisode({ path: epFile });
+    await db.prepare(`UPDATE episodes SET size_bytes = 1234, media_info = '{"videoCodec":"h264"}' WHERE id = ?`).run(episodeId);
     fetchWatchedFiles.mockResolvedValue([watchedNow(epFile, 60)]);
 
     await runAutoArchival();
 
     expect(fs.existsSync(epFile)).toBe(false);
     const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(episodeId)) as any;
-    expect(ep).toMatchObject({ has_file: 0, file_path: null });
+    expect(ep).toMatchObject({ has_file: 0, file_path: null, size_bytes: null, media_info: null });
     const history = (await db.prepare("SELECT * FROM history WHERE media_item_id = ?").get(showId)) as any;
     expect(JSON.parse(history.data).title).toBe("Show X S01E01");
   });
@@ -477,6 +567,59 @@ describe("runAutoArchival", () => {
     await runAutoArchival();
 
     expect(fs.existsSync(file)).toBe(false);
-    expect(fs.existsSync(path.join(archiveDir, "CrossFs.mkv"))).toBe(true);
+    expect(fs.existsSync(path.join(archiveDir, "movies", "CrossFs.mkv"))).toBe(true);
+  });
+});
+
+// A flat archive folder keyed by file name let one show's "Season 01/S01E01.mkv" overwrite
+// another's, destroying the first even though archiving is the reversible mode.
+describe("runAutoArchival — archive destinations", () => {
+  function enableArchival(): void {
+    configureMediaServer();
+    setSetting("archiveEnabled", "1");
+    setSetting("archiveFolder", archiveDir);
+  }
+
+  it("keeps two shows' identically named episode files apart, under their own folders", async () => {
+    enableArchival();
+    const showAFile = makeFile("tv/Show A/Season 01/S01E01.mkv");
+    fs.writeFileSync(showAFile, "show a");
+    const showBFile = makeFile("tv/Show B/Season 01/S01E01.mkv");
+    fs.writeFileSync(showBFile, "show b");
+    await insertShowWithEpisode({ path: showAFile });
+    await insertShowWithEpisode({ path: showBFile });
+    fetchWatchedFiles.mockResolvedValue([watchedNow(showAFile, 60), watchedNow(showBFile, 60)]);
+
+    await runAutoArchival();
+
+    expect(fs.readFileSync(path.join(archiveDir, "tv", "Show A", "Season 01", "S01E01.mkv"), "utf-8")).toBe("show a");
+    expect(fs.readFileSync(path.join(archiveDir, "tv", "Show B", "Season 01", "S01E01.mkv"), "utf-8")).toBe("show b");
+  });
+
+  it("never replaces a file already in the archive, numbering the new one instead", async () => {
+    enableArchival();
+    fs.mkdirSync(path.join(archiveDir, "movies"), { recursive: true });
+    fs.writeFileSync(path.join(archiveDir, "movies", "Rewatched.mkv"), "archived last year");
+    const file = makeFile("movies/Rewatched.mkv");
+    fs.writeFileSync(file, "archived now");
+    await insertMovie({ title: "Rewatched", path: file });
+    fetchWatchedFiles.mockResolvedValue([watchedNow(file, 60)]);
+
+    await runAutoArchival();
+
+    expect(fs.readFileSync(path.join(archiveDir, "movies", "Rewatched.mkv"), "utf-8")).toBe("archived last year");
+    expect(fs.readFileSync(path.join(archiveDir, "movies", "Rewatched (1).mkv"), "utf-8")).toBe("archived now");
+  });
+
+  it("outside every root folder, keeps the file's last three path segments", async () => {
+    enableArchival();
+    await db.prepare("DELETE FROM root_folders").run();
+    const file = makeFile("tv/Unrooted Show/Season 02/S02E03.mkv");
+    await insertShowWithEpisode({ path: file, season: 2, episode: 3 });
+    fetchWatchedFiles.mockResolvedValue([watchedNow(file, 60)]);
+
+    await runAutoArchival();
+
+    expect(fs.existsSync(path.join(archiveDir, "Unrooted Show", "Season 02", "S02E03.mkv"))).toBe(true);
   });
 });

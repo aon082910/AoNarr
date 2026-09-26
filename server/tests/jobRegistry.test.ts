@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { setupTestDb } from "./helpers/testDb.js";
 
 let registerJob: (typeof import("../src/services/jobRegistry.js"))["registerJob"];
@@ -7,19 +7,28 @@ let cancelJob: (typeof import("../src/services/jobRegistry.js"))["cancelJob"];
 let updateJobSchedule: (typeof import("../src/services/jobRegistry.js"))["updateJobSchedule"];
 let listJobs: (typeof import("../src/services/jobRegistry.js"))["listJobs"];
 let stopAllJobs: (typeof import("../src/services/jobRegistry.js"))["stopAllJobs"];
+let startAllJobs: (typeof import("../src/services/jobRegistry.js"))["startAllJobs"];
+let isJobsStopped: (typeof import("../src/services/jobRegistry.js"))["isJobsStopped"];
 let setSetting: (key: string, value: string) => void;
 let uniqueCounter = 0;
 
 beforeAll(async () => {
   await setupTestDb();
-  ({ registerJob, runJobNow, cancelJob, updateJobSchedule, listJobs, stopAllJobs } = await import("../src/services/jobRegistry.js"));
+  ({ registerJob, runJobNow, cancelJob, updateJobSchedule, listJobs, stopAllJobs, startAllJobs, isJobsStopped } = await import(
+    "../src/services/jobRegistry.js"
+  ));
   ({ setSetting } = await import("../src/services/settingsStore.js"));
 });
 
+// stopAllJobs also refuses every later run until startAllJobs, so each test starts from there.
+beforeEach(() => {
+  startAllJobs();
+});
+
 afterEach(() => {
-  // updateJobSchedule's success path starts a REAL cron/interval timer — unconditionally clear
-  // every registered job's timer after each test so nothing keeps firing into later tests or
-  // leaks past the test run itself (defs/state are module-private and never reset between tests).
+  // startAllJobs and updateJobSchedule's success path start REAL cron/interval timers — clear every
+  // registered job's timer after each test so nothing keeps firing into later tests or leaks past
+  // the test run itself (defs/state are module-private and never reset between tests).
   stopAllJobs();
 });
 
@@ -62,8 +71,8 @@ describe("registerJob / listJobs", () => {
 });
 
 describe("runJobNow", () => {
-  it("returns false for an unknown job key", () => {
-    expect(runJobNow("definitely-not-a-registered-job")).toBe(false);
+  it("reports an unknown job key", () => {
+    expect(runJobNow("definitely-not-a-registered-job")).toBe("unknown");
   });
 
   it("runs the job and records a success status", async () => {
@@ -79,7 +88,7 @@ describe("runJobNow", () => {
       },
     });
 
-    expect(runJobNow(key)).toBe(true);
+    expect(runJobNow(key)).toBe("started");
     await tick();
 
     expect(ran).toBe(true);
@@ -127,12 +136,62 @@ describe("runJobNow", () => {
 
     runJobNow(key);
     await tick(); // let the first run actually start and set running=true
-    runJobNow(key); // should be skipped — the job is still "running"
+    expect(runJobNow(key)).toBe("already-running");
     await tick();
     releaseFirstRun();
     await tick();
 
     expect(runCount).toBe(1);
+  });
+});
+
+describe("stopAllJobs", () => {
+  it("refuses to run a job, even on demand, until startAllJobs", async () => {
+    const key = uniqueKey("stopped");
+    let runCount = 0;
+    registerJob({
+      key,
+      name: "Stopped Job",
+      scheduleType: "cron",
+      defaultSchedule: "0 3 * * *",
+      run: async () => {
+        runCount++;
+      },
+    });
+
+    stopAllJobs();
+    expect(isJobsStopped()).toBe(true);
+    expect(runJobNow(key)).toBe("stopped");
+    await tick();
+    expect(runCount).toBe(0);
+    expect(listJobs().find((j) => j.key === key)!.lastRunAt).toBeNull();
+
+    startAllJobs();
+    expect(isJobsStopped()).toBe(false);
+    expect(runJobNow(key)).toBe("started");
+    await tick();
+    expect(runCount).toBe(1);
+  });
+
+  it("still reports an unknown job key as unknown while stopped", () => {
+    stopAllJobs();
+    expect(runJobNow("no-such-job-while-stopped")).toBe("unknown");
+  });
+
+  it("saves a schedule change made while stopped without restarting its timer", () => {
+    const key = uniqueKey("stopped-schedule");
+    registerJob({ key, name: "Stopped Schedule Job", scheduleType: "interval", defaultSchedule: "60", run: async () => {} });
+
+    stopAllJobs();
+    vi.useFakeTimers();
+    try {
+      expect(updateJobSchedule(key, "30")).toEqual({ ok: true });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(listJobs().find((j) => j.key === key)!.schedule).toBe("30");
+    expect(runJobNow(key)).toBe("stopped");
   });
 });
 

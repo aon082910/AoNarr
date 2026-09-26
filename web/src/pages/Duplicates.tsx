@@ -7,6 +7,7 @@ import { PageToolbar } from "../components/PageToolbar.js";
 import type { DuplicateGroup, DuplicateGroupItem } from "../types.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
+import { parseServerTimestamp } from "../utils/format.js";
 
 // Same provider labels AddMedia.tsx's own PROVIDER_LABELS uses — matchedProviders here is the raw
 // externalIds key set (Object.keys(JSON.parse(external_ids))), e.g. "tmdb"/"mangadex", not
@@ -252,7 +253,7 @@ export default function Duplicates() {
                     <td>
                       <MonitorToggle monitored={item.monitored} onToggle={() => toggleItemMonitored(item)} />
                     </td>
-                    <td>{item.addedAt ? new Date(item.addedAt).toLocaleDateString() : "-"}</td>
+                    <td>{item.addedAt ? parseServerTimestamp(item.addedAt).toLocaleDateString() : "-"}</td>
                   </tr>
                 ))}
               </tbody>

@@ -31,26 +31,41 @@ const MediaAnalysisContext = createContext<MediaAnalysisContextValue | null>(nul
  */
 export function MediaAnalysisProvider({ children }: { children: ReactNode }) {
   const [progress, setProgress] = useState<AnalysisProgress | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollFailuresRef = useRef(0);
 
   function stopPolling() {
     if (pollRef.current) {
-      clearInterval(pollRef.current);
+      clearTimeout(pollRef.current);
       pollRef.current = null;
     }
   }
 
+  function schedulePoll(delayMs: number) {
+    stopPolling();
+    pollRef.current = setTimeout(pollProgress, delayMs);
+  }
+
   function pollProgress() {
+    pollRef.current = null;
     api
       .get<AnalysisProgress>("/media-analysis/progress")
       .then((p) => {
+        pollFailuresRef.current = 0;
         setProgress(p);
-        if (!p.running) {
-          stopPolling();
+        if (p.running) {
+          schedulePoll(1200);
+        } else if (p.finishedAt === null) {
+          // The server restarted mid-run (its in-memory progress is back to the idle default).
+          notify.info("The analysis run was interrupted before it finished.");
+        } else {
           notify.success(`Analysis finished — ${p.done - p.failed} probed${p.failed > 0 ? `, ${p.failed} failed` : ""}.`);
         }
       })
-      .catch(() => stopPolling());
+      // Nothing else re-arms polling while progress.running is true (MediaAnalyzer disables
+      // "Analyze Now" then), so one failed poll — a Wi-Fi blip, a laptop waking, a single 502 —
+      // must back off and retry rather than stop, or the bar freezes until a full page reload.
+      .catch(() => schedulePoll(Math.min(30_000, 1200 * 2 ** ++pollFailuresRef.current)));
   }
 
   // Picks up an already-running analysis (started before this session loaded, e.g. a scheduled
@@ -62,7 +77,7 @@ export function MediaAnalysisProvider({ children }: { children: ReactNode }) {
       .then((p) => {
         if (p.running) {
           setProgress(p);
-          pollRef.current = setInterval(pollProgress, 1200);
+          schedulePoll(1200);
         }
       })
       .catch(() => {});
@@ -77,8 +92,8 @@ export function MediaAnalysisProvider({ children }: { children: ReactNode }) {
       notify.info("An analysis run is already in progress — showing its live progress.");
     }
     setProgress({ running: true, type: type || null, total: 0, done: 0, failed: 0, startedAt: Date.now(), finishedAt: null });
-    stopPolling();
-    pollRef.current = setInterval(pollProgress, 1200);
+    pollFailuresRef.current = 0;
+    schedulePoll(1200);
   }
 
   return <MediaAnalysisContext.Provider value={{ progress, runAnalysis }}>{children}</MediaAnalysisContext.Provider>;

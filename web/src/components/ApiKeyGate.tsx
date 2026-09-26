@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { hasCredentials, setApiKey, setSessionToken } from "../api/client.js";
+import { hasCredentials, setApiKey, setSessionToken, UI_REQUEST_HEADERS } from "../api/client.js";
 import { AuthProvider } from "../context/AuthContext.js";
 import { MediaAnalysisProvider } from "../context/MediaAnalysisContext.js";
 
@@ -11,7 +11,7 @@ type Mode = "admin" | "user" | "apikey";
 async function postLogin<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...UI_REQUEST_HEADERS, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
@@ -58,7 +58,7 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
     try {
       const res = await fetch("/api/auth/setup", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { ...UI_REQUEST_HEADERS, "Content-Type": "application/json" },
         body: JSON.stringify({ username: username.trim(), password }),
       });
       const body = await res.json();
@@ -79,7 +79,7 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
     setChecking(true);
     setError(null);
     try {
-      const res = await fetch("/api/settings", { headers: { "X-Api-Key": trimmed } });
+      const res = await fetch("/api/settings", { headers: { ...UI_REQUEST_HEADERS, "X-Api-Key": trimmed } });
       if (res.status === 429) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? "Too many failed attempts. Try again later.");
@@ -107,7 +107,7 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
     try {
       const res = await fetch("/api/settings/totp/check-login", {
         method: "POST",
-        headers: { "X-Api-Key": pendingTotpKey, "Content-Type": "application/json" },
+        headers: { ...UI_REQUEST_HEADERS, "X-Api-Key": pendingTotpKey, "Content-Type": "application/json" },
         body: JSON.stringify({ code: totpCode }),
       });
       const body = await res.json();
@@ -293,7 +293,8 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
           <>
             <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
               Legacy sign-in using the instance API key (Settings → General), for scripts/automation
-              or accounts created before admin login existed.
+              or accounts created before admin login existed. An instance with no admin account yet
+              can create one from the Account page after signing in here.
             </p>
             <label htmlFor="apikeygate-api-key-10">API key</label>
             <input id="apikeygate-api-key-10" value={apiKeyInput} onChange={(e) => setApiKeyInput(e.target.value)} autoFocus />

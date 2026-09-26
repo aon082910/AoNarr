@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
@@ -47,12 +47,24 @@ export default function CutoffUnmet() {
   const [pageSize, setPageSize] = useState<number>(() => Number(localStorage.getItem("aonarr_cutoffunmet_page_size")) || 60);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [searching, setSearching] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // Paging quickly overlaps requests; a slower, older one must not overwrite the current page or
+  // raise an error banner over data that loaded fine.
+  const loadSeq = useRef(0);
 
   function load() {
-    api.get<CutoffUnmetResponse>(`/wanted/cutoff-unmet?page=${page}&pageSize=${pageSize}`).then((res) => {
-      setData(res);
-      setSelected(new Set());
-    });
+    const seq = ++loadSeq.current;
+    api.get<CutoffUnmetResponse>(`/wanted/cutoff-unmet?page=${page}&pageSize=${pageSize}`).then(
+      (res) => {
+        if (seq !== loadSeq.current) return;
+        setData(res);
+        setLoadError(null);
+        setSelected(new Set());
+      },
+      (e) => {
+        if (seq === loadSeq.current) setLoadError((e as Error).message);
+      }
+    );
   }
 
   useEffect(load, [page, pageSize]);
@@ -110,7 +122,7 @@ export default function CutoffUnmet() {
       })
     : [];
 
-  if (!data) return <p className="empty">Loading...</p>;
+  if (!data) return <p className="empty">{loadError ?? "Loading..."}</p>;
 
   return (
     <div>
@@ -121,6 +133,12 @@ export default function CutoffUnmet() {
         doesn't retroactively re-search it, so these sit here until manually (or automatically)
         re-searched for an upgrade.
       </p>
+      {/* A failed page change or refresh keeps the previous rows on screen. */}
+      {loadError && (
+        <p role="alert" style={{ color: "var(--danger)" }}>
+          Couldn't load this page: {loadError}
+        </p>
+      )}
       {selected.size > 0 && (
         <div className="form-panel" style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <strong>{selected.size} selected</strong>

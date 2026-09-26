@@ -4,6 +4,7 @@ import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { streamFileWithRangeSupport } from "../services/rangeStream.js";
 import { isLocalArtworkExtension } from "../services/localArtwork.js";
 import { fetchMediaServerArtwork, isMediaServerArtworkRef } from "../services/mediaServer.js";
+import { fetchScreenscraperArtwork, isScreenscraperArtworkRef } from "../services/metadata.js";
 import { Readable } from "node:stream";
 
 /**
@@ -34,6 +35,16 @@ localArtworkRouter.get(
     // with the server's credential sent as a header — never handed to the browser in a URL.
     if (isMediaServerArtworkRef(filePath)) {
       const upstream = await fetchMediaServerArtwork(filePath).catch(() => null);
+      if (!upstream?.body) throw new HttpError(404, "No artwork found for this token");
+      res.setHeader("Content-Type", upstream.headers.get("content-type") ?? "image/jpeg");
+      res.setHeader("Cache-Control", "private, max-age=86400");
+      Readable.fromWeb(upstream.body as any).pipe(res);
+      return;
+    }
+    // ScreenScraper artwork is proxied the same way: its media URLs only answer with the admin's
+    // ScreenScraper credentials in them (see fetchScreenscraperArtwork, which only returns rasters).
+    if (isScreenscraperArtworkRef(filePath)) {
+      const upstream = await fetchScreenscraperArtwork(filePath).catch(() => null);
       if (!upstream?.body) throw new HttpError(404, "No artwork found for this token");
       res.setHeader("Content-Type", upstream.headers.get("content-type") ?? "image/jpeg");
       res.setHeader("Cache-Control", "private, max-age=86400");

@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { MediaType, MetadataSearchResult } from "../types.js";
+import { displayableImageUrl } from "../utils/artwork.js";
 import type { AddPreviewState } from "./AddPreview.js";
 
 // Matches server/src/services/nfoParser.ts's actual root-tag whitelist (movie/tvshow/
@@ -334,20 +335,23 @@ export default function AddMedia() {
       {results && (
         <div className="grid">
           {results.length === 0 && <p className="empty">No results found.</p>}
-          {results.map((r, idx) => (
-            <div key={idx} className="card" onClick={() => goToPreview(r, false)} style={r.excluded ? { opacity: 0.5 } : undefined}>
-              <div className="poster" style={r.posterUrl ? { backgroundImage: `url(${r.posterUrl})` } : undefined}>
-                {!r.posterUrl && "No poster"}
-              </div>
-              <div className="meta">
-                <div className="title">{r.title}</div>
-                <div className="sub">
-                  {r.year ?? ""}
-                  {r.excluded && " · excluded (click to add anyway)"}
+          {results.map((r, idx) => {
+            const poster = displayableImageUrl(r.posterUrl);
+            return (
+              <div key={idx} className="card" onClick={() => goToPreview(r, false)} style={r.excluded ? { opacity: 0.5 } : undefined}>
+                <div className="poster" style={poster ? { backgroundImage: `url(${poster})` } : undefined}>
+                  {!poster && "No poster"}
+                </div>
+                <div className="meta">
+                  <div className="title">{r.title}</div>
+                  <div className="sub">
+                    {r.year ?? ""}
+                    {r.excluded && " · excluded (click to add anyway)"}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

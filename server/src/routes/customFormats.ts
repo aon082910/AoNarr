@@ -4,7 +4,7 @@ import { db } from "../db/index.js";
 import { customFormatFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { translateTrashFormat, type TrashCustomFormat } from "../services/trashFormats.js";
-import { syncTrashFormats } from "../services/trashSync.js";
+import { getLastTrashSyncResult, isTrashSyncRunning, syncTrashFormats } from "../services/trashSync.js";
 import { log } from "../services/logger.js";
 import { scoreRelease } from "../services/customFormatScoring.js";
 import { parseReleaseTitle } from "../services/releaseParser.js";
@@ -227,14 +227,28 @@ customFormatsRouter.post(
  * upstream) so re-running updates already-synced formats in place instead of duplicating them. Only
  * formats with at least one translatable condition are synced; the rest are reported back as
  * unsupported rather than created empty. Fire-and-forget, same reasoning as the media-server and
- * Starr-app imports — fetching 100+ format files from GitHub can outrun an HTTP/gateway timeout.
+ * Starr-app imports — fetching 100+ format files from GitHub can outrun an HTTP/gateway timeout; the
+ * outcome is read back through GET /trash-sync/status.
  */
 customFormatsRouter.post(
   "/trash-sync",
   asyncHandler(async (req, res) => {
     const app = req.body?.app === "sonarr" ? "sonarr" : "radarr";
+    const alreadyRunning = isTrashSyncRunning(app);
     syncTrashFormats(app).catch((err) => log.warn(`[trashSync] ${app} sync failed:`, (err as Error).message));
-    res.json({ started: true });
+    res.json({ started: !alreadyRunning, alreadyRunning });
+  })
+);
+
+/** The outcome of each app's most recent TRaSH-Guides sync (null until one has run). */
+customFormatsRouter.get(
+  "/trash-sync/status",
+  asyncHandler(async (_req, res) => {
+    res.json({
+      radarr: getLastTrashSyncResult("radarr"),
+      sonarr: getLastTrashSyncResult("sonarr"),
+      running: { radarr: isTrashSyncRunning("radarr"), sonarr: isTrashSyncRunning("sonarr") },
+    });
   })
 );
 

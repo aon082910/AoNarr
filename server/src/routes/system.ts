@@ -20,7 +20,8 @@ import {
 import { ENCRYPTION_KEY_PATH, reloadEncryptionKey } from "../services/encryption.js";
 import { config } from "../config.js";
 import { downloadClientFromRow, indexerFromRow, rootFolderFromRow } from "../db/mappers.js";
-import { getDownloadClientAdapter } from "../services/downloadClient.js";
+import { getDownloadClientAdapter, waitForQueueImports } from "../services/downloadClient.js";
+import { cancelJob, isJobRunning, listJobs, stopAllJobs } from "../services/jobRegistry.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { checkIndexerHealth } from "../services/indexerClient.js";
 import { attachIndexerHealth } from "../services/indexerHealth.js";
@@ -174,14 +175,17 @@ systemRouter.get(
  * Server-Sent Events channel for a live-tailing System → Logs page (Radarr/Sonarr-style), pushing
  * every new entry the moment it's logged instead of the page's old load-once/manual-refresh view.
  * Same pattern as activity.ts's own /stream route (see services/realtime.ts) — an EventSource can't
- * set the X-Api-Key/X-Session-Token headers, so requireAuth's `?apikey=`/`?sessionToken=` query
- * fallback carries the credential instead.
+ * set the X-Api-Key/X-Session-Token headers, so the browser opens it with a single-use `?ticket=`
+ * from POST /api/auth/stream-ticket, and requireAuth drops the connection once the credential behind
+ * it is revoked (see middleware/auth.ts).
  */
 systemRouter.get("/logs/stream", (req, res) => {
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
+    // An nginx-based reverse proxy of the user's own (SWAG, Nginx Proxy Manager) buffers the stream otherwise.
+    "X-Accel-Buffering": "no",
   });
   res.write(": connected\n\n");
   registerLogStreamClient(res);
@@ -271,7 +275,8 @@ systemRouter.get(
           return {
             path: f.path,
             mediaType: f.mediaType,
-            freeBytes: stat.bfree * stat.bsize,
+            // bavail, not bfree: the server runs unprivileged and can't use root-reserved blocks.
+            freeBytes: stat.bavail * stat.bsize,
             totalBytes: stat.blocks * stat.bsize,
             daysUntilFull: forecast?.daysUntilFull ?? null,
           };
@@ -713,15 +718,29 @@ function writeRestoredKey(keyBuffer: Buffer): void {
   fs.writeFileSync(ENCRYPTION_KEY_PATH, keyBuffer, { mode: 0o600 });
 }
 
+const RESTORE_IMPORT_WAIT_MS = 30_000;
+
+/** Stops scheduled jobs and lets running imports finish before the database is replaced: an import
+ * cut off mid-copy leaves its partial copy behind and its later database writes fail. A queue poll
+ * already underway keeps starting imports (it doesn't stop on cancel), so it's waited out too. */
+async function settleBeforeRestore(): Promise<void> {
+  stopAllJobs();
+  for (const job of listJobs()) {
+    if (job.running) cancelJob(job.key);
+  }
+  if (!(await waitForQueueImports(RESTORE_IMPORT_WAIT_MS, () => isJobRunning("queuePoll")))) {
+    log.warn(`[system] an import or queue poll was still running after ${RESTORE_IMPORT_WAIT_MS / 1000}s — restoring anyway`);
+  }
+}
+
 /**
  * SQLite restore means replacing the live DB file out from under a running process, which is
  * only safe if we stop touching it first — so this checkpoints + closes the connection, swaps
  * the file, and exits; the container's restart policy (`unless-stopped`) brings it back up
  * against the restored file. The previous DB is kept alongside as a `.pre-restore` copy just in
- * case. Postgres restore is different in kind, not just mechanism: `pg_restore` runs against the
- * live connection over the network (see restorePostgres()), so the app never needs to stop
- * touching the database or exit — its connection pool just sees the schema replaced underneath it
- * inside one transaction.
+ * case. On Postgres, `pg_restore` runs against the live connection over the network (see
+ * restorePostgres()), so the database needs no file swap — but the process still exits afterwards,
+ * for the same restart.
  *
  * Accepts both a current bundle (zip: db snapshot + encryption.key, see writeBackupBundle) and a
  * legacy single-file `.db`/`.dump` upload from before bundling existed, for backward compatibility
@@ -729,9 +748,8 @@ function writeRestoredKey(keyBuffer: Buffer): void {
  * `encryption.key`, and the key being replaced is kept as `encryption.key.pre-restore` — the
  * credentials in the old DB (the SQLite `.pre-restore` copy) are only decryptable with it. On the
  * Postgres path the key is swapped only when the data now in the database needs it (see
- * restoredDbNeedsBundleKey — pg_restore can fail both before and after the data is in) and its
- * cache dropped (reloadEncryptionKey) so this still-running instance's next decrypt uses it; on
- * the SQLite path the process exits and restarts anyway, so a plain file write is enough.
+ * restoredDbNeedsBundleKey — pg_restore can fail both before and after the data is in); on the
+ * SQLite path a plain file write is enough. Either way the restarted process loads the key file.
  */
 systemRouter.post(
   "/backup/restore",
@@ -758,9 +776,10 @@ systemRouter.post(
       fs.writeFileSync(tmpFile, dbBuffer);
       const actor = auditActor(req);
       log.warn(`[system] database restore initiated by ${actor.username} (postgres)`);
-      res.json({ restored: true, message: "Restoring — this may take a moment, the app keeps running." });
+      res.json({ restored: true, message: "Restoring — the app will restart once the restore finishes." });
       let restoreSucceeded = false;
       try {
+        await settleBeforeRestore();
         await restorePostgres(tmpFile);
         restoreSucceeded = true;
         log.info("[system] postgres restore completed");
@@ -781,6 +800,13 @@ systemRouter.post(
           log.error("[system] couldn't install the backup's encryption key:", (err as Error).message);
         }
       }
+      // pg_restore --clean replaced the tables under this running process, even when it reported
+      // errors partway: the settings and quality caches, job schedules and IRC feeds still hold
+      // pre-restore values, and a dump from an older version lacks columns that only the startup
+      // migrations add. Restarting, as the SQLite path does, redoes all of that against the data now
+      // in the database. The short delay lets the log lines above reach the log file first.
+      log.warn("[system] restarting to load the restored database");
+      setTimeout(() => process.exit(0), 250);
       return;
     }
 
@@ -806,17 +832,28 @@ systemRouter.post(
 
     res.json({ restored: true, message: "Restoring — the app will restart momentarily." });
 
-    setTimeout(() => {
-      if (keyBuffer) writeRestoredKey(keyBuffer);
-      sqliteDb.close();
-      fs.writeFileSync(config.dbPath, dbBuffer);
-      for (const suffix of ["-wal", "-shm"]) {
-        try {
-          fs.unlinkSync(config.dbPath + suffix);
-        } catch {
-          // no journal file to clean up, that's fine
+    setTimeout(async () => {
+      try {
+        await settleBeforeRestore();
+        // Whatever committed while that waited (a finishing import's rows) is missing from the copy
+        // taken above, so the rollback copy is refreshed. Before the key swap: if this fails, the
+        // current database stays in place with its own key.
+        sqliteDb.pragma("wal_checkpoint(TRUNCATE)");
+        fs.copyFileSync(config.dbPath, preRestorePath);
+        if (keyBuffer) writeRestoredKey(keyBuffer);
+        sqliteDb.close();
+        fs.writeFileSync(config.dbPath, dbBuffer);
+        for (const suffix of ["-wal", "-shm"]) {
+          try {
+            fs.unlinkSync(config.dbPath + suffix);
+          } catch {
+            // no journal file to clean up, that's fine
+          }
         }
+      } catch (err) {
+        log.error("[system] database restore failed:", (err as Error).message);
       }
+      // Scheduled jobs are stopped either way, so a restart is what brings them back.
       process.exit(0);
     }, 250);
   })

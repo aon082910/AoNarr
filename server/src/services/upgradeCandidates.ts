@@ -1,5 +1,5 @@
 import { db } from "../db/index.js";
-import { qualityRank } from "./quality.js";
+import { qualityRank, usesQualityTiers } from "./quality.js";
 
 export interface UpgradeCandidate {
   mediaItemId: number;
@@ -35,22 +35,33 @@ function belowCutoff(quality: string, cutoff: string): boolean {
   return current >= 0 && current < qualityRank(cutoff);
 }
 
+/** A YouTube video or an RSS podcast episode is downloaded straight from its source, which offers
+ * no other quality, so a search refuses to upgrade it. Lives here rather than in scheduler.ts, whose
+ * directSourceFor uses it too, since scheduler.ts imports this module. */
+export function isDirectSource(type: string, provider: string | null, externalId: string | null): boolean {
+  if (!externalId) return false;
+  return (type === "video" && provider === "youtube") || (type === "podcast" && provider === "rss");
+}
+
 /**
  * Downloaded files never get revisited once imported — if an admin later raises a quality
  * profile's cutoff, everything already downloaded under the old (lower) cutoff just stays as-is
  * forever unless someone remembers to check. This surfaces anything currently below its current
  * profile's cutoff so it can be manually re-searched for an upgrade. Monitored rows only (a movie,
  * or an episode/sub-item AND its parent) — unmonitoring is how an admin says "leave this file
- * alone", and auto-upgrade used to replace unmonitored files anyway.
+ * alone", and auto-upgrade used to replace unmonitored files anyway. Types without quality tiers
+ * (music, books, ROMs) and direct-source videos are left out: a search refuses to upgrade them,
+ * having no quality to go by.
  */
 export async function findUpgradeCandidates(): Promise<UpgradeCandidate[]> {
   const profiles = await loadProfiles();
   const candidates: UpgradeCandidate[] = [];
 
   const movies = (await db
-    .prepare("SELECT id, title, quality, quality_profile_id FROM media_items WHERE has_file = 1 AND monitored = 1 AND quality IS NOT NULL")
-    .all()) as { id: number; title: string; quality: string; quality_profile_id: number | null }[];
+    .prepare("SELECT id, type, title, quality, quality_profile_id FROM media_items WHERE has_file = 1 AND monitored = 1 AND quality IS NOT NULL")
+    .all()) as { id: number; type: string; title: string; quality: string; quality_profile_id: number | null }[];
   for (const m of movies) {
+    if (!usesQualityTiers(m.type)) continue;
     const profile = m.quality_profile_id ? profiles.get(m.quality_profile_id) : undefined;
     if (!profile) continue;
     if (belowCutoff(m.quality, profile.cutoff)) {
@@ -60,7 +71,7 @@ export async function findUpgradeCandidates(): Promise<UpgradeCandidate[]> {
 
   const episodes = (await db
     .prepare(
-      `SELECT e.id, e.season_number, e.episode_number, e.quality, m.id AS "mediaItemId", m.title, m.quality_profile_id
+      `SELECT e.id, e.season_number, e.episode_number, e.quality, m.id AS "mediaItemId", m.type, m.title, m.quality_profile_id
        FROM episodes e JOIN media_items m ON m.id = e.media_item_id
        WHERE e.has_file = 1 AND e.monitored = 1 AND m.monitored = 1 AND e.quality IS NOT NULL`
     )
@@ -70,10 +81,12 @@ export async function findUpgradeCandidates(): Promise<UpgradeCandidate[]> {
     episode_number: number;
     quality: string;
     mediaItemId: number;
+    type: string;
     title: string;
     quality_profile_id: number | null;
   }[];
   for (const e of episodes) {
+    if (!usesQualityTiers(e.type)) continue;
     const profile = e.quality_profile_id ? profiles.get(e.quality_profile_id) : undefined;
     if (!profile) continue;
     if (belowCutoff(e.quality, profile.cutoff)) {
@@ -90,7 +103,8 @@ export async function findUpgradeCandidates(): Promise<UpgradeCandidate[]> {
 
   const subItems = (await db
     .prepare(
-      `SELECT s.id, s.title AS "subTitle", s.quality, m.id AS "mediaItemId", m.title, m.quality_profile_id
+      `SELECT s.id, s.title AS "subTitle", s.quality, s.external_provider, s.external_id, m.id AS "mediaItemId", m.type, m.title,
+         m.quality_profile_id
        FROM sub_items s JOIN media_items m ON m.id = s.media_item_id
        WHERE s.has_file = 1 AND s.monitored = 1 AND m.monitored = 1 AND s.quality IS NOT NULL`
     )
@@ -98,11 +112,15 @@ export async function findUpgradeCandidates(): Promise<UpgradeCandidate[]> {
     id: number;
     subTitle: string;
     quality: string;
+    external_provider: string | null;
+    external_id: string | null;
     mediaItemId: number;
+    type: string;
     title: string;
     quality_profile_id: number | null;
   }[];
   for (const s of subItems) {
+    if (!usesQualityTiers(s.type) || isDirectSource(s.type, s.external_provider, s.external_id)) continue;
     const profile = s.quality_profile_id ? profiles.get(s.quality_profile_id) : undefined;
     if (!profile) continue;
     if (belowCutoff(s.quality, profile.cutoff)) {

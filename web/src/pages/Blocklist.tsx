@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
@@ -22,18 +22,30 @@ export default function Blocklist() {
   const [data, setData] = useState<BlocklistResponse | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(() => Number(localStorage.getItem("aonarr_blocklist_page_size")) || 100);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // Paging quickly overlaps requests; a slower, older one must not overwrite the current page or
+  // raise an error banner over data that loaded fine.
+  const loadSeq = useRef(0);
 
   function load() {
+    const seq = ++loadSeq.current;
     const offset = (page - 1) * pageSize;
-    api.get<BlocklistResponse>(`/blocklist?limit=${pageSize}&offset=${offset}`).then((res) => {
-      // Past the end (the last entries on this page were removed) — step back instead of showing
-      // "Nothing blocklisted." with no pagination while entries remain on earlier pages.
-      if (res.items.length === 0 && page > 1) {
-        setPage(Math.min(page - 1, Math.max(1, Math.ceil(res.total / pageSize))));
-        return;
+    api.get<BlocklistResponse>(`/blocklist?limit=${pageSize}&offset=${offset}`).then(
+      (res) => {
+        if (seq !== loadSeq.current) return;
+        // Past the end (the last entries on this page were removed) — step back instead of showing
+        // "Nothing blocklisted." with no pagination while entries remain on earlier pages.
+        if (res.items.length === 0 && page > 1) {
+          setPage(Math.min(page - 1, Math.max(1, Math.ceil(res.total / pageSize))));
+          return;
+        }
+        setData(res);
+        setLoadError(null);
+      },
+      (e) => {
+        if (seq === loadSeq.current) setLoadError((e as Error).message);
       }
-      setData(res);
-    });
+    );
   }
 
   useEffect(load, [page, pageSize]);
@@ -81,7 +93,7 @@ export default function Blocklist() {
       })
     : [];
 
-  if (!data) return <p className="empty">Loading...</p>;
+  if (!data) return <p className="empty">{loadError ?? "Loading..."}</p>;
 
   const totalPages = Math.max(1, Math.ceil(data.total / pageSize));
 
@@ -92,6 +104,12 @@ export default function Blocklist() {
         Releases AoNarr won't grab again — added manually from a search result, or automatically
         after a grab fails to import. Remove an entry to let it be considered again.
       </p>
+      {/* A failed page change keeps the previous page's rows on screen. */}
+      {loadError && (
+        <p role="alert" style={{ color: "var(--danger)" }}>
+          Couldn't load this page: {loadError}
+        </p>
+      )}
       {data.items.length > 0 && (
         <PageToolbar
           left={<ToolbarButton icon={<TrashIcon />} label="Clear All" onClick={clearAll} danger title="Clear blocklist" />}

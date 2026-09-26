@@ -323,6 +323,8 @@ export interface QueueItem {
   retryCount: number;
   indexerId: number | null;
   downloadClientId: number | null;
+  /** Why a completed row's import was skipped, leaving it for a manual import. */
+  importSkippedReason?: string | null;
 }
 
 export interface User {

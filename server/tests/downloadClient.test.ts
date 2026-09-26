@@ -19,7 +19,9 @@ class FakeChildProcess {
     for (const h of this.stdoutHandlers) if (h.event === "data") h.handler(Buffer.from(text));
   }
   emitExit(code: number) {
+    // A real child process emits "exit", then "close" once its stdio streams are drained.
     for (const h of this.procHandlers) if (h.event === "exit") h.handler(code);
+    for (const h of this.procHandlers) if (h.event === "close") h.handler(code);
   }
   emitError(err: Error) {
     for (const h of this.procHandlers) if (h.event === "error") h.handler(err);
@@ -49,14 +51,21 @@ let getDownloadClientAdapter: (typeof import("../src/services/downloadClient.js"
 let testDownloadClientConnection: (typeof import("../src/services/downloadClient.js"))["testDownloadClientConnection"];
 let applyRemotePathMapping: (typeof import("../src/services/downloadClient.js"))["applyRemotePathMapping"];
 let removeQueueItemDownload: (typeof import("../src/services/downloadClient.js"))["removeQueueItemDownload"];
+let withQueueImportLock: (typeof import("../src/services/downloadClient.js"))["withQueueImportLock"];
+let DOWNLOAD_INTERRUPTED_REASON: string;
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
   ({ config } = await import("../src/config.js"));
   ({ setSetting } = await import("../src/services/settingsStore.js"));
-  ({ getDownloadClientAdapter, testDownloadClientConnection, applyRemotePathMapping, removeQueueItemDownload } = await import(
-    "../src/services/downloadClient.js"
-  ));
+  ({
+    getDownloadClientAdapter,
+    testDownloadClientConnection,
+    applyRemotePathMapping,
+    removeQueueItemDownload,
+    withQueueImportLock,
+    DOWNLOAD_INTERRUPTED_REASON,
+  } = await import("../src/services/downloadClient.js"));
 });
 
 let downloadsDir: string;
@@ -218,6 +227,36 @@ describe("getDownloadClientAdapter / removeQueueItemDownload", () => {
 });
 
 // ---------------------------------------------------------------------------
+// withQueueImportLock
+// ---------------------------------------------------------------------------
+
+describe("withQueueImportLock", () => {
+  it("refuses a second import of the same row while the first is in flight, but not of another row", async () => {
+    let finishFirst!: () => void;
+    const first = withQueueImportLock(101, () => new Promise<void>((resolve) => (finishFirst = resolve)));
+    const second = vi.fn(async () => {});
+
+    expect(await withQueueImportLock(101, second)).toBe(false);
+    expect(second).not.toHaveBeenCalled();
+    expect(await withQueueImportLock(102, async () => {})).toBe(true);
+
+    finishFirst();
+    expect(await first).toBe(true);
+    expect(await withQueueImportLock(101, second)).toBe(true); // released once the first finished
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the row when the import throws, and passes the error through", async () => {
+    await expect(
+      withQueueImportLock(103, async () => {
+        throw new Error("no file");
+      })
+    ).rejects.toThrow("no file");
+    expect(await withQueueImportLock(103, async () => {})).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // testDownloadClientConnection
 // ---------------------------------------------------------------------------
 
@@ -235,6 +274,50 @@ describe("testDownloadClientConnection", () => {
   it("sabnzbd: throws when the API reports an error", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ok({ error: "API Key Incorrect" })));
     await expect(testDownloadClientConnection(await insertClient({ type: "sabnzbd", api_key: "bad" }))).rejects.toThrow("API Key Incorrect");
+  });
+
+  it("sabnzbd: rejects a wrong API key even though mode=version (which never checks the key) answers", async () => {
+    // What a real SABnzbd returns for a bad key: HTTP 200 with status:false, not an HTTP error.
+    const fetchMock = routedFetch([
+      { test: (u) => u.includes("mode=version"), response: ok({ version: "4.3.2" }) },
+      { test: (u) => u.includes("mode=queue"), response: ok({ status: false, error: "API Key Incorrect" }) },
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(testDownloadClientConnection(await insertClient({ type: "sabnzbd", api_key: "stale" }))).rejects.toThrow("API Key Incorrect");
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("mode=queue") && String(c[0]).includes("apikey=stale"))).toBe(true);
+  });
+
+  it("sabnzbd: rejects a non-JSON answer, and succeeds once both the version and a keyed call answer", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError("Unexpected token <");
+        },
+      })
+    );
+    await expect(testDownloadClientConnection(await insertClient({ type: "sabnzbd", api_key: "k" }))).rejects.toThrow("non-JSON");
+
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u.includes("mode=version"), response: ok({ version: "4.3.2" }) },
+        { test: (u) => u.includes("mode=queue"), response: ok({ queue: { slots: [] } }) },
+      ])
+    );
+    await expect(testDownloadClientConnection(await insertClient({ type: "sabnzbd", api_key: "good" }))).resolves.toBeUndefined();
+  });
+
+  it("gives every API call a timeout signal, so a client that never answers can't hang the caller", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "Ok." });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await testDownloadClientConnection(await insertClient({ type: "qbittorrent" }));
+
+    expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
   });
 
   it("realdebrid: reports a friendly message on 401", async () => {
@@ -461,6 +544,62 @@ describe("QBittorrentAdapter", () => {
     ]);
   });
 
+  it("getStatus keeps a finished torrent 'downloading' while qBittorrent is still moving or rechecking it", async () => {
+    const unsettled = ["moving", "checkingUP", "checkingResumeData", "missingFiles"];
+    const seeding = ["uploading", "stalledUP", "queuedUP", "pausedUP", "stoppedUP", "forcedUP"];
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        loginRoute,
+        {
+          test: (u) => u.includes("/torrents/info"),
+          response: ok([
+            // Mid-move, content_path still names the old (incomplete-folder) location.
+            ...unsettled.map((state) => ({ hash: state, progress: 1, state, content_path: "/incomplete/x" })),
+            ...seeding.map((state) => ({ hash: state, progress: 1, state, content_path: "/complete/x" })),
+          ]),
+        },
+      ])
+    );
+
+    const updates = await adapter().getStatus(await insertClient({ type: "qbittorrent" }), []);
+    const statusOf = (hash: string) => updates.find((u) => u.downloadId === hash)!.status;
+
+    for (const state of unsettled) expect(statusOf(state)).toBe("downloading");
+    for (const state of seeding) expect(statusOf(state)).toBe("completed");
+  });
+
+  it("getStatus flags only a torrent that's running but getting nothing as stalled, including its pending-tag alias", async () => {
+    const stalledStates = ["metaDL", "forcedMetaDL", "stalledDL"];
+    const healthyStates = ["queuedDL", "checkingDL", "checkingResumeData", "allocating", "moving", "pausedDL", "stoppedDL", "forcedDL", "downloading"];
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        loginRoute,
+        {
+          test: (u) => u.includes("/torrents/info"),
+          response: ok([
+            ...[...stalledStates, ...healthyStates].map((state) => ({ hash: state, progress: 0, state })),
+            { hash: "dead-hash", progress: 0, state: "stalledDL", tags: "aonarr,aonarr-pending-dead01" },
+          ]),
+        },
+      ])
+    );
+
+    const updates = await adapter().getStatus(await insertClient({ type: "qbittorrent" }), ["tag:aonarr-pending-dead01"]);
+    const update = (id: string) => updates.find((u) => u.downloadId === id)!;
+
+    for (const state of stalledStates) {
+      expect(update(state).status).toBe("downloading");
+      expect(update(state).stalled).toBe(true);
+    }
+    for (const state of healthyStates) {
+      expect(update(state).status).toBe("downloading");
+      expect(update(state)).not.toHaveProperty("stalled");
+    }
+    expect(update("tag:aonarr-pending-dead01")).toMatchObject({ resolvedDownloadId: "dead-hash", stalled: true });
+  });
+
   it("getHealthStats computes the global ratio and counts torrents over the configured limit", async () => {
     const fetchMock = routedFetch([
       { test: (u) => u.includes("/auth/login"), response: ok({}, { headers: new Headers({ "set-cookie": "SID=abc; Path=/" }) }) },
@@ -502,6 +641,27 @@ describe("QBittorrentAdapter", () => {
     expect(removed).toBe(1);
     const deleteCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("/torrents/delete"));
     expect(deleteCall![1].body.get("hashes")).toBe("seeding-goal-met");
+  });
+
+  it("removeSeededTorrents treats qBittorrent 5's stoppedUP like pausedUP, but never a stopped unfinished download", async () => {
+    const fetchMock = routedFetch([
+      loginRoute,
+      {
+        test: (u) => u.includes("/torrents/info"),
+        response: ok([
+          { hash: "stopped-at-share-limit", state: "stoppedUP", ratio: 2, tags: "aonarr" },
+          { hash: "stopped-mid-download", state: "stoppedDL", ratio: 2, tags: "aonarr" },
+        ]),
+      },
+      { test: (u) => u.includes("/torrents/delete"), response: ok({}) },
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const removed = await adapter().removeSeededTorrents!(await insertClient({ type: "qbittorrent" }), 1, null);
+
+    expect(removed).toBe(1);
+    const deleteCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("/torrents/delete"));
+    expect(deleteCall![1].body.get("hashes")).toBe("stopped-at-share-limit");
   });
 
   it("removeSeededTorrents only touches AoNarr's own torrents (its tag or its category), never other apps'", async () => {
@@ -554,6 +714,18 @@ describe("SabnzbdAdapter", () => {
     const result = await adapter().addDownload(await insertClient({ type: "sabnzbd" }), "http://indexer/nzb", null);
 
     expect(result.downloadId).toBe("SABnzbd_nzo_123");
+  });
+
+  it("addDownload throws on SABnzbd's HTTP-200 key rejection instead of recording a job that doesn't exist", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ok({ status: false, error: "API Key Incorrect" })));
+
+    await expect(adapter().addDownload(await insertClient({ type: "sabnzbd" }), "http://indexer/nzb", null)).rejects.toThrow("API Key Incorrect");
+  });
+
+  it("getStatus throws on a key rejection rather than reporting an empty queue", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ok({ status: false, error: "API Key Incorrect" })));
+
+    await expect(adapter().getStatus(await insertClient({ type: "sabnzbd" }), ["id1"])).rejects.toThrow("API Key Incorrect");
   });
 
   it("reports 'downloading' for a job still in the queue even at 100%, not 'completed'", async () => {
@@ -668,16 +840,86 @@ describe("HttpDownloadAdapter", () => {
     expect(files.some((f) => f.startsWith("My Release"))).toBe(true);
   });
 
-  it("reports failed when the fetch itself fails, and getStatus omits unknown ids", async () => {
+  it("reports failed when the fetch itself fails", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
 
     const { downloadId } = await adapter().addDownload(await insertClient({ type: "http" }), "https://example.com/gone.mkv", null);
     await vi.waitFor(async () => {
       const [status] = await adapter().getStatus({} as any, [downloadId]);
       expect(status.status).toBe("failed");
+      expect(status.failureReason).toBeUndefined();
+    });
+  });
+
+  it("reports a job it doesn't know (lost to a restart) as interrupted, and removes only that job's partial file", async () => {
+    const lostId = "0b7a4c1e-5d2f-4e8a-9c3b-1f2e3d4c5b6a";
+    const otherPartial = path.join(config.downloadsDir, ".aonarr-11111111-2222-3333-4444-555555555555-0.part");
+    fs.writeFileSync(path.join(config.downloadsDir, `.aonarr-${lostId}-0.part`), "half a file");
+    fs.writeFileSync(path.join(config.downloadsDir, `.aonarr-${lostId}-1.part`), "half another");
+    fs.writeFileSync(otherPartial, "someone else's");
+
+    // Every in-process adapter shares this: its job table lives only in memory.
+    for (const type of ["http", "ytdlp", "realdebrid", "alldebrid", "torbox"] as const) {
+      expect(await getDownloadClientAdapter(type).getStatus({} as any, [lostId])).toEqual([
+        { downloadId: lostId, progress: 0, status: "failed", failureReason: DOWNLOAD_INTERRUPTED_REASON },
+      ]);
+    }
+    const left = fs.readdirSync(config.downloadsDir);
+    expect(left.some((f) => f.includes(lostId))).toBe(false);
+    expect(fs.existsSync(otherPartial)).toBe(true);
+    fs.rmSync(otherPartial, { force: true });
+  });
+
+  it("writes to a partial file until the body is complete, then reports the finished file as its path", async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({ start: (c) => void (controller = c) });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, headers: new Headers({ "content-length": "10" }), body });
+    vi.stubGlobal("fetch", fetchMock);
+    const dest = path.join(config.downloadsDir, "Streaming Release.mkv");
+    fs.rmSync(dest, { force: true });
+
+    const { downloadId } = await adapter().addDownload(await insertClient({ type: "http" }), "https://example.com/stream.mkv", null, "Streaming Release");
+    controller.enqueue(new TextEncoder().encode("12345"));
+    await vi.waitFor(async () => {
+      expect((await adapter().getStatus({} as any, [downloadId]))[0].progress).toBeCloseTo(0.5);
     });
 
-    expect(await adapter().getStatus({} as any, ["never-existed"])).toEqual([]);
+    // Half-written: nothing under the final name for the importer to pick up.
+    expect(fs.existsSync(dest)).toBe(false);
+    expect(fs.existsSync(path.join(config.downloadsDir, `.aonarr-${downloadId}-0.part`))).toBe(true);
+
+    controller.enqueue(new TextEncoder().encode("67890"));
+    controller.close();
+    let status: any;
+    await vi.waitFor(async () => {
+      [status] = await adapter().getStatus({} as any, [downloadId]);
+      expect(status.status).toBe("completed");
+    });
+
+    expect(status.remotePath).toBe(dest);
+    expect(fs.readFileSync(dest, "utf-8")).toBe("1234567890");
+    expect(fs.existsSync(path.join(config.downloadsDir, `.aonarr-${downloadId}-0.part`))).toBe(false);
+    // The file body itself is never cut off by the API-call timeout.
+    expect(fetchMock.mock.calls[0][1]?.signal).toBeUndefined();
+    fs.rmSync(dest, { force: true });
+  });
+
+  it("removes the partial file when the body fails mid-stream", async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({ start: (c) => void (controller = c) });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: new Headers({ "content-length": "10" }), body }));
+
+    const { downloadId } = await adapter().addDownload(await insertClient({ type: "http" }), "https://example.com/cut.mkv", null, "Cut Release");
+    controller.enqueue(new TextEncoder().encode("12345"));
+    await vi.waitFor(async () => {
+      expect((await adapter().getStatus({} as any, [downloadId]))[0].progress).toBeCloseTo(0.5);
+    });
+    controller.error(new Error("connection reset"));
+
+    await vi.waitFor(async () => {
+      expect((await adapter().getStatus({} as any, [downloadId]))[0].status).toBe("failed");
+    });
+    expect(fs.readdirSync(config.downloadsDir).some((f) => f.includes(downloadId) || f.startsWith("Cut Release"))).toBe(false);
   });
 
   it("takes the file extension from Content-Disposition or Content-Type when the URL has no usable one", async () => {
@@ -736,6 +978,66 @@ describe("HttpDownloadAdapter", () => {
     expect(fs.readdirSync(config.downloadsDir)).toContain("DDL Redirect Release.mkv");
     fs.rmSync(path.join(config.downloadsDir, "DDL Redirect Release.mkv"), { force: true });
   });
+
+  it("gives two concurrent jobs with the same title distinct files, each reported as its own path", async () => {
+    const controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        const body = new ReadableStream<Uint8Array>({ start: (c) => void controllers.push(c) });
+        return { ok: true, status: 200, headers: new Headers({ "content-length": "5" }), body };
+      })
+    );
+    const client = await insertClient({ type: "http" });
+    const plain = path.join(config.downloadsDir, "Trailer.mkv");
+    fs.rmSync(plain, { force: true });
+
+    const first = await adapter().addDownload(client, "https://a.example/trailer.mkv", null, "Trailer");
+    const second = await adapter().addDownload(client, "https://b.example/trailer.mkv", null, "Trailer");
+    const ids = [first.downloadId, second.downloadId];
+    await vi.waitFor(() => expect(controllers).toHaveLength(2));
+    controllers[0].enqueue(new TextEncoder().encode("first"));
+    controllers[1].enqueue(new TextEncoder().encode("secnd"));
+    // Both have picked their final names (progress is only reported past that point) before either finishes.
+    await vi.waitFor(async () => {
+      expect((await adapter().getStatus({} as any, ids)).every((s) => s.progress > 0)).toBe(true);
+    });
+    controllers[1].close();
+    controllers[0].close();
+
+    let statuses: any[] = [];
+    await vi.waitFor(async () => {
+      statuses = await adapter().getStatus({} as any, ids);
+      expect(statuses.map((s) => s.status)).toEqual(["completed", "completed"]);
+    });
+    const [firstPath, secondPath] = statuses.map((s) => s.remotePath);
+    expect(firstPath).not.toBe(secondPath);
+    expect(fs.readFileSync(firstPath, "utf-8")).toBe("first");
+    expect(fs.readFileSync(secondPath, "utf-8")).toBe("secnd");
+    for (const [p, id] of [[firstPath, first.downloadId], [secondPath, second.downloadId]]) {
+      expect([plain, path.join(config.downloadsDir, `Trailer (${id.slice(0, 8)}).mkv`)]).toContain(p);
+      fs.rmSync(p, { force: true });
+    }
+  });
+
+  it("refuses a download URL that isn't http(s) before starting a job", async () => {
+    const fetchMock = vi.fn(async () => fileResponse("bytes"));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = await insertClient({ type: "http" });
+
+    await expect(adapter().addDownload(client, "data:text/plain;base64,aGVsbG8=", null, "Data Release")).rejects.toThrow(/"data:"/);
+    await expect(adapter().addDownload(client, "file:///etc/passwd", null, "File Release")).rejects.toThrow(/"file:"/);
+    await expect(adapter().addDownload(client, "not a url", null, "Bad Release")).rejects.toThrow();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const { downloadId } = await adapter().addDownload(client, "https://example.com/ok.mkv", null, "Accepted Release");
+    let status: any;
+    await vi.waitFor(async () => {
+      [status] = await adapter().getStatus({} as any, [downloadId]);
+      expect(status.status).toBe("completed");
+    });
+    fs.rmSync(status.remotePath, { force: true });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -768,6 +1070,45 @@ describe("YtdlpAdapter", () => {
     await adapter().addDownload(await insertClient({ type: "ytdlp", audio_only: 1 }), "https://youtube.com/watch?v=x", null);
 
     expect(spawnArgs!.args).toEqual(expect.arrayContaining(["-x", "--audio-format", "mp3"]));
+    expect(spawnArgs!.args).not.toContain("--merge-output-format");
+  });
+
+  it("merges video into mkv and asks yt-dlp to print the finished file's path", async () => {
+    await adapter().addDownload(await insertClient({ type: "ytdlp" }), "https://youtube.com/watch?v=x", null, "My Video");
+
+    const args = spawnArgs!.args;
+    expect(args[args.indexOf("--merge-output-format") + 1]).toBe("mkv");
+    expect(args[args.indexOf("--print") + 1]).toBe("after_move:filepath");
+    expect(args).toContain("--progress"); // --print implies --quiet, which would otherwise hide progress
+    expect(args).not.toContain("-x");
+  });
+
+  it("reports the path yt-dlp printed as the completed job's remotePath, even when it arrives split across chunks", async () => {
+    const client = await insertClient({ type: "ytdlp" });
+    const { downloadId } = await adapter().addDownload(client, "https://youtube.com/watch?v=x", null, "My Video");
+    const finalPath = path.join(config.downloadsDir, "My Video.mkv");
+
+    lastSpawned!.emitStdout("[download]  99.0% of 10MiB\n[download] 100% of 10MiB\n");
+    lastSpawned!.emitStdout(finalPath.slice(0, 10));
+    lastSpawned!.emitStdout(`${finalPath.slice(10)}\n`);
+    lastSpawned!.emitExit(0);
+
+    expect(await adapter().getStatus(client, [downloadId])).toEqual([{ downloadId, progress: 1, status: "completed", remotePath: finalPath }]);
+  });
+
+  it("reads a printed path with no trailing newline, and reports no path when yt-dlp printed none", async () => {
+    const client = await insertClient({ type: "ytdlp" });
+    const { downloadId: id1 } = await adapter().addDownload(client, "https://x", null, "A");
+    const finalPath = path.join(config.downloadsDir, "A.mkv");
+    lastSpawned!.emitStdout(finalPath);
+    lastSpawned!.emitExit(0);
+    expect((await adapter().getStatus(client, [id1]))[0].remotePath).toBe(finalPath);
+
+    // e.g. a video already in the download archive: nothing is downloaded, so nothing is printed.
+    const { downloadId: id2 } = await adapter().addDownload(client, "https://x", null, "B");
+    lastSpawned!.emitStdout("[download]  50.0% of 10MiB\n");
+    lastSpawned!.emitExit(0);
+    expect(await adapter().getStatus(client, [id2])).toEqual([{ downloadId: id2, progress: 1, status: "completed" }]);
   });
 
   it("adds the download-archive/SponsorBlock/subtitle flags only when opted in via settings", async () => {
@@ -801,6 +1142,73 @@ describe("YtdlpAdapter", () => {
 
     expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("failed");
   });
+
+  const outputTemplate = () => spawnArgs!.args[spawnArgs!.args.indexOf("-o") + 1];
+
+  it("gives two concurrent jobs with the same title distinct output names, freeing each once it ends", async () => {
+    const client = await insertClient({ type: "ytdlp" });
+
+    await adapter().addDownload(client, "https://youtube.com/watch?v=a", null, "Channel Trailer");
+    const firstProc = lastSpawned!;
+    expect(outputTemplate()).toBe(path.join(config.downloadsDir, "Channel Trailer.%(ext)s"));
+
+    const second = await adapter().addDownload(client, "https://youtube.com/watch?v=b", null, "Channel Trailer");
+    const secondProc = lastSpawned!;
+    expect(outputTemplate()).toBe(path.join(config.downloadsDir, `Channel Trailer (${second.downloadId.slice(0, 8)}).%(ext)s`));
+
+    firstProc.emitExit(1);
+    secondProc.emitError(new Error("ENOENT: yt-dlp not found"));
+    await adapter().addDownload(client, "https://youtube.com/watch?v=c", null, "Channel Trailer");
+    expect(outputTemplate()).toBe(path.join(config.downloadsDir, "Channel Trailer.%(ext)s"));
+    lastSpawned!.emitExit(1);
+  });
+
+  it("sees a running job's claimed name when the downloads folder is configured with a trailing separator", async () => {
+    const client = await insertClient({ type: "ytdlp" });
+    const originalDir = config.downloadsDir;
+    await adapter().addDownload(client, "https://youtube.com/watch?v=s1", null, "Slash Clip");
+    const firstProc = lastSpawned!;
+    try {
+      config.downloadsDir = originalDir + path.sep;
+      const second = await adapter().addDownload(client, "https://youtube.com/watch?v=s2", null, "Slash Clip");
+      expect(outputTemplate()).toBe(path.join(originalDir, `Slash Clip (${second.downloadId.slice(0, 8)}).%(ext)s`));
+      lastSpawned!.emitExit(1);
+    } finally {
+      config.downloadsDir = originalDir;
+      firstProc.emitExit(1);
+    }
+  });
+
+  it("picks another name when a file with that title is still in the downloads folder, whatever its extension", async () => {
+    const client = await insertClient({ type: "ytdlp" });
+    const existing = path.join(config.downloadsDir, "Bonus Clip.webm");
+    fs.writeFileSync(existing, "an earlier download");
+    try {
+      const { downloadId } = await adapter().addDownload(client, "https://youtube.com/watch?v=d", null, "Bonus Clip");
+      expect(outputTemplate()).toBe(path.join(config.downloadsDir, `Bonus Clip (${downloadId.slice(0, 8)}).%(ext)s`));
+      lastSpawned!.emitExit(1);
+    } finally {
+      fs.rmSync(existing, { force: true });
+    }
+  });
+
+  it("keeps an HTTP download clear of a running yt-dlp job's name", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => fileResponse("bytes", { "content-type": "video/x-matroska" })));
+    await adapter().addDownload(await insertClient({ type: "ytdlp" }), "https://youtube.com/watch?v=e", null, "Shared Name");
+    try {
+      const http = getDownloadClientAdapter("http");
+      const { downloadId } = await http.addDownload(await insertClient({ type: "http" }), "https://example.com/get", null, "Shared Name");
+      let status: any;
+      await vi.waitFor(async () => {
+        [status] = await http.getStatus({} as any, [downloadId]);
+        expect(status.status).toBe("completed");
+      });
+      expect(status.remotePath).toBe(path.join(config.downloadsDir, `Shared Name (${downloadId.slice(0, 8)}).mkv`));
+      fs.rmSync(status.remotePath, { force: true });
+    } finally {
+      lastSpawned!.emitExit(1);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -823,12 +1231,59 @@ describe("RealDebridAdapter", () => {
     );
     const client = await insertClient({ type: "realdebrid", api_key: "key" });
 
+    const moviePath = path.join(config.downloadsDir, "Movie.mkv");
+    fs.rmSync(moviePath, { force: true });
     const { downloadId } = await adapter().addDownload(client, "magnet:?xt=urn:btih:abc", null, "Some Release");
+    let status: any;
     await vi.waitFor(async () => {
-      expect((await adapter().getStatus(client, [downloadId]))[0].status).toBe("completed");
+      [status] = await adapter().getStatus(client, [downloadId]);
+      expect(status.status).toBe("completed");
     });
 
-    expect(fs.existsSync(path.join(config.downloadsDir, "Movie.mkv"))).toBe(true); // hardcoded write target, see the http adapter test's comment above
+    expect(fs.existsSync(moviePath)).toBe(true); // hardcoded write target, see the http adapter test's comment above
+    // A single file sits loose in the downloads root, so the importer is pointed at the file itself.
+    expect(status.remotePath).toBe(moviePath);
+  });
+
+  it("gives a second concurrent multi-file job with the same release title a folder of its own", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u.includes("/torrents/addMagnet"), response: (_u: string, init: any) => ok({ id: String(init.body).includes("one") ? "rd-one" : "rd-two" }) },
+        { test: (u) => u.includes("/torrents/selectFiles"), response: ok({}) },
+        { test: (u) => /\/torrents\/info\/rd-(one|two)$/.test(u), response: (u: string) => ok({ status: "downloaded", links: [`${u}/a`, `${u}/b`] }) },
+        {
+          test: (u) => u.includes("/unrestrict/link"),
+          response: (_u: string, init: any) => {
+            const link = decodeURIComponent(String(init.body).slice("link=".length));
+            const job = link.includes("rd-one") ? "one" : "two";
+            return ok({ download: `https://rd/direct-${job}-${link.slice(-1)}`, filename: `${link.slice(-1)}.flac` });
+          },
+        },
+        { test: (u) => u.startsWith("https://rd/direct-"), response: (u: string) => fileResponse(u.slice("https://rd/direct-".length)) },
+      ])
+    );
+    const client = await insertClient({ type: "realdebrid", api_key: "key" });
+    const releaseTitle = "Same Titled Album";
+    const plainDir = path.join(config.downloadsDir, releaseTitle);
+    fs.rmSync(plainDir, { recursive: true, force: true });
+
+    const one = await adapter().addDownload(client, "magnet:?xt=urn:btih:one", null, releaseTitle);
+    const two = await adapter().addDownload(client, "magnet:?xt=urn:btih:two", null, releaseTitle);
+    let statuses: any[] = [];
+    await vi.waitFor(async () => {
+      statuses = await adapter().getStatus(client, [one.downloadId, two.downloadId]);
+      expect(statuses.map((s) => s.status)).toEqual(["completed", "completed"]);
+    });
+
+    const [dirOne, dirTwo] = statuses.map((s) => s.remotePath);
+    expect(dirOne).not.toBe(dirTwo);
+    for (const [job, dir, id] of [["one", dirOne, one.downloadId], ["two", dirTwo, two.downloadId]] as const) {
+      expect([plainDir, `${plainDir} (${id.slice(0, 8)})`]).toContain(dir);
+      expect(fs.readFileSync(path.join(dir, "a.flac"), "utf-8")).toBe(`${job}-a`);
+      expect(fs.readFileSync(path.join(dir, "b.flac"), "utf-8")).toBe(`${job}-b`);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("saves a multi-file job into a folder named for the release and reports that folder as its path", async () => {
@@ -1286,6 +1741,20 @@ describe("BlackholeAdapter", () => {
     expect(fs.readFileSync(path.join(downloadsDir, magnetFile!), "utf-8")).toBe("magnet:?xt=x");
   });
 
+  it("writes a .magnet file for a download URL that redirects to a magnet (a Jackett/Prowlarr proxy link)", async () => {
+    const fetchMock = routedFetch([
+      {
+        test: (u, init) => u === "https://jackett/dl/tracker/?file=Release" && init?.redirect === "manual",
+        response: { ok: false, status: 302, headers: new Headers({ location: "magnet:?xt=urn:btih:abc&dn=Release" }) },
+      },
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await adapter().addDownload({ host: downloadsDir } as any, "https://jackett/dl/tracker/?file=Release", null, "Proxy Release");
+
+    expect(fs.readFileSync(path.join(downloadsDir, "Proxy Release.magnet"), "utf-8")).toBe("magnet:?xt=urn:btih:abc&dn=Release");
+  });
+
   it("sniffs XML content and writes a .nzb file instead of .torrent", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, arrayBuffer: async () => Buffer.from("<?xml version=\"1.0\"?><nzb></nzb>") }));
 
@@ -1381,7 +1850,33 @@ describe("SlskdAdapter", () => {
     for (let i = 0; i < terminal.length; i++) {
       expect(updates).toContainEqual({ downloadId: `peer t${i}.flac`, progress: 0, status: "failed" });
     }
-    expect(updates).toContainEqual({ downloadId: "peer waiting.flac", progress: 0, status: "downloading" });
+    expect(updates).toContainEqual({ downloadId: "peer waiting.flac", progress: 0, status: "downloading", stalled: true });
+  });
+
+  it("getStatus flags a transfer the peer hasn't started serving as stalled, but not one in slskd's own queue", async () => {
+    const stalledStates = ["Queued, Remotely", "Requested"];
+    const activeStates = ["Queued, Locally", "Initializing", "InProgress"];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        ok([
+          {
+            username: "peer",
+            directories: [{ files: [...stalledStates, ...activeStates].map((state, i) => ({ filename: `f${i}.flac`, state, size: 100, bytesTransferred: 0 })) }],
+          },
+        ])
+      )
+    );
+    const all = [...stalledStates, ...activeStates];
+
+    const updates = await adapter().getStatus({} as any, all.map((_, i) => `peer f${i}.flac`));
+
+    all.forEach((state, i) => {
+      const update = updates.find((u) => u.downloadId === `peer f${i}.flac`)!;
+      expect(update.status).toBe("downloading");
+      if (stalledStates.includes(state)) expect(update.stalled).toBe(true);
+      else expect(update).not.toHaveProperty("stalled");
+    });
   });
 
   it("getStatus ignores transfers that weren't asked about", async () => {

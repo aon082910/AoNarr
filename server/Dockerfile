@@ -11,7 +11,16 @@ RUN cp src/db/schema.sql dist/db/schema.sql && cp src/db/schema.postgres.sql dis
 
 FROM node:20-bookworm-slim
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip make g++ ca-certificates curl ffmpeg gnupg \
+# unrar and 7z unpack RAR/7z downloads (services/archiveExtract.ts; ZIP is handled in Node).
+# unrar is freeware that permits redistribution but lives in Debian's non-free component, so that
+# is enabled first — in the deb822 debian.sources this image ships, or a classic sources.list.
+RUN for f in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do \
+      [ -f "$f" ] || continue; \
+      sed -i -E -e '/^Components:/{/[[:space:]]non-free([[:space:]]|$)/!s/$/ non-free/}' \
+                -e '/^deb[[:space:]]/{/[[:space:]]non-free([[:space:]]|$)/!s/$/ non-free/}' "$f"; \
+    done \
+    && apt-get update && apt-get install -y --no-install-recommends python3 python3-pip make g++ ca-certificates curl ffmpeg gnupg \
+      p7zip-full unrar \
     && rm -rf /var/lib/apt/lists/*
 # ffsubsync re-aligns a downloaded subtitle's timing against the video's own audio (voice-activity
 # detection, no external API) — used as a best-effort pass on subtitles the picker didn't already

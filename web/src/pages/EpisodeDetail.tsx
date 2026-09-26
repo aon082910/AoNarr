@@ -62,6 +62,7 @@ export default function EpisodeDetail() {
   const [browsePath, setBrowsePath] = useState("");
   const [browseAnyFolder, setBrowseAnyFolder] = useState(false);
   const [browseParent, setBrowseParent] = useState<string | null>(null);
+  const [browseError, setBrowseError] = useState<string | null>(null);
   const [customFolderInput, setCustomFolderInput] = useState("");
   const [browseEntries, setBrowseEntries] = useState<BrowseEntry[]>([]);
   const [importingPath, setImportingPath] = useState<string | null>(null);
@@ -106,6 +107,7 @@ export default function EpisodeDetail() {
     setBrowsePath("");
     setBrowseAnyFolder(false);
     setBrowseParent(null);
+    setBrowseError(null);
     setCustomFolderInput("");
     setAiGuesses({});
   }, [mediaId, episodeId]);
@@ -141,13 +143,28 @@ export default function EpisodeDetail() {
 
   async function browse(nextPath: string, anyFolderOverride?: boolean) {
     const anyFolder = anyFolderOverride ?? browseAnyFolder;
-    const res = await api.get<BrowseResponse>(
-      `/import/browse?path=${encodeURIComponent(nextPath)}${anyFolder ? "&anyFolder=1" : ""}`
-    );
+    let res: BrowseResponse;
+    try {
+      res = await api.get<BrowseResponse>(`/import/browse?path=${encodeURIComponent(nextPath)}${anyFolder ? "&anyFolder=1" : ""}`);
+    } catch (e) {
+      setBrowseError(`Couldn't open ${nextPath || (anyFolder ? "/" : "the downloads folder")}: ${(e as Error).message}`);
+      return;
+    }
+    setBrowseError(null);
     setBrowsePath(res.path);
     setBrowseAnyFolder(!!res.anyFolder);
     setBrowseParent(res.parent ?? null);
     setBrowseEntries(res.entries);
+  }
+
+  function browseUp() {
+    if (browseAnyFolder) {
+      browse(browseParent ?? "/", true);
+      return;
+    }
+    // A server that returns no parent joins downloads-relative paths with its own separator.
+    const sep = browsePath.includes("/") ? "/" : "\\";
+    browse(browseParent ?? browsePath.split(sep).slice(0, -1).join(sep));
   }
 
   function toggleImport() {
@@ -345,7 +362,7 @@ export default function EpisodeDetail() {
               <button
                 type="button"
                 className="icon-button"
-                onClick={() => (browseAnyFolder ? browse(browseParent ?? "/", true) : browse(browsePath.split("/").slice(0, -1).join("/")))}
+                onClick={browseUp}
                 title="Up one folder"
                 aria-label="Up one folder"
               >
@@ -353,6 +370,7 @@ export default function EpisodeDetail() {
               </button>
             )}
           </div>
+          {browseError && <p style={{ color: "var(--danger)", marginTop: 0 }}>{browseError}</p>}
           <table>
             <thead>
               <tr>

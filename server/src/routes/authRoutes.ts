@@ -5,7 +5,7 @@ import multer from "multer";
 import { db } from "../db/index.js";
 import { config } from "../config.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { clientIp, safeEqual } from "../middleware/auth.js";
+import { clientIp, mintStreamTicket, safeEqual } from "../middleware/auth.js";
 import { getSetting } from "../services/settingsStore.js";
 import {
   consumePendingLogin,
@@ -35,12 +35,24 @@ const avatarUpload = multer({
   fileFilter: (_req, file, cb) => cb(null, file.mimetype in AVATAR_EXTENSION_BY_MIMETYPE),
 });
 
+/**
+ * A brand-new install: no accounts and nothing added or configured yet. An instance run on the API
+ * key alone (installs from before admin login existed, headless/scripted setups) has no user rows
+ * but is already in use — creating its first admin account without the API key would let anyone
+ * who can reach the login screen mint themselves admin.
+ */
+async function isFreshInstall(): Promise<boolean> {
+  for (const table of ["users", "root_folders", "media_items", "indexers", "download_clients"]) {
+    if (await db.prepare(`SELECT 1 AS present FROM ${table} LIMIT 1`).get()) return false;
+  }
+  return true;
+}
+
 /** Public — lets the web UI decide whether to show "create admin account" or the normal login form. */
 authRouter.get(
   "/setup-status",
   asyncHandler(async (_req, res) => {
-    const anyUser = await db.prepare("SELECT id FROM users LIMIT 1").get();
-    res.json({ needsSetup: !anyUser });
+    res.json({ needsSetup: await isFreshInstall() });
   })
 );
 
@@ -48,20 +60,18 @@ authRouter.get(
  * Public, but only does anything while no admin account exists yet — creates the first admin
  * user and logs them in. Once an admin exists this always 403s, so it can't be used to mint a
  * second admin account without already being authenticated (use Settings → Users for that).
+ * Anything but a fresh install also needs the API key (the web UI offers this on the Account
+ * page after signing in with the key).
  */
 authRouter.post(
   "/setup",
   asyncHandler(async (req, res) => {
     const existingAdmin = await db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
     if (existingAdmin) throw new HttpError(403, "An admin account already exists");
-    // An instance with household accounts but no admin-role user yet (run on the API key alone) is
-    // already in use, not a fresh install — creating its first admin account then takes the API
-    // key, or anyone who could reach the login screen could mint themselves admin.
-    const anyUser = await db.prepare("SELECT id FROM users LIMIT 1").get();
     const expectedApiKey = getSetting("apiKey");
     const providedApiKey = req.header("X-Api-Key") ?? "";
-    if (anyUser && !(expectedApiKey && providedApiKey && safeEqual(providedApiKey, expectedApiKey))) {
-      throw new HttpError(403, "This instance already has user accounts — sign in with the API key to create the first admin");
+    if (!(expectedApiKey && providedApiKey && safeEqual(providedApiKey, expectedApiKey)) && !(await isFreshInstall())) {
+      throw new HttpError(403, "This instance is already in use — sign in with the API key to create the first admin account");
     }
 
     const { username, password } = req.body ?? {};
@@ -106,12 +116,15 @@ authRouter.post(
       res.status(429).json({ error: "Too many failed attempts. Try again later.", retryAfterSeconds: rateLimit.retryAfterSeconds });
       return;
     }
+    // Counted as a failure before the first await and cleared again on success: on Postgres the
+    // lookup below is a real network round trip, so a burst of parallel guesses would otherwise all
+    // pass the check above before any of them had recorded its failure.
+    recordFailure(rateLimitKey);
 
     const user = (await db.prepare("SELECT * FROM users WHERE username = ?").get(username)) as
       | { id: number; username: string; password_hash: string; role: string; totp_enabled: number }
       | undefined;
     if (!user || !verifyPassword(password, user.password_hash)) {
-      recordFailure(rateLimitKey);
       logAuditEvent(user?.id ?? null, username, "login_failed");
       throw new HttpError(401, "Invalid username or password");
     }
@@ -146,19 +159,22 @@ authRouter.post(
     const { pendingToken, code } = req.body ?? {};
     if (!pendingToken || !code) throw new HttpError(400, "pendingToken and code are required");
 
-    const rateLimitKey = `logintotp:${clientIp(req)}`;
-    const rateLimit = checkRateLimit(rateLimitKey);
-    if (!rateLimit.allowed) {
-      res.status(429).json({ error: "Too many failed attempts. Try again later.", retryAfterSeconds: rateLimit.retryAfterSeconds });
-      return;
-    }
-
     const userId = consumePendingLogin(pendingToken);
     const user = userId
       ? ((await db.prepare("SELECT * FROM users WHERE id = ?").get(userId)) as
           | { id: number; username: string; role: string; totp_secret: string | null }
           | undefined)
       : undefined;
+
+    // Checked only after the lookup, with nothing awaited between the check, the code comparison
+    // and recordFailure: on Postgres the lookup is a real round trip, so a parallel burst of
+    // guesses (one pending token each) checked before it would all pass before any failure landed.
+    const rateLimitKey = `logintotp:${clientIp(req)}`;
+    const rateLimit = checkRateLimit(rateLimitKey);
+    if (!rateLimit.allowed) {
+      res.status(429).json({ error: "Too many failed attempts. Try again later.", retryAfterSeconds: rateLimit.retryAfterSeconds });
+      return;
+    }
     if (!user || !user.totp_secret || !verifyTotp(user.totp_secret, code)) {
       recordFailure(rateLimitKey);
       throw new HttpError(401, "Invalid or expired code — log in again");
@@ -297,6 +313,13 @@ authRouter.get(
     streamFileWithRangeSupport(req, res, path.join(AVATAR_DIR, user.avatar_path));
   })
 );
+
+/** A single-use ticket for opening one of the SSE streams (see mintStreamTicket in middleware/auth.ts). */
+authRouter.post("/stream-ticket", (req, res) => {
+  const ticket = mintStreamTicket(req);
+  if (!ticket) throw new HttpError(401, "Not authenticated");
+  res.json(ticket);
+});
 
 authRouter.post(
   "/logout",

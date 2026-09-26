@@ -30,6 +30,9 @@ interface JobState {
 
 const defs = new Map<string, JobDef>();
 const state = new Map<string, JobState>();
+/** Set by stopAllJobs for a shutdown or a backup restore: from then on nothing may start a job, not
+ * even "Run now", since an import started mid-restore writes into a database being replaced. */
+let stopped = false;
 
 function settingKey(key: string): string {
   return `jobSchedule_${key}`;
@@ -55,6 +58,7 @@ async function execute(key: string): Promise<void> {
   const def = defs.get(key);
   const s = state.get(key);
   if (!def || !s) return;
+  if (stopped) return;
   if (s.running) {
     log.info(`[jobs] "${def.name}" is already running — skipping this trigger`);
     return;
@@ -110,23 +114,34 @@ function stopTask(key: string): void {
 
 /** Starts every registered job on its currently configured (or default) schedule. */
 export function startAllJobs(): void {
+  stopped = false;
   for (const key of defs.keys()) startTask(key);
 }
 
-/** Stops every job's cron/interval timer so nothing new fires — used on shutdown, alongside
- * cancelJob for whatever's already mid-run, so a SIGTERM doesn't race a job that just started. */
+/** Stops every job's cron/interval timer and refuses any further run, "Run now" included, until
+ * startAllJobs — used on shutdown and before a backup restore, alongside cancelJob for whatever's
+ * already mid-run, so neither races a job that just started. */
 export function stopAllJobs(): void {
+  stopped = true;
   for (const key of defs.keys()) stopTask(key);
+}
+
+export function isJobsStopped(): boolean {
+  return stopped;
 }
 
 export function isJobRunning(key: string): boolean {
   return state.get(key)?.running ?? false;
 }
 
-export function runJobNow(key: string): boolean {
-  if (!defs.has(key)) return false;
+export type RunJobResult = "started" | "already-running" | "unknown" | "stopped";
+
+export function runJobNow(key: string): RunJobResult {
+  if (!defs.has(key)) return "unknown";
+  if (stopped) return "stopped";
+  if (isJobRunning(key)) return "already-running";
   execute(key).catch(() => {});
-  return true;
+  return "started";
 }
 
 export function cancelJob(key: string): boolean {
@@ -151,7 +166,7 @@ export function updateJobSchedule(key: string, schedule: string): { ok: boolean;
   stopTask(key);
   s.schedule = schedule;
   setSetting(settingKey(key), schedule);
-  startTask(key);
+  if (!stopped) startTask(key);
   return { ok: true };
 }
 

@@ -4,7 +4,7 @@ export type ReleaseFlag = "proper" | "repack" | "extended" | "unrated" | "direct
 
 export interface ParsedRelease {
   seasonNumber: number | null;
-  episodeNumbers: number[] | null; // null when not an episode release (movie, full-season, album, book)
+  episodeNumbers: number[] | null; // null when not an episode release (movie, full-season, album, book); [] for a "12.5" special
   isFullSeason: boolean;
   year: number | null;
   quality: QualityName | "Unknown";
@@ -12,7 +12,7 @@ export interface ParsedRelease {
   resolution: string | null; // "2160p"/"1080p"/"720p" — the resolution half of `quality`
   flags: ReleaseFlag[]; // proper/repack/edition tags found in the title
   languages: string[]; // lowercased audio/subtitle language tags found in the title, e.g. ["french","multi"]
-  releaseGroup: string | null; // the tag after the final hyphen, e.g. "RARBG"
+  releaseGroup: string | null; // the tag after the final hyphen, e.g. "RARBG", or a leading fansub "[Group]"
   /** YYYY-MM-DD, when the title carries a full date (daily/talk-show releases are named by air
    * date instead of season/episode, e.g. "Show.Name.2024.08.25.1080p...") — null otherwise. Only
    * consulted for "daily"-type series; harmless to detect unconditionally on everything else. */
@@ -39,18 +39,50 @@ export interface ParsedRelease {
    * pattern: a season-pack release, a multi-episode release, a single episode, or null for
    * anything that isn't an episodic release at all (movie, album, book, full-series). */
   releaseType: "single" | "multi" | "seasonPack" | null;
+  /** The episodes a ranged fansub pack covers ("S2 - 13-24", "S2 - 01 ~ 12"), inclusive. Such a
+   * release is still `isFullSeason` (it imports as a pack), but only matches episodes inside the
+   * range. Null or absent for every other release, including a pack of the whole season. */
+  episodeRange?: [number, number] | null;
 }
 
 // Group 3 (hyphenated range end, e.g. "S01E01-E03"/"S01E01-03") and group 4 (a chain of bare
 // "E\d+" tags with no hyphen, e.g. "S01E01E02E03") are mutually exclusive alternatives — a title
 // only ever uses one multi-episode convention or the other, never both.
-const SEASON_EP_RANGE = /\bS(\d{1,2})E(\d{1,3})(?:-E?(\d{1,3})|((?:E\d{1,3})+))?\b/i;
+// A single "." / "_" / space may sit between the season and episode tags ("Show.S01.E05").
+const SEASON_EP_RANGE = /\bS(\d{1,2})[._ ]?E(\d{1,3})(?:-E?(\d{1,3})|((?:E\d{1,3})+))?\b/i;
 // "1x01" scene/P2P notation, the same convention libraryScan.ts's filename-based detector already
 // recognizes — used as a fallback only when SxxExx doesn't match, since SxxExx is unambiguous while
 // this format risks colliding with e.g. a bare resolution/codec tag if not scoped narrowly.
 const SEASON_EP_X_FORMAT = /\b0*(\d{1,2})x0*(\d{1,3})\b/i;
-const SEASON_ONLY = /\bS(\d{1,2})\b(?!\s*E\d)/i;
+// Fansub season numbering: "[SubsPlease] Show S2 - 05 (1080p)", "Show Season 2 - 05 [1080p]". Without
+// this the bare "S2"/"Season 2" reads as a season pack, so episode 5 would satisfy every episode of
+// the season.
+// Neither a "~ NN" range end (group 4) nor an unspaced "-NN" one (group 5) ever starts an episode
+// title, so anything may follow them. A spaced " - NN" second number (group 6) often does
+// ("S2 - 05 - 7 Deadly Sins"), so it is a range end only when a bracket, a "+ OVA" extra, a
+// resolution or the end of the title follows (optionally after "END"). A decimal ("S2 - 12.5") is
+// a recap or special between two regular episodes.
+const SEASON_DASH_EPISODE =
+  /\bS(?:eason\s*)?(\d{1,2})\s+-\s+0*(\d{1,3})(\.\d)?(?:v\d)?(?=[\s[(~-]|$)(?:\s*~\s*0*(\d{1,3})(?:v\d)?(?![\da-z])|-0*(\d{1,3})(?:v\d)?(?![\da-z])|\s*-\s*0*(\d{1,3})(?:v\d)?(?!\d)(?=\s*(?:end\s*)?(?:[[(+]|\d{3,4}[pi]\b|$)))?/i;
+// "The Office Season 1 - 9 Complete" and "Friends Season 1 - 10 Complete" are multi-season
+// collections, not episode 9 or 10: a spelled-out season followed by an unpadded single digit, or
+// any match followed by a collection word, is left to the season-pack rules below.
+const MULTI_SEASON_TAIL = /^[\s._\-[(]*(?:complete|collection|box\s*set|series|seasons?)\b/i;
+function seasonDashEpisode(title: string): RegExpMatchArray | null {
+  const m = title.match(SEASON_DASH_EPISODE);
+  if (!m || m.index === undefined) return null;
+  if (MULTI_SEASON_TAIL.test(title.slice(m.index + m[0].length))) return null;
+  const spelledOut = /^season/i.test(m[0]);
+  const unpaddedSingleDigit = /-\s+[1-9](?!\d)/.test(m[0]) && !m[4] && !m[5] && !m[6];
+  if (spelledOut && unpaddedSingleDigit) return null;
+  return m;
+}
+// A dash range of this many episodes or more ("S2 - 01-12") is a batch, not a multi-episode release.
+const DASH_RANGE_BATCH_SIZE = 4;
+const SEASON_ONLY = /\bS(\d{1,2})\b(?![\s._-]*E\d)/i;
 const FULL_SEASON_HINT = /\b(complete|season\s?\d{1,2}|full season)\b/i;
+// Fansub batch tag; bracketed only, since "Batch" is also an ordinary title word.
+const BATCH_TAG = /[[(]\s*batch\s*[\])]/i;
 const YEAR = /\b(19|20)\d{2}\b/;
 // Matches "2024.08.25", "2024-08-25", or "2024 08 25" — the three separators scene releases
 // actually use; month/day are sanity-range-checked below since this alone can't tell a real date
@@ -59,9 +91,13 @@ const AIR_DATE = /\b((?:19|20)\d{2})[.\-\s](\d{1,2})[.\-\s](\d{1,2})\b/;
 // Anime fansub convention: "[Group] Show Title - 145 [1080p]" — a bare number after " - " with
 // no SxxExx designator anywhere in the title. Deliberately narrow (requires the space-hyphen-space
 // separator) to avoid catching an arbitrary number elsewhere in the title.
+// The lookahead alone keeps a "1080p" token out, so a genuine episode 480/720/1080 still parses.
 const ABSOLUTE_EPISODE = /\s-\s0*(\d{1,4})(?=\s|\[|\(|$)/;
+// A season-less fansub batch ("[Group] Show - 01 ~ 12 [1080p]"): the same range conventions as
+// SEASON_DASH_EPISODE, with an absolute number's four digits.
+const ABSOLUTE_RANGE =
+  /\s-\s0*(\d{1,4})(?:v\d)?(?:\s*~\s*0*(\d{1,4})(?![\da-z])|-0*(\d{1,4})(?:v\d)?(?![\da-z])|\s+-\s+0*(\d{1,4})(?:v\d)?(?!\d)(?=\s*(?:end\s*)?(?:[[(+]|\d{3,4}[pi]\b|$)))/i;
 const IMDB_ID = /\btt\d{7,8}\b/i;
-const COMMON_RESOLUTIONS = new Set([480, 576, 720, 1080, 2160]);
 
 const RESOLUTION_2160 = /\b(2160p|4k|uhd)\b/i;
 const RESOLUTION_1080 = /\b1080p\b/i;
@@ -75,6 +111,9 @@ const SOURCE_WEBDL = /\b(web-?dl|webdl)\b/i;
 const SOURCE_WEBRIP = /\bwebrip\b/i;
 const SOURCE_HDTV = /\bhdtv\b/i;
 const SOURCE_DVD = /\bdvd(rip)?\b/i;
+// Sources that are SD when no resolution is given: TV/satellite captures and BD/BR rips. Bare "WEB"
+// only counts followed by a codec ("Show.S01E01.WEB.h264-GRP"), since it's also a title word.
+const SD_SOURCE = /\b(sdtv|pdtv|tvrip|dsr|dsrip|satrip|dvb|dvbrip|bdrip|brrip)\b|\bweb[ ._-]+(?:[hx][ .]?26[45]|hevc|avc|xvid|divx)\b/i;
 // Movie-only, lowest-quality theatrical-capture sources (Radarr/Whisparr's own Source vocabulary,
 // AoNarr had no equivalent for any of these) — kept narrow ("ts"/"tc" alone are too short/ambiguous
 // to safely match as bare words against an arbitrary title.
@@ -134,6 +173,46 @@ const LANGUAGE_PATTERN = new RegExp(`\\b(${Object.keys(LANGUAGE_TAGS).join("|")}
 
 // Release group convention: a trailing "-GROUPNAME" with no further dots/spaces/hyphens after it.
 const RELEASE_GROUP = /-([A-Za-z0-9]+)$/;
+// An untagged title ending in a hyphenated source token ("...WEB-DL", "...Blu-ray") has no group.
+const TRAILING_SOURCE_TOKEN = /(?:web|blu|bd|dvd|hd)-(?:dl|ray|rip)$/i;
+// Nor does one ending in an episode range or a hyphenated resolution ("S01E01-02", "S2 - 05-06",
+// "S2 - 05-1080p"): the tail is the range end or the resolution.
+const TRAILING_RANGE_END = /\d-(?:E?\d{1,3}(?:v\d)?|\d{3,4}[pi])$/i;
+// Fansub convention: the group leads the title in brackets ("[SubsPlease] Show - 05 (1080p)").
+const LEADING_BRACKET_GROUP = /^\[([^\]]+)\]/;
+// The CRC32 a fansub release ends with ("... (1080p) [ABCD1234]").
+const FANSUB_HASH = /\[[0-9a-f]{8}\]$/i;
+// Numbers, years, format/quality/source, language, content-kind and platform words that also lead
+// titles ("[FLAC] Artist - Album", "[MP3 320]", "[VOSTFR] Show - 05") — none of them names a group.
+const NON_GROUP_WORD =
+  /^(?:\d+|\d{3,4}[pi]|4k|uhd|hd|sd|hdr\d*|dv|sdr|\d{1,2}bit|\d+k(?:bps|hz)?|kbps|khz|v[02]|flac|mp3|aac|alac|ogg|opus|wav|ape|dsd|m4a|m4b|lossless|hi|res|hires|epub|pdf|mobi|azw\d?|cb[rz7]|djvu|web|webdl|webrip|dl|rip|blu|ray|bluray|bd|bdrip|brrip|remux|hdtv|dvd|dvd[59]|dvdrip|[hx]26[45]|hevc|avc|xvid|divx|eng|jpn|jap|ger|fre|fra|ita|spa|rus|kor|chi|chs|cht|dual|audio|multiple|subs?|subbed|subtitles?|dub|dubbed|raws?|ost|cd|vinyl|audiobook|unabridged|abridged|retail|discography|nsw|ps[1-5p]|psv|nds|3ds|gba|gbc|wii|wiiu|n64|snes|xbox|x360)$/i;
+
+// Music and book formats. A title tagged with one ("[Artist] Album - 01 [FLAC]", "[Author] Series - 03
+// (epub)") and carrying no video marker leads with an artist or author, not a fansub group. AAC and
+// Opus are common fansub audio too, which is why a video marker overrides the format tag.
+const AUDIO_BOOK_FORMAT_WORD =
+  /^(?:flac|mp3|aac|alac|ogg|opus|wav|ape|dsd|m4a|m4b|lossless|\d{1,2}bit|\d*khz|\d*kbps|epub|pdf|mobi|azw\d?|cb[rz7]|djvu|audiobook|unabridged|abridged|discography)$/i;
+const VIDEO_MARKER = /\b(?:\d{3,4}[pi]|\d{3,4}x\d{3,4}|4k|[hx]\.?26[45]|hevc|avc|xvid|divx|bd|bdrip|bluray|hi10p?|10bit|web(?:-?dl|-?rip)?)\b/i;
+const BRACKET_TAG = /[[(]([^\])]*)[\])]/g;
+const ABSOLUTE_EPISODE_ALL = new RegExp(ABSOLUTE_EPISODE.source, "g");
+const YEAR_SHAPED = /^(?:19|20)\d{2}$/;
+
+function tagWords(tag: string): string[] {
+  return tag.split(/[\s_,+\-/]+/).filter(Boolean);
+}
+
+function isNonGroupTag(tag: string): boolean {
+  const words = tagWords(tag);
+  return words.length > 0 && words.every((w) => NON_GROUP_WORD.test(w) || Object.hasOwn(LANGUAGE_TAGS, w.toLowerCase()));
+}
+
+function hasAudioOrBookTag(text: string): boolean {
+  if (VIDEO_MARKER.test(text)) return false;
+  for (const [, tag] of text.matchAll(BRACKET_TAG)) {
+    if (isNonGroupTag(tag) && tagWords(tag).some((w) => AUDIO_BOOK_FORMAT_WORD.test(w))) return true;
+  }
+  return false;
+}
 
 function detectLanguages(title: string): string[] {
   const found = new Set<string>();
@@ -144,8 +223,33 @@ function detectLanguages(title: string): string[] {
 }
 
 function detectReleaseGroup(title: string): string | null {
-  const match = title.trim().match(RELEASE_GROUP);
-  return match ? match[1] : null;
+  const trimmed = title.trim();
+  const match = trimmed.match(RELEASE_GROUP);
+  // A trailing resolution ("Title-1080p", "1080p-2160p") names a quality, never a group.
+  if (match && !TRAILING_SOURCE_TOKEN.test(trimmed) && !TRAILING_RANGE_END.test(trimmed) && !/^(?:\d{3,4}[pi]|4k|8k)$/i.test(match[1])) return match[1];
+  // Only a fansub-shaped title leads with its group; music, book and tracker titles lead with a
+  // format, language or site tag ("[FLAC] Artist - Album", "[www.site.org] Movie"). A year after
+  // " - " ("Compilation - 2020") is a release date, not an episode number.
+  const episodeNumbered = [...trimmed.matchAll(ABSOLUTE_EPISODE_ALL)].some((m) => !YEAR_SHAPED.test(m[1]));
+  // Music and book titles never carry a season-numbered episode or a CRC32.
+  // A season-less episode range ("[Group] Show - 01-04 [1080p]") is fansub numbering too.
+  const fansubOnly = !!seasonDashEpisode(trimmed) || FANSUB_HASH.test(trimmed) || isAbsoluteBatch(trimmed);
+  if (!episodeNumbered && !fansubOnly) return null;
+  const leadingMatch = trimmed.match(LEADING_BRACKET_GROUP);
+  if (!leadingMatch) return null;
+  const leading = leadingMatch[1].trim();
+  if (!leading || leading.includes(".") || isNonGroupTag(leading)) return null;
+  if (!fansubOnly && hasAudioOrBookTag(trimmed.slice(leadingMatch[0].length))) return null;
+  return leading;
+}
+
+function isAbsoluteBatch(title: string): boolean {
+  const match = title.match(ABSOLUTE_RANGE);
+  if (!match) return false;
+  const end = match[2] ?? match[3] ?? match[4];
+  // "Discography - 1999-2005" spans years, not episodes.
+  if (YEAR_SHAPED.test(end)) return false;
+  return !!match[2] || Number(end) - Number(match[1]) + 1 >= DASH_RANGE_BATCH_SIZE;
 }
 
 function detectResolution(title: string): string | null {
@@ -198,7 +302,7 @@ function detectFlags(title: string): ReleaseFlag[] {
 function detectQuality(title: string): QualityName | "Unknown" {
   // Only the resolutions the quality ladder actually has tiers for — 480p/576p are exposed on
   // `resolution` for custom-format conditions, but "WEBDL-480p" isn't a quality: a 576i DVD rip
-  // must still grade as plain "DVD" (anything else sub-720p stays "Unknown", as it always has).
+  // grades as plain "DVD", and any other sub-720p video release as the "SD" tier.
   const resolution = detectResolution(title);
   const suffix = resolution === "2160p" || resolution === "1080p" || resolution === "720p" ? resolution : null;
   const source = detectSource(title);
@@ -208,6 +312,12 @@ function detectQuality(title: string): QualityName | "Unknown" {
   if (source === "Cam" || source === "Telesync" || source === "Telecine" || source === "Workprint") return "Unknown";
   if (!suffix) {
     if (source === "DVD") return "DVD";
+    // Only a sub-HD encode is the ladder's "SD" tier: resolution-less scene naming
+    // ("Show.S01E01.HDTV.x264-LOL"), a 480p/576p encode, or an SD capture/rip. A resolution-less
+    // remux, disc image or plain "BluRay" ("Movie.COMPLETE.BLURAY") is a full-size HD release —
+    // graded SD, any profile allowing SD would grab it, and a 720p release would "upgrade" it.
+    if (source === "Remux" || detectQualityModifier(title) === "brdisk") return "Unknown";
+    if (resolution || source === "HDTV" || source === "WEBDL" || source === "WEBRip" || SD_SOURCE.test(title)) return "SD";
     return "Unknown";
   }
 
@@ -225,6 +335,7 @@ export function parseReleaseTitle(title: string): ParsedRelease {
   let seasonNumber: number | null = null;
   let episodeNumbers: number[] | null = null;
   let isFullSeason = false;
+  let episodeRange: [number, number] | null = null;
 
   const rangeMatch = title.match(SEASON_EP_RANGE);
   if (rangeMatch) {
@@ -241,8 +352,27 @@ export function parseReleaseTitle(title: string): ParsedRelease {
       for (let e = start; e <= end; e++) episodeNumbers.push(e);
     }
   } else {
-    const xMatch = title.match(SEASON_EP_X_FORMAT);
-    if (xMatch) {
+    const dashMatch = seasonDashEpisode(title);
+    const xMatch = dashMatch ? null : title.match(SEASON_EP_X_FORMAT);
+    if (dashMatch) {
+      seasonNumber = Number(dashMatch[1]);
+      const start = Number(dashMatch[2]);
+      const tildeEnd = dashMatch[4];
+      const rangeEnd = tildeEnd ?? dashMatch[5] ?? dashMatch[6];
+      const end = rangeEnd ? Number(rangeEnd) : start;
+      if (BATCH_TAG.test(title) || tildeEnd || (rangeEnd && end - start + 1 >= DASH_RANGE_BATCH_SIZE)) {
+        // "~", a [Batch] tag and a long range are the fansub batch conventions; a short dash range
+        // is a multi-episode release, the same as "S02E05-E06".
+        isFullSeason = true;
+        if (rangeEnd && end >= start) episodeRange = [start, end];
+      } else if (dashMatch[3]) {
+        // A special numbered between two episodes is neither of them, nor a pack.
+        episodeNumbers = [];
+      } else {
+        episodeNumbers = [];
+        for (let e = start; e <= Math.max(start, end); e++) episodeNumbers.push(e);
+      }
+    } else if (xMatch) {
       seasonNumber = Number(xMatch[1]);
       episodeNumbers = [Number(xMatch[2])];
     } else {
@@ -259,6 +389,9 @@ export function parseReleaseTitle(title: string): ParsedRelease {
           // "S03" abbreviation) can still match a request for that specific season.
           const digits = fullSeasonMatch[1].match(/(\d{1,2})/);
           if (digits) seasonNumber = Number(digits[1]);
+        } else if (BATCH_TAG.test(title) || isAbsoluteBatch(title)) {
+          // With no season, the pack matches no specific episode, which beats matching its first.
+          isFullSeason = true;
         }
       }
     }
@@ -280,10 +413,7 @@ export function parseReleaseTitle(title: string): ParsedRelease {
   let absoluteEpisode: number | null = null;
   if (seasonNumber === null && episodeNumbers === null && !isFullSeason) {
     const absMatch = title.match(ABSOLUTE_EPISODE);
-    if (absMatch) {
-      const n = Number(absMatch[1]);
-      if (!COMMON_RESOLUTIONS.has(n)) absoluteEpisode = n;
-    }
+    if (absMatch) absoluteEpisode = Number(absMatch[1]);
   }
 
   const imdbMatch = title.match(IMDB_ID);
@@ -305,6 +435,7 @@ export function parseReleaseTitle(title: string): ParsedRelease {
     edition: detectEdition(title),
     qualityModifier: detectQualityModifier(title),
     releaseType: detectReleaseType(isFullSeason, episodeNumbers),
+    episodeRange,
   };
 }
 
@@ -312,7 +443,11 @@ export function parseReleaseTitle(title: string): ParsedRelease {
 function matchesSeasonEpisode(parsed: ParsedRelease, seasonNumber: number, episodeNumber: number): boolean {
   if (parsed.seasonNumber !== null && parsed.seasonNumber !== seasonNumber) return false;
   if (parsed.episodeNumbers) return parsed.episodeNumbers.includes(episodeNumber);
-  if (parsed.isFullSeason) return parsed.seasonNumber === seasonNumber;
+  if (parsed.isFullSeason) {
+    if (parsed.seasonNumber !== seasonNumber) return false;
+    const range = parsed.episodeRange;
+    return !range || (episodeNumber >= range[0] && episodeNumber <= range[1]);
+  }
   return false;
 }
 

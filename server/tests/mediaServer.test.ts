@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { setupTestDb } from "./helpers/testDb.js";
 
 let getMediaServerConfig: (typeof import("../src/services/mediaServer.js"))["getMediaServerConfig"];
@@ -10,6 +13,7 @@ let fetchMediaServerSeries: (typeof import("../src/services/mediaServer.js"))["f
 let refreshMediaServerLibrary: (typeof import("../src/services/mediaServer.js"))["refreshMediaServerLibrary"];
 let triggerFullMediaServerScan: (typeof import("../src/services/mediaServer.js"))["triggerFullMediaServerScan"];
 let resolvePlexFilePath: (typeof import("../src/services/mediaServer.js"))["resolvePlexFilePath"];
+let resolveJellyfinLikeFilePath: (typeof import("../src/services/mediaServer.js"))["resolveJellyfinLikeFilePath"];
 let pushWatchState: (typeof import("../src/services/mediaServer.js"))["pushWatchState"];
 let fetchMediaServerArtwork: (typeof import("../src/services/mediaServer.js"))["fetchMediaServerArtwork"];
 let setSetting: (typeof import("../src/services/settingsStore.js"))["setSetting"];
@@ -27,6 +31,7 @@ beforeAll(async () => {
     refreshMediaServerLibrary,
     triggerFullMediaServerScan,
     resolvePlexFilePath,
+    resolveJellyfinLikeFilePath,
     pushWatchState,
     fetchMediaServerArtwork,
   } = await import("../src/services/mediaServer.js"));
@@ -548,14 +553,17 @@ describe("refreshMediaServerLibrary / triggerFullMediaServerScan", () => {
   it("Plex: refresh includes a path param (targeted); full scan does not (whole-section)", async () => {
     configurePlex();
     const fetchMock = routedFetch([
-      { test: (u) => u.includes("/library/sections?"), response: ok({ MediaContainer: { Directory: [{ key: "1", type: "movie" }] } }) },
+      {
+        test: (u) => u.includes("/library/sections?"),
+        response: ok({ MediaContainer: { Directory: [{ key: "1", type: "movie", Location: [{ id: 1, path: "/movies" }] }] } }),
+      },
       { test: () => true, response: ok({}) },
     ]);
     vi.stubGlobal("fetch", fetchMock);
 
-    await refreshMediaServerLibrary("/movies/a.mkv");
+    await refreshMediaServerLibrary("/movies/A (2020)/a.mkv");
     const refreshCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("/refresh"));
-    expect(String(refreshCall![0])).toContain("path=%2Fmovies%2Fa.mkv");
+    expect(String(refreshCall![0])).toContain("path=%2Fmovies%2FA%20(2020)&");
 
     fetchMock.mockClear();
     await triggerFullMediaServerScan();
@@ -602,6 +610,215 @@ describe("refreshMediaServerLibrary / triggerFullMediaServerScan", () => {
     refreshCalls = 0;
     await triggerFullMediaServerScan();
     expect(refreshCalls).toBe(2); // same per-section resilience for the full-scan path
+  });
+});
+
+describe("refreshMediaServerLibrary — Plex path mapping", () => {
+  function plexWithSections(directory: unknown[]) {
+    configurePlex();
+    const fetchMock = routedFetch([
+      { test: (u) => u.includes("/library/sections?"), response: ok({ MediaContainer: { Directory: directory } }) },
+      { test: (u) => u.includes("/refresh"), response: ok({}) },
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+    const refreshUrls = () => fetchMock.mock.calls.map((c) => String(c[0])).filter((u) => u.includes("/refresh"));
+    return { fetchMock, refreshUrls };
+  }
+
+  function refreshUrl(sectionKey: string, plexFolder: string | null): string {
+    const pathParam = plexFolder ? `path=${encodeURIComponent(plexFolder)}&` : "";
+    return `http://plex.local:32400/library/sections/${sectionKey}/refresh?${pathParam}X-Plex-Token=plex-token`;
+  }
+
+  it("refreshes only the matching section, with the file's folder as Plex sees it", async () => {
+    const { fetchMock, refreshUrls } = plexWithSections([
+      { key: "1", type: "movie", Location: [{ id: 1, path: "/data/movies" }] },
+      { key: "2", type: "show", Location: [{ id: 2, path: "/data/tv" }] },
+    ]);
+
+    await refreshMediaServerLibrary("/media/movies/Dune (2021)/Dune (2021).mkv");
+
+    expect(refreshUrls()).toEqual([refreshUrl("1", "/data/movies/Dune (2021)")]);
+    // Plex's refresh endpoint is a GET.
+    const refreshCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("/refresh")) as unknown[];
+    expect((refreshCall[1] as { method?: string } | undefined)?.method ?? "GET").toBe("GET");
+  });
+
+  it("prefers the location sharing the most path segments", async () => {
+    const { refreshUrls } = plexWithSections([
+      { key: "1", type: "movie", Location: [{ id: 1, path: "/media" }] },
+      { key: "2", type: "show", Location: [{ id: 2, path: "/media/tv" }] },
+    ]);
+
+    await refreshMediaServerLibrary("/media/tv/Some Show/Season 01/Some Show - S01E01.mkv");
+
+    expect(refreshUrls()).toEqual([refreshUrl("2", "/media/tv/Some Show/Season 01")]);
+  });
+
+  it("on an equally specific match, prefers the location matching higher up the path", async () => {
+    const { refreshUrls } = plexWithSections([
+      { key: "1", type: "movie", Location: [{ id: 1, path: "/data/movies" }] },
+      { key: "2", type: "show", Location: [{ id: 2, path: "/data/tv" }] },
+    ]);
+
+    // A show whose own folder is named like the movie library's root.
+    await refreshMediaServerLibrary("/media/tv/Movies/Season 01/Movies - S01E01.mkv");
+
+    expect(refreshUrls()).toEqual([refreshUrl("2", "/data/tv/Movies/Season 01")]);
+  });
+
+  it("keeps a Windows Plex server's own separators", async () => {
+    const { refreshUrls } = plexWithSections([{ key: "3", type: "movie", Location: [{ id: 3, path: "D:\\Media\\Movies\\" }] }]);
+
+    await refreshMediaServerLibrary("/mnt/nas/movies/Heat (1995)/Heat (1995).mkv");
+
+    expect(refreshUrls()).toEqual([refreshUrl("3", "D:\\Media\\Movies\\Heat (1995)")]);
+  });
+
+  it("uses a folder passed in (a season pack's destination) as the folder itself", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-plex-refresh-"));
+    const packFolder = path.join(root, "tv", "Pack Show", "Season 02");
+    fs.mkdirSync(packFolder, { recursive: true });
+    fs.writeFileSync(path.join(packFolder, "Pack Show - S02E01.mkv"), "");
+    try {
+      const { refreshUrls } = plexWithSections([{ key: "2", type: "show", Location: [{ id: 2, path: "/data/tv" }] }]);
+
+      await refreshMediaServerLibrary(packFolder);
+
+      expect(refreshUrls()).toEqual([refreshUrl("2", "/data/tv/Pack Show/Season 02")]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rescans every movie/show section whole when no location shares any part of the path", async () => {
+    const { refreshUrls } = plexWithSections([
+      { key: "1", type: "movie", Location: [{ id: 1, path: "/plexdata/films" }] },
+      { key: "2", type: "show", Location: [{ id: 2, path: "/plexdata/series" }] },
+      { key: "5", type: "artist", Location: [{ id: 5, path: "/media/movies" }] },
+    ]);
+
+    await refreshMediaServerLibrary("/media/movies/Dune (2021)/Dune (2021).mkv");
+
+    expect(refreshUrls()).toEqual([refreshUrl("1", null), refreshUrl("2", null)]);
+  });
+
+  it("asks Plex nothing for a non-video import: an ebook file or an album folder", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-plex-refresh-"));
+    const albumFolder = path.join(root, "music", "Artist", "Album (2020)");
+    fs.mkdirSync(albumFolder, { recursive: true });
+    fs.writeFileSync(path.join(albumFolder, "01 - Track.flac"), "");
+    try {
+      const { fetchMock } = plexWithSections([
+        { key: "1", type: "movie", Location: [{ id: 1, path: "/plexdata/films" }] },
+        { key: "2", type: "show", Location: [{ id: 2, path: "/plexdata/series" }] },
+      ]);
+
+      await refreshMediaServerLibrary("/media/books/Some Author/Some Title.epub");
+      await refreshMediaServerLibrary(albumFolder);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("Jellyfin still refreshes its library for a non-video import (it has book and music libraries)", async () => {
+    configureJellyfin();
+    const fetchMock = vi.fn().mockResolvedValue(ok({}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await refreshMediaServerLibrary("/media/books/Some Author/Some Title.epub");
+
+    expect(fetchMock).toHaveBeenCalledWith("http://jellyfin.local:8096/Library/Refresh", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("logs a refresh Plex rejects instead of ignoring it", async () => {
+    configurePlex();
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        {
+          test: (u) => u.includes("/library/sections?"),
+          response: ok({ MediaContainer: { Directory: [{ key: "1", type: "movie", Location: [{ path: "/data/movies" }] }] } }),
+        },
+        { test: (u) => u.includes("/refresh"), response: notOk(401) },
+      ])
+    );
+    const { log } = await import("../src/services/logger.js");
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+    try {
+      await refreshMediaServerLibrary("/media/movies/Dune (2021)/Dune (2021).mkv");
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("returned HTTP 401"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe("resolveJellyfinLikeFilePath", () => {
+  it("returns null without any request when unconfigured, configured for Plex, or given a malformed id", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    unconfigure();
+    expect(await resolveJellyfinLikeFilePath("abc")).toBeNull();
+    configurePlex();
+    expect(await resolveJellyfinLikeFilePath("abc")).toBeNull();
+    configureJellyfin();
+    expect(await resolveJellyfinLikeFilePath("abc&Ids=other")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("Jellyfin: looks the item up as the admin user and matches its id with or without dashes", async () => {
+    configureJellyfin();
+    const fetchMock = routedFetch([
+      { test: (u) => u.endsWith("/Users"), response: ok([{ Id: "viewer" }, { Id: "admin", Policy: { IsAdministrator: true } }]) },
+      {
+        test: (u) => u.includes("/Users/admin/Items?"),
+        response: ok({ Items: [{ Id: "a1b2c3d4e5f60718293a4b5c6d7e8f90", Path: "/jf/movies/Film (2020)/Film.mkv" }] }),
+      },
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await resolveJellyfinLikeFilePath("a1b2c3d4-e5f6-0718-293a-4b5c6d7e8f90")).toBe("/jf/movies/Film (2020)/Film.mkv");
+    const itemsCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("/Items?")) as unknown[];
+    expect(String(itemsCall[0])).toBe(
+      "http://jellyfin.local:8096/Users/admin/Items?Ids=a1b2c3d4-e5f6-0718-293a-4b5c6d7e8f90&Recursive=true&Fields=Path"
+    );
+    expect((itemsCall[1] as any).headers["X-Emby-Token"]).toBe("jf-token");
+  });
+
+  it("Emby: uses the /emby base path", async () => {
+    configureEmby();
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u === "http://emby.local:8096/emby/Users", response: ok([{ Id: "u1" }]) },
+        { test: (u) => u.startsWith("http://emby.local:8096/emby/Users/u1/Items?Ids=77&"), response: ok({ Items: [{ Id: "77", Path: "/e/x.mkv" }] }) },
+      ])
+    );
+
+    expect(await resolveJellyfinLikeFilePath("77")).toBe("/e/x.mkv");
+  });
+
+  it("returns null when the item isn't in the response, has no path, or a request fails", async () => {
+    configureJellyfin();
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u.endsWith("/Users"), response: ok([{ Id: "u1" }]) },
+        { test: (u) => u.includes("Ids=other"), response: ok({ Items: [{ Id: "somethingelse", Path: "/wrong.mkv" }] }) },
+        { test: (u) => u.includes("Ids=nopath"), response: ok({ Items: [{ Id: "nopath" }] }) },
+        { test: (u) => u.includes("Ids=broken"), response: notOk(500) },
+      ])
+    );
+
+    expect(await resolveJellyfinLikeFilePath("other")).toBeNull();
+    expect(await resolveJellyfinLikeFilePath("nopath")).toBeNull();
+    expect(await resolveJellyfinLikeFilePath("broken")).toBeNull();
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(notOk(401)));
+    expect(await resolveJellyfinLikeFilePath("abc")).toBeNull();
   });
 });
 

@@ -161,6 +161,8 @@ export interface QueueItem {
    * client reported no path, no mapping applies, or that adapter doesn't support it — importer.ts
    * falls back to its existing downloads-directory-wide fuzzy scan in that case. */
   downloadPath: string | null;
+  /** Why a 'completed' row's import was skipped and is waiting for a manual import. */
+  importSkippedReason?: string | null;
 }
 
 export interface HistoryEvent {

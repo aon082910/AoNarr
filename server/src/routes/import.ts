@@ -3,8 +3,11 @@ import { requireAdmin } from "../middleware/auth.js";
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
+import { db } from "../db/index.js";
+import { mediaItemFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { placeFile } from "../services/importer.js";
+import { effectiveShape, getMediaTypeConfig } from "../services/mediaTypes.js";
 import { parseReleaseTitle } from "../services/releaseParser.js";
 import { parseNfo } from "../services/nfoParser.js";
 import { scrapeCoursePage } from "../services/courseScraper.js";
@@ -63,12 +66,15 @@ importRouter.get(
       throw new HttpError(404, "Directory not found");
     }
 
+    // Relative to downloadsDir and always "/"-separated, whatever the host's own separator: the pages
+    // split it on "/" to go up a level.
+    const relativePath = anyFolder ? null : path.relative(path.resolve(config.downloadsDir), target).split(path.sep).join("/");
+
     const listing = entries
       .map((entry) => {
         // In anyFolder mode every entry's path is absolute (so it can be browsed/imported directly
-        // with no separate root to remember); in the default mode it stays relative to downloadsDir,
-        // unchanged from before.
-        const entryPath = anyFolder ? path.join(target, entry.name) : path.join(requestedPath, entry.name);
+        // with no separate root to remember); in the default mode it stays relative to downloadsDir.
+        const entryPath = anyFolder ? path.join(target, entry.name) : relativePath ? `${relativePath}/${entry.name}` : entry.name;
         const full = path.join(target, entry.name);
         const isMediaFile = entry.isFile() && MEDIA_EXTENSIONS.has(path.extname(entry.name).toLowerCase());
         const isNfoFile = entry.isFile() && path.extname(entry.name).toLowerCase() === ".nfo";
@@ -84,8 +90,10 @@ importRouter.get(
       .filter((e) => e.isDirectory || e.isMediaFile || e.isNfoFile)
       .sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.localeCompare(b.name));
 
-    const parent = anyFolder ? (path.dirname(target) === target ? null : path.dirname(target)) : null;
-    res.json({ path: anyFolder ? target : requestedPath, anyFolder, parent, entries: listing });
+    let parent: string | null;
+    if (anyFolder) parent = path.dirname(target) === target ? null : path.dirname(target);
+    else parent = relativePath ? (relativePath.includes("/") ? relativePath.slice(0, relativePath.lastIndexOf("/")) : "") : null;
+    res.json({ path: anyFolder ? target : relativePath, anyFolder, parent, entries: listing });
   })
 );
 
@@ -196,6 +204,23 @@ importRouter.post(
       throw new HttpError(400, "mediaItemId and a non-empty files array are required");
     }
 
+    const itemRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(b.mediaItemId);
+    if (!itemRow) throw new HttpError(404, "Media item not found");
+    const item = mediaItemFromRow(itemRow);
+    const shape = effectiveShape(item);
+    // An album or audiobook takes many files; every other target takes one.
+    const manyFilesPerChild = shape === "collection" && !!getMediaTypeConfig(item.type).multiFilePerChild;
+    const targetOf = (f: { episodeId?: unknown; subItemId?: unknown }): string | null => {
+      if (shape === "single") return "item";
+      if (f.episodeId) return `episode:${Number(f.episodeId)}`;
+      if (f.subItemId && !manyFilesPerChild) return `sub:${Number(f.subItemId)}`;
+      return null;
+    };
+    const mappedTargets = new Set<string>();
+    // Shared by every file of this request, so the importer refuses a later file for a row an
+    // earlier one already filled (a sample checked alongside its episode, two picks for one track).
+    const batchClaims = new Set<string>();
+
     const results: { sourcePath: string; ok: boolean; destPath?: string; fileLabel?: string; error?: string }[] = [];
     for (const f of b.files) {
       const sourcePath = f?.sourcePath;
@@ -208,6 +233,10 @@ importRouter.post(
         if (!fs.existsSync(sourceFile) || !fs.statSync(sourceFile).isFile()) {
           throw new Error("Source file not found");
         }
+        // Refused even when the earlier file then fails to import: its sample must not land in its place.
+        const target = targetOf(f);
+        if (target && mappedTargets.has(target)) throw new Error("Another file in this import is already mapped to that target");
+        if (target) mappedTargets.add(target);
         const quality = f.quality ?? parseReleaseTitle(path.basename(sourceFile)).quality;
         const result = await placeFile({
           itemId: b.mediaItemId,
@@ -215,6 +244,7 @@ importRouter.post(
           subItemId: f.subItemId ?? null,
           sourceFile,
           quality,
+          batchClaims,
         });
         results.push({ sourcePath, ok: true, ...result });
       } catch (err) {

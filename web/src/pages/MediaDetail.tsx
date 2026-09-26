@@ -39,7 +39,8 @@ import { TrashIcon, PencilIcon, FolderIcon, EyeIcon, ArrowLeftIcon, ArrowUpIcon,
 import { ProviderIcon } from "../components/ProviderIcons.js";
 import { PageToolbar, ToolbarButton, ToolbarSeparator } from "../components/PageToolbar.js";
 import type { Collection, HistoryEvent, MediaInfo, MediaItem, QualityProfile, RootFolder, SearchResult, Tag } from "../types.js";
-import { formatBytes, formatMediaInfo } from "../utils/format.js";
+import { formatBytes, formatCalendarDate, formatMediaInfo, formatServerTimestamp, parseServerTimestamp } from "../utils/format.js";
+import { displayableImageUrl } from "../utils/artwork.js";
 import { useContentRatings } from "../hooks/useContentRatings.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
@@ -131,7 +132,11 @@ interface ScanImportResult {
   skipped: number;
   skippedFiles?: { path: string; reason: string }[];
   unsupported?: string;
+  /** A whole-library scan of this type is running or queued; it covers this item's files instead. */
+  alreadyRunning?: boolean;
 }
+
+const SCAN_ALREADY_RUNNING_MESSAGE = "A library scan is already running; it will pick up this item's files.";
 
 /** A bare "matched 0, created 0, skipped N" told an admin nothing about WHY — usually a title
  * guessed from the folder/filename not matching this item closely enough, or an unrecognized
@@ -192,6 +197,11 @@ function summarizeSubtitles(mediaInfo: MediaInfo): string {
   return mediaInfo.subtitleStreams.map((s) => s.language ?? "und").join(", ");
 }
 
+/** Null when the value isn't a usable date, so the header falls back to the year. */
+function formatReleaseDate(value: string | null | undefined): string | null {
+  return formatCalendarDate(value, { year: "numeric", month: "short", day: "numeric" }) || null;
+}
+
 export default function MediaDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -234,6 +244,11 @@ export default function MediaDetail() {
   const [browseEntries, setBrowseEntries] = useState<BrowseEntry[]>([]);
   const [browseAnyFolder, setBrowseAnyFolder] = useState(false);
   const [browseParent, setBrowseParent] = useState<string | null>(null);
+  const [browseError, setBrowseError] = useState<string | null>(null);
+  // Downloads-relative browse paths are joined with the server host's own separator, and the
+  // client can't tell a Windows "\" from a "\" inside a POSIX folder name — so Up goes back to
+  // the folder each path was opened from rather than guessing a parent from the string.
+  const browseOpenedFrom = useRef(new Map<string, string>());
   const [customFolderInput, setCustomFolderInput] = useState("");
   const [aiGuesses, setAiGuesses] = useState<Record<string, string>>({});
   const [aiIdentifying, setAiIdentifying] = useState<string | null>(null);
@@ -278,6 +293,7 @@ export default function MediaDetail() {
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<HistoryEvent[] | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const historyRequestRef = useRef(0);
   const [editTitle, setEditTitle] = useState("");
   const [editYear, setEditYear] = useState("");
   const [editOverview, setEditOverview] = useState("");
@@ -305,16 +321,27 @@ export default function MediaDetail() {
   // mutation calls the load() it captured at click time, which would otherwise refetch the item
   // the admin has since navigated away from and win the ordering guard as the newest request.
   const loadRequestRef = useRef(0);
+  const patchSeqRef = useRef(0);
   const idRef = useRef(id);
   idRef.current = id;
   const [loadError, setLoadError] = useState<string | null>(null);
   function load() {
     const requestId = ++loadRequestRef.current;
-    setItem(null);
+    const loadingId = idRef.current;
+    const patchSeqAtStart = patchSeqRef.current;
+    // Only a different item blanks the page. A post-action refetch of the same item keeps it
+    // rendered: dropping to the "Loading..." line clamps the scroll to the top and remounts every
+    // open modal (search results, manual import) mid-task.
+    setItem((prev) => (prev && String(prev.id) === loadingId ? prev : null));
     setLoadError(null);
-    api.get<MediaDetailResponse>(`/media/${idRef.current}`).then(
+    api.get<MediaDetailResponse>(`/media/${loadingId}`).then(
       (data) => {
-        if (loadRequestRef.current === requestId) setItem(data);
+        if (loadRequestRef.current !== requestId) return;
+        // The page stays clickable during that refetch, so a patchItem() (monitored, protected,
+        // tags...) may have landed after this GET read the row; applying the snapshot would put
+        // the old value back on screen, so fetch again instead.
+        if (patchSeqRef.current !== patchSeqAtStart) load();
+        else setItem(data);
       },
       (e) => {
         if (loadRequestRef.current === requestId) setLoadError((e as Error).message);
@@ -324,6 +351,7 @@ export default function MediaDetail() {
 
   /** Applies a post-await update only while that same item is still the one on screen. */
   function patchItem(itemId: number, update: (prev: MediaDetailResponse) => MediaDetailResponse) {
+    if (String(itemId) === idRef.current) patchSeqRef.current++;
     setItem((prev) => (prev && prev.id === itemId ? update(prev) : prev));
   }
 
@@ -334,49 +362,103 @@ export default function MediaDetail() {
   useEffect(() => {
     localStorage.setItem("aonarr_episode_show_filepath", showEpisodeFilePath ? "1" : "0");
   }, [showEpisodeFilePath]);
+  // Each per-item fetch below drops its response once the id has moved on (the cleanup flips
+  // `cancelled`): the previous item's slower cast/ratings/trailer/watch-state would otherwise land
+  // after the new item's and show on its page — and toggleWatched would then write the inverse of
+  // the other item's flag.
   useEffect(() => {
+    let cancelled = false;
+    setWatched(false);
+    setWatchStateError(null);
     api
       .get<{ watched: boolean }>(`/media/${id}/watch-state`)
-      .then((r) => setWatched(r.watched))
-      .catch(() => setWatched(false));
+      .then((r) => {
+        if (!cancelled) setWatched(r.watched);
+      })
+      .catch(() => {
+        if (!cancelled) setWatched(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
   useEffect(() => {
+    let cancelled = false;
     setCast(null);
     api
       .get<CastMember[]>(`/media/${id}/cast`)
-      .then(setCast)
-      .catch(() => setCast([]));
+      .then((r) => {
+        if (!cancelled) setCast(r);
+      })
+      .catch(() => {
+        if (!cancelled) setCast([]);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
   useEffect(() => {
+    let cancelled = false;
     setAlternateTitles(null);
     api
       .get<string[]>(`/media/${id}/alternate-titles`)
-      .then(setAlternateTitles)
-      .catch(() => setAlternateTitles([]));
+      .then((r) => {
+        if (!cancelled) setAlternateTitles(r);
+      })
+      .catch(() => {
+        if (!cancelled) setAlternateTitles([]);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
   useEffect(() => {
+    let cancelled = false;
     setExternalRatings(null);
     api
       .get<{ imdbRating: number | null; rottenTomatoesScore: number | null; metacriticScore: number | null }>(
         `/media/${id}/ratings`
       )
-      .then(setExternalRatings)
-      .catch(() => setExternalRatings(null));
+      .then((r) => {
+        if (!cancelled) setExternalRatings(r);
+      })
+      .catch(() => {
+        if (!cancelled) setExternalRatings(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
   useEffect(() => {
     setTmdbCollection(null);
     if (item?.type !== "movie") return;
+    let cancelled = false;
     api
       .get<TmdbCollection | null>(`/media/${id}/collection`)
-      .then(setTmdbCollection)
-      .catch(() => setTmdbCollection(null));
+      .then((r) => {
+        if (!cancelled) setTmdbCollection(r);
+      })
+      .catch(() => {
+        if (!cancelled) setTmdbCollection(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [id, item?.type]);
   useEffect(() => {
+    let cancelled = false;
     setTrailerUrl(null);
     api
       .get<{ url: string | null }>(`/media/${id}/trailer`)
-      .then((r) => setTrailerUrl(r.url))
-      .catch(() => setTrailerUrl(null));
+      .then((r) => {
+        if (!cancelled) setTrailerUrl(r.url);
+      })
+      .catch(() => {
+        if (!cancelled) setTrailerUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
   useEffect(() => {
     if (isAdmin) api.get<Tag[]>("/tags").then(setAllTags);
@@ -394,10 +476,15 @@ export default function MediaDetail() {
       setGroupChain(null);
       return;
     }
+    let cancelled = false;
     api.get<{ breadcrumb: LibraryGroup[] }>(`/library-groups/${item.groupId}`).then((detail) => {
+      if (cancelled) return;
       setGroupBreadcrumb(detail.breadcrumb.map((g) => g.name).join(" / "));
       setGroupChain(detail.breadcrumb.map((g) => g.id));
     });
+    return () => {
+      cancelled = true;
+    };
   }, [item?.groupId]);
 
   async function addToCollection() {
@@ -494,11 +581,7 @@ export default function MediaDetail() {
     setShowSearchMatch(false);
     // The server drops the old match's rating/genres/local artwork and refreshes from the new match
     // in the background, so refetch the full item rather than keep showing what it used to be.
-    // Best-effort: the rematch itself already succeeded.
-    api
-      .get<MediaDetailResponse>(`/media/${item.id}`)
-      .then((fresh) => patchItem(item.id, () => fresh))
-      .catch(() => {});
+    load();
   }
 
   async function toggleWatched() {
@@ -524,7 +607,9 @@ export default function MediaDetail() {
   // or worse, with A's still-open edit-metadata/artwork/move/split/import modal silently applying
   // its stale fields (e.g. A's episode ids as import targets) to B on save.
   useEffect(() => {
+    historyRequestRef.current++;
     setHistory(null);
+    setLoadingHistory(false);
     setShowHistory(false);
     setShowAllCast(false);
     setShowAllAltTitles(false);
@@ -550,8 +635,10 @@ export default function MediaDetail() {
     setImportSubItemId("");
     setBrowseEntries([]);
     setBrowsePath("");
+    browseOpenedFrom.current.clear();
     setBrowseAnyFolder(false);
     setBrowseParent(null);
+    setBrowseError(null);
     setCustomFolderInput("");
     setAiGuesses({});
     setShowMetadataSources(false);
@@ -563,18 +650,25 @@ export default function MediaDetail() {
   }, [id]);
 
   // Opens the History modal — Modal's own close button/overlay-click/Escape handles hiding it
-  // again (previously this toggled an inline panel closed too).
+  // again (previously this toggled an inline panel closed too). Refetches on every open: a grab,
+  // import or scan since the last open adds rows a cached list would never show. Only the newest
+  // request (for the item still on screen) may land.
   function openHistory() {
     if (!item) return;
+    const requestId = ++historyRequestRef.current;
     setShowHistory(true);
-    if (history === null) {
-      setLoadingHistory(true);
-      api
-        .get<HistoryEvent[]>(`/media/${item.id}/history`)
-        .then(setHistory)
-        .catch(() => setHistory([]))
-        .finally(() => setLoadingHistory(false));
-    }
+    setLoadingHistory(true);
+    api
+      .get<HistoryEvent[]>(`/media/${item.id}/history`)
+      .then((rows) => {
+        if (historyRequestRef.current === requestId) setHistory(rows);
+      })
+      .catch(() => {
+        if (historyRequestRef.current === requestId) setHistory([]);
+      })
+      .finally(() => {
+        if (historyRequestRef.current === requestId) setLoadingHistory(false);
+      });
   }
 
   function historyEventLabel(event: HistoryEvent): { label: string; detail: string | null } {
@@ -713,7 +807,8 @@ export default function MediaDetail() {
     setScanningItem(true);
     try {
       const result = await api.post<ScanImportResult>(`/media/${item.id}/scan-import`, {});
-      notify.success(scanImportSummary(result));
+      if (result.alreadyRunning) notify.info(SCAN_ALREADY_RUNNING_MESSAGE);
+      else notify.success(scanImportSummary(result));
       load();
     } catch (err) {
       setError((err as Error).message);
@@ -742,7 +837,8 @@ export default function MediaDetail() {
     setSeasonActionBusy({ seasonNumber, action: "scan" });
     try {
       const result = await api.post<ScanImportResult>(`/media/${item.id}/season/${seasonNumber}/scan-import`, {});
-      notify.success(`Season ${seasonNumber} — ${scanImportSummary(result)}`);
+      if (result.alreadyRunning) notify.info(SCAN_ALREADY_RUNNING_MESSAGE);
+      else notify.success(`Season ${seasonNumber} — ${scanImportSummary(result)}`);
       load();
     } catch (err) {
       setError((err as Error).message);
@@ -791,14 +887,27 @@ export default function MediaDetail() {
 
   async function checkCorrupt() {
     if (!item) return;
-    const result = await api.post<{ corrupt: boolean; checked: boolean; queuedForReview?: boolean; reason?: string }>(
-      `/media/${item.id}/check-corrupt`,
-      {}
-    );
+    const result = await api.post<{
+      corrupt: boolean;
+      checked: boolean;
+      queuedForReview?: boolean;
+      reason?: string;
+      action?: "recycled" | "queued" | "stale" | "unavailable" | "failed";
+      message?: string | null;
+    }>(`/media/${item.id}/check-corrupt`, {});
+    const failedValidation = `This file failed validation${result.reason ? ` (${result.reason})` : ""}`;
     if (!result.checked) {
       notify.info(result.reason ?? "Nothing to check.");
     } else if (result.corrupt && result.queuedForReview) {
       notify.info(`This file failed validation (${result.reason}) — queued for review on the Recycle Bin page.`);
+    } else if (result.corrupt && result.action === "unavailable") {
+      notify.error(`${failedValidation}. ${result.message ?? "The file's storage is offline — nothing was moved"}.`);
+    } else if (result.corrupt && result.action === "failed") {
+      notify.error(`${failedValidation}. ${result.message ?? "Couldn't move the file to the Recycle Bin — it was left as is"}.`);
+    } else if (result.corrupt && result.action === "stale") {
+      notify.info(`${failedValidation}. ${result.message ?? "The file changed since it was checked — nothing was moved"}.`);
+      // The item's file record changed while it was being checked, so what's on screen is out of date.
+      load();
     } else if (result.corrupt) {
       notify.error("This file failed validation and was moved to the Recycle Bin. Marked missing — it'll be picked up by auto-search again.");
       load();
@@ -837,8 +946,7 @@ export default function MediaDetail() {
       // so the newly added episodes only reach the season list/import targets via a refetch.
       if (updated.episodesAdded) {
         notify.success(`${provider}: added ${updated.episodesAdded} missing episode(s)`);
-        const fresh = await api.get<MediaDetailResponse>(`/media/${item.id}`);
-        patchItem(item.id, () => fresh);
+        load();
       }
     } catch (err) {
       // Shown inside the Metadata Sources modal itself (sourcesError), not the shared page-level
@@ -877,8 +985,10 @@ export default function MediaDetail() {
         // no other source to be rebuilt from once erased.
         extraMetadata: Object.fromEntries(Object.entries(item.extraMetadata).filter(([key]) => !providers.includes(key))),
       };
-      await api.patch(`/media/${item.id}`, payload);
-      patchItem(item.id, (prev) => ({ ...prev, ...payload }));
+      // The server may store a different poster URL than the one sent (a ScreenScraper reference
+      // becomes a proxied local-artwork URL), so take the saved row rather than echoing the payload.
+      const updated = await api.patch<MediaItem>(`/media/${item.id}`, payload);
+      patchItem(item.id, (prev) => ({ ...prev, ...updated }));
       setMergeChoice({ title: "current", year: "current", overview: "current", posterUrl: "current" });
     } catch (err) {
       setSourcesError((err as Error).message);
@@ -1120,13 +1230,20 @@ export default function MediaDetail() {
   async function browse(
     nextPath: string,
     overrides?: { onlyEpisodeId?: number | null; subItemId?: number | ""; onlySeasonNumber?: number | null; anyFolder?: boolean }
-  ) {
+  ): Promise<boolean> {
     // Same stale-closure reasoning as the other overrides below: a caller that just flipped
     // browseAnyFolder via setState can't rely on that state being visible yet this render.
     const anyFolder = overrides && "anyFolder" in overrides ? overrides.anyFolder! : browseAnyFolder;
-    const res = await api.get<BrowseResponse>(
-      `/import/browse?path=${encodeURIComponent(nextPath)}${anyFolder ? "&anyFolder=1" : ""}`
-    );
+    let res: BrowseResponse;
+    try {
+      res = await api.get<BrowseResponse>(`/import/browse?path=${encodeURIComponent(nextPath)}${anyFolder ? "&anyFolder=1" : ""}`);
+    } catch (e) {
+      // Shown inside the modal: a mistyped folder or an unmounted downloads dir otherwise just
+      // leaves the previous listing in place with nothing saying the browse failed.
+      setBrowseError(`Couldn't open ${nextPath || (anyFolder ? "/" : "the downloads folder")}: ${(e as Error).message}`);
+      return false;
+    }
+    setBrowseError(null);
     setBrowsePath(res.path);
     setBrowseAnyFolder(!!res.anyFolder);
     setBrowseParent(res.parent ?? null);
@@ -1142,18 +1259,51 @@ export default function MediaDetail() {
     if (onlySeasonNumber != null) episodes = episodes.filter((ep) => ep.seasonNumber === onlySeasonNumber);
     const nextTargets: Record<string, number | ""> = {};
     const nextChecked: Record<string, boolean> = {};
-    const mediaFileCount = res.entries.filter((e) => e.isMediaFile).length;
+    // A sample, or a later file guessing a target an earlier pre-checked one already has, keeps its
+    // guess but isn't pre-checked: the import only takes one file per episode/child (an album or
+    // audiobook takes many, so its tracks all stay checked).
+    const isSample = (name: string) => /\bsample\b/i.test(name);
+    const manyFilesPerChild = shape === "collection" && !!typeInfo?.multiFilePerChild;
+    const takenTargets = new Set<number>();
+    const candidateCount = res.entries.filter((e) => e.isMediaFile && !isSample(e.name)).length;
     for (const e of res.entries) {
       if (!e.isMediaFile) continue;
       const target =
         onlyEpisodeId != null ? onlyEpisodeId : shape === "episodic" ? guessEpisodeIdForFile(e.name, episodes) : subItemDefault;
       nextTargets[e.path] = target;
-      // A single-file item (movie/ROM/...) has no per-row target to pick, so only a folder's
-      // lone media file is pre-checked — never every unrelated file sitting beside it.
-      nextChecked[e.path] = shape === "single" ? mediaFileCount === 1 : target !== "";
+      if (isSample(e.name)) {
+        nextChecked[e.path] = false;
+      } else if (shape === "single") {
+        // A single-file item (movie/ROM/...) has no per-row target to pick, so only a folder's
+        // lone media file is pre-checked — never every unrelated file sitting beside it.
+        nextChecked[e.path] = candidateCount === 1;
+      } else if (target === "" || (!manyFilesPerChild && takenTargets.has(target))) {
+        nextChecked[e.path] = false;
+      } else {
+        takenTargets.add(target);
+        nextChecked[e.path] = true;
+      }
     }
     setImportTargets(nextTargets);
     setImportChecked(nextChecked);
+    return true;
+  }
+
+  function openBrowseFolder(entryPath: string) {
+    if (!browseAnyFolder) browseOpenedFrom.current.set(entryPath, browsePath);
+    browse(entryPath, { anyFolder: browseAnyFolder });
+  }
+
+  async function browseUp() {
+    if (browseAnyFolder) {
+      browse(browseParent ?? "/", { anyFolder: true });
+      return;
+    }
+    const parent = browseParent ?? browseOpenedFrom.current.get(browsePath) ?? "";
+    // A parent removed since it was listed would fail on every click, with no way out short of
+    // closing the modal — land on the downloads root instead.
+    if ((await browse(parent)) || parent === "") return;
+    if (await browse("")) setBrowseError(`Couldn't open ${parent}, so went back to the downloads folder.`);
   }
 
   /** Whether a browsed file counts toward "Import checked files" — a single-shape item imports
@@ -1541,11 +1691,10 @@ export default function MediaDetail() {
               // Full month/day/year when a real release date is on file (already stored this way
               // for movies — see metadata.ts — just never surfaced beyond the bare year before
               // now); falls back to the plain year pill for anything else.
-              const parsedReleaseDate = item.releaseDate ? new Date(item.releaseDate) : null;
-              const validReleaseDate = parsedReleaseDate && !isNaN(parsedReleaseDate.getTime()) ? parsedReleaseDate : null;
-              return validReleaseDate ? (
+              const releaseDateLabel = formatReleaseDate(item.releaseDate);
+              return releaseDateLabel ? (
                 <span className="pill" title="Release date">
-                  <CalendarIcon /> {validReleaseDate.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}
+                  <CalendarIcon /> {releaseDateLabel}
                 </span>
               ) : (
                 item.year != null && (
@@ -1555,14 +1704,14 @@ export default function MediaDetail() {
                 )
               );
             })()}
-            {item.digitalReleaseDate && !isNaN(new Date(item.digitalReleaseDate).getTime()) && (
+            {formatReleaseDate(item.digitalReleaseDate) && (
               <span className="pill" title="Digital release date">
-                <DownloadIcon /> Digital: {new Date(item.digitalReleaseDate).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}
+                <DownloadIcon /> Digital: {formatReleaseDate(item.digitalReleaseDate)}
               </span>
             )}
-            {item.physicalReleaseDate && !isNaN(new Date(item.physicalReleaseDate).getTime()) && (
+            {formatReleaseDate(item.physicalReleaseDate) && (
               <span className="pill" title="Physical release date">
-                <HardDriveIcon /> Physical: {new Date(item.physicalReleaseDate).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}
+                <HardDriveIcon /> Physical: {formatReleaseDate(item.physicalReleaseDate)}
               </span>
             )}
             <span className="pill" title="Type / status">
@@ -1605,7 +1754,7 @@ export default function MediaDetail() {
             )}
             {isAdmin && (
               <span className="pill" title="Added">
-                <CalendarIcon /> Added {new Date(item.addedAt).toLocaleDateString()}
+                <CalendarIcon /> Added {parseServerTimestamp(item.addedAt).toLocaleDateString()}
               </span>
             )}
             {isAdmin && qualityProfile && (
@@ -1704,7 +1853,7 @@ export default function MediaDetail() {
                   </td>
                   <td>{item.mediaInfo ? summarizeAudio(item.mediaInfo) : "-"}</td>
                   <td>{item.mediaInfo ? summarizeSubtitles(item.mediaInfo) : "-"}</td>
-                  <td>{item.addedAt ? new Date(item.addedAt).toLocaleDateString() : "-"}</td>
+                  <td>{item.addedAt ? parseServerTimestamp(item.addedAt).toLocaleDateString() : "-"}</td>
                 </tr>
               ) : (
                 <tr>
@@ -1891,6 +2040,7 @@ export default function MediaDetail() {
       )}
 
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
+      {loadError && <p style={{ color: "var(--danger)" }}>Couldn't refresh this item: {loadError}</p>}
       {watchStateError && <p style={{ color: "var(--danger)" }}>{watchStateError}</p>}
 
       {showEditMetadata && (
@@ -1988,7 +2138,7 @@ export default function MediaDetail() {
                         <span className={`badge ${h.eventType === "failed" ? "danger" : h.eventType === "imported" ? "ok" : ""}`}>{label}</span>
                       </td>
                       <td>{detail ?? "—"}</td>
-                      <td>{new Date(h.createdAt).toLocaleString()}</td>
+                      <td>{formatServerTimestamp(h.createdAt)}</td>
                     </tr>
                   );
                 })}
@@ -2152,13 +2302,14 @@ export default function MediaDetail() {
                         </tr>
                       </thead>
                       <tbody>
-                        {row("posterUrl", "Poster", (v) =>
-                          v ? (
-                            <img src={v as string} alt="" style={{ width: 40, height: 60, objectFit: "cover", borderRadius: 3 }} />
+                        {row("posterUrl", "Poster", (v) => {
+                          const src = displayableImageUrl(v as string | null);
+                          return src ? (
+                            <img src={src} alt="" style={{ width: 40, height: 60, objectFit: "cover", borderRadius: 3 }} />
                           ) : (
-                            <span style={{ color: "var(--muted)" }}>none</span>
-                          )
-                        )}
+                            <span style={{ color: "var(--muted)" }}>{v ? "no preview" : "none"}</span>
+                          );
+                        })}
                         {row("title", "Title", (v) => <span>{v}</span>)}
                         {row("year", "Year", (v) => <span>{v ?? "-"}</span>)}
                         {row("overview", "Overview", (v) => (
@@ -2189,11 +2340,16 @@ export default function MediaDetail() {
               )}
               {artworkOptions.posters.length > 0 && (
                 <div className="grid">
-                  {artworkOptions.posters.map((url, idx) => (
-                    <div key={idx} className="card" onClick={() => selectArtwork(url)}>
-                      <div className="poster" style={{ backgroundImage: `url(${url})` }} />
-                    </div>
-                  ))}
+                  {artworkOptions.posters.map((url, idx) => {
+                    const preview = displayableImageUrl(url);
+                    return (
+                      <div key={idx} className="card" onClick={() => selectArtwork(url)}>
+                        <div className="poster" style={preview ? { backgroundImage: `url(${preview})` } : undefined}>
+                          {!preview && "No preview"}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
               {artworkOptions.backgrounds.length > 0 && (
@@ -2203,19 +2359,39 @@ export default function MediaDetail() {
                     or, less commonly, as its poster.
                   </p>
                   <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
-                    {artworkOptions.backgrounds.map((url, idx) => (
-                      <div key={idx} className="card static" style={{ padding: 0, cursor: "default" }}>
-                        <div style={{ aspectRatio: "16/9", backgroundImage: `url(${url})`, backgroundSize: "cover", backgroundPosition: "center", borderRadius: "6px 6px 0 0" }} />
-                        <div style={{ display: "flex", gap: 4, padding: 6 }}>
-                          <button type="button" className="secondary" style={{ flex: 1, fontSize: "0.75rem" }} onClick={() => selectArtwork(url, "backdrop")}>
-                            Set as backdrop
-                          </button>
-                          <button type="button" className="secondary" style={{ flex: 1, fontSize: "0.75rem" }} onClick={() => selectArtwork(url, "poster")}>
-                            Set as poster
-                          </button>
+                    {artworkOptions.backgrounds.map((url, idx) => {
+                      const preview = displayableImageUrl(url);
+                      return (
+                        <div key={idx} className="card static" style={{ padding: 0, cursor: "default" }}>
+                          {preview ? (
+                            <div style={{ aspectRatio: "16/9", backgroundImage: `url(${preview})`, backgroundSize: "cover", backgroundPosition: "center", borderRadius: "6px 6px 0 0" }} />
+                          ) : (
+                            <div
+                              style={{
+                                aspectRatio: "16/9",
+                                background: "var(--input-bg)",
+                                borderRadius: "6px 6px 0 0",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                color: "var(--muted)",
+                                fontSize: "0.8rem",
+                              }}
+                            >
+                              No preview
+                            </div>
+                          )}
+                          <div style={{ display: "flex", gap: 4, padding: 6 }}>
+                            <button type="button" className="secondary" style={{ flex: 1, fontSize: "0.75rem" }} onClick={() => selectArtwork(url, "backdrop")}>
+                              Set as backdrop
+                            </button>
+                            <button type="button" className="secondary" style={{ flex: 1, fontSize: "0.75rem" }} onClick={() => selectArtwork(url, "poster")}>
+                              Set as poster
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </>
               )}
@@ -2296,7 +2472,7 @@ export default function MediaDetail() {
                 <button
                   type="button"
                   className="icon-button"
-                  onClick={() => (browseAnyFolder ? browse(browseParent ?? "/", { anyFolder: true }) : browse(browsePath.split("/").slice(0, -1).join("/")))}
+                  onClick={browseUp}
                   title="Up one folder"
                   aria-label="Up one folder"
                 >
@@ -2304,6 +2480,7 @@ export default function MediaDetail() {
                 </button>
               )}
             </div>
+            {browseError && <p style={{ color: "var(--danger)", marginTop: 0 }}>{browseError}</p>}
             <table>
               <thead>
                 <tr>
@@ -2390,7 +2567,7 @@ export default function MediaDetail() {
                     </td>
                     <td>
                       {e.isDirectory && (
-                        <button type="button" className="icon-button" onClick={() => browse(e.path, { anyFolder: browseAnyFolder })} title="Open" aria-label="Open folder">
+                        <button type="button" className="icon-button" onClick={() => openBrowseFolder(e.path)} title="Open" aria-label="Open folder">
                           <FolderIcon />
                         </button>
                       )}

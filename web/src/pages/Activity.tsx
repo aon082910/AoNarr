@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, getApiKey, getSessionToken } from "../api/client.js";
+import { api, openEventStream } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { RotateCcwIcon, SlashIcon, InboxIcon, ArrowUpCircleIcon, AlertTriangleIcon, ClockIcon, DownloadIcon } from "../components/NavIcons.js";
@@ -8,6 +8,8 @@ import { ToolbarButton } from "../components/PageToolbar.js";
 import Pagination, { DEFAULT_PAGE_SIZE_OPTIONS } from "../components/Pagination.js";
 import type { QueueItem, Quality, Indexer, DownloadClient } from "../types.js";
 import { notify } from "../utils/notify.js";
+import { confirmDialog } from "../utils/confirmDialog.js";
+import { formatServerTimestamp } from "../utils/format.js";
 
 interface ImportCandidate {
   path: string;
@@ -36,7 +38,7 @@ const TIMELINE_LABELS: Record<string, string> = {
 
 const PROTOCOL_LABELS: Record<Indexer["protocol"], string> = {
   torznab: "Torrent",
-  rss: "Torrent (RSS)",
+  rss: "RSS",
   newznab: "Usenet",
   ddl: "DDL",
 };
@@ -58,7 +60,7 @@ const QUEUE_PROTOCOL_OPTIONS: { value: QueueProtocolFilter; label: string }[] = 
   { value: "torznab", label: "Torrent" },
   { value: "newznab", label: "Usenet" },
   { value: "ddl", label: "DDL" },
-  { value: "rss", label: "Torrent (RSS)" },
+  { value: "rss", label: "RSS" },
 ];
 
 const QUEUE_STATUS_RANK: Record<string, number> = { downloading: 0, importing: 1, queued: 2, failed: 3, completed: 4, imported: 5 };
@@ -206,21 +208,13 @@ export default function Activity() {
     // auto-reconnect kicking in for some reason. Real-time updates come from the "queue" event.
     const interval = setInterval(() => loadRef.current(), 30000);
 
-    // /activity/stream is admin-only (same as every /activity route) and EventSource can't set the
-    // X-Api-Key/X-Session-Token headers, so whichever credential this session actually has travels
-    // as a query param instead — requireAuth already accepts both as a fallback for exactly this case.
-    let stream: EventSource | null = null;
-    const apiKey = getApiKey();
-    const sessionToken = getSessionToken();
-    const authParam = apiKey ? `apikey=${encodeURIComponent(apiKey)}` : sessionToken ? `sessionToken=${encodeURIComponent(sessionToken)}` : null;
-    if (authParam) {
-      stream = new EventSource(`/api/activity/stream?${authParam}`);
+    const closeStream = openEventStream("/activity/stream", (stream) => {
       stream.addEventListener("queue", () => loadRef.current());
-    }
+    });
 
     return () => {
       clearInterval(interval);
-      stream?.close();
+      closeStream();
     };
   }, []);
 
@@ -237,9 +231,33 @@ export default function Activity() {
     return id != null ? indexerById.get(id)?.protocol ?? null : null;
   }
 
-  async function remove(id: number, blocklist = false) {
-    await api.del(`/activity/queue/${id}${blocklist ? "?blocklist=1" : ""}`);
-    load();
+  /** Asks whether to also remove the download from its client (which deletes its downloaded data)
+   * and returns the DELETE query string, or null if cancelled. */
+  async function confirmQueueRemoval(subject: string, count: number, blocklist: boolean): Promise<string | null> {
+    const confirmed = await confirmDialog({
+      title: blocklist ? "Remove & blocklist" : "Remove from queue",
+      message: blocklist
+        ? `Remove ${subject} from the queue and blocklist ${count === 1 ? "its release" : "their releases"}?`
+        : `Remove ${subject} from the queue?`,
+      confirmLabel: blocklist ? "Remove & blocklist" : "Remove",
+      danger: true,
+      options: [{ key: "removeFromClient", label: "Remove from download client (deletes its downloaded data)", defaultChecked: true }],
+    });
+    if (!confirmed) return null;
+    const params = [blocklist && "blocklist=1", !confirmed.values.removeFromClient && "removeFromClient=0"].filter(Boolean).join("&");
+    return params ? `?${params}` : "";
+  }
+
+  async function remove(item: QueueItem, blocklist = false) {
+    const query = await confirmQueueRemoval(`"${item.title}"`, 1, blocklist);
+    if (query === null) return;
+    try {
+      await api.del(`/activity/queue/${item.id}${query}`);
+    } catch (e) {
+      notify.error((e as Error).message);
+    } finally {
+      load();
+    }
   }
 
   async function setPriority(id: number, priority: "top" | "normal") {
@@ -265,7 +283,9 @@ export default function Activity() {
 
   async function bulkRemove(blocklist = false) {
     const ids = Array.from(selected);
-    const results = await Promise.allSettled(ids.map((id) => api.del(`/activity/queue/${id}${blocklist ? "?blocklist=1" : ""}`)));
+    const query = await confirmQueueRemoval(`${ids.length} item(s)`, ids.length, blocklist);
+    if (query === null) return;
+    const results = await Promise.allSettled(ids.map((id) => api.del(`/activity/queue/${id}${query}`)));
     const failed = results.filter((r) => r.status === "rejected").length;
     setSelected(new Set());
     load();
@@ -480,6 +500,7 @@ export default function Activity() {
                           : ""
                       }`}
                       style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+                      title={q.status === "completed" && q.importSkippedReason ? `Not imported: ${q.importSkippedReason}` : undefined}
                     >
                       <StatusIcon status={q.status} />
                       {QUEUE_STATUS_LABELS[q.status] ?? q.status}
@@ -515,10 +536,10 @@ export default function Activity() {
                         </button>
                       </>
                     )}
-                    <button type="button" className="icon-button danger" onClick={() => remove(q.id)} title="Remove" aria-label="Remove">
+                    <button type="button" className="icon-button danger" onClick={() => remove(q)} title="Remove" aria-label="Remove">
                       <TrashIcon />
                     </button>
-                    <button type="button" className="icon-button danger" onClick={() => remove(q.id, true)} title="Remove &amp; Blocklist" aria-label="Remove and blocklist">
+                    <button type="button" className="icon-button danger" onClick={() => remove(q, true)} title="Remove &amp; Blocklist" aria-label="Remove and blocklist">
                       <SlashIcon />
                     </button>
                   </td>
@@ -585,7 +606,7 @@ export default function Activity() {
           <tbody>
             {visibleHistory.map((t, idx) => (
               <tr key={idx}>
-                <td>{t.timestamp}</td>
+                <td>{formatServerTimestamp(t.timestamp)}</td>
                 <td>
                   <span
                     className={`badge ${

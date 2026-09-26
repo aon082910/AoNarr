@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { api, downloadFile, getApiKey, setApiKey } from "../api/client.js";
 import FolderPicker from "../components/FolderPicker.js";
@@ -21,7 +21,7 @@ import type {
   StarrQualityProfilePreview,
   Tag,
 } from "../types.js";
-import { formatBytes } from "../utils/format.js";
+import { formatBytes, formatServerTimestamp } from "../utils/format.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { TrashIcon, FolderIcon, ArrowUpIcon, ArrowDownIcon } from "../components/ActionIcons.js";
 import { notify } from "../utils/notify.js";
@@ -58,7 +58,7 @@ function BlocklistTable({ entries, onRemove }: { entries: BlocklistEntry[]; onRe
           <tr key={b.id}>
             <td>{b.mediaTitle}</td>
             <td>{b.releaseTitle}</td>
-            <td>{b.createdAt}</td>
+            <td>{formatServerTimestamp(b.createdAt)}</td>
             <td>
               <button type="button" className="icon-button danger" onClick={() => onRemove(b.id)} title="Remove" aria-label="Remove">
                 <TrashIcon />
@@ -222,6 +222,78 @@ function ImportExclusionsTable({
         ))}
       </tbody>
     </table>
+  );
+}
+
+type TrashSyncApp = "radarr" | "sonarr";
+
+interface TrashSyncOutcome {
+  app: TrashSyncApp;
+  finishedAt: string;
+  added: number;
+  updated: number;
+  unsupported: string[];
+  partiallyUnsupported: { name: string; skipped: string[] }[];
+  failed: { name: string; error: string }[];
+  error: string | null;
+}
+
+type TrashSyncStatus = Record<TrashSyncApp, TrashSyncOutcome | null> & { running?: Partial<Record<TrashSyncApp, boolean>> };
+
+const TRASH_SYNC_POLL_MS = 3000;
+const TRASH_SYNC_MAX_POLLS = 60;
+/** A name list longer than this starts collapsed. */
+const TRASH_SYNC_LIST_OPEN_MAX = 5;
+
+function TrashSyncNameList({ title, count, children }: { title: string; count: number; children: ReactNode }) {
+  if (count === 0) return null;
+  return (
+    <details open={count <= TRASH_SYNC_LIST_OPEN_MAX} style={{ marginTop: 4 }}>
+      <summary style={{ cursor: "pointer" }}>
+        {title} ({count})
+      </summary>
+      <ul style={{ margin: "4px 0 0", paddingLeft: 20, maxHeight: 220, overflowY: "auto" }}>{children}</ul>
+    </details>
+  );
+}
+
+function TrashSyncResultSummary({ label, result }: { label: string; result: TrashSyncOutcome | null }) {
+  if (!result) {
+    return <p style={{ color: "var(--muted)", fontSize: "0.85rem", margin: "8px 0 0" }}>{label}: not synced yet.</p>;
+  }
+  const counted = result.added + result.updated + result.unsupported.length + result.failed.length;
+  return (
+    <div style={{ fontSize: "0.85rem", marginTop: 8 }}>
+      <div>
+        <strong>{label}</strong> — last synced {formatServerTimestamp(result.finishedAt)}
+      </div>
+      {(!result.error || counted > 0) && (
+        <div style={{ color: "var(--muted)" }}>
+          {result.added} added · {result.updated} updated · {result.unsupported.length} unsupported ·{" "}
+          {result.partiallyUnsupported.length} partially unsupported · {result.failed.length} failed
+        </div>
+      )}
+      {result.error && <div style={{ color: "var(--danger)" }}>{result.error}</div>}
+      <TrashSyncNameList title="Failed (not synced)" count={result.failed.length}>
+        {result.failed.map((f, i) => (
+          <li key={i}>
+            <strong>{f.name}</strong>: {f.error}
+          </li>
+        ))}
+      </TrashSyncNameList>
+      <TrashSyncNameList title="Unsupported (none of their conditions translate, not synced)" count={result.unsupported.length}>
+        {result.unsupported.map((name, i) => (
+          <li key={i}>{name}</li>
+        ))}
+      </TrashSyncNameList>
+      <TrashSyncNameList title="Partially unsupported (synced with these condition types skipped)" count={result.partiallyUnsupported.length}>
+        {result.partiallyUnsupported.map((p, i) => (
+          <li key={i}>
+            {p.name}: {p.skipped.join(", ")}
+          </li>
+        ))}
+      </TrashSyncNameList>
+    </div>
   );
 }
 
@@ -626,7 +698,8 @@ export default function Settings() {
   const [formatMediaTypes, setFormatMediaTypes] = useState<Set<MediaType>>(new Set());
   const [trashJson, setTrashJson] = useState("");
   const [trashError, setTrashError] = useState<string | null>(null);
-  const [trashSyncing, setTrashSyncing] = useState<"radarr" | "sonarr" | null>(null);
+  const [trashSyncing, setTrashSyncing] = useState<TrashSyncApp | null>(null);
+  const [trashSyncStatus, setTrashSyncStatus] = useState<TrashSyncStatus>({ radarr: null, sonarr: null });
   const [starrFormatApp, setStarrFormatApp] = useState<"radarr" | "sonarr" | "whisparr">("radarr");
   const [starrFormatUrl, setStarrFormatUrl] = useState("");
   const [starrFormatApiKey, setStarrFormatApiKey] = useState("");
@@ -658,6 +731,7 @@ export default function Settings() {
       seasonNumber: number | null;
       episodeNumbers: number[] | null;
       isFullSeason: boolean;
+      episodeRange?: [number, number] | null;
       year: number | null;
       quality: string;
       source: string | null;
@@ -691,6 +765,7 @@ export default function Settings() {
     api.get<SubtitleProvider[]>("/subtitles/providers").then(setProviders);
     api.get<Tag[]>("/tags").then(setTags);
     api.get<CustomFormat[]>("/custom-formats").then(setCustomFormats);
+    api.get<TrashSyncStatus>("/custom-formats/trash-sync/status").then(setTrashSyncStatus);
     // /blocklist now returns a paginated { items, total } page instead of a bare array (see
     // Blocklist.tsx's own dedicated, paginated page) — this Settings tile shows the newest max-size
     // page plus the real total, and links to that page for anything beyond it.
@@ -1010,14 +1085,38 @@ export default function Settings() {
     }
   }
 
-  async function syncTrashFormats(app: "radarr" | "sonarr") {
+  /** The sync runs in the background on the server, so this polls its stored result until one
+   * newer than the result from before the click shows up. */
+  async function syncTrashFormats(app: TrashSyncApp) {
+    const label = app === "radarr" ? "Radarr" : "Sonarr";
     setTrashSyncing(app);
     try {
+      const before = (await api.get<TrashSyncStatus>("/custom-formats/trash-sync/status"))[app]?.finishedAt ?? null;
       await api.post("/custom-formats/trash-sync", { app });
       notify.info(
-        `Syncing ${app === "radarr" ? "Radarr" : "Sonarr"} formats from TRaSH-Guides in the background — this can take a minute for 100+ formats. Check the Logs page for the result, or refresh this list shortly.`,
+        `Syncing ${label} formats from TRaSH-Guides in the background — this can take a minute for 100+ formats. The result will show under the sync buttons when it finishes.`,
         7000
       );
+      for (let attempt = 0; attempt < TRASH_SYNC_MAX_POLLS; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, TRASH_SYNC_POLL_MS));
+        if (!mountedRef.current) return;
+        const status = await api.get<TrashSyncStatus>("/custom-formats/trash-sync/status").catch(() => null);
+        if (!status || !mountedRef.current) continue;
+        setTrashSyncStatus(status);
+        const latest = status[app];
+        if (latest && latest.finishedAt !== before) {
+          api.get<CustomFormat[]>("/custom-formats").then(setCustomFormats);
+          if (latest.error) {
+            notify.error(latest.error);
+          } else {
+            notify.success(
+              `${label} sync finished: ${latest.added} added, ${latest.updated} updated, ${latest.unsupported.length} unsupported, ${latest.failed.length} failed.`
+            );
+          }
+          return;
+        }
+      }
+      notify.info(`The ${label} sync is still running — reload this page shortly to see its result under the sync buttons.`, 7000);
     } catch (e) {
       notify.error((e as Error).message);
     } finally {
@@ -1438,7 +1537,8 @@ export default function Settings() {
     }
   }
 
-  async function saveSetting(key: string, value: string) {
+  /** Rejects on failure, for a caller that reports the error itself (a modal that must stay open). */
+  async function saveSettingOrThrow(key: string, value: string) {
     setSavingKey(key);
     try {
       await api.put(`/settings/${key}`, { value });
@@ -1446,6 +1546,15 @@ export default function Settings() {
       notify.success("Saved.", 1500);
     } finally {
       setSavingKey(null);
+    }
+  }
+
+  /** Most callers are blur/change handlers that don't await, so a failed save is shown here. */
+  async function saveSetting(key: string, value: string) {
+    try {
+      await saveSettingOrThrow(key, value);
+    } catch (err) {
+      notify.error((err as Error).message);
     }
   }
 
@@ -1465,7 +1574,12 @@ export default function Settings() {
           const current = (document.getElementById(inputId) as HTMLInputElement | null)?.value.trim();
           return [key, current || fallback];
         });
-      for (const [key, shownValue] of unsaved) await api.put(`/settings/${key}`, { value: shownValue });
+      try {
+        for (const [key, shownValue] of unsaved) await api.put(`/settings/${key}`, { value: shownValue });
+      } catch (err) {
+        notify.error((err as Error).message);
+        return;
+      }
       if (unsaved.length > 0) setSettings((prev) => ({ ...prev, ...Object.fromEntries(unsaved) }));
     }
     await saveSetting(enabledKey, value);
@@ -1537,8 +1651,14 @@ export default function Settings() {
     load();
   }
 
-  async function removeProfile(id: number) {
-    await api.del(`/quality-profiles/${id}`);
+  async function removeProfile(profile: QualityProfile) {
+    if (!(await confirmDialog({ title: "Delete quality profile", message: `Delete the quality profile "${profile.name}"?`, danger: true }))) return;
+    try {
+      await api.del(`/quality-profiles/${profile.id}`);
+    } catch (err) {
+      notify.error((err as Error).message);
+      return;
+    }
     load();
   }
 
@@ -1682,15 +1802,18 @@ export default function Settings() {
         <input id="settings-allowed-cors-origins-4"
           key={settings.corsAllowedOrigins ?? "cors-empty"}
           defaultValue={settings.corsAllowedOrigins ?? ""}
-          placeholder="unset — allows any origin (default)"
+          placeholder="unset — this instance's own web UI only (default)"
           onBlur={(e) => saveSetting("corsAllowedOrigins", e.target.value)}
         />
         <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
-          Comma-separated origins (e.g. <code>https://aonarr.example.com</code>) allowed to call
-          this API from a browser. Leave blank to allow any origin (the default, safe here since
-          every request still needs a valid API key/session token — a cross-origin page can't
-          attach one). Only worth restricting if you run the web UI and server as separate
-          containers on different origins and want to lock the API to just your own web UI.
+          Comma-separated extra origins (e.g. <code>https://dashboard.example.com</code>) whose pages
+          may call this API from a browser and read its responses. This instance's own web UI never
+          needs to be listed, behind any reverse proxy. Leave blank for the default: without an
+          entry, other sites can't read responses, and form or plain-text posts from them are
+          refused with "Cross-origin request from … refused". The{" "}
+          <code>AONARR_CORS_ALLOWED_ORIGINS</code> environment variable (comma-separated) adds
+          origins too, and applies without going through this page. <code>*</code> allows every
+          origin (not recommended).
         </p>
       </div>
 
@@ -2182,10 +2305,13 @@ export default function Settings() {
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
                   Optional: paste this URL into Plex's Settings → Webhooks (or Jellyfin/Emby's Webhook
                   plugin) so a "recently watched" item shows up on the Dashboard immediately instead of
-                  waiting for the next scheduled poll. A Jellyfin/Emby playback stop only counts as
-                  watched when the payload says it played to completion, so a Jellyfin webhook template
-                  must include <code>{'"PlayedToCompletion": "{{PlayedToCompletion}}"'}</code> (or have
-                  "Send All Properties" enabled) — without it, Jellyfin stops are never recorded as watched.
+                  waiting for the next scheduled poll. A Jellyfin playback stop (the plugin sends no file
+                  path) is matched to a file by looking its item up through the media server URL and
+                  token above; a Jellyfin/Emby stop only counts as watched when the payload says it
+                  played to completion, so a Jellyfin webhook
+                  template must include <code>{'"ItemId": "{{ItemId}}"'}</code> and{" "}
+                  <code>{'"PlayedToCompletion": "{{PlayedToCompletion}}"'}</code> (or have "Send All
+                  Properties" enabled) — without them, Jellyfin stops are never recorded as watched.
                 </p>
                 <button type="button" className="secondary" onClick={showWebhookUrl}>
                   Show webhook URL...
@@ -2359,8 +2485,8 @@ export default function Settings() {
               initialEnabled={settings[enabledKey] !== "0"}
               onClose={() => setNamingModalType(null)}
               onSave={async (template, enabled) => {
-                if (template !== initialTemplate) await saveSetting(templateKey, template);
-                await saveSetting(enabledKey, enabled ? "1" : "0");
+                if (template !== initialTemplate) await saveSettingOrThrow(templateKey, template);
+                await saveSettingOrThrow(enabledKey, enabled ? "1" : "0");
               }}
             />
           );
@@ -2745,7 +2871,9 @@ export default function Settings() {
                   Off by default. When on, importing a track writes artist/album/title/track
                   number/year directly into the file's ID3v2 tags, so the file carries correct
                   metadata even opened outside AoNarr. MP3 only — FLAC/OGG/M4A files are left
-                  untouched (each needs its own tag format, not implemented here).
+                  untouched (each needs its own tag format, not implemented here). Files imported
+                  as hardlinks or symlinks are left untagged, since changing them would alter the
+                  download client's seeding copy.
                 </p>
                 <label htmlFor="settings-write-audio-tags-on-import-59">Write audio tags on import</label>
                 <select id="settings-write-audio-tags-on-import-59"
@@ -2836,10 +2964,13 @@ export default function Settings() {
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
                   Off by default (same as Radarr/Sonarr's own "Kodi (XBMC)/Emby" metadata
                   consumer). When on, importing a file also writes a same-named .nfo sidecar with
-                  title/year/overview/poster/unique-ids — the same sidecar AoNarr already writes
-                  whenever you edit an item's metadata by hand, just now on import too. Movies/
-                  ROMs/Adult and single-file collection types (Books, Comics, Manga, Online
-                  Videos, Courses) only; series episodes and Music tracks aren't covered.
+                  title/year/overview/poster/unique-ids (Movies/ROMs/Adult and single-file
+                  collection types — Books, Comics, Manga, Online Videos, Courses — only; series
+                  episodes and Music tracks aren't covered), and editing or rematching an item's
+                  metadata refreshes it — but never overwrites an NFO another tool wrote (anything
+                  beyond title/year/plot/thumb/uniqueid, e.g. from Kodi or tinyMediaManager) or adds
+                  a sidecar beside one that would shadow it. While off, metadata edits and rematches
+                  leave NFOs alone.
                 </p>
                 <label htmlFor="settings-write-nfo-on-import-63">Write NFO on import</label>
                 <select id="settings-write-nfo-on-import-63"
@@ -3382,7 +3513,7 @@ export default function Settings() {
                   placeholder="No limit"
                   onBlur={(e) => saveMaxSizeGb(p.id, e.target.value)}
                 />
-                <button className="danger" onClick={() => removeProfile(p.id)}>
+                <button className="danger" onClick={() => removeProfile(p)}>
                   Delete quality profile
                 </button>
               </div>
@@ -3842,13 +3973,15 @@ export default function Settings() {
                     quality profile until you set a score for them in the Format Scores tile.
                   </p>
                   <div style={{ display: "flex", gap: 8 }}>
-                    <button type="button" onClick={() => syncTrashFormats("radarr")} disabled={trashSyncing !== null}>
-                      {trashSyncing === "radarr" ? "Syncing..." : "Sync Radarr formats"}
+                    <button type="button" onClick={() => syncTrashFormats("radarr")} disabled={trashSyncing !== null || !!trashSyncStatus.running?.radarr}>
+                      {trashSyncing === "radarr" || trashSyncStatus.running?.radarr ? "Syncing..." : "Sync Radarr formats"}
                     </button>
-                    <button type="button" onClick={() => syncTrashFormats("sonarr")} disabled={trashSyncing !== null}>
-                      {trashSyncing === "sonarr" ? "Syncing..." : "Sync Sonarr formats"}
+                    <button type="button" onClick={() => syncTrashFormats("sonarr")} disabled={trashSyncing !== null || !!trashSyncStatus.running?.sonarr}>
+                      {trashSyncing === "sonarr" || trashSyncStatus.running?.sonarr ? "Syncing..." : "Sync Sonarr formats"}
                     </button>
                   </div>
+                  <TrashSyncResultSummary label="Radarr" result={trashSyncStatus.radarr} />
+                  <TrashSyncResultSummary label="Sonarr" result={trashSyncStatus.sonarr} />
                 </div>
 
                 <div className="form-panel">
@@ -3988,7 +4121,12 @@ export default function Settings() {
                           Quality: <code>{testResult.parsed.quality}</code>
                           {testResult.parsed.source ? ` (${testResult.parsed.source})` : ""} · Season:{" "}
                           <code>{testResult.parsed.seasonNumber ?? "-"}</code> · Episode(s):{" "}
-                          <code>{testResult.parsed.episodeNumbers?.join(", ") ?? (testResult.parsed.isFullSeason ? "full season" : "-")}</code>{" "}
+                          <code>{testResult.parsed.episodeNumbers?.join(", ") ??
+                            (testResult.parsed.isFullSeason
+                              ? testResult.parsed.episodeRange
+                                ? `batch ${testResult.parsed.episodeRange[0]}–${testResult.parsed.episodeRange[1]}`
+                                : "full season"
+                              : "-")}</code>{" "}
                           · Year: <code>{testResult.parsed.year ?? "-"}</code> · Group:{" "}
                           <code>{testResult.parsed.releaseGroup ?? "-"}</code>
                           {testResult.parsed.languages.length > 0 && <> · Languages: <code>{testResult.parsed.languages.join(", ")}</code></>}

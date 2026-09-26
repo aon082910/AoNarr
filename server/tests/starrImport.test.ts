@@ -730,6 +730,50 @@ describe("previewStarrQualityProfiles / importStarrQualityProfiles", () => {
     expect(scoreCount.c).toBe(1); // "Never Imported Format" has no matching AoNarr custom format, so no row for it
   });
 
+  it("scores a Sonarr profile on the Sonarr-scoped copy of a format both TRaSH syncs created", async () => {
+    // Radarr's TRaSH sync took the plain name; Sonarr's copy of the same format got the suffix.
+    const radarrCopy = Number(
+      (await db.prepare("INSERT INTO custom_formats (name, patterns, trash_id) VALUES ('Shared Trash Format', '[]', 'radarr-trash-id')").run())
+        .lastInsertRowid
+    );
+    const sonarrCopy = Number(
+      (
+        await db
+          .prepare("INSERT INTO custom_formats (name, patterns, trash_id) VALUES ('Shared Trash Format (Sonarr)', '[]', 'sonarr-trash-id')")
+          .run()
+      ).lastInsertRowid
+    );
+    await db.prepare("INSERT INTO custom_formats (name, patterns) VALUES ('Plain Only Format', '[]')").run();
+    const plainOnly = (await db.prepare("SELECT id FROM custom_formats WHERE name = 'Plain Only Format'").get()) as { id: number };
+    mockStarrApi({
+      "/api/v3/qualityprofile": [
+        {
+          id: 7,
+          name: "Sonarr Scoped Profile",
+          cutoff: 1,
+          items: [{ quality: { id: 1, name: "WEBDL-1080p" }, allowed: true }],
+          formatItems: [
+            { format: 910, name: "Shared Trash Format", score: -10000 },
+            { format: 911, name: "Plain Only Format", score: 5 },
+          ],
+        },
+      ],
+    });
+
+    const result = await importStarrQualityProfiles("http://sonarr:8989", "key", "sonarr", [7]);
+
+    expect(result).toEqual({ added: 1, skipped: [] });
+    const profile = (await db.prepare("SELECT id FROM quality_profiles WHERE name = 'Sonarr Scoped Profile'").get()) as { id: number };
+    const scores = (await db
+      .prepare("SELECT custom_format_id, score FROM quality_profile_format_scores WHERE quality_profile_id = ? ORDER BY custom_format_id")
+      .all(profile.id)) as { custom_format_id: number; score: number }[];
+    expect(scores.map((r) => [Number(r.custom_format_id), Number(r.score)])).toEqual([
+      [sonarrCopy, -10000],
+      [plainOnly.id, 5],
+    ]);
+    expect(scores.some((r) => Number(r.custom_format_id) === radarrCopy)).toBe(false);
+  });
+
   it("skips a profile with no mappable qualities instead of creating an empty/unusable one", async () => {
     mockStarrApi({
       "/api/v3/qualityprofile": [

@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import AdmZip from "adm-zip";
 import { findIsbnInText, extractIsbnFromBookFile, fetchBookByIsbn } from "../src/services/bookIsbnScan.js";
+import { buildMobi } from "./helpers/bookFixtures.js";
 
 // A real, checksum-valid ISBN-10/13 pair for the same book (Clean Code), so conversion tests are
 // grounded in a value that's actually correct, not just internally self-consistent.
@@ -120,9 +121,21 @@ describe("extractIsbnFromBookFile — epub", () => {
 });
 
 describe("extractIsbnFromBookFile — other formats", () => {
-  it("returns null immediately for an unsupported extension like .mobi", async () => {
+  it("returns null for a .mobi with no readable MOBI header", async () => {
     const filePath = path.join(tmpDir, "book.mobi");
     fs.writeFileSync(filePath, "fake mobi content");
+    expect(await extractIsbnFromBookFile(filePath)).toBeNull();
+  });
+
+  it("reads a MOBI/AZW3's ISBN from its EXTH 104 record", async () => {
+    const filePath = path.join(tmpDir, "book.azw3");
+    fs.writeFileSync(filePath, buildMobi({ fullName: "Clean Code", exth: [{ type: 104, value: REAL_ISBN_10 }] }));
+    expect(await extractIsbnFromBookFile(filePath)).toBe(REAL_ISBN_13);
+  });
+
+  it("returns null for an unsupported extension", async () => {
+    const filePath = path.join(tmpDir, "book.txt");
+    fs.writeFileSync(filePath, `ISBN ${REAL_ISBN_13}`);
     expect(await extractIsbnFromBookFile(filePath)).toBeNull();
   });
 

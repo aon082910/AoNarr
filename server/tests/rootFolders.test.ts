@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
 import { setupTestDb } from "./helpers/testDb.js";
@@ -104,5 +104,86 @@ describe("POST /api/root-folders/:id/move-to/:destinationId", () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Music/);
     expect(Number((await itemRow(id)).root_folder_id)).toBe(source.id);
+  });
+});
+
+describe("GET /api/root-folders", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("reports the space the server can actually use, not blocks reserved for root", async () => {
+    const { id, dir } = await createRootFolder("space-report", "movie");
+    const realStatfs = fs.statfsSync;
+    vi.spyOn(fs, "statfsSync").mockImplementation(((p: string, ...rest: unknown[]) =>
+      p === dir ? ({ bfree: 30, bavail: 10, blocks: 100, bsize: 1000 } as any) : (realStatfs as any)(p, ...rest)) as any);
+
+    const res = await request(app).get("/api/root-folders").set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(200);
+    const folder = res.body.find((f: { id: number }) => f.id === id);
+    expect(folder).toMatchObject({ freeBytes: 10_000, totalBytes: 100_000 });
+    expect(folder.percentUsed).toBeCloseTo(90);
+  });
+});
+
+describe("PATCH /api/root-folders/:id", () => {
+  async function folderRow(id: number): Promise<{ quota_percent: number | null; min_free_space_gb: number | null }> {
+    return (await db.prepare("SELECT quota_percent, min_free_space_gb FROM root_folders WHERE id = ?").get(id)) as {
+      quota_percent: number | null;
+      min_free_space_gb: number | null;
+    };
+  }
+
+  it("stores a fractional quota or minimum free space rounded, since both columns are whole numbers", async () => {
+    const { id } = await createRootFolder("patch-fraction", "movie");
+
+    const res = await request(app).patch(`/api/root-folders/${id}`).set("X-Api-Key", apiKey).send({ quotaPercent: 12.5, minFreeSpaceGb: "7.4" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ quotaPercent: 13, minFreeSpaceGb: 7 });
+    expect(await folderRow(id)).toEqual({ quota_percent: 13, min_free_space_gb: 7 });
+  });
+
+  it("rejects a non-numeric, negative, over-100% or too-large value with a 400, leaving the folder unchanged", async () => {
+    const { id } = await createRootFolder("patch-invalid", "movie");
+    await db.prepare("UPDATE root_folders SET quota_percent = 80, min_free_space_gb = 50 WHERE id = ?").run(id);
+
+    for (const body of [
+      { minFreeSpaceGb: "abc" },
+      { quotaPercent: "abc" },
+      { quotaPercent: -1 },
+      { quotaPercent: 150 },
+      { minFreeSpaceGb: "" },
+      { quotaPercent: true },
+      // Past what the integer column holds (Postgres would reject it with "integer out of range").
+      { minFreeSpaceGb: 1e12 },
+      { minFreeSpaceGb: 2_147_483_647.6 },
+    ]) {
+      const res = await request(app).patch(`/api/root-folders/${id}`).set("X-Api-Key", apiKey).send({ name: "Renamed", ...body });
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(res.body.error).toMatch(Object.keys(body)[0]);
+    }
+    expect(await folderRow(id)).toEqual({ quota_percent: 80, min_free_space_gb: 50 });
+    expect(((await db.prepare("SELECT name FROM root_folders WHERE id = ?").get(id)) as { name: string | null }).name).toBeNull();
+  });
+
+  it("accepts a minimum free space up to the largest the column holds", async () => {
+    const { id } = await createRootFolder("patch-max", "movie");
+
+    const res = await request(app).patch(`/api/root-folders/${id}`).set("X-Api-Key", apiKey).send({ minFreeSpaceGb: 2_147_483_647 });
+
+    expect(res.status).toBe(200);
+    expect(await folderRow(id)).toEqual({ quota_percent: null, min_free_space_gb: 2_147_483_647 });
+  });
+
+  it("clears a quota or minimum free space set to null", async () => {
+    const { id } = await createRootFolder("patch-clear", "movie");
+    await db.prepare("UPDATE root_folders SET quota_percent = 80, min_free_space_gb = 50 WHERE id = ?").run(id);
+
+    const res = await request(app).patch(`/api/root-folders/${id}`).set("X-Api-Key", apiKey).send({ quotaPercent: null, minFreeSpaceGb: null });
+
+    expect(res.status).toBe(200);
+    expect(await folderRow(id)).toEqual({ quota_percent: null, min_free_space_gb: null });
   });
 });

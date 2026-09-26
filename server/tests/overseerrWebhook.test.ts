@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, it, expect, beforeAll, vi } from "vitest";
 import { setupTestDb } from "./helpers/testDb.js";
 
@@ -5,7 +8,8 @@ const fetchMovieByTmdbId = vi.fn();
 const fetchSeriesByTmdbId = vi.fn();
 const fetchSeriesEpisodesFor = vi.fn();
 
-vi.mock("../src/services/metadata.js", () => ({
+vi.mock("../src/services/metadata.js", async (importOriginal) => ({
+  isEpisodeMonitoredByDefault: (await importOriginal<typeof import("../src/services/metadata.js")>()).isEpisodeMonitoredByDefault,
   fetchMovieByTmdbId: (...args: unknown[]) => fetchMovieByTmdbId(...args),
   fetchSeriesByTmdbId: (...args: unknown[]) => fetchSeriesByTmdbId(...args),
   fetchSeriesEpisodesFor: (...args: unknown[]) => fetchSeriesEpisodesFor(...args),
@@ -13,10 +17,17 @@ vi.mock("../src/services/metadata.js", () => ({
 
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let handleOverseerrWebhook: (typeof import("../src/services/overseerrWebhook.js"))["handleOverseerrWebhook"];
+const rootFolderIds: Record<string, number> = {};
+
+async function addRootFolder(mediaType: string): Promise<number> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `aonarr-overseerr-${mediaType}-`));
+  return Number((await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, ?)").run(dir, mediaType)).lastInsertRowid);
+}
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
   ({ handleOverseerrWebhook } = await import("../src/services/overseerrWebhook.js"));
+  for (const type of ["movie", "series"]) rootFolderIds[type] = await addRootFolder(type);
 });
 
 function fakeMovieMeta(overrides: Record<string, unknown> = {}) {
@@ -75,6 +86,53 @@ describe("handleOverseerrWebhook", () => {
     expect(row.type).toBe("movie");
     expect(row.year).toBe(2022);
     expect(JSON.parse(row.external_ids)).toEqual({ tmdb: "1001" });
+    expect(row.root_folder_id).toBe(rootFolderIds.movie);
+  });
+
+  it("declines an approval when no root folder is configured for its media type", async () => {
+    await db.prepare("DELETE FROM root_folders WHERE media_type = 'movie'").run();
+    fetchMovieByTmdbId.mockClear();
+    try {
+      const result = await handleOverseerrWebhook({ notification_type: "MEDIA_APPROVED", media: { media_type: "movie", tmdbId: 1101 } });
+
+      expect(result).toEqual({ added: false, reason: "No root folder is configured for movie" });
+      expect(fetchMovieByTmdbId).not.toHaveBeenCalled();
+      const rows = (await db.prepare("SELECT id FROM media_items WHERE external_ids LIKE ?").all('%"1101"%')) as unknown[];
+      expect(rows).toHaveLength(0);
+    } finally {
+      rootFolderIds.movie = await addRootFolder("movie");
+    }
+  });
+
+  it("adds a title once when two approvals for it arrive back to back", async () => {
+    // Both webhooks pass the "already in the library" check while their metadata fetches are in
+    // flight; the fetches only resolve once both have started.
+    let started = 0;
+    let release!: () => void;
+    const bothStarted = new Promise<void>((resolve) => (release = resolve));
+    fetchSeriesByTmdbId.mockImplementation(async () => {
+      if (++started === 2) release();
+      await bothStarted;
+      return { title: "Twice Approved Series", year: 2021, overview: "", posterUrl: null, externalIds: { tmdb: "2101" }, releaseDate: null };
+    });
+    fetchSeriesEpisodesFor.mockResolvedValue([{ seasonNumber: 1, episodeNumber: 1, title: "Pilot", airDate: null, overview: "" }]);
+    const payload = { notification_type: "MEDIA_APPROVED", media: { media_type: "tv", tmdbId: 2101 } };
+
+    try {
+      const results = await Promise.all([handleOverseerrWebhook(payload), handleOverseerrWebhook(payload)]);
+
+      expect(started).toBe(2);
+      expect(results.filter((r) => r.added)).toHaveLength(1);
+      expect(results.find((r) => !r.added)).toEqual({ added: false, reason: "Already in the library" });
+      const shows = (await db.prepare("SELECT id, root_folder_id FROM media_items WHERE title = 'Twice Approved Series'").all()) as any[];
+      expect(shows).toHaveLength(1);
+      expect(shows[0].root_folder_id).toBe(rootFolderIds.series);
+      const episodes = (await db.prepare("SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ?").get(shows[0].id)) as { c: number | string };
+      expect(Number(episodes.c)).toBe(1);
+    } finally {
+      fetchSeriesByTmdbId.mockReset();
+      fetchSeriesEpisodesFor.mockReset();
+    }
   });
 
   it("adds a new movie for MEDIA_AUTO_APPROVED too", async () => {

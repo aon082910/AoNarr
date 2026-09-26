@@ -5,6 +5,7 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { addRecentSearch, clearRecentSearches, getRecentSearches } from "../utils/recentSearches.js";
 import { useAuth } from "../context/AuthContext.js";
 import { notify } from "../utils/notify.js";
+import { displayableImageUrl } from "../utils/artwork.js";
 import type { MetadataSearchResult } from "../types.js";
 import type { AddPreviewState } from "./AddPreview.js";
 
@@ -184,20 +185,23 @@ export default function GlobalSearch() {
           {results.length === 0 && <p className="empty">Nothing matched.</p>}
           {results.length > 0 && (
             <div className="grid">
-              {results.map((r) => (
-                <div key={r.mediaItemId} className="card" onClick={() => navigate(`/media/${r.mediaItemId}`)}>
-                  <div className="poster" style={r.posterUrl ? { backgroundImage: `url(${r.posterUrl})` } : undefined}>
-                    {!r.posterUrl && "No poster"}
-                  </div>
-                  <div className="meta">
-                    <div className="title">{r.title}</div>
-                    <div className="sub">
-                      {r.year ?? ""} · {labelFor(r.type)}
-                      {r.matchedOn !== "title" && r.matchDetail ? ` · matched "${r.matchDetail}"` : ""}
+              {results.map((r) => {
+                const poster = displayableImageUrl(r.posterUrl);
+                return (
+                  <div key={r.mediaItemId} className="card" onClick={() => navigate(`/media/${r.mediaItemId}`)}>
+                    <div className="poster" style={poster ? { backgroundImage: `url(${poster})` } : undefined}>
+                      {!poster && "No poster"}
+                    </div>
+                    <div className="meta">
+                      <div className="title">{r.title}</div>
+                      <div className="sub">
+                        {r.year ?? ""} · {labelFor(r.type)}
+                        {r.matchedOn !== "title" && r.matchDetail ? ` · matched "${r.matchDetail}"` : ""}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </>
@@ -215,17 +219,22 @@ export default function GlobalSearch() {
             <div key={group.type} style={{ marginBottom: 20 }}>
               <h3 style={{ marginBottom: 8 }}>{labelFor(group.type)}</h3>
               <div className="grid">
-                {group.results.map((r, idx) => (
-                  <div key={idx} className="card" onClick={() => goAdd(group.type, r)}>
-                    <div className="poster" style={r.posterUrl ? { backgroundImage: `url(${r.posterUrl})` } : undefined}>
-                      {!r.posterUrl && "No poster"}
+                {group.results.map((r, idx) => {
+                  // goAdd still gets the raw result: the server turns a ScreenScraper reference
+                  // into a loadable URL when the item is added.
+                  const poster = displayableImageUrl(r.posterUrl);
+                  return (
+                    <div key={idx} className="card" onClick={() => goAdd(group.type, r)}>
+                      <div className="poster" style={poster ? { backgroundImage: `url(${poster})` } : undefined}>
+                        {!poster && "No poster"}
+                      </div>
+                      <div className="meta">
+                        <div className="title">{r.title}</div>
+                        <div className="sub">{r.year ?? ""}</div>
+                      </div>
                     </div>
-                    <div className="meta">
-                      <div className="title">{r.title}</div>
-                      <div className="sub">{r.year ?? ""}</div>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           ))}

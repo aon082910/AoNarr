@@ -79,7 +79,11 @@ mediaServerWebhookRouter.post(
 
     if (signal) {
       const matched = await recordWatchEvent(signal);
-      if (!matched) log.info(`[webhook] watch event for "${signal.filePath}" didn't match any library file`);
+      // No path means an item id that never resolved, which recordWatchEvent has already logged.
+      if (!matched && signal.filePath) {
+        const item = signal.itemId ? ` (media server item ${signal.itemId})` : "";
+        log.info(`[webhook] watch event for "${signal.filePath}"${item} didn't match any library file`);
+      }
     }
 
     res.status(200).json({ received: true });

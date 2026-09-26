@@ -38,6 +38,30 @@ async function waitForRestoreToSettle(id: number): Promise<any> {
   throw new Error(`recycle_bin entry ${id} never finished restoring`);
 }
 
+async function recycleNewFile(name: string, content: string): Promise<{ src: string; row: any }> {
+  const { recycleFile } = await import("../src/services/recycleBin.js");
+  const src = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-src-")), name);
+  fs.writeFileSync(src, content);
+  await recycleFile(src, "movie", name, null);
+  return { src, row: await db.prepare("SELECT * FROM recycle_bin WHERE original_path = ?").get(src) };
+}
+
+// Must stay the first block in this file to touch restore/purge: the leftover-flag reset runs once
+// per process, on the first such call.
+describe("restore flags left behind by a restart", () => {
+  it("are cleared the first time the recycle bin is used, without any explicit startup call", async () => {
+    const { purgeExpiredRecycleBinEntries } = await import("../src/services/recycleBin.js");
+    const { row } = await recycleNewFile("left-restoring.mkv", "x");
+    await db.prepare("UPDATE recycle_bin SET restoring = 1 WHERE id = ?").run(row.id); // a restore the previous process never finished
+
+    await purgeExpiredRecycleBinEntries();
+
+    const after = (await db.prepare("SELECT restoring, restore_error FROM recycle_bin WHERE id = ?").get(row.id)) as any;
+    expect(Number(after.restoring)).toBe(0);
+    expect(after.restore_error).toMatch(/interrupted by a restart/i);
+  });
+});
+
 describe("recycleFile / restore / purge — files", () => {
   it("moves a file into the recycle bin and records it", async () => {
     const { recycleFile } = await import("../src/services/recycleBin.js");
@@ -312,6 +336,130 @@ describe("restoreAllFromRecycleBin / purgeAllRecycleBinEntries", () => {
     expect(result.purged).toBeGreaterThanOrEqual(2);
     expect(await db.prepare("SELECT id FROM recycle_bin WHERE id = ?").get(movie1.id)).toBeUndefined();
     expect(await db.prepare("SELECT id FROM recycle_bin WHERE id = ?").get(series1.id)).toBeUndefined();
+  });
+});
+
+describe("recycleFile — symlinks, unreachable files and failed bookkeeping", () => {
+  it("moves a dangling symlink (its mount is down) into the bin as a link instead of deleting it", async () => {
+    const { recycleFile } = await import("../src/services/recycleBin.js");
+    const target = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-mount-")), "gone", "movie.mkv");
+    const link = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-src-")), "linked.mkv");
+    fs.symlinkSync(target, link);
+
+    expect(await recycleFile(link, "movie", "Linked Movie", null)).toBe(true);
+
+    const row = (await db.prepare("SELECT * FROM recycle_bin WHERE original_path = ?").get(link)) as any;
+    expect(row).toBeDefined();
+    expect(fs.lstatSync(row.recycle_path).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(row.recycle_path)).toBe(target);
+    expect(() => fs.lstatSync(link)).toThrow();
+  });
+
+  it("leaves a file it can't reach (a dead mount) in place instead of deleting it", async () => {
+    const { recycleFile } = await import("../src/services/recycleBin.js");
+    const src = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-src-")), "unreachable.mkv");
+    fs.writeFileSync(src, "still needed");
+    const notConnected = Object.assign(new Error("Transport endpoint is not connected"), { code: "ENOTCONN" });
+    vi.spyOn(fsp, "stat").mockRejectedValue(notConnected);
+    vi.spyOn(fsp, "lstat").mockRejectedValue(notConnected);
+    const rm = vi.spyOn(fsp, "rm");
+
+    expect(await recycleFile(src, "movie", "Unreachable", null)).toBe(false);
+
+    expect(rm).not.toHaveBeenCalled();
+    expect(fs.readFileSync(src, "utf-8")).toBe("still needed");
+    expect(await db.prepare("SELECT id FROM recycle_bin WHERE original_path = ?").get(src)).toBeUndefined();
+  });
+
+  it("moves the file back when its recycle_bin row can't be written, so it isn't stranded untracked in the bin", async () => {
+    const { recycleFile } = await import("../src/services/recycleBin.js");
+    const src = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-src-")), "unrecorded-movie.mkv");
+    fs.writeFileSync(src, "keep me");
+
+    // No such media item, so the INSERT fails its foreign key after the file has already moved.
+    expect(await recycleFile(src, "movie", "Unrecorded", 987654321)).toBe(false);
+
+    expect(fs.readFileSync(src, "utf-8")).toBe("keep me");
+    expect(await db.prepare("SELECT id FROM recycle_bin WHERE original_path = ?").get(src)).toBeUndefined();
+    expect(fs.readdirSync(path.join(recycleBinDir, "movie")).filter((f) => f.endsWith("-unrecorded-movie.mkv"))).toEqual([]);
+  });
+});
+
+describe("interrupted restores", () => {
+  it("resetInterruptedRestores clears a stale flag and removes a leftover partial copy, so the entry restores normally", async () => {
+    const { resetInterruptedRestores, startRestoreFromRecycleBin } = await import("../src/services/recycleBin.js");
+    const { src, row } = await recycleNewFile("cut-off.mkv", "full content");
+    const partial = path.join(path.dirname(src), `.cut-off.mkv.aonarr-restore-${row.id}.partial`);
+    fs.writeFileSync(partial, "full con"); // the copy the restart cut off
+    await db.prepare("UPDATE recycle_bin SET restoring = 1 WHERE id = ?").run(row.id);
+
+    expect(await resetInterruptedRestores()).toBeGreaterThanOrEqual(1);
+
+    const after = (await db.prepare("SELECT restoring, restore_error FROM recycle_bin WHERE id = ?").get(row.id)) as any;
+    expect(Number(after.restoring)).toBe(0);
+    expect(after.restore_error).toMatch(/interrupted by a restart/i);
+    expect(fs.existsSync(partial)).toBe(false);
+
+    await startRestoreFromRecycleBin(row.id);
+    expect(await waitForRestoreToSettle(row.id)).toBeUndefined();
+    expect(fs.readFileSync(src, "utf-8")).toBe("full content");
+  });
+
+  it("drops the entry when the restart hit after the file was already back in place", async () => {
+    const { resetInterruptedRestores } = await import("../src/services/recycleBin.js");
+    const { src, row } = await recycleNewFile("already-back.mkv", "restored");
+    fs.renameSync(row.recycle_path, src); // the move finished; only the row delete was lost
+    await db.prepare("UPDATE recycle_bin SET restoring = 1 WHERE id = ?").run(row.id);
+
+    await resetInterruptedRestores();
+
+    expect(await db.prepare("SELECT id FROM recycle_bin WHERE id = ?").get(row.id)).toBeUndefined();
+    expect(fs.readFileSync(src, "utf-8")).toBe("restored");
+  });
+
+  it("leaves a restore running in this process alone", async () => {
+    const { resetInterruptedRestores, startRestoreFromRecycleBin } = await import("../src/services/recycleBin.js");
+    const { src, row } = await recycleNewFile("in-flight.mkv", "moving");
+    let finishMove!: () => void;
+    const moveMayFinish = new Promise<void>((resolve) => (finishMove = resolve));
+    const realRename = fsp.rename.bind(fsp);
+    vi.spyOn(fsp, "rename").mockImplementationOnce(async (from, to) => {
+      await moveMayFinish;
+      return realRename(from, to);
+    });
+    await startRestoreFromRecycleBin(row.id);
+
+    await resetInterruptedRestores();
+
+    const during = (await db.prepare("SELECT restoring, restore_error FROM recycle_bin WHERE id = ?").get(row.id)) as any;
+    expect(Number(during.restoring)).toBe(1);
+    expect(during.restore_error).toBeNull();
+    finishMove();
+    expect(await waitForRestoreToSettle(row.id)).toBeUndefined();
+    expect(fs.readFileSync(src, "utf-8")).toBe("moving");
+  });
+
+  it("a cross-device restore that fails partway leaves nothing at the original path, and a retry succeeds", async () => {
+    const { startRestoreFromRecycleBin } = await import("../src/services/recycleBin.js");
+    const { src, row } = await recycleNewFile("cross-device-restore.mkv", "whole file");
+    forceNextRenameToLookCrossDevice();
+    vi.spyOn(fsp, "cp").mockImplementationOnce(async (_from, to) => {
+      fs.writeFileSync(String(to), "whole"); // part of the copy lands, then the disk errors
+      throw Object.assign(new Error("i/o error"), { code: "EIO" });
+    });
+
+    await startRestoreFromRecycleBin(row.id);
+    const failed = await waitForRestoreToSettle(row.id);
+
+    expect(failed.restore_error).toMatch(/i\/o error/);
+    expect(fs.existsSync(src)).toBe(false);
+    expect(fs.readdirSync(path.dirname(src))).toEqual([]);
+
+    forceNextRenameToLookCrossDevice();
+    await startRestoreFromRecycleBin(row.id);
+    expect(await waitForRestoreToSettle(row.id)).toBeUndefined();
+    expect(fs.readFileSync(src, "utf-8")).toBe("whole file");
+    expect(fs.readdirSync(path.dirname(src))).toEqual(["cross-device-restore.mkv"]);
   });
 });
 

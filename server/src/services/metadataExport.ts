@@ -3,6 +3,7 @@ import path from "node:path";
 import { getMediaTypeConfig } from "./mediaTypes.js";
 import { log } from "./logger.js";
 import { fetchMediaServerArtwork, isMediaServerArtworkRef } from "./mediaServer.js";
+import { fetchScreenscraperArtwork, isScreenscraperArtworkRef } from "./metadata.js";
 
 function escapeXml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -136,21 +137,28 @@ export function writeNfoSidecar(filePath: string, item: ExportableItem): void {
  * later. Plex/Kodi/Jellyfin/Emby's local media agents all recognize a real `poster.jpg` (or
  * `cover.jpg`, Calibre's own convention) sitting next to the sidecar, so a bulk export is more
  * useful as a genuinely self-contained package. Returns null (never throws) on any failure — a
- * missing/unreachable poster shouldn't fail the whole export, just that one item's image.
+ * missing/unreachable poster shouldn't fail the whole export, just that one item's image — and as
+ * soon as `signal` aborts.
  */
-export async function fetchPosterBuffer(posterUrl: string | null, localPath?: string | null): Promise<Buffer | null> {
+export async function fetchPosterBuffer(posterUrl: string | null, localPath?: string | null, signal?: AbortSignal): Promise<Buffer | null> {
+  if (signal?.aborted) return null;
   // A local poster (services/localArtwork.ts) already sits on disk — read it directly rather than
   // looping an HTTP request back through this same server for its own /api/media/local-artwork
   // route, which `posterUrl` would otherwise point at. `fetch()` also can't resolve that route's
   // path-only URL at all outside a browser (no scheme/host to resolve it against), so this isn't
   // just an optimization — without it, every local-poster item's export silently got no poster.jpg.
-  if (isMediaServerArtworkRef(localPath)) {
-    try {
-      const res = await fetchMediaServerArtwork(localPath);
-      return res ? Buffer.from(await res.arrayBuffer()) : null;
-    } catch {
-      return null;
-    }
+  // Proxied artwork (a media server's, ScreenScraper's) is fetched the way the local-artwork route
+  // serves it, since the stored reference isn't a file path.
+  const proxied = isMediaServerArtworkRef(localPath)
+    ? fetchMediaServerArtwork(localPath)
+    : isScreenscraperArtworkRef(localPath)
+      ? fetchScreenscraperArtwork(localPath)
+      : null;
+  if (proxied) {
+    return untilAborted(
+      proxied.then(async (res) => (res ? Buffer.from(await res.arrayBuffer()) : null)),
+      signal
+    ).catch(() => null);
   }
   if (localPath) {
     try {
@@ -161,10 +169,20 @@ export async function fetchPosterBuffer(posterUrl: string | null, localPath?: st
   }
   if (!posterUrl) return null;
   try {
-    const res = await fetch(posterUrl);
+    const res = await fetch(posterUrl, { signal });
     if (!res.ok) return null;
     return Buffer.from(await res.arrayBuffer());
   } catch {
     return null;
   }
+}
+
+/** `promise`, or null once `signal` aborts — for helpers that take no signal of their own. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T | null> {
+  if (!signal) return promise;
+  return new Promise<T | null>((resolve, reject) => {
+    const onAbort = () => resolve(null);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }

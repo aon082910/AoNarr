@@ -6,6 +6,7 @@ import { log } from "../services/logger.js";
 import { db } from "../db/index.js";
 import { nowExpr } from "../db/asyncDb.js";
 import {
+  downloadClientFromRow,
   episodeFromRow,
   historyEventFromRow,
   mediaItemFromRow,
@@ -17,7 +18,7 @@ import {
 } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { requireAdmin } from "../middleware/auth.js";
-import { getMediaTypeConfig, isProbeableFile, isValidMediaType } from "../services/mediaTypes.js";
+import { effectiveShape, getMediaTypeConfig, isPlaceholderParent, isProbeableFile, isValidMediaType } from "../services/mediaTypes.js";
 import { attachChildCounts } from "../services/childCounts.js";
 import { notifyQueueChanged } from "../services/realtime.js";
 import { buildMediaQuery, clampLimit, clampOffset, MEDIA_SORT_COLUMNS } from "../services/mediaQuery.js";
@@ -33,7 +34,9 @@ import {
   fetchSeriesEpisodesForProvider,
   fetchTmdbCollectionFor,
   fetchTrailerFor,
+  proxyScreenscraperArtwork,
   searchMetadata,
+  type MetadataEpisode,
 } from "../services/metadata.js";
 import { pushWatchState } from "../services/mediaServer.js";
 import {
@@ -46,6 +49,9 @@ import {
   matchProvidersForLibrary,
   mergeEpisodesIntoItem,
   convertLibraryToEpisodic,
+  pickVerifiedProviderHit,
+  mergedProviderIds,
+  ADDITIONAL_PROVIDER_IDS_KEY,
 } from "../services/libraryScan.js";
 import { notifyGrabbed } from "../services/notifications.js";
 import { recycleFile } from "../services/recycleBin.js";
@@ -59,15 +65,14 @@ import {
   writeNfoSidecar,
   type ExportableItem,
 } from "../services/metadataExport.js";
-import { corruptReason, handleCorrupt, isCorruptMediaReviewEnabled } from "../services/corruptMediaCheck.js";
+import { corruptReason, handleCorrupt, type CorruptAction } from "../services/corruptMediaCheck.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { getSetting } from "../services/settingsStore.js";
 import { renameLibraryFiles, renameOneMediaItem } from "../services/importer.js";
 import { extractIsbnFromBookFile, fetchBookByIsbn } from "../services/bookIsbnScan.js";
 import { sendEmailWithAttachment } from "../services/smtp.js";
-import { convertSubItemToM4b } from "../services/audiobookConvert.js";
+import { convertSubItemToM4b, M4bConversionInProgressError } from "../services/audiobookConvert.js";
 import { CONTENT_TYPES } from "../services/rangeStream.js";
-import AdmZip from "adm-zip";
 import type { MediaType } from "../types/index.js";
 
 export const mediaRouter = Router();
@@ -475,6 +480,15 @@ function parseCsv(text: string): string[][] {
   return rows.filter((r) => r.length > 1 || r[0] !== "");
 }
 
+const CSV_FLAG_VALUES = new Map<string, number>([
+  ["1", 1],
+  ["true", 1],
+  ["yes", 1],
+  ["0", 0],
+  ["false", 0],
+  ["no", 0],
+]);
+
 /** GET /api/media/export.csv — a flat CSV of the whole library (or one type), for spreadsheet
  * tracking/archival outside the app. Registered before "/:id" so it isn't shadowed by that route. */
 mediaRouter.get(
@@ -529,15 +543,28 @@ mediaRouter.post(
     let updated = 0;
     let skipped = 0;
     const update = db.prepare("UPDATE media_items SET monitored = COALESCE(?, monitored), quality_profile_id = COALESCE(?, quality_profile_id) WHERE id = ?");
+    const qualityProfileIds = new Set(
+      ((await db.prepare("SELECT id FROM quality_profiles").all()) as { id: number | string }[]).map((r) => Number(r.id))
+    );
+    const cell = (row: string[], idx: number) => (idx === -1 ? "" : (row[idx] ?? "").trim());
 
     for (const row of rows.slice(1)) {
       const id = Number(row[idIdx]);
-      if (!id || !(await db.prepare("SELECT id FROM media_items WHERE id = ?").get(id))) {
+      // Postgres rejects a fractional or out-of-range value for the INTEGER id outright.
+      if (!Number.isInteger(id) || id <= 0 || id > 2147483647 || !(await db.prepare("SELECT id FROM media_items WHERE id = ?").get(id))) {
         skipped++;
         continue;
       }
-      const monitored = monitoredIdx !== -1 && row[monitoredIdx] !== "" ? Number(row[monitoredIdx]) : null;
-      const qualityProfileId = qualityProfileIdx !== -1 && row[qualityProfileIdx] !== "" ? Number(row[qualityProfileIdx]) : null;
+      // A spreadsheet re-saves 1/0 as TRUE/FALSE; anything unreadable skips the row rather than
+      // binding NaN, which SQLite stores as NULL and Postgres rejects outright.
+      const monitoredCell = cell(row, monitoredIdx);
+      const monitored = monitoredCell === "" ? null : (CSV_FLAG_VALUES.get(monitoredCell.toLowerCase()) ?? NaN);
+      const qualityProfileCell = cell(row, qualityProfileIdx);
+      const qualityProfileId = qualityProfileCell === "" ? null : Number(qualityProfileCell);
+      if (Number.isNaN(monitored) || (qualityProfileId !== null && !qualityProfileIds.has(qualityProfileId))) {
+        skipped++;
+        continue;
+      }
       await update.run(monitored, qualityProfileId, id);
       updated++;
     }
@@ -590,7 +617,9 @@ mediaRouter.post(
     if (!type || !isValidMediaType(type)) throw new HttpError(400, "A valid type is required");
     refreshLibraryMetadata(type)
       .then((result) =>
-        log.info(`[refresh] "${type}": updated ${result.updated}, failed ${result.failed}, episodes/children added ${result.childrenAdded}`)
+        result.alreadyRunning
+          ? log.info(`[refresh] "${type}": already running - skipped`)
+          : log.info(`[refresh] "${type}": updated ${result.updated}, failed ${result.failed}, episodes/children added ${result.childrenAdded}`)
       )
       .catch((err) => log.warn(`[refresh] "${type}" failed:`, (err as Error).message));
     res.json({ started: true });
@@ -697,26 +726,23 @@ mediaRouter.get(
 
     const rows = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[];
     const names = uniqueExportNames(rows);
-    const zip = new AdmZip();
-    for (const [i, row] of rows.entries()) {
+    res.setHeader("Content-Disposition", `attachment; filename="aonarr-${type}-metadata.zip"`);
+    res.setHeader("Content-Type", "application/zip");
+    await streamZipExport(res, rows, (row, i, poster) => {
       const item = toExportable(row);
       const name = names[i];
       if (fmt === "plexmatch") {
         // Must be named exactly ".plexmatch" inside the item's own folder — never per-title-named
         // like .nfo/.json, since that's not a filename Plex looks for.
-        zip.addFile(`${name}/.plexmatch`, Buffer.from(buildPlexMatch(item), "utf-8"));
-        const poster = await fetchPosterBuffer(item.posterUrl, row.local_poster_path);
-        if (poster) zip.addFile(`${name}/poster.jpg`, poster);
-      } else {
-        const body = fmt === "json" ? buildJson(item) : buildNfo(item);
-        zip.addFile(`${name}.${fmt}`, Buffer.from(body, "utf-8"));
-        const poster = await fetchPosterBuffer(item.posterUrl, row.local_poster_path);
-        if (poster) zip.addFile(`${name}-poster.jpg`, poster);
+        const entries: ZipEntry[] = [[`${name}/.plexmatch`, Buffer.from(buildPlexMatch(item), "utf-8")]];
+        if (poster) entries.push([`${name}/poster.jpg`, poster]);
+        return entries;
       }
-    }
-    res.setHeader("Content-Disposition", `attachment; filename="aonarr-${type}-metadata.zip"`);
-    res.setHeader("Content-Type", "application/zip");
-    res.send(zip.toBuffer());
+      const body = fmt === "json" ? buildJson(item) : buildNfo(item);
+      const entries: ZipEntry[] = [[`${name}.${fmt}`, Buffer.from(body, "utf-8")]];
+      if (poster) entries.push([`${name}-poster.jpg`, poster]);
+      return entries;
+    });
   })
 );
 
@@ -731,18 +757,186 @@ mediaRouter.get(
 
     const rows = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[];
     const names = uniqueExportNames(rows);
-    const zip = new AdmZip();
-    for (const [i, row] of rows.entries()) {
-      const item = toExportable(row);
-      zip.addFile(`${names[i]}/metadata.opf`, Buffer.from(buildCalibreOpf(item), "utf-8"));
-      const cover = await fetchPosterBuffer(item.posterUrl, row.local_poster_path);
-      if (cover) zip.addFile(`${names[i]}/cover.jpg`, cover);
-    }
     res.setHeader("Content-Disposition", `attachment; filename="aonarr-${type}-calibre.zip"`);
     res.setHeader("Content-Type", "application/zip");
-    res.send(zip.toBuffer());
+    await streamZipExport(res, rows, (row, i, cover) => {
+      const entries: ZipEntry[] = [[`${names[i]}/metadata.opf`, Buffer.from(buildCalibreOpf(toExportable(row)), "utf-8")]];
+      if (cover) entries.push([`${names[i]}/cover.jpg`, cover]);
+      return entries;
+    });
   })
 );
+
+type ZipEntry = [name: string, data: Buffer];
+
+// How many items' posters are fetched ahead of the one being written, and how long one may take.
+const EXPORT_POSTER_PREFETCH = 8;
+const EXPORT_POSTER_TIMEOUT_MS = 15_000;
+
+function fetchExportPoster(row: any): Promise<Buffer | null> {
+  return fetchPosterBuffer(row.poster_url, row.local_poster_path, AbortSignal.timeout(EXPORT_POSTER_TIMEOUT_MS)).catch(() => null);
+}
+
+/** Writes a bulk export's zip to the response as it goes. Building it in memory first meant one
+ * sequential poster fetch per item before a single byte was sent — a few thousand items outlived
+ * nginx's 300 s proxy timeout, so the download always failed while the server kept every poster in
+ * memory and then compressed them all synchronously. Posters are fetched a few items ahead with a
+ * per-poster timeout, and the work stops as soon as the client goes away. */
+async function streamZipExport(
+  res: import("express").Response,
+  rows: any[],
+  entriesFor: (row: any, index: number, poster: Buffer | null) => ZipEntry[]
+): Promise<void> {
+  const zip = new ZipResponseWriter(res);
+  const posters: (Promise<Buffer | null> | undefined)[] = [];
+  const prefetch = (i: number) => {
+    if (i < rows.length) posters[i] = fetchExportPoster(rows[i]);
+  };
+  for (let i = 0; i < EXPORT_POSTER_PREFETCH; i++) prefetch(i);
+  try {
+    for (const [i, row] of rows.entries()) {
+      const poster = await posters[i];
+      posters[i] = undefined;
+      prefetch(i + EXPORT_POSTER_PREFETCH);
+      for (const [name, data] of entriesFor(row, i, poster ?? null)) await zip.add(name, data);
+    }
+    await zip.finish();
+  } catch (err) {
+    if (!res.headersSent) throw err;
+    log.warn("[media] bulk export aborted:", (err as Error).message);
+    res.destroy();
+  }
+}
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(data: Buffer): number {
+  let c = 0xffffffff;
+  for (let i = 0; i < data.length; i++) c = CRC32_TABLE[(c ^ data[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+/** Minimal streaming ZIP writer: STORED entries (posters are already-compressed JPEGs and the
+ * sidecars are tiny), UTF-8 names, ZIP64 records only once the entry count or offsets outgrow the
+ * classic format. Waits on the socket's backpressure and rejects once the client disconnects. */
+class ZipResponseWriter {
+  private offset = 0;
+  private count = 0;
+  private closed = false;
+  private wake: (() => void) | null = null;
+  private readonly central: Buffer[] = [];
+  private readonly dosTime: number;
+  private readonly dosDate: number;
+
+  constructor(private readonly res: import("express").Response) {
+    const now = new Date();
+    this.dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | Math.floor(now.getSeconds() / 2);
+    this.dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+    res.on("close", () => {
+      this.closed = true;
+      this.wake?.();
+    });
+    res.on("drain", () => this.wake?.());
+  }
+
+  private async write(chunk: Buffer): Promise<void> {
+    if (this.closed || this.res.destroyed) throw new Error("client disconnected");
+    this.offset += chunk.length;
+    if (this.res.write(chunk)) return;
+    await new Promise<void>((resolve) => {
+      this.wake = resolve;
+    });
+    this.wake = null;
+    if (this.closed) throw new Error("client disconnected");
+  }
+
+  async add(name: string, data: Buffer): Promise<void> {
+    const nameBuf = Buffer.from(name, "utf-8");
+    const crc = crc32(data);
+    const localOffset = this.offset;
+
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0x0800, 6); // names are UTF-8
+    local.writeUInt16LE(0, 8); // stored
+    local.writeUInt16LE(this.dosTime, 10);
+    local.writeUInt16LE(this.dosDate, 12);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26);
+    local.writeUInt16LE(0, 28);
+
+    const offset64 = localOffset >= 0xffffffff;
+    const extra = Buffer.alloc(offset64 ? 12 : 0);
+    if (offset64) {
+      extra.writeUInt16LE(0x0001, 0);
+      extra.writeUInt16LE(8, 2);
+      extra.writeBigUInt64LE(BigInt(localOffset), 4);
+    }
+    const entry = Buffer.alloc(46);
+    entry.writeUInt32LE(0x02014b50, 0);
+    entry.writeUInt16LE(offset64 ? 45 : 20, 4);
+    entry.writeUInt16LE(offset64 ? 45 : 20, 6);
+    entry.writeUInt16LE(0x0800, 8);
+    entry.writeUInt16LE(0, 10);
+    entry.writeUInt16LE(this.dosTime, 12);
+    entry.writeUInt16LE(this.dosDate, 14);
+    entry.writeUInt32LE(crc, 16);
+    entry.writeUInt32LE(data.length, 20);
+    entry.writeUInt32LE(data.length, 24);
+    entry.writeUInt16LE(nameBuf.length, 28);
+    entry.writeUInt16LE(extra.length, 30);
+    entry.writeUInt32LE(offset64 ? 0xffffffff : localOffset, 42);
+    this.central.push(entry, nameBuf, extra);
+    this.count++;
+
+    await this.write(Buffer.concat([local, nameBuf, data]));
+  }
+
+  async finish(): Promise<void> {
+    const cdOffset = this.offset;
+    const directory = Buffer.concat(this.central);
+    await this.write(directory);
+    const cdSize = directory.length;
+
+    const tail: Buffer[] = [];
+    if (this.count >= 0xffff || cdOffset >= 0xffffffff || cdSize >= 0xffffffff) {
+      const record = Buffer.alloc(56);
+      record.writeUInt32LE(0x06064b50, 0);
+      record.writeBigUInt64LE(44n, 4);
+      record.writeUInt16LE(45, 12);
+      record.writeUInt16LE(45, 14);
+      record.writeBigUInt64LE(BigInt(this.count), 24);
+      record.writeBigUInt64LE(BigInt(this.count), 32);
+      record.writeBigUInt64LE(BigInt(cdSize), 40);
+      record.writeBigUInt64LE(BigInt(cdOffset), 48);
+      const locator = Buffer.alloc(20);
+      locator.writeUInt32LE(0x07064b50, 0);
+      locator.writeBigUInt64LE(BigInt(this.offset), 8);
+      locator.writeUInt32LE(1, 16);
+      tail.push(record, locator);
+    }
+    const end = Buffer.alloc(22);
+    end.writeUInt32LE(0x06054b50, 0);
+    end.writeUInt16LE(Math.min(this.count, 0xffff), 8);
+    end.writeUInt16LE(Math.min(this.count, 0xffff), 10);
+    end.writeUInt32LE(Math.min(cdSize, 0xffffffff), 12);
+    end.writeUInt32LE(Math.min(cdOffset, 0xffffffff), 16);
+    tail.push(end);
+    await this.write(Buffer.concat(tail));
+    this.res.end();
+  }
+}
 
 mediaRouter.get(
   "/:id",
@@ -758,7 +952,9 @@ mediaRouter.get(
     if (req.auth?.user?.maxContentRating && isRatingBlocked(item.contentRating, req.auth.user.maxContentRating)) {
       throw new HttpError(403, "You don't have access to this item");
     }
-    const shape = getMediaTypeConfig(item.type).shape;
+    // A course/adult row that predates its type's switch to episodic still keeps its children in
+    // its old shape's table until "Convert to Episodic" runs for its library.
+    const shape = effectiveShape(item);
     let children: unknown[] = [];
     let seasons: unknown[] = [];
     if (shape === "episodic") {
@@ -793,9 +989,9 @@ function toExportable(row: any): ExportableItem {
   };
 }
 
-/** One zip entry base name per row for the bulk exports. adm-zip's addFile silently replaces an
- * existing entry of the same name, so same-titled items ("Dune" 1984 and 2021) used to collapse
- * into one sidecar/poster: a shared title gets its year, and a still-shared name gets the id.
+/** One zip entry base name per row for the bulk exports. Two entries of the same name overwrite
+ * each other on extraction, so same-titled items ("Dune" 1984 and 2021) used to collapse into one
+ * sidecar/poster: a shared title gets its year, and a still-shared name gets the id.
  * Compared case-insensitively since the zip is usually extracted onto a case-insensitive disk. */
 function uniqueExportNames(rows: any[]): string[] {
   const titleCounts = new Map<string, number>();
@@ -948,11 +1144,20 @@ mediaRouter.get(
       return;
     }
 
-    const libraryRows = (await db.prepare("SELECT id, title, external_ids FROM media_items WHERE type = 'movie'").all()) as any[];
+    const libraryRows = (await db.prepare("SELECT id, title, external_ids, content_rating FROM media_items WHERE type = 'movie'").all()) as any[];
+    const maxContentRating = req.auth?.user?.maxContentRating ?? null;
     const byTmdbId = new Map<string, { id: number; title: string }>();
     for (const r of libraryRows) {
-      const ids = r.external_ids ? JSON.parse(r.external_ids) : {};
-      if (ids.tmdb) byTmdbId.set(String(ids.tmdb), { id: r.id, title: r.title });
+      if (!r.external_ids) continue;
+      // Same gate as discover.ts/people.ts: a part above the viewer's rating cap must not come back
+      // with its library id, which reveals an item that account can't open.
+      if (maxContentRating && isRatingBlocked(r.content_rating ?? null, maxContentRating)) continue;
+      try {
+        const ids = JSON.parse(r.external_ids);
+        if (ids?.tmdb) byTmdbId.set(String(ids.tmdb), { id: r.id, title: r.title });
+      } catch {
+        // malformed external_ids on an old row — skip it rather than fail the whole panel
+      }
     }
 
     res.json({
@@ -1039,6 +1244,15 @@ function redactHistoryData(data: string | null): string | null {
   }
 }
 
+/** Why a flagged file was left where it is; null when it was recycled or queued as asked. */
+const CORRUPT_ACTION_MESSAGES: Record<CorruptAction, string | null> = {
+  recycled: null,
+  queued: null,
+  unavailable: "The file's storage is offline — nothing was moved",
+  stale: "The file changed since it was checked — nothing was moved",
+  failed: "Couldn't move the file to the recycle bin — it was left as is",
+};
+
 /** On-demand corrupt-file check for a "single" shape item (movie/rom/adult) — the full library
  * scan lives in the scheduled Corrupt Media Check job; this is for checking just this one item
  * right now instead of waiting for the next scheduled run. */
@@ -1066,9 +1280,8 @@ mediaRouter.post(
 
     // Same detection/handling the scheduled Corrupt Media Check job uses — including honoring
     // "Hold for review" if the admin has it on, rather than always recycling immediately.
-    const queuedForReview = isCorruptMediaReviewEnabled();
-    await handleCorrupt("media_items", row.id, row.path, row.type, row.title, row.id, reason);
-    res.json({ corrupt: true, checked: true, queuedForReview, reason });
+    const action = await handleCorrupt("media_items", row.id, row.path, row.type, row.title, row.id, reason);
+    res.json({ corrupt: true, checked: true, action, queuedForReview: action === "queued", reason, message: CORRUPT_ACTION_MESSAGES[action] });
   })
 );
 
@@ -1079,21 +1292,24 @@ mediaRouter.post(
  * ordinary PATCH endpoint) whether to promote one's overview/poster to primary. Matches by title
  * search rather than a shared external id, since providers rarely share id schemes.
  *
- * For an episodic item, this ALSO merges in any episode the fetched provider lists that this item
- * doesn't have yet (e.g. TVDB/TVMaze's Season 0 specials for a show whose primary match is TMDB,
- * which excludes them) via the same non-destructive mergeEpisodesIntoItem matchAdditionalProviders
- * uses — unlike the 4-field show-level merge, episode merging is additive-only (never overwrites or
- * removes an existing episode row) so there's no "which source wins" choice to make before
- * applying it. The found provider id is also folded into external_ids (never overwriting one the
- * item already has), the same benefit a later duplicate check gets from the automatic
- * all-providers match on import.
+ * When the hit is verifiably this item (title and year, an exact year first — or the item's own
+ * id, for a provider it already has one at), an
+ * episodic item ALSO gets any Season 0 special the fetched provider lists that it doesn't have yet
+ * (e.g. TVDB/TVMaze's specials for a show whose primary match is TMDB, which excludes them), added
+ * unmonitored via the same non-destructive mergeEpisodesIntoItem, and the found provider id is
+ * folded into external_ids (never overwriting one the item already has) — the same benefit a later
+ * duplicate check gets from the automatic all-providers match on import. Neither happens for an
+ * AniList-numbered anime, whose numbering the other providers don't share.
  */
 mediaRouter.post(
   "/:id/metadata/fetch",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id)) as any;
     if (!row) throw new HttpError(404, "Media item not found");
+    if (isPlaceholderParent(row)) {
+      throw new HttpError(400, `"${row.title}" only holds files AoNarr couldn't identify — there's nothing to look up for it at a metadata provider`);
+    }
     const item = mediaItemFromRow(row);
 
     const provider = req.body?.provider;
@@ -1105,28 +1321,70 @@ mediaRouter.post(
 
     const query = item.year ? `${item.title} ${item.year}` : item.title;
     const results = await searchMetadata(item.type, query, provider);
-    const best = results[0];
-    if (!best) throw new HttpError(404, `No "${provider}" result found for "${item.title}"`);
+    if (results.length === 0) throw new HttpError(404, `No "${provider}" result found for "${item.title}"`);
 
-    const extra = { ...item.extraMetadata, [provider]: best };
     // mediaItemFromRow leaves externalIds as the raw JSON string (unlike extraMetadata, which it
     // already parses) — spreading it directly would fan a string out into one object key per
     // character instead of parsing it.
     const externalIds: Record<string, string> = item.externalIds ? JSON.parse(item.externalIds) : {};
-    for (const [key, value] of Object.entries(best.externalIds ?? {})) {
-      if (!externalIds[key]) externalIds[key] = value;
+
+    // The same safeguards matchAdditionalProviders applies. A fuzzy search's top hit can be another
+    // show (a remake, a spin-off), and AniList numbers every cour as season 1 — merging such a
+    // hit's id (which then outranks anilist on every Refresh) or its full episode list queued
+    // another show's seasons as wanted. An unverified top hit is still staged for side-by-side
+    // review, which only changes the item when an admin applies a field from it.
+    // A same-titled show a year apart ("Queer as Folk" UK 1999 vs US 2000) passes the title/year
+    // check, so an exact-year hit wins over an earlier ±1 one. matchAdditionalProviders never asks
+    // a provider the item already has an id at, but this route can: such an item is verified by
+    // that id alone.
+    const itemYear = item.year != null ? Number(item.year) : null;
+    const ownProviderId = externalIds[provider];
+    const verified = ownProviderId
+      ? results.find((r) => r.externalIds?.[provider] != null && String(r.externalIds[provider]) === String(ownProviderId))
+      : pickVerifiedProviderHit(results, item.title, itemYear);
+    const best = verified ?? results[0];
+    const shape = effectiveShape(item);
+    const anilistNumbered =
+      shape === "episodic" && !!externalIds.anilist && !["tmdb", "tvdb", "tvmaze", "trakt"].some((p) => externalIds[p]);
+
+    const newIds: Record<string, string> = {};
+    let episodes: MetadataEpisode[] = [];
+    if (verified && !anilistNumbered) {
+      for (const [key, value] of Object.entries(verified.externalIds ?? {})) {
+        if (!externalIds[key]) newIds[key] = value;
+      }
+      const providerId = verified.externalIds?.[provider];
+      if (shape === "episodic" && providerId) {
+        episodes = await fetchSeriesEpisodesForProvider(provider, providerId).catch(() => []);
+      }
     }
 
-    let episodesAdded = 0;
-    const providerId = best.externalIds?.[provider];
-    if (typeConfig.shape === "episodic" && providerId) {
-      const episodes = await fetchSeriesEpisodesForProvider(provider, providerId).catch(() => []);
-      episodesAdded = await mergeEpisodesIntoItem(Number(req.params.id), episodes);
+    const current = (await db.prepare("SELECT extra_metadata FROM media_items WHERE id = ?").get(req.params.id)) as
+      | { extra_metadata: string | null }
+      | undefined;
+    if (!current) throw new HttpError(404, "Media item not found");
+    const storedExtra: Record<string, any> = (current.extra_metadata ? JSON.parse(current.extra_metadata) : null) ?? {};
+    // Same key matchAdditionalProviders records its merged ids under. Refresh picks the provider it
+    // looks the item and its episodes/books up from by which ids are present, TMDB/Open Library
+    // first, so an unrecorded merged-in id moved a TVDB show onto TMDB's numbering (or a Google
+    // Books author onto Open Library's list). Without a record, the merged ids are inferred from
+    // the staged provider results — read before this result replaces one, and written out every
+    // time, since this result can be for the item's own provider and would then pass for a merge.
+    const mergedBefore = mergedProviderIds(externalIds, storedExtra);
+    const extra: Record<string, any> = { ...storedExtra, [provider]: best };
+    extra[ADDITIONAL_PROVIDER_IDS_KEY] = { ...mergedBefore, ...newIds };
+    // The provider round-trips above are slow and rate-limited: a Different Match made meanwhile
+    // must not get the old match's ids written back over it, or the old show's specials merged in.
+    const write = await db
+      .prepare("UPDATE media_items SET extra_metadata = ?, external_ids = ? WHERE id = ? AND COALESCE(external_ids, '') = ?")
+      .run(JSON.stringify(extra), JSON.stringify({ ...externalIds, ...newIds }), req.params.id, row.external_ids ?? "");
+    if (write.changes === 0) {
+      throw new HttpError(409, `"${item.title}" was changed while fetching from "${provider}" — try again`);
     }
 
-    await db
-      .prepare("UPDATE media_items SET extra_metadata = ?, external_ids = ? WHERE id = ?")
-      .run(JSON.stringify(extra), JSON.stringify(externalIds), req.params.id);
+    // Only the specials the primary provider leaves out, unmonitored like Sonarr's own specials,
+    // so the fetch never queues anything as wanted.
+    const episodesAdded = episodes.length > 0 ? await mergeEpisodesIntoItem(Number(req.params.id), episodes, 0, false) : 0;
 
     const updated = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id);
     res.json({ ...mediaItemFromRow(updated), episodesAdded });
@@ -1160,6 +1418,12 @@ mediaRouter.delete(
   })
 );
 
+/** A provider poster/backdrop that a browser can't load directly (ScreenScraper's, which needs the
+ * admin's credentials) as the local-artwork proxy's url/path/token; null to store the value as-is. */
+function proxiedProviderArtwork(value: unknown): { url: string; localPath: string; token: string } | null {
+  return typeof value === "string" ? proxyScreenscraperArtwork(value) : null;
+}
+
 mediaRouter.post(
   "/",
   requireAdmin,
@@ -1177,11 +1441,13 @@ mediaRouter.post(
     }
 
     const rootFolderId = b.rootFolderId ?? (await autoSelectRootFolderId(b.type));
+    const poster = proxiedProviderArtwork(b.posterUrl);
+    const backdrop = proxiedProviderArtwork(b.backdropUrl);
     const result = await db
       .prepare(
         `INSERT INTO media_items
-         (type, title, sort_title, year, overview, poster_url, external_ids, path, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability, series_type, backdrop_url, rating, runtime_minutes, studio, content_rating)
-         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @path, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability, @seriesType, @backdropUrl, @rating, @runtimeMinutes, @studio, @contentRating)`
+         (type, title, sort_title, year, overview, poster_url, local_poster_path, local_poster_token, external_ids, path, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability, series_type, backdrop_url, local_backdrop_path, local_backdrop_token, rating, runtime_minutes, studio, content_rating)
+         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @localPosterPath, @localPosterToken, @externalIds, @path, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability, @seriesType, @backdropUrl, @localBackdropPath, @localBackdropToken, @rating, @runtimeMinutes, @studio, @contentRating)`
       )
       .run({
         type: b.type,
@@ -1189,7 +1455,9 @@ mediaRouter.post(
         sortTitle: (b.sortTitle ?? b.title).toLowerCase(),
         year: b.year ?? null,
         overview: b.overview ?? null,
-        posterUrl: b.posterUrl ?? null,
+        posterUrl: poster?.url ?? b.posterUrl ?? null,
+        localPosterPath: poster?.localPath ?? null,
+        localPosterToken: poster?.token ?? null,
         externalIds: b.externalIds ? JSON.stringify(b.externalIds) : null,
         path: b.path ?? null,
         rootFolderId,
@@ -1202,7 +1470,9 @@ mediaRouter.post(
         releaseDate: b.releaseDate ?? null,
         minimumAvailability: b.minimumAvailability ?? getSetting("defaultMinimumAvailability") ?? "announced",
         seriesType: b.seriesType ?? null,
-        backdropUrl: b.backdropUrl ?? null,
+        backdropUrl: backdrop?.url ?? b.backdropUrl ?? null,
+        localBackdropPath: backdrop?.localPath ?? null,
+        localBackdropToken: backdrop?.token ?? null,
         rating: b.rating ?? null,
         runtimeMinutes: b.runtimeMinutes ?? null,
         studio: b.studio ?? null,
@@ -1259,6 +1529,43 @@ mediaRouter.post(
   })
 );
 
+// The only elements buildNfo writes. An existing sidecar made of nothing else is one AoNarr wrote
+// (or one no richer than it), so rewriting it loses nothing.
+const AONARR_NFO_ELEMENTS = new Set(["movie", "tvshow", "title", "year", "plot", "thumb", "uniqueid"]);
+
+function isAonarrShapedNfo(content: string): boolean {
+  const body = content
+    .replace(/<\?xml[\s\S]*?\?>/g, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .trim();
+  if (!body) return true;
+  if (!/^<(movie|tvshow)[\s>]/.test(body) || !/<\/(movie|tvshow)>$/.test(body)) return false;
+  return [...body.matchAll(/<\/?([A-Za-z_][\w.:-]*)/g)].every((m) => AONARR_NFO_ELEMENTS.has(m[1].toLowerCase()));
+}
+
+/** Rewrites an item's "<basename>.nfo" after a metadata edit or rematch — only when the admin opted
+ * into AoNarr-written NFOs, and never over one another tool wrote: a tinyMediaManager/Kodi/Radarr
+ * NFO's cast, genres, ratings and fileinfo were replaced by AoNarr's six-field stub with no backup.
+ * A new "<basename>.nfo" isn't created beside such a movie.nfo either, since it would shadow it for
+ * Kodi and for AoNarr's own Refresh (findMovieSidecar prefers the basename one). */
+function refreshNfoSidecar(row: any, externalIds: Record<string, string>): void {
+  if (getSetting("writeNfoOnImport") !== "1" || !row.path) return;
+  const dir = path.dirname(row.path);
+  const own = path.join(dir, `${path.basename(row.path, path.extname(row.path))}.nfo`);
+  for (const candidate of [own, path.join(dir, "movie.nfo")]) {
+    let content: string;
+    try {
+      content = fs.readFileSync(candidate, "utf-8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+      return;
+    }
+    if (!isAonarrShapedNfo(content)) return;
+    if (candidate === own) break;
+  }
+  writeNfoSidecar(row.path, { type: row.type, title: row.title, year: row.year, overview: row.overview, posterUrl: row.poster_url, externalIds });
+}
+
 mediaRouter.patch(
   "/:id",
   requireAdmin,
@@ -1270,13 +1577,44 @@ mediaRouter.patch(
     if (b.contentRating !== undefined && b.contentRating !== null && !CONTENT_RATING_ORDER.includes(b.contentRating)) {
       throw new HttpError(400, `Unknown content rating "${b.contentRating}"`);
     }
+    // The record of which external ids were merged in from other providers is written only by the
+    // server, often in the background after the page loaded. Taken from a client's copy, it was lost
+    // and those ids then counted as the item's own, moving it onto another provider's numbering on
+    // the next Refresh. An older item has no record, only the staged provider results it is
+    // inferred from — which Apply Merge drops — so the inferred ids are written out as the record.
+    let extraMetadataJson: string | undefined;
+    if (b.extraMetadata !== undefined) {
+      const next: Record<string, unknown> =
+        b.extraMetadata && typeof b.extraMetadata === "object" && !Array.isArray(b.extraMetadata) ? { ...b.extraMetadata } : {};
+      delete next[ADDITIONAL_PROVIDER_IDS_KEY];
+      const storedExtra: Record<string, any> = mediaItemFromRow(existing).extraMetadata ?? {};
+      let storedIds: Record<string, string> = {};
+      try {
+        storedIds = JSON.parse((existing as any).external_ids || "{}") ?? {};
+      } catch {
+        // malformed external_ids on an old row — nothing to infer merged ids from
+      }
+      const merged = mergedProviderIds(storedIds, storedExtra);
+      if (storedExtra[ADDITIONAL_PROVIDER_IDS_KEY] || Object.keys(merged).length > 0) next[ADDITIONAL_PROVIDER_IDS_KEY] = merged;
+      extraMetadataJson = JSON.stringify(next);
+    }
+    const poster = proxiedProviderArtwork(b.posterUrl);
+    const backdrop = proxiedProviderArtwork(b.backdropUrl);
+    // A different poster/backdrop replaces any local or proxied one, whose path exports read
+    // ahead of the URL. The current URL echoed back (Apply Merge keeping "current") keeps it.
+    const posterReplaced = b.posterUrl !== undefined && b.posterUrl !== (existing as any).poster_url;
+    const backdropReplaced = b.backdropUrl !== undefined && b.backdropUrl !== (existing as any).backdrop_url;
     const fields: Record<string, unknown> = {
       title: b.title,
       sort_title: b.title !== undefined ? String(b.title).toLowerCase() : undefined,
       year: b.year,
       overview: b.overview,
-      poster_url: b.posterUrl,
-      backdrop_url: b.backdropUrl,
+      poster_url: poster?.url ?? b.posterUrl,
+      local_poster_path: poster ? poster.localPath : posterReplaced ? null : undefined,
+      local_poster_token: poster ? poster.token : posterReplaced ? null : undefined,
+      backdrop_url: backdrop?.url ?? b.backdropUrl,
+      local_backdrop_path: backdrop ? backdrop.localPath : backdropReplaced ? null : undefined,
+      local_backdrop_token: backdrop ? backdrop.token : backdropReplaced ? null : undefined,
       monitored: b.monitored,
       protected: b.protected,
       quality_profile_id: b.qualityProfileId,
@@ -1290,7 +1628,7 @@ mediaRouter.patch(
       // Lets the "Apply merge" button (MediaDetail.tsx) clear the supplemental-provider scratch
       // data (usually to {}) once it's been folded into the item's own fields, so the merge table
       // doesn't keep showing stale fetched data forever after being applied.
-      extra_metadata: b.extraMetadata !== undefined ? JSON.stringify(b.extraMetadata) : undefined,
+      extra_metadata: extraMetadataJson,
     };
     const sets: string[] = [];
     const values: any[] = [];
@@ -1321,7 +1659,7 @@ mediaRouter.patch(
       } catch {
         // malformed external_ids on an old row — write the sidecar without unique ids rather than fail the edit
       }
-      writeNfoSidecar(row.path, { type: row.type, title: row.title, year: row.year, overview: row.overview, posterUrl: row.poster_url, externalIds });
+      refreshNfoSidecar(row, externalIds);
     }
     res.json(mediaItemFromRow(row));
   })
@@ -1352,46 +1690,53 @@ mediaRouter.post(
     // below fills them in from the new match's by-id lookup.
     const contentRating = typeof b.contentRating === "string" && CONTENT_RATING_ORDER.includes(b.contentRating) ? b.contentRating : null;
     const genres = Array.isArray(b.genres) ? b.genres.filter((g: unknown) => typeof g === "string") : [];
+    // Every id of the new match is the item's own. Left recorded as merged-in, one that happens to
+    // equal an id of the old match's (rematching a TVDB show to its TMDB entry) was skipped by
+    // Refresh, which kept looking the item up by the provider the admin just moved it off. An empty
+    // record rather than none: without one, merged ids are inferred from the old match's staged
+    // provider results, which stay behind. (An older PATCH could store extra_metadata as null.)
+    const extraMetadata: Record<string, any> = { ...(mediaItemFromRow(existing).extraMetadata ?? {}) };
+    extraMetadata[ADDITIONAL_PROVIDER_IDS_KEY] = {};
+    const poster = proxiedProviderArtwork(b.posterUrl);
+    const backdrop = proxiedProviderArtwork(b.backdropUrl);
 
     await db
       .prepare(
         // A wholesale re-match's poster/backdrop is real, new metadata — whichever local_*_path/
         // token this item may have had (services/localArtwork.ts) is now stale, orphaned against
-        // an old match, so it's cleared here rather than left pointing at a file the new match's
+        // an old match, so it's replaced here rather than left pointing at a file the new match's
         // own poster_url no longer references.
-        "UPDATE media_items SET title = ?, sort_title = ?, year = ?, overview = ?, poster_url = ?, local_poster_path = NULL, local_poster_token = NULL, external_ids = ?, release_date = ?, backdrop_url = ?, local_backdrop_path = NULL, local_backdrop_token = NULL, rating = ?, runtime_minutes = ?, studio = ?, content_rating = ?, genres = ? WHERE id = ?"
+        "UPDATE media_items SET title = ?, sort_title = ?, year = ?, overview = ?, poster_url = ?, local_poster_path = ?, local_poster_token = ?, external_ids = ?, release_date = ?, backdrop_url = ?, local_backdrop_path = ?, local_backdrop_token = ?, rating = ?, runtime_minutes = ?, studio = ?, content_rating = ?, genres = ?, extra_metadata = ? WHERE id = ?"
       )
       .run(
         b.title,
         b.title.toLowerCase(),
         b.year ?? null,
         b.overview ?? null,
-        b.posterUrl ?? null,
+        poster?.url ?? b.posterUrl ?? null,
+        poster?.localPath ?? null,
+        poster?.token ?? null,
         b.externalIds ? JSON.stringify(b.externalIds) : null,
         b.releaseDate ?? null,
-        b.backdropUrl ?? null,
+        backdrop?.url ?? b.backdropUrl ?? null,
+        backdrop?.localPath ?? null,
+        backdrop?.token ?? null,
         b.rating ?? null,
         b.runtimeMinutes ?? null,
         b.studio ?? null,
         contentRating,
         genres.length > 0 ? JSON.stringify(genres) : null,
+        JSON.stringify(extraMetadata),
         req.params.id
       );
 
     const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id)) as any;
-    if (row.path) {
-      writeNfoSidecar(row.path, {
-        type: row.type,
-        title: row.title,
-        year: row.year,
-        overview: row.overview,
-        posterUrl: row.poster_url,
-        externalIds: b.externalIds ?? {},
-      });
-    }
+    if (row.path) refreshNfoSidecar(row, b.externalIds ?? {});
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "media_rematched", `"${(existing as any).title}" → "${b.title}"`);
-    refreshOneMediaItem(row.id).catch((err) => log.warn(`[rematch] follow-up refresh of item ${row.id} failed:`, (err as Error).message));
+    refreshOneMediaItem(row.id, undefined, { firstMatch: true }).catch((err) =>
+      log.warn(`[rematch] follow-up refresh of item ${row.id} failed:`, (err as Error).message)
+    );
     res.json(mediaItemFromRow(row));
   })
 );
@@ -1423,25 +1768,34 @@ mediaRouter.post(
       .all(existing.id, ...episodeIds)) as { id: number }[];
     if (owned.length !== episodeIds.length) throw new HttpError(400, "One or more episodes don't belong to this series");
 
-    const insertResult = await db
-      .prepare(
-        `INSERT INTO media_items (type, title, sort_title, root_folder_id, quality_profile_id, monitored, has_file, status)
-         VALUES (?, ?, ?, ?, ?, 1, 0, 'unknown')`
-      )
-      .run(existing.type, title, title.toLowerCase(), existing.root_folder_id, existing.quality_profile_id);
-    const newId = Number(insertResult.lastInsertRowid);
+    let newId = 0;
+    await db.transaction(async () => {
+      const insertResult = await db
+        .prepare(
+          `INSERT INTO media_items (type, title, sort_title, root_folder_id, quality_profile_id, monitored, has_file, status)
+           VALUES (?, ?, ?, ?, ?, 1, 0, 'unknown')`
+        )
+        .run(existing.type, title, title.toLowerCase(), existing.root_folder_id, existing.quality_profile_id);
+      newId = Number(insertResult.lastInsertRowid);
 
-    await db.prepare(`UPDATE episodes SET media_item_id = ? WHERE media_item_id = ? AND id IN (${placeholders})`).run(newId, existing.id, ...episodeIds);
+      await db.prepare(`UPDATE episodes SET media_item_id = ? WHERE media_item_id = ? AND id IN (${placeholders})`).run(newId, existing.id, ...episodeIds);
+      // Everything else tied to a moved episode follows it. A download still in the queue is
+      // imported under queue.media_item_id's title and folder, so one left on the old series put
+      // the new series' episode inside the old show's folder.
+      for (const table of ["queue", "watch_events", "iptv_playlist_items"]) {
+        await db.prepare(`UPDATE ${table} SET media_item_id = ? WHERE episode_id IN (${placeholders})`).run(newId, ...episodeIds);
+      }
 
-    // Same has_file rollup scanAndImportLibrary does after an episode import — both the donor
-    // series (which may have lost every file it had) and the new one need it recomputed from
-    // their remaining/gained episodes.
-    for (const id of [existing.id, newId]) {
-      const hasAny = (await db.prepare("SELECT 1 FROM episodes WHERE media_item_id = ? AND has_file = 1 LIMIT 1").get(id)) as
-        | unknown
-        | undefined;
-      await db.prepare("UPDATE media_items SET has_file = ? WHERE id = ?").run(hasAny ? 1 : 0, id);
-    }
+      // Same has_file rollup scanAndImportLibrary does after an episode import — both the donor
+      // series (which may have lost every file it had) and the new one need it recomputed from
+      // their remaining/gained episodes.
+      for (const id of [existing.id, newId]) {
+        const hasAny = (await db.prepare("SELECT 1 FROM episodes WHERE media_item_id = ? AND has_file = 1 LIMIT 1").get(id)) as
+          | unknown
+          | undefined;
+        await db.prepare("UPDATE media_items SET has_file = ? WHERE id = ?").run(hasAny ? 1 : 0, id);
+      }
+    });
 
     const newRow = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(newId)) as any;
     const actor = auditActor(req);
@@ -1573,6 +1927,23 @@ mediaRouter.delete(
   })
 );
 
+/** A JSON true/false or 1/0 as the 1/0 an INTEGER flag column takes — neither driver binds a JS boolean. */
+function toFlag(value: unknown): 0 | 1 {
+  return Number(value) > 0 ? 1 : 0;
+}
+
+/** After a child's file is marked missing: a parent with no file-bearing episode/sub-item left stops
+ * claiming has_file, so it shows up in the Missing views and auto-search again. */
+async function rollUpParentMissing(mediaItemId: string): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE media_items SET has_file = 0 WHERE id = ? AND has_file = 1 AND path IS NULL
+       AND NOT EXISTS (SELECT 1 FROM episodes e WHERE e.media_item_id = media_items.id AND e.has_file = 1)
+       AND NOT EXISTS (SELECT 1 FROM sub_items s WHERE s.media_item_id = media_items.id AND s.has_file = 1)`
+    )
+    .run(mediaItemId);
+}
+
 // Episodes (series)
 mediaRouter.post(
   "/:id/episodes",
@@ -1612,11 +1983,13 @@ mediaRouter.patch(
     const values: any[] = [];
     if (b.monitored !== undefined) {
       sets.push("monitored = ?");
-      values.push(b.monitored);
+      values.push(toFlag(b.monitored));
     }
+    const fileCleared = b.hasFile !== undefined && toFlag(b.hasFile) === 0;
     if (b.hasFile !== undefined) {
       sets.push("has_file = ?");
-      values.push(b.hasFile);
+      values.push(toFlag(b.hasFile));
+      if (fileCleared) sets.push("size_bytes = NULL", "media_info = NULL");
     }
     if (b.filePath !== undefined) {
       sets.push("file_path = ?");
@@ -1626,10 +1999,15 @@ mediaRouter.patch(
       sets.push("quality = ?");
       values.push(b.quality);
     }
-    if (sets.length > 0) {
-      values.push(req.params.episodeId);
-      await db.prepare(`UPDATE episodes SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+    // Scoped to the show in the URL, since that is the parent the missing-file rollup below updates.
+    if (!(await db.prepare("SELECT id FROM episodes WHERE id = ? AND media_item_id = ?").get(req.params.episodeId, req.params.id))) {
+      throw new HttpError(404, "Episode not found");
     }
+    if (sets.length > 0) {
+      values.push(req.params.episodeId, req.params.id);
+      await db.prepare(`UPDATE episodes SET ${sets.join(", ")} WHERE id = ? AND media_item_id = ?`).run(...values);
+    }
+    if (fileCleared) await rollUpParentMissing(req.params.id);
     const row = await db.prepare("SELECT * FROM episodes WHERE id = ?").get(req.params.episodeId);
     if (!row) throw new HttpError(404, "Episode not found");
     res.json(episodeFromRow(row));
@@ -1754,6 +2132,7 @@ mediaRouter.post(
       const result = await convertSubItemToM4b(Number(req.params.subItemId));
       res.json({ converted: true, path: result.path });
     } catch (err) {
+      if (err instanceof M4bConversionInProgressError) throw new HttpError(409, err.message);
       throw new HttpError(400, (err as Error).message);
     }
   })
@@ -1833,7 +2212,9 @@ mediaRouter.post(
 
     const clientRow = await db.prepare("SELECT * FROM download_clients WHERE type = 'ytdlp' AND enabled = 1 LIMIT 1").get();
     if (!clientRow) throw new HttpError(400, "No enabled yt-dlp download client configured — add one in Download Clients");
-    const client = clientRow as any;
+    // Mapped like scheduler.ts's checkVideoChannels: the adapter reads `audioOnly`, which the raw
+    // row only carries as `audio_only`, so a manual download ignored the audio-only setting.
+    const client = downloadClientFromRow(clientRow);
 
     const sourceUrl =
       sub.external_provider === "youtube"
@@ -1871,11 +2252,13 @@ mediaRouter.patch(
     const values: any[] = [];
     if (b.monitored !== undefined) {
       sets.push("monitored = ?");
-      values.push(b.monitored);
+      values.push(toFlag(b.monitored));
     }
+    const fileCleared = b.hasFile !== undefined && toFlag(b.hasFile) === 0;
     if (b.hasFile !== undefined) {
       sets.push("has_file = ?");
-      values.push(b.hasFile);
+      values.push(toFlag(b.hasFile));
+      if (fileCleared) sets.push("size_bytes = NULL", "media_info = NULL");
     }
     if (b.filePath !== undefined) {
       sets.push("file_path = ?");
@@ -1901,10 +2284,15 @@ mediaRouter.patch(
       sets.push("narrator = ?");
       values.push(b.narrator || null);
     }
-    if (sets.length > 0) {
-      values.push(req.params.subItemId);
-      await db.prepare(`UPDATE sub_items SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+    // Scoped to the item in the URL, since that is the parent the missing-file rollup below updates.
+    if (!(await db.prepare("SELECT id FROM sub_items WHERE id = ? AND media_item_id = ?").get(req.params.subItemId, req.params.id))) {
+      throw new HttpError(404, "Sub-item not found");
     }
+    if (sets.length > 0) {
+      values.push(req.params.subItemId, req.params.id);
+      await db.prepare(`UPDATE sub_items SET ${sets.join(", ")} WHERE id = ? AND media_item_id = ?`).run(...values);
+    }
+    if (fileCleared) await rollUpParentMissing(req.params.id);
     const row = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(req.params.subItemId);
     if (!row) throw new HttpError(404, "Sub-item not found");
     res.json(subItemFromRow(row));
@@ -1987,7 +2375,18 @@ mediaRouter.post(
     }
 
     const ext = path.extname(sub.file_path).toLowerCase();
-    const filename = `${sub.title}${ext}`.replace(/[/\\]/g, "_");
+    // Both go into mail headers verbatim: a double quote ended the attachment's filename="..."
+    // parameter early (so Send to Kindle saw an extension-less name and rejected it), a backslash
+    // is an escape there, and CR/LF would start a header of their own.
+    const headerSafeTitle =
+      String(sub.title ?? "")
+        .replace(/[\u0000-\u001f\u007f]+/g, " ")
+        .replace(/"/g, "'")
+        .replace(/\s+/g, " ")
+        .trim() || "Untitled";
+    // Non-ASCII stays: sendEmailWithAttachment RFC 2047-encodes the subject and sends the name as an
+    // ASCII fallback plus an RFC 2231 filename*, so "進撃の巨人" isn't delivered as "Untitled".
+    const filename = `${headerSafeTitle.replace(/[/\\]/g, "_")}${ext.replace(/[^A-Za-z0-9.]+/g, "")}`;
 
     await sendEmailWithAttachment(
       {
@@ -1999,7 +2398,7 @@ mediaRouter.post(
         from: smtpFrom,
         to: kindleAddress,
       },
-      sub.title,
+      headerSafeTitle,
       `Sent from AoNarr: ${sub.title}`,
       { filename, content: fs.readFileSync(sub.file_path), contentType: CONTENT_TYPES[ext] ?? "application/octet-stream" }
     );

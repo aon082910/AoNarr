@@ -1,5 +1,7 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import fs from "node:fs";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 import os from "node:os";
 import request from "supertest";
@@ -110,9 +112,59 @@ describe("writeNfoSidecar", () => {
 });
 
 describe("fetchPosterBuffer", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("returns null without making a request when there's no URL", async () => {
     const { fetchPosterBuffer } = await import("../src/services/metadataExport.js");
     expect(await fetchPosterBuffer(null)).toBeNull();
+  });
+
+  it("downloads a ScreenScraper poster through its stored reference, with the credentials added server-side", async () => {
+    const { setSetting, deleteSetting } = await import("../src/services/settingsStore.js");
+    setSetting("screenscraperDevId", "export-dev");
+    setSetting("screenscraperDevPassword", "export-dev-secret");
+    const fetchMock = vi.fn(async () => new Response(Buffer.from("png-bytes"), { headers: { "content-type": "image/png" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { fetchPosterBuffer } = await import("../src/services/metadataExport.js");
+
+    try {
+      const buffer = await fetchPosterBuffer(
+        "/api/media/local-artwork/sometoken",
+        "screenscraper:https://neoclone.screenscraper.fr/api2/mediaJeu.php?systemeid=1&jeuid=4242&media=box-2D"
+      );
+
+      expect(buffer?.toString()).toBe("png-bytes");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const url = new URL(String((fetchMock.mock.calls[0] as unknown[])[0]));
+      expect(url.hostname).toBe("neoclone.screenscraper.fr");
+      expect(url.searchParams.get("jeuid")).toBe("4242");
+      expect(url.searchParams.get("devpassword")).toBe("export-dev-secret");
+    } finally {
+      deleteSetting("screenscraperDevId");
+      deleteSetting("screenscraperDevPassword");
+    }
+  });
+
+  it("returns null once its signal has aborted, without leaving the request running", async () => {
+    let requestSignal: AbortSignal | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init?: RequestInit) => {
+        requestSignal = init?.signal ?? undefined;
+        return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason)));
+      })
+    );
+    const { fetchPosterBuffer } = await import("../src/services/metadataExport.js");
+    const controller = new AbortController();
+
+    const pending = fetchPosterBuffer("https://img.example/slow.jpg", null, controller.signal);
+    controller.abort();
+
+    expect(await pending).toBeNull();
+    expect(requestSignal?.aborted).toBe(true);
+    expect(await fetchPosterBuffer("https://img.example/slow.jpg", null, controller.signal)).toBeNull();
   });
 });
 
@@ -201,5 +253,114 @@ describe("bulk zip exports with same-titled items", () => {
     expect(names).toHaveLength(2);
     expect(names).toContain("Emma/metadata.opf");
     expect([`Emma [${first}]/metadata.opf`, `Emma [${second}]/metadata.opf`]).toContain(names.find((n) => n !== "Emma/metadata.opf"));
+  });
+});
+
+async function insertItemWithPoster(type: string, title: string, posterUrl: string): Promise<number> {
+  const result = await db
+    .prepare(`INSERT INTO media_items (type, title, sort_title, poster_url, monitored, has_file, status) VALUES (?, ?, ?, ?, 1, 0, 'missing')`)
+    .run(type, title, title.toLowerCase(), posterUrl);
+  return Number(result.lastInsertRowid);
+}
+
+describe("bulk zip exports with posters", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("fetches posters a few items ahead, not one at a time or all at once, and keeps each with its item", async () => {
+    for (let i = 0; i < 20; i++) await insertItemWithPoster("rom", `Poster Game ${String(i).padStart(2, "0")}`, `https://img.example/game-${i}.jpg`);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setImmediate(resolve));
+        inFlight--;
+        return new Response(Buffer.from(`jpeg:${url}`));
+      })
+    );
+
+    const res = await getZip("/api/media/export-bulk.zip?type=rom&format=nfo");
+
+    expect(res.status).toBe(200);
+    const zip = new AdmZip(res.body as Buffer);
+    expect(zip.getEntries()).toHaveLength(40);
+    expect(zip.readAsText("Poster Game 07-poster.jpg")).toBe("jpeg:https://img.example/game-7.jpg");
+    expect(zip.readAsText("Poster Game 19.nfo")).toContain("<title>Poster Game 19</title>");
+    expect(maxInFlight).toBeGreaterThan(1);
+    expect(maxInFlight).toBeLessThanOrEqual(8);
+  });
+
+  it("gives up on a poster that never arrives instead of stalling the whole export, and cancels its request", async () => {
+    await insertItemWithPoster("manga", "Hanging Cover", "https://img.example/hang.jpg");
+    await insertItemWithPoster("manga", "Quick Cover", "https://img.example/quick.jpg");
+    const hangingSignals: AbortSignal[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        if (!url.includes("hang")) return Promise.resolve(new Response(Buffer.from("jpeg")));
+        hangingSignals.push(init!.signal!);
+        return new Promise<Response>((_resolve, reject) => init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason)));
+      })
+    );
+    // The real per-poster timeout, shortened so the test doesn't wait it out.
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => realTimeout(50));
+
+    const res = await getZip("/api/media/export-calibre.zip?type=manga");
+
+    expect(res.status).toBe(200);
+    const names = new AdmZip(res.body as Buffer).getEntries().map((e) => e.entryName).sort();
+    expect(names).toEqual(["Hanging Cover/metadata.opf", "Quick Cover/cover.jpg", "Quick Cover/metadata.opf"]);
+    expect(timeout).toHaveBeenCalledWith(15_000);
+    expect(hangingSignals).toHaveLength(1);
+    expect(hangingSignals[0].aborted).toBe(true);
+  });
+
+  it("stops fetching posters once the client has gone away", async () => {
+    for (let i = 0; i < 40; i++) await insertItemWithPoster("podcast", `Abort Show ${String(i).padStart(2, "0")}`, `https://img.example/abort-${i}.jpg`);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const fetchMock = vi.fn(async (url: string) => {
+      if (Number(url.match(/abort-(\d+)/)![1]) >= 10) await gate;
+      return new Response(Buffer.from("jpeg"));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { log } = await import("../src/services/logger.js");
+    const warn = vi.spyOn(log, "warn");
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise((resolve) => server.once("listening", resolve));
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const req = http.get(
+          { host: "127.0.0.1", port: (server.address() as AddressInfo).port, path: "/api/media/export-bulk.zip?type=podcast&format=nfo", headers: { "X-Api-Key": apiKey } },
+          (res) => {
+            res.once("data", () => {
+              req.destroy();
+              resolve();
+            });
+          }
+        );
+        req.on("error", (err) => (err.message.includes("socket hang up") ? undefined : reject(err)));
+      });
+      const connections = () => new Promise<number>((resolve) => server.getConnections((_err, n) => resolve(n)));
+      await vi.waitFor(async () => expect(await connections()).toBe(0));
+      release();
+
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledWith("[media] bulk export aborted:", expect.any(String)));
+      // 10 posters written, 8 more prefetched while the export waited on the 11th, and at most the
+      // one prefetched when that 11th finally arrived — never the other 20-odd.
+      expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(19);
+    } finally {
+      release();
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 });

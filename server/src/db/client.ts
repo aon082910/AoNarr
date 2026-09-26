@@ -127,6 +127,13 @@ ensureColumn("media_items", "local_backdrop_token", "local_backdrop_token TEXT")
 // everything", matching every real app's own "blank restriction = global" convention.
 ensureColumn("release_profiles", "indexer_ids", "indexer_ids TEXT");
 ensureColumn("release_profiles", "tag_ids", "tag_ids TEXT");
+ensureColumn("irc_feeds", "announcers", "announcers TEXT");
+// See schema.sql's queue table and resumeInterruptedImports in services/scheduler.ts.
+ensureColumn("queue", "import_started_at", "import_started_at TEXT");
+ensureColumn("queue", "import_skipped_reason", "import_skipped_reason TEXT");
+ensureColumn("queue", "import_resume_state", "import_resume_state INTEGER NOT NULL DEFAULT 0");
+// A list's own root folder for the items of its media type (see services/importLists.ts's RootFolderPicker).
+ensureColumn("import_lists", "root_folder_id", "root_folder_id INTEGER REFERENCES root_folders(id) ON DELETE SET NULL");
 
 /**
  * One-time transition marker for the course/adult "collection"/"single" -> "episodic" shape change
@@ -204,6 +211,67 @@ function repairDanglingReference(table: string, correctCreateSql: string) {
   db.pragma("legacy_alter_table = OFF");
 }
 
+const INDEXER_DEFAULT_MEDIA_TYPES = "movie,series,anime,sports,ppv,artist,author,audiobook,comic,manga,rom,course,adult";
+// Every value indexers.media_types was ever given implicitly: past schema defaults plus the
+// add-indexer route's old fallback.
+const LEGACY_INDEXER_MEDIA_TYPE_DEFAULTS = [
+  "movie,series,artist,author",
+  "movie,series,anime,artist,author,comic,rom,video,course,adult",
+  "movie,series,anime,artist,author,audiobook,comic,rom,video,course,adult",
+  "movie,series,anime,artist,author,audiobook,comic,manga,rom,video,course,adult",
+];
+
+/**
+ * Indexers created without an explicit media_types (Jackett/Prowlarr sync, the add route's
+ * fallback) got a default that never included sports or ppv, so those types were never searched.
+ * SQLite can't ALTER a column DEFAULT, so the table is rebuilt from its own stored CREATE text with
+ * only the default swapped, and rows still holding an old default are widened in the same
+ * transaction. Keyed off the stored default, so it runs once and never overrides a list an admin
+ * picks later. Foreign keys are off for the swap: dropping the old table with them on would
+ * cascade-delete indexer_health and null out queue/blocklist indexer_id. Runs before the CHECK
+ * rebuild below, whose hardcoded CREATE already carries the new default.
+ */
+export function upgradeIndexerMediaTypesDefault(): void {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'indexers'").get() as
+    | { sql: string }
+    | undefined;
+  const defaultClause = /(\bmedia_types\s+TEXT\s+NOT\s+NULL\s+DEFAULT\s+)'([^']*)'/i;
+  const current = row?.sql.match(defaultClause);
+  if (!row || !current || current[2] === INDEXER_DEFAULT_MEDIA_TYPES) return;
+  const createSql = row.sql
+    .replace(defaultClause, `$1'${INDEXER_DEFAULT_MEDIA_TYPES}'`)
+    .replace(/^CREATE TABLE\s+"?indexers"?\s*\(/i, "CREATE TABLE indexers_rebuild (");
+  if (!createSql.startsWith("CREATE TABLE indexers_rebuild (")) return;
+
+  const cols = (db.prepare(`PRAGMA table_info(indexers)`).all() as { name: string }[]).map((c) => c.name).join(", ");
+  const seq = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'indexers'").get() as { seq: number } | undefined;
+  db.pragma("foreign_keys = OFF");
+  // Legacy rename doesn't re-resolve every trigger and view in the schema, so an unrelated broken
+  // one can't abort startup here.
+  db.pragma("legacy_alter_table = ON");
+  try {
+    db.transaction(() => {
+      db.exec(createSql);
+      db.exec(`INSERT INTO indexers_rebuild (${cols}) SELECT ${cols} FROM indexers`);
+      db.exec(`DROP TABLE indexers`);
+      db.exec(`ALTER TABLE indexers_rebuild RENAME TO indexers`);
+      // AUTOINCREMENT must not hand a deleted indexer's id to a new one: release_profiles keeps
+      // indexer ids without a foreign key.
+      if (seq) {
+        const updated = db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'indexers'").run(seq.seq);
+        if (updated.changes === 0) db.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES ('indexers', ?)").run(seq.seq);
+      }
+      db.prepare(
+        `UPDATE indexers SET media_types = ? WHERE media_types IN (${LEGACY_INDEXER_MEDIA_TYPE_DEFAULTS.map(() => "?").join(", ")})`
+      ).run(INDEXER_DEFAULT_MEDIA_TYPES, ...LEGACY_INDEXER_MEDIA_TYPE_DEFAULTS);
+    })();
+  } finally {
+    db.pragma("legacy_alter_table = OFF");
+    db.pragma("foreign_keys = ON");
+  }
+}
+upgradeIndexerMediaTypesDefault();
+
 dropCheckConstraint(
   "indexers",
   `CREATE TABLE indexers (
@@ -213,7 +281,7 @@ dropCheckConstraint(
      url TEXT NOT NULL,
      api_key TEXT,
      categories TEXT NOT NULL DEFAULT '',
-     media_types TEXT NOT NULL DEFAULT 'movie,series,anime,artist,author,audiobook,comic,manga,rom,video,course,adult',
+     media_types TEXT NOT NULL DEFAULT 'movie,series,anime,sports,ppv,artist,author,audiobook,comic,manga,rom,course,adult',
      enabled INTEGER NOT NULL DEFAULT 1,
      priority INTEGER NOT NULL DEFAULT 25,
      config TEXT,
@@ -261,7 +329,10 @@ repairDanglingReference(
      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
      last_progress_at TEXT,
      download_path TEXT,
-     retry_count INTEGER NOT NULL DEFAULT 0
+     retry_count INTEGER NOT NULL DEFAULT 0,
+     import_started_at TEXT,
+     import_skipped_reason TEXT,
+     import_resume_state INTEGER NOT NULL DEFAULT 0
    )`
 );
 
@@ -411,7 +482,8 @@ dropCheckConstraint(
      require_review INTEGER NOT NULL DEFAULT 0,
      min_rating REAL,
      min_votes INTEGER,
-     exclude_genres TEXT
+     exclude_genres TEXT,
+     root_folder_id INTEGER REFERENCES root_folders(id) ON DELETE SET NULL
    )`
 );
 
@@ -529,3 +601,25 @@ export function upgradeFtsReparentTriggers(): void {
   })();
 }
 upgradeFtsReparentTriggers();
+
+/**
+ * Items added by import lists, Plex watchlist sync, Trakt and Overseerr used to be created with no
+ * root folder, so they were still searched and grabbed but every finished download failed to import
+ * ("has no root folder configured"). Filled in only where that type has exactly one root folder, so
+ * the pick is unambiguous; cheap and idempotent, so it simply runs on every startup. Queue rows that
+ * already finished and stuck at 'completed' are not revisited: they still need Activity's Retry import.
+ * Keep in sync with postgresSchema.ts's copy.
+ */
+export function backfillMissingRootFolders(): number {
+  const { changes } = db
+    .prepare(
+      `UPDATE media_items
+       SET root_folder_id = (SELECT id FROM root_folders rf WHERE rf.media_type = media_items.type)
+       WHERE root_folder_id IS NULL AND has_file = 0
+         AND (SELECT COUNT(*) FROM root_folders rf WHERE rf.media_type = media_items.type) = 1`
+    )
+    .run();
+  if (changes > 0) console.log(`[startup] assigned the only root folder of their type to ${changes} item(s) that had none`);
+  return changes;
+}
+backfillMissingRootFolders();

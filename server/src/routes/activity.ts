@@ -1,12 +1,16 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
+import { nowExpr } from "../db/asyncDb.js";
 import { downloadClientFromRow, mediaItemFromRow, queueItemFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { getDownloadClientAdapter } from "../services/downloadClient.js";
+import { getDownloadClientAdapter, removeQueueItemDownload, withQueueImportLock } from "../services/downloadClient.js";
 import { importQueueItem, listDownloadedFileCandidates } from "../services/importer.js";
+import { isJobRunning, listJobs } from "../services/jobRegistry.js";
 import { clampLimit, clampOffset } from "../services/mediaQuery.js";
 import { notifyQueueChanged, registerQueueStreamClient, unregisterQueueStreamClient } from "../services/realtime.js";
+import { markQueueImportFailed, markQueueImportStarted } from "../services/scheduler.js";
+import { getSetting } from "../services/settingsStore.js";
 
 export const activityRouter = Router();
 activityRouter.use(requireAdmin);
@@ -17,7 +21,9 @@ activityRouter.get(
     const limit = clampLimit(req.query.limit, 60, 500);
     const offset = clampOffset(req.query.offset);
     const total = ((await db.prepare("SELECT COUNT(*) AS c FROM queue").get()) as { c: number }).c;
-    const rows = await db.prepare("SELECT * FROM queue ORDER BY added_at DESC LIMIT ? OFFSET ?").all(limit, offset);
+    // id breaks added_at ties (one-second resolution, so a bulk search adds many rows per second):
+    // Postgres orders tied rows differently from one page request to the next.
+    const rows = await db.prepare("SELECT * FROM queue ORDER BY added_at DESC, id DESC LIMIT ? OFFSET ?").all(limit, offset);
     res.json({ items: rows.map(queueItemFromRow), total: Number(total) });
   })
 );
@@ -25,15 +31,18 @@ activityRouter.get(
 /**
  * Server-Sent Events channel for live queue updates (see services/realtime.ts) — the Activity page
  * opens this once and re-fetches GET /queue whenever a "queue" event arrives, instead of polling on
- * a fixed timer. Auth goes through the same requireAuth middleware as every other /api route (an
- * EventSource can't set the X-Api-Key header, so the browser client passes it as `?apikey=`, which
- * requireAuth already accepts as a fallback for exactly this kind of case).
+ * a fixed timer. Auth goes through the same requireAuth middleware as every other /api route — an
+ * EventSource can't set the X-Api-Key/X-Session-Token headers, so the browser opens it with a
+ * single-use `?ticket=` from POST /api/auth/stream-ticket, and requireAuth drops the connection once
+ * the credential behind it is revoked (see middleware/auth.ts).
  */
 activityRouter.get("/stream", (req, res) => {
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
+    // An nginx-based reverse proxy of the user's own (SWAG, Nginx Proxy Manager) buffers the stream otherwise.
+    "X-Accel-Buffering": "no",
   });
   res.write(": connected\n\n");
   registerQueueStreamClient(res);
@@ -54,24 +63,89 @@ activityRouter.get("/stream", (req, res) => {
   });
 });
 
+interface QueueRowTiming {
+  status: string;
+  updated_at: string;
+  /** The database's own clock, read in the same query as updated_at. */
+  db_now: string;
+}
+
+const POLL_TIMESTAMP_MARGIN_MS = 2000;
+
+function parseDbTimestamp(value: string): number {
+  const iso = value.includes("T") ? value : value.replace(" ", "T");
+  return Date.parse(/(Z|[+-]\d\d:?\d\d)$/i.test(iso) ? iso : `${iso}Z`);
+}
+
+/**
+ * The queue poller marks a row completed and imports it inline in the same run (or marks it failed
+ * and grabs a replacement) without taking the per-row import lock, so a row it moved during its
+ * current run may still be in its hands. Rows it hasn't touched this run are idle, however long the
+ * run takes. Compared on the database's clock (how long ago the row changed vs. how long the run has
+ * been going), since a Postgres server's clock needn't match this process's; the margin covers
+ * updated_at's one-second resolution.
+ */
+function pollerMayOwnQueueRow(row: QueueRowTiming): boolean {
+  if (row.status !== "completed" && row.status !== "failed") return false;
+  if (!isJobRunning("queuePoll")) return false;
+  const startedAt = listJobs().find((job) => job.key === "queuePoll")?.startedAt;
+  const runningForMs = startedAt ? Date.now() - Date.parse(startedAt) : NaN;
+  const sinceUpdateMs = parseDbTimestamp(row.db_now) - parseDbTimestamp(row.updated_at);
+  if (!Number.isFinite(runningForMs) || !Number.isFinite(sinceUpdateMs)) return true;
+  return sinceUpdateMs <= runningForMs + POLL_TIMESTAMP_MARGIN_MS;
+}
+
+const POLLER_BUSY_MESSAGE = "The queue poller is handling this download — try again in a moment";
+
 /**
  * Radarr/Sonarr-style "Remove and Blocklist" — pass `?blocklist=1` to add the release to this
  * media item's blocklist (see routes/blocklist.ts) in the same call, instead of removing from the
- * queue and blocklisting separately by hand across two pages.
+ * queue and blocklisting separately by hand across two pages. Like Radarr/Sonarr, the download is
+ * also removed from its client unless `?removeFromClient=0`: left there, it would keep downloading
+ * and seeding with nothing left to import or clean it up. Refused (409) while the row is being
+ * imported, since the client would delete the files the import is still copying.
  */
 activityRouter.delete(
   "/queue/:id",
   asyncHandler(async (req, res) => {
-    const queueRow = (await db.prepare("SELECT * FROM queue WHERE id = ?").get(req.params.id)) as any;
+    const queueRow = (await db
+      .prepare(`SELECT *, ${nowExpr(db)} AS db_now FROM queue WHERE id = ?`)
+      .get(req.params.id)) as any;
     if (!queueRow) throw new HttpError(404, "Queue item not found");
+    if (pollerMayOwnQueueRow(queueRow)) throw new HttpError(409, POLLER_BUSY_MESSAGE);
 
-    if (req.query.blocklist === "1") {
-      await db
-        .prepare("INSERT INTO blocklist (media_item_id, release_title, indexer_id, reason) VALUES (?, ?, ?, ?)")
-        .run(queueRow.media_item_id, queueRow.title, queueRow.indexer_id, "Removed from queue by admin");
-    }
+    let rowChanged = false;
+    const ran = await withQueueImportLock(Number(queueRow.id), async () => {
+      // The row goes first, and only if the poller hasn't moved it since it was read: a row the
+      // poller has just marked completed is being imported inline, and once the row is gone the
+      // poller's import of it stops before copying anything the client is about to delete.
+      const deleted = await db.prepare("DELETE FROM queue WHERE id = ? AND status = ?").run(queueRow.id, queueRow.status);
+      if (deleted.changes === 0) {
+        rowChanged = true;
+        return;
+      }
 
-    await db.prepare("DELETE FROM queue WHERE id = ?").run(req.params.id);
+      if (req.query.blocklist === "1") {
+        await db
+          .prepare("INSERT INTO blocklist (media_item_id, release_title, indexer_id, reason) VALUES (?, ?, ?, ?)")
+          .run(queueRow.media_item_id, queueRow.title, queueRow.indexer_id, "Removed from queue by admin");
+      }
+
+      if (req.query.removeFromClient !== "0" && queueRow.download_client_id && queueRow.download_id) {
+        // Another row can point at the same download (one season pack grabbed for two targets); it
+        // still needs that data.
+        const sharing = (await db
+          .prepare("SELECT COUNT(*) AS c FROM queue WHERE download_client_id = ? AND download_id = ? AND id <> ?")
+          .get(queueRow.download_client_id, queueRow.download_id, queueRow.id)) as { c: number | string };
+        // Symlinked library files point into the client's data, and files already imported can be
+        // links into this very download (the same pack re-added for another target), so only the
+        // torrent/job itself goes.
+        const deleteData = getSetting("importStrategy") !== "symlink";
+        if (Number(sharing.c) === 0) await removeQueueItemDownload(queueItemFromRow(queueRow), deleteData);
+      }
+    });
+    if (!ran) throw new HttpError(409, "This download is being imported — try again once that finishes");
+    if (rowChanged) throw new HttpError(409, "This download changed while it was being removed — refresh and try again");
     notifyQueueChanged();
     res.status(204).send();
   })
@@ -79,7 +153,8 @@ activityRouter.delete(
 
 /**
  * Not every download client backend has a real queue to reorder — the in-process http/ytdlp
- * adapters download sequentially with nothing to prioritize — so this 400s cleanly instead of
+ * adapters have none (the scheduler just caps how many direct downloads run at once, see
+ * MAX_ACTIVE_DIRECT_DOWNLOADS in services/scheduler.ts) — so this 400s cleanly instead of
  * silently no-op'ing when the underlying client type doesn't implement `setPriority`.
  */
 activityRouter.post(
@@ -105,6 +180,43 @@ activityRouter.post(
   })
 );
 
+/**
+ * Runs an admin-triggered import of a queue row, refusing (409) while anything else may be importing
+ * the same row: a second concurrent import races the first on the same source files, and whichever
+ * finishes first deletes the row and the client's data while the other is still copying. A queued or
+ * downloading row still belongs to the poller, which imports it itself the moment its client reports
+ * it complete. The import is marked on the row while it runs, so one a restart cuts off is retried
+ * by the poller like its own, except a `manual` one (a file and quality the admin chose), which is
+ * left for the admin (see resumeInterruptedImports in services/scheduler.ts).
+ */
+async function runAdminImport(queueId: number, importFn: () => Promise<void>, manual = false): Promise<void> {
+  const queueRow = Number.isInteger(queueId)
+    ? ((await db
+        .prepare(`SELECT status, updated_at, ${nowExpr(db)} AS db_now FROM queue WHERE id = ?`)
+        .get(queueId)) as QueueRowTiming | undefined)
+    : undefined;
+  if (!queueRow) throw new HttpError(404, "Queue item not found");
+  if (queueRow.status === "queued" || queueRow.status === "downloading") {
+    throw new HttpError(409, "This download hasn't finished yet");
+  }
+  if (pollerMayOwnQueueRow(queueRow)) throw new HttpError(409, POLLER_BUSY_MESSAGE);
+  let ran: boolean;
+  try {
+    ran = await withQueueImportLock(queueId, async () => {
+      await markQueueImportStarted(queueId, manual);
+      try {
+        await importFn();
+      } catch (err) {
+        await markQueueImportFailed(queueId, err);
+        throw err;
+      }
+    });
+  } catch (err) {
+    throw new HttpError(422, (err as Error).message);
+  }
+  if (!ran) throw new HttpError(409, "This download is already being imported");
+}
+
 /** Re-runs the automatic importer against a queue item — for a "completed" or "failed" row whose
  * file wasn't found or matched the first time (e.g. it finished extracting/repairing moments after
  * AoNarr gave up, or a transient filesystem hiccup) but should resolve cleanly now without needing
@@ -112,14 +224,9 @@ activityRouter.post(
 activityRouter.post(
   "/queue/:id/retry-import",
   asyncHandler(async (req, res) => {
-    const queueRow = await db.prepare("SELECT * FROM queue WHERE id = ?").get(req.params.id);
-    if (!queueRow) throw new HttpError(404, "Queue item not found");
-    try {
-      await importQueueItem(Number(req.params.id));
-      res.json({ ok: true });
-    } catch (err) {
-      throw new HttpError(422, (err as Error).message);
-    }
+    const queueId = Number(req.params.id);
+    await runAdminImport(queueId, () => importQueueItem(queueId));
+    res.json({ ok: true });
   })
 );
 
@@ -147,14 +254,9 @@ activityRouter.post(
     const sourceFile = req.body?.sourceFile;
     if (!sourceFile || typeof sourceFile !== "string") throw new HttpError(400, "sourceFile is required");
     const overrideQuality = typeof req.body?.quality === "string" && req.body.quality ? req.body.quality : undefined;
-    const queueRow = await db.prepare("SELECT * FROM queue WHERE id = ?").get(req.params.id);
-    if (!queueRow) throw new HttpError(404, "Queue item not found");
-    try {
-      await importQueueItem(Number(req.params.id), sourceFile, overrideQuality);
-      res.json({ ok: true });
-    } catch (err) {
-      throw new HttpError(422, (err as Error).message);
-    }
+    const queueId = Number(req.params.id);
+    await runAdminImport(queueId, () => importQueueItem(queueId, sourceFile, overrideQuality), true);
+    res.json({ ok: true });
   })
 );
 

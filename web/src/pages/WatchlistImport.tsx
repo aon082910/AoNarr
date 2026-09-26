@@ -80,7 +80,9 @@ function parseCsv(text: string): ParsedRow[] {
     const yearRaw = yearIdx !== -1 ? fields[yearIdx]?.trim() : "";
     const year = yearRaw && /^\d{4}$/.test(yearRaw) ? Number(yearRaw) : null;
     const typeRaw = (typeIdx !== -1 ? fields[typeIdx] : "")?.trim().toLowerCase();
-    const type: MediaType = typeRaw?.includes("tv") || typeRaw?.includes("show") ? "series" : "movie";
+    // Not a bare "tv" match: IMDb's "TV Movie"/"TV Special"/"TV Short" (tvMovie, tvSpecial...) are
+    // films. Only (mini) series and Trakt's "show" are series, same rule as the IMDb import list.
+    const type: MediaType = typeRaw?.includes("series") || typeRaw?.includes("show") ? "series" : "movie";
     rows.push({ title, year, type });
   }
   return rows;

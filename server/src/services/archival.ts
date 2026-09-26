@@ -5,6 +5,7 @@ import { db } from "../db/index.js";
 import { getSetting } from "./settingsStore.js";
 import { fetchWatchedFiles, getMediaServerConfig, type WatchedFile } from "./mediaServer.js";
 import { recycleFile } from "./recycleBin.js";
+import { createOfflineStorageCheck } from "./deletedFileCheck.js";
 
 /**
  * Plex/Jellyfin/Emby usually mount the library at a different path than AoNarr sees (e.g. Plex's
@@ -31,6 +32,31 @@ export function findWatchedMatch(filePath: string | null, watched: WatchedFile[]
   return watched.find((w) => pathTail(w.path) === tail) ?? null;
 }
 
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fsp.lstat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Where an archived file goes: its path under the root folder it lives in (or, outside every
+ * root folder, its last three path segments, as in pathTail), mirrored under the archive folder,
+ * and numbered " (1)", " (2)"... rather than replacing anything already there. A flat folder keyed
+ * by file name let a second show's "Season 01/S01E01.mkv" overwrite the first's. */
+async function archiveDestination(filePath: string, archiveFolder: string): Promise<string> {
+  const resolved = path.resolve(filePath);
+  const roots = ((await db.prepare("SELECT path FROM root_folders").all()) as { path: string }[]).map((r) => path.resolve(r.path));
+  const owner = roots.filter((r) => resolved.startsWith(r + path.sep)).sort((a, b) => b.length - a.length)[0];
+  const relative = owner ? path.relative(owner, resolved) : path.join(...resolved.split(path.sep).filter(Boolean).slice(-3));
+  const base = path.join(archiveFolder, relative);
+  const ext = path.extname(base);
+  let dest = base;
+  for (let n = 1; await pathExists(dest); n++) dest = `${base.slice(0, base.length - ext.length)} (${n})${ext}`;
+  return dest;
+}
+
 async function moveOrDelete(
   filePath: string,
   archiveFolder: string | null,
@@ -43,11 +69,11 @@ async function moveOrDelete(
     // "Permanently delete" here means "don't keep an archive copy" — it still goes through the
     // recycle bin (unless that's disabled instance-wide), since the whole point of a recycle bin
     // is catching exactly this kind of automated deletion.
-    await recycleFile(filePath, mediaType, title, mediaItemId);
+    if (!(await recycleFile(filePath, mediaType, title, mediaItemId))) throw new Error("couldn't remove the file (its storage may be offline)");
     return;
   }
-  await fsp.mkdir(archiveFolder, { recursive: true });
-  const dest = path.join(archiveFolder, path.basename(filePath));
+  const dest = await archiveDestination(filePath, archiveFolder);
+  await fsp.mkdir(path.dirname(dest), { recursive: true });
   try {
     await fsp.rename(filePath, dest);
   } catch (err) {
@@ -55,7 +81,7 @@ async function moveOrDelete(
     // Cross-filesystem (e.g. /config vs /media in Docker) — fsp.cp/rm hand the copy off to
     // libuv's thread pool instead of blocking Node's single event loop for as long as a
     // multi-GB archive move takes, same reasoning as recycleBin.ts's moveFileAsync.
-    await fsp.cp(filePath, dest, { recursive: true });
+    await fsp.cp(filePath, dest, { recursive: true, force: false, errorOnExist: true });
     await fsp.rm(filePath, { recursive: true, force: true });
   }
 }
@@ -102,6 +128,13 @@ async function logArchival(mediaItemId: number, title: string, mode: "archived" 
   log.info(`[archival] ${mode} "${title}" (watched + past retention window)`);
 }
 
+/** The instance-wide retention in days. 0 is a real setting ("archive as soon as it's watched"),
+ * so only a blank or unparseable value falls back to the default. */
+function archiveAfterDays(): number {
+  const configured = parseInt(getSetting("archiveAfterDays") ?? "", 10);
+  return Number.isFinite(configured) && configured >= 0 ? configured : 30;
+}
+
 export interface ArchivalCandidate {
   mediaItemId: number;
   title: string;
@@ -124,7 +157,7 @@ export async function getUpcomingArchivals(): Promise<ArchivalCandidate[]> {
   const archiveFolder = getSetting("archiveFolder");
   const permanentDelete = getSetting("archivePermanentDelete") === "1";
   if (!permanentDelete && !archiveFolder) return [];
-  const afterDays = Number(getSetting("archiveAfterDays") ?? "30") || 30;
+  const afterDays = archiveAfterDays();
 
   let watched: WatchedFile[];
   try {
@@ -204,7 +237,7 @@ export async function runAutoArchival(): Promise<void> {
   if (getSetting("archiveEnabled") !== "1") return;
   if (!getMediaServerConfig()) return;
 
-  const afterDays = Number(getSetting("archiveAfterDays") ?? "30") || 30;
+  const afterDays = archiveAfterDays();
   const archiveFolder = getSetting("archiveFolder");
   const permanentDelete = getSetting("archivePermanentDelete") === "1";
   if (!permanentDelete && !archiveFolder) {
@@ -221,6 +254,10 @@ export async function runAutoArchival(): Promise<void> {
   }
   if (watched.length === 0) return;
 
+  // A file on an unmounted share or a dead rclone/debrid mount looks already gone, and the recycle
+  // bin reports a missing file as removed: its row would be cleared and unmonitored for good.
+  const isOffline = await createOfflineStorageCheck("archival");
+
   const singleItems = (await db
     .prepare("SELECT * FROM media_items WHERE has_file = 1 AND protected = 0 AND path IS NOT NULL")
     .all()) as any[];
@@ -231,13 +268,14 @@ export async function runAutoArchival(): Promise<void> {
     if (retentionDays === null) continue; // never-archive override
     const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
     if (match.lastPlayedAt.getTime() > cutoffMs) continue;
+    if (isOffline(item.path)) continue;
     try {
       await moveOrDelete(item.path, archiveFolder, permanentDelete, item.type, item.title, item.id);
       // Also unmonitored (here and for episodes/sub-items below): the file was watched and
       // deliberately cleared out, so auto-search — which only skips unmonitored or has_file rows —
       // mustn't treat it as missing and re-download it on its next pass, which the media server
       // would then report as watched again and the next archival run would archive again, forever.
-      await db.prepare("UPDATE media_items SET has_file = 0, path = NULL, quality = NULL, monitored = 0 WHERE id = ?").run(item.id);
+      await db.prepare("UPDATE media_items SET has_file = 0, path = NULL, quality = NULL, size_bytes = NULL, media_info = NULL, monitored = 0 WHERE id = ?").run(item.id);
       await logArchival(item.id, item.title, permanentDelete ? "deleted" : "archived");
     } catch (err) {
       log.warn(`[archival] failed to archive "${item.title}":`, (err as Error).message);
@@ -258,10 +296,11 @@ export async function runAutoArchival(): Promise<void> {
     if (retentionDays === null) continue;
     const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
     if (match.lastPlayedAt.getTime() > cutoffMs) continue;
+    if (isOffline(ep.file_path)) continue;
     const label = `${ep.media_title} S${String(ep.season_number).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}`;
     try {
       await moveOrDelete(ep.file_path, archiveFolder, permanentDelete, ep.media_type, label, ep.media_item_id);
-      await db.prepare("UPDATE episodes SET has_file = 0, file_path = NULL, quality = NULL, monitored = 0 WHERE id = ?").run(ep.id);
+      await db.prepare("UPDATE episodes SET has_file = 0, file_path = NULL, quality = NULL, size_bytes = NULL, media_info = NULL, monitored = 0 WHERE id = ?").run(ep.id);
       await logArchival(ep.media_item_id, label, permanentDelete ? "deleted" : "archived");
     } catch (err) {
       log.warn(`[archival] failed to archive "${label}":`, (err as Error).message);
@@ -282,10 +321,11 @@ export async function runAutoArchival(): Promise<void> {
     if (retentionDays === null) continue;
     const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
     if (match.lastPlayedAt.getTime() > cutoffMs) continue;
+    if (isOffline(sub.file_path)) continue;
     const label = `${sub.media_title} - ${sub.title}`;
     try {
       await moveOrDelete(sub.file_path, archiveFolder, permanentDelete, sub.media_type, label, sub.media_item_id);
-      await db.prepare("UPDATE sub_items SET has_file = 0, file_path = NULL, quality = NULL, monitored = 0 WHERE id = ?").run(sub.id);
+      await db.prepare("UPDATE sub_items SET has_file = 0, file_path = NULL, quality = NULL, size_bytes = NULL, media_info = NULL, monitored = 0 WHERE id = ?").run(sub.id);
       await logArchival(sub.media_item_id, label, permanentDelete ? "deleted" : "archived");
     } catch (err) {
       log.warn(`[archival] failed to archive "${label}":`, (err as Error).message);

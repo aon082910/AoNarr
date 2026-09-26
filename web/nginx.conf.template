@@ -1,3 +1,13 @@
+# The Host passed to the API: $http_host, not $host, keeps the port the browser used, which the
+# API's cross-origin check compares with the Origin header (server/src/app.ts isOriginAllowed).
+# An HTTP/1.0 client may send no Host at all, and forwarding none would get a 400 from Node, so
+# that falls back to $host (the server name). Only ${...} names of defined environment variables
+# are substituted in this template, so these nginx variables pass through untouched.
+map $http_host $aonarr_host {
+    "" $host;
+    default $http_host;
+}
+
 server {
     listen 9876;
     server_name _;
@@ -8,17 +18,19 @@ server {
     # scripts (theme-init.js is a real file, see index.html) and no known dangerouslySetInnerHTML
     # use. style-src needs unsafe-inline because React's `style={{...}}` renders as inline style
     # attributes throughout the app — removing that would mean rewriting every styled component to
-    # CSS classes, well beyond what this header is trying to fix. img-src stays wide open (any
-    # https/http origin, data:, blob:) since posters/backdrops/media-server artwork can come from
-    # any URL an admin configures — same reasoning as crossOriginResourcePolicy:false on the API
-    # server (see server/src/app.ts). frame-ancestors is deliberately NOT restricted: this app is
-    # commonly embedded in dashboard tools (Organizr, Homarr, Heimdall) and had no framing
+    # CSS classes, well beyond what this header is trying to fix. style-src and font-src also allow
+    # any https/http origin: a Custom Theme (Settings → General, injected as a <style> by main.tsx)
+    # may @import a theme.park-style stylesheet or load web fonts from a CDN. img-src stays wide
+    # open (any https/http origin, data:, blob:) since posters/backdrops/media-server artwork can
+    # come from any URL an admin configures — same reasoning as crossOriginResourcePolicy:false on
+    # the API server (see server/src/app.ts). frame-ancestors is deliberately NOT restricted: this
+    # app is commonly embedded in dashboard tools (Organizr, Homarr, Heimdall) and had no framing
     # restriction before this header existed either.
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https: http:; img-src 'self' data: blob: https: http:; font-src 'self' data: https: http:; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'" always;
 
     location /api/ {
         proxy_pass http://${AONARR_SERVER_HOST}:${AONARR_SERVER_PORT}/api/;
-        proxy_set_header Host $host;
+        proxy_set_header Host $aonarr_host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_http_version 1.1;
         # nginx's 1m default would reject a large settings-template import (the API accepts 10mb)
@@ -33,6 +45,58 @@ server {
         proxy_read_timeout 300s;
     }
 
+    # A backup restore uploads the whole .aonarrbackup in one request and the API accepts up to 1gb
+    # there (routes/system.ts) — under /api/'s 10m cap a real library's backup got nginx's own 413
+    # before reaching the server. Only this one path gets the raised limit. Request buffering stays
+    # ON deliberately: nginx spools the upload to a temp file and hands Node the finished body at
+    # loopback speed. Streaming it through would make the client's whole upload time count against
+    # Node's 300s request timeout, so a slow remote upload would be cut off with a 408.
+    # Spooling happens before Node's requireAdmin sees the request, so without a check first anyone
+    # who can reach the port could make nginx write up to 1gb per connection to its temp dir.
+    # auth_request runs in the access phase, before the body is read: the caller's own credential
+    # headers are tried against an admin-only endpoint first, and a 401/403 there is returned
+    # without reading the upload.
+    location = /api/system/backup/restore {
+        auth_request /__aonarr_admin_check;
+        proxy_pass http://${AONARR_SERVER_HOST}:${AONARR_SERVER_PORT};
+        proxy_set_header Host $aonarr_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_http_version 1.1;
+        client_max_body_size 1g;
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 600s;
+        proxy_read_timeout 600s;
+    }
+
+    # The restore upload's admin check. Any cheap GET under /api/system works: that whole router is
+    # admin-only. The subrequest carries the original request's headers (X-Api-Key /
+    # X-Session-Token) but never its body. It also inherits the upload's Content-Length, which
+    # nginx checks against this location's own client_max_body_size, hence the matching 1g.
+    location = /__aonarr_admin_check {
+        internal;
+        proxy_pass http://${AONARR_SERVER_HOST}:${AONARR_SERVER_PORT}/api/system/resources;
+        client_max_body_size 1g;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Host $aonarr_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_http_version 1.1;
+    }
+
+    # Server-Sent Events: the Activity page's queue push and System → Logs' live tail. Unbuffered
+    # and uncached so no event can sit in an nginx buffer waiting for more data. The server sends a
+    # heartbeat every 30s, so the long read timeout only ever ends a stream whose backend is gone.
+    location ~ ^/api/(activity/stream|system/logs/stream)$ {
+        proxy_pass http://${AONARR_SERVER_HOST}:${AONARR_SERVER_PORT};
+        proxy_set_header Host $aonarr_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 3600s;
+    }
+
     location / {
         try_files $uri /index.html;
     }
@@ -42,13 +106,18 @@ server {
     # that references those hashed names, so it must never be cached, or the browser can keep serving
     # a stale index.html pointing at JS that predates whatever update was just deployed — this was
     # the actual cause of "the UI still looks the same after updating the container."
+    # `expires -1` sends the same Cache-Control: no-cache without an add_header here: any add_header
+    # in a location replaces every server-level one, which would leave the page itself (every SPA
+    # route lands here via try_files) without the Content-Security-Policy above.
     location = /index.html {
-        add_header Cache-Control "no-cache";
+        expires -1;
     }
 
     # Browsers already re-check a registered service worker's script at most once every 24h by
     # spec regardless of headers — this just makes sure that check, whenever it happens, isn't
     # itself served from a stale HTTP cache.
+    # Its add_header also keeps the page's CSP off the worker, whose own fetch() re-requests every
+    # cross-origin poster and would be blocked by connect-src 'self'.
     location = /sw.js {
         add_header Cache-Control "no-cache";
     }

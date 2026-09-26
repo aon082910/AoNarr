@@ -1,10 +1,14 @@
 import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
+import request from "supertest";
+import type { Express } from "express";
 import { setupTestDb } from "./helpers/testDb.js";
 
+let app: Express;
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
+let apiKey: string;
 
 beforeAll(async () => {
-  ({ db } = await setupTestDb());
+  ({ app, db, apiKey } = await setupTestDb());
 });
 
 afterEach(() => {
@@ -210,5 +214,119 @@ describe("compareFriendLibrary — title/year matching and dedup", () => {
 
     const missing = await compareFriendLibrary(cfg);
     expect(missing.map((m) => m.title)).toEqual(["Apple Movie", "Mango Movie", "Zebra Movie"]);
+  });
+});
+
+describe("friend library tokens at rest", () => {
+  async function storedToken(id: number): Promise<string> {
+    return ((await db.prepare("SELECT token FROM friend_libraries WHERE id = ?").get(id)) as { token: string }).token;
+  }
+
+  async function insertRaw(name: string, url: string, token: string): Promise<number> {
+    return Number(
+      (await db.prepare("INSERT INTO friend_libraries (name, type, url, token) VALUES (?, 'jellyfin', ?, ?)").run(name, url, token)).lastInsertRowid
+    );
+  }
+
+  /** Stands in for the friend's Jellyfin server: records the token each request carried. */
+  function stubJellyfin(url: string, title: string): { sentTokens: string[] } {
+    const sentTokens: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (requestUrl: string, init?: { headers?: Record<string, string> }) => {
+        sentTokens.push(init?.headers?.["X-Emby-Token"] ?? "");
+        if (requestUrl === `${url}/Users`) return { ok: true, json: async () => [{ Id: "u" }] } as any;
+        if (requestUrl.startsWith(`${url}/Users/u/Items`)) {
+          return { ok: true, json: async () => ({ Items: [{ Name: title, Type: "Movie", ProductionYear: 2011 }] }) } as any;
+        }
+        return { ok: false, status: 404 } as any;
+      })
+    );
+    return { sentTokens };
+  }
+
+  it("stores a new or replacement token encrypted and never returns it", async () => {
+    const { decryptValue } = await import("../src/services/encryption.js");
+    const created = await request(app)
+      .post("/api/friend-libraries")
+      .set("X-Api-Key", apiKey)
+      .send({ name: "Encrypted Friend", type: "jellyfin", url: "http://enc-friend.example.com/", token: "friend-secret-token" });
+
+    expect(created.status).toBe(201);
+    expect(JSON.stringify(created.body)).not.toContain("friend-secret-token");
+    const raw = await storedToken(created.body.id);
+    expect(raw.startsWith("enc1:")).toBe(true);
+    expect(decryptValue(raw)).toBe("friend-secret-token");
+
+    const patched = await request(app).patch(`/api/friend-libraries/${created.body.id}`).set("X-Api-Key", apiKey).send({ token: "replacement-token" });
+    const listed = await request(app).get("/api/friend-libraries").set("X-Api-Key", apiKey);
+
+    expect(patched.status).toBe(200);
+    expect(JSON.stringify(patched.body)).not.toContain("replacement-token");
+    expect(JSON.stringify(listed.body)).not.toContain("enc1:");
+    const rawAfter = await storedToken(created.body.id);
+    expect(rawAfter.startsWith("enc1:")).toBe(true);
+    expect(decryptValue(rawAfter)).toBe("replacement-token");
+  });
+
+  it("compares using the decrypted token", async () => {
+    const created = await request(app)
+      .post("/api/friend-libraries")
+      .set("X-Api-Key", apiKey)
+      .send({ name: "Comparing Friend", type: "jellyfin", url: "http://cmp-friend.example.com", token: "cmp-token" });
+    const { sentTokens } = stubJellyfin("http://cmp-friend.example.com", "Encrypted Friend Only Film");
+
+    const res = await request(app).get(`/api/friend-libraries/${created.body.id}/compare`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((m: { title: string }) => m.title)).toEqual(["Encrypted Friend Only Film"]);
+    expect(sentTokens).toEqual(["cmp-token", "cmp-token"]);
+  });
+
+  it("keeps working with a token stored in plaintext before encryption, and re-saves it encrypted", async () => {
+    const { decryptValue } = await import("../src/services/encryption.js");
+    const id = await insertRaw("Legacy Friend", "http://legacy-friend.example.com", "legacy-plain-token");
+    const { sentTokens } = stubJellyfin("http://legacy-friend.example.com", "Legacy Friend Only Film");
+
+    const res = await request(app).get(`/api/friend-libraries/${id}/compare`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(200);
+    expect(sentTokens).toEqual(["legacy-plain-token", "legacy-plain-token"]);
+    const raw = await storedToken(id);
+    expect(raw.startsWith("enc1:")).toBe(true);
+    expect(decryptValue(raw)).toBe("legacy-plain-token");
+  });
+
+  it("asks for the token to be re-entered when it can't be decrypted, without contacting the friend", async () => {
+    const id = await insertRaw("Undecryptable Friend", "http://bad-key-friend.example.com", `enc1:${Buffer.alloc(40, 7).toString("base64")}`);
+    const { sentTokens } = stubJellyfin("http://bad-key-friend.example.com", "Never Fetched");
+
+    const res = await request(app).get(`/api/friend-libraries/${id}/compare`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toMatch(/re-enter/);
+    expect(sentTokens).toEqual([]);
+  });
+
+  it("encrypts plaintext friend tokens and remote-instance API keys at startup", async () => {
+    const { decryptValue } = await import("../src/services/encryption.js");
+    const { createApp } = await import("../src/app.js");
+    const friendId = await insertRaw("Startup Friend", "http://startup-friend.example.com", "startup-plain-token");
+    const remoteId = Number(
+      (
+        await db
+          .prepare("INSERT INTO remote_instances (name, url, api_key) VALUES ('Startup Remote', 'http://startup-remote.local:9876', 'startup-plain-key')")
+          .run()
+      ).lastInsertRowid
+    );
+
+    await createApp();
+
+    const token = await storedToken(friendId);
+    const key = ((await db.prepare("SELECT api_key FROM remote_instances WHERE id = ?").get(remoteId)) as { api_key: string }).api_key;
+    expect(token.startsWith("enc1:")).toBe(true);
+    expect(decryptValue(token)).toBe("startup-plain-token");
+    expect(key.startsWith("enc1:")).toBe(true);
+    expect(decryptValue(key)).toBe("startup-plain-key");
   });
 });

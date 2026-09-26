@@ -87,7 +87,8 @@ import { friendLibrariesRouter } from "./routes/friendLibraries.js";
 
 /**
  * download_clients.password/.api_key, irc_feeds.sasl_pass, ai_providers.api_key, indexers.api_key,
- * and subtitle_providers.api_key live in their own dedicated tables rather than the generic
+ * subtitle_providers.api_key, remote_instances.api_key and friend_libraries.token live in their
+ * own dedicated tables rather than the generic
  * `settings` table, so settingsStore.ts's own self-healing re-encryption (loadSettingsCache) never
  * sees them — an install that predates encryption-at-rest support for these tables has plaintext
  * rows here. Same idea, scoped to these instead: read, and if a value isn't already in our
@@ -155,7 +156,121 @@ async function reencryptLegacyCredentials(): Promise<void> {
     }
   }
 
+  const remotes = (await db.prepare("SELECT id, api_key FROM remote_instances").all()) as { id: number; api_key: string | null }[];
+  for (const r of remotes) {
+    if (r.api_key && !isEncryptedValue(r.api_key)) {
+      await db.prepare("UPDATE remote_instances SET api_key = ? WHERE id = ?").run(encryptValue(r.api_key), r.id);
+      count++;
+    }
+  }
+
+  const friends = (await db.prepare("SELECT id, token FROM friend_libraries").all()) as { id: number; token: string | null }[];
+  for (const f of friends) {
+    if (f.token && !isEncryptedValue(f.token)) {
+      await db.prepare("UPDATE friend_libraries SET token = ? WHERE id = ?").run(encryptValue(f.token), f.id);
+      count++;
+    }
+  }
+
   if (count > 0) log.info(`[encryption] encrypted ${count} legacy plaintext credential(s) at rest`);
+}
+
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+/** The request bodies a page may send to another origin without the browser asking first. */
+const PREFLIGHT_FREE_CONTENT_TYPES = new Set(["application/x-www-form-urlencoded", "multipart/form-data", "text/plain"]);
+/** Any one of these makes the browser ask first. The web UI sends X-Requested-With on every request
+ * (web/src/api/client.ts), so even a credential-less upload with Authentication disabled carries one. */
+const PREFLIGHT_HEADERS = ["x-api-key", "x-session-token", "x-requested-with"];
+
+function hostnameOf(value: string): string | null {
+  try {
+    return new URL(value.includes("://") ? value : `http://${value}`).hostname.toLowerCase() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** A Host / X-Forwarded-Host value split into hostname and the port it names, if it names one. */
+function parseHostHeader(value: string): { hostname: string; port: string | null } | null {
+  const match = /^(.+?)(?::(\d{1,5}))?$/.exec(value.trim());
+  const hostname = match ? hostnameOf(match[1]) : null;
+  return hostname ? { hostname, port: match?.[2] ? String(Number(match[2])) : null } : null;
+}
+
+/** The first entry of a forwarding header: the one the proxy nearest the browser set. */
+function firstForwarded(req: express.Request, name: string): string {
+  return String(req.headers[name] ?? "").split(",")[0].trim();
+}
+
+/** Whether `originUrl` names the host a request was addressed to. A host without a port means the
+ * scheme's default port (80/443), as it does for a browser; `scheme` and `fallbackPort` are what
+ * a proxy reported in X-Forwarded-Proto / X-Forwarded-Port. */
+function originMatchesHost(originUrl: URL, hostHeader: string, scheme?: string, fallbackPort?: string): boolean {
+  const host = parseHostHeader(hostHeader);
+  if (!host) return false;
+  const protocol = scheme ? `${scheme}:` : originUrl.protocol;
+  if (protocol !== originUrl.protocol || host.hostname !== originUrl.hostname.toLowerCase()) return false;
+  const defaultPort = protocol === "https:" ? "443" : "80";
+  return (host.port ?? fallbackPort ?? defaultPort) === (originUrl.port || defaultPort);
+}
+
+/**
+ * Whether a browser page served from `origin` may use this API and read its responses. A request
+ * with no Origin (curl, scripts, server-to-server webhooks) isn't a cross-origin browser request.
+ * Anything listed in the `corsAllowedOrigins` setting or the AONARR_CORS_ALLOWED_ORIGINS
+ * environment variable is allowed (`*` allows every http(s) origin); an opaque "null" origin
+ * (sandboxed frame, file:// page) or any other scheme only when listed exactly. Otherwise the
+ * page must be this instance itself: the browser says so (Sec-Fetch-Site "same-origin"/"none",
+ * which pages can't forge; browsers only send it to HTTPS and localhost URLs), or Origin names the
+ * host the request was addressed to — Host, or the first X-Forwarded-Host entry with the scheme
+ * and port from X-Forwarded-Proto / X-Forwarded-Port — port included, so another app on the same
+ * host but a different port doesn't count.
+ */
+export function isOriginAllowed(req: express.Request, origin: string | undefined): boolean {
+  if (!origin) return true;
+  const allowed = `${getSetting("corsAllowedOrigins") ?? ""},${process.env.AONARR_CORS_ALLOWED_ORIGINS ?? ""}`
+    .split(",")
+    .map((o) => o.trim().replace(/\/+$/, "").toLowerCase())
+    .filter(Boolean);
+  if (allowed.includes(origin.trim().replace(/\/+$/, "").toLowerCase())) return true;
+
+  let originUrl: URL;
+  try {
+    originUrl = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (originUrl.protocol !== "http:" && originUrl.protocol !== "https:") return false;
+  if (allowed.includes("*")) return true;
+
+  const fetchSite = req.header("Sec-Fetch-Site")?.trim().toLowerCase();
+  if (fetchSite === "same-origin" || fetchSite === "none") return true;
+
+  if (originMatchesHost(originUrl, req.headers.host ?? "")) return true;
+  const forwardedHost = firstForwarded(req, "x-forwarded-host");
+  if (!forwardedHost) return false;
+  const forwardedProto = firstForwarded(req, "x-forwarded-proto").toLowerCase();
+  const forwardedPort = /^\d{1,5}$/.exec(firstForwarded(req, "x-forwarded-port"))?.[0];
+  return originMatchesHost(
+    originUrl,
+    forwardedHost,
+    forwardedProto === "http" || forwardedProto === "https" ? forwardedProto : undefined,
+    forwardedPort ? String(Number(forwardedPort)) : undefined
+  );
+}
+
+/**
+ * Whether a page on another site could have sent this request without a CORS preflight: a
+ * state-changing method (only POST really can, but every one is judged alike) with none of the
+ * headers that force one, and no Content-Type or one of the form/plain-text ones. Any other
+ * request from a foreign page needs the preflight first, which cors() doesn't approve for a
+ * disallowed origin, so the browser never sends it.
+ */
+function skipsPreflight(req: express.Request): boolean {
+  if (SAFE_METHODS.has(req.method)) return false;
+  if (PREFLIGHT_HEADERS.some((name) => req.headers[name] !== undefined)) return false;
+  const contentType = req.header("Content-Type");
+  return contentType === undefined || PREFLIGHT_FREE_CONTENT_TYPES.has(contentType.split(";")[0].trim().toLowerCase());
 }
 
 /**
@@ -182,24 +297,27 @@ export async function createApp(): Promise<Express> {
   // improving security meaningfully for a single-admin self-hosted app. Every other helmet
   // default (nosniff, frame-options, referrer-policy, etc.) is safe to enable unconditionally.
   app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: false }));
-  // Wide open (reflects whatever Origin the browser sends) by default, same as before this
-  // setting existed — this API is header-based (X-Api-Key/X-Session-Token), not cookie-based, so
-  // a cross-origin page can't attach real credentials to a request even with open CORS; the main
-  // reason to restrict it is a split (web container + server container on different origins)
-  // self-hosted deployment where the admin wants to lock the API down to just their own web UI's
-  // origin. `corsAllowedOrigins` (comma-separated) opts into that; unset keeps current behavior.
-  app.use(
-    cors({
-      // Reads the setting fresh on every request (not once at startup) so a change on the
-      // Settings page takes effect immediately, same as every other setting in this app.
-      origin: (origin, callback) => {
-        const corsOrigins = getSetting("corsAllowedOrigins");
-        if (!corsOrigins) return callback(null, true); // unset = allow any origin (default)
-        const allowed = corsOrigins.split(",").map((o) => o.trim());
-        callback(null, !origin || allowed.includes(origin));
-      },
-    })
-  );
+  // Same-origin plus the configured allowlist only (see isOriginAllowed), read fresh on every request so
+  // a Settings change applies immediately. Header-based credentials alone don't make open CORS
+  // safe: with Authentication disabled every request is admin, so any page a LAN user visited could
+  // read secrets and drive the API. The web UI's own requests are same-origin to the browser and
+  // need no CORS headers, wherever a proxy sends them.
+  app.use(cors<express.Request>((req, callback) => callback(null, { origin: isOriginAllowed(req, req.header("Origin")) })));
+  // CORS headers only govern what a page may *read*: a form or text/plain POST still executes
+  // without a preflight, so those are refused outright from a disallowed Origin. Only those:
+  // judging the web UI's own requests by Origin as well would lock it out (login included) behind
+  // any proxy that rewrites Host or drops its port.
+  app.use((req, res, next) => {
+    if (!skipsPreflight(req) || isOriginAllowed(req, req.header("Origin"))) {
+      next();
+      return;
+    }
+    res.status(403).json({
+      error:
+        `Cross-origin request from ${req.header("Origin")} refused — allow that origin under Settings → Allowed CORS ` +
+        "origins, or in the AONARR_CORS_ALLOWED_ORIGINS environment variable (comma-separated)",
+    });
+  });
   // Correlation id + HTTP metrics — tags every log line made while handling this request (see
   // logger.ts's withReqTag) with a short id also echoed back as X-Request-Id, and records
   // method/route/status/duration into httpMetrics.ts once the response actually finishes (so a

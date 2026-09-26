@@ -4,7 +4,7 @@ import { isExcluded } from "./importExclusions.js";
 import { fetchWatchedFiles, getMediaServerConfig } from "./mediaServer.js";
 import { findWatchedMatch } from "./archival.js";
 import { autoSelectRootFolderId } from "./rootFolderSelect.js";
-import { fetchSeriesEpisodesFor } from "./metadata.js";
+import { fetchSeriesEpisodesFor, isEpisodeMonitoredByDefault } from "./metadata.js";
 import { log } from "./logger.js";
 
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w342";
@@ -318,9 +318,9 @@ export async function runAutoRequestFromWatchHistory(): Promise<void> {
           await db
             .prepare(
               `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-               VALUES (?, ?, ?, ?, ?, ?, 1)`
+               VALUES (?, ?, ?, ?, ?, ?, ?)`
             )
-            .run(result.lastInsertRowid, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
+            .run(result.lastInsertRowid, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview, isEpisodeMonitoredByDefault(ep) ? 1 : 0);
         }
       }
       added++;

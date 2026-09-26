@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import swaggerCssUrl from "swagger-ui-dist/swagger-ui.css?url";
 import swaggerBundleUrl from "swagger-ui-dist/swagger-ui-bundle.js?url";
 import swaggerPresetUrl from "swagger-ui-dist/swagger-ui-standalone-preset.js?url";
-import { getApiKey, getSessionToken } from "../api/client.js";
+import { getApiKey, getSessionToken, UI_REQUEST_HEADERS } from "../api/client.js";
 
 declare global {
   interface Window {
@@ -53,6 +53,10 @@ export default function ApiDocs() {
         domNode: containerRef.current,
         presets: [window.SwaggerUIBundle.presets.apis],
         requestInterceptor: (req: any) => {
+          // Many operations have no request body, so Swagger sends them without a Content-Type;
+          // with Authentication disabled this header is all that keeps them from looking like a
+          // cross-site form post to the server.
+          req.headers = Object.assign(req.headers ?? {}, UI_REQUEST_HEADERS);
           // Whichever credential the current session actually used — the raw admin API key, or a
           // session token from a normal logged-in admin account — since only one of the two is
           // ever populated at a time (setApiKey/setSessionToken each clear the other).

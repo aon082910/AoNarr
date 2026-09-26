@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS indexers (
   url TEXT NOT NULL,
   api_key TEXT,
   categories TEXT NOT NULL DEFAULT '',
-  media_types TEXT NOT NULL DEFAULT 'movie,series,anime,artist,author,audiobook,comic,manga,rom,video,course,adult',
+  media_types TEXT NOT NULL DEFAULT 'movie,series,anime,sports,ppv,artist,author,audiobook,comic,manga,rom,course,adult',
   enabled INTEGER NOT NULL DEFAULT 1,
   priority INTEGER NOT NULL DEFAULT 25,
   config TEXT -- JSON blob, protocol-specific (e.g. DDL's JSON-field mapping); unused by torznab/newznab/rss
@@ -177,7 +177,14 @@ CREATE TABLE IF NOT EXISTS queue (
   added_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_progress_at TEXT,
-  download_path TEXT
+  download_path TEXT,
+  -- Set while the row's import runs, so a restart mid-import is told apart from a skipped import
+  -- (import_skipped_reason). import_resume_state: 0 = never resumed, 1 = waiting for the queue
+  -- poller to retry it after a restart, 2 = that one automatic retry has been used, 3 = the import
+  -- running is a Manual import, which a restart leaves for the admin to run again.
+  import_started_at TEXT,
+  import_skipped_reason TEXT,
+  import_resume_state INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_queue_media_item_id ON queue(media_item_id);
 CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
@@ -476,6 +483,7 @@ CREATE TABLE IF NOT EXISTS import_lists (
   min_rating REAL,
   min_votes INTEGER,
   exclude_genres TEXT,
+  root_folder_id INTEGER REFERENCES root_folders(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -560,7 +568,9 @@ CREATE TABLE IF NOT EXISTS irc_feeds (
   announce_regex TEXT NOT NULL,
   protocol TEXT NOT NULL DEFAULT 'torrent' CHECK (protocol IN ('torrent', 'usenet')),
   enabled INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Nicks (comma/space separated) whose lines are acted on; NULL accepts any sender in the channel.
+  announcers TEXT
 );
 
 -- Requests submitted by restricted users; an admin approves (which adds the media item to the

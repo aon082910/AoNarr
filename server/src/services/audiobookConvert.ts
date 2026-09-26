@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -35,6 +36,21 @@ function buildChapterMetadata(tracks: { title: string; durationMs: number }[]): 
   return lines.join("\n");
 }
 
+/** Thrown when a merge for the same audiobook is already running; `status`/`expose` let the HTTP
+ * layer answer 409 with this message. */
+export class M4bConversionInProgressError extends Error {
+  readonly status = 409;
+  readonly expose = true;
+  constructor() {
+    super("This audiobook is already being converted to M4B");
+    this.name = "M4bConversionInProgressError";
+  }
+}
+
+/** Sub-items with a merge running. The request can outlive a proxy's timeout, and a retry started
+ * a second ffmpeg writing the same output while the first went on to delete the source tracks. */
+const conversionsInProgress = new Set<number>();
+
 /**
  * Merges every downloaded track of an audiobook sub-item into one chapterized M4B — the LazyLibrarian
  * advantage this codebase otherwise lacked: audiobooks downloaded as a folder of per-chapter MP3/M4A
@@ -50,6 +66,16 @@ function buildChapterMetadata(tracks: { title: string; durationMs: number }[]): 
  * tracks into 1 needs no changes anywhere else.
  */
 export async function convertSubItemToM4b(subItemId: number): Promise<{ path: string }> {
+  if (conversionsInProgress.has(subItemId)) throw new M4bConversionInProgressError();
+  conversionsInProgress.add(subItemId);
+  try {
+    return await mergeTracks(subItemId);
+  } finally {
+    conversionsInProgress.delete(subItemId);
+  }
+}
+
+async function mergeTracks(subItemId: number): Promise<{ path: string }> {
   const subRow = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId)) as any;
   if (!subRow) throw new Error("Sub-item not found");
   if (!subRow.file_path) throw new Error("This audiobook has no downloaded folder yet");
@@ -90,6 +116,9 @@ export async function convertSubItemToM4b(subItemId: number): Promise<{ path: st
   const chapterMetaPath = path.join(destDir, `.aonarr-chapters-${subItemId}.txt`);
   fs.writeFileSync(chapterMetaPath, buildChapterMetadata(tracks.map((t, i) => ({ title: t.title, durationMs: durations[i] }))));
 
+  // Encoded under a temporary name and renamed into place only once ffmpeg succeeds, so a failed or
+  // timed-out run never leaves a truncated book at the real path.
+  const tmpOutputPath = path.join(destDir, `.aonarr-m4b-${subItemId}-${crypto.randomBytes(6).toString("hex")}.m4b`);
   const inputArgs = tracks.flatMap((t) => ["-i", t.filePath]);
   const concatInputs = tracks.map((_, i) => `[${i}:a]`).join("");
   const filterComplex = `${concatInputs}concat=n=${tracks.length}:v=0:a=1[out]`;
@@ -110,13 +139,17 @@ export async function convertSubItemToM4b(subItemId: number): Promise<{ path: st
     "64k",
     "-movflags",
     "+faststart",
-    outputPath,
+    tmpOutputPath,
   ];
 
   try {
     await execFileAsync("ffmpeg", args, { timeout: 30 * 60 * 1000, maxBuffer: 20 * 1024 * 1024 });
+    fs.renameSync(tmpOutputPath, outputPath);
+  } catch (err) {
+    fs.rmSync(tmpOutputPath, { force: true });
+    throw err;
   } finally {
-    fs.unlinkSync(chapterMetaPath);
+    fs.rmSync(chapterMetaPath, { force: true });
   }
 
   const totalDurationSeconds = Math.round(durations.reduce((a, b) => a + b, 0) / 1000);

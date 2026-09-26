@@ -43,6 +43,12 @@ export default function Requests() {
   function load() {
     const offset = (page - 1) * pageSize;
     api.get<RequestsResponse>(`/requests?limit=${pageSize}&offset=${offset}`).then((data) => {
+      // Past the end (e.g. the only request on the last page was just cancelled) — step back
+      // instead of showing "No requests yet." with the pager hidden while earlier pages remain.
+      if (data.items.length === 0 && page > 1) {
+        setPage(Math.min(page - 1, Math.max(1, Math.ceil(data.total / pageSize))));
+        return;
+      }
       setRequests(data.items);
       setTotal(data.total);
     });

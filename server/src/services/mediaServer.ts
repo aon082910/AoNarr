@@ -1,4 +1,7 @@
+import fs from "node:fs";
+import path from "node:path";
 import { getSetting } from "./settingsStore.js";
+import { log } from "./logger.js";
 
 export interface WatchedFile {
   /** Raw file path as reported by the media server. */
@@ -442,17 +445,65 @@ async function fetchPlexItems(cfg: MediaServerConfig): Promise<MediaServerItem[]
   return items;
 }
 
+function pathSegments(p: string): string[] {
+  return p.replace(/\\/g, "/").split("/").filter(Boolean);
+}
+
+const VIDEO_EXTENSIONS = new Set([".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v", ".webm"]);
+
+/** A single import is one file, or a pack's destination folder with the files directly inside it. */
+async function importHoldsVideo(importPath: string, isFolder: boolean): Promise<boolean> {
+  const isVideo = (name: string) => VIDEO_EXTENSIONS.has(path.extname(name).toLowerCase());
+  if (!isFolder) return isVideo(importPath);
+  const entries = await fs.promises.readdir(importPath, { withFileTypes: true }).catch(() => []);
+  return entries.some((entry) => entry.isFile() && isVideo(entry.name));
+}
+
+/** Plex usually mounts the library somewhere other than AoNarr does (/media/movies/X here,
+ * /data/movies/X in Plex), and a partial scan only works with Plex's own path. The location's
+ * trailing segments are looked up in AoNarr's folder, and whatever follows them is appended to the
+ * location. `overlap` is how many segments matched, so the most specific location wins; on a tie
+ * the match nearer the top of AoNarr's path (`at`) wins, since a library root sits above the
+ * folders inside it (a show called "Movies" must not map onto a Plex /data/movies location). */
+function mapOntoPlexLocation(folderParts: string[], location: string): { overlap: number; at: number; path: string } | null {
+  const locationParts = pathSegments(location);
+  const lowerFolder = folderParts.map((s) => s.toLowerCase());
+  for (let k = locationParts.length; k > 0; k--) {
+    const run = locationParts.slice(-k).map((s) => s.toLowerCase());
+    for (let at = 0; at + k <= lowerFolder.length; at++) {
+      if (!run.every((seg, i) => lowerFolder[at + i] === seg)) continue;
+      const separator = location.includes("\\") && !location.includes("/") ? "\\" : "/";
+      const base = location.replace(/[\\/]+$/, "");
+      return { overlap: k, at, path: [base, ...folderParts.slice(at + k)].join(separator) };
+    }
+  }
+  return null;
+}
+
+async function refreshPlexSection(cfg: MediaServerConfig, sectionKey: string, folder: string | null): Promise<void> {
+  const pathParam = folder ? `path=${encodeURIComponent(folder)}&` : "";
+  const res = await fetch(`${cfg.url}/library/sections/${sectionKey}/refresh?${pathParam}X-Plex-Token=${cfg.token}`, {
+    headers: { Accept: "application/json" },
+  }).catch((err: Error) => {
+    log.warn(`[mediaServer] Plex refresh of library section ${sectionKey} failed:`, err.message);
+    return null;
+  });
+  if (res && !res.ok) log.warn(`[mediaServer] Plex refresh of library section ${sectionKey} returned HTTP ${res.status}`);
+}
+
 /**
  * Tells the configured media server to pick up a just-imported file, instead of leaving it to
  * whatever periodic scan interval the media server itself is configured with — the same "Connect"
  * capability Sonarr/Radarr call a notification. Plex supports a *targeted* refresh scoped to one
- * path (`?path=`), which only rescans that folder rather than the whole library section — cheap
- * enough to call on every import, so this fires it against every movie/show section rather than
- * trying to guess which one the file belongs to (Plex just no-ops for a path outside a section).
- * Jellyfin/Emby have no equivalent lightweight per-path trigger via a simple REST call, so this
- * falls back to their full-library refresh endpoint for those two — heavier, but still far better
- * than waiting for their own scan interval. Never throws — this is a best-effort nicety alongside
- * the import that already succeeded, not something that should fail the import itself.
+ * folder (`?path=`), which only rescans that folder rather than the whole library section — cheap
+ * enough to call on every import. The folder is translated into Plex's own view of it through the
+ * section locations Plex reports (see mapOntoPlexLocation); when no location shares any part of
+ * AoNarr's path, every movie/show section is rescanned whole instead of sending a path Plex can't
+ * see. Plex is only told about video imports. Jellyfin/Emby have no equivalent lightweight
+ * per-path trigger via a simple REST call, so this falls back to their full-library refresh
+ * endpoint for those two — heavier, but still far better than waiting for their own scan
+ * interval. Never throws — this is a best-effort nicety alongside the import that already
+ * succeeded, not something that should fail the import itself.
  */
 export async function refreshMediaServerLibrary(filePath: string): Promise<void> {
   const cfg = getMediaServerConfig();
@@ -460,18 +511,42 @@ export async function refreshMediaServerLibrary(filePath: string): Promise<void>
 
   try {
     if (cfg.type === "plex") {
+      // Imports pass either the new file or (for a pack) its destination folder.
+      const isFolder = await fs.promises.stat(filePath).then(
+        (s) => s.isDirectory(),
+        () => false
+      );
+      // Plex movie/show sections index nothing but video. An ebook, album or ROM import has nothing
+      // there to pick up, and would otherwise cost a whole-section rescan of every section each.
+      if (!(await importHoldsVideo(filePath, isFolder))) return;
+
       const headers = { Accept: "application/json" };
       const sectionsRes = await fetch(`${cfg.url}/library/sections?X-Plex-Token=${cfg.token}`, { headers });
       if (!sectionsRes.ok) return;
       const sectionsBody = (await sectionsRes.json()) as any;
-      const sections: { key: string; type: string }[] = sectionsBody?.MediaContainer?.Directory ?? [];
+      const sections: { key: string; type: string; Location?: { path?: unknown }[] }[] = (
+        (sectionsBody?.MediaContainer?.Directory ?? []) as any[]
+      ).filter((s) => s.type === "movie" || s.type === "show");
+
+      const folderParts = pathSegments(filePath);
+      if (!isFolder) folderParts.pop();
+
+      let target: { key: string; overlap: number; at: number; path: string } | null = null;
       for (const section of sections) {
-        if (section.type !== "movie" && section.type !== "show") continue;
-        await fetch(
-          `${cfg.url}/library/sections/${section.key}/refresh?path=${encodeURIComponent(filePath)}&X-Plex-Token=${cfg.token}`,
-          { method: "PUT", headers }
-        ).catch(() => {});
+        for (const location of section.Location ?? []) {
+          if (typeof location?.path !== "string") continue;
+          const mapped = mapOntoPlexLocation(folderParts, location.path);
+          if (!mapped) continue;
+          if (!target || mapped.overlap > target.overlap || (mapped.overlap === target.overlap && mapped.at < target.at)) {
+            target = { key: section.key, ...mapped };
+          }
+        }
       }
+      if (target) {
+        await refreshPlexSection(cfg, target.key, target.path);
+        return;
+      }
+      for (const section of sections) await refreshPlexSection(cfg, section.key, null);
     } else {
       const basePath = cfg.type === "jellyfin" ? "" : "/emby";
       await fetch(`${cfg.url}${basePath}/Library/Refresh`, {
@@ -505,7 +580,7 @@ export async function triggerFullMediaServerScan(): Promise<void> {
       const sections: { key: string; type: string }[] = sectionsBody?.MediaContainer?.Directory ?? [];
       for (const section of sections) {
         if (section.type !== "movie" && section.type !== "show") continue;
-        await fetch(`${cfg.url}/library/sections/${section.key}/refresh?X-Plex-Token=${cfg.token}`, { method: "PUT", headers }).catch(() => {});
+        await refreshPlexSection(cfg, section.key, null);
       }
       return;
     }
@@ -535,6 +610,32 @@ export async function resolvePlexFilePath(ratingKey: string): Promise<string | n
   const item = body?.MediaContainer?.Metadata?.[0];
   const file = item?.Media?.[0]?.Part?.[0]?.file;
   return typeof file === "string" && file ? file : null;
+}
+
+/**
+ * Jellyfin's webhook plugin has no file-path template variable, only `ItemId`, so a Jellyfin/Emby
+ * webhook needs this lookup the same way a Plex one needs resolvePlexFilePath. Looked up as the
+ * admin user, whose view of the library is never restricted.
+ */
+export async function resolveJellyfinLikeFilePath(itemId: string): Promise<string | null> {
+  const cfg = getMediaServerConfig();
+  if (!cfg || cfg.type === "plex" || !/^[\w-]+$/.test(itemId)) return null;
+  const basePath = cfg.type === "jellyfin" ? "" : "/emby";
+  const headers = { "X-Emby-Token": cfg.token, Accept: "application/json" };
+  const usersRes = await fetch(`${cfg.url}${basePath}/Users`, { headers, signal: AbortSignal.timeout(15_000) });
+  if (!usersRes.ok) return null;
+  const userId = pickJellyfinAdminUserId((await usersRes.json()) as { Id: string; Policy?: { IsAdministrator?: boolean } }[]);
+  if (!userId) return null;
+  const itemsRes = await fetch(`${cfg.url}${basePath}/Users/${userId}/Items?Ids=${encodeURIComponent(itemId)}&Recursive=true&Fields=Path`, {
+    headers,
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!itemsRes.ok) return null;
+  const body = (await itemsRes.json()) as { Items?: { Id?: string; Path?: string }[] };
+  // The plugin renders a GUID with dashes; the API returns it without them.
+  const normalize = (id: unknown) => String(id).replace(/-/g, "").toLowerCase();
+  const item = (body.Items ?? []).find((i) => normalize(i.Id) === normalize(itemId));
+  return typeof item?.Path === "string" && item.Path ? item.Path : null;
 }
 
 async function fetchJellyfinLikeItems(cfg: MediaServerConfig, basePath: string): Promise<{ items: MediaServerItem[]; userId: string | null }> {

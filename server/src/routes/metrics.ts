@@ -9,22 +9,84 @@ import fs from "node:fs";
 
 export const metricsRouter = Router();
 
-function metricLine(name: string, help: string, type: "gauge" | "counter", samples: { labels?: Record<string, string>; value: number }[]): string {
+type Sample = { labels?: Record<string, string>; value: number };
+
+/** Exposition-format label escaping — a root folder's free-text name can contain a backslash or
+ * newline, and an unescaped newline ends the sample line mid-label, so Prometheus rejects the
+ * whole scrape. */
+function escapeLabelValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/"/g, '\\"');
+}
+
+function metricLine(name: string, help: string, type: "gauge" | "counter", samples: Sample[]): string {
   const lines = [`# HELP ${name} ${help}`, `# TYPE ${name} ${type}`];
   for (const s of samples) {
     const labelStr = s.labels
-      ? "{" + Object.entries(s.labels).map(([k, v]) => `${k}="${v.replace(/"/g, '\\"')}"`).join(",") + "}"
+      ? "{" + Object.entries(s.labels).map(([k, v]) => `${k}="${escapeLabelValue(v)}"`).join(",") + "}"
       : "";
     lines.push(`${name}${labelStr} ${s.value}`);
   }
   return lines.join("\n");
 }
 
+interface ExpensiveGauges {
+  repeatedImports: number;
+  upgradeCandidates: number;
+  diskFree: Sample[];
+  diskTotal: Sample[];
+}
+
+// The route is unauthenticated, and these gauges walk the whole import history, every monitored
+// item/episode and statfs each root folder — recomputing them per hit let any client that loops
+// the request keep the server busy. Concurrent scrapes share one in-flight computation.
+const EXPENSIVE_GAUGES_TTL_MS = 5 * 60 * 1000;
+let expensiveCache: { at: number; gauges: ExpensiveGauges } | null = null;
+let expensiveInFlight: Promise<ExpensiveGauges> | null = null;
+
+async function computeExpensiveGauges(): Promise<ExpensiveGauges> {
+  const repeatedImports = (await findRepeatedImports()).length;
+  const upgradeCandidates = (await findUpgradeCandidates()).length;
+
+  const folders = ((await db.prepare("SELECT * FROM root_folders").all()) as any[]).map(rootFolderFromRow);
+  const diskFree: Sample[] = [];
+  const diskTotal: Sample[] = [];
+  for (const f of folders) {
+    try {
+      const stat = fs.statfsSync(f.path);
+      // Identified by id/name, never the host path: the path would tell an anonymous caller how
+      // the server's storage is laid out.
+      const labels: Record<string, string> = { root_folder_id: String(f.id), media_type: f.mediaType };
+      if (f.name) labels.name = f.name;
+      diskFree.push({ labels, value: stat.bavail * stat.bsize });
+      diskTotal.push({ labels, value: stat.blocks * stat.bsize });
+    } catch {
+      // path not reachable — skip this folder's sample rather than emit a bogus 0
+    }
+  }
+  return { repeatedImports, upgradeCandidates, diskFree, diskTotal };
+}
+
+function getExpensiveGauges(): Promise<ExpensiveGauges> {
+  if (expensiveCache && Date.now() - expensiveCache.at < EXPENSIVE_GAUGES_TTL_MS) {
+    return Promise.resolve(expensiveCache.gauges);
+  }
+  expensiveInFlight ??= computeExpensiveGauges()
+    .then((gauges) => {
+      expensiveCache = { at: Date.now(), gauges };
+      return gauges;
+    })
+    .finally(() => {
+      expensiveInFlight = null;
+    });
+  return expensiveInFlight;
+}
+
 /**
  * Prometheus text-exposition metrics — deliberately unauthenticated (same as `/health`) since
- * Prometheus scraping and the admin API key don't mix well, and nothing exposed here is more
- * sensitive than library counts/queue depth; protect this route at the network level if that
- * matters for your deployment.
+ * Prometheus scraping and the admin API key don't mix well. It exposes library counts, queue depth
+ * and per-root-folder disk space (by root folder id/name, not path); protect this route at the
+ * network level if even that matters for your deployment. The history/library-wide gauges and disk
+ * samples are refreshed at most every few minutes.
  */
 metricsRouter.get(
   "/",
@@ -46,21 +108,7 @@ metricsRouter.get(
     const pendingRequests = Number(
       ((await db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get()) as { c: number }).c
     );
-    const repeatedImports = (await findRepeatedImports()).length;
-    const upgradeCandidates = (await findUpgradeCandidates()).length;
-
-    const folders = ((await db.prepare("SELECT * FROM root_folders").all()) as any[]).map(rootFolderFromRow);
-    const diskFree: { labels: Record<string, string>; value: number }[] = [];
-    const diskTotal: { labels: Record<string, string>; value: number }[] = [];
-    for (const f of folders) {
-      try {
-        const stat = fs.statfsSync(f.path);
-        diskFree.push({ labels: { path: f.path, media_type: f.mediaType }, value: stat.bfree * stat.bsize });
-        diskTotal.push({ labels: { path: f.path, media_type: f.mediaType }, value: stat.blocks * stat.bsize });
-      } catch {
-        // path not reachable — skip this folder's sample rather than emit a bogus 0
-      }
-    }
+    const { repeatedImports, upgradeCandidates, diskFree, diskTotal } = await getExpensiveGauges();
 
     const httpSamples = getHttpMetricsSamples();
 

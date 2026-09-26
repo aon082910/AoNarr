@@ -17,10 +17,17 @@ export default function CollectionDetail() {
   const { auth } = useAuth();
   const mediaTypes = useMediaTypes();
   const [collection, setCollection] = useState<CollectionDetailResponse | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const labelFor = (key: string) => mediaTypes.find((t) => t.key === key)?.label ?? key;
 
   function load() {
-    api.get<CollectionDetailResponse>(`/collections/${id}`).then(setCollection);
+    api.get<CollectionDetailResponse>(`/collections/${id}`).then(
+      (data) => {
+        setCollection(data);
+        setLoadError(null);
+      },
+      (e) => setLoadError((e as Error).message)
+    );
   }
   useEffect(load, [id]);
 
@@ -71,12 +78,18 @@ export default function CollectionDetail() {
     }
   }
 
-  if (!collection) return <p className="empty">Loading...</p>;
+  if (!collection) return <p className="empty">{loadError ?? "Loading..."}</p>;
 
   return (
     <div>
       <h1>{collection.name}</h1>
       {collection.description && <p style={{ color: "var(--muted)" }}>{collection.description}</p>}
+      {/* A failed reload keeps the previously loaded collection on screen. */}
+      {loadError && (
+        <p role="alert" style={{ color: "var(--danger)" }}>
+          Couldn't reload this collection: {loadError}
+        </p>
+      )}
 
       {collection.smartFilter && (
         <div className="detail-pills">

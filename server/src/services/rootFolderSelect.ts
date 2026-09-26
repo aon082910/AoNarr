@@ -15,7 +15,7 @@ export async function autoSelectRootFolderId(mediaType: string): Promise<number 
     let freeBytes = -1;
     try {
       const stat = fs.statfsSync(folder.path);
-      freeBytes = stat.bfree * stat.bsize;
+      freeBytes = stat.bavail * stat.bsize;
     } catch {
       // unreachable path — treat as least preferred, but still a valid fallback candidate
     }
@@ -40,7 +40,7 @@ export async function isRootFolderOverQuota(rootFolderId: number | null): Promis
     const stat = fs.statfsSync(folder.path);
     const totalBytes = stat.blocks * stat.bsize;
     if (totalBytes === 0) return false;
-    const freeBytes = stat.bfree * stat.bsize;
+    const freeBytes = stat.bavail * stat.bsize;
     const percentUsed = ((totalBytes - freeBytes) / totalBytes) * 100;
     return percentUsed >= folder.quota_percent;
   } catch {

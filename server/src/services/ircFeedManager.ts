@@ -1,6 +1,6 @@
 import { db } from "../db/index.js";
 import { log } from "./logger.js";
-import { IrcConnection, type IrcFeedConfig } from "./ircClient.js";
+import { IrcConnection, parseAnnouncerNicks, type IrcFeedConfig } from "./ircClient.js";
 import { handleAnnounce, type IrcFeedRow } from "./ircAnnounce.js";
 import { decryptValue } from "./encryption.js";
 
@@ -28,6 +28,7 @@ export async function restartIrcFeeds(): Promise<void> {
       saslUser: row.sasl_user,
       saslPass: row.sasl_pass ? decryptValue(row.sasl_pass) : row.sasl_pass,
       channel: row.channel,
+      announcers: parseAnnouncerNicks(row.announcers),
     };
     const feed: IrcFeedRow = { id: row.id, name: row.name, announce_regex: row.announce_regex, protocol: row.protocol };
     const conn = new IrcConnection(config, (text) => {

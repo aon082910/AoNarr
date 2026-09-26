@@ -1,9 +1,10 @@
 import { log } from "./logger.js";
 import { db } from "../db/index.js";
 import { getSetting } from "./settingsStore.js";
-import { fetchSeriesEpisodesFor } from "./metadata.js";
+import { fetchSeriesEpisodesFor, isEpisodeMonitoredByDefault } from "./metadata.js";
 import { isExcluded } from "./importExclusions.js";
 import { parsePlexExternalIds } from "./mediaServer.js";
+import { insertUnlessTmdbIdExists, RootFolderPicker } from "./importLists.js";
 
 const DISCOVER_BASE = "https://discover.provider.plex.tv";
 
@@ -85,7 +86,7 @@ async function defaultQualityProfileId(): Promise<number | null> {
  * list/watchlist URL. Watchlist items only carry a `type` of "movie" or "show" (Plex's own
  * terminology) — mapped to AoNarr's "movie"/"series" media types.
  */
-export async function runPlexWatchlistSync(): Promise<{ added: number; error?: string }> {
+export async function runPlexWatchlistSync(): Promise<{ added: number; error?: string; warning?: string }> {
   if (getSetting("plexWatchlistSyncEnabled") !== "1") return { added: 0 };
   if (getSetting("mediaServerType") !== "plex") return { added: 0 };
   const token = getSetting("mediaServerToken");
@@ -99,6 +100,7 @@ export async function runPlexWatchlistSync(): Promise<{ added: number; error?: s
   }
 
   const qualityProfileId = await defaultQualityProfileId();
+  const rootFolders = new RootFolderPicker();
   const existingMovies = await existingTmdbIds("movie");
   const existingSeries = await existingTmdbIds("series");
   let added = 0;
@@ -113,40 +115,52 @@ export async function runPlexWatchlistSync(): Promise<{ added: number; error?: s
       if (item.type === "movie") {
         if (existingMovies.has(tmdbId)) continue;
         if (await isExcluded("movie", item.title, item.year ?? null, tmdbId, "tmdb")) continue;
-        await db
-          .prepare(
-            `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, quality_profile_id, monitored, status)
-             VALUES ('movie', ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
-          )
-          .run(
-            item.title,
-            String(item.title).toLowerCase(),
-            item.year ?? null,
-            item.summary ?? null,
-            plexThumbUrl(item.thumb),
-            JSON.stringify({ tmdb: tmdbId, ...(ids.imdb ? { imdb: ids.imdb } : {}) }),
-            qualityProfileId
-          );
+        const rootFolderId = await rootFolders.pick("movie");
+        if (rootFolderId == null) continue;
+        const inserted = await insertUnlessTmdbIdExists("movie", tmdbId, () =>
+          db
+            .prepare(
+              `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status)
+               VALUES ('movie', ?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
+            )
+            .run(
+              item.title,
+              String(item.title).toLowerCase(),
+              item.year ?? null,
+              item.summary ?? null,
+              plexThumbUrl(item.thumb),
+              JSON.stringify({ tmdb: tmdbId, ...(ids.imdb ? { imdb: ids.imdb } : {}) }),
+              rootFolderId,
+              qualityProfileId
+            )
+        );
         existingMovies.add(tmdbId);
-        added++;
+        if (inserted) added++;
       } else if (item.type === "show") {
         if (existingSeries.has(tmdbId)) continue;
         if (await isExcluded("series", item.title, item.year ?? null, tmdbId, "tmdb")) continue;
+        const rootFolderId = await rootFolders.pick("series");
+        if (rootFolderId == null) continue;
         const externalIds = { tmdb: tmdbId, ...(ids.imdb ? { imdb: ids.imdb } : {}) };
-        const result = await db
-          .prepare(
-            `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, quality_profile_id, monitored, status)
-             VALUES ('series', ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
-          )
-          .run(
-            item.title,
-            String(item.title).toLowerCase(),
-            item.year ?? null,
-            item.summary ?? null,
-            plexThumbUrl(item.thumb),
-            JSON.stringify(externalIds),
-            qualityProfileId
-          );
+        const result = await insertUnlessTmdbIdExists("series", tmdbId, () =>
+          db
+            .prepare(
+              `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status)
+               VALUES ('series', ?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
+            )
+            .run(
+              item.title,
+              String(item.title).toLowerCase(),
+              item.year ?? null,
+              item.summary ?? null,
+              plexThumbUrl(item.thumb),
+              JSON.stringify(externalIds),
+              rootFolderId,
+              qualityProfileId
+            )
+        );
+        existingSeries.add(tmdbId);
+        if (!result) continue;
 
         const mediaItemId = result.lastInsertRowid;
         const episodes = await fetchSeriesEpisodesFor(externalIds).catch(() => []);
@@ -154,12 +168,11 @@ export async function runPlexWatchlistSync(): Promise<{ added: number; error?: s
           await db
             .prepare(
               `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-               VALUES (?, ?, ?, ?, ?, ?, 1)`
+               VALUES (?, ?, ?, ?, ?, ?, ?)`
             )
-            .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
+            .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview, isEpisodeMonitoredByDefault(ep) ? 1 : 0);
         }
 
-        existingSeries.add(tmdbId);
         added++;
       }
     } catch (err) {
@@ -167,5 +180,6 @@ export async function runPlexWatchlistSync(): Promise<{ added: number; error?: s
     }
   }
 
-  return { added };
+  const warning = rootFolders.skippedSummary();
+  return warning ? { added, warning } : { added };
 }

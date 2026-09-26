@@ -1,11 +1,13 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
+import { nowExpr } from "../db/asyncDb.js";
 import { downloadClientFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { getDownloadClientAdapter, testDownloadClientConnection } from "../services/downloadClient.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { encryptValue } from "../services/encryption.js";
+import { notifyQueueChanged } from "../services/realtime.js";
 
 export const downloadClientsRouter = Router();
 downloadClientsRouter.use(requireAdmin);
@@ -159,11 +161,19 @@ downloadClientsRouter.post(
 downloadClientsRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
-    const existing = (await db.prepare("SELECT name FROM download_clients WHERE id = ?").get(req.params.id)) as
-      | { name: string }
+    const existing = (await db.prepare("SELECT id, name FROM download_clients WHERE id = ?").get(req.params.id)) as
+      | { id: number; name: string }
       | undefined;
-    const result = await db.prepare("DELETE FROM download_clients WHERE id = ?").run(req.params.id);
+    if (!existing) throw new HttpError(404, "Download client not found");
+    // Its queue rows outlive it (download_client_id goes NULL), but nothing ever polls them again:
+    // still queued/downloading, they'd block every future search for their targets. Failed, the
+    // targets are searched again; the releases did nothing wrong, so nothing is blocklisted.
+    const stranded = await db
+      .prepare(`UPDATE queue SET status = 'failed', updated_at = ${nowExpr(db)} WHERE download_client_id = ? AND status IN ('queued', 'downloading')`)
+      .run(existing.id);
+    const result = await db.prepare("DELETE FROM download_clients WHERE id = ?").run(existing.id);
     if (result.changes === 0) throw new HttpError(404, "Download client not found");
+    if (stranded.changes > 0) notifyQueueChanged();
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "download_client_removed", existing?.name);
     res.status(204).send();

@@ -51,14 +51,15 @@ const QUEUE_STATUS_LABELS: Record<string, string> = {
  * a packet-level capture — AoNarr doesn't proxy the traffic itself. */
 export default function NetworkStats() {
   const [data, setData] = useState<NetworkStatsResponse | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const clientSort = useSortableTable<ClientStat, "client" | "uploaded" | "downloaded" | "ratio">("client");
   const queueSort = useSortableTable<QueueStat, "status" | "count" | "size">("status");
 
   useEffect(() => {
-    api.get<NetworkStatsResponse>("/system/network-stats").then(setData);
+    api.get<NetworkStatsResponse>("/system/network-stats").then(setData, (e) => setLoadError((e as Error).message));
   }, []);
 
-  if (!data) return <p className="empty">Loading...</p>;
+  if (!data) return <p className="empty">{loadError ?? "Loading..."}</p>;
 
   const totalQueued = data.queueByStatus.reduce((sum, q) => sum + q.totalBytes, 0);
 

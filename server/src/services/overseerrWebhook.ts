@@ -1,6 +1,7 @@
 import { db } from "../db/index.js";
-import { fetchMovieByTmdbId, fetchSeriesByTmdbId, fetchSeriesEpisodesFor } from "./metadata.js";
+import { fetchMovieByTmdbId, fetchSeriesByTmdbId, fetchSeriesEpisodesFor, isEpisodeMonitoredByDefault } from "./metadata.js";
 import { autoSelectRootFolderId } from "./rootFolderSelect.js";
+import { insertUnlessTmdbIdExists, libraryHasTmdbId } from "./importLists.js";
 import { log } from "./logger.js";
 
 /**
@@ -12,21 +13,6 @@ import { log } from "./logger.js";
  * connection. Only acts on MEDIA_APPROVED/MEDIA_AUTO_APPROVED; every other notification type
  * (test, media available, issue reported, etc.) is acknowledged and ignored.
  */
-async function existingTmdbItem(type: string, tmdbId: string): Promise<boolean> {
-  const rows = (await db.prepare("SELECT external_ids FROM media_items WHERE type = ?").all(type)) as {
-    external_ids: string | null;
-  }[];
-  for (const row of rows) {
-    if (!row.external_ids) continue;
-    try {
-      if (JSON.parse(row.external_ids).tmdb === tmdbId) return true;
-    } catch {
-      // malformed external_ids on an old row — skip rather than crash the whole check
-    }
-  }
-  return false;
-}
-
 export async function handleOverseerrWebhook(payload: any): Promise<{ added: boolean; reason?: string }> {
   const notificationType = payload?.notification_type;
   if (notificationType !== "MEDIA_APPROVED" && notificationType !== "MEDIA_AUTO_APPROVED") {
@@ -40,30 +26,43 @@ export async function handleOverseerrWebhook(payload: any): Promise<{ added: boo
   const tmdbId = payload?.media?.tmdbId ? String(payload.media.tmdbId) : null;
   if (!tmdbId) return { added: false, reason: "No tmdbId in webhook payload" };
 
-  if (await existingTmdbItem(type, tmdbId)) return { added: false, reason: "Already in the library" };
+  if (await libraryHasTmdbId(type, tmdbId)) return { added: false, reason: "Already in the library" };
 
+  // Without a root folder the importer refuses the finished download and the queue row is never
+  // retried, so an approval that can't be placed anywhere is declined instead of added.
   const rootFolderId = await autoSelectRootFolderId(type);
+  if (rootFolderId == null) {
+    const reason = `No root folder is configured for ${type}`;
+    log.warn(`[overseerrWebhook] not adding tmdb ${tmdbId}: ${reason}`);
+    return { added: false, reason };
+  }
   const qualityProfileId =
     ((await db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get()) as { id: number } | undefined)?.id ?? null;
 
   const meta = type === "movie" ? await fetchMovieByTmdbId(tmdbId) : await fetchSeriesByTmdbId(tmdbId);
-  const result = await db
-    .prepare(
-      `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, release_date, root_folder_id, quality_profile_id, monitored, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
-    )
-    .run(
-      type,
-      meta.title,
-      meta.title.toLowerCase(),
-      meta.year,
-      meta.overview,
-      meta.posterUrl,
-      JSON.stringify(meta.externalIds),
-      meta.releaseDate ?? null,
-      rootFolderId,
-      qualityProfileId
-    );
+  // Re-checked under the shared library-add lock: two approvals for the same title (two users'
+  // season requests, or a 4K and a standard request) arrive back to back and both pass the check
+  // above while the metadata fetch is in flight.
+  const result = await insertUnlessTmdbIdExists(type, tmdbId, () =>
+    db
+      .prepare(
+        `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, release_date, root_folder_id, quality_profile_id, monitored, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
+      )
+      .run(
+        type,
+        meta.title,
+        meta.title.toLowerCase(),
+        meta.year,
+        meta.overview,
+        meta.posterUrl,
+        JSON.stringify(meta.externalIds),
+        meta.releaseDate ?? null,
+        rootFolderId,
+        qualityProfileId
+      )
+  );
+  if (!result) return { added: false, reason: "Already in the library" };
 
   if (type === "series") {
     const episodes = await fetchSeriesEpisodesFor(meta.externalIds).catch(() => []);
@@ -71,9 +70,9 @@ export async function handleOverseerrWebhook(payload: any): Promise<{ added: boo
       await db
         .prepare(
           `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-           VALUES (?, ?, ?, ?, ?, ?, 1)`
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
         )
-        .run(result.lastInsertRowid, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
+        .run(result.lastInsertRowid, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview, isEpisodeMonitoredByDefault(ep) ? 1 : 0);
     }
   }
 

@@ -7,11 +7,22 @@ let isIndexerBackedOff: (typeof import("../src/services/indexerClient.js"))["isI
 let searchIndexer: (typeof import("../src/services/indexerClient.js"))["searchIndexer"];
 let searchAllIndexers: (typeof import("../src/services/indexerClient.js"))["searchAllIndexers"];
 let getMediaTypeConfig: (typeof import("../src/services/mediaTypes.js"))["getMediaTypeConfig"];
+let searchCacheSize: (typeof import("../src/services/indexerClient.js"))["searchCacheSize"];
+let INDEXER_MEDIA_TYPES: string[];
+let DEFAULT_INDEXER_MEDIA_TYPES: string;
 
 beforeAll(async () => {
   // indexerClient.ts imports logger.js/settingsStore.js, which touch config.js/db/index.js.
   await setupTestDb();
-  ({ checkIndexerHealth, isIndexerBackedOff, searchIndexer, searchAllIndexers } = await import("../src/services/indexerClient.js"));
+  ({
+    checkIndexerHealth,
+    isIndexerBackedOff,
+    searchIndexer,
+    searchAllIndexers,
+    searchCacheSize,
+    INDEXER_MEDIA_TYPES,
+    DEFAULT_INDEXER_MEDIA_TYPES,
+  } = await import("../src/services/indexerClient.js"));
   ({ getMediaTypeConfig } = await import("../src/services/mediaTypes.js"));
 });
 
@@ -77,13 +88,15 @@ function torznabItem(opts: {
   </item>`;
 }
 
+const CAPS_XML = '<?xml version="1.0" encoding="UTF-8"?><caps><searching><search available="yes" supportedParams="q"/></searching></caps>';
+
 function rssXml(itemsXml: string): string {
   return `<?xml version="1.0"?><rss version="2.0"><channel><title>Feed</title>${itemsXml}</channel></rss>`;
 }
 
 describe("checkIndexerHealth", () => {
   it("builds the torznab/newznab caps URL with apikey", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => "" });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => CAPS_XML });
     vi.stubGlobal("fetch", fetchMock);
     const indexer = makeIndexer({ protocol: "torznab", url: "https://idx.example.com/", apiKey: "abc123" });
 
@@ -137,7 +150,7 @@ describe("checkIndexerHealth", () => {
   });
 
   it("returns ok:true on success", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => "" }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => CAPS_XML }));
 
     await expect(checkIndexerHealth(makeIndexer())).resolves.toEqual({ ok: true });
   });
@@ -170,7 +183,7 @@ describe("network retry — transient failures get one retry, real HTTP response
     const fetchMock = vi
       .fn()
       .mockRejectedValueOnce(new Error("fetch failed"))
-      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => "" });
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => CAPS_XML });
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(checkIndexerHealth(makeIndexer())).resolves.toEqual({ ok: true });
@@ -179,13 +192,13 @@ describe("network retry — transient failures get one retry, real HTTP response
 
   it("retries once after a transient error identified by err.code, including when nested under err.cause.code", async () => {
     const codeErr = Object.assign(new Error("connection reset"), { code: "ECONNRESET" });
-    let fetchMock = vi.fn().mockRejectedValueOnce(codeErr).mockResolvedValueOnce({ ok: true, status: 200, text: async () => "" });
+    let fetchMock = vi.fn().mockRejectedValueOnce(codeErr).mockResolvedValueOnce({ ok: true, status: 200, text: async () => CAPS_XML });
     vi.stubGlobal("fetch", fetchMock);
     await expect(checkIndexerHealth(makeIndexer())).resolves.toEqual({ ok: true });
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
     const causeErr = Object.assign(new Error("fetch failed"), { cause: { code: "ETIMEDOUT" } });
-    fetchMock = vi.fn().mockRejectedValueOnce(causeErr).mockResolvedValueOnce({ ok: true, status: 200, text: async () => "" });
+    fetchMock = vi.fn().mockRejectedValueOnce(causeErr).mockResolvedValueOnce({ ok: true, status: 200, text: async () => CAPS_XML });
     vi.stubGlobal("fetch", fetchMock);
     await expect(checkIndexerHealth(makeIndexer())).resolves.toEqual({ ok: true });
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -497,6 +510,48 @@ describe("searchIndexer — ddl", () => {
     ]);
   });
 
+  it("reads a human-readable size (1024-based units, thousands separators) as whole bytes", async () => {
+    const sizes: [unknown, number][] = [
+      ["1.4 GB", Math.round(1.4 * 1024 ** 3)],
+      ["700 MB", 700 * 1024 ** 2],
+      ["1,234.5 MiB", Math.round(1234.5 * 1024 ** 2)],
+      ["2.1GiB", Math.round(2.1 * 1024 ** 3)],
+      ["512 kb", 512 * 1024],
+      ["1 TiB", 1024 ** 4],
+      ["123456", 123456],
+      ["1,234,567", 1234567],
+      [123456.7, 123457],
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ results: sizes.map(([size], i) => ({ name: `Release ${i}`, dl: `https://ddl.example.com/dl/${i}`, size })) }),
+      })
+    );
+    const indexer = makeIndexer({ protocol: "ddl", url: "https://ddl.example.com/search?q={query}", config: JSON.stringify(ddlConfig) });
+
+    const results = await searchIndexer(indexer, "q", "movie");
+
+    expect(results.map((r) => r.size)).toEqual(sizes.map(([, bytes]) => bytes));
+    for (const r of results) expect((r as { sizeKnown?: boolean }).sizeKnown).toBeUndefined();
+  });
+
+  it("leaves an unparseable or non-positive size unknown", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          results: ["about 2 GB", "-5 MB", "0", "GB"].map((size, i) => ({ name: `Release ${i}`, dl: `https://ddl.example.com/dl/${i}`, size })),
+        }),
+      })
+    );
+    const indexer = makeIndexer({ protocol: "ddl", url: "https://ddl.example.com/search?q={query}", config: JSON.stringify(ddlConfig) });
+
+    for (const r of await searchIndexer(indexer, "q", "movie")) expect(r).toMatchObject({ size: 0, sizeKnown: false });
+  });
+
   it("throws when resultsPath doesn't resolve to an array", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ results: "nope" }) }));
     const indexer = makeIndexer({ protocol: "ddl", url: "https://ddl.example.com/search?q={query}", config: JSON.stringify(ddlConfig) });
@@ -761,5 +816,343 @@ describe("searchAllIndexers — caching", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const secondUrl = new URL(fetchMock.mock.calls[1][0] as string);
     expect(secondUrl.searchParams.get("imdbid")).toBe("0133093");
+  });
+});
+
+/** A result's size for size-bound checks: null when the indexer didn't report one. */
+function reportedSize(result: { size: number }): number | null {
+  return (result as { sizeKnown?: boolean }).sizeKnown === false ? null : result.size;
+}
+
+describe("Torznab/Newznab <error> documents", () => {
+  const errorXml = (code: string, description: string) =>
+    `<?xml version="1.0" encoding="UTF-8"?><error code="${code}" description="${description}"/>`;
+
+  it("a search that gets an <error> document with HTTP 200 fails with the indexer's code/description instead of returning 0 results", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => errorXml("100", "Invalid API Key") }));
+    const indexer = makeIndexer({ protocol: "torznab", categories: "2000" });
+
+    await expect(searchIndexer(indexer, "q", "movie")).rejects.toThrow('Indexer "Test Indexer" error 100: Invalid API Key');
+    expect(isIndexerBackedOff(indexer.id)).toBe(false);
+  });
+
+  it("records the failure in the indexer's health history", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => errorXml("100", "Invalid API Key") }));
+    const { db } = await import("../src/db/index.js");
+    const id = Number(
+      (await db.prepare("INSERT INTO indexers (name, protocol, url) VALUES ('Error Doc', 'torznab', 'https://idx.example.com')").run()).lastInsertRowid
+    );
+
+    await expect(searchIndexer(makeIndexer({ id, protocol: "torznab", categories: "2000" }), "q", "movie")).rejects.toThrow("error 100");
+
+    const row = (await db.prepare("SELECT success, error FROM indexer_health WHERE indexer_id = ?").get(id)) as { success: number; error: string };
+    expect(Number(row.success)).toBe(0);
+    expect(row.error).toContain("Invalid API Key");
+  });
+
+  it("a request-limit error code (newznab 500) triggers the same backoff as an HTTP 429", async () => {
+    const indexer = makeIndexer({ protocol: "newznab", categories: "2000" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => errorXml("500", "Request limit reached") }));
+    await expect(searchIndexer(indexer, "q", "movie")).rejects.toThrow("error 500: Request limit reached");
+    expect(isIndexerBackedOff(indexer.id)).toBe(true);
+
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(searchIndexer(indexer, "q2", "movie")).rejects.toThrow("backed off");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a 200 response that isn't an RSS feed at all (e.g. an HTML login page) fails instead of reading as 0 results", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => "<html><body><p>Login</p></body></html>" }));
+
+    await expect(searchIndexer(makeIndexer({ protocol: "torznab", categories: "2000" }), "q", "movie")).rejects.toThrow("no <rss> feed");
+  });
+
+  it("the health check reports an <error> caps response as unhealthy", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => errorXml("100", "Invalid API Key") }));
+
+    await expect(checkIndexerHealth(makeIndexer({ protocol: "torznab" }))).resolves.toEqual({
+      ok: false,
+      error: "Indexer error 100: Invalid API Key",
+    });
+  });
+
+  it("the health check reports a 200 response with no <caps> element as unhealthy", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => "<html><body>Jackett</body></html>" }));
+
+    const health = await checkIndexerHealth(makeIndexer({ protocol: "newznab" }));
+    expect(health.ok).toBe(false);
+    expect(health.error).toContain("<caps>");
+  });
+
+  it("an empty channel is still a healthy search with no results", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => '<rss version="2.0"><channel></channel></rss>' }));
+
+    await expect(searchIndexer(makeIndexer({ protocol: "torznab", categories: "2000" }), "q", "movie")).resolves.toEqual([]);
+  });
+});
+
+describe("imdbid/tmdbid rejected by the indexer (Jackett's 201 on an indexer without movie-imdb search)", () => {
+  const unsupportedXml = (code = "201") =>
+    `<?xml version="1.0" encoding="UTF-8"?><error code="${code}" description="eztv does not support the requested query. Please check the capabilities (t=caps)"/>`;
+  const resultsXml = torznabXml(torznabItem({ title: "Show S01E01", downloadUrl: "https://idx.example.com/dl/ids" }));
+  /** Rejects any request carrying an id param, answers a plain one with results. */
+  function rejectIdsFetch() {
+    return vi.fn().mockImplementation(async (url: string) => {
+      const params = new URL(url).searchParams;
+      const text = params.has("imdbid") || params.has("tmdbid") ? unsupportedXml() : resultsXml;
+      return { ok: true, status: 200, text: async () => text };
+    });
+  }
+
+  it("retries once without the id params and records a success, not a failure", async () => {
+    const fetchMock = rejectIdsFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    const { db } = await import("../src/db/index.js");
+    const id = Number(
+      (await db.prepare("INSERT INTO indexers (name, protocol, url) VALUES ('Id Reject', 'torznab', 'https://idx.example.com')").run()).lastInsertRowid
+    );
+
+    const results = await searchIndexer(makeIndexer({ id, categories: "5000" }), "Show", "series", { imdb: "tt0944947", tmdb: "1399" });
+
+    expect(results.map((r) => r.title)).toEqual(["Show S01E01"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new URL(fetchMock.mock.calls[0][0] as string).searchParams.get("imdbid")).toBe("0944947");
+    const retryParams = new URL(fetchMock.mock.calls[1][0] as string).searchParams;
+    expect(retryParams.has("imdbid")).toBe(false);
+    expect(retryParams.has("tmdbid")).toBe(false);
+    expect(retryParams.get("q")).toBe("Show");
+    const rows = (await db.prepare("SELECT success FROM indexer_health WHERE indexer_id = ?").all(id)) as { success: number }[];
+    expect(rows.map((r) => Number(r.success))).toEqual([1]);
+  });
+
+  it("later searches on that indexer leave the ids off instead of paying for a rejected request first", async () => {
+    const indexer = makeIndexer({ categories: "2000" });
+    vi.stubGlobal("fetch", rejectIdsFetch());
+    await searchIndexer(indexer, "Movie", "movie", { imdb: "tt0133093" });
+
+    const fetchMock = rejectIdsFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(searchIndexer(indexer, "Movie Two", "movie", { imdb: "tt0234215" })).resolves.toHaveLength(1);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(new URL(fetchMock.mock.calls[0][0] as string).searchParams.has("imdbid")).toBe(false);
+    // A different indexer still gets the ids.
+    const other = rejectIdsFetch();
+    vi.stubGlobal("fetch", other);
+    await searchIndexer(makeIndexer({ categories: "2000" }), "Movie", "movie", { imdb: "tt0133093" });
+    expect(new URL(other.mock.calls[0][0] as string).searchParams.get("imdbid")).toBe("0133093");
+  });
+
+  it("a 203 'function not available' reply to the id params is retried the same way", async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => ({
+      ok: true,
+      status: 200,
+      text: async () => (new URL(url).searchParams.has("tmdbid") ? unsupportedXml("203") : resultsXml),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(searchIndexer(makeIndexer({ categories: "2000" }), "Movie", "movie", { tmdb: "603" })).resolves.toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("still fails when the plain query is rejected too, and keeps sending ids next time", async () => {
+    const indexer = makeIndexer({ categories: "2000" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => unsupportedXml() }));
+    await expect(searchIndexer(indexer, "Movie", "movie", { imdb: "tt0133093" })).rejects.toThrow("error 201");
+
+    const fetchMock = rejectIdsFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    await searchIndexer(indexer, "Movie", "movie", { imdb: "tt0133093" });
+    expect(new URL(fetchMock.mock.calls[0][0] as string).searchParams.get("imdbid")).toBe("0133093");
+  });
+
+  it("never retries a 201 on a request that carried no id params, or any other error code", async () => {
+    const plain = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => unsupportedXml() });
+    vi.stubGlobal("fetch", plain);
+    await expect(searchIndexer(makeIndexer({ categories: "2000" }), "Movie", "movie")).rejects.toThrow("error 201");
+    expect(plain).toHaveBeenCalledTimes(1);
+
+    const badKey = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => '<?xml version="1.0" encoding="UTF-8"?><error code="100" description="Invalid API Key"/>',
+    });
+    vi.stubGlobal("fetch", badKey);
+    await expect(searchIndexer(makeIndexer({ categories: "2000" }), "Movie", "movie", { imdb: "tt0133093" })).rejects.toThrow("error 100");
+    expect(badKey).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Newznab attributes", () => {
+  function newznabXml(itemsXml: string): string {
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+<channel><title>Usenet Indexer</title>${itemsXml}</channel></rss>`;
+  }
+
+  it("reads <newznab:attr> imdb/tmdbid/size the same way as <torznab:attr>", async () => {
+    const xml = newznabXml(`<item>
+      <title>The.Matrix.1999.1080p.BluRay-GRP</title>
+      <link>https://nzb.example.com/get/1</link>
+      <enclosure url="https://nzb.example.com/get/1.nzb" type="application/x-nzb"/>
+      <newznab:attr name="size" value="8500000000"/>
+      <newznab:attr name="imdb" value="0133093"/>
+      <newznab:attr name="tmdbid" value="603"/>
+    </item>`);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => xml }));
+
+    const [result] = await searchIndexer(makeIndexer({ protocol: "newznab", categories: "2000" }), "q", "movie");
+
+    expect(result).toMatchObject({ protocol: "usenet", imdbId: "tt0133093", tmdbId: "603", size: 8_500_000_000 });
+    expect(reportedSize(result)).toBe(8_500_000_000);
+  });
+
+  it("uses a torznab size attr when the enclosure length is 0", async () => {
+    const xml = torznabXml(`<item>
+      <title>Sized By Attr</title>
+      <enclosure url="https://idx.example.com/dl/attr" length="0" type="application/x-bittorrent"/>
+      <torznab:attr name="size" value="1234567"/>
+    </item>`);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => xml }));
+
+    const [result] = await searchIndexer(makeIndexer({ protocol: "torznab", categories: "2000" }), "q", "movie");
+
+    expect(result.size).toBe(1_234_567);
+    expect(reportedSize(result)).toBe(1_234_567);
+  });
+});
+
+describe("unknown release size", () => {
+  it("torznab: an item with no length and no size attr is marked size-unknown, not a real 0 bytes", async () => {
+    const xml = torznabXml(`<item><title>No Size</title><link>https://idx.example.com/dl/nosize</link></item>`);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => xml }));
+
+    const [result] = await searchIndexer(makeIndexer({ protocol: "torznab", categories: "2000" }), "q", "movie");
+
+    expect(result.size).toBe(0);
+    expect((result as { sizeKnown?: boolean }).sizeKnown).toBe(false);
+    expect(reportedSize(result)).toBeNull();
+  });
+
+  it("rss: an enclosure without a length is size-unknown", async () => {
+    const xml = rssXml(`<item><title>Matrix Feed Item</title><enclosure url="https://feed.example.com/f.mkv" type="video/x-matroska"/></item>`);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => xml }));
+
+    const [result] = await searchIndexer(makeIndexer({ protocol: "rss" }), "matrix", "movie");
+
+    expect(reportedSize(result)).toBeNull();
+  });
+
+  it("ddl: no sizeField configured (or a non-numeric size) is size-unknown", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ results: [{ name: "No Size Field", dl: "https://ddl.example.com/1", size: "about 2 GB" }] }),
+      })
+    );
+    const withoutField = makeIndexer({
+      protocol: "ddl",
+      url: "https://ddl.example.com/search?q={query}",
+      config: JSON.stringify({ resultsPath: "results", titleField: "name", downloadUrlField: "dl" }),
+    });
+    const nonNumeric = makeIndexer({
+      protocol: "ddl",
+      url: "https://ddl.example.com/search?q={query}",
+      config: JSON.stringify({ resultsPath: "results", titleField: "name", downloadUrlField: "dl", sizeField: "size" }),
+    });
+
+    expect((await searchIndexer(withoutField, "q", "movie"))[0]).toMatchObject({ size: 0, sizeKnown: false });
+    expect((await searchIndexer(nonNumeric, "q", "movie"))[0]).toMatchObject({ size: 0, sizeKnown: false });
+  });
+});
+
+describe("rss: protocol follows each item's enclosure", () => {
+  async function protocolOf(itemXml: string): Promise<string> {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => rssXml(itemXml) }));
+    const [result] = await searchIndexer(makeIndexer({ protocol: "rss" }), "release", "movie");
+    return result.protocol;
+  }
+
+  it("a .torrent enclosure or a magnet link is a torrent, not a direct HTTP download", async () => {
+    expect(
+      await protocolOf(`<item><title>Release A</title><enclosure url="https://tracker.example.com/dl/1" length="1000" type="application/x-bittorrent"/></item>`)
+    ).toBe("torrent");
+    expect(await protocolOf(`<item><title>Release B</title><link>https://tracker.example.com/files/b.torrent?passkey=x</link></item>`)).toBe("torrent");
+    expect(await protocolOf(`<item><title>Release C</title><link>magnet:?xt=urn:btih:abcdef&amp;dn=Release+C</link></item>`)).toBe("torrent");
+  });
+
+  it("an NZB enclosure is usenet, and anything else stays a direct HTTP download", async () => {
+    expect(await protocolOf(`<item><title>Release D</title><enclosure url="https://nzb.example.com/get/4" type="application/x-nzb"/></item>`)).toBe("usenet");
+    expect(await protocolOf(`<item><title>Release E</title><link>https://files.example.com/e.mkv</link></item>`)).toBe("http");
+  });
+});
+
+describe("in-memory request state stays bounded", () => {
+  it("expired search-cache entries are dropped instead of kept for the life of the process", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => torznabXml(torznabItem({ title: "Cache Bound", downloadUrl: "https://idx.example.com/dl/bound", size: 100 })),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const indexer = makeIndexer({ protocol: "torznab", mediaTypes: "movie", categories: "2000" });
+
+    vi.useFakeTimers();
+    try {
+      await searchAllIndexers([indexer], "cache bound one", "movie");
+      await searchAllIndexers([indexer], "cache bound two", "movie");
+      expect(searchCacheSize()).toBeGreaterThanOrEqual(2);
+
+      vi.setSystemTime(Date.now() + 6 * 60 * 1000); // past the 5-minute TTL
+      await searchAllIndexers([indexer], "cache bound three", "movie");
+      expect(searchCacheSize()).toBe(1); // every older entry, from this and earlier tests, is gone
+
+      vi.setSystemTime(Date.now() + 6 * 60 * 1000);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500, text: async () => "" }));
+      await searchAllIndexers([indexer], "cache bound three", "movie"); // expired lookup, then a failed refetch
+      expect(searchCacheSize()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("requests made while an indexer has no query limit aren't tracked (so they can't pile up or count later)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => torznabXml("") });
+    vi.stubGlobal("fetch", fetchMock);
+    const indexer = makeIndexer({ protocol: "torznab", queryLimitPerHour: null });
+
+    for (let i = 0; i < 3; i++) await searchIndexer(indexer, `untracked ${i}`, "movie");
+
+    indexer.queryLimitPerHour = 1;
+    await searchIndexer(indexer, "first limited", "movie");
+    await expect(searchIndexer(indexer, "second limited", "movie")).rejects.toThrow("hit its configured query limit");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe("default indexer media types", () => {
+  it("cover every indexer-searchable library type, including sports/ppv/anime, but not Online Videos or Podcasts", () => {
+    for (const type of ["movie", "series", "anime", "sports", "ppv", "artist", "author", "audiobook", "comic", "manga", "rom", "course", "adult"]) {
+      expect(INDEXER_MEDIA_TYPES).toContain(type);
+    }
+    expect(INDEXER_MEDIA_TYPES).not.toContain("video");
+    expect(INDEXER_MEDIA_TYPES).not.toContain("podcast");
+    expect(DEFAULT_INDEXER_MEDIA_TYPES.split(",")).toEqual(INDEXER_MEDIA_TYPES);
+  });
+
+  it("an indexer on the default list is searched for a Sports item", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => torznabXml(torznabItem({ title: "UFC.300.1080p", downloadUrl: "https://idx.example.com/dl/ufc" })),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const indexer = makeIndexer({ protocol: "torznab", mediaTypes: DEFAULT_INDEXER_MEDIA_TYPES });
+
+    const results = await searchAllIndexers([indexer], "UFC 300", "sports");
+
+    expect(results.map((r) => r.title)).toEqual(["UFC.300.1080p"]);
   });
 });

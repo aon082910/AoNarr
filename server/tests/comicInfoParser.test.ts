@@ -73,4 +73,22 @@ describe("findComicInfoInCbz", () => {
   it("returns null (never throws) for a nonexistent file", () => {
     expect(findComicInfoInCbz("/definitely/does/not/exist.cbz")).toBeNull();
   });
+
+  it("won't inflate an embedded ComicInfo.xml far larger than any real one", () => {
+    // Megabytes of padding deflate to a few KiB: a small archive, a large read.
+    const bloated = SAMPLE_COMICINFO.replace("<Summary>", `<Summary>${" ".repeat(4 * 1024 * 1024)}`);
+    const cbzPath = makeCbz({ "ComicInfo.xml": bloated, "page01.jpg": "fake image data" });
+    expect(fs.statSync(cbzPath).size).toBeLessThan(64 * 1024);
+    expect(findComicInfoInCbz(cbzPath)).toBeNull();
+  });
+
+  it("won't read a ComicInfo.xml whose header claims a size over the cap", () => {
+    const cbzPath = makeCbz({ "ComicInfo.xml": SAMPLE_COMICINFO });
+    const bytes = fs.readFileSync(cbzPath);
+    // Uncompressed-size fields: offset 22 in the local header, 24 in the central directory entry.
+    bytes.writeUInt32LE(2 * 1024 * 1024, 22);
+    bytes.writeUInt32LE(2 * 1024 * 1024, bytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02])) + 24);
+    fs.writeFileSync(cbzPath, bytes);
+    expect(findComicInfoInCbz(cbzPath)).toBeNull();
+  });
 });

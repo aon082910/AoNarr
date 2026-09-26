@@ -174,4 +174,112 @@ describe("sendEmailWithAttachment", () => {
     expect(payload).toContain("Enjoy\r\nyour book\r\n");
     expect(payload).not.toMatch(/(^|[^\r])\n/);
   });
+
+  it("names a non-ASCII attachment with an ASCII fallback plus an RFC 2231 UTF-8 parameter, and encodes the subject", async () => {
+    activeServer = await startFakeSmtpServer();
+    const attachment = { filename: "Les Misérables.epub", content: Buffer.from("fake epub bytes"), contentType: "application/epub+zip" };
+
+    await sendEmailWithAttachment(baseConfig(activeServer.port), "Les Misérables", "Enjoy", attachment);
+
+    const headers = unfold(activeServer.dataPayloads[0]);
+    const encodedName = "Les%20Mis%C3%A9rables.epub";
+    expect(headerLine(headers, "Content-Disposition")).toBe(
+      `Content-Disposition: attachment; filename="Les Miserables.epub"; filename*=UTF-8''${encodedName}`
+    );
+    expect(headerLine(headers, "Content-Type: application/epub+zip")).toBe(
+      `Content-Type: application/epub+zip; name="Les Miserables.epub"; name*=UTF-8''${encodedName}`
+    );
+    const subject = headerLine(headers, "Subject");
+    expect(subject).toMatch(/^Subject: [\x20-\x7e]+$/);
+    expect(decodeEncodedWords(subject.slice("Subject: ".length))).toBe("Les Misérables");
+  });
+
+  it("strips CR/LF, quotes and backslashes from an attachment name instead of letting them end the parameter or start a header", async () => {
+    activeServer = await startFakeSmtpServer();
+    const attachment = { filename: 'Bad "Name"\\\r\nBcc: v@x.io.epub', content: Buffer.from("x"), contentType: "application/epub+zip" };
+
+    await sendEmailWithAttachment(baseConfig(activeServer.port), "Send to Kindle", "Enjoy", attachment);
+
+    const payload = activeServer.dataPayloads[0];
+    expect(payload).not.toMatch(/\r\nBcc:/i);
+    const disposition = headerLine(unfold(payload), "Content-Disposition");
+    expect(disposition).toMatch(/^Content-Disposition: attachment; filename="Bad Name Bcc: v@x\.io\.epub"; filename\*=UTF-8''[A-Za-z0-9%!#$&+.^_`|~-]+$/);
+    expect(disposition).toContain("Bad%20%22Name%22%5C%20Bcc%3A%20v%40x.io.epub");
+  });
+
+  it("keeps every header line short for a long non-ASCII name by splitting its UTF-8 parameter into continuations", async () => {
+    activeServer = await startFakeSmtpServer();
+    const title = "転生したらスライムだった件".repeat(8);
+    const attachment = { filename: `${title}.epub`, content: Buffer.from("x"), contentType: "application/epub+zip" };
+
+    await sendEmailWithAttachment(baseConfig(activeServer.port), title, "Enjoy", attachment);
+
+    const payload = activeServer.dataPayloads[0];
+    for (const line of payload.split("\r\n")) expect(line.length).toBeLessThanOrEqual(100);
+    const disposition = headerLine(unfold(payload), "Content-Disposition");
+    expect(disposition).toContain('filename="attachment.epub"');
+    const segments = [...disposition.matchAll(/filename\*(\d+)\*=(?:UTF-8'')?([^;]+)/g)];
+    expect(segments.length).toBeGreaterThan(1);
+    expect(segments.map((m) => Number(m[1]))).toEqual(segments.map((_m, i) => i));
+    expect(decodeURIComponent(segments.map((m) => m[2]).join(""))).toBe(`${title}.epub`);
+    expect(decodeEncodedWords(headerLine(unfold(payload), "Subject").slice("Subject: ".length))).toBe(title);
+  });
+
+  it("base64-encodes a non-ASCII text part rather than sending undeclared 8-bit data", async () => {
+    activeServer = await startFakeSmtpServer();
+    const attachment = { filename: "book.epub", content: Buffer.from("x"), contentType: "application/epub+zip" };
+
+    await sendEmailWithAttachment(baseConfig(activeServer.port), "Send to Kindle", "Sent from AoNarr: Les Misérables", attachment);
+
+    const payload = activeServer.dataPayloads[0];
+    expect(payload).not.toMatch(/[^\x00-\x7f]/);
+    const textPart = payload.split(/--aonarr-[0-9a-f]+/)[1];
+    expect(textPart).toContain("Content-Transfer-Encoding: base64");
+    const body = textPart.split("\r\n\r\n")[1].replace(/\r\n/g, "");
+    expect(Buffer.from(body, "base64").toString("utf8")).toBe("Sent from AoNarr: Les Misérables");
+  });
 });
+
+describe("sendEmail header encoding", () => {
+  it("encodes a non-ASCII subject and body, and leaves ASCII ones as they are", async () => {
+    activeServer = await startFakeSmtpServer();
+
+    await sendEmail(baseConfig(activeServer.port), "Grabbed: Amélie", "Amélie (2001)");
+    await sendEmail(baseConfig(activeServer.port), "Grabbed: Heat", "Heat (1995)");
+
+    const [encoded, plain] = activeServer.dataPayloads;
+    expect(encoded).not.toMatch(/[^\x00-\x7f]/);
+    expect(decodeEncodedWords(headerLine(unfold(encoded), "Subject").slice("Subject: ".length))).toBe("Grabbed: Amélie");
+    expect(encoded).toContain("MIME-Version: 1.0");
+    expect(encoded).toContain("Content-Transfer-Encoding: base64");
+    expect(plain).toContain("Subject: Grabbed: Heat\r\n");
+    expect(plain).toContain("Heat (1995)");
+  });
+
+  it("passes an already-encoded subject through unchanged", async () => {
+    activeServer = await startFakeSmtpServer();
+    const preEncoded = `=?UTF-8?B?${Buffer.from("Les Misérables").toString("base64")}?=`;
+
+    await sendEmail(baseConfig(activeServer.port), preEncoded, "Body");
+
+    expect(activeServer.dataPayloads[0]).toContain(`Subject: ${preEncoded}\r\n`);
+  });
+});
+
+/** Header folding (CRLF + whitespace) undone, so each header reads as one line. */
+function unfold(message: string): string {
+  return message.replace(/\r\n[ \t]+/g, " ");
+}
+
+function headerLine(unfolded: string, prefix: string): string {
+  const line = unfolded.split("\r\n").find((l) => l.startsWith(prefix));
+  if (!line) throw new Error(`no "${prefix}" header in:\n${unfolded}`);
+  return line;
+}
+
+function decodeEncodedWords(value: string): string {
+  // Whitespace between adjacent encoded-words is dropped when decoding (RFC 2047 §6.2).
+  const words = [...value.matchAll(/=\?UTF-8\?B\?([A-Za-z0-9+/=]+)\?=/g)];
+  expect(words.map((m) => m[0]).join(" ")).toBe(value);
+  return Buffer.concat(words.map((m) => Buffer.from(m[1], "base64"))).toString("utf8");
+}

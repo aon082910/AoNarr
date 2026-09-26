@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -68,13 +69,37 @@ export async function convertComicImages(filePath: string, format: "webp" | "jpe
       fs.unlinkSync(srcPath);
       fs.unlinkSync(outPath);
     }
-    zip.writeZip(filePath);
+    replaceFile(filePath, zip.toBuffer());
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 
   const newBytes = fs.statSync(filePath).size;
   return { originalBytes, newBytes };
+}
+
+/**
+ * Writes the new archive beside `filePath` and renames it over the path instead of rewriting the
+ * file in place: under the hardlink and symlink import strategies the library path shares its data
+ * with the download client's seeding copy, and an in-place rewrite corrupted that torrent. The
+ * original's permissions (applied at import) carry over to the new file.
+ */
+export function replaceFile(filePath: string, data: Buffer): void {
+  const original = fs.statSync(filePath);
+  const tmpPath = path.join(path.dirname(filePath), `.aonarr-tmp-${crypto.randomBytes(6).toString("hex")}`);
+  try {
+    fs.writeFileSync(tmpPath, data);
+    fs.chmodSync(tmpPath, original.mode & 0o7777);
+    try {
+      fs.chownSync(tmpPath, original.uid, original.gid);
+    } catch {
+      // Not permitted when running unprivileged; the file keeps this process's own owner.
+    }
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    fs.rmSync(tmpPath, { force: true });
+    throw err;
+  }
 }
 
 /** Best-effort wrapper for the automatic post-import call site — a re-encode failing (a

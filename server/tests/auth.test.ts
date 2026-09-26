@@ -8,15 +8,16 @@ let app: Express;
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let apiKey: string;
 
-/** RFC 6238 code for `secretBase32` right now — a reference computation, independent of totp.ts. */
-function currentTotpCode(secretBase32: string): string {
+/** RFC 6238 code for `secretBase32` right now (or `stepOffset` 30s steps away) — a reference
+ * computation, independent of totp.ts. */
+function currentTotpCode(secretBase32: string, stepOffset = 0): string {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
   let bits = "";
   for (const char of secretBase32) bits += alphabet.indexOf(char).toString(2).padStart(5, "0");
   const key: number[] = [];
   for (let i = 0; i + 8 <= bits.length; i += 8) key.push(parseInt(bits.slice(i, i + 8), 2));
   const counter = Buffer.alloc(8);
-  counter.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 1000 / 30)));
+  counter.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 1000 / 30) + stepOffset));
   const hmac = crypto.createHmac("sha1", Buffer.from(key)).update(counter).digest();
   const offset = hmac[hmac.length - 1] & 0x0f;
   const binary =
@@ -205,6 +206,31 @@ describe("auth", () => {
 
       expect((await login("case-victim", "case-password")).status).toBe(429);
     });
+
+    // On Postgres the user lookup is a real round trip, so a parallel burst used to have every
+    // request pass the lockout check before any failure was recorded.
+    it("checks at most the lockout limit's worth of guesses from a parallel burst", async () => {
+      const ip = "203.0.113.22";
+      await insertUser("burst-victim", "burst-password");
+      const login = (password: string) => request(app).post("/api/auth/login").set("X-Real-IP", ip).send({ username: "burst-victim", password });
+
+      const statuses = (await Promise.all(Array.from({ length: 30 }, (_, i) => login(`guess-${i}`)))).map((r) => r.status);
+
+      expect(statuses.filter((s) => s === 401)).toHaveLength(10);
+      expect(statuses.filter((s) => s === 429)).toHaveLength(20);
+      expect((await login("burst-password")).status).toBe(429);
+    });
+
+    it("clears the attempt it counted up front when the login succeeds", async () => {
+      const ip = "203.0.113.23";
+      await insertUser("steady-user", "steady-password");
+      const login = (password: string) => request(app).post("/api/auth/login").set("X-Real-IP", ip).send({ username: "steady-user", password });
+
+      for (let round = 0; round < 3; round++) {
+        for (let i = 0; i < 9; i++) expect((await login("guess")).status).toBe(401);
+        expect((await login("steady-password")).status).toBe(200);
+      }
+    });
   });
 
   describe("POST /api/auth/login/totp rate limiting", () => {
@@ -225,6 +251,27 @@ describe("auth", () => {
       expect((await totp("bogus-pending-final", "000000")).status).toBe(401); // the 10th failure
 
       expect((await totp(await passwordStep(), currentTotpCode(secret))).status).toBe(429);
+    });
+
+    // Someone who already has the password can collect any number of pending tokens; on Postgres
+    // the user lookup is a real round trip, so a parallel burst of codes used to all pass the
+    // lockout check before any failure was recorded.
+    it("checks at most the lockout limit's worth of codes from a parallel burst", async () => {
+      const { createPendingLogin } = await import("../src/services/auth.js");
+      const ip = "203.0.113.31";
+      const secret = "KRSXG5CTMVRXEZLU";
+      const userId = await insertUser("totp-burst-user", "totp-password");
+      await db.prepare("UPDATE users SET totp_enabled = 1, totp_secret = ? WHERE id = ?").run(secret, userId);
+      const totp = (code: string) =>
+        request(app).post("/api/auth/login/totp").set("X-Real-IP", ip).send({ pendingToken: createPendingLogin(userId), code });
+      // Not accepted in any of the windows verifyTotp allows for clock drift.
+      const wrongCode = ["000000", "111111", "222222", "333333"].find((c) => ![-1, 0, 1].some((o) => currentTotpCode(secret, o) === c))!;
+
+      const statuses = (await Promise.all(Array.from({ length: 30 }, () => totp(wrongCode)))).map((r) => r.status);
+
+      expect(statuses.filter((s) => s === 401)).toHaveLength(10);
+      expect(statuses.filter((s) => s === 429)).toHaveLength(20);
+      expect((await totp(currentTotpCode(secret))).status).toBe(429);
     });
   });
 

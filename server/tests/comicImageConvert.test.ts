@@ -25,13 +25,14 @@ vi.mock("node:child_process", () => ({
 
 let convertComicImages: (typeof import("../src/services/comicImageConvert.js"))["convertComicImages"];
 let convertComicImagesBestEffort: (typeof import("../src/services/comicImageConvert.js"))["convertComicImagesBestEffort"];
+let replaceFile: (typeof import("../src/services/comicImageConvert.js"))["replaceFile"];
 let tmpDir: string;
 
 beforeAll(async () => {
   // comicImageConvert.ts imports logger.js, which touches config.js/db/index.js transitively —
   // must load after setupTestDb() has set the env vars those modules read at first import.
   await setupTestDb();
-  ({ convertComicImages, convertComicImagesBestEffort } = await import("../src/services/comicImageConvert.js"));
+  ({ convertComicImages, convertComicImagesBestEffort, replaceFile } = await import("../src/services/comicImageConvert.js"));
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-comicconvert-"));
 });
 
@@ -144,5 +145,62 @@ describe("convertComicImagesBestEffort", () => {
     ffmpegShouldFail = true;
 
     await expect(convertComicImagesBestEffort(filePath, "webp", 80)).resolves.toBeUndefined();
+  });
+});
+
+describe("convertComicImages — library files linked to a download", () => {
+  it("re-encodes a hardlinked library file without changing the download client's copy", async () => {
+    const seed = makeCbz("hardlink-seed.cbz", { "page01.png": "seeding png bytes" });
+    const seedBytes = fs.readFileSync(seed);
+    const library = path.join(tmpDir, "hardlink-library.cbz");
+    fs.linkSync(seed, library);
+
+    await convertComicImages(library, "webp", 80);
+
+    expect(fs.readFileSync(seed)).toEqual(seedBytes);
+    expect(readZipEntries(seed).map((e) => e.name)).toEqual(["page01.png"]);
+    expect(readZipEntries(library).map((e) => e.name)).toEqual(["page01.webp"]);
+    expect(fs.statSync(library).ino).not.toBe(fs.statSync(seed).ino);
+  });
+
+  it("replaces a symlinked library file with the converted copy, leaving the link's target alone", async () => {
+    const seed = makeCbz("symlink-seed.cbz", { "page01.png": "seeding png bytes" });
+    const seedBytes = fs.readFileSync(seed);
+    const library = path.join(tmpDir, "symlink-library.cbz");
+    fs.symlinkSync(seed, library);
+
+    await convertComicImages(library, "webp", 80);
+
+    expect(fs.readFileSync(seed)).toEqual(seedBytes);
+    expect(fs.lstatSync(library).isSymbolicLink()).toBe(false);
+    expect(readZipEntries(library).map((e) => e.name)).toEqual(["page01.webp"]);
+  });
+
+  it("keeps the file's permissions and leaves no temporary file behind", async () => {
+    const dir = fs.mkdtempSync(path.join(tmpDir, "perms-"));
+    const zip = new AdmZip();
+    zip.addFile("page01.png", Buffer.from("png"));
+    const filePath = path.join(dir, "perms.cbz");
+    zip.writeZip(filePath);
+    fs.chmodSync(filePath, 0o640);
+
+    await convertComicImages(filePath, "webp", 80);
+
+    expect(fs.statSync(filePath).mode & 0o777).toBe(0o640);
+    expect(fs.readdirSync(dir)).toEqual(["perms.cbz"]);
+  });
+
+  it("replaceFile gives a hardlinked path new contents without writing through to its other link", () => {
+    const dir = fs.mkdtempSync(path.join(tmpDir, "replace-"));
+    const seed = path.join(dir, "seed.mp3");
+    fs.writeFileSync(seed, "seeding bytes");
+    const library = path.join(dir, "library.mp3");
+    fs.linkSync(seed, library);
+
+    replaceFile(library, Buffer.from("retagged bytes"));
+
+    expect(fs.readFileSync(seed, "utf-8")).toBe("seeding bytes");
+    expect(fs.readFileSync(library, "utf-8")).toBe("retagged bytes");
+    expect(fs.readdirSync(dir).sort()).toEqual(["library.mp3", "seed.mp3"]);
   });
 });

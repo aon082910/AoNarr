@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterEach } from "vitest";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -9,12 +10,14 @@ let writeBackupBundle: (typeof import("../src/services/scheduledBackup.js"))["wr
 let readBackupBundle: (typeof import("../src/services/scheduledBackup.js"))["readBackupBundle"];
 let looksLikeBackupBundle: (typeof import("../src/services/scheduledBackup.js"))["looksLikeBackupBundle"];
 let runScheduledBackup: (typeof import("../src/services/scheduledBackup.js"))["runScheduledBackup"];
+let restoredDbNeedsBundleKey: (typeof import("../src/services/scheduledBackup.js"))["restoredDbNeedsBundleKey"];
 let ENCRYPTION_KEY_PATH: string;
 let setSetting: (key: string, value: string) => void;
+let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 
 beforeAll(async () => {
-  await setupTestDb();
-  ({ backupFileExtension, writeBackupBundle, readBackupBundle, looksLikeBackupBundle, runScheduledBackup } = await import(
+  ({ db } = await setupTestDb());
+  ({ backupFileExtension, writeBackupBundle, readBackupBundle, looksLikeBackupBundle, runScheduledBackup, restoredDbNeedsBundleKey } = await import(
     "../src/services/scheduledBackup.js"
   ));
   ({ ENCRYPTION_KEY_PATH } = await import("../src/services/encryption.js"));
@@ -127,5 +130,54 @@ describe("runScheduledBackup", () => {
     expect(remaining).not.toContain("aonarr-backup-2020-01-01T00-00-00-000Z.aonarrbackup");
     expect(remaining).not.toContain("aonarr-backup-2020-01-02T00-00-00-000Z.aonarrbackup");
     expect(remaining).toContain("aonarr-backup-2020-01-03T00-00-00-000Z.aonarrbackup");
+  });
+});
+
+describe("restoredDbNeedsBundleKey — sampled columns", () => {
+  const bundleKeyHex = "ef".repeat(32);
+
+  /** encryption.ts's `enc1:` format (IV, auth tag, ciphertext), under a key other than the installed one. */
+  function encryptWithBundleKey(plaintext: string): string {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv("aes-256-gcm", Buffer.from(bundleKeyHex, "hex"), iv);
+    const data = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+    return `enc1:${Buffer.concat([iv, cipher.getAuthTag(), data]).toString("base64")}`;
+  }
+
+  /** Runs `fn` with no encrypted settings in the database, so only the rows it adds are sampled. */
+  async function withoutEncryptedSettings(fn: () => Promise<void>): Promise<void> {
+    const saved = (await db.prepare("SELECT key, value FROM settings WHERE value LIKE ?").all("enc1:%")) as { key: string; value: string }[];
+    await db.prepare("DELETE FROM settings WHERE value LIKE ?").run("enc1:%");
+    try {
+      await fn();
+    } finally {
+      for (const row of saved) await db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(row.key, row.value);
+    }
+  }
+
+  it("samples a remote instance's API key, even when nothing else is encrypted", async () => {
+    await withoutEncryptedSettings(async () => {
+      expect(await restoredDbNeedsBundleKey(Buffer.from(bundleKeyHex), false)).toBe(false);
+      await db.prepare("INSERT INTO remote_instances (name, url, api_key) VALUES (?, ?, ?)").run("Other Install", "http://other.local", encryptWithBundleKey("remote key"));
+      try {
+        expect(await restoredDbNeedsBundleKey(Buffer.from(bundleKeyHex), false)).toBe(true);
+      } finally {
+        await db.prepare("DELETE FROM remote_instances").run();
+      }
+    });
+  });
+
+  it("samples a friend library's token, even when nothing else is encrypted", async () => {
+    await withoutEncryptedSettings(async () => {
+      expect(await restoredDbNeedsBundleKey(Buffer.from(bundleKeyHex), false)).toBe(false);
+      await db
+        .prepare("INSERT INTO friend_libraries (name, type, url, token) VALUES (?, 'plex', ?, ?)")
+        .run("Friend's Plex", "http://friend.local:32400", encryptWithBundleKey("plex token"));
+      try {
+        expect(await restoredDbNeedsBundleKey(Buffer.from(bundleKeyHex), false)).toBe(true);
+      } finally {
+        await db.prepare("DELETE FROM friend_libraries").run();
+      }
+    });
   });
 });

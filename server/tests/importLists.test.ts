@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { setupTestDb } from "./helpers/testDb.js";
 
@@ -5,12 +8,27 @@ const fetchAlbumTracksFor = vi.fn();
 const fetchArtistAlbumsFor = vi.fn();
 const fetchSeriesEpisodesFor = vi.fn();
 const searchMetadata = vi.fn();
-vi.mock("../src/services/metadata.js", () => ({
+vi.mock("../src/services/metadata.js", async (importOriginal) => ({
+  isEpisodeMonitoredByDefault: (await importOriginal<typeof import("../src/services/metadata.js")>()).isEpisodeMonitoredByDefault,
   fetchAlbumTracksFor: (...args: unknown[]) => fetchAlbumTracksFor(...args),
   fetchArtistAlbumsFor: (...args: unknown[]) => fetchArtistAlbumsFor(...args),
   fetchSeriesEpisodesFor: (...args: unknown[]) => fetchSeriesEpisodesFor(...args),
   searchMetadata: (...args: unknown[]) => searchMetadata(...args),
 }));
+
+/** Pass-through root-folder auto-select with an optional hook, used to hold concurrent syncs at a
+ * point after their existing-ids snapshot. */
+const rootFolderGate = vi.hoisted(() => ({ hook: null as null | (() => Promise<void>) }));
+vi.mock("../src/services/rootFolderSelect.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/services/rootFolderSelect.js")>();
+  return {
+    ...actual,
+    autoSelectRootFolderId: async (mediaType: string) => {
+      if (rootFolderGate.hook) await rootFolderGate.hook();
+      return actual.autoSelectRootFolderId(mediaType);
+    },
+  };
+});
 
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let passesListFilters: (typeof import("../src/services/importLists.js"))["passesListFilters"];
@@ -20,10 +38,20 @@ let runAllImportLists: (typeof import("../src/services/importLists.js"))["runAll
 let setSetting: (typeof import("../src/services/settingsStore.js"))["setSetting"];
 type ImportListRow = import("../src/services/importLists.js").ImportListRow;
 
+/** Every media type the lists add gets one root folder, so items are created under it (a type
+ * with none is skipped — covered explicitly below). */
+const rootFolderIds: Record<string, number> = {};
+
+async function addRootFolder(mediaType: string): Promise<number> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `aonarr-importlists-${mediaType}-`));
+  return Number((await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, ?)").run(dir, mediaType)).lastInsertRowid);
+}
+
 beforeAll(async () => {
   ({ db } = await setupTestDb());
   ({ passesListFilters, insertTracksForAlbum, syncImportList, runAllImportLists } = await import("../src/services/importLists.js"));
   ({ setSetting } = await import("../src/services/settingsStore.js"));
+  for (const type of ["movie", "series", "artist"]) rootFolderIds[type] = await addRootFolder(type);
 });
 
 afterEach(() => {
@@ -44,6 +72,7 @@ async function insertImportList(overrides: Partial<ImportListRow> = {}): Promise
     url: "https://trakt.tv/users/tester/lists/my-list",
     enabled: 1,
     quality_profile_id: null,
+    root_folder_id: null,
     min_rating: null,
     min_votes: null,
     exclude_genres: null,
@@ -51,10 +80,10 @@ async function insertImportList(overrides: Partial<ImportListRow> = {}): Promise
   };
   const result = await db
     .prepare(
-      `INSERT INTO import_lists (name, type, url, enabled, require_review, quality_profile_id, min_rating, min_votes, exclude_genres)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO import_lists (name, type, url, enabled, require_review, quality_profile_id, root_folder_id, min_rating, min_votes, exclude_genres)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(row.name, row.type, row.url, row.enabled, row.require_review, row.quality_profile_id, row.min_rating, row.min_votes, row.exclude_genres);
+    .run(row.name, row.type, row.url, row.enabled, row.require_review, row.quality_profile_id, row.root_folder_id, row.min_rating, row.min_votes, row.exclude_genres);
   return { id: Number(result.lastInsertRowid), last_synced_at: null, last_added_count: null, last_error: null, created_at: "", ...row };
 }
 
@@ -163,6 +192,12 @@ describe("syncImportList — trakt", () => {
 
     await syncImportList(await insertImportList({ type: "trakt", url: "https://trakt.tv/users/tester/watchlist" }));
     expect(fetchMock.mock.calls[0][0]).toBe("https://api.trakt.tv/users/tester/watchlist?extended=full");
+    // Cloudflare in front of api.trakt.tv blocks Node's default "node" User-Agent outright.
+    expect(fetchMock.mock.calls[0][1].headers).toMatchObject({
+      "User-Agent": expect.stringMatching(/^AoNarr\//),
+      "trakt-api-key": "client-1",
+      "trakt-api-version": "2",
+    });
 
     fetchMock.mockClear();
     await syncImportList(await insertImportList({ type: "trakt", url: "https://trakt.tv/users/tester/lists/faves" }));
@@ -190,20 +225,29 @@ describe("syncImportList — trakt", () => {
         ],
       })
     );
-    fetchSeriesEpisodesFor.mockResolvedValue([{ seasonNumber: 1, episodeNumber: 1, title: "Pilot", airDate: "2023-01-01", overview: null }]);
+    fetchSeriesEpisodesFor.mockResolvedValue([
+      { seasonNumber: 0, episodeNumber: 1, title: "Behind the Scenes", airDate: "2022-12-01", overview: null },
+      { seasonNumber: 1, episodeNumber: 1, title: "Pilot", airDate: "2023-01-01", overview: null },
+    ]);
     const list = await insertImportList({ type: "trakt", url: "https://trakt.tv/users/tester/lists/mixed" });
 
     const result = await syncImportList(list);
 
     expect(result).toEqual({ added: 2 });
     const movie = (await db.prepare("SELECT * FROM media_items WHERE title = 'New Movie'").get()) as any;
-    expect(movie).toMatchObject({ type: "movie", sort_title: "new movie", year: 2024 });
+    expect(movie).toMatchObject({ type: "movie", sort_title: "new movie", year: 2024, root_folder_id: rootFolderIds.movie });
     expect(JSON.parse(movie.external_ids)).toEqual({ tmdb: "1001", trakt: "2" });
     const show = (await db.prepare("SELECT * FROM media_items WHERE title = 'New Show'").get()) as any;
     expect(show).toBeTruthy();
-    const episodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").all(show.id)) as any[];
-    expect(episodes).toHaveLength(1);
-    expect(episodes[0].title).toBe("Pilot");
+    expect(show.root_folder_id).toBe(rootFolderIds.series);
+    const episodes = (await db
+      .prepare("SELECT season_number, title, monitored FROM episodes WHERE media_item_id = ? ORDER BY season_number")
+      .all(show.id)) as any[];
+    // Season 0 specials come in unmonitored so they don't flood Wanted.
+    expect(episodes.map((e) => [e.season_number, e.title, Number(e.monitored)])).toEqual([
+      [0, "Behind the Scenes", 0],
+      [1, "Pilot", 1],
+    ]);
   });
 
   it("queues an entry for review instead of adding it when require_review is set", async () => {
@@ -280,6 +324,158 @@ describe("syncImportList — trakt", () => {
     expect(result).toEqual({ added: 1 });
     expect(await db.prepare("SELECT * FROM media_items WHERE title = 'Survivor Movie'").get()).toBeTruthy();
   });
+
+  it("skips items whose media type has no root folder, still adds the rest, and records why", async () => {
+    setSetting("traktClientId", "client-1");
+    await db.prepare("DELETE FROM root_folders WHERE media_type = 'movie'").run();
+    try {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => [
+          { movie: { title: "No Root Movie A", year: 2024, ids: { tmdb: 6101 } } },
+          { movie: { title: "No Root Movie B", year: 2024, ids: { tmdb: 6102 } } },
+          { show: { title: "Has Root Show", year: 2024, ids: { tmdb: 6103 } } },
+        ],
+      }));
+      const list = await insertImportList({ type: "trakt", url: "https://trakt.tv/users/tester/lists/no-root" });
+
+      const result = await syncImportList(list);
+
+      // Partly worked: a warning next to the count, not a failed sync.
+      expect(result).toEqual({ added: 1, warning: "2 item(s) not added: no root folder is configured for movie" });
+      expect(await db.prepare("SELECT id FROM media_items WHERE title = 'No Root Movie A'").get()).toBeUndefined();
+      expect(await db.prepare("SELECT id FROM media_items WHERE title = 'No Root Movie B'").get()).toBeUndefined();
+      const show = (await db.prepare("SELECT * FROM media_items WHERE title = 'Has Root Show'").get()) as any;
+      expect(show.root_folder_id).toBe(rootFolderIds.series);
+      const row = (await db.prepare("SELECT * FROM import_lists WHERE id = ?").get(list.id)) as any;
+      expect(row.last_added_count).toBe(1);
+      expect(row.last_error).toBe("Added 1; 2 item(s) not added: no root folder is configured for movie");
+    } finally {
+      rootFolderIds.movie = await addRootFolder("movie");
+    }
+  });
+
+  it("reports a warning, not a failed sync, when every new item was skipped for lack of a root folder", async () => {
+    setSetting("traktClientId", "client-1");
+    await db.prepare("DELETE FROM root_folders WHERE media_type = 'movie'").run();
+    try {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => [{ movie: { title: "Only No Root Movie", year: 2024, ids: { tmdb: 6111 } } }],
+      }));
+      const list = await insertImportList({ type: "trakt", url: "https://trakt.tv/users/tester/lists/no-root-only" });
+
+      const result = await syncImportList(list);
+
+      expect(result).toEqual({ added: 0, warning: "1 item(s) not added: no root folder is configured for movie" });
+      const row = (await db.prepare("SELECT * FROM import_lists WHERE id = ?").get(list.id)) as any;
+      expect(row.last_added_count).toBe(0);
+      expect(row.last_error).toBe("Added 0; 1 item(s) not added: no root folder is configured for movie");
+    } finally {
+      rootFolderIds.movie = await addRootFolder("movie");
+    }
+  });
+
+  it("uses the list's own root folder for items of its media type, and auto-selects for the others", async () => {
+    setSetting("traktClientId", "client-1");
+    const listMovieFolder = await addRootFolder("movie");
+    try {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => [
+          { movie: { title: "List Folder Movie", year: 2024, ids: { tmdb: 6201 } } },
+          { show: { title: "List Folder Show", year: 2024, ids: { tmdb: 6202 } } },
+        ],
+      }));
+      const { id } = await insertImportList({ type: "trakt", url: "https://trakt.tv/users/tester/lists/own-folder", root_folder_id: listMovieFolder });
+      // As the scheduled sync and the route read it.
+      const list = (await db.prepare("SELECT * FROM import_lists WHERE id = ?").get(id)) as ImportListRow;
+      expect(list.root_folder_id).toBe(listMovieFolder);
+
+      expect(await syncImportList(list)).toEqual({ added: 2 });
+
+      const movie = (await db.prepare("SELECT root_folder_id FROM media_items WHERE title = 'List Folder Movie'").get()) as any;
+      expect(movie.root_folder_id).toBe(listMovieFolder);
+      const show = (await db.prepare("SELECT root_folder_id FROM media_items WHERE title = 'List Folder Show'").get()) as any;
+      expect(show.root_folder_id).toBe(rootFolderIds.series);
+    } finally {
+      await db.prepare("DELETE FROM root_folders WHERE id = ?").run(listMovieFolder);
+    }
+  });
+
+  it("adds a title only once when two lists containing it sync at the same time", async () => {
+    setSetting("traktClientId", "client-1");
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => [{ show: { title: "Raced Show", year: 2024, ids: { tmdb: 6301 } } }] })));
+    // Hold both syncs at their root-folder pick (after each took its existing-ids snapshot and
+    // passed it) until both are there, so neither has seen the other's insert.
+    let arrived = 0;
+    let release!: () => void;
+    const bothArrived = new Promise<void>((resolve) => (release = resolve));
+    rootFolderGate.hook = async () => {
+      if (++arrived === 2) release();
+      await bothArrived;
+    };
+    try {
+      const listA = await insertImportList({ type: "trakt", url: "https://trakt.tv/users/tester/lists/race-a" });
+      const listB = await insertImportList({ type: "trakt", url: "https://trakt.tv/users/tester/watchlist" });
+
+      const [a, b] = await Promise.all([syncImportList(listA), syncImportList(listB)]);
+
+      expect(arrived).toBe(2);
+      expect(a.added + b.added).toBe(1);
+      const count = (await db.prepare("SELECT COUNT(*) AS c FROM media_items WHERE title = 'Raced Show'").get()) as { c: number | string };
+      expect(Number(count.c)).toBe(1);
+    } finally {
+      rootFolderGate.hook = null;
+    }
+  });
+});
+
+describe("insertUnlessTmdbIdExists", () => {
+  it("serializes the existence check and the insert, so concurrent callers never both insert", async () => {
+    const { insertUnlessTmdbIdExists } = await import("../src/services/importLists.js");
+    let inserts = 0;
+    const insert = async () => {
+      // yield between the caller's check and its insert, where an unserialized caller would interleave
+      await Promise.resolve();
+      await Promise.resolve();
+      inserts++;
+      return db
+        .prepare(`INSERT INTO media_items (type, title, sort_title, external_ids, monitored, status) VALUES ('movie', 'Locked Movie', 'locked movie', ?, 1, 'missing')`)
+        .run(JSON.stringify({ tmdb: "6401" }));
+    };
+
+    const results = await Promise.all([
+      insertUnlessTmdbIdExists("movie", "6401", insert),
+      insertUnlessTmdbIdExists("movie", "6401", insert),
+      insertUnlessTmdbIdExists("movie", "6401", insert),
+    ]);
+
+    expect(inserts).toBe(1);
+    expect(results.filter((r) => r !== null)).toHaveLength(1);
+  });
+
+  it("keeps the lock usable after a caller's insert throws", async () => {
+    const { insertUnlessTmdbIdExists } = await import("../src/services/importLists.js");
+
+    await expect(
+      insertUnlessTmdbIdExists("movie", "6402", async () => {
+        throw new Error("insert failed");
+      })
+    ).rejects.toThrow("insert failed");
+    await expect(insertUnlessTmdbIdExists("movie", "6402", async () => "inserted")).resolves.toBe("inserted");
+  });
+
+  it("matches the tmdb id exactly, not as a substring of a longer id", async () => {
+    const { libraryHasTmdbId } = await import("../src/services/importLists.js");
+    await db
+      .prepare(`INSERT INTO media_items (type, title, sort_title, external_ids, monitored, status) VALUES ('movie', 'Longer Id', 'longer id', ?, 1, 'missing')`)
+      .run(JSON.stringify({ tmdb: "164031", imdb: "tt0006403" }));
+
+    expect(await libraryHasTmdbId("movie", "6403")).toBe(false);
+    expect(await libraryHasTmdbId("movie", "164031")).toBe(true);
+    expect(await libraryHasTmdbId("series", "164031")).toBe(false);
+  });
 });
 
 describe("syncImportList — imdb", () => {
@@ -294,6 +490,10 @@ describe("syncImportList — imdb", () => {
   function csvRow(fields: Record<string, string>): string {
     const cols = csvHeader.split(",").map((h) => csvField(fields[h] ?? ""));
     return cols.join(",");
+  }
+
+  function csvResponse(csv: string) {
+    return { ok: true, status: 200, headers: new Headers({ "content-type": "text/csv" }), text: async () => csv };
   }
 
   it("fails when the URL isn't a recognized IMDb list URL", async () => {
@@ -315,7 +515,7 @@ describe("syncImportList — imdb", () => {
       csvHeader,
       csvRow({ Title: "The Matrix", "Title Type": "Movie", Year: "1999", "IMDb Rating": "8.7", "Num Votes": "1,900,000", Genres: "Action, Sci-Fi" }),
     ].join("\n");
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, text: async () => csv }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(csvResponse(csv)));
     searchMetadata.mockResolvedValue([
       { title: "The Matrix", year: 1999, overview: "A hacker discovers reality is a simulation.", posterUrl: "https://img/matrix.jpg", externalIds: { tmdb: "603" } },
     ]);
@@ -330,7 +530,7 @@ describe("syncImportList — imdb", () => {
 
   it("treats a 'Series'/'TV Series' Title Type as a series and fetches its episodes", async () => {
     const csv = [csvHeader, csvRow({ Title: "Some Show", "Title Type": "TV Series", Year: "2020" })].join("\n");
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, text: async () => csv }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(csvResponse(csv)));
     searchMetadata.mockResolvedValue([{ title: "Some Show", year: 2020, overview: null, posterUrl: null, externalIds: { tmdb: "777" } }]);
     fetchSeriesEpisodesFor.mockResolvedValue([{ seasonNumber: 1, episodeNumber: 1, title: "Ep 1", airDate: null, overview: null }]);
 
@@ -343,7 +543,7 @@ describe("syncImportList — imdb", () => {
 
   it("queues the raw title for review when metadata search finds no match at all", async () => {
     const csv = [csvHeader, csvRow({ Title: "Totally Obscure Title", "Title Type": "Movie", Year: "2024" })].join("\n");
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, text: async () => csv }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(csvResponse(csv)));
     searchMetadata.mockResolvedValue([]);
 
     const result = await syncImportList(await insertImportList({ type: "imdb", url: "https://www.imdb.com/list/ls000000003/" }));
@@ -354,7 +554,7 @@ describe("syncImportList — imdb", () => {
 
   it("wires the CSV Genres column through to exclude_genres end-to-end, filtering before ever calling searchMetadata", async () => {
     const csv = [csvHeader, csvRow({ Title: "Scary Movie", "Title Type": "Movie", Year: "2024", Genres: "Horror" })].join("\n");
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, text: async () => csv }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(csvResponse(csv)));
     const list = await insertImportList({ type: "imdb", url: "https://www.imdb.com/list/ls000000005/", exclude_genres: JSON.stringify(["horror"]) });
 
     const result = await syncImportList(list);
@@ -366,12 +566,73 @@ describe("syncImportList — imdb", () => {
   it("skips a row whose title already has a possible duplicate in the library", async () => {
     await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, status) VALUES ('movie','Dune','dune',2021,1,'unknown')`).run();
     const csv = [csvHeader, csvRow({ Title: "Dune", "Title Type": "Movie", Year: "2021" })].join("\n");
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, text: async () => csv }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(csvResponse(csv)));
 
     const result = await syncImportList(await insertImportList({ type: "imdb", url: "https://www.imdb.com/list/ls000000004/" }));
 
     expect(result).toEqual({ added: 0 });
     expect(searchMetadata).not.toHaveBeenCalled();
+  });
+
+  it("reports IMDb's 202 bot challenge as an error instead of a clean 0-item sync", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 202, headers: new Headers({ "x-amzn-waf-action": "challenge" }), text: async () => "" })
+    );
+    const list = await insertImportList({ type: "imdb", url: "https://www.imdb.com/list/ls000000006/" });
+
+    const result = await syncImportList(list);
+
+    expect(result.added).toBe(0);
+    expect(result.error).toMatch(/IMDb refused the list export \(HTTP 202/);
+    const row = (await db.prepare("SELECT last_error FROM import_lists WHERE id = ?").get(list.id)) as any;
+    expect(row.last_error).toBe(result.error);
+  });
+
+  it("reports a 200 response that isn't the CSV export as an error", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(csvResponse("")));
+
+    const result = await syncImportList(await insertImportList({ type: "imdb", url: "https://www.imdb.com/list/ls000000007/" }));
+
+    expect(result.error).toContain("did not return a CSV");
+  });
+
+  it("accepts a real but empty list export (header row only) as a clean sync", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(csvResponse(`﻿${csvHeader}\n`)));
+
+    const result = await syncImportList(await insertImportList({ type: "imdb", url: "https://www.imdb.com/list/ls000000008/" }));
+
+    expect(result).toEqual({ added: 0 });
+  });
+
+  it("does not re-add a title on the next sync when IMDb's title differs from the metadata match", async () => {
+    const csv = [csvHeader, csvRow({ Title: "Harry Potter and the Sorcerer's Stone", "Title Type": "Movie", Year: "2001" })].join("\n");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(csvResponse(csv)));
+    searchMetadata.mockResolvedValue([
+      { title: "Harry Potter and the Philosopher's Stone", year: 2001, overview: null, posterUrl: null, externalIds: { tmdb: "671" } },
+    ]);
+    const list = await insertImportList({ type: "imdb", url: "https://www.imdb.com/list/ls000000009/" });
+
+    expect(await syncImportList(list)).toEqual({ added: 1 });
+    expect(await syncImportList(list)).toEqual({ added: 0 });
+
+    const rows = (await db.prepare("SELECT root_folder_id FROM media_items WHERE title = 'Harry Potter and the Philosopher''s Stone'").all()) as any[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].root_folder_id).toBe(rootFolderIds.movie);
+  });
+
+  it("honors an exclusion keyed on the metadata match's id and title, not IMDb's", async () => {
+    await db
+      .prepare("INSERT INTO import_exclusions (type, title, year, external_id, external_provider) VALUES ('movie', 'Provider Spelling', 2019, '6501', 'tmdb')")
+      .run();
+    const csv = [csvHeader, csvRow({ Title: "IMDb Spelling", "Title Type": "Movie", Year: "2019" })].join("\n");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(csvResponse(csv)));
+    searchMetadata.mockResolvedValue([{ title: "Provider Spelling", year: 2019, overview: null, posterUrl: null, externalIds: { tmdb: "6501" } }]);
+
+    const result = await syncImportList(await insertImportList({ type: "imdb", url: "https://www.imdb.com/list/ls000000010/" }));
+
+    expect(result).toEqual({ added: 0 });
+    expect(await db.prepare("SELECT id FROM media_items WHERE title = 'Provider Spelling'").get()).toBeUndefined();
   });
 });
 
@@ -417,6 +678,7 @@ describe("syncImportList — lastfm", () => {
     expect(result).toEqual({ added: 1 });
     const artist = (await db.prepare("SELECT * FROM media_items WHERE title = 'Band Name'").get()) as any;
     expect(artist.type).toBe("artist");
+    expect(artist.root_folder_id).toBe(rootFolderIds.artist);
     const albums = (await db.prepare("SELECT * FROM sub_items WHERE media_item_id = ?").all(artist.id)) as any[];
     expect(albums).toHaveLength(1);
     expect(albums[0].title).toBe("Album One");
@@ -466,6 +728,49 @@ describe("syncImportList — tmdb", () => {
     await syncImportList(await insertImportList({ type: "tmdb", url: "98765" }));
 
     expect(fetchMock.mock.calls[0][0]).toContain("/3/list/98765");
+  });
+
+  it("reads every page of the list, not just the first 20 items", async () => {
+    setSetting("tmdbApiKey", "key-1");
+    const pages: Record<string, unknown[]> = {
+      "1": [
+        { media_type: "movie", id: 7101, title: "Paged Movie One", release_date: "2020-01-01" },
+        { media_type: "movie", id: 7102, title: "Paged Movie Two", release_date: "2020-01-01" },
+      ],
+      "2": [{ media_type: "tv", id: 7103, name: "Paged Show Three", first_air_date: "2020-01-01" }],
+    };
+    const fetchMock = vi.fn(async (url: string) => {
+      const page = new URL(url).searchParams.get("page") ?? "1";
+      return { ok: true, json: async () => ({ item_count: 3, page: Number(page), total_pages: 2, items: pages[page] ?? [] }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await syncImportList(await insertImportList({ type: "tmdb", url: "https://www.themoviedb.org/list/7100" }));
+
+    expect(result).toEqual({ added: 3 });
+    expect(fetchMock.mock.calls.map((c) => new URL(c[0] as string).searchParams.get("page"))).toEqual(["1", "2"]);
+    const show = (await db.prepare("SELECT * FROM media_items WHERE title = 'Paged Show Three'").get()) as any;
+    expect(show).toMatchObject({ type: "series", root_folder_id: rootFolderIds.series });
+    const movie = (await db.prepare("SELECT root_folder_id FROM media_items WHERE title = 'Paged Movie Two'").get()) as any;
+    expect(movie.root_folder_id).toBe(rootFolderIds.movie);
+  });
+
+  it("keeps paging by item_count when the response carries no total_pages", async () => {
+    setSetting("tmdbApiKey", "key-1");
+    const pages: Record<string, unknown[]> = {
+      "1": [{ media_type: "movie", id: 7201, title: "Count Paged One", release_date: "2020-01-01" }],
+      "2": [{ media_type: "movie", id: 7202, title: "Count Paged Two", release_date: "2020-01-01" }],
+    };
+    const fetchMock = vi.fn(async (url: string) => {
+      const page = new URL(url).searchParams.get("page") ?? "1";
+      return { ok: true, json: async () => ({ item_count: 2, items: pages[page] ?? [] }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await syncImportList(await insertImportList({ type: "tmdb", url: "7200" }));
+
+    expect(result).toEqual({ added: 2 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("distinguishes movies from TV shows via media_type, maps genre ids to names for filtering", async () => {

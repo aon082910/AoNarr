@@ -3,10 +3,12 @@ import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
-import type { QualityProfile } from "../types.js";
+import type { QualityProfile, RootFolder } from "../types.js";
 import { PlusCircleIcon, RotateCcwIcon } from "../components/NavIcons.js";
 import { TrashIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
+import { formatServerTimestamp } from "../utils/format.js";
+import { notify } from "../utils/notify.js";
 
 interface ImportList {
   id: number;
@@ -15,6 +17,7 @@ interface ImportList {
   url: string;
   enabled: 0 | 1;
   quality_profile_id: number | null;
+  root_folder_id: number | null;
   require_review: 0 | 1;
   last_synced_at: string | null;
   last_added_count: number | null;
@@ -42,6 +45,22 @@ function parseGenresList(json: string | null): string {
 }
 
 const TYPE_LABELS: Record<ImportList["type"], string> = { trakt: "Trakt", imdb: "IMDb", lastfm: "Last.fm", tmdb: "TMDB" };
+/** The media types each type of list adds items of (services/importLists.ts's IMPORT_LIST_MEDIA_TYPES). */
+const LIST_MEDIA_TYPES: Record<ImportList["type"], string[]> = { trakt: ["movie", "series"], imdb: ["movie", "series"], tmdb: ["movie", "series"], lastfm: ["artist"] };
+const AUTO_ROOT_FOLDER_LABEL = "Auto — the type's root folder with the most free space";
+const FOLDER_TYPE_LABELS: Record<string, string> = { movie: "Movies", series: "Shows", artist: "Music" };
+
+function folderLabel(folder: RootFolder): string {
+  const name = folder.name ? `${folder.name} — ${folder.path}` : folder.path;
+  return `${name} (${FOLDER_TYPE_LABELS[folder.mediaType] ?? folder.mediaType})`;
+}
+
+/** A list's last result, stored in last_error: a sync that added some items and skipped others
+ * reads "Added N; ...", with N its last_added_count, and is a warning rather than a failure. */
+function isPartialSyncWarning(list: ImportList): boolean {
+  return list.last_added_count != null && !!list.last_error?.startsWith(`Added ${list.last_added_count}; `);
+}
+
 const URL_PLACEHOLDERS: Record<ImportList["type"], string> = {
   trakt: "https://trakt.tv/users/you/lists/to-watch (or .../watchlist)",
   imdb: "https://www.imdb.com/list/ls123456789/",
@@ -58,6 +77,8 @@ export default function ImportLists() {
   const [type, setType] = useState<ImportList["type"]>("trakt");
   const [url, setUrl] = useState("");
   const [qualityProfileId, setQualityProfileId] = useState<number | "">("");
+  const [rootFolders, setRootFolders] = useState<RootFolder[]>([]);
+  const [rootFolderId, setRootFolderId] = useState<number | "">("");
   const [requireReview, setRequireReview] = useState(false);
   const [minRating, setMinRating] = useState("");
   const [minVotes, setMinVotes] = useState("");
@@ -78,23 +99,42 @@ export default function ImportLists() {
       setProfiles(p);
       if (p.length > 0) setQualityProfileId(p[0].id);
     });
+    api.get<RootFolder[]>("/root-folders").then(setRootFolders);
   }, []);
+
+  function foldersFor(listType: ImportList["type"]): RootFolder[] {
+    return rootFolders.filter((f) => LIST_MEDIA_TYPES[listType].includes(f.mediaType));
+  }
+
+  function changeType(next: ImportList["type"]) {
+    setType(next);
+    // A folder of a type the new list doesn't add would only be refused by the server.
+    if (rootFolderId !== "" && !foldersFor(next).some((f) => f.id === rootFolderId)) setRootFolderId("");
+  }
 
   async function addList(e: FormEvent) {
     e.preventDefault();
     if (!name || !url) return;
-    await api.post("/import-lists", {
-      name,
-      type,
-      url,
-      qualityProfileId: qualityProfileId || null,
-      requireReview,
-      minRating: minRating || null,
-      minVotes: minVotes || null,
-      excludeGenres: excludeGenres || null,
-    });
+    try {
+      await api.post("/import-lists", {
+        name,
+        type,
+        url,
+        qualityProfileId: qualityProfileId || null,
+        rootFolderId: rootFolderId === "" ? null : rootFolderId,
+        requireReview,
+        minRating: minRating || null,
+        minVotes: minVotes || null,
+        excludeGenres: excludeGenres || null,
+      });
+    } catch (err) {
+      // Refused (a root folder removed meanwhile, say): the form stays open to fix it.
+      notify.error((err as Error).message);
+      return;
+    }
     setName("");
     setUrl("");
+    setRootFolderId("");
     setMinRating("");
     setMinVotes("");
     setExcludeGenres("");
@@ -110,6 +150,16 @@ export default function ImportLists() {
   async function saveField(list: ImportList, field: "name" | "url", value: string) {
     if (!value.trim() || value === list[field]) return;
     await api.patch(`/import-lists/${list.id}`, { [field]: value.trim() });
+    load();
+  }
+
+  async function saveRootFolder(list: ImportList, value: string) {
+    setError(null);
+    try {
+      await api.patch(`/import-lists/${list.id}`, { rootFolderId: value ? Number(value) : null });
+    } catch (e) {
+      setError((e as Error).message);
+    }
     load();
   }
 
@@ -132,8 +182,9 @@ export default function ImportLists() {
     setSyncingId(id);
     setError(null);
     try {
-      const result = await api.post<{ added: number; error?: string }>(`/import-lists/${id}/sync`, {});
+      const result = await api.post<{ added: number; error?: string; warning?: string }>(`/import-lists/${id}/sync`, {});
       if (result.error) setError(result.error);
+      else if (result.warning) notify.info(`Added ${result.added} item(s); ${result.warning}`, 8000);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -161,7 +212,7 @@ export default function ImportLists() {
             <label htmlFor="importlists-name-1">Name</label>
             <input id="importlists-name-1" value={name} onChange={(e) => setName(e.target.value)} placeholder="My watchlist" required />
             <label htmlFor="importlists-type-2">Type</label>
-            <select id="importlists-type-2" value={type} onChange={(e) => setType(e.target.value as ImportList["type"])}>
+            <select id="importlists-type-2" value={type} onChange={(e) => changeType(e.target.value as ImportList["type"])}>
               <option value="trakt">Trakt</option>
               <option value="imdb">IMDb</option>
               <option value="lastfm">Last.fm</option>
@@ -181,6 +232,19 @@ export default function ImportLists() {
                 </select>
               </>
             )}
+            <label htmlFor="importlists-root-folder-8">Root folder</label>
+            <select id="importlists-root-folder-8" value={rootFolderId} onChange={(e) => setRootFolderId(e.target.value ? Number(e.target.value) : "")}>
+              <option value="">{AUTO_ROOT_FOLDER_LABEL}</option>
+              {foldersFor(type).map((f) => (
+                <option key={f.id} value={f.id}>
+                  {folderLabel(f)}
+                </option>
+              ))}
+            </select>
+            <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+              Where this list's items are added. A list of movies and shows uses a movie folder for its
+              movies only, and picks automatically for its shows (or the other way round).
+            </p>
             {listSupportsFilters(type) && (
               <>
                 <label htmlFor="importlists-minimum-rating-0-10-optional-5">Minimum rating (0-10, optional)</label>
@@ -227,6 +291,7 @@ export default function ImportLists() {
               {listHeader("name", "Name")}
               {listHeader("type", "Type")}
               <th>URL</th>
+              <th>Root folder</th>
               {listHeader("enabled", "Enabled")}
               <th>Review before add</th>
               <th>Filters</th>
@@ -260,6 +325,22 @@ export default function ImportLists() {
                     title={l.url}
                     style={{ fontSize: "0.8rem", minWidth: 160 }}
                   />
+                </td>
+                <td>
+                  <select
+                    value={l.root_folder_id ?? ""}
+                    onChange={(e) => saveRootFolder(l, e.target.value)}
+                    title="Where this list's items are added"
+                    aria-label="Root folder"
+                    style={{ fontSize: "0.8rem", minWidth: 120 }}
+                  >
+                    <option value="">Auto</option>
+                    {foldersFor(l.type).map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {folderLabel(f)}
+                      </option>
+                    ))}
+                  </select>
                 </td>
                 <td>
                   <input type="checkbox" checked={!!l.enabled} onChange={() => toggleEnabled(l)} />
@@ -305,10 +386,12 @@ export default function ImportLists() {
                     <span style={{ color: "var(--muted)", fontSize: "0.8rem" }}>N/A</span>
                   )}
                 </td>
-                <td>{l.last_synced_at ?? "Never"}</td>
+                <td>{l.last_synced_at ? formatServerTimestamp(l.last_synced_at) : "Never"}</td>
                 <td>
                   {l.last_error ? (
-                    <span style={{ color: "var(--danger)" }}>{l.last_error}</span>
+                    <span style={{ color: isPartialSyncWarning(l) ? "#e0b03c" : "var(--danger)" }}>
+                      {l.last_error}
+                    </span>
                   ) : l.last_added_count != null ? (
                     `+${l.last_added_count}`
                   ) : (

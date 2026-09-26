@@ -13,20 +13,43 @@ import { decodeSlskdDownloadUrl } from "./soulseek.js";
 import { getSetting } from "./settingsStore.js";
 import { MEDIA_TYPES } from "./mediaTypes.js";
 
-/** Streams a fetch() body to disk with backpressure, and on any failure closes the write stream
- * and removes the partial file — a leftover partial in downloadsDir would otherwise be picked up
- * by the importer's fuzzy filename match as if it were a finished download. */
-async function saveBodyToFile(body: ReadableStream<Uint8Array>, dest: string, onChunk?: (bytes: number) => void): Promise<void> {
+/** Streams a fetch() body to disk with backpressure. The data goes to `partial` and is only renamed
+ * to `dest` once complete: a file under its final name in downloadsDir is always a finished download,
+ * so the importer's fuzzy filename match can't pick one up mid-write, and a process killed mid-download
+ * leaves only a `.part` file behind. On any failure the partial is removed. */
+async function saveBodyToFile(
+  body: ReadableStream<Uint8Array>,
+  dest: string,
+  partial: string,
+  onChunk?: (bytes: number) => void
+): Promise<void> {
   const source = Readable.fromWeb(body as any);
   if (onChunk) source.on("data", (chunk: Buffer) => onChunk(chunk.length));
-  const out = fs.createWriteStream(dest);
+  const out = fs.createWriteStream(partial);
   try {
     await pipeline(source, out);
+    await fs.promises.rename(partial, dest);
   } catch (err) {
     out.destroy();
-    await fs.promises.unlink(dest).catch(() => {});
+    await fs.promises.unlink(partial).catch(() => {});
     throw err;
   }
+}
+
+/** Where an in-process job writes its `fileIndex`th file until it's complete: the downloads root
+ * (the same filesystem as every job folder beneath it, so the final rename is atomic), named by the
+ * job's id so a job lost to a restart can still have its leftover found and removed. */
+function partialPath(downloadId: string, fileIndex: number): string {
+  return path.join(config.downloadsDir, `.aonarr-${downloadId}-${fileIndex}.part`);
+}
+
+/** Bounds a download-client API call. A client that accepts the connection but never answers would
+ * otherwise hold its own queue poll (and the health/test routes) for undici's 5-minute default. Not for file bodies: a large download can
+ * legitimately run far longer. */
+const CLIENT_API_TIMEOUT_MS = 30_000;
+
+function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(url, { ...init, signal: init.signal ?? AbortSignal.timeout(CLIENT_API_TIMEOUT_MS) });
 }
 
 /** Debrid services can sit in a "waiting"/"queued" state indefinitely for a dead torrent — give
@@ -49,6 +72,14 @@ export interface QueueStatusUpdate {
   clientTitle?: string;
   progress: number; // 0-1
   status: "downloading" | "completed" | "failed";
+  /** True when the client itself reports this download as active but receiving no data (no peers /
+   * no metadata). Never set for a download waiting its turn in the client's own queue, paused, or
+   * being checked — those are healthy, just not running yet. */
+  stalled?: boolean;
+  /** Set on a "failed" update when the adapter knows why. DOWNLOAD_INTERRUPTED_REASON means the
+   * download was cut off by an AoNarr restart, not rejected at the client: the release did nothing
+   * wrong, so it should be retried without being blocklisted. */
+  failureReason?: string;
   /** Absolute path this download's data lives at, in the CLIENT's own filesystem namespace — as
    * reported directly by the client's own API (qBittorrent's save_path/content_path, SABnzbd's
    * history "storage" field). Set whenever the adapter has one on hand, regardless of status —
@@ -75,9 +106,9 @@ export interface DownloadClientAdapter {
     protocol?: SearchResult["protocol"]
   ): Promise<GrabResult>;
   getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]>;
-  /** Not every backend has a real queue to reorder (the in-process http/ytdlp adapters download
-   * sequentially with nothing to prioritize) — implementing this is optional; callers check for
-   * its presence before offering the UI action. */
+  /** Not every backend has a real queue to reorder (the in-process http/ytdlp adapters start each
+   * download the moment it's grabbed, with no queue of their own) — implementing this is optional;
+   * callers check for its presence before offering the UI action. */
   setPriority?(client: DownloadClient, downloadId: string, priority: "top" | "normal"): Promise<void>;
   /** Torrent-specific health: seed ratio, upload/download totals, ratio-limit config. Only
    * meaningful for backends that actually seed (qBittorrent) — usenet clients have no equivalent
@@ -130,7 +161,7 @@ async function resolveDownloadSource(downloadUrl: string): Promise<ResolvedDownl
 
   let url = downloadUrl;
   for (let redirects = 0; redirects < 5; redirects++) {
-    const res = await fetch(url, { redirect: "manual" });
+    const res = await apiFetch(url, { redirect: "manual" });
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get("location");
       if (!location) throw new Error(`Redirect from "${url}" had no Location header`);
@@ -149,6 +180,25 @@ function baseUrl(client: DownloadClient): string {
   return `${scheme}://${client.host}:${client.port}`;
 }
 
+/** One SABnzbd API call. SABnzbd reports a bad or missing API key as HTTP 200 with
+ * `{status: false, error}`, which reads like any other JSON body unless it's checked for. */
+async function sabnzbdApi(client: DownloadClient, params: Record<string, string>): Promise<any> {
+  const url = new URL(`${baseUrl(client)}/api`);
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+  url.searchParams.set("apikey", client.apiKey ?? "");
+  url.searchParams.set("output", "json");
+  const res = await apiFetch(url.toString());
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  let body: any;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error("Unexpected (non-JSON) response — check host/port/API key.");
+  }
+  if (body?.error || body?.status === false) throw new Error(String(body.error ?? "Request rejected — check the API key."));
+  return body;
+}
+
 /**
  * Radarr-style "Test" on the Download Client edit form — validates connectivity/credentials
  * against the already-saved row (same pattern as indexers' own POST /:id/test) without needing to
@@ -159,7 +209,7 @@ function baseUrl(client: DownloadClient): string {
 export async function testDownloadClientConnection(client: DownloadClient): Promise<void> {
   switch (client.type) {
     case "qbittorrent": {
-      const res = await fetch(`${baseUrl(client)}/api/v2/auth/login`, {
+      const res = await apiFetch(`${baseUrl(client)}/api/v2/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ username: client.username ?? "", password: client.password ?? "" }),
@@ -169,19 +219,15 @@ export async function testDownloadClientConnection(client: DownloadClient): Prom
       return;
     }
     case "sabnzbd": {
-      const url = new URL(`${baseUrl(client)}/api`);
-      url.searchParams.set("mode", "version");
-      url.searchParams.set("apikey", client.apiKey ?? "");
-      url.searchParams.set("output", "json");
-      const res = await fetch(url.toString());
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body: any = await res.json();
-      if (body?.error) throw new Error(body.error);
+      const body = await sabnzbdApi(client, { mode: "version" });
       if (!body?.version) throw new Error("Unexpected response — check host/port/API key.");
+      // SABnzbd answers "version" without checking the API key at all, so only a call that needs
+      // the full key can tell a wrong one apart from a right one.
+      await sabnzbdApi(client, { mode: "queue", limit: "1" });
       return;
     }
     case "realdebrid": {
-      const res = await fetch("https://api.real-debrid.com/rest/1.0/user", {
+      const res = await apiFetch("https://api.real-debrid.com/rest/1.0/user", {
         headers: { Authorization: `Bearer ${client.apiKey}` },
       });
       if (!res.ok) throw new Error(res.status === 401 ? "API token rejected." : `HTTP ${res.status}`);
@@ -191,14 +237,14 @@ export async function testDownloadClientConnection(client: DownloadClient): Prom
       const url = new URL("https://api.alldebrid.com/v4/user");
       url.searchParams.set("agent", "aonarr");
       url.searchParams.set("apikey", client.apiKey ?? "");
-      const res = await fetch(url.toString());
+      const res = await apiFetch(url.toString());
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body: any = await res.json();
       if (body.status === "error") throw new Error(body.error?.message ?? "API key rejected.");
       return;
     }
     case "torbox": {
-      const res = await fetch("https://api.torbox.app/v1/api/user/me", {
+      const res = await apiFetch("https://api.torbox.app/v1/api/user/me", {
         headers: { Authorization: `Bearer ${client.apiKey}` },
       });
       if (!res.ok) throw new Error(res.status === 401 ? "API key rejected." : `HTTP ${res.status}`);
@@ -207,7 +253,7 @@ export async function testDownloadClientConnection(client: DownloadClient): Prom
       return;
     }
     case "slskd": {
-      const res = await fetch(`${baseUrl(client)}/api/v0/transfers/downloads`, {
+      const res = await apiFetch(`${baseUrl(client)}/api/v0/transfers/downloads`, {
         headers: client.apiKey ? { "X-API-Key": client.apiKey } : {},
       });
       if (!res.ok) throw new Error(res.status === 401 ? "API key rejected." : `HTTP ${res.status}`);
@@ -233,6 +279,16 @@ export async function testDownloadClientConnection(client: DownloadClient): Prom
 
 const QBIT_TAG = "aonarr";
 const QBIT_PENDING_TAG_PREFIX = "aonarr-pending-";
+
+/** States in which a torrent can already report progress 1 while its data isn't ready to import:
+ * "moving" is qBittorrent relocating it out of the "Keep incomplete torrents in" folder (content_path
+ * keeps naming the old location until the move ends, and a cross-filesystem move takes minutes), the
+ * checking states are a recheck whose verdict isn't in yet, and missingFiles has no data at all. */
+const QBIT_UNSETTLED_STATES = new Set(["moving", "checkingUP", "checkingDL", "checkingResumeData", "allocating", "metaDL", "missingFiles", "unknown"]);
+
+/** Started and allowed to run, but getting nothing: no metadata from any peer yet, or no peer
+ * sending data. queuedDL (waiting for a slot) and the paused/checking states are not stalled. */
+const QBIT_STALLED_STATES = new Set(["metaDL", "forcedMetaDL", "stalledDL"]);
 
 function base32ToHex(value: string): string {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -273,7 +329,7 @@ class QBittorrentAdapter implements DownloadClientAdapter {
   private async authedFetch(client: DownloadClient, url: string, init: RequestInit = {}): Promise<Response> {
     const attempt = async () => {
       const cookie = await this.login(client);
-      return fetch(url, { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Cookie: cookie } });
+      return apiFetch(url, { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Cookie: cookie } });
     };
     let res = await attempt();
     if (res.status === 403) {
@@ -287,7 +343,7 @@ class QBittorrentAdapter implements DownloadClientAdapter {
     const cached = this.cookieCache.get(client.id);
     if (cached) return cached;
 
-    const res = await fetch(`${baseUrl(client)}/api/v2/auth/login`, {
+    const res = await apiFetch(`${baseUrl(client)}/api/v2/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -368,10 +424,12 @@ class QBittorrentAdapter implements DownloadClientAdapter {
     // hash a magnet's btih carries (and so a queue row keyed by it) only shows up as infohash_v1.
     const byV1Hash = new Map<string, QueueStatusUpdate>();
     for (const t of torrents) {
+      const status = t.progress >= 1 && !QBIT_UNSETTLED_STATES.has(t.state) ? "completed" : t.state === "error" ? "failed" : "downloading";
       const update: QueueStatusUpdate = {
         downloadId: t.hash,
         progress: t.progress ?? 0,
-        status: t.progress >= 1 ? "completed" : t.state === "error" ? "failed" : "downloading",
+        status,
+        ...(status === "downloading" && QBIT_STALLED_STATES.has(t.state) ? { stalled: true } : {}),
         // content_path (API v2.8.4+) points straight at the torrent's actual file/folder; save_path
         // is only the download root it was saved under. Older qBittorrent builds lack content_path
         // entirely, so fall back to save_path rather than reporting no path at all.
@@ -443,7 +501,9 @@ class QBittorrentAdapter implements DownloadClientAdapter {
     // Only a torrent that's actually finished downloading and seeding (never one still fetching,
     // "uploading"/"stalledUP"/"queuedUP"/"pausedUP" states) is eligible — same reasoning as
     // qBittorrent's own state machine, so this can't accidentally remove an in-progress download.
-    const seedingStates = new Set(["uploading", "stalledUP", "queuedUP", "pausedUP", "forcedUP"]);
+    // qBittorrent 5 renamed pausedUP to stoppedUP (which is also what its own "Stop torrent"
+    // share-limit action leaves behind); both are listed for older and newer builds.
+    const seedingStates = new Set(["uploading", "stalledUP", "queuedUP", "pausedUP", "stoppedUP", "forcedUP"]);
     // Only AoNarr's own torrents — its tag, or its configured category — never everything on a
     // qBittorrent shared with Sonarr/Radarr or the user's own manual torrents (removing those on
     // AoNarr's seed goal can mean hit-and-run penalties on their private trackers).
@@ -488,9 +548,12 @@ class SabnzbdAdapter implements DownloadClientAdapter {
     url.searchParams.set("output", "json");
     if (category) url.searchParams.set("cat", category);
 
-    const res = await fetch(url.toString());
+    const res = await apiFetch(url.toString());
     if (!res.ok) throw new Error(`SABnzbd add failed: HTTP ${res.status}`);
     const body: any = await res.json();
+    // A rejected key comes back as HTTP 200 {status: false, error}; taking that as a grab would
+    // leave a queue row polling for a job SABnzbd never created.
+    if (body?.error || body?.status === false) throw new Error(`SABnzbd add failed: ${body.error ?? "rejected"}`);
     const downloadId = body?.nzo_ids?.[0] ?? downloadUrl;
     return { downloadId };
   }
@@ -512,9 +575,10 @@ class SabnzbdAdapter implements DownloadClientAdapter {
     queueUrl.searchParams.set("mode", "queue");
     queueUrl.searchParams.set("apikey", client.apiKey ?? "");
     queueUrl.searchParams.set("output", "json");
-    const queueRes = await fetch(queueUrl.toString());
+    const queueRes = await apiFetch(queueUrl.toString());
     if (!queueRes.ok) throw new Error(`SABnzbd status failed: HTTP ${queueRes.status}`);
     const queueBody: any = await queueRes.json();
+    if (queueBody?.error || queueBody?.status === false) throw new Error(`SABnzbd status failed: ${queueBody.error ?? "rejected"}`);
     const slots: any[] = queueBody?.queue?.slots ?? [];
 
     const updates: QueueStatusUpdate[] = [];
@@ -535,7 +599,7 @@ class SabnzbdAdapter implements DownloadClientAdapter {
       historyUrl.searchParams.set("apikey", client.apiKey ?? "");
       historyUrl.searchParams.set("output", "json");
       historyUrl.searchParams.set("nzo_ids", missingIds.join(","));
-      const historyRes = await fetch(historyUrl.toString());
+      const historyRes = await apiFetch(historyUrl.toString());
       if (historyRes.ok) {
         const historyBody: any = await historyRes.json();
         const historySlots: any[] = historyBody?.history?.slots ?? [];
@@ -578,7 +642,7 @@ class SabnzbdAdapter implements DownloadClientAdapter {
     url.searchParams.set("value2", priority === "top" ? "2" : "0");
     url.searchParams.set("apikey", client.apiKey ?? "");
     url.searchParams.set("output", "json");
-    const res = await fetch(url.toString());
+    const res = await apiFetch(url.toString());
     if (!res.ok) throw new Error(`SABnzbd priority change failed: HTTP ${res.status}`);
   }
 
@@ -601,7 +665,7 @@ class SabnzbdAdapter implements DownloadClientAdapter {
         if (mode === "history") url.searchParams.set("del_files", deleteFiles ? "1" : "0");
         url.searchParams.set("apikey", client.apiKey ?? "");
         url.searchParams.set("output", "json");
-        const res = await fetch(url.toString());
+        const res = await apiFetch(url.toString());
         if (res.ok) anyOk = true;
       } catch (err) {
         lastErr = err as Error;
@@ -617,22 +681,109 @@ interface InProcessJob {
   remotePath?: string;
 }
 
+export const DOWNLOAD_INTERRUPTED_REASON = "Download was interrupted by an AoNarr restart";
+
+/** Status of in-process jobs (http, yt-dlp, debrid), which live only in this process's memory. An id
+ * the adapter doesn't know belongs to a job a previous process started and never finished: left out
+ * of the result, its queue row would never be polled again and would block its target's searches
+ * forever, so it's reported failed as interrupted, and whatever partial file it left is removed. */
+function inProcessStatuses(jobs: Map<string, InProcessJob>, downloadIds: string[]): QueueStatusUpdate[] {
+  const lost = downloadIds.filter((id) => !jobs.has(id));
+  if (lost.length > 0) removeLostJobPartials(lost);
+  return downloadIds.map((id) => {
+    const job = jobs.get(id);
+    return job
+      ? { downloadId: id, ...job }
+      : { downloadId: id, progress: 0, status: "failed", failureReason: DOWNLOAD_INTERRUPTED_REASON };
+  });
+}
+
+function removeLostJobPartials(downloadIds: string[]): void {
+  let names: string[];
+  try {
+    names = fs.readdirSync(config.downloadsDir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name.endsWith(".part") && downloadIds.some((id) => name.startsWith(`.aonarr-${id}-`))) {
+      fs.rmSync(path.join(config.downloadsDir, name), { force: true });
+    }
+  }
+}
+
+/** Final paths claimed by in-process jobs still running. A job's file only appears under its final
+ * name once complete, so without this two concurrent jobs with the same title ("Trailer", a
+ * same-titled podcast episode) both pick the same name and the second rename overwrites the first. */
+const claimedFinalPaths = new Set<string>();
+
+/** `name` inside `dir` — or, when something on disk or another running job already has that name,
+ * the name with ` (<start of downloadId>)` before its extension. The path stays claimed until
+ * releaseFinalPaths(); by then the finished file or folder exists on disk and is seen there. */
+function claimFinalPath(dir: string, name: string, downloadId: string, isDir = false): string {
+  const ext = isDir ? "" : path.extname(name);
+  const stem = name.slice(0, name.length - ext.length);
+  // A bare claimed stem is a running yt-dlp job's (claimFinalStem), whose file may get any extension.
+  const taken = (candidateStem: string) => {
+    const candidate = path.join(dir, candidateStem + ext);
+    return claimedFinalPaths.has(candidate) || claimedFinalPaths.has(path.resolve(dir, candidateStem)) || fs.existsSync(candidate);
+  };
+  let candidateStem = stem;
+  for (let n = 1; taken(candidateStem); n++) candidateStem = uniqueStem(stem, downloadId, n);
+  const claimed = path.join(dir, candidateStem + ext);
+  claimedFinalPaths.add(claimed);
+  return claimed;
+}
+
+function uniqueStem(stem: string, downloadId: string, attempt: number): string {
+  return `${stem} (${downloadId.slice(0, 8)}${attempt > 1 ? `-${attempt}` : ""})`;
+}
+
+/** claimFinalPath for a job whose extension is only known once it finishes (yt-dlp's merge and audio
+ * conversion decide it): the stem is taken by any file or claimed path in `dir` named `<stem>.<ext>`.
+ * Returns the claimed `dir/<stem>`, which releaseFinalPaths() releases like any other claim. */
+function claimFinalStem(dir: string, stem: string, downloadId: string): string {
+  // Claimed paths are normalized, so a configured "/downloads/" must compare as "/downloads".
+  const base = path.resolve(dir);
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(base);
+  } catch {
+    // nothing saved there yet
+  }
+  for (const p of claimedFinalPaths) if (path.dirname(path.resolve(p)) === base) names.push(path.basename(p));
+  const taken = (candidateStem: string) => names.some((n) => n === candidateStem || n.startsWith(`${candidateStem}.`));
+  let candidateStem = stem;
+  for (let n = 1; taken(candidateStem); n++) candidateStem = uniqueStem(stem, downloadId, n);
+  const claimed = path.join(base, candidateStem);
+  claimedFinalPaths.add(claimed);
+  return claimed;
+}
+
+function releaseFinalPaths(paths: string[]): void {
+  for (const p of paths) claimedFinalPaths.delete(p);
+}
+
 /** Where an in-process job saves its files. A multi-file job (an album, a season pack) gets a folder
  * of its own named for the release: loose in the downloads root, the importer can't tell its files
- * from every other download's and imports only the one it matched. A single file stays in the root. */
-function inProcessJobDir(fileCount: number, releaseTitle: string | undefined, downloadId: string): string {
+ * from every other download's and imports only the one it matched. A single file stays in the root.
+ * A folder the job claims is added to `claimed`. */
+function inProcessJobDir(fileCount: number, releaseTitle: string | undefined, downloadId: string, claimed: string[]): string {
   let dir = config.downloadsDir;
   if (fileCount > 1) {
     const name = sanitizeFilename(releaseTitle ?? "");
-    dir = path.join(config.downloadsDir, /^\.*$/.test(name) ? downloadId : name);
+    dir = claimFinalPath(config.downloadsDir, /^\.*$/.test(name) ? downloadId : name, downloadId, true);
+    claimed.push(dir);
   }
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
-/** The job's completed state, pointing the importer at its own folder when it has one. */
-function completedJob(dir: string): InProcessJob {
-  return dir === config.downloadsDir ? { progress: 1, status: "completed" } : { progress: 1, status: "completed", remotePath: dir };
+/** The job's completed state, pointing the importer at its own folder when it has one, and at the
+ * one file it saved when it doesn't — the downloads root holds every other job's files too. */
+function completedJob(dir: string, savedFiles: string[]): InProcessJob {
+  const remotePath = dir === config.downloadsDir ? savedFiles[0] : dir;
+  return remotePath ? { progress: 1, status: "completed", remotePath } : { progress: 1, status: "completed" };
 }
 
 const EXTENSION_BY_CONTENT_TYPE: Record<string, string> = {
@@ -712,28 +863,40 @@ class HttpDownloadAdapter implements DownloadClientAdapter {
     _category: string | null,
     releaseTitle?: string
   ): Promise<GrabResult> {
+    // fetch() also reads data: URLs (and the URL comes from indexer results and podcast feeds).
+    let protocol: string;
+    try {
+      protocol = new URL(downloadUrl).protocol;
+    } catch {
+      throw new Error("Invalid download URL");
+    }
+    if (protocol !== "http:" && protocol !== "https:") throw new Error(`Refusing to download a "${protocol}" URL — only http(s) links are supported`);
+
     const downloadId = crypto.randomUUID();
     this.jobs.set(downloadId, { progress: 0, status: "downloading" });
 
     (async () => {
+      let dest: string | undefined;
       try {
         const res = await fetch(downloadUrl);
         if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
         const ext = downloadedFileExtension(res, downloadUrl);
         const filename = sanitizeFilename(releaseTitle || path.basename(new URL(downloadUrl).pathname) || downloadId) + ext;
         fs.mkdirSync(config.downloadsDir, { recursive: true });
-        const dest = path.join(config.downloadsDir, filename);
+        dest = claimFinalPath(config.downloadsDir, filename, downloadId);
 
         const total = Number(res.headers.get("content-length") ?? 0);
         let received = 0;
-        await saveBodyToFile(res.body, dest, (bytes) => {
+        await saveBodyToFile(res.body, dest, partialPath(downloadId, 0), (bytes) => {
           received += bytes;
           if (total > 0) this.jobs.set(downloadId, { progress: Math.min(received / total, 0.99), status: "downloading" });
         });
-        this.jobs.set(downloadId, { progress: 1, status: "completed" });
+        this.jobs.set(downloadId, { progress: 1, status: "completed", remotePath: dest });
       } catch (err) {
         log.warn(`[http-download] failed for "${releaseTitle ?? downloadUrl}":`, (err as Error).message);
         this.jobs.set(downloadId, { progress: 0, status: "failed" });
+      } finally {
+        if (dest) releaseFinalPaths([dest]);
       }
     })();
 
@@ -741,9 +904,7 @@ class HttpDownloadAdapter implements DownloadClientAdapter {
   }
 
   async getStatus(_client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
-    return downloadIds
-      .filter((id) => this.jobs.has(id))
-      .map((id) => ({ downloadId: id, ...this.jobs.get(id)! }));
+    return inProcessStatuses(this.jobs, downloadIds);
   }
 }
 
@@ -765,12 +926,27 @@ class YtdlpAdapter implements DownloadClientAdapter {
     this.jobs.set(downloadId, { progress: 0, status: "downloading" });
     fs.mkdirSync(config.downloadsDir, { recursive: true });
 
-    const outputTemplate = path.join(config.downloadsDir, `${sanitizeFilename(releaseTitle || downloadId)}.%(ext)s`);
+    // Two same-titled videos (a channel's "Trailer" uploads) would otherwise share one output name
+    // and .part files, and yt-dlp would skip the second as already downloaded.
+    const title = sanitizeFilename(releaseTitle ?? "");
+    const outputStem = claimFinalStem(config.downloadsDir, /^\.*$/.test(title) ? downloadId : title, downloadId);
+    const outputTemplate = `${outputStem}.%(ext)s`;
     // Audio-only mode (e.g. ripping a music video / live set) extracts and transcodes to mp3
-    // instead of saving the source video container — yt-dlp's own -x/--audio-format flags.
-    const args = client.audioOnly
-      ? ["-x", "--audio-format", "mp3", "-o", outputTemplate, "--newline", downloadUrl]
-      : ["-o", outputTemplate, "--newline", downloadUrl];
+    // instead of saving the source video container — yt-dlp's own -x/--audio-format flags. Video
+    // merges into mkv: separate best video+audio streams otherwise often merge into .webm.
+    // `--print after_move:filepath` reports where the finished file really ended up (merging and
+    // post-processing decide its extension), so the importer is pointed at it rather than guessing
+    // by title; --print implies --quiet, so --progress keeps the progress lines coming.
+    const args = [
+      ...(client.audioOnly ? ["-x", "--audio-format", "mp3"] : ["--merge-output-format", "mkv"]),
+      "-o",
+      outputTemplate,
+      "--newline",
+      "--progress",
+      "--print",
+      "after_move:filepath",
+      downloadUrl,
+    ];
 
     // Youtarr-style extras, all opt-in via Settings so existing setups don't change behavior:
     // a persistent --download-archive means a video already grabbed once (by id) is never
@@ -793,9 +969,19 @@ class YtdlpAdapter implements DownloadClientAdapter {
     const proc = spawn("yt-dlp", args);
 
     let stderrTail = "";
+    let stdoutLine = "";
+    let finalPath: string | undefined;
+    const readPrintedPath = (line: string) => {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith("[")) finalPath = path.resolve(trimmed);
+    };
     proc.stdout.on("data", (chunk: Buffer) => {
-      const match = chunk.toString().match(/(\d+(?:\.\d+)?)%/);
+      const text = chunk.toString();
+      const match = text.match(/(\d+(?:\.\d+)?)%/);
       if (match) this.jobs.set(downloadId, { progress: Math.min(Number(match[1]) / 100, 0.99), status: "downloading" });
+      const lines = (stdoutLine + text).split(/\r?\n/);
+      stdoutLine = lines.pop() ?? "";
+      for (const line of lines) readPrintedPath(line);
     });
     proc.stderr.on("data", (chunk: Buffer) => {
       stderrTail = (stderrTail + chunk.toString()).slice(-2000);
@@ -803,10 +989,15 @@ class YtdlpAdapter implements DownloadClientAdapter {
     proc.on("error", (err) => {
       log.warn(`[ytdlp] failed to start for "${releaseTitle ?? downloadUrl}":`, err.message);
       this.jobs.set(downloadId, { progress: 0, status: "failed" });
+      releaseFinalPaths([outputStem]);
     });
-    proc.on("exit", (code) => {
+    // "close", not "exit": only "close" guarantees stdout has been fully read, and the file path is
+    // the last thing yt-dlp prints.
+    proc.on("close", (code) => {
+      releaseFinalPaths([outputStem]);
       if (code === 0) {
-        this.jobs.set(downloadId, { progress: 1, status: "completed" });
+        readPrintedPath(stdoutLine);
+        this.jobs.set(downloadId, finalPath ? { progress: 1, status: "completed", remotePath: finalPath } : { progress: 1, status: "completed" });
       } else {
         log.warn(`[ytdlp] failed for "${releaseTitle ?? downloadUrl}" (exit ${code}):`, stderrTail.trim().split("\n").pop());
         this.jobs.set(downloadId, { progress: 0, status: "failed" });
@@ -817,9 +1008,7 @@ class YtdlpAdapter implements DownloadClientAdapter {
   }
 
   async getStatus(_client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
-    return downloadIds
-      .filter((id) => this.jobs.has(id))
-      .map((id) => ({ downloadId: id, ...this.jobs.get(id)! }));
+    return inProcessStatuses(this.jobs, downloadIds);
   }
 }
 
@@ -848,9 +1037,10 @@ class RealDebridAdapter implements DownloadClientAdapter {
     this.jobs.set(downloadId, { progress: 0, status: "downloading" });
 
     (async () => {
+      const claimed: string[] = [];
       try {
         const torrentId = await this.addToRealDebrid(client, downloadUrl);
-        const selectRes = await fetch(`${this.base}/torrents/selectFiles/${torrentId}`, {
+        const selectRes = await apiFetch(`${this.base}/torrents/selectFiles/${torrentId}`, {
           method: "POST",
           headers: { ...this.headers(client), "Content-Type": "application/x-www-form-urlencoded" },
           body: "files=all",
@@ -864,7 +1054,7 @@ class RealDebridAdapter implements DownloadClientAdapter {
         const deadline = Date.now() + DEBRID_POLL_TIMEOUT_MS;
         for (;;) {
           if (Date.now() > deadline) throw new Error("Real-Debrid did not finish within the polling window");
-          const res = await fetch(`${this.base}/torrents/info/${torrentId}`, { headers: this.headers(client) });
+          const res = await apiFetch(`${this.base}/torrents/info/${torrentId}`, { headers: this.headers(client) });
           if (!res.ok) throw new Error(`Real-Debrid status check failed: HTTP ${res.status}`);
           const info: any = await res.json();
           if (info.status === "error" || info.status === "magnet_error" || info.status === "virus" || info.status === "dead") {
@@ -879,9 +1069,10 @@ class RealDebridAdapter implements DownloadClientAdapter {
         }
         if (links.length === 0) throw new Error("Real-Debrid reported no files");
 
-        const dir = inProcessJobDir(links.length, releaseTitle, downloadId);
-        for (const link of links) {
-          const unrestrictRes = await fetch(`${this.base}/unrestrict/link`, {
+        const dir = inProcessJobDir(links.length, releaseTitle, downloadId, claimed);
+        const saved: string[] = [];
+        for (const [index, link] of links.entries()) {
+          const unrestrictRes = await apiFetch(`${this.base}/unrestrict/link`, {
             method: "POST",
             headers: { ...this.headers(client), "Content-Type": "application/x-www-form-urlencoded" },
             body: `link=${encodeURIComponent(link)}`,
@@ -892,14 +1083,18 @@ class RealDebridAdapter implements DownloadClientAdapter {
           const fileRes = await fetch(unrestricted.download);
           if (!fileRes.ok || !fileRes.body) throw new Error(`Downloading unrestricted link failed: HTTP ${fileRes.status}`);
           const filename = sanitizeFilename(unrestricted.filename || releaseTitle || downloadId);
-          const dest = path.join(dir, filename);
-          await saveBodyToFile(fileRes.body, dest);
+          const dest = claimFinalPath(dir, filename, downloadId);
+          claimed.push(dest);
+          await saveBodyToFile(fileRes.body, dest, partialPath(downloadId, index));
+          saved.push(dest);
         }
 
-        this.jobs.set(downloadId, completedJob(dir));
+        this.jobs.set(downloadId, completedJob(dir, saved));
       } catch (err) {
         log.warn(`[real-debrid] failed for "${releaseTitle ?? downloadUrl}":`, (err as Error).message);
         this.jobs.set(downloadId, { progress: 0, status: "failed" });
+      } finally {
+        releaseFinalPaths(claimed);
       }
     })();
 
@@ -914,7 +1109,7 @@ class RealDebridAdapter implements DownloadClientAdapter {
     const source = await resolveDownloadSource(downloadUrl);
 
     if (source.kind === "magnet") {
-      const res = await fetch(`${this.base}/torrents/addMagnet`, {
+      const res = await apiFetch(`${this.base}/torrents/addMagnet`, {
         method: "POST",
         headers: { ...this.headers(client), "Content-Type": "application/x-www-form-urlencoded" },
         body: `magnet=${encodeURIComponent(source.uri)}`,
@@ -924,7 +1119,7 @@ class RealDebridAdapter implements DownloadClientAdapter {
       return body.id;
     }
 
-    const addRes = await fetch(`${this.base}/torrents/addTorrent`, {
+    const addRes = await apiFetch(`${this.base}/torrents/addTorrent`, {
       method: "PUT",
       headers: this.headers(client),
       body: source.bytes,
@@ -935,9 +1130,7 @@ class RealDebridAdapter implements DownloadClientAdapter {
   }
 
   async getStatus(_client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
-    return downloadIds
-      .filter((id) => this.jobs.has(id))
-      .map((id) => ({ downloadId: id, ...this.jobs.get(id)! }));
+    return inProcessStatuses(this.jobs, downloadIds);
   }
 }
 
@@ -974,6 +1167,7 @@ class TorBoxAdapter implements DownloadClientAdapter {
     const idParam = isUsenet ? "usenet_id" : "torrent_id";
 
     (async () => {
+      const claimed: string[] = [];
       try {
         const itemId = isUsenet ? await this.addToTorBoxUsenet(client, downloadUrl, releaseTitle) : await this.addToTorBox(client, downloadUrl);
 
@@ -984,7 +1178,7 @@ class TorBoxAdapter implements DownloadClientAdapter {
         const deadline = Date.now() + DEBRID_POLL_TIMEOUT_MS;
         for (;;) {
           if (Date.now() > deadline) throw new Error("TorBox did not finish within the polling window");
-          const res = await fetch(`${this.base}/${kind}/mylist?id=${itemId}&bypass_cache=true`, { headers: this.headers(client) });
+          const res = await apiFetch(`${this.base}/${kind}/mylist?id=${itemId}&bypass_cache=true`, { headers: this.headers(client) });
           if (!res.ok) throw new Error(`TorBox status check failed: HTTP ${res.status}`);
           const body: any = await res.json();
           if (body.success === false) throw new Error(`TorBox reported: ${body.detail ?? "unknown error"}`);
@@ -1004,9 +1198,10 @@ class TorBoxAdapter implements DownloadClientAdapter {
         }
         if (files.length === 0) throw new Error("TorBox reported no files");
 
-        const dir = inProcessJobDir(files.length, releaseTitle, downloadId);
-        for (const file of files) {
-          const dlRes = await fetch(
+        const dir = inProcessJobDir(files.length, releaseTitle, downloadId, claimed);
+        const saved: string[] = [];
+        for (const [index, file] of files.entries()) {
+          const dlRes = await apiFetch(
             `${this.base}/${kind}/requestdl?token=${encodeURIComponent(client.apiKey ?? "")}&${idParam}=${itemId}&file_id=${file.id}`
           );
           if (!dlRes.ok) throw new Error(`TorBox requestdl failed: HTTP ${dlRes.status}`);
@@ -1017,14 +1212,18 @@ class TorBoxAdapter implements DownloadClientAdapter {
           const fileRes = await fetch(downloadLink);
           if (!fileRes.ok || !fileRes.body) throw new Error(`Downloading TorBox link failed: HTTP ${fileRes.status}`);
           const filename = sanitizeFilename(file.name || releaseTitle || downloadId);
-          const dest = path.join(dir, filename);
-          await saveBodyToFile(fileRes.body, dest);
+          const dest = claimFinalPath(dir, filename, downloadId);
+          claimed.push(dest);
+          await saveBodyToFile(fileRes.body, dest, partialPath(downloadId, index));
+          saved.push(dest);
         }
 
-        this.jobs.set(downloadId, completedJob(dir));
+        this.jobs.set(downloadId, completedJob(dir, saved));
       } catch (err) {
         log.warn(`[torbox] failed for "${releaseTitle ?? downloadUrl}":`, (err as Error).message);
         this.jobs.set(downloadId, { progress: 0, status: "failed" });
+      } finally {
+        releaseFinalPaths(claimed);
       }
     })();
 
@@ -1048,7 +1247,7 @@ class TorBoxAdapter implements DownloadClientAdapter {
     form.append("seed", "1");
     form.append("allow_zip", "false");
 
-    const res = await fetch(`${this.base}/torrents/createtorrent`, {
+    const res = await apiFetch(`${this.base}/torrents/createtorrent`, {
       method: "POST",
       headers: this.headers(client),
       body: form,
@@ -1070,7 +1269,7 @@ class TorBoxAdapter implements DownloadClientAdapter {
     form.append("link", downloadUrl);
     if (releaseTitle) form.append("name", releaseTitle);
 
-    const res = await fetch(`${this.base}/usenet/createusenetdownload`, {
+    const res = await apiFetch(`${this.base}/usenet/createusenetdownload`, {
       method: "POST",
       headers: this.headers(client),
       body: form,
@@ -1084,9 +1283,7 @@ class TorBoxAdapter implements DownloadClientAdapter {
   }
 
   async getStatus(_client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
-    return downloadIds
-      .filter((id) => this.jobs.has(id))
-      .map((id) => ({ downloadId: id, ...this.jobs.get(id)! }));
+    return inProcessStatuses(this.jobs, downloadIds);
   }
 }
 
@@ -1106,7 +1303,7 @@ class AllDebridAdapter implements DownloadClientAdapter {
     url.searchParams.set("agent", this.agent);
     url.searchParams.set("apikey", client.apiKey ?? "");
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    const res = await fetch(url.toString());
+    const res = await apiFetch(url.toString());
     if (!res.ok) throw new Error(`AllDebrid request failed: HTTP ${res.status}`);
     const body: any = await res.json();
     if (body.status === "error") throw new Error(`AllDebrid: ${body.error?.message ?? body.error?.code ?? "unknown error"}`);
@@ -1128,7 +1325,7 @@ class AllDebridAdapter implements DownloadClientAdapter {
     const url = new URL(`${this.base}/magnet/files`);
     url.searchParams.set("agent", this.agent);
     url.searchParams.set("apikey", client.apiKey ?? "");
-    const res = await fetch(url.toString(), {
+    const res = await apiFetch(url.toString(), {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ "id[]": magnetId }),
@@ -1158,7 +1355,7 @@ class AllDebridAdapter implements DownloadClientAdapter {
     url.searchParams.set("apikey", client.apiKey ?? "");
     const form = new FormData();
     form.append("files[]", new Blob([bytes]), filename);
-    const res = await fetch(url.toString(), { method: "POST", body: form });
+    const res = await apiFetch(url.toString(), { method: "POST", body: form });
     if (!res.ok) throw new Error(`AllDebrid request failed: HTTP ${res.status}`);
     const body: any = await res.json();
     if (body.status === "error") throw new Error(`AllDebrid: ${body.error?.message ?? body.error?.code ?? "unknown error"}`);
@@ -1175,6 +1372,7 @@ class AllDebridAdapter implements DownloadClientAdapter {
     this.jobs.set(downloadId, { progress: 0, status: "downloading" });
 
     (async () => {
+      const claimed: string[] = [];
       try {
         // The indexer's downloadUrl is commonly a Torznab "get"/proxy endpoint, not a magnet or
         // .torrent itself — resolveDownloadSource follows redirects (a Location pointing at a
@@ -1223,8 +1421,9 @@ class AllDebridAdapter implements DownloadClientAdapter {
         }
         if (links.length === 0) throw new Error("AllDebrid reported no files");
 
-        const dir = inProcessJobDir(links.length, releaseTitle, downloadId);
-        for (const { link, filename: remoteFilename } of links) {
+        const dir = inProcessJobDir(links.length, releaseTitle, downloadId, claimed);
+        const saved: string[] = [];
+        for (const [index, { link, filename: remoteFilename }] of links.entries()) {
           const unlockData = await this.call(client, "/link/unlock", { link });
           const directLink = unlockData?.link;
           if (!directLink) throw new Error("AllDebrid link/unlock returned no direct link");
@@ -1232,14 +1431,18 @@ class AllDebridAdapter implements DownloadClientAdapter {
           const fileRes = await fetch(directLink);
           if (!fileRes.ok || !fileRes.body) throw new Error(`Downloading unlocked link failed: HTTP ${fileRes.status}`);
           const filename = sanitizeFilename(unlockData.filename || remoteFilename || releaseTitle || downloadId);
-          const dest = path.join(dir, filename);
-          await saveBodyToFile(fileRes.body, dest);
+          const dest = claimFinalPath(dir, filename, downloadId);
+          claimed.push(dest);
+          await saveBodyToFile(fileRes.body, dest, partialPath(downloadId, index));
+          saved.push(dest);
         }
 
-        this.jobs.set(downloadId, completedJob(dir));
+        this.jobs.set(downloadId, completedJob(dir, saved));
       } catch (err) {
         log.warn(`[alldebrid] failed for "${releaseTitle ?? downloadUrl}":`, (err as Error).message);
         this.jobs.set(downloadId, { progress: 0, status: "failed" });
+      } finally {
+        releaseFinalPaths(claimed);
       }
     })();
 
@@ -1247,9 +1450,7 @@ class AllDebridAdapter implements DownloadClientAdapter {
   }
 
   async getStatus(_client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
-    return downloadIds
-      .filter((id) => this.jobs.has(id))
-      .map((id) => ({ downloadId: id, ...this.jobs.get(id)! }));
+    return inProcessStatuses(this.jobs, downloadIds);
   }
 }
 
@@ -1259,9 +1460,11 @@ class AllDebridAdapter implements DownloadClientAdapter {
  * talking to the client at all, AoNarr drops the release into a folder the client is separately
  * configured to watch (`client.host` holds that folder's path, reusing the field the same way
  * Real-Debrid reuses `apiKey` for its token). A magnet link is written as a `.magnet` file
- * (content is just the URI — most watch-folder setups that support magnets at all expect this);
- * anything else is fetched and sniffed by content (XML → `.nzb`, otherwise `.torrent`) since the
- * shared adapter interface doesn't carry the result's protocol through to here.
+ * (content is just the URI — most watch-folder setups that support magnets at all expect this),
+ * including one an indexer's download proxy redirects to (see resolveDownloadSource: Jackett and
+ * Prowlarr answer magnet-only trackers that way); anything else is fetched and sniffed by content
+ * (XML → `.nzb`, otherwise `.torrent`) since the shared adapter interface doesn't carry the result's
+ * protocol through to here.
  *
  * This is fire-and-forget by design, same as the real thing: AoNarr has no way to ask an unknown
  * external client how a download is progressing, so getStatus can't report real progress or ever
@@ -1276,14 +1479,12 @@ class BlackholeAdapter implements DownloadClientAdapter {
     const downloadId = crypto.randomUUID();
     const base = sanitizeFilename(releaseTitle || downloadId);
 
-    if (downloadUrl.startsWith("magnet:")) {
-      fs.writeFileSync(path.join(client.host, `${base}.magnet`), downloadUrl, "utf-8");
+    const source = await resolveDownloadSource(downloadUrl);
+    if (source.kind === "magnet") {
+      fs.writeFileSync(path.join(client.host, `${base}.magnet`), source.uri, "utf-8");
     } else {
-      const res = await fetch(downloadUrl);
-      if (!res.ok) throw new Error(`Failed to fetch release file for blackhole: HTTP ${res.status}`);
-      const buf = Buffer.from(await res.arrayBuffer());
-      const looksLikeNzb = buf.subarray(0, 20).toString("utf-8").trimStart().startsWith("<");
-      fs.writeFileSync(path.join(client.host, `${base}${looksLikeNzb ? ".nzb" : ".torrent"}`), buf);
+      const looksLikeNzb = source.bytes.subarray(0, 20).toString("utf-8").trimStart().startsWith("<");
+      fs.writeFileSync(path.join(client.host, `${base}${looksLikeNzb ? ".nzb" : ".torrent"}`), source.bytes);
     }
 
     return { downloadId };
@@ -1319,7 +1520,7 @@ class SlskdAdapter implements DownloadClientAdapter {
 
   async addDownload(client: DownloadClient, downloadUrl: string): Promise<GrabResult> {
     const { username, filename, size } = decodeSlskdDownloadUrl(downloadUrl);
-    const res = await fetch(`${this.baseUrl(client)}/api/v0/transfers/downloads/${encodeURIComponent(username)}`, {
+    const res = await apiFetch(`${this.baseUrl(client)}/api/v0/transfers/downloads/${encodeURIComponent(username)}`, {
       method: "POST",
       headers: { ...this.headers(client), "Content-Type": "application/json" },
       body: JSON.stringify([{ filename, size }]),
@@ -1332,7 +1533,7 @@ class SlskdAdapter implements DownloadClientAdapter {
 
   async getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
     const wanted = new Set(downloadIds);
-    const res = await fetch(`${this.baseUrl(client)}/api/v0/transfers/downloads`, { headers: this.headers(client) });
+    const res = await apiFetch(`${this.baseUrl(client)}/api/v0/transfers/downloads`, { headers: this.headers(client) });
     if (!res.ok) throw new Error(`slskd status failed: HTTP ${res.status}`);
     const users = (await res.json()) as { username: string; directories?: { files?: any[] }[] }[];
 
@@ -1350,7 +1551,9 @@ class SlskdAdapter implements DownloadClientAdapter {
           const failed = /Errored|Cancelled|Rejected|TimedOut|Aborted/.test(state) || (state.includes("Completed") && !state.includes("Succeeded"));
           const status = state.includes("Succeeded") ? "completed" : failed ? "failed" : "downloading";
           const progress = f.size > 0 ? Math.min((f.bytesTransferred ?? 0) / f.size, 1) : 0;
-          updates.push({ downloadId, progress, status });
+          // Waiting on the peer, who may never serve it; "Queued, Locally" is slskd's own queue.
+          const stalled = status === "downloading" && (state === "Queued, Remotely" || state === "Requested");
+          updates.push({ downloadId, progress, status, ...(stalled ? { stalled: true } : {}) });
         }
       }
     }
@@ -1438,5 +1641,52 @@ export async function removeQueueItemDownload(queueItem: Pick<QueueItem, "downlo
     await adapter.removeDownload(client, queueItem.downloadId, deleteFiles);
   } catch (err) {
     log.warn(`[downloadClient] failed to remove completed download for "${queueItem.title}" from its client:`, (err as Error).message);
+  }
+}
+
+/** Each running import's queue row, with a promise that resolves (never rejects) once it settles. */
+const queueImportsInFlight = new Map<number, Promise<void>>();
+
+/**
+ * Runs `importFn` as the only import of queue row `queueId` in flight, or returns false without
+ * running it when another one already is. Two imports of the same row race on the same source files:
+ * whichever finishes first deletes the row and the client's copy of the data while the other is
+ * still copying from it. Taken by importQueueItem's callers, not by importQueueItem itself, and by
+ * the Activity page's Remove, which deletes the client's copy too.
+ */
+export async function withQueueImportLock(queueId: number, importFn: () => Promise<void>): Promise<boolean> {
+  if (queueImportsInFlight.has(queueId)) return false;
+  let settle!: () => void;
+  queueImportsInFlight.set(queueId, new Promise<void>((resolve) => (settle = resolve)));
+  try {
+    await importFn();
+    return true;
+  } finally {
+    queueImportsInFlight.delete(queueId);
+    settle();
+  }
+}
+
+/** How often waitForQueueImports rechecks `moreMayStart` while nothing is importing. */
+const MORE_IMPORTS_RECHECK_MS = 100;
+
+/**
+ * Waits for every import running under withQueueImportLock — including ones that start while it
+ * waits — to settle, so shutdown and restore don't close the database under an import mid-copy.
+ * While `moreMayStart` returns true it keeps waiting even with nothing importing: the queue poller
+ * imports its completed rows one after another, and cancelling it doesn't stop a run already going.
+ * Resolves true once none is left, false when `timeoutMs` passes first; never rejects.
+ */
+export async function waitForQueueImports(timeoutMs: number, moreMayStart: () => boolean = () => false): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const idle = queueImportsInFlight.size === 0;
+    if (idle && !moreMayStart()) return true;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>((resolve) => (timer = setTimeout(resolve, idle ? Math.min(MORE_IMPORTS_RECHECK_MS, remaining) : remaining)));
+    await (idle ? timeout : Promise.race([Promise.all(queueImportsInFlight.values()), timeout]));
+    clearTimeout(timer);
   }
 }

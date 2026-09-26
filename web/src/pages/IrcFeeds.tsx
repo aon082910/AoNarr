@@ -19,6 +19,7 @@ interface IrcFeed {
   announceRegex: string;
   protocol: "torrent" | "usenet";
   enabled: 0 | 1;
+  announcers: string | null;
   createdAt: string;
 }
 
@@ -35,6 +36,7 @@ export default function IrcFeeds() {
   const [saslUser, setSaslUser] = useState("");
   const [saslPass, setSaslPass] = useState("");
   const [channel, setChannel] = useState("");
+  const [announcers, setAnnouncers] = useState("");
   const [announceRegex, setAnnounceRegex] = useState("");
   const [protocol, setProtocol] = useState<"torrent" | "usenet">("torrent");
   const [enabled, setEnabled] = useState(true);
@@ -53,6 +55,7 @@ export default function IrcFeeds() {
     setSaslUser("");
     setSaslPass("");
     setChannel("");
+    setAnnouncers("");
     setAnnounceRegex("");
     setProtocol("torrent");
     setEnabled(true);
@@ -72,6 +75,7 @@ export default function IrcFeeds() {
     setSaslUser(f.saslUser ?? "");
     setSaslPass(f.saslPass ?? "");
     setChannel(f.channel);
+    setAnnouncers(f.announcers ?? "");
     setAnnounceRegex(f.announceRegex);
     setProtocol(f.protocol);
     setEnabled(!!f.enabled);
@@ -90,6 +94,7 @@ export default function IrcFeeds() {
       saslUser: saslUser.trim() || null,
       saslPass: saslPass.trim() || null,
       channel: channel.trim(),
+      announcers: announcers.trim(),
       announceRegex: announceRegex.trim(),
       protocol,
       enabled,
@@ -170,6 +175,18 @@ export default function IrcFeeds() {
             <input id="ircfeeds-sasl-password-optional-6" type="password" value={saslPass} onChange={(e) => setSaslPass(e.target.value)} placeholder={editingFeed?.saslPass ? "unchanged" : ""} />
             <label htmlFor="ircfeeds-channel-7">Channel</label>
             <input id="ircfeeds-channel-7" value={channel} onChange={(e) => setChannel(e.target.value)} placeholder="#announces" required />
+            <label htmlFor="ircfeeds-announcers-10">Announcer nick(s) (optional)</label>
+            <input
+              id="ircfeeds-announcers-10"
+              value={announcers}
+              onChange={(e) => setAnnouncers(e.target.value)}
+              placeholder="AnnounceBot, BackupBot"
+              aria-describedby="ircfeeds-announcers-hint"
+            />
+            <p id="ircfeeds-announcers-hint" style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+              The tracker's announce bot, comma or space separated. When set, only lines from these nicks are acted on, so
+              nobody else in the channel can post a release for AoNarr to grab. Leave blank to accept any sender.
+            </p>
             <label htmlFor="ircfeeds-announce-regex-named-groups-title-url-8">Announce regex (named groups: title, url)</label>
             <input id="ircfeeds-announce-regex-named-groups-title-url-8" value={announceRegex} onChange={(e) => setAnnounceRegex(e.target.value)} placeholder={EXAMPLE_REGEX} required />
             <label htmlFor="ircfeeds-protocol-9">Protocol</label>

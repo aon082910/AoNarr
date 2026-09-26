@@ -281,4 +281,74 @@ describe("GET /api/media/local-artwork/:token", () => {
       expect(fetchMock).not.toHaveBeenCalled();
     });
   });
+
+  describe("a 'screenscraper:' artwork ref", () => {
+    const SCREENSCRAPER_KEYS = ["screenscraperDevId", "screenscraperDevPassword", "screenscraperUserId", "screenscraperUserPassword"];
+
+    afterEach(async () => {
+      vi.unstubAllGlobals();
+      const { setSetting } = await import("../src/services/settingsStore.js");
+      for (const key of SCREENSCRAPER_KEYS) setSetting(key, "");
+    });
+
+    async function configureScreenscraper(): Promise<void> {
+      const { setSetting } = await import("../src/services/settingsStore.js");
+      setSetting("screenscraperDevId", "ss-dev");
+      setSetting("screenscraperDevPassword", "ss-dev-secret");
+      setSetting("screenscraperUserId", "ss-user");
+      setSetting("screenscraperUserPassword", "ss-user-secret");
+    }
+
+    const ref = (jeuid: number) => `screenscraper:https://neoclone.screenscraper.fr/api2/mediaJeu.php?jeuid=${jeuid}&media=box-2D(wor)`;
+
+    it("is proxied server-side with the ScreenScraper credentials added there, never handed to the browser", async () => {
+      await configureScreenscraper();
+      const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 4, 5, 6]);
+      const fetchMock = vi.fn(async () => new Response(new Uint8Array(imageBytes), { status: 200, headers: { "content-type": "image/png" } }));
+      vi.stubGlobal("fetch", fetchMock);
+      await insertPosterRow("ScreenScraper Art", ref(9001), "test-screenscraper-token");
+
+      const res = await request(app)
+        .get("/api/media/local-artwork/test-screenscraper-token")
+        .buffer(true)
+        .parse((r, cb) => {
+          const chunks: Buffer[] = [];
+          r.on("data", (c: Buffer) => chunks.push(c));
+          r.on("end", () => cb(null, Buffer.concat(chunks)));
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.headers["content-type"]).toBe("image/png");
+      expect(res.headers["cache-control"]).toBe("private, max-age=86400");
+      expect((res.body as Buffer).equals(imageBytes)).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const sent = new URL((fetchMock.mock.calls[0] as unknown as [string])[0]);
+      expect(sent.hostname).toBe("neoclone.screenscraper.fr");
+      expect(sent.searchParams.get("jeuid")).toBe("9001");
+      expect(sent.searchParams.get("devpassword")).toBe("ss-dev-secret");
+      expect(sent.searchParams.get("sspassword")).toBe("ss-user-secret");
+      expect(JSON.stringify(res.headers)).not.toMatch(/ss-dev-secret|ss-user-secret/);
+    });
+
+    it("404s when ScreenScraper doesn't answer with an image", async () => {
+      await configureScreenscraper();
+      vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>quota exceeded</html>", { status: 200, headers: { "content-type": "text/html" } })));
+      await insertPosterRow("ScreenScraper Refused", ref(9002), "test-screenscraper-refused-token");
+
+      const res = await request(app).get("/api/media/local-artwork/test-screenscraper-refused-token");
+
+      expect(res.status).toBe(404);
+    });
+
+    it("404s without any network call when ScreenScraper isn't configured", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      await insertPosterRow("ScreenScraper Unconfigured", ref(9003), "test-screenscraper-unconfigured-token");
+
+      const res = await request(app).get("/api/media/local-artwork/test-screenscraper-unconfigured-token");
+
+      expect(res.status).toBe(404);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
 });

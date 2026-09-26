@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { setupTestDb } from "./helpers/testDb.js";
@@ -74,6 +75,7 @@ let placeAlbumFiles: (typeof import("../src/services/importer.js"))["placeAlbumF
 let placeSeasonPackFiles: (typeof import("../src/services/importer.js"))["placeSeasonPackFiles"];
 let importQueueItem: (typeof import("../src/services/importer.js"))["importQueueItem"];
 let removeEmptyParents: (typeof import("../src/services/importer.js"))["removeEmptyParents"];
+let removeStaleImportTemps: (typeof import("../src/services/importer.js"))["removeStaleImportTemps"];
 let renameLibraryFiles: (typeof import("../src/services/importer.js"))["renameLibraryFiles"];
 let renameOneMediaItem: (typeof import("../src/services/importer.js"))["renameOneMediaItem"];
 let ImportSkippedError: (typeof import("../src/services/importer.js"))["ImportSkippedError"];
@@ -91,12 +93,15 @@ beforeAll(async () => {
     placeSeasonPackFiles,
     importQueueItem,
     removeEmptyParents,
+    removeStaleImportTemps,
     renameLibraryFiles,
     renameOneMediaItem,
     ImportSkippedError,
     downloadSubtitleForLanguage,
   } = await import("../src/services/importer.js"));
   ({ config } = await import("../src/config.js"));
+  // Quality ranks decide whether a pack's file may replace an episode's existing one.
+  await (await import("../src/services/quality.js")).loadQualityCaches();
   // setupTestDb() points AONARR_CONFIG_DIR and AONARR_DOWNLOADS_DIR at the SAME temp directory, so
   // config.downloadsDir also holds the app's own logs/DB — clearing it directly (as an earlier
   // version of this file did) deleted those and crashed the logger mid-run. A dedicated, fully
@@ -128,6 +133,7 @@ beforeEach(async () => {
   await db.prepare("DELETE FROM history").run();
   await db.prepare("DELETE FROM recycle_bin").run();
   await db.prepare("DELETE FROM queue").run();
+  await db.prepare("DELETE FROM download_clients").run();
   await db.prepare("DELETE FROM tracks").run();
   await db.prepare("DELETE FROM episodes").run();
   await db.prepare("DELETE FROM sub_items").run();
@@ -140,7 +146,7 @@ beforeEach(async () => {
   notifyManualInteractionRequired.mockReset().mockResolvedValue(undefined);
   writeNfoSidecar.mockReset();
   writeAudioTags.mockReset();
-  unpackDownloadedArchives.mockReset().mockResolvedValue(undefined);
+  unpackDownloadedArchives.mockReset().mockResolvedValue({ extracted: [], failed: [] });
   removeQueueItemDownload.mockReset().mockResolvedValue(undefined);
   syncSubtitleToVideo.mockReset().mockResolvedValue(false);
   convertComicImagesBestEffort.mockReset().mockResolvedValue(undefined);
@@ -359,6 +365,53 @@ describe("findDownloadedFile", () => {
     expect(findDownloadedFile(pack, "series", { season: 3, episode: 3 }, ownFolder)).toBeNull();
   });
 
+  it("never takes a decimal special for a numbered episode when no file is named for that episode", () => {
+    writeDownloadFile(path.join("anime", "[Group] Show S2 - 12.5 [1080p].mkv"));
+
+    expect(findDownloadedFile("[Group] Show S2 - 12 [1080p]", "anime", { season: 2, episode: 12 })).toBeNull();
+    expect(
+      findDownloadedFile("[Group] Show S2 - 13 [1080p]", "anime", { season: 2, episode: 13 }, path.join(downloadsDir, "anime"), { category: "anime" })
+    ).toBeNull();
+  });
+
+  it("passes over a release's sample for its own file, unless the release is itself titled with the word", () => {
+    const release = "The.Matrix.1999.1080p.BluRay.x264-GRP";
+    const wanted = writeDownloadFile(path.join(release, "the.matrix.1999.1080p.mkv"), "the movie");
+    writeDownloadFile(path.join(release, "Sample", "the.matrix.1999.1080p.sample.mkv"), "a sample, larger than the movie here");
+
+    expect(findDownloadedFile(release, "movie", undefined, path.join(downloadsDir, release))).toBe(wanted);
+    expect(findDownloadedFile(release, "movie")).toBe(wanted);
+
+    const titled = "Free.Sample.2019.1080p.BluRay-GRP";
+    const titledFile = writeDownloadFile(path.join(titled, "free.sample.2019.1080p.mkv"), "the movie");
+    expect(findDownloadedFile(titled, "movie", undefined, path.join(downloadsDir, titled))).toBe(titledFile);
+  });
+
+  it("finds a pack's episode titled with the word 'sample', still passing over the pack's real samples", () => {
+    const pack = "Show.S01.1080p.WEB-DL";
+    const packDir = path.join(downloadsDir, pack);
+    writeDownloadFile(path.join(pack, "Show.S01E04.The.Letter.1080p.WEB-DL.mkv"), "episode four of the pack");
+    const wanted = writeDownloadFile(path.join(pack, "Show.S01E05.The.Sample.1080p.WEB-DL.mkv"), "episode five of the pack");
+    writeDownloadFile(path.join(pack, "Show.S01E06.The.Party.1080p.WEB-DL.mkv"), "episode six of the pack");
+    writeDownloadFile(path.join(pack, "Show.S01E05.1080p.WEB-DL-sample.mkv"), "cut");
+    writeDownloadFile(path.join(pack, "Sample", "show.s01e05.sample.mkv"), "a sample, larger than the episodes here");
+
+    expect(findDownloadedFile(pack, "series", { season: 1, episode: 5 }, packDir)).toBe(wanted);
+    expect(findDownloadedFile(pack, "series", { season: 1, episode: 5 })).toBe(wanted);
+  });
+
+  it("never picks a sample of a short episode, however close its size is to the episodes'", () => {
+    const pack = "Cartoon.S01.720p.WEB-DL";
+    const packDir = path.join(downloadsDir, pack);
+    const wanted = writeDownloadFile(path.join(pack, "Cartoon.S01E02.720p.WEB-DL.mkv"), "short episode");
+    writeDownloadFile(path.join(pack, "Cartoon.S01E03.720p.WEB-DL.mkv"), "short episode");
+    // Samples as large as the episodes, and bigger than them once sorted by size.
+    writeDownloadFile(path.join(pack, "Cartoon.S01E02.720p.WEB-DL-sample.mkv"), "a sample cut of episode two, longer");
+    writeDownloadFile(path.join(pack, "sample-cartoon.s01e02.720p.mkv"), "another sample cut of episode two");
+
+    expect(findDownloadedFile(pack, "series", { season: 1, episode: 2 }, packDir)).toBe(wanted);
+  });
+
   it("does not fall back to the whole downloads directory for an episode once the download's own folder exists", () => {
     const ownFolder = path.join(downloadsDir, "Breaking.Bad.S01E05.1080p.WEB-DL");
     writeDownloadFile(path.join("Breaking.Bad.S01E05.1080p.WEB-DL", "readme.txt"));
@@ -379,6 +432,29 @@ describe("findDownloadedFile", () => {
     expect(findDownloadedFile("Breaking.Bad.S01E05.1080p.WEB-DL", "series", { season: 1, episode: 5 }, categoryFolder)).toBe(wanted);
   });
 
+  it("requires the series title in a save folder the client reports for a download with no folder of its own", () => {
+    // qBittorrent reports a multi-file torrent saved without a subfolder by its save path, which
+    // needn't be named for the client's category.
+    const saveFolder = path.join(downloadsDir, "complete");
+    writeDownloadFile(path.join("complete", "Heroes.S01E03.1080p.mkv"));
+
+    expect(findDownloadedFile("Lost.S01.1080p.BluRay", "series", { season: 1, episode: 3 }, saveFolder, { category: "sonarr" })).toBeNull();
+  });
+
+  it("requires the series title in a save folder named only with quality words the release shares", () => {
+    const saveFolder = path.join(downloadsDir, "UHD HDR");
+    writeDownloadFile(path.join("UHD HDR", "Heroes.S01E03.2160p.UHD.HDR.mkv"));
+
+    expect(findDownloadedFile("Lost.S01.2160p.UHD.HDR.WEB-DL", "series", { season: 1, episode: 3 }, saveFolder, { category: "tv-uhd" })).toBeNull();
+  });
+
+  it("requires the series title in a save folder named only with a pack word and a quality word the release shares", () => {
+    const saveFolder = path.join(downloadsDir, "Complete 1080p");
+    writeDownloadFile(path.join("Complete 1080p", "Heroes.S01E03.1080p.mkv"));
+
+    expect(findDownloadedFile("Lost.S01.COMPLETE.1080p.BluRay", "series", { season: 1, episode: 3 }, saveFolder, { category: "tv" })).toBeNull();
+  });
+
   it("matches an indexer title's apostrophes and accents against release names that drop them", () => {
     const wanted = writeDownloadFile(path.join("Greys.Anatomy.S01E05.1080p", "Greys.Anatomy.S01E05.1080p.mkv"));
     writeDownloadFile(path.join("Pokemon.S01E05.1080p", "Pokemon.S01E05.1080p.mkv"));
@@ -387,6 +463,32 @@ describe("findDownloadedFile", () => {
     expect(findDownloadedFile("Pokémon S01E05 1080p", "series", { season: 1, episode: 5 })).toBe(
       path.join(downloadsDir, "Pokemon.S01E05.1080p", "Pokemon.S01E05.1080p.mkv")
     );
+  });
+
+  it("tells numbered downloads apart even though their titles share every word", () => {
+    const wanted = writeDownloadFile("Episode 13.mp3", "thirteen");
+    writeDownloadFile("Episode 12.mp3", "twelve, still being written and already larger");
+
+    expect(findDownloadedFile("Episode 13", "podcast")).toBe(wanted);
+
+    fs.rmSync(wanted);
+    expect(findDownloadedFile("Episode 13", "podcast")).toBeNull();
+  });
+
+  it("matches a title made only of short words by its number", () => {
+    writeDownloadFile("Ep 4.mp3", "four, the larger file");
+    const wanted = writeDownloadFile("Ep 5.mp3", "five");
+
+    expect(findDownloadedFile("Ep 5", "podcast")).toBe(wanted);
+  });
+
+  it("prefers the wanted book's own file over the largest when a download holds several", () => {
+    const pack = "Brandon Sanderson - Mistborn Trilogy (The Final Empire, The Well of Ascension, The Hero of Ages) epub";
+    writeDownloadFile(path.join(pack, "The Final Empire.epub"), "one");
+    const wanted = writeDownloadFile(path.join(pack, "The Well of Ascension.epub"), "two");
+    writeDownloadFile(path.join(pack, "The Hero of Ages.epub"), "three, the largest file by far");
+
+    expect(findDownloadedFile(pack, "author", undefined, path.join(downloadsDir, pack), { childTitle: "The Well of Ascension" })).toBe(wanted);
   });
 });
 
@@ -399,6 +501,25 @@ describe("listDownloadedFileCandidates", () => {
     const candidates = listDownloadedFileCandidates("movie");
 
     expect(candidates.map((c) => c.path)).toEqual([newer, older]);
+  });
+});
+
+describe("dangling symlinks in the downloads directory", () => {
+  it("are skipped by the matcher and the manual-import picker instead of failing them", () => {
+    // A debrid link whose torrent expired, left behind in a shared downloads folder.
+    fs.symlinkSync(path.join(downloadsDir, "expired-debrid-target.mkv"), path.join(downloadsDir, "The.Matrix.1999.2160p.mkv"));
+    const wanted = writeDownloadFile("The.Matrix.1999.1080p.mkv");
+
+    expect(findDownloadedFile("The Matrix 1999 1080p", "movie")).toBe(wanted);
+    expect(listDownloadedFileCandidates("movie").map((c) => c.path)).toEqual([wanted]);
+  });
+
+  it("returns no match rather than throwing when the only candidate dangles", () => {
+    fs.symlinkSync(path.join(downloadsDir, "expired-debrid-target.mkv"), path.join(downloadsDir, "The.Matrix.1999.2160p.mkv"));
+    fs.symlinkSync(path.join(downloadsDir, "expired-debrid-episode.mkv"), path.join(downloadsDir, "Show.S01E01.1080p.mkv"));
+
+    expect(findDownloadedFile("The Matrix 1999 2160p", "movie")).toBeNull();
+    expect(findDownloadedFile("Show.S01E01.1080p", "series", { season: 1, episode: 1 })).toBeNull();
   });
 });
 
@@ -497,10 +618,12 @@ describe("placeFile — single shape (movie)", () => {
     const movie = await insertMovie({ root_folder_id: folder.id });
     const src = writeDownloadFile("x.mkv");
     setSetting("skipFreeSpaceCheck", "0");
-    vi.spyOn(fs, "statfsSync").mockReturnValue({ bfree: 1, bsize: 1 } as any);
+    // Plenty free for root, almost nothing for the unprivileged server (ext4's reserved blocks).
+    vi.spyOn(fs, "statfsSync").mockReturnValue({ bavail: 1, bfree: 1e15, bsize: 1 } as any);
 
     await expect(placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: src, quality: null })).rejects.toThrow(ImportSkippedError);
     vi.restoreAllMocks();
+    expect(fs.existsSync(src)).toBe(true);
   });
 
   it("writes an NFO sidecar when enabled", async () => {
@@ -587,6 +710,17 @@ describe("placeFile — episodic shape (series)", () => {
     expect(result.destPath).toBe(expectedDest);
     const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(epId)) as any;
     expect(ep).toMatchObject({ has_file: 1, file_path: expectedDest, quality: "HDTV-720p" });
+  });
+
+  it("marks the show as having a file as soon as one of its episodes does", async () => {
+    const folder = await insertRootFolder("series");
+    const { showId, epId } = await insertShowWithEpisode(folder.id, { season: 1, episode: 1 });
+    const src = writeDownloadFile("ep.mkv");
+
+    await placeFile({ itemId: showId, episodeId: epId, subItemId: null, sourceFile: src, quality: null });
+
+    const show = (await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(showId)) as any;
+    expect(Number(show.has_file)).toBe(1);
   });
 
   it("computes absoluteEpisode across seasons, excluding season 0 specials", async () => {
@@ -804,6 +938,598 @@ describe("placeFile — collection shape, single-file-per-child (author/book)", 
   });
 });
 
+describe("placeFile — an item not yet converted to its type's current shape", () => {
+  it("places an unconverted Adult item's file as the single-file item it still is", async () => {
+    const folder = await insertRootFolder("adult");
+    const itemId = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, year, root_folder_id, monitored, has_file, status, legacy_shape)
+             VALUES ('adult', 'Some Scene', 'some scene', 2020, ?, 1, 0, 'missing', 'single')`
+          )
+          .run(folder.id)
+      ).lastInsertRowid
+    );
+    const src = writeDownloadFile("Some.Scene.2020.1080p.mkv");
+
+    const result = await placeFile({ itemId, episodeId: null, subItemId: null, sourceFile: src, quality: null });
+
+    expect(result.destPath).toBe(path.join(folder.path, "Some Scene (2020)", "Some Scene (2020).mkv"));
+    const row = (await db.prepare("SELECT has_file, path FROM media_items WHERE id = ?").get(itemId)) as any;
+    expect(row).toMatchObject({ has_file: 1, path: result.destPath });
+  });
+});
+
+describe("downloadSubtitleForLanguage", () => {
+  it("asks OpenSubtitles for a three-letter language by its two-letter code, and names the file by the configured one", async () => {
+    const movie = await insertMovie();
+    const video = path.join(libraryDir, "Movie.mkv");
+    fs.writeFileSync(video, "video");
+    searchSubtitles.mockResolvedValue([
+      { language: "fr", releaseName: "Movie", fileId: 1, downloadUrl: "", provider: "opensubtitles", downloadCount: 99 },
+      { language: "en", releaseName: "Movie", fileId: 2, downloadUrl: "", provider: "opensubtitles", downloadCount: 5 },
+    ]);
+    downloadSubtitleContent.mockResolvedValue("1\n00:00:01,000 --> 00:00:02,000\nHello\n");
+
+    const downloaded = await downloadSubtitleForLanguage(video, movie.id, "eng", { type: "opensubtitles", api_key: "key", languages: "eng", config: null }, false);
+
+    expect(downloaded).toBe(true);
+    expect(searchSubtitles.mock.calls[0][2]).toBe("en");
+    expect(downloadSubtitleContent).toHaveBeenCalledWith("key", 2);
+    expect(fs.readFileSync(path.join(libraryDir, "Movie.eng.srt"), "utf-8")).toContain("Hello");
+  });
+});
+
+describe("library paths built from titles", () => {
+  async function insertSeries(folderId: number, title: string, episodeTitle: string): Promise<{ showId: number; epId: number }> {
+    const showId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('series',?,?,?,1,0,'missing')`)
+          .run(title, title.toLowerCase(), folderId)
+      ).lastInsertRowid
+    );
+    const epId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,1,?,1,0)`)
+          .run(showId, episodeTitle)
+      ).lastInsertRowid
+    );
+    return { showId, epId };
+  }
+
+  it("keeps a '/' inside a title as part of the name instead of an extra folder", async () => {
+    const folder = await insertRootFolder("movie");
+    const movie = await insertMovie({ root_folder_id: folder.id, title: "Face/Off", sort_title: "face/off", year: 1997 });
+    const src = writeDownloadFile("Face.Off.1997.mkv");
+
+    const result = await placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: src, quality: null });
+
+    expect(result.destPath).toBe(path.join(folder.path, "Face-Off (1997)", "Face-Off (1997).mkv"));
+    expect(fs.readdirSync(folder.path)).toEqual(["Face-Off (1997)"]);
+  });
+
+  it("never lets an episode title climb out of the root folder", async () => {
+    const folder = await insertRootFolder("series");
+    const { showId, epId } = await insertSeries(folder.id, "Breaking Bad", "x/../../../../../config/x");
+    const src = writeDownloadFile("Breaking.Bad.S01E01.mkv");
+
+    const result = await placeFile({ itemId: showId, episodeId: epId, subItemId: null, sourceFile: src, quality: null });
+
+    expect(result.destPath).toBe(path.join(folder.path, "Breaking Bad", "Season 01", "Breaking Bad - S01E01 - x-..-..-..-..-..-config-x.mkv"));
+    expect(fs.existsSync(result.destPath)).toBe(true);
+  });
+
+  it("turns a series title of '..' into a placeholder folder rather than the root's parent", async () => {
+    const folder = await insertRootFolder("series");
+    const { showId, epId } = await insertSeries(folder.id, "..", "Pilot");
+    const src = writeDownloadFile("show.s01e01.mkv");
+
+    const result = await placeFile({ itemId: showId, episodeId: epId, subItemId: null, sourceFile: src, quality: null });
+
+    expect(result.destPath).toBe(path.join(folder.path, "_", "Season 01", ".. - S01E01 - Pilot.mkv"));
+  });
+
+  it("neutralizes '..' levels written into a naming template itself", async () => {
+    const folder = await insertRootFolder("movie");
+    const movie = await insertMovie({ root_folder_id: folder.id });
+    const src = writeDownloadFile("x.mkv");
+    setSetting("namingMovieTemplate", "../../{title} ({year})/{title} ({year})");
+    try {
+      const result = await placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: src, quality: null });
+
+      expect(result.destPath).toBe(path.join(folder.path, "_", "_", "The Matrix (1999)", "The Matrix (1999).mkv"));
+    } finally {
+      setSetting("namingMovieTemplate", "");
+    }
+  });
+
+  it("creates the skeleton folder for a title holding '../' inside the root folder", () => {
+    createLibraryFolderSkeleton({ type: "movie", title: "../../escape", year: 2024 }, libraryDir);
+
+    expect(fs.readdirSync(libraryDir)).toContain("..-..-escape (2024)");
+  });
+});
+
+describe("placeFile — another entry's file at the destination", () => {
+  it("gives a same-titled sibling with no date a file named with its id, leaving the first file intact", async () => {
+    const folder = await insertRootFolder("author");
+    const authorId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('author','Some Author','some author',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    const insertBook = async () =>
+      Number((await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file) VALUES (?, 'Bonus Episode', 1, 0)").run(authorId)).lastInsertRowid);
+    const firstId = await insertBook();
+    const secondId = await insertBook();
+    const first = writeDownloadFile("first.epub", "first");
+    const second = writeDownloadFile("second.epub", "second");
+
+    const placed = await placeFile({ itemId: authorId, episodeId: null, subItemId: firstId, sourceFile: first, quality: null });
+    const placedSecond = await placeFile({ itemId: authorId, episodeId: null, subItemId: secondId, sourceFile: second, quality: null });
+
+    expect(placed.destPath).toBe(path.join(folder.path, "Some Author", "Bonus Episode.epub"));
+    expect(placedSecond.destPath).toBe(path.join(folder.path, "Some Author", `Bonus Episode [${secondId}].epub`));
+    expect(fs.readFileSync(placed.destPath, "utf-8")).toBe("first");
+    expect(fs.readFileSync(placedSecond.destPath, "utf-8")).toBe("second");
+    const secondRow = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(secondId)) as any;
+    expect(secondRow).toMatchObject({ has_file: 1, file_path: placedSecond.destPath });
+  });
+
+  describe("same-titled podcast episodes", () => {
+    async function insertPodcastEpisodes(folderId: number): Promise<{ showId: number; firstId: number; secondId: number }> {
+      const showId = Number(
+        (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('podcast','Some Show','some show',?,1,0,'missing')`).run(folderId))
+          .lastInsertRowid
+      );
+      const insertEpisode = async (releaseDate: string) =>
+        Number(
+          (await db.prepare("INSERT INTO sub_items (media_item_id, title, release_date, monitored, has_file) VALUES (?, 'Bonus Episode', ?, 1, 0)").run(showId, releaseDate))
+            .lastInsertRowid
+        );
+      return { showId, firstId: await insertEpisode("2024-01-05"), secondId: await insertEpisode("2024-02-09") };
+    }
+
+    it("imports both, the later one under a name carrying its release date, and keeps it there on a re-import", async () => {
+      const folder = await insertRootFolder("podcast");
+      const { showId, firstId, secondId } = await insertPodcastEpisodes(folder.id);
+      const first = writeDownloadFile("bonus-a.mp3", "january bonus");
+      const second = writeDownloadFile("bonus-b.mp3", "february bonus");
+
+      const one = await placeFile({ itemId: showId, episodeId: null, subItemId: firstId, sourceFile: first, quality: null });
+      const two = await placeFile({ itemId: showId, episodeId: null, subItemId: secondId, sourceFile: second, quality: null });
+
+      expect(one.destPath).toBe(path.join(folder.path, "Some Show", "Bonus Episode.mp3"));
+      expect(two.destPath).toBe(path.join(folder.path, "Some Show", "Bonus Episode (2024-02-09).mp3"));
+      expect(fs.readFileSync(one.destPath, "utf-8")).toBe("january bonus");
+      expect(fs.readFileSync(two.destPath, "utf-8")).toBe("february bonus");
+      const rows = (await db.prepare("SELECT id, has_file, file_path FROM sub_items WHERE media_item_id = ? ORDER BY id").all(showId)) as any[];
+      expect(rows.map((r) => [Number(r.has_file), r.file_path])).toEqual([
+        [1, one.destPath],
+        [1, two.destPath],
+      ]);
+
+      const again = writeDownloadFile("bonus-b-v2.mp3", "february bonus, re-downloaded");
+      const three = await placeFile({ itemId: showId, episodeId: null, subItemId: secondId, sourceFile: again, quality: null });
+
+      expect(three.destPath).toBe(two.destPath);
+      expect(fs.readFileSync(three.destPath, "utf-8")).toBe("february bonus, re-downloaded");
+      expect(fs.readFileSync(one.destPath, "utf-8")).toBe("january bonus");
+    });
+
+    it("leaves both where they are on Organize & Rename, and its preview reports no conflict", async () => {
+      const folder = await insertRootFolder("podcast");
+      const { showId, firstId, secondId } = await insertPodcastEpisodes(folder.id);
+      const one = await placeFile({ itemId: showId, episodeId: null, subItemId: firstId, sourceFile: writeDownloadFile("bonus-a.mp3", "january"), quality: null });
+      const two = await placeFile({ itemId: showId, episodeId: null, subItemId: secondId, sourceFile: writeDownloadFile("bonus-b.mp3", "february"), quality: null });
+
+      const preview = await renameOneMediaItem(showId, undefined, true);
+      expect(preview).toMatchObject({ renamed: [], errors: [] });
+      const result = await renameOneMediaItem(showId);
+      expect(result).toMatchObject({ renamed: [], errors: [] });
+
+      expect(fs.readFileSync(one.destPath, "utf-8")).toBe("january");
+      expect(fs.readFileSync(two.destPath, "utf-8")).toBe("february");
+    });
+
+    it("gives each its own name when a template change renames them both", async () => {
+      const folder = await insertRootFolder("podcast");
+      const { showId, firstId, secondId } = await insertPodcastEpisodes(folder.id);
+      await placeFile({ itemId: showId, episodeId: null, subItemId: firstId, sourceFile: writeDownloadFile("bonus-a.mp3", "january"), quality: null });
+      await placeFile({ itemId: showId, episodeId: null, subItemId: secondId, sourceFile: writeDownloadFile("bonus-b.mp3", "february"), quality: null });
+      setSetting("namingPodcastTemplate", "{parentTitle}/Episodes/{childTitle}");
+      try {
+        const result = await renameOneMediaItem(showId);
+
+        expect(result.errors).toEqual([]);
+        const rows = (await db.prepare("SELECT file_path FROM sub_items WHERE media_item_id = ? ORDER BY id").all(showId)) as any[];
+        const episodesDir = path.join(folder.path, "Some Show", "Episodes");
+        expect(rows.map((r) => r.file_path)).toEqual([path.join(episodesDir, "Bonus Episode.mp3"), path.join(episodesDir, "Bonus Episode (2024-02-09).mp3")]);
+        expect(rows.map((r) => fs.readFileSync(r.file_path, "utf-8"))).toEqual(["january", "february"]);
+      } finally {
+        setSetting("namingPodcastTemplate", "");
+      }
+    });
+
+    it("puts the date on the file's own name when naming is disabled", async () => {
+      const folder = await insertRootFolder("podcast");
+      const { showId, firstId, secondId } = await insertPodcastEpisodes(folder.id);
+      const first = writeDownloadFile(path.join("feed-a", "episode.mp3"), "january bonus");
+      const second = writeDownloadFile(path.join("feed-b", "episode.mp3"), "february bonus");
+      setSetting("namingEnabledPodcast", "0");
+      try {
+        const one = await placeFile({ itemId: showId, episodeId: null, subItemId: firstId, sourceFile: first, quality: null });
+        const two = await placeFile({ itemId: showId, episodeId: null, subItemId: secondId, sourceFile: second, quality: null });
+
+        expect(one.destPath).toBe(path.join(folder.path, "Some Show", "episode.mp3"));
+        expect(two.destPath).toBe(path.join(folder.path, "Some Show", "episode (2024-02-09).mp3"));
+        expect(fs.readFileSync(one.destPath, "utf-8")).toBe("january bonus");
+      } finally {
+        setSetting("namingEnabledPodcast", "1");
+      }
+    });
+  });
+
+  it("refuses to overwrite another item's file that renders the same path", async () => {
+    const folder = await insertRootFolder("rom");
+    const insertRom = async () =>
+      Number(
+        (
+          await db
+            .prepare(`INSERT INTO media_items (type, title, sort_title, year, root_folder_id, monitored, has_file, status) VALUES ('rom','Sonic the Hedgehog','sonic the hedgehog',1991,?,1,0,'missing')`)
+            .run(folder.id)
+        ).lastInsertRowid
+      );
+    const genesis = await insertRom();
+    const masterSystem = await insertRom();
+    const genesisZip = writeDownloadFile("sonic-genesis.zip", "genesis");
+    const smsZip = writeDownloadFile("sonic-sms.zip", "master system");
+
+    const placed = await placeFile({ itemId: genesis, episodeId: null, subItemId: null, sourceFile: genesisZip, quality: null });
+    await expect(placeFile({ itemId: masterSystem, episodeId: null, subItemId: null, sourceFile: smsZip, quality: null })).rejects.toThrow(ImportSkippedError);
+
+    expect(fs.readFileSync(placed.destPath, "utf-8")).toBe("genesis");
+    expect(fs.existsSync(smsZip)).toBe(true);
+  });
+
+  it("still replaces the item's own previous file on an upgrade", async () => {
+    const folder = await insertRootFolder("movie");
+    const samePath = path.join(folder.path, "The Matrix (1999)", "The Matrix (1999).mkv");
+    fs.mkdirSync(path.dirname(samePath), { recursive: true });
+    fs.writeFileSync(samePath, "old");
+    const movie = await insertMovie({ root_folder_id: folder.id, has_file: 1, path: samePath });
+    const src = writeDownloadFile("upgrade.mkv", "new");
+
+    await placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: src, quality: null });
+
+    expect(fs.readFileSync(samePath, "utf-8")).toBe("new");
+  });
+
+  it("refuses a second file of one batch for an episode the batch already filled", async () => {
+    const folder = await insertRootFolder("series");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('series','Show','show',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    const epId = Number(
+      (await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,1,'Pilot',1,0)`).run(showId))
+        .lastInsertRowid
+    );
+    const real = writeDownloadFile(path.join("Show.S01E01.720p", "Show.S01E01.720p.mkv"), "REAL EPISODE");
+    const sample = writeDownloadFile(path.join("Show.S01E01.720p", "Show.S01E01.720p.sample.mkv"), "sample");
+    const batchClaims = new Set<string>();
+
+    const placed = await placeFile({ itemId: showId, episodeId: epId, subItemId: null, sourceFile: real, quality: null, batchClaims });
+    await expect(placeFile({ itemId: showId, episodeId: epId, subItemId: null, sourceFile: sample, quality: null, batchClaims })).rejects.toThrow(
+      ImportSkippedError
+    );
+
+    expect(fs.readFileSync(placed.destPath, "utf-8")).toBe("REAL EPISODE");
+    expect(fs.readFileSync(sample, "utf-8")).toBe("sample");
+    const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(epId)) as any;
+    expect(ep.file_path).toBe(placed.destPath);
+  });
+
+  describe("a multi-episode file in a batch that already filled one of its episodes", () => {
+    async function insertTwoEpisodes(): Promise<{ folderPath: string; showId: number; ep1: number; ep2: number }> {
+      const folder = await insertRootFolder("series");
+      const showId = Number(
+        (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('series','Show','show',?,1,0,'missing')`).run(folder.id))
+          .lastInsertRowid
+      );
+      const insertEpisode = async (n: number, title: string) =>
+        Number(
+          (await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,?,?,1,0)`).run(showId, n, title))
+            .lastInsertRowid
+        );
+      return { folderPath: folder.path, showId, ep1: await insertEpisode(1, "One"), ep2: await insertEpisode(2, "Two") };
+    }
+
+    it("places it for the episode it was mapped to, leaving the earlier file on the other one", async () => {
+      const { folderPath, showId, ep1, ep2 } = await insertTwoEpisodes();
+      const e02 = writeDownloadFile("Show.S01E02.mkv", "episode two");
+      const e01e02 = writeDownloadFile("Show.S01E01E02.mkv", "episodes one and two");
+      const batchClaims = new Set<string>();
+
+      const first = await placeFile({ itemId: showId, episodeId: ep2, subItemId: null, sourceFile: e02, quality: null, batchClaims });
+      const second = await placeFile({ itemId: showId, episodeId: ep1, subItemId: null, sourceFile: e01e02, quality: null, batchClaims });
+
+      expect(second.destPath).toBe(path.join(folderPath, "Show", "Season 01", "Show - S01E01 - One.mkv"));
+      const rows = (await db.prepare("SELECT id, has_file, file_path FROM episodes WHERE media_item_id = ? ORDER BY episode_number").all(showId)) as any[];
+      expect(rows.map((r) => [Number(r.has_file), r.file_path])).toEqual([
+        [1, second.destPath],
+        [1, first.destPath],
+      ]);
+      expect(fs.readFileSync(first.destPath, "utf-8")).toBe("episode two");
+      expect(fs.readFileSync(second.destPath, "utf-8")).toBe("episodes one and two");
+      expect(await db.prepare("SELECT * FROM recycle_bin").all()).toEqual([]);
+    });
+
+    it("records it only for the episodes next to its own that the batch left free", async () => {
+      const { folderPath, showId, ep1, ep2 } = await insertTwoEpisodes();
+      await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,3,'Three',1,0)`).run(showId);
+      const e02 = writeDownloadFile("Show.S01E02.mkv", "episode two");
+      const e01to03 = writeDownloadFile("Show.S01E01E02E03.mkv", "episodes one to three");
+      const batchClaims = new Set<string>();
+
+      const first = await placeFile({ itemId: showId, episodeId: ep2, subItemId: null, sourceFile: e02, quality: null, batchClaims });
+      const second = await placeFile({ itemId: showId, episodeId: ep1, subItemId: null, sourceFile: e01to03, quality: null, batchClaims });
+
+      expect(second.destPath).toBe(path.join(folderPath, "Show", "Season 01", "Show - S01E01 - One.mkv"));
+      const rows = (await db.prepare("SELECT has_file, file_path FROM episodes WHERE media_item_id = ? ORDER BY episode_number").all(showId)) as any[];
+      expect(rows.map((r) => [Number(r.has_file), r.file_path])).toEqual([
+        [1, second.destPath],
+        [1, first.destPath],
+        [0, null],
+      ]);
+      expect(fs.readFileSync(first.destPath, "utf-8")).toBe("episode two");
+      const history = (await db.prepare("SELECT data FROM history WHERE event_type = 'imported' ORDER BY id").all()) as any[];
+      expect(history.map((h) => JSON.parse(h.data).episodeId)).toEqual([ep2, ep1]);
+    });
+
+    it("names the episode the batch already filled when refusing a file mapped to it", async () => {
+      const { showId, ep1, ep2 } = await insertTwoEpisodes();
+      const e01e02 = writeDownloadFile("Show.S01E01E02.mkv", "episodes one and two");
+      const e02 = writeDownloadFile("Show.S01E02.mkv", "episode two");
+      const batchClaims = new Set<string>();
+
+      await placeFile({ itemId: showId, episodeId: ep1, subItemId: null, sourceFile: e01e02, quality: null, batchClaims });
+      await expect(placeFile({ itemId: showId, episodeId: ep2, subItemId: null, sourceFile: e02, quality: null, batchClaims })).rejects.toThrow(
+        "S01E02 already got a file from this import"
+      );
+      expect(fs.readFileSync(e02, "utf-8")).toBe("episode two");
+    });
+  });
+
+  it("refuses a second file of one batch for the same movie, even with another extension", async () => {
+    const folder = await insertRootFolder("movie");
+    const movie = await insertMovie({ root_folder_id: folder.id });
+    const first = writeDownloadFile("The.Matrix.1999.mkv", "the movie");
+    const second = writeDownloadFile("The.Matrix.1999.trailer.mp4", "a trailer");
+    const batchClaims = new Set<string>();
+
+    const placed = await placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: first, quality: null, batchClaims });
+    await expect(placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: second, quality: null, batchClaims })).rejects.toThrow(
+      ImportSkippedError
+    );
+
+    expect(fs.readFileSync(placed.destPath, "utf-8")).toBe("the movie");
+    expect(fs.existsSync(second)).toBe(true);
+    const row = (await db.prepare("SELECT path FROM media_items WHERE id = ?").get(movie.id)) as any;
+    expect(row.path).toBe(placed.destPath);
+    expect(await db.prepare("SELECT * FROM recycle_bin").all()).toEqual([]);
+  });
+
+  it("lets a batch retry a row whose earlier file failed to move", async () => {
+    const folder = await insertRootFolder("movie");
+    const movie = await insertMovie({ root_folder_id: folder.id });
+    const missing = path.join(downloadsDir, "gone.mkv");
+    const good = writeDownloadFile("The.Matrix.1999.mkv", "the movie");
+    const batchClaims = new Set<string>();
+
+    await expect(placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: missing, quality: null, batchClaims })).rejects.toThrow();
+    const placed = await placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: good, quality: null, batchClaims });
+
+    expect(fs.readFileSync(placed.destPath, "utf-8")).toBe("the movie");
+  });
+});
+
+describe("placeFile — how the file is put in place", () => {
+  function exdevOnceFor(src: string) {
+    const realRename = fs.renameSync;
+    return vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(from) === src) throw Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" });
+      return realRename(from, to);
+    });
+  }
+
+  async function insertMovieWithFile(folder: { id: number; path: string }): Promise<{ movie: any; samePath: string }> {
+    const samePath = path.join(folder.path, "The Matrix (1999)", "The Matrix (1999).mkv");
+    fs.mkdirSync(path.dirname(samePath), { recursive: true });
+    fs.writeFileSync(samePath, "old");
+    const movie = await insertMovie({ root_folder_id: folder.id, has_file: 1, path: samePath });
+    return { movie, samePath };
+  }
+
+  it("copies a cross-device upgrade beside the library file and swaps it in", async () => {
+    const folder = await insertRootFolder("movie");
+    const { movie, samePath } = await insertMovieWithFile(folder);
+    const src = writeDownloadFile("The.Matrix.1999.2160p.mkv", "new");
+    const rename = exdevOnceFor(src);
+    try {
+      await placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: src, quality: null });
+    } finally {
+      rename.mockRestore();
+    }
+
+    expect(fs.readFileSync(samePath, "utf-8")).toBe("new");
+    expect(fs.existsSync(src)).toBe(false);
+    expect(fs.readdirSync(path.dirname(samePath))).toEqual(["The Matrix (1999).mkv"]);
+  });
+
+  it("leaves the existing library file intact when a cross-device copy fails partway", async () => {
+    const folder = await insertRootFolder("movie");
+    const { movie, samePath } = await insertMovieWithFile(folder);
+    const src = writeDownloadFile("The.Matrix.1999.2160p.mkv", "new");
+    const rename = exdevOnceFor(src);
+    const copy = vi.spyOn(fsp, "copyFile").mockImplementation(async (_from, to) => {
+      fs.writeFileSync(String(to), "ne");
+      throw Object.assign(new Error("EIO: i/o error, copyfile"), { code: "EIO" });
+    });
+    try {
+      await expect(placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: src, quality: null })).rejects.toThrow("EIO");
+    } finally {
+      copy.mockRestore();
+      rename.mockRestore();
+    }
+
+    expect(fs.readFileSync(samePath, "utf-8")).toBe("old");
+    expect(fs.readdirSync(path.dirname(samePath))).toEqual(["The Matrix (1999).mkv"]);
+    expect(fs.readFileSync(src, "utf-8")).toBe("new");
+  });
+
+  it("clears a partial copy an earlier interrupted import left beside the destination, but not a fresh one", async () => {
+    const folder = await insertRootFolder("movie");
+    const { movie, samePath } = await insertMovieWithFile(folder);
+    const dir = path.dirname(samePath);
+    const stale = path.join(dir, ".aonarr-tmp-0123456789ab");
+    const fresh = path.join(dir, ".aonarr-tmp-ba9876543210");
+    fs.writeFileSync(stale, "half of an old copy");
+    fs.writeFileSync(fresh, "another copy still running");
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    fs.utimesSync(stale, twoHoursAgo, twoHoursAgo);
+    const src = writeDownloadFile("The.Matrix.1999.2160p.mkv", "new");
+    const rename = exdevOnceFor(src);
+    try {
+      await placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: src, quality: null });
+    } finally {
+      rename.mockRestore();
+    }
+
+    expect(fs.readFileSync(samePath, "utf-8")).toBe("new");
+    expect(fs.readdirSync(dir).sort()).toEqual([".aonarr-tmp-ba9876543210", "The Matrix (1999).mkv"]);
+  });
+
+  it("never clears the temp of a copy still in progress, however old its mtime", async () => {
+    const folder = await insertRootFolder("movie");
+    const { movie, samePath } = await insertMovieWithFile(folder);
+    const src = writeDownloadFile("The.Matrix.1999.2160p.mkv", "new");
+    const rename = exdevOnceFor(src);
+    const realCopy = fsp.copyFile;
+    // The copy's mtime carried over from an old source (as macOS copyfile does), and another
+    // import sweeping the same folder while it is still in flight.
+    const copy = vi.spyOn(fsp, "copyFile").mockImplementation(async (from, to) => {
+      await realCopy(from, to);
+      const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      fs.utimesSync(String(to), old, old);
+      removeStaleImportTemps(path.dirname(String(to)));
+    });
+    try {
+      await placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: src, quality: null });
+    } finally {
+      copy.mockRestore();
+      rename.mockRestore();
+    }
+
+    expect(fs.readFileSync(samePath, "utf-8")).toBe("new");
+    expect(fs.readdirSync(path.dirname(samePath))).toEqual(["The Matrix (1999).mkv"]);
+  });
+
+  it("clears the partial copy a killed import left as soon as that same import is retried", async () => {
+    const folder = await insertRootFolder("movie");
+    const { movie, samePath } = await insertMovieWithFile(folder);
+    const dir = path.dirname(samePath);
+    const src = writeDownloadFile("The.Matrix.1999.2160p.mkv", "new");
+    const rename = exdevOnceFor(src);
+    // A killed process runs no cleanup, so the first attempt's half-written temp stays behind.
+    let leftover = "";
+    const copy = vi.spyOn(fsp, "copyFile").mockImplementationOnce(async (_from, to) => {
+      leftover = String(to);
+      fs.writeFileSync(leftover, "ne");
+      throw new Error("killed mid-copy");
+    });
+    const rm = vi.spyOn(fs, "rmSync").mockImplementationOnce(() => undefined);
+    try {
+      await expect(placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: src, quality: null })).rejects.toThrow("killed mid-copy");
+      copy.mockRestore();
+      rm.mockRestore();
+      expect(fs.readdirSync(dir).sort()).toEqual([path.basename(leftover), "The Matrix (1999).mkv"].sort());
+
+      await placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: src, quality: null });
+    } finally {
+      copy.mockRestore();
+      rm.mockRestore();
+      rename.mockRestore();
+    }
+
+    expect(fs.readFileSync(samePath, "utf-8")).toBe("new");
+    expect(fs.readdirSync(dir)).toEqual(["The Matrix (1999).mkv"]);
+  });
+
+  it("hardlinks a destination whose name alone is close to the filesystem's length limit", async () => {
+    const folder = await insertRootFolder("movie");
+    const title = "A".repeat(235); // "<title> (1999).mkv" is 246 bytes, under NAME_MAX (255)
+    const movie = await insertMovie({ root_folder_id: folder.id, title, sort_title: title.toLowerCase() });
+    const src = writeDownloadFile("long.mkv", "bytes");
+    setSetting("importStrategy", "hardlink");
+
+    const result = await placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: src, quality: null });
+
+    expect(path.basename(result.destPath)).toBe(`${title} (1999).mkv`);
+    expect(fs.readFileSync(result.destPath, "utf-8")).toBe("bytes");
+    expect(fs.readdirSync(path.dirname(result.destPath))).toEqual([`${title} (1999).mkv`]);
+  });
+
+  it("symlinks over a dangling link left at the destination", async () => {
+    const folder = await insertRootFolder("movie");
+    const dest = path.join(folder.path, "The Matrix (1999)", "The Matrix (1999).mkv");
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.symlinkSync(path.join(libraryDir, "expired-debrid-file.mkv"), dest);
+    const movie = await insertMovie({ root_folder_id: folder.id, has_file: 0 });
+    const src = writeDownloadFile("The.Matrix.1999.mkv", "from the mount");
+    setSetting("importStrategy", "symlink");
+
+    const result = await placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: src, quality: null });
+
+    expect(result.destPath).toBe(dest);
+    expect(fs.readlinkSync(dest)).toBe(path.resolve(src));
+    expect(fs.readFileSync(dest, "utf-8")).toBe("from the mount");
+  });
+
+  it("never replaces a library file with a link to itself when it's imported onto its own path", async () => {
+    const folder = await insertRootFolder("movie");
+    const { movie, samePath } = await insertMovieWithFile(folder);
+    setSetting("importStrategy", "symlink");
+
+    await placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: samePath, quality: null });
+
+    expect(fs.lstatSync(samePath).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(samePath, "utf-8")).toBe("old");
+  });
+
+  it("applies the configured folder permissions to every folder it creates, not just the deepest", async () => {
+    const folder = await insertRootFolder("series");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('series','Show','show',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    const epId = Number(
+      (await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,1,'Pilot',1,0)`).run(showId))
+        .lastInsertRowid
+    );
+    const src = writeDownloadFile("Show.S01E01.mkv");
+    setSetting("setPermissionsEnabled", "1");
+    setSetting("folderChmod", "770");
+
+    await placeFile({ itemId: showId, episodeId: epId, subItemId: null, sourceFile: src, quality: null });
+
+    expect(fs.statSync(path.join(folder.path, "Show")).mode & 0o777).toBe(0o770);
+    expect(fs.statSync(path.join(folder.path, "Show", "Season 01")).mode & 0o777).toBe(0o770);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // placeAlbumFiles
 // ---------------------------------------------------------------------------
@@ -846,6 +1572,19 @@ describe("placeAlbumFiles", () => {
     const result = await placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: anchor, quality: null });
 
     expect(fs.existsSync(path.join(result.destFolder, "weird-name.mp3"))).toBe(true);
+  });
+
+  it("gives an album whose title sanitizes to nothing a placeholder folder instead of the artist folder", async () => {
+    const folder = await insertRootFolder("artist");
+    const { artistId, albumId } = await insertArtistAlbum(folder.id);
+    await db.prepare("UPDATE sub_items SET title = ? WHERE id = ?").run("?", albumId);
+    await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, 1, 'Look at Me/Intro')").run(albumId);
+    const anchor = writeDownloadFile(path.join("Album", "01 - look at me.mp3"));
+
+    const result = await placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: anchor, quality: null });
+
+    expect(result.destFolder).toBe(path.join(folder.path, "Some Artist", "_"));
+    expect(fs.readdirSync(result.destFolder)).toEqual(["01 - Look at Me-Intro.mp3"]);
   });
 
   it("collapses a multi-disc CD1/CD2 download into one album folder with a continuous track offset", async () => {
@@ -968,6 +1707,99 @@ describe("placeAlbumFiles", () => {
     expect(fs.existsSync(deluxe)).toBe(true);
   });
 
+  it("takes the whole album from its own folder named by nothing but a year-like title and a format tag", async () => {
+    const folder = await insertRootFolder("artist");
+    const artistId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('artist','Taylor Swift','taylor swift',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    const albumId = Number((await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file) VALUES (?, '1989', 1, 0)").run(artistId)).lastInsertRowid);
+    const anchor = writeDownloadFile(path.join("1989 [FLAC]", "01.flac"), "one");
+    writeDownloadFile(path.join("1989 [FLAC]", "02.flac"), "two");
+    writeDownloadFile(path.join("1989 [FLAC]", "03.flac"), "three");
+
+    const result = await placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: anchor, quality: null, releaseTitle: "Taylor Swift - 1989 [FLAC]" });
+
+    expect(result).toMatchObject({ fileCount: 3, leftInPlace: 0 });
+    expect(fs.readdirSync(result.destFolder).sort()).toEqual(["01.flac", "02.flac", "03.flac"]);
+    expect(notifyManualInteractionRequired).not.toHaveBeenCalled();
+  });
+
+  describe("an artist's same-titled albums", () => {
+    async function insertQueenAlbums(folderId: number, secondReleaseDate: string | null) {
+      const artistId = Number(
+        (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('artist','Queen','queen',?,1,0,'missing')`).run(folderId))
+          .lastInsertRowid
+      );
+      const insertAlbum = async (releaseDate: string | null) => {
+        const id = Number(
+          (await db.prepare("INSERT INTO sub_items (media_item_id, title, release_date, monitored, has_file) VALUES (?, 'Greatest Hits', ?, 1, 0)").run(artistId, releaseDate))
+            .lastInsertRowid
+        );
+        await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, 1, 'Bohemian Rhapsody')").run(id);
+        return id;
+      };
+      return { artistId, first: await insertAlbum("1981-10-26"), second: await insertAlbum(secondReleaseDate) };
+    }
+
+    it("puts the later one in a folder named with its year, leaving the earlier one's tracks intact", async () => {
+      const folder = await insertRootFolder("artist");
+      const { artistId, first, second } = await insertQueenAlbums(folder.id, "1991-10-28");
+      const firstAnchor = writeDownloadFile(path.join("Queen - Greatest Hits (1981)", "01 - Bohemian Rhapsody.flac"), "album one");
+      const secondAnchor = writeDownloadFile(path.join("Queen - Greatest Hits II (1991)", "01 - Bohemian Rhapsody.flac"), "album two");
+
+      const one = await placeAlbumFiles({ itemId: artistId, subItemId: first, anchorFile: firstAnchor, quality: null });
+      const two = await placeAlbumFiles({ itemId: artistId, subItemId: second, anchorFile: secondAnchor, quality: null });
+
+      expect(one.destFolder).toBe(path.join(folder.path, "Queen", "Greatest Hits"));
+      expect(two.destFolder).toBe(path.join(folder.path, "Queen", "Greatest Hits (1991)"));
+      const firstTrack = (await db.prepare("SELECT file_path FROM tracks WHERE sub_item_id = ?").get(first)) as any;
+      const secondTrack = (await db.prepare("SELECT file_path FROM tracks WHERE sub_item_id = ?").get(second)) as any;
+      expect(fs.readFileSync(firstTrack.file_path, "utf-8")).toBe("album one");
+      expect(fs.readFileSync(secondTrack.file_path, "utf-8")).toBe("album two");
+
+      // Re-importing the later album finds its own year folder again, not the earlier album's.
+      const again = writeDownloadFile(path.join("Queen - Greatest Hits II (1991) [24bit]", "01 - Bohemian Rhapsody.flac"), "album two, again");
+      const three = await placeAlbumFiles({ itemId: artistId, subItemId: second, anchorFile: again, quality: null });
+      expect(three.destFolder).toBe(two.destFolder);
+      expect(fs.readFileSync(firstTrack.file_path, "utf-8")).toBe("album one");
+    });
+
+    it("refuses the later one when it has no year to tell the folders apart", async () => {
+      const folder = await insertRootFolder("artist");
+      const { artistId, first, second } = await insertQueenAlbums(folder.id, null);
+      const firstAnchor = writeDownloadFile(path.join("Queen - Greatest Hits (1981)", "01 - Bohemian Rhapsody.flac"), "album one");
+      const secondAnchor = writeDownloadFile(path.join("Queen - Greatest Hits II", "01 - Bohemian Rhapsody.flac"), "album two");
+
+      const one = await placeAlbumFiles({ itemId: artistId, subItemId: first, anchorFile: firstAnchor, quality: null });
+      await expect(placeAlbumFiles({ itemId: artistId, subItemId: second, anchorFile: secondAnchor, quality: null })).rejects.toThrow(ImportSkippedError);
+
+      expect(fs.readFileSync(path.join(one.destFolder, "01 - Bohemian Rhapsody.flac"), "utf-8")).toBe("album one");
+      expect(fs.readFileSync(secondAnchor, "utf-8")).toBe("album two");
+      const secondRow = (await db.prepare("SELECT has_file FROM sub_items WHERE id = ?").get(second)) as any;
+      expect(secondRow.has_file).toBe(0);
+    });
+
+    it("moves nothing when one track would land on another album's track file", async () => {
+      const folder = await insertRootFolder("artist");
+      const { artistId, first, second } = await insertQueenAlbums(folder.id, "1991-10-28");
+      // The earlier album's folder isn't recorded on its row, but its track file is there.
+      const takenTrack = path.join(folder.path, "Queen", "Greatest Hits", "02 - We Will Rock You.flac");
+      fs.mkdirSync(path.dirname(takenTrack), { recursive: true });
+      fs.writeFileSync(takenTrack, "album one");
+      await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title, has_file, file_path) VALUES (?, 2, 'We Will Rock You', 1, ?)").run(first, takenTrack);
+      await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, 2, 'We Will Rock You')").run(second);
+      const firstSrc = writeDownloadFile(path.join("GH2", "01 - Bohemian Rhapsody.flac"), "track one");
+      writeDownloadFile(path.join("GH2", "02 - We Will Rock You.flac"), "album two");
+
+      await expect(placeAlbumFiles({ itemId: artistId, subItemId: second, anchorFile: firstSrc, quality: null })).rejects.toThrow(ImportSkippedError);
+
+      expect(fs.readFileSync(takenTrack, "utf-8")).toBe("album one");
+      expect(fs.existsSync(firstSrc)).toBe(true);
+      expect(fs.existsSync(path.join(folder.path, "Queen", "Greatest Hits", "01 - Bohemian Rhapsody.flac"))).toBe(false);
+    });
+  });
+
   it("recycles a track's previous file when the re-import brings it in another format", async () => {
     const folder = await insertRootFolder("artist");
     const { artistId, albumId } = await insertArtistAlbum(folder.id);
@@ -983,6 +1815,445 @@ describe("placeAlbumFiles", () => {
     expect(track.file_path).toBe(path.join(folder.path, "Some Artist", "Some Album", "01 - Track One.flac"));
     expect(fs.existsSync(oldTrack)).toBe(false);
     expect(await db.prepare("SELECT * FROM recycle_bin WHERE original_path = ?").get(oldTrack)).toBeDefined();
+  });
+
+  describe("multi-disc albums in one folder", () => {
+    async function insertTracks(albumId: number, titles: string[]) {
+      for (const [i, title] of titles.entries()) {
+        await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, ?, ?)").run(albumId, i + 1, title);
+      }
+    }
+    async function trackContents(albumId: number): Promise<string[]> {
+      const rows = (await db.prepare("SELECT file_path FROM tracks WHERE sub_item_id = ? ORDER BY track_number").all(albumId)) as any[];
+      return rows.map((r) => fs.readFileSync(r.file_path, "utf-8"));
+    }
+
+    it("maps '1-01'/'2-01' files onto consecutive tracks without moving any over another", async () => {
+      const folder = await insertRootFolder("artist");
+      const { artistId, albumId } = await insertArtistAlbum(folder.id);
+      await insertTracks(albumId, ["Intro", "Song", "Reprise", "Outro"]);
+      const anchor = writeDownloadFile(path.join("Some Album (2CD)", "1-01 Intro.flac"), "disc 1 track 1");
+      writeDownloadFile(path.join("Some Album (2CD)", "1-02 Song.flac"), "disc 1 track 2");
+      writeDownloadFile(path.join("Some Album (2CD)", "2-01 Reprise.flac"), "disc 2 track 1");
+      writeDownloadFile(path.join("Some Album (2CD)", "2-02 Outro.flac"), "disc 2 track 2");
+
+      const result = await placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: anchor, quality: null });
+
+      expect(result.fileCount).toBe(4);
+      expect(fs.readdirSync(result.destFolder).sort()).toEqual(["01 - Intro.flac", "02 - Song.flac", "03 - Reprise.flac", "04 - Outro.flac"]);
+      expect(await trackContents(albumId)).toEqual(["disc 1 track 1", "disc 1 track 2", "disc 2 track 1", "disc 2 track 2"]);
+    });
+
+    it("reads '101'-style disc and track numbers the same way", async () => {
+      const folder = await insertRootFolder("artist");
+      const { artistId, albumId } = await insertArtistAlbum(folder.id);
+      await insertTracks(albumId, ["Intro", "Song", "Reprise"]);
+      const anchor = writeDownloadFile(path.join("Some Album", "101 Intro.flac"), "d1t1");
+      writeDownloadFile(path.join("Some Album", "102 Song.flac"), "d1t2");
+      writeDownloadFile(path.join("Some Album", "201 Reprise.flac"), "d2t1");
+
+      await placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: anchor, quality: null });
+
+      expect(await trackContents(albumId)).toEqual(["d1t1", "d1t2", "d2t1"]);
+    });
+
+    it("reads scene-named tracks by their leading number even when the artist's name starts with digits", async () => {
+      const folder = await insertRootFolder("artist");
+      const { artistId, albumId } = await insertArtistAlbum(folder.id);
+      await insertTracks(albumId, ["Intro", "What Up Gangsta", "Patiently Waiting"]);
+      const album = "50_Cent-Get_Rich_or_Die_Tryin-2003-GRP";
+      const anchor = writeDownloadFile(path.join(album, "01-50_cent-intro.mp3"), "t1");
+      writeDownloadFile(path.join(album, "02-50_cent-what_up_gangsta.mp3"), "t2");
+      writeDownloadFile(path.join(album, "03-50_cent-patiently_waiting.mp3"), "t3");
+
+      await placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: anchor, quality: null });
+
+      expect(await trackContents(albumId)).toEqual(["t1", "t2", "t3"]);
+    });
+
+    it("reads a track whose title starts with a number as that track, when the album isn't named disc-track", async () => {
+      const folder = await insertRootFolder("artist");
+      const { artistId, albumId } = await insertArtistAlbum(folder.id);
+      const titles = [...Array.from({ length: 9 }, (_, i) => `Song ${i + 1}`), "21 Guns"];
+      await insertTracks(albumId, titles);
+      // "10-21 Guns" alone reads like disc 10's track 21.
+      const files = titles.map((title, i) => writeDownloadFile(path.join("Some Album", `${String(i + 1).padStart(2, "0")}-${title}.mp3`), `t${i + 1}`));
+
+      await placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: files[0], quality: null });
+
+      expect(await trackContents(albumId)).toEqual(titles.map((_, i) => `t${i + 1}`));
+    });
+
+    it("gives neither of two files the one track both claim, so neither is renamed over the other", async () => {
+      const folder = await insertRootFolder("artist");
+      const { artistId, albumId } = await insertArtistAlbum(folder.id);
+      await insertTracks(albumId, ["Intro"]);
+      const anchor = writeDownloadFile(path.join("Some Album", "01 - Intro.flac"), "studio");
+      writeDownloadFile(path.join("Some Album", "01 - Intro (Live).flac"), "live");
+
+      const result = await placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: anchor, quality: null });
+
+      expect(result.fileCount).toBe(2);
+      expect(fs.readFileSync(path.join(result.destFolder, "01 - Intro.flac"), "utf-8")).toBe("studio");
+      expect(fs.readFileSync(path.join(result.destFolder, "01 - Intro (Live).flac"), "utf-8")).toBe("live");
+    });
+
+    it("keeps same-named files of different disc folders in their own disc folder", async () => {
+      const folder = await insertRootFolder("artist");
+      const { artistId, albumId } = await insertArtistAlbum(folder.id);
+      const anchor = writeDownloadFile(path.join("Big Album", "CD1", "Intro.flac"), "disc one");
+      writeDownloadFile(path.join("Big Album", "CD2", "Intro.flac"), "disc two");
+
+      const result = await placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: anchor, quality: null });
+
+      expect(result.fileCount).toBe(2);
+      expect(fs.readFileSync(path.join(result.destFolder, "CD1", "Intro.flac"), "utf-8")).toBe("disc one");
+      expect(fs.readFileSync(path.join(result.destFolder, "CD2", "Intro.flac"), "utf-8")).toBe("disc two");
+    });
+  });
+
+  it("places a manually picked track into its album's folder on its own, matched to its track", async () => {
+    const folder = await insertRootFolder("artist");
+    const { artistId, albumId } = await insertArtistAlbum(folder.id);
+    await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, 1, 'Track One')").run(albumId);
+    await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, 2, 'Track Two')").run(albumId);
+    const picked = writeDownloadFile(path.join("Some.Album.2020", "01 - Track One.mp3"), "one");
+    const notPicked = writeDownloadFile(path.join("Some.Album.2020", "02 - Track Two.mp3"), "two");
+
+    const result = await placeFile({ itemId: artistId, episodeId: null, subItemId: albumId, sourceFile: picked, quality: null });
+
+    const albumFolder = path.join(folder.path, "Some Artist", "Some Album");
+    expect(result.destPath).toBe(path.join(albumFolder, "01 - Track One.mp3"));
+    expect(fs.existsSync(notPicked)).toBe(true);
+    const tracks = (await db.prepare("SELECT track_number, has_file FROM tracks WHERE sub_item_id = ? ORDER BY track_number").all(albumId)) as any[];
+    expect(tracks.map((t) => Number(t.has_file))).toEqual([1, 0]);
+    const album = (await db.prepare("SELECT has_file, file_path FROM sub_items WHERE id = ?").get(albumId)) as any;
+    expect(album).toMatchObject({ has_file: 1, file_path: albumFolder });
+    const artist = (await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(artistId)) as any;
+    expect(Number(artist.has_file)).toBe(1);
+    expect(notifyManualInteractionRequired).not.toHaveBeenCalled();
+  });
+
+  it("matches a track picked by hand out of a category folder holding other albums' tracks", async () => {
+    const folder = await insertRootFolder("artist");
+    const artistId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('artist','Adele','adele',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    const albumId = Number(
+      (await db.prepare("INSERT INTO sub_items (media_item_id, title, release_date, monitored, has_file) VALUES (?, '25', '2015-11-20', 1, 0)").run(artistId)).lastInsertRowid
+    );
+    await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, 1, 'Hello')").run(albumId);
+    await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, 2, 'Send My Love')").run(albumId);
+    const picked = writeDownloadFile(path.join("music", "01 - Hello.flac"), "hello");
+    const otherAlbum = writeDownloadFile(path.join("music", "01 - Other Band Intro.flac"), "other band");
+
+    const result = await placeFile({ itemId: artistId, episodeId: null, subItemId: albumId, sourceFile: picked, quality: "FLAC" });
+
+    expect(result.destPath).toBe(path.join(folder.path, "Adele", "25", "01 - Hello.flac"));
+    const tracks = (await db.prepare("SELECT has_file, file_path FROM tracks WHERE sub_item_id = ? ORDER BY track_number").all(albumId)) as any[];
+    expect(tracks.map((t) => [Number(t.has_file), t.file_path])).toEqual([
+      [1, result.destPath],
+      [0, null],
+    ]);
+    expect(fs.readFileSync(otherAlbum, "utf-8")).toBe("other band");
+  });
+
+  describe("a two-disc album picked by hand, one disc folder at a time", () => {
+    const albumDir = "AM (2013) [2CD]";
+    async function insertTwoDiscAlbum(folderId: number): Promise<{ artistId: number; albumId: number; albumFolder: string }> {
+      const artistId = Number(
+        (
+          await db
+            .prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('artist','Arctic Monkeys','arctic monkeys',?,1,0,'missing')`)
+            .run(folderId)
+        ).lastInsertRowid
+      );
+      const albumId = Number(
+        (await db.prepare("INSERT INTO sub_items (media_item_id, title, release_date, monitored, has_file) VALUES (?, 'AM', '2013-09-09', 1, 0)").run(artistId)).lastInsertRowid
+      );
+      for (const [i, title] of ["Do I Wanna Know", "R U Mine", "Bonus One", "Bonus Two"].entries()) {
+        await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, ?, ?)").run(albumId, i + 1, title);
+      }
+      const root = (await db.prepare("SELECT path FROM root_folders WHERE id = ?").get(folderId)) as { path: string };
+      return { artistId, albumId, albumFolder: path.join(root.path, "Arctic Monkeys", "AM") };
+    }
+    function writeDiscs(): { cd1: string[]; cd2: string[] } {
+      return {
+        cd1: [
+          writeDownloadFile(path.join(albumDir, "CD1", "01 - Do I Wanna Know.flac"), "disc 1 track 1"),
+          writeDownloadFile(path.join(albumDir, "CD1", "02 - R U Mine.flac"), "disc 1 track 2"),
+        ],
+        cd2: [
+          writeDownloadFile(path.join(albumDir, "CD2", "01 - Bonus One.flac"), "disc 2 track 1"),
+          writeDownloadFile(path.join(albumDir, "CD2", "02 - Bonus Two.flac"), "disc 2 track 2"),
+        ],
+      };
+    }
+    async function importBatches(artistId: number, albumId: number, batches: string[][]): Promise<void> {
+      for (const batch of batches) {
+        const batchClaims = new Set<string>();
+        for (const sourceFile of batch) await placeFile({ itemId: artistId, episodeId: null, subItemId: albumId, sourceFile, quality: "FLAC", batchClaims });
+      }
+    }
+    async function trackFiles(albumId: number): Promise<[number, string | null][]> {
+      const rows = (await db.prepare("SELECT has_file, file_path FROM tracks WHERE sub_item_id = ? ORDER BY track_number").all(albumId)) as any[];
+      return rows.map((r) => [Number(r.has_file), r.file_path]);
+    }
+
+    it("matches a pick from the second disc folder after the first disc's files, even with the album folder not named for the artist", async () => {
+      const folder = await insertRootFolder("artist");
+      const { artistId, albumId, albumFolder } = await insertTwoDiscAlbum(folder.id);
+      const { cd2 } = writeDiscs();
+
+      const result = await placeFile({ itemId: artistId, episodeId: null, subItemId: albumId, sourceFile: cd2[0], quality: "FLAC" });
+
+      expect(result.destPath).toBe(path.join(albumFolder, "03 - Bonus One.flac"));
+      expect(await trackFiles(albumId)).toEqual([
+        [0, null],
+        [0, null],
+        [1, result.destPath],
+        [0, null],
+      ]);
+    });
+
+    it("matches every track when the second disc is picked while the first is still in the download", async () => {
+      const folder = await insertRootFolder("artist");
+      const { artistId, albumId, albumFolder } = await insertTwoDiscAlbum(folder.id);
+      const { cd1, cd2 } = writeDiscs();
+
+      await importBatches(artistId, albumId, [cd2, cd1]);
+
+      const names = ["01 - Do I Wanna Know.flac", "02 - R U Mine.flac", "03 - Bonus One.flac", "04 - Bonus Two.flac"];
+      expect(await trackFiles(albumId)).toEqual(names.map((name) => [1, path.join(albumFolder, name)]));
+      expect(names.map((name) => fs.readFileSync(path.join(albumFolder, name), "utf-8"))).toEqual([
+        "disc 1 track 1",
+        "disc 1 track 2",
+        "disc 2 track 1",
+        "disc 2 track 2",
+      ]);
+    });
+
+    it("never puts the second disc on the first disc's tracks once the first disc's folder was emptied by an earlier pick", async () => {
+      const folder = await insertRootFolder("artist");
+      const { artistId, albumId, albumFolder } = await insertTwoDiscAlbum(folder.id);
+      const { cd1, cd2 } = writeDiscs();
+
+      await importBatches(artistId, albumId, [cd1, cd2]);
+
+      expect(fs.readFileSync(path.join(albumFolder, "01 - Do I Wanna Know.flac"), "utf-8")).toBe("disc 1 track 1");
+      expect(fs.readFileSync(path.join(albumFolder, "02 - R U Mine.flac"), "utf-8")).toBe("disc 1 track 2");
+      // Nothing left to count disc 1's tracks from: disc 2's files keep their names and disc folder.
+      expect(fs.readFileSync(path.join(albumFolder, "CD2", "01 - Bonus One.flac"), "utf-8")).toBe("disc 2 track 1");
+      expect(fs.readFileSync(path.join(albumFolder, "CD2", "02 - Bonus Two.flac"), "utf-8")).toBe("disc 2 track 2");
+      expect(await trackFiles(albumId)).toEqual([
+        [1, path.join(albumFolder, "01 - Do I Wanna Know.flac")],
+        [1, path.join(albumFolder, "02 - R U Mine.flac")],
+        [0, null],
+        [0, null],
+      ]);
+    });
+
+    it("refuses a pick whose destination already holds a file rather than overwriting it", async () => {
+      const folder = await insertRootFolder("artist");
+      const { artistId, albumId, albumFolder } = await insertTwoDiscAlbum(folder.id);
+      const { cd2 } = writeDiscs();
+      // Track 3 already has its file; disc 2's "01" is counted onto it from disc 1's two files.
+      const existing = path.join(albumFolder, "03 - Bonus One.flac");
+      fs.mkdirSync(albumFolder, { recursive: true });
+      fs.writeFileSync(existing, "library copy");
+      await db.prepare("UPDATE tracks SET has_file = 1, file_path = ? WHERE sub_item_id = ? AND track_number = 3").run(existing, albumId);
+      await db.prepare("UPDATE sub_items SET has_file = 1, file_path = ? WHERE id = ?").run(albumFolder, albumId);
+
+      await expect(placeFile({ itemId: artistId, episodeId: null, subItemId: albumId, sourceFile: cd2[0], quality: "FLAC" })).rejects.toThrow(/already exists/);
+
+      expect(fs.readFileSync(existing, "utf-8")).toBe("library copy");
+      expect(fs.readFileSync(cd2[0], "utf-8")).toBe("disc 2 track 1");
+    });
+  });
+
+  it("replaces a single-file audiobook found loose in the root folder with an imported download of it", async () => {
+    const folder = await insertRootFolder("audiobook");
+    const authorId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('audiobook','Frank Herbert','frank herbert',?,1,1,'downloaded')`)
+          .run(folder.id)
+      ).lastInsertRowid
+    );
+    const loose = path.join(folder.path, "Dune.m4b");
+    fs.writeFileSync(loose, "old loose copy");
+    const bookId = Number(
+      (await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, file_path) VALUES (?, 'Dune', 1, 1, ?)").run(authorId, loose)).lastInsertRowid
+    );
+    await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title, has_file, file_path) VALUES (?, 1, 'Dune', 1, ?)").run(bookId, loose);
+    const release = "Frank Herbert - Dune (Unabridged) [M4B]";
+    const anchor = writeDownloadFile(path.join(release, "Dune.m4b"), "new download");
+
+    const result = await placeAlbumFiles({ itemId: authorId, subItemId: bookId, anchorFile: anchor, quality: null, releaseTitle: release });
+
+    const bookFolder = path.join(folder.path, "Frank Herbert", "Dune");
+    expect(result.anchorDest).toBe(path.join(bookFolder, "Dune.m4b"));
+    const tracks = (await db.prepare("SELECT has_file, file_path FROM tracks WHERE sub_item_id = ?").all(bookId)) as any[];
+    expect(tracks.map((t) => [Number(t.has_file), t.file_path])).toEqual([[1, result.anchorDest]]);
+    const book = (await db.prepare("SELECT has_file, file_path FROM sub_items WHERE id = ?").get(bookId)) as any;
+    expect(book).toMatchObject({ has_file: 1, file_path: bookFolder });
+    expect(fs.existsSync(loose)).toBe(false);
+    expect(await db.prepare("SELECT * FROM recycle_bin WHERE original_path = ?").get(loose)).toBeDefined();
+    expect(fs.readFileSync(result.anchorDest!, "utf-8")).toBe("new download");
+  });
+
+  describe("a hand-picked file named like one already in the library", () => {
+    it("replaces a single-file audiobook's own file, recycling the old copy", async () => {
+      const folder = await insertRootFolder("audiobook");
+      const authorId = Number(
+        (
+          await db
+            .prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('audiobook','Frank Herbert','frank herbert',?,1,1,'downloaded')`)
+            .run(folder.id)
+        ).lastInsertRowid
+      );
+      const bookFolder = path.join(folder.path, "Frank Herbert", "Dune");
+      const existing = path.join(bookFolder, "Dune.m4b");
+      fs.mkdirSync(bookFolder, { recursive: true });
+      fs.writeFileSync(existing, "old copy");
+      const bookId = Number(
+        (await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, file_path) VALUES (?, 'Dune', 1, 1, ?)").run(authorId, bookFolder)).lastInsertRowid
+      );
+      await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title, has_file, file_path) VALUES (?, 1, 'Dune', 1, ?)").run(bookId, existing);
+      const picked = writeDownloadFile(path.join("Frank Herbert - Dune (Unabridged) [M4B]", "Dune.m4b"), "new copy");
+
+      const result = await placeFile({ itemId: authorId, episodeId: null, subItemId: bookId, sourceFile: picked, quality: null });
+
+      expect(result.destPath).toBe(existing);
+      expect(fs.readFileSync(existing, "utf-8")).toBe("new copy");
+      const recycled = (await db.prepare("SELECT recycle_path FROM recycle_bin WHERE original_path = ?").get(existing)) as any;
+      expect(fs.readFileSync(recycled.recycle_path, "utf-8")).toBe("old copy");
+      const tracks = (await db.prepare("SELECT has_file, file_path FROM tracks WHERE sub_item_id = ?").all(bookId)) as any[];
+      expect(tracks.map((t) => [Number(t.has_file), t.file_path])).toEqual([[1, existing]]);
+    });
+
+    it("replaces the file of the track it matches by its own number, recycling the old copy", async () => {
+      const folder = await insertRootFolder("artist");
+      const { artistId, albumId } = await insertArtistAlbum(folder.id);
+      const existing = path.join(folder.path, "Some Artist", "Some Album", "01 - Rolling in the Deep.mp3");
+      fs.mkdirSync(path.dirname(existing), { recursive: true });
+      fs.writeFileSync(existing, "old copy");
+      await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title, has_file, file_path) VALUES (?, 1, 'Rolling in the Deep', 1, ?)").run(albumId, existing);
+      await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, 2, 'Rumour Has It')").run(albumId);
+      const picked = writeDownloadFile(path.join("Some.Artist-Some.Album-2011-MP3", "01 - Rolling in the Deep.mp3"), "new copy");
+
+      const result = await placeFile({ itemId: artistId, episodeId: null, subItemId: albumId, sourceFile: picked, quality: null });
+
+      expect(result.destPath).toBe(existing);
+      expect(fs.readFileSync(existing, "utf-8")).toBe("new copy");
+      const recycled = (await db.prepare("SELECT recycle_path FROM recycle_bin WHERE original_path = ?").get(existing)) as any;
+      expect(fs.readFileSync(recycled.recycle_path, "utf-8")).toBe("old copy");
+      const track = (await db.prepare("SELECT has_file, file_path FROM tracks WHERE sub_item_id = ? AND track_number = 1").get(albumId)) as any;
+      expect([Number(track.has_file), track.file_path]).toEqual([1, existing]);
+    });
+
+    it("refuses a file whose title merely starts with a number, rather than replace that track's file", async () => {
+      const folder = await insertRootFolder("artist");
+      const { artistId, albumId } = await insertArtistAlbum(folder.id);
+      const existing = path.join(folder.path, "Some Artist", "Some Album", "07 - Song Seven.flac");
+      fs.mkdirSync(path.dirname(existing), { recursive: true });
+      fs.writeFileSync(existing, "library copy");
+      for (let n = 1; n <= 9; n++) {
+        await db
+          .prepare("INSERT INTO tracks (sub_item_id, track_number, title, has_file, file_path) VALUES (?, ?, ?, ?, ?)")
+          .run(albumId, n, n === 7 ? "Song Seven" : `Other Song ${n}`, n === 7 ? 1 : 0, n === 7 ? existing : null);
+      }
+      const picked = writeDownloadFile(path.join("Ariana Grande - 7 rings (Single)", "7 rings.flac"), "a single");
+
+      await expect(placeFile({ itemId: artistId, episodeId: null, subItemId: albumId, sourceFile: picked, quality: null })).rejects.toThrow(/already exists/);
+
+      expect(fs.readFileSync(existing, "utf-8")).toBe("library copy");
+      expect(fs.readFileSync(picked, "utf-8")).toBe("a single");
+      expect(await db.prepare("SELECT * FROM recycle_bin").all()).toEqual([]);
+    });
+
+    it("leaves both the library file and the download as they were when the new copy can't be completed", async () => {
+      const folder = await insertRootFolder("audiobook");
+      const authorId = Number(
+        (
+          await db
+            .prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('audiobook','Frank Herbert','frank herbert',?,1,1,'downloaded')`)
+            .run(folder.id)
+        ).lastInsertRowid
+      );
+      const bookFolder = path.join(folder.path, "Frank Herbert", "Dune");
+      const existing = path.join(bookFolder, "Dune.m4b");
+      fs.mkdirSync(bookFolder, { recursive: true });
+      fs.writeFileSync(existing, "old copy");
+      const bookId = Number(
+        (await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, file_path) VALUES (?, 'Dune', 1, 1, ?)").run(authorId, bookFolder)).lastInsertRowid
+      );
+      await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title, has_file, file_path) VALUES (?, 1, 'Dune', 1, ?)").run(bookId, existing);
+      const picked = writeDownloadFile(path.join("Frank Herbert - Dune (Unabridged) [M4B]", "Dune.m4b"), "new copy");
+      // Another filesystem, and the disk fills up part-way through the copy.
+      const link = vi.spyOn(fs, "linkSync").mockImplementation(() => {
+        throw Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" });
+      });
+      const copy = vi.spyOn(fsp, "copyFile").mockRejectedValue(Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" }));
+      try {
+        await expect(placeFile({ itemId: authorId, episodeId: null, subItemId: bookId, sourceFile: picked, quality: null })).rejects.toThrow(/ENOSPC/);
+      } finally {
+        link.mockRestore();
+        copy.mockRestore();
+      }
+
+      expect(fs.readFileSync(existing, "utf-8")).toBe("old copy");
+      expect(fs.readdirSync(bookFolder)).toEqual(["Dune.m4b"]);
+      expect(fs.readFileSync(picked, "utf-8")).toBe("new copy");
+      expect(await db.prepare("SELECT * FROM recycle_bin").all()).toEqual([]);
+      const tracks = (await db.prepare("SELECT has_file, file_path FROM tracks WHERE sub_item_id = ?").all(bookId)) as any[];
+      expect(tracks.map((t) => [Number(t.has_file), t.file_path])).toEqual([[1, existing]]);
+    });
+
+    it("refuses an unmatched file whose name is another track's file", async () => {
+      const folder = await insertRootFolder("artist");
+      const { artistId, albumId } = await insertArtistAlbum(folder.id);
+      const existing = path.join(folder.path, "Some Artist", "Some Album", "Hidden Track.flac");
+      fs.mkdirSync(path.dirname(existing), { recursive: true });
+      fs.writeFileSync(existing, "library copy");
+      await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, 1, 'Intro')").run(albumId);
+      await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title, has_file, file_path) VALUES (?, 2, 'Hidden Track', 1, ?)").run(albumId, existing);
+      const picked = writeDownloadFile(path.join("Some Album", "Hidden Track.flac"), "another file");
+
+      await expect(placeFile({ itemId: artistId, episodeId: null, subItemId: albumId, sourceFile: picked, quality: null })).rejects.toThrow(/already exists/);
+
+      expect(fs.readFileSync(existing, "utf-8")).toBe("library copy");
+      expect(fs.readFileSync(picked, "utf-8")).toBe("another file");
+      expect(await db.prepare("SELECT * FROM recycle_bin").all()).toEqual([]);
+    });
+  });
+
+  it("records a manual import of an album's tracks, one call per track, as one import of the album", async () => {
+    const { findRepeatedImports } = await import("../src/services/duplicates.js");
+    const folder = await insertRootFolder("artist");
+    const { artistId, albumId } = await insertArtistAlbum(folder.id);
+    const names = ["01 - Track One.mp3", "02 - Track Two.mp3", "03 - Track Three.mp3"];
+    for (const [i, name] of names.entries()) {
+      await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, ?, ?)").run(albumId, i + 1, name.slice(5, -4));
+    }
+    const files = names.map((name) => writeDownloadFile(path.join("Some.Album.2020", name)));
+
+    // Unbatched, as the manual-import endpoints call it today, then as one batch.
+    for (const sourceFile of files) await placeFile({ itemId: artistId, episodeId: null, subItemId: albumId, sourceFile, quality: "MP3-320" });
+
+    let history = (await db.prepare("SELECT data FROM history WHERE media_item_id = ? AND event_type = 'imported'").all(artistId)) as any[];
+    expect(history).toHaveLength(1);
+    expect(notifyImported).toHaveBeenCalledTimes(1);
+    expect(await findRepeatedImports()).toEqual([]);
+
+    const flacs = names.map((name) => writeDownloadFile(path.join("Some.Album.2020.FLAC", name.replace(".mp3", ".flac"))));
+    const batchClaims = new Set<string>();
+    for (const sourceFile of flacs) await placeFile({ itemId: artistId, episodeId: null, subItemId: albumId, sourceFile, quality: "FLAC", batchClaims });
+
+    history = (await db.prepare("SELECT data FROM history WHERE media_item_id = ? AND event_type = 'imported' ORDER BY id").all(artistId)) as any[];
+    expect(history.map((h) => JSON.parse(h.data).quality)).toEqual(["MP3-320", "FLAC"]);
+    expect(notifyImported).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -1132,7 +2403,7 @@ describe("placeSeasonPackFiles", () => {
 
   it("counts only this season's unknown episodes as unmatched, not extras, specials or other seasons", async () => {
     const folder = await insertRootFolder("series");
-    const { showId } = await insertShowWithEpisodes(folder.id, [1, 2]);
+    const { showId } = await insertShowWithEpisodes(folder.id, [1, 2, 3]);
     const pack = "Show.S01.1080p.BluRay-GRP";
     const anchor = writeDownloadFile(path.join(pack, "Show.S01E01.mkv"));
     writeDownloadFile(path.join(pack, "Show.S01E02.mkv"));
@@ -1146,7 +2417,7 @@ describe("placeSeasonPackFiles", () => {
     expect(clean).toMatchObject({ episodeCount: 2, unmatchedCount: 0, leftInPlace: 0 });
     expect(fs.existsSync(extra)).toBe(true);
 
-    const nextAnchor = writeDownloadFile(path.join("Show.S01.REPACK", "Show.S01E01.mkv"));
+    const nextAnchor = writeDownloadFile(path.join("Show.S01.REPACK", "Show.S01E03.mkv"));
     writeDownloadFile(path.join("Show.S01.REPACK", "Show.S01E07.mkv"));
 
     const withUnknown = await placeSeasonPackFiles({ itemId: showId, seasonNumber: 1, anchorFile: nextAnchor, quality: null, releaseTitle: "Show.S01.REPACK" });
@@ -1175,6 +2446,27 @@ describe("placeSeasonPackFiles", () => {
     expect(fs.existsSync(sample)).toBe(true);
   });
 
+  it("imports a pack's episode titled with the word 'sample' along with the rest, but not the pack's samples", async () => {
+    const folder = await insertRootFolder("series");
+    const { showId, epIds } = await insertShowWithEpisodes(folder.id, [1, 2]);
+    const pack = "Show.S01.1080p.WEB-DL";
+    const anchor = writeDownloadFile(path.join(pack, "Show.S01E01.Pilot.1080p.WEB-DL.mkv"), "episode one of the pack");
+    writeDownloadFile(path.join(pack, "Show.S01E02.The.Sample.1080p.WEB-DL.mkv"), "episode two of the pack");
+    const cut = writeDownloadFile(path.join(pack, "Show.S01E01.1080p.WEB-DL-sample.mkv"), "cut");
+    const sample = writeDownloadFile(path.join(pack, "Sample", "show.s01e02.sample.mkv"), "a sample, larger than the episodes here");
+
+    const result = await placeSeasonPackFiles({ itemId: showId, seasonNumber: 1, anchorFile: anchor, quality: null, releaseTitle: pack, downloadPath: path.join(downloadsDir, pack) });
+
+    expect(result).toMatchObject({ episodeCount: 2, unmatchedCount: 0 });
+    const [row1, row2] = (await Promise.all([
+      db.prepare("SELECT * FROM episodes WHERE id = ?").get(epIds[0]),
+      db.prepare("SELECT * FROM episodes WHERE id = ?").get(epIds[1]),
+    ])) as any[];
+    expect(fs.readFileSync(row1.file_path, "utf-8")).toBe("episode one of the pack");
+    expect(fs.readFileSync(row2.file_path, "utf-8")).toBe("episode two of the pack");
+    expect(fs.existsSync(cut) && fs.existsSync(sample)).toBe(true);
+  });
+
   it("collects the pack from the client-reported download folder even when its name doesn't carry the season", async () => {
     const folder = await insertRootFolder("series");
     const { showId } = await insertShowWithEpisodes(folder.id, [1, 2]);
@@ -1193,6 +2485,176 @@ describe("placeSeasonPackFiles", () => {
 
     expect(result.episodeCount).toBe(2);
   });
+
+  describe("files not named SxxEyy", () => {
+    /** `seasons` maps a season number to its episode count; `airDates` sets episodes' air dates by "SxE". */
+    async function insertShow(type: string, folderId: number, seasons: Record<number, number>, airDates: Record<string, string> = {}) {
+      const showId = Number(
+        (
+          await db
+            .prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES (?,'Show','show',?,1,0,'missing')`)
+            .run(type, folderId)
+        ).lastInsertRowid
+      );
+      const ids: Record<string, number> = {};
+      for (const [season, count] of Object.entries(seasons)) {
+        for (let n = 1; n <= count; n++) {
+          ids[`${season}x${n}`] = Number(
+            (
+              await db
+                .prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, monitored, has_file) VALUES (?,?,?,?,?,1,0)`)
+                .run(showId, Number(season), n, `Ep${n}`, airDates[`${season}x${n}`] ?? null)
+            ).lastInsertRowid
+          );
+        }
+      }
+      return { showId, ids };
+    }
+    async function fileOf(episodeId: number): Promise<string | null> {
+      const row = (await db.prepare("SELECT has_file, file_path FROM episodes WHERE id = ?").get(episodeId)) as any;
+      return Number(row.has_file) ? fs.readFileSync(row.file_path, "utf-8") : null;
+    }
+
+    it("maps an anime batch's absolute numbers onto the season's episodes", async () => {
+      const folder = await insertRootFolder("anime");
+      const { showId, ids } = await insertShow("anime", folder.id, { 1: 12, 2: 3 });
+      const pack = "[Grp] Show S2 [1080p]";
+      const anchor = writeDownloadFile(path.join(pack, "[Grp] Show - 13.mkv"), "abs 13");
+      writeDownloadFile(path.join(pack, "[Grp] Show - 14.mkv"), "abs 14");
+      writeDownloadFile(path.join(pack, "[Grp] Show - 15.mkv"), "abs 15");
+
+      const result = await placeSeasonPackFiles({ itemId: showId, seasonNumber: 2, anchorFile: anchor, quality: null, releaseTitle: pack });
+
+      expect(result).toMatchObject({ episodeCount: 3, unmatchedCount: 0 });
+      expect([await fileOf(ids["2x1"]), await fileOf(ids["2x2"]), await fileOf(ids["2x3"])]).toEqual(["abs 13", "abs 14", "abs 15"]);
+      expect(await fileOf(ids["1x1"])).toBeNull();
+    });
+
+    it("reads a batch numbered from 1 again as that season's own numbering", async () => {
+      const folder = await insertRootFolder("anime");
+      const { showId, ids } = await insertShow("anime", folder.id, { 1: 12, 2: 3 });
+      const pack = "[Grp] Show S2 [1080p]";
+      const anchor = writeDownloadFile(path.join(pack, "[Grp] Show - 01.mkv"), "s2 e1");
+      writeDownloadFile(path.join(pack, "[Grp] Show - 02.mkv"), "s2 e2");
+
+      await placeSeasonPackFiles({ itemId: showId, seasonNumber: 2, anchorFile: anchor, quality: null, releaseTitle: pack });
+
+      expect([await fileOf(ids["2x1"]), await fileOf(ids["2x2"])]).toEqual(["s2 e1", "s2 e2"]);
+      expect(await fileOf(ids["1x1"])).toBeNull();
+    });
+
+    it("maps a daily show's dated files by air date, and names them with it", async () => {
+      const folder = await insertRootFolder("series");
+      const { showId, ids } = await insertShow("series", folder.id, { 2024: 2 }, { "2024x1": "2024-01-15", "2024x2": "2024-01-16" });
+      setSetting("namingSeriesTemplate", "{parentTitle}/{airDate}");
+      try {
+        const pack = "Show.2024.Pack.1080p";
+        const anchor = writeDownloadFile(path.join(pack, "Show.2024.01.15.1080p.mkv"), "jan 15");
+        writeDownloadFile(path.join(pack, "Show.2024.01.16.1080p.mkv"), "jan 16");
+
+        const result = await placeSeasonPackFiles({ itemId: showId, seasonNumber: 2024, anchorFile: anchor, quality: null, releaseTitle: pack });
+
+        expect(result.episodeCount).toBe(2);
+        expect([await fileOf(ids["2024x1"]), await fileOf(ids["2024x2"])]).toEqual(["jan 15", "jan 16"]);
+        const row = (await db.prepare("SELECT file_path FROM episodes WHERE id = ?").get(ids["2024x1"])) as any;
+        expect(path.basename(row.file_path)).toBe("2024-01-15.mkv");
+      } finally {
+        setSetting("namingSeriesTemplate", "");
+      }
+    });
+
+    it("maps files named only by their episode number inside a folder named for the season", async () => {
+      const folder = await insertRootFolder("series");
+      const { showId, ids } = await insertShow("series", folder.id, { 1: 2 });
+      const pack = "Show.S01.1080p.WEB-DL";
+      const anchor = writeDownloadFile(path.join(pack, "01.mkv"), "one");
+      writeDownloadFile(path.join(pack, "E02.mkv"), "two");
+
+      await placeSeasonPackFiles({ itemId: showId, seasonNumber: 1, anchorFile: anchor, quality: null, releaseTitle: pack });
+
+      expect([await fileOf(ids["1x1"]), await fileOf(ids["1x2"])]).toEqual(["one", "two"]);
+    });
+
+    it("marks the show as having a file", async () => {
+      const folder = await insertRootFolder("series");
+      const { showId } = await insertShow("series", folder.id, { 1: 1 });
+      const anchor = writeDownloadFile(path.join("Show.S01.PACK", "Show.S01E01.mkv"));
+
+      await placeSeasonPackFiles({ itemId: showId, seasonNumber: 1, anchorFile: anchor, quality: null });
+
+      const show = (await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(showId)) as any;
+      expect(Number(show.has_file)).toBe(1);
+    });
+  });
+
+  describe("episodes that already have a file", () => {
+    /** Episode 1 has a library file of `existingQuality`; episode 2 has none. */
+    async function insertShowWithOneFile(folderPath: string, folderId: number, existingQuality: string) {
+      const { showId, epIds } = await insertShowWithEpisodes(folderId, [1, 2]);
+      const existing = path.join(folderPath, "Show", "Season 01", "Show.S01E01.Older.Release.mkv");
+      fs.mkdirSync(path.dirname(existing), { recursive: true });
+      fs.writeFileSync(existing, "existing file");
+      await db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ? WHERE id = ?").run(existing, existingQuality, epIds[0]);
+      return { showId, epIds, existing };
+    }
+
+    it("leaves an episode's better file alone, keeping the pack's copy in the download", async () => {
+      const folder = await insertRootFolder("series");
+      const { showId, epIds, existing } = await insertShowWithOneFile(folder.path, folder.id, "Bluray-1080p");
+      const pack = "Show.S01.1080p.WEB-DL";
+      const anchor = writeDownloadFile(path.join(pack, "Show.S01E01.mkv"), "web e1");
+      writeDownloadFile(path.join(pack, "Show.S01E02.mkv"), "web e2");
+
+      const result = await placeSeasonPackFiles({ itemId: showId, seasonNumber: 1, anchorFile: anchor, quality: "WEBDL-1080p", releaseTitle: pack });
+
+      expect(result).toMatchObject({ episodeCount: 1, notUpgradedCount: 1 });
+      const ep1 = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(epIds[0])) as any;
+      expect(ep1).toMatchObject({ file_path: existing, quality: "Bluray-1080p" });
+      expect(fs.readFileSync(existing, "utf-8")).toBe("existing file");
+      expect(fs.readFileSync(anchor, "utf-8")).toBe("web e1");
+      const ep2 = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(epIds[1])) as any;
+      expect(fs.readFileSync(ep2.file_path, "utf-8")).toBe("web e2");
+      expect(await db.prepare("SELECT * FROM recycle_bin").get()).toBeUndefined();
+      expect(notifyImported).toHaveBeenCalledTimes(1);
+      expect(notifyUpgraded).not.toHaveBeenCalled();
+    });
+
+    it("replaces a worse file, recycling it, and reports that episode as upgraded", async () => {
+      const folder = await insertRootFolder("series");
+      const { showId, epIds, existing } = await insertShowWithOneFile(folder.path, folder.id, "HDTV-720p");
+      const pack = "Show.S01.1080p.WEB-DL";
+      const anchor = writeDownloadFile(path.join(pack, "Show.S01E01.mkv"), "web e1");
+      writeDownloadFile(path.join(pack, "Show.S01E02.mkv"), "web e2");
+
+      const result = await placeSeasonPackFiles({ itemId: showId, seasonNumber: 1, anchorFile: anchor, quality: "WEBDL-1080p", releaseTitle: pack });
+
+      expect(result).toMatchObject({ episodeCount: 2, notUpgradedCount: 0 });
+      const ep1 = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(epIds[0])) as any;
+      expect(ep1.quality).toBe("WEBDL-1080p");
+      expect(fs.readFileSync(ep1.file_path, "utf-8")).toBe("web e1");
+      expect(await db.prepare("SELECT * FROM recycle_bin WHERE original_path = ?").get(existing)).toBeDefined();
+      expect(notifyUpgraded).toHaveBeenCalledTimes(1);
+      expect(notifyUpgraded.mock.calls[0][1]).toContain("1 episode(s)");
+      expect(notifyImported).toHaveBeenCalledTimes(1);
+      const history = (await db.prepare("SELECT data FROM history WHERE media_item_id = ? AND event_type = 'imported'").all(showId)) as any[];
+      const byEpisode = new Map(history.map((h) => [JSON.parse(h.data).episodeId, JSON.parse(h.data)]));
+      expect(byEpisode.get(epIds[0])).toMatchObject({ upgraded: true, previousQuality: "HDTV-720p" });
+      expect(byEpisode.get(epIds[1]).upgraded).toBeUndefined();
+    });
+
+    it("refuses a pack that upgrades none of the episodes it matched, moving nothing", async () => {
+      const folder = await insertRootFolder("series");
+      const { showId, existing } = await insertShowWithOneFile(folder.path, folder.id, "Bluray-1080p");
+      const anchor = writeDownloadFile(path.join("Show.S01.1080p.WEB-DL", "Show.S01E01.mkv"), "web e1");
+
+      await expect(
+        placeSeasonPackFiles({ itemId: showId, seasonNumber: 1, anchorFile: anchor, quality: "WEBDL-1080p", releaseTitle: "Show.S01.1080p.WEB-DL" })
+      ).rejects.toThrow(/Not an upgrade/);
+
+      expect(fs.readFileSync(existing, "utf-8")).toBe("existing file");
+      expect(fs.existsSync(anchor)).toBe(true);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1201,12 +2663,21 @@ describe("placeSeasonPackFiles", () => {
 
 describe("importQueueItem", () => {
   async function insertQueueRow(mediaItemId: number, overrides: Record<string, unknown> = {}): Promise<number> {
-    const row = { episode_id: null, sub_item_id: null, season_number: null, title: "Some.Release.2020", quality: null, download_path: null, ...overrides };
+    const row = {
+      episode_id: null,
+      sub_item_id: null,
+      season_number: null,
+      title: "Some.Release.2020",
+      quality: null,
+      download_path: null,
+      download_client_id: null,
+      ...overrides,
+    };
     const result = await db
       .prepare(
-        `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, quality, download_path, status) VALUES (?,?,?,?,?,?,?, 'downloaded')`
+        `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, quality, download_path, download_client_id, status) VALUES (?,?,?,?,?,?,?,?, 'downloaded')`
       )
-      .run(mediaItemId, row.episode_id, row.sub_item_id, row.season_number, row.title, row.quality, row.download_path);
+      .run(mediaItemId, row.episode_id, row.sub_item_id, row.season_number, row.title, row.quality, row.download_path, row.download_client_id);
     return Number(result.lastInsertRowid);
   }
 
@@ -1228,7 +2699,9 @@ describe("importQueueItem", () => {
     const movie = await insertMovie({ root_folder_id: folder.id });
     const queueId = await insertQueueRow(movie.id, { title: "Nothing Matches This At All" });
 
-    await expect(importQueueItem(queueId)).rejects.toThrow("No matching file found");
+    const err = await importQueueItem(queueId).catch((e) => e);
+    expect(err.message).toContain("No matching file found");
+    expect(err).not.toBeInstanceOf(ImportSkippedError);
   });
 
   it("dispatches season-pack imports when the queue row has a season but no specific episode", async () => {
@@ -1290,6 +2763,21 @@ describe("importQueueItem", () => {
     await importQueueItem(queueId);
 
     expect(fs.existsSync(path.join(downloadsDir, "Release Folder"))).toBe(true);
+    expect(removeQueueItemDownload).not.toHaveBeenCalled();
+  });
+
+  it("leaves a hardlinked import's download in its client to keep seeding", async () => {
+    const folder = await insertRootFolder("movie");
+    const movie = await insertMovie({ root_folder_id: folder.id });
+    const src = writeDownloadFile(path.join("Release Folder", "The.Matrix.1999.mkv"));
+    const queueId = await insertQueueRow(movie.id, { title: "The Matrix 1999" });
+    setSetting("removeCompletedDownloads", "1");
+    setSetting("importStrategy", "hardlink");
+
+    await importQueueItem(queueId);
+
+    expect(removeQueueItemDownload).not.toHaveBeenCalled();
+    expect(fs.existsSync(src)).toBe(true);
   });
 
   it("keeps a season pack's download data when some of its files couldn't be matched to an episode", async () => {
@@ -1373,6 +2861,481 @@ describe("importQueueItem", () => {
     expect(fs.existsSync(anchor)).toBe(false);
     expect(fs.existsSync(unplaced)).toBe(true);
     expect(removeQueueItemDownload).toHaveBeenCalledTimes(1);
+    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false);
+  });
+
+  it("imports the whole album from the client-reported folder even when its name shares no word with the release", async () => {
+    const folder = await insertRootFolder("artist");
+    const artistId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('artist','Adele','adele',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    const albumId = Number((await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file) VALUES (?, '25', 1, 0)").run(artistId)).lastInsertRowid);
+    const clientId = Number((await db.prepare("INSERT INTO download_clients (name, type, category) VALUES ('qBittorrent', 'qbittorrent', 'music')").run()).lastInsertRowid);
+    const albumDir = path.join("music", "25 (2015) [FLAC]");
+    for (const name of ["01 - Hello.flac", "02 - Send My Love.flac", "03 - I Miss You.flac"]) writeDownloadFile(path.join(albumDir, name));
+    const queueId = await insertQueueRow(artistId, {
+      sub_item_id: albumId,
+      title: "Adele - 25 (2015) [FLAC]",
+      download_path: path.join(downloadsDir, albumDir),
+      download_client_id: clientId,
+    });
+    setSetting("removeCompletedDownloads", "1");
+
+    await importQueueItem(queueId);
+
+    expect(fs.readdirSync(path.join(folder.path, "Adele", "25")).sort()).toEqual(["01 - Hello.flac", "02 - Send My Love.flac", "03 - I Miss You.flac"]);
+    expect(notifyManualInteractionRequired).not.toHaveBeenCalled();
+    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(true);
+  });
+
+  it("never deletes the category folder a single-file download was saved into", async () => {
+    const folder = await insertRootFolder("movie");
+    const movie = await insertMovie({ root_folder_id: folder.id });
+    const file = writeDownloadFile(path.join("movies", "The.Matrix.1999.1080p.mkv"));
+    const otherRom = writeDownloadFile(path.join("movies", "Game (USA).zip"));
+    const stillDownloading = writeDownloadFile(path.join("movies", "Other.Movie.2020.mkv.!qB"));
+    const queueId = await insertQueueRow(movie.id, { title: "The Matrix 1999 1080p", download_path: file });
+    setSetting("removeCompletedDownloads", "1");
+
+    await importQueueItem(queueId);
+
+    expect(fs.existsSync(otherRom)).toBe(true);
+    expect(fs.existsSync(stillDownloading)).toBe(true);
+  });
+
+  it("keeps a release's own folder while it holds anything besides its leftovers, and removes it once it doesn't", async () => {
+    const folder = await insertRootFolder("movie");
+    const kept = await insertMovie({ root_folder_id: folder.id });
+    writeDownloadFile(path.join("The Matrix Release", "The.Matrix.1999.mkv"));
+    const archive = writeDownloadFile(path.join("The Matrix Release", "extras.rar"));
+    setSetting("removeCompletedDownloads", "1");
+
+    await importQueueItem(await insertQueueRow(kept.id, { title: "The Matrix 1999" }));
+
+    expect(fs.existsSync(archive)).toBe(true);
+
+    const removed = await insertMovie({ root_folder_id: folder.id, title: "Heat", sort_title: "heat", year: 1995 });
+    writeDownloadFile(path.join("Heat Release", "Heat.1995.mkv"));
+    writeDownloadFile(path.join("Heat Release", "Heat.1995.nfo"));
+    writeDownloadFile(path.join("Heat Release", "Sample", "heat.sample.mkv"));
+    writeDownloadFile(path.join("Heat Release", "Subs", "English.srt"));
+
+    await importQueueItem(await insertQueueRow(removed.id, { title: "Heat 1995" }));
+
+    expect(fs.existsSync(path.join(downloadsDir, "Heat Release"))).toBe(false);
+  });
+
+  it("keeps the rest of a pack's data when one episode of it is imported by hand", async () => {
+    const folder = await insertRootFolder("series");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('series','Show','show',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,1,'Ep1',1,0)`).run(showId);
+    const ep2 = Number(
+      (await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,2,'Ep2',1,0)`).run(showId)).lastInsertRowid
+    );
+    const pack = "Show.S01.1080p.WEB-DL";
+    const other = writeDownloadFile(path.join(pack, "Show.S01E01.mkv"), "one");
+    const picked = writeDownloadFile(path.join(pack, "Show.S01E02.mkv"), "two");
+    const queueId = await insertQueueRow(showId, { episode_id: ep2, season_number: 1, title: pack, download_path: path.join(downloadsDir, pack) });
+    setSetting("removeCompletedDownloads", "1");
+
+    await importQueueItem(queueId, picked);
+
+    expect(fs.existsSync(other)).toBe(true);
+    expect(removeQueueItemDownload).toHaveBeenCalledTimes(1);
+    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false);
+  });
+
+  it("imports the grabbed episode's own file when none of its pack's files can be mapped to an episode", async () => {
+    const folder = await insertRootFolder("series");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('series','Show','show',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    // Scene-numbered: the pack's season 1 is the scene's season 2, which the pack's own mapping skips.
+    const ep5 = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO episodes (media_item_id, season_number, episode_number, scene_season_number, scene_episode_number, title, monitored, has_file) VALUES (?,1,5,2,1,'Ep5',1,0)`
+          )
+          .run(showId)
+      ).lastInsertRowid
+    );
+    const pack = "Show.S01.1080p";
+    writeDownloadFile(path.join(pack, "Show.S02E01.mkv"), "episode five");
+    const queueId = await insertQueueRow(showId, { episode_id: ep5, season_number: 1, title: pack, download_path: path.join(downloadsDir, pack) });
+
+    await importQueueItem(queueId);
+
+    const row = (await db.prepare("SELECT has_file, file_path FROM episodes WHERE id = ?").get(ep5)) as any;
+    expect(Number(row.has_file)).toBe(1);
+    expect(fs.readFileSync(row.file_path, "utf-8")).toBe("episode five");
+  });
+
+  it("never guesses the grabbed episode's file out of a pack none of whose files names an episode", async () => {
+    const folder = await insertRootFolder("series");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('series','Show','show',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    const ep1 = Number(
+      (await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,1,'Ep1',1,0)`).run(showId)).lastInsertRowid
+    );
+    const pack = "Show.S01.1080p";
+    const small = writeDownloadFile(path.join(pack, "a1b2c3.mkv"), "one");
+    const largest = writeDownloadFile(path.join(pack, "d4e5f6.mkv"), "some other episode, the largest file");
+    const queueId = await insertQueueRow(showId, { episode_id: ep1, season_number: 1, title: pack, download_path: path.join(downloadsDir, pack) });
+    setSetting("removeCompletedDownloads", "1");
+
+    await expect(importQueueItem(queueId)).rejects.toThrow(ImportSkippedError);
+
+    const row = (await db.prepare("SELECT has_file FROM episodes WHERE id = ?").get(ep1)) as any;
+    expect(Number(row.has_file)).toBe(0);
+    expect(fs.existsSync(small) && fs.existsSync(largest)).toBe(true);
+    expect(removeQueueItemDownload).not.toHaveBeenCalled();
+  });
+
+  it("maps a batch's re-released 'v2' files onto their own episodes, not the largest onto the grabbed one", async () => {
+    const folder = await insertRootFolder("anime");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('anime','Show','show',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    const epIds: number[] = [];
+    for (const n of [1, 2]) {
+      epIds.push(
+        Number(
+          (await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,?,?,1,0)`).run(showId, n, `Ep${n}`))
+            .lastInsertRowid
+        )
+      );
+    }
+    const pack = "[Grp] Show S01 [1080p]";
+    writeDownloadFile(path.join(pack, "[Grp] Show - 01v2 [1080p].mkv"), "episode one");
+    writeDownloadFile(path.join(pack, "[Grp] Show - 02v2 [1080p].mkv"), "episode two, the largest file");
+    const queueId = await insertQueueRow(showId, { episode_id: epIds[0], season_number: 1, title: pack, download_path: path.join(downloadsDir, pack) });
+    setSetting("removeCompletedDownloads", "1");
+
+    await importQueueItem(queueId);
+
+    const contents = [];
+    for (const id of epIds) {
+      const row = (await db.prepare("SELECT file_path FROM episodes WHERE id = ?").get(id)) as any;
+      contents.push(fs.readFileSync(row.file_path, "utf-8"));
+    }
+    expect(contents).toEqual(["episode one", "episode two, the largest file"]);
+    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(true);
+  });
+
+  it("keeps a pack's data when the client reports a save folder shared with other downloads for it", async () => {
+    const folder = await insertRootFolder("series");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('series','Lost','lost',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    const epIds: number[] = [];
+    for (const n of [1, 2, 3]) {
+      epIds.push(
+        Number(
+          (await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,?,?,1,0)`).run(showId, n, `Ep${n}`))
+            .lastInsertRowid
+        )
+      );
+    }
+    const clientId = Number((await db.prepare("INSERT INTO download_clients (name, type, category) VALUES ('qBittorrent', 'qbittorrent', 'sonarr')").run()).lastInsertRowid);
+    // A multi-file torrent saved without a subfolder: qBittorrent reports its save path, "complete".
+    writeDownloadFile(path.join("complete", "Lost.S01E01.1080p.BluRay.mkv"), "lost one");
+    writeDownloadFile(path.join("complete", "Lost.S01E02.1080p.BluRay.mkv"), "lost two");
+    const otherShow = writeDownloadFile(path.join("complete", "Heroes.S01E03.1080p.mkv"), "heroes three");
+    const queueId = await insertQueueRow(showId, {
+      season_number: 1,
+      title: "Lost.S01.1080p.BluRay",
+      download_path: path.join(downloadsDir, "complete"),
+      download_client_id: clientId,
+    });
+    setSetting("removeCompletedDownloads", "1");
+
+    await importQueueItem(queueId);
+
+    const rows = (await db.prepare("SELECT has_file FROM episodes WHERE media_item_id = ? ORDER BY episode_number").all(showId)) as any[];
+    expect(rows.map((r) => Number(r.has_file))).toEqual([1, 1, 0]);
+    expect(fs.readFileSync(otherShow, "utf-8")).toBe("heroes three");
+    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false);
+  });
+
+  it("never takes a save folder named only with the release's quality words for the pack's own", async () => {
+    const folder = await insertRootFolder("series");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('series','Lost','lost',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    for (const n of [1, 2, 3]) {
+      await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,?,?,1,0)`).run(showId, n, `Ep${n}`);
+    }
+    const clientId = Number((await db.prepare("INSERT INTO download_clients (name, type, category) VALUES ('qBittorrent', 'qbittorrent', 'tv-uhd')").run()).lastInsertRowid);
+    writeDownloadFile(path.join("UHD HDR", "Lost.S01E01.2160p.UHD.HDR.WEB-DL.mkv"), "lost one");
+    writeDownloadFile(path.join("UHD HDR", "Lost.S01E02.2160p.UHD.HDR.WEB-DL.mkv"), "lost two");
+    const otherShow = writeDownloadFile(path.join("UHD HDR", "Heroes.S01E03.2160p.UHD.HDR.mkv"), "heroes three");
+    const queueId = await insertQueueRow(showId, {
+      season_number: 1,
+      title: "Lost.S01.2160p.UHD.HDR.WEB-DL",
+      download_path: path.join(downloadsDir, "UHD HDR"),
+      download_client_id: clientId,
+    });
+    setSetting("removeCompletedDownloads", "1");
+
+    await importQueueItem(queueId);
+
+    const rows = (await db.prepare("SELECT has_file FROM episodes WHERE media_item_id = ? ORDER BY episode_number").all(showId)) as any[];
+    expect(rows.map((r) => Number(r.has_file))).toEqual([1, 1, 0]);
+    expect(fs.readFileSync(otherShow, "utf-8")).toBe("heroes three");
+    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false);
+  });
+
+  it("keeps the other books' data when a pack gives each book a folder of its own under one shared file name", async () => {
+    const folder = await insertRootFolder("author");
+    const authorId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('author','Brandon Sanderson','brandon sanderson',?,1,0,'missing')`)
+          .run(folder.id)
+      ).lastInsertRowid
+    );
+    const bookId = Number(
+      (await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file) VALUES (?, 'The Well of Ascension', 1, 0)").run(authorId)).lastInsertRowid
+    );
+    const pack = "Brandon Sanderson - Mistborn Trilogy (The Final Empire, The Well of Ascension, The Hero of Ages) epub";
+    const firstBook = writeDownloadFile(path.join(pack, "The Final Empire", "book.epub"), "one");
+    const picked = writeDownloadFile(path.join(pack, "The Well of Ascension", "book.epub"), "two");
+    const thirdBook = writeDownloadFile(path.join(pack, "The Hero of Ages", "book.epub"), "three");
+    const queueId = await insertQueueRow(authorId, { sub_item_id: bookId, title: pack, download_path: path.join(downloadsDir, pack) });
+    setSetting("removeCompletedDownloads", "1");
+
+    await importQueueItem(queueId, picked);
+
+    const book = (await db.prepare("SELECT file_path FROM sub_items WHERE id = ?").get(bookId)) as any;
+    expect(fs.readFileSync(book.file_path, "utf-8")).toBe("two");
+    expect(fs.existsSync(firstBook) && fs.existsSync(thirdBook)).toBe(true);
+    expect(removeQueueItemDownload).toHaveBeenCalledTimes(1);
+    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false);
+  });
+
+  it("unpacks only this download's archives, and leaves it for a manual import when one of them couldn't be", async () => {
+    const folder = await insertRootFolder("movie");
+    const movie = await insertMovie({ root_folder_id: folder.id });
+    const releaseDir = path.join(downloadsDir, "The.Matrix.1999.1080p");
+    const archive = writeDownloadFile(path.join("The.Matrix.1999.1080p", "the.matrix.1999.1080p.rar"), "rar");
+    const queueId = await insertQueueRow(movie.id, { title: "The.Matrix.1999.1080p", download_path: releaseDir });
+    unpackDownloadedArchives.mockResolvedValue({ extracted: [], failed: [{ archive, reason: "unrar is not installed" }] });
+
+    const err = await importQueueItem(queueId).catch((e) => e);
+
+    expect(unpackDownloadedArchives).toHaveBeenCalledWith({ downloadPath: releaseDir, releaseTitle: "The.Matrix.1999.1080p", mediaType: "movie" });
+    expect(err).toBeInstanceOf(ImportSkippedError);
+    expect(err.message).toContain("couldn't unpack: the.matrix.1999.1080p.rar: unrar is not installed");
+    expect(await db.prepare("SELECT id FROM queue WHERE id = ?").get(queueId)).toBeDefined();
+    expect(await db.prepare("SELECT * FROM blocklist").all()).toEqual([]);
+  });
+
+  describe("a download whose archive couldn't be unpacked", () => {
+    async function expectLeftForManualImport(queueId: number, movieId: number): Promise<void> {
+      const err = await importQueueItem(queueId).catch((e) => e);
+      expect(err).toBeInstanceOf(ImportSkippedError);
+      expect(err.message).toContain("couldn't unpack: ");
+      expect(err.message).toContain(": unrar is not installed");
+      const row = (await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(movieId)) as any;
+      expect(Number(row.has_file)).toBe(0);
+      expect(await db.prepare("SELECT id FROM queue WHERE id = ?").get(queueId)).toBeDefined();
+      expect(removeQueueItemDownload).not.toHaveBeenCalled();
+    }
+
+    it("is left for a manual import rather than having its sample imported as the movie", async () => {
+      const folder = await insertRootFolder("movie");
+      const movie = await insertMovie({ root_folder_id: folder.id });
+      const release = "The.Matrix.1999.1080p.BluRay.x264-GRP";
+      const archive = writeDownloadFile(path.join(release, "the.matrix.1999.1080p.rar"), "rar");
+      const sample = writeDownloadFile(path.join(release, "Sample", "the.matrix.1999.1080p.sample.mkv"), "sample");
+      const queueId = await insertQueueRow(movie.id, { title: release, download_path: path.join(downloadsDir, release) });
+      unpackDownloadedArchives.mockResolvedValue({ extracted: [], failed: [{ archive, reason: "unrar is not installed" }] });
+      setSetting("removeCompletedDownloads", "1");
+
+      await expectLeftForManualImport(queueId, movie.id);
+      expect(fs.readFileSync(sample, "utf-8")).toBe("sample");
+    });
+
+    it("is left for a manual import when a release titled with the word 'sample' has only its sample beside the archive", async () => {
+      const folder = await insertRootFolder("movie");
+      const movie = await insertMovie({ root_folder_id: folder.id, title: "Free Sample", sort_title: "free sample", year: 2019 });
+      const release = "Free.Sample.2019.1080p.BluRay-GRP";
+      const archive = writeDownloadFile(path.join(release, "free.sample.2019.1080p.rar"), "rar");
+      writeDownloadFile(path.join(release, "Sample", "free.sample.2019.1080p-sample.mkv"), "sample");
+      const queueId = await insertQueueRow(movie.id, { title: release, download_path: path.join(downloadsDir, release) });
+      unpackDownloadedArchives.mockResolvedValue({ extracted: [], failed: [{ archive, reason: "unrar is not installed" }] });
+      setSetting("removeCompletedDownloads", "1");
+
+      await expectLeftForManualImport(queueId, movie.id);
+    });
+
+    it("never takes another download's copy of the movie instead", async () => {
+      const folder = await insertRootFolder("movie");
+      const movie = await insertMovie({ root_folder_id: folder.id });
+      const release = "The.Matrix.1999.1080p.BluRay.x264-GRP";
+      const archive = writeDownloadFile(path.join(release, "the.matrix.1999.1080p.rar"), "rar");
+      const otherGrab = writeDownloadFile(path.join("The.Matrix.1999.1080p.BluRay.x264-OTHER", "The.Matrix.1999.1080p.BluRay.x264-OTHER.mkv"), "still seeding");
+      const queueId = await insertQueueRow(movie.id, { title: release, download_path: path.join(downloadsDir, release) });
+      unpackDownloadedArchives.mockResolvedValue({ extracted: [], failed: [{ archive, reason: "unrar is not installed" }] });
+      setSetting("removeCompletedDownloads", "1");
+
+      await expectLeftForManualImport(queueId, movie.id);
+      expect(fs.readFileSync(otherGrab, "utf-8")).toBe("still seeding");
+    });
+
+    it("still imports the movie file sitting beside a Sample folder", async () => {
+      const folder = await insertRootFolder("movie");
+      const movie = await insertMovie({ root_folder_id: folder.id });
+      const release = "The.Matrix.1999.1080p.BluRay.x264-GRP";
+      const archive = writeDownloadFile(path.join(release, "subs", "the.matrix.1999.1080p.subs.rar"), "rar");
+      writeDownloadFile(path.join(release, "the.matrix.1999.1080p.mkv"), "the movie");
+      writeDownloadFile(path.join(release, "Sample", "the.matrix.1999.1080p.sample.mkv"), "a sample, larger than the movie here");
+      const queueId = await insertQueueRow(movie.id, { title: release, download_path: path.join(downloadsDir, release) });
+      unpackDownloadedArchives.mockResolvedValue({ extracted: [], failed: [{ archive, reason: "unrar is not installed" }] });
+
+      await importQueueItem(queueId);
+
+      const row = (await db.prepare("SELECT has_file, path FROM media_items WHERE id = ?").get(movie.id)) as any;
+      expect(Number(row.has_file)).toBe(1);
+      expect(fs.readFileSync(row.path, "utf-8")).toBe("the movie");
+    });
+  });
+
+  it("never takes another download's copy of the movie when the download's own folder holds only its sample", async () => {
+    const folder = await insertRootFolder("movie");
+    const movie = await insertMovie({ root_folder_id: folder.id });
+    const release = "The.Matrix.1999.1080p.BluRay.x264-GRP";
+    const sample = writeDownloadFile(path.join(release, "Sample", "the.matrix.1999.1080p.sample.mkv"), "sample");
+    const otherRelease = "The.Matrix.1999.720p.BluRay.x264-OTHER";
+    const otherGrab = writeDownloadFile(path.join(otherRelease, "The.Matrix.1999.720p.BluRay.x264-OTHER.mkv"), "still seeding");
+    const queueId = await insertQueueRow(movie.id, { title: release, download_path: path.join(downloadsDir, release) });
+    setSetting("removeCompletedDownloads", "1");
+
+    await expect(importQueueItem(queueId)).rejects.toThrow(/No matching file found/);
+
+    const row = (await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(movie.id)) as any;
+    expect(Number(row.has_file)).toBe(0);
+    expect(fs.readFileSync(otherGrab, "utf-8")).toBe("still seeding");
+    expect(fs.readFileSync(sample, "utf-8")).toBe("sample");
+    expect(removeQueueItemDownload).not.toHaveBeenCalled();
+  });
+
+  it("keeps a pack's data when one episode is imported by hand from a download with no folder of its own", async () => {
+    const folder = await insertRootFolder("series");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('series','Lost','lost',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    const ep1 = Number(
+      (await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,1,'Ep1',1,0)`).run(showId)).lastInsertRowid
+    );
+    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,2,'Ep2',1,0)`).run(showId);
+    const clientId = Number((await db.prepare("INSERT INTO download_clients (name, type, category) VALUES ('qBittorrent', 'qbittorrent', 'tv')").run()).lastInsertRowid);
+    const picked = writeDownloadFile(path.join("tv", "Lost.S01E01.mkv"), "one");
+    const rest = writeDownloadFile(path.join("tv", "Lost.S01E02.mkv"), "two");
+    const queueId = await insertQueueRow(showId, {
+      episode_id: ep1,
+      season_number: 1,
+      title: "Lost.S01.1080p",
+      download_path: path.join(downloadsDir, "tv"),
+      download_client_id: clientId,
+    });
+    setSetting("removeCompletedDownloads", "1");
+
+    await importQueueItem(queueId, picked);
+
+    expect(fs.existsSync(rest)).toBe(true);
+    expect(removeQueueItemDownload).toHaveBeenCalledTimes(1);
+    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false);
+  });
+
+  it("lets the client delete a book's download once only other formats of that same book are left", async () => {
+    const folder = await insertRootFolder("author");
+    const authorId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('author','Brandon Sanderson','brandon sanderson',?,1,0,'missing')`)
+          .run(folder.id)
+      ).lastInsertRowid
+    );
+    const bookId = Number(
+      (await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file) VALUES (?, 'Elantris', 1, 0)").run(authorId)).lastInsertRowid
+    );
+    const release = "Brandon Sanderson - Elantris (2005) [epub, mobi, azw3]";
+    writeDownloadFile(path.join(release, "Brandon Sanderson - Elantris.epub"), "the epub, the largest file");
+    writeDownloadFile(path.join(release, "Brandon Sanderson - Elantris.mobi"), "mobi");
+    writeDownloadFile(path.join(release, "brandon sanderson - elantris.azw3"), "azw3");
+    const queueId = await insertQueueRow(authorId, { sub_item_id: bookId, title: release, download_path: path.join(downloadsDir, release) });
+    setSetting("removeCompletedDownloads", "1");
+
+    await importQueueItem(queueId);
+
+    const book = (await db.prepare("SELECT has_file FROM sub_items WHERE id = ?").get(bookId)) as any;
+    expect(Number(book.has_file)).toBe(1);
+    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(true);
+  });
+
+  it("keeps a pack's data when some of its episodes weren't upgrades over the files already there", async () => {
+    const folder = await insertRootFolder("series");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('series','Show','show',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    const existing = path.join(folder.path, "Show", "Season 01", "Show.S01E01.Remux.mkv");
+    fs.mkdirSync(path.dirname(existing), { recursive: true });
+    fs.writeFileSync(existing, "remux");
+    await db
+      .prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path, quality) VALUES (?,1,1,'Ep1',1,1,?,'Remux-1080p')`)
+      .run(showId, existing);
+    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,2,'Ep2',1,0)`).run(showId);
+    const pack = "Show.S01.1080p.WEB-DL";
+    const packE01 = writeDownloadFile(path.join(pack, "Show.S01E01.mkv"), "web e1");
+    writeDownloadFile(path.join(pack, "Show.S01E02.mkv"), "web e2");
+    const queueId = await insertQueueRow(showId, { season_number: 1, title: pack, quality: "WEBDL-1080p", download_path: path.join(downloadsDir, pack) });
+    setSetting("removeCompletedDownloads", "1");
+
+    await importQueueItem(queueId);
+
+    expect(fs.readFileSync(existing, "utf-8")).toBe("remux");
+    expect(fs.existsSync(packE01)).toBe(true);
+    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false);
+  });
+
+  it("imports the wanted book out of a trilogy download and keeps the other books' data", async () => {
+    const folder = await insertRootFolder("author");
+    const authorId = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('author','Brandon Sanderson','brandon sanderson',?,1,0,'missing')`)
+          .run(folder.id)
+      ).lastInsertRowid
+    );
+    const bookId = Number(
+      (await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file) VALUES (?, 'The Well of Ascension', 1, 0)").run(authorId)).lastInsertRowid
+    );
+    const pack = "Brandon Sanderson - Mistborn Trilogy (The Final Empire, The Well of Ascension, The Hero of Ages) epub";
+    writeDownloadFile(path.join(pack, "The Final Empire.epub"), "one");
+    writeDownloadFile(path.join(pack, "The Well of Ascension.epub"), "two");
+    const largest = writeDownloadFile(path.join(pack, "The Hero of Ages.epub"), "three, the largest file by far");
+    const queueId = await insertQueueRow(authorId, { sub_item_id: bookId, title: pack, download_path: path.join(downloadsDir, pack) });
+    setSetting("removeCompletedDownloads", "1");
+
+    await importQueueItem(queueId);
+
+    const book = (await db.prepare("SELECT file_path FROM sub_items WHERE id = ?").get(bookId)) as any;
+    expect(fs.readFileSync(book.file_path, "utf-8")).toBe("two");
+    expect(fs.existsSync(largest)).toBe(true);
     expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false);
   });
 });
@@ -1498,5 +3461,106 @@ describe("renameLibraryFiles / renameOneMediaItem", () => {
     expect(result.renamed[0].title).toBe("Good Movie");
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0].title).toBe("Broken Movie");
+  });
+
+  it("moves the file's own subtitles and .nfo along with it, then removes the emptied folder", async () => {
+    const folder = await insertRootFolder("movie");
+    const oldDir = path.join(folder.path, "Old Folder");
+    fs.mkdirSync(oldDir, { recursive: true });
+    const oldPath = path.join(oldDir, "old-name.mkv");
+    fs.writeFileSync(oldPath, "video");
+    fs.writeFileSync(path.join(oldDir, "old-name.en.srt"), "en");
+    fs.writeFileSync(path.join(oldDir, "old-name.pt-BR.forced.srt"), "pt forced");
+    fs.writeFileSync(path.join(oldDir, "old-name.nfo"), "<movie/>");
+    const movie = await insertMovie({ root_folder_id: folder.id, has_file: 1, path: oldPath });
+
+    const result = await renameOneMediaItem(movie.id);
+
+    expect(result.errors).toEqual([]);
+    const newDir = path.join(folder.path, "The Matrix (1999)");
+    expect(fs.readdirSync(newDir).sort()).toEqual(
+      ["The Matrix (1999).en.srt", "The Matrix (1999).mkv", "The Matrix (1999).nfo", "The Matrix (1999).pt-BR.forced.srt"].sort()
+    );
+    expect(fs.readFileSync(path.join(newDir, "The Matrix (1999).pt-BR.forced.srt"), "utf-8")).toBe("pt forced");
+    expect(fs.existsSync(oldDir)).toBe(false);
+  });
+
+  it("leaves files that only share the name's beginning where they are", async () => {
+    const folder = await insertRootFolder("movie");
+    const oldPath = path.join(folder.path, "old-name.mkv");
+    fs.writeFileSync(oldPath, "video");
+    const extendedCut = path.join(folder.path, "old-name.Extended.srt");
+    const otherSubtitle = path.join(folder.path, "old-name-commentary.srt");
+    fs.writeFileSync(extendedCut, "x");
+    fs.writeFileSync(otherSubtitle, "x");
+    const movie = await insertMovie({ root_folder_id: folder.id, has_file: 1, path: oldPath });
+
+    await renameOneMediaItem(movie.id);
+
+    expect(fs.existsSync(extendedCut)).toBe(true);
+    expect(fs.existsSync(otherSubtitle)).toBe(true);
+  });
+
+  it("never overwrites a different file already at the destination", async () => {
+    const folder = await insertRootFolder("movie");
+    const oldPath = path.join(folder.path, "old-name.mkv");
+    fs.writeFileSync(oldPath, "mine");
+    const occupied = path.join(folder.path, "The Matrix (1999)", "The Matrix (1999).mkv");
+    fs.mkdirSync(path.dirname(occupied), { recursive: true });
+    fs.writeFileSync(occupied, "someone else's");
+    const movie = await insertMovie({ root_folder_id: folder.id, has_file: 1, path: oldPath });
+
+    const result = await renameOneMediaItem(movie.id);
+
+    expect(result.renamed).toEqual([]);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].error).toContain("already exists");
+    expect(fs.readFileSync(oldPath, "utf-8")).toBe("mine");
+    expect(fs.readFileSync(occupied, "utf-8")).toBe("someone else's");
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(movie.id)) as any;
+    expect(row.path).toBe(oldPath);
+  });
+
+  it("renames only one of two files bound for the same name, reporting the other (and says so in the preview)", async () => {
+    const folder = await insertRootFolder("series");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('series','Course X','course x',?,1,1,'downloaded')`).run(folder.id))
+        .lastInsertRowid
+    );
+    const lesson = (module: string, content: string) => {
+      const p = path.join(folder.path, "Course X", module, "Introduction.mp4");
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, content);
+      return p;
+    };
+    const firstPath = lesson("Module 1", "module one");
+    const secondPath = lesson("Module 2", "module two");
+    for (const [episode, filePath] of [[1, firstPath], [5, secondPath]] as const) {
+      await db
+        .prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path) VALUES (?,1,?,'Introduction',1,1,?)`)
+        .run(showId, episode, filePath);
+    }
+    // With naming disabled both keep their own filename under the template's "Season 01" folder.
+    setSetting("namingEnabledSeries", "0");
+    try {
+      const preview = await renameOneMediaItem(showId, undefined, true);
+      expect(preview.renamed).toHaveLength(1);
+      expect(preview.errors).toHaveLength(1);
+
+      const result = await renameOneMediaItem(showId);
+
+      const dest = path.join(folder.path, "Course X", "Season 01", "Introduction.mp4");
+      expect(result.renamed).toHaveLength(1);
+      expect(result.errors).toHaveLength(1);
+      const rows = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ? ORDER BY episode_number").all(showId)) as any[];
+      const moved = rows.find((r) => r.file_path === dest);
+      const stayed = rows.find((r) => r.file_path !== dest);
+      expect(moved).toBeDefined();
+      expect(stayed).toBeDefined();
+      expect(fs.readFileSync(dest, "utf-8")).toBe(moved.episode_number === 1 ? "module one" : "module two");
+      expect(fs.readFileSync(stayed.file_path, "utf-8")).toBe(stayed.episode_number === 1 ? "module one" : "module two");
+    } finally {
+      setSetting("namingEnabledSeries", "1");
+    }
   });
 });

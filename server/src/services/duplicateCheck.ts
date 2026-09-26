@@ -1,6 +1,7 @@
+import path from "node:path";
 import { db } from "../db/index.js";
 import { log } from "./logger.js";
-import { effectiveShape, getMediaTypeConfig, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
+import { effectiveShape, getMediaTypeConfig, isPlaceholderParent, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
 import { recycleFile } from "./recycleBin.js";
 import { notifyDuplicatesFound } from "./notifications.js";
 import { attachChildCounts } from "./childCounts.js";
@@ -50,6 +51,8 @@ export async function findPossibleDuplicates(
 
   return candidates
     .filter((c) => {
+      // The "Unknown Author"/"Unknown Series" bucket of unidentified files is no author or series.
+      if (isPlaceholderParent({ type, title: c.title, external_ids: c.external_ids })) return false;
       if (needle) {
         const candidateNormalized = normalizeTitle(c.title);
         if (candidateNormalized === needle && (year == null || c.year == null || year === c.year)) return true;
@@ -170,11 +173,15 @@ export async function findDuplicateGroups(type?: string): Promise<DuplicateGroup
   for (const t of types) {
     const shape = getMediaTypeConfig(t).shape;
     // attachChildCounts reads camelCase legacyShape — without it a not-yet-converted course item is
-    // counted from the (empty) episodes table instead of its sub_items.
-    const rows = ((await db.prepare("SELECT * FROM media_items WHERE type = ?").all(t)) as any[]).map((r) => ({
-      ...r,
-      legacyShape: r.legacy_shape,
-    }));
+    // counted from the (empty) episodes table instead of its sub_items. Each root folder has its own
+    // "Unknown Author"/"Unknown Series" bucket for unidentified files: two roots' buckets share a
+    // title but aren't duplicates, and merging them would undo that per-root separation.
+    const rows = ((await db.prepare("SELECT * FROM media_items WHERE type = ?").all(t)) as any[])
+      .filter((r) => !isPlaceholderParent(r))
+      .map((r) => ({
+        ...r,
+        legacyShape: r.legacy_shape,
+      }));
     // One batched grouped query for every row of this type up front, instead of a per-row
     // COUNT(*) issued only for the (hopefully rare) rows that turn out to be duplicates — same
     // pattern as the Library page's own child-count attachment.
@@ -248,10 +255,64 @@ export async function dismissDuplicateGroup(groupKey: string): Promise<void> {
 
 /** Tables that reference media_items.id and should follow the item to the keeper on merge rather
  * than being silently cascade-deleted with the loser — history, active downloads, blocklist
- * entries, watch status, share links, and household requests are all real user data a merge
- * shouldn't quietly discard. episodes/sub_items are handled separately below since a straight
- * reassign risks colliding with a row the keeper already has. */
-const REASSIGN_TABLES = ["queue", "history", "corrupt_media_review", "share_links", "requests", "blocklist", "watch_events"];
+ * entries, watch status, share links, household requests, IPTV playlist entries and recycle-bin
+ * entries are all real user data a merge shouldn't quietly discard. episodes/sub_items/seasons are
+ * handled separately below since a straight reassign risks colliding with a row the keeper already has. */
+const REASSIGN_TABLES = [
+  "queue",
+  "history",
+  "corrupt_media_review",
+  "share_links",
+  "requests",
+  "blocklist",
+  "watch_events",
+  "iptv_playlist_items",
+  "recycle_bin",
+];
+
+/** Tables pointing at a single episode / sub-item, repointed from a loser's colliding child to the
+ * keeper's before the loser's row is cascade-deleted. */
+const EPISODE_REF_TABLES = ["queue", "watch_events", "iptv_playlist_items"];
+const SUB_ITEM_REF_TABLES = ["queue", "watch_events"];
+
+/** True when `inner` is `outer` itself or lies anywhere below it. */
+function isSameOrInside(inner: string, outer: string): boolean {
+  const rel = path.relative(path.resolve(outer), path.resolve(inner));
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+}
+
+/**
+ * Returns a check for whether recycling a path would take away something the keeper still uses
+ * after the merge. A loser's file can end up adopted by one keeper row while also colliding with
+ * another that has its own file (a multi-episode file covering a fileless and a filed keeper
+ * episode), and a sub-item's file_path is its folder when imported but the file itself when
+ * scanned, so the same book can collide as "folder" vs "file inside that folder". Either way the
+ * keeper would be left pointing into the recycle bin.
+ */
+async function keeperPathsInUse(keeperId: number, shape: string): Promise<(candidate: string) => boolean> {
+  const item = (await db.prepare("SELECT path FROM media_items WHERE id = ?").get(keeperId)) as { path: string | null } | undefined;
+  const rows = (
+    shape === "episodic"
+      ? await db.prepare("SELECT file_path FROM episodes WHERE media_item_id = ? AND file_path IS NOT NULL").all(keeperId)
+      : shape === "collection"
+        ? await db
+            .prepare(
+              `SELECT file_path FROM sub_items WHERE media_item_id = ? AND file_path IS NOT NULL
+               UNION ALL
+               SELECT t.file_path FROM tracks t JOIN sub_items s ON s.id = t.sub_item_id WHERE s.media_item_id = ? AND t.file_path IS NOT NULL`
+            )
+            .all(keeperId, keeperId)
+        : []
+  ) as { file_path: string }[];
+  const childPaths = rows.map((r) => r.file_path);
+  if (item?.path && shape === "single") childPaths.push(item.path);
+  // An episodic/collection item's own path is its root folder, which normally holds the loser's
+  // files too — only recycling that folder itself (or a parent of it) would hurt the keeper.
+  const rootFolder = item?.path && shape !== "single" ? item.path : null;
+  return (candidate) =>
+    (rootFolder !== null && isSameOrInside(rootFolder, candidate)) ||
+    childPaths.some((p) => isSameOrInside(p, candidate) || isSameOrInside(candidate, p));
+}
 
 /**
  * Merges one or more "loser" media_items into a "keeper", moving over anything useful (a missing
@@ -262,11 +323,13 @@ const REASSIGN_TABLES = ["queue", "history", "corrupt_media_review", "share_link
  *   own; any other loser file is left on disk (deleteFiles: true recycles it) rather than guessing
  *   which file is "better" and silently overwriting.
  * - "episodic"/"collection": a loser's episode/sub-item moves to the keeper unless the keeper
- *   already has one at that season+episode / that title — a colliding loser child's file is left
- *   on disk untouched (recycled instead if deleteFiles) rather than picked between automatically.
- *   Its own row is not spared, though: once the loser's media_items row is deleted below, the
- *   collided episode/sub_item row goes with it via ON DELETE CASCADE, so AoNarr stops tracking
- *   that file even when its bytes were deliberately left alone.
+ *   already has one at that season+episode / that title. On such a collision the keeper's row
+ *   adopts the loser's file when it has none of its own (both rows usually exist, since every item
+ *   gets the provider's full episode list); when both have files, the loser's is left on disk
+ *   untouched (recycled instead if deleteFiles) rather than picked between automatically.
+ *   Downloads, watch events and playlist entries pointing at the collided loser row move to the
+ *   keeper's row; the loser's row itself goes away with the loser via ON DELETE CASCADE.
+ * deleteFiles never recycles a path the keeper still uses once the merge is done.
  * A loser whose effective shape differs from the keeper's (a not-yet-converted legacy_shape item
  * next to a converted one) is left untouched and its id returned in `skippedShapeMismatch`.
  */
@@ -307,32 +370,76 @@ export async function mergeMediaItems(
       if (shape === "episodic") {
         const loserEpisodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").all(loserId)) as any[];
         for (const ep of loserEpisodes) {
-          const collision = await db
-            .prepare("SELECT id FROM episodes WHERE media_item_id = ? AND season_number = ? AND episode_number = ?")
-            .get(keeperId, ep.season_number, ep.episode_number);
+          const collision = (await db
+            .prepare("SELECT id, has_file FROM episodes WHERE media_item_id = ? AND season_number = ? AND episode_number = ?")
+            .get(keeperId, ep.season_number, ep.episode_number)) as { id: number; has_file: number } | undefined;
           if (!collision) {
             await db.prepare("UPDATE episodes SET media_item_id = ? WHERE id = ?").run(keeperId, ep.id);
+            continue;
+          }
+          if (!collision.has_file && ep.has_file && ep.file_path) {
+            await db
+              .prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?")
+              .run(ep.file_path, ep.quality, ep.media_info, ep.size_bytes ?? null, collision.id);
+            await db.prepare("UPDATE corrupt_media_review SET row_id = ? WHERE table_name = 'episodes' AND row_id = ?").run(collision.id, ep.id);
           } else if (deleteFiles && ep.file_path) {
             toRecycle.push({ path: ep.file_path, type: keeper.type, title: `${loser.title} S${ep.season_number}E${ep.episode_number}` });
           }
+          for (const table of EPISODE_REF_TABLES) {
+            await db.prepare(`UPDATE ${table} SET episode_id = ? WHERE episode_id = ?`).run(collision.id, ep.id);
+          }
         }
+        await db
+          .prepare(
+            `UPDATE seasons SET media_item_id = ?
+             WHERE media_item_id = ? AND season_number NOT IN (SELECT season_number FROM seasons WHERE media_item_id = ?)`
+          )
+          .run(keeperId, loserId, keeperId);
       } else if (shape === "collection") {
-        const keeperSubs = (await db.prepare("SELECT id, title FROM sub_items WHERE media_item_id = ?").all(keeperId)) as any[];
+        const keeperSubs = (await db.prepare("SELECT id, title, has_file FROM sub_items WHERE media_item_id = ?").all(keeperId)) as any[];
         const loserSubs = (await db.prepare("SELECT * FROM sub_items WHERE media_item_id = ?").all(loserId)) as any[];
         for (const sub of loserSubs) {
           const collision = keeperSubs.find((k) => normalizeTitle(k.title) === normalizeTitle(sub.title));
           if (!collision) {
             await db.prepare("UPDATE sub_items SET media_item_id = ? WHERE id = ?").run(keeperId, sub.id);
+            continue;
+          }
+          const keeperHasTrackFile =
+            !collision.has_file && !!(await db.prepare("SELECT id FROM tracks WHERE sub_item_id = ? AND has_file = 1").get(collision.id));
+          if (!collision.has_file && !keeperHasTrackFile && sub.has_file && sub.file_path) {
+            await db
+              .prepare("UPDATE sub_items SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?")
+              .run(sub.file_path, sub.quality, sub.media_info, sub.size_bytes ?? null, collision.id);
+            // An album's/audiobook's files are its tracks: the loser's replace the keeper's
+            // fileless track rows wherever the track numbers overlap.
+            await db
+              .prepare(
+                `DELETE FROM tracks WHERE sub_item_id = ? AND has_file = 0
+                 AND track_number IN (SELECT track_number FROM tracks WHERE sub_item_id = ?)`
+              )
+              .run(collision.id, sub.id);
+            await db
+              .prepare(
+                `UPDATE tracks SET sub_item_id = ?
+                 WHERE sub_item_id = ? AND track_number NOT IN (SELECT track_number FROM tracks WHERE sub_item_id = ?)`
+              )
+              .run(collision.id, sub.id, collision.id);
+            await db.prepare("UPDATE corrupt_media_review SET row_id = ? WHERE table_name = 'sub_items' AND row_id = ?").run(collision.id, sub.id);
+            collision.has_file = 1;
           } else if (deleteFiles && sub.file_path) {
             toRecycle.push({ path: sub.file_path, type: keeper.type, title: `${loser.title} — ${sub.title}` });
+          }
+          for (const table of SUB_ITEM_REF_TABLES) {
+            await db.prepare(`UPDATE ${table} SET sub_item_id = ? WHERE sub_item_id = ?`).run(collision.id, sub.id);
           }
         }
       } else if (!keeper.has_file && loser.has_file) {
         await db
-          .prepare("UPDATE media_items SET has_file = 1, path = ?, quality = ?, media_info = ? WHERE id = ?")
-          .run(loser.path, loser.quality, loser.media_info, keeperId);
-        keeper = { ...keeper, has_file: 1, path: loser.path, quality: loser.quality, media_info: loser.media_info };
-      } else if (keeper.has_file && loser.has_file && loser.path && loser.path !== keeper.path && deleteFiles) {
+          .prepare("UPDATE media_items SET has_file = 1, path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?")
+          .run(loser.path, loser.quality, loser.media_info, loser.size_bytes ?? null, keeperId);
+        await db.prepare("UPDATE corrupt_media_review SET row_id = ? WHERE table_name = 'media_items' AND row_id = ?").run(keeperId, loserId);
+        keeper = { ...keeper, has_file: 1, path: loser.path, quality: loser.quality, media_info: loser.media_info, size_bytes: loser.size_bytes };
+      } else if (keeper.has_file && loser.has_file && loser.path && deleteFiles) {
         toRecycle.push({ path: loser.path, type: loser.type, title: loser.title });
       }
 
@@ -341,11 +448,18 @@ export async function mergeMediaItems(
       await db
         .prepare(
           `UPDATE media_items SET
-             overview = COALESCE(overview, ?), poster_url = COALESCE(poster_url, ?),
+             overview = COALESCE(overview, ?),
              external_ids = COALESCE(NULLIF(external_ids, '{}'), ?), year = COALESCE(year, ?)
            WHERE id = ?`
         )
-        .run(loser.overview, loser.poster_url, loser.external_ids, loser.year, keeperId);
+        .run(loser.overview, loser.external_ids, loser.year, keeperId);
+      if (loser.poster_url) {
+        // A local-artwork poster URL is only a token, resolved through the row that holds
+        // local_poster_path/local_poster_token, and the loser's row is about to be deleted.
+        await db
+          .prepare("UPDATE media_items SET poster_url = ?, local_poster_path = ?, local_poster_token = ? WHERE id = ? AND poster_url IS NULL")
+          .run(loser.poster_url, loser.local_poster_path ?? null, loser.local_poster_token ?? null, keeperId);
+      }
 
       await db
         .prepare(upsertIgnore("media_item_tags", "media_item_id, tag_id", "SELECT ?, tag_id FROM media_item_tags WHERE media_item_id = ?"))
@@ -384,7 +498,16 @@ export async function mergeMediaItems(
   });
 
   // The loser rows are deleted by now, so their recycle_bin entries can't reference them.
+  const stillInUse = toRecycle.length > 0 ? await keeperPathsInUse(keeperId, shape) : () => false;
+  const handled = new Set<string>();
   for (const r of toRecycle) {
+    const resolved = path.resolve(r.path);
+    if (handled.has(resolved)) continue;
+    handled.add(resolved);
+    if (stillInUse(r.path)) {
+      log.info(`[duplicateCheck] kept "${r.path}" instead of recycling it: "${keeper.title}" still uses it`);
+      continue;
+    }
     await recycleFile(r.path, r.type, r.title, null).catch(() => {});
   }
 

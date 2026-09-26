@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS indexers (
   url TEXT NOT NULL,
   api_key TEXT,
   categories TEXT NOT NULL DEFAULT '',
-  media_types TEXT NOT NULL DEFAULT 'movie,series,anime,artist,author,audiobook,comic,manga,rom,video,course,adult',
+  media_types TEXT NOT NULL DEFAULT 'movie,series,anime,sports,ppv,artist,author,audiobook,comic,manga,rom,course,adult',
   enabled INTEGER NOT NULL DEFAULT 1,
   priority INTEGER NOT NULL DEFAULT 25,
   config TEXT -- JSON blob, protocol-specific (e.g. DDL's JSON-field mapping); unused by torznab/newznab/rss
@@ -161,11 +161,17 @@ CREATE TABLE IF NOT EXISTS queue (
   size BIGINT,
   quality TEXT,
   status TEXT NOT NULL DEFAULT 'queued',
-  progress REAL NOT NULL DEFAULT 0,
+  -- Not REAL: that is float4 here (unlike SQLite's 8-byte REAL), so a client's full-precision
+  -- progress never compares equal to its stored value and stalled downloads are never detected.
+  progress DOUBLE PRECISION NOT NULL DEFAULT 0,
   added_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
   updated_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
   last_progress_at TEXT,
-  download_path TEXT
+  download_path TEXT,
+  -- See schema.sql.
+  import_started_at TEXT,
+  import_skipped_reason TEXT,
+  import_resume_state INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_queue_media_item_id ON queue(media_item_id);
 CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
@@ -437,6 +443,7 @@ CREATE TABLE IF NOT EXISTS import_lists (
   min_rating REAL,
   min_votes INTEGER,
   exclude_genres TEXT,
+  root_folder_id INTEGER REFERENCES root_folders(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
 );
 
@@ -510,7 +517,9 @@ CREATE TABLE IF NOT EXISTS irc_feeds (
   announce_regex TEXT NOT NULL,
   protocol TEXT NOT NULL DEFAULT 'torrent' CHECK (protocol IN ('torrent', 'usenet')),
   enabled INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+  created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
+  -- Nicks (comma/space separated) whose lines are acted on; NULL accepts any sender in the channel.
+  announcers TEXT
 );
 
 -- Requests submitted by restricted users; an admin approves (which adds the media item to the

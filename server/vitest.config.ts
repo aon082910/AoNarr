@@ -10,6 +10,9 @@ export default defineConfig({
   test: {
     environment: "node",
     fileParallelism: false,
+    // Gives each test file a fresh temp AONARR_CONFIG_DIR/AONARR_DOWNLOADS_DIR before any of its
+    // imports run — see tests/helpers/isolateDataDirs.ts.
+    setupFiles: ["./tests/helpers/isolateDataDirs.ts"],
     testTimeout: 20000,
     hookTimeout: 20000,
   },

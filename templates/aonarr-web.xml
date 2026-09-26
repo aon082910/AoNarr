@@ -13,7 +13,9 @@
 &#13;
 This is the browser UI container. It requires the "aonarr-server" container (same repo, "server" tag) to be installed and running — install that one first.&#13;
 &#13;
-By default this expects the backend container to be named "aonarr-server" and listening on port 8989. If you renamed the server container or changed its port, update the AONARR_SERVER_HOST / AONARR_SERVER_PORT variables below to match. On Unraid, containers on the default bridge network can reach each other by container name.</Overview>
+By default this expects the backend container to be named "aonarr-server" and listening on port 8989. If you renamed the server container or changed its port, update the AONARR_SERVER_HOST / AONARR_SERVER_PORT variables below to match. On Unraid, containers on the default bridge network can reach each other by container name.&#13;
+&#13;
+The API's own options — including the optional AONARR_CORS_ALLOWED_ORIGINS, for other sites' pages (e.g. a dashboard widget) that call the API from the browser — are set on the aonarr-server container, not this one. This UI never needs it.</Overview>
   <Category>MediaApp:Video MediaApp:Music MediaApp:Books</Category>
   <License>MIT</License>
   <WebUI>http://[IP]:[PORT:9876]/</WebUI>

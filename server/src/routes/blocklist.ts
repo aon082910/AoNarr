@@ -24,7 +24,7 @@ blocklistRouter.get(
         `SELECT b.id, b.media_item_id AS "mediaItemId", b.release_title AS "releaseTitle", b.reason,
                 b.created_at AS "createdAt", m.title AS "mediaTitle"
          FROM blocklist b JOIN media_items m ON m.id = b.media_item_id
-         ORDER BY b.created_at DESC LIMIT ? OFFSET ?`
+         ORDER BY b.created_at DESC, b.id DESC LIMIT ? OFFSET ?`
       )
       .all(limit, offset);
     res.json({ items, total: Number(countRow.total) });

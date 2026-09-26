@@ -16,6 +16,20 @@ function ensureIptvToken(): string {
   return token;
 }
 
+/** For the INTEGER duration/interval columns: null stays null, anything else must be a number of 0
+ * or more (Postgres rejects a fractional or non-numeric value outright). */
+function optionalNonNegativeInteger(value: unknown, field: string): number | null {
+  if (value == null) return null;
+  const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
+  if (!Number.isFinite(n) || n < 0 || n > 2147483647) throw new HttpError(400, `${field} must be a number of 0 or more`);
+  return Math.round(n);
+}
+
+/** An INTEGER 0/1 column from a JSON boolean or number (neither driver binds a boolean); unset means on. */
+function flag(value: unknown): number {
+  return value == null ? 1 : value ? 1 : 0;
+}
+
 /** Admin-only management — mounted at /api/iptv. */
 export const iptvRouter = Router();
 iptvRouter.use(requireAdmin);
@@ -57,9 +71,10 @@ iptvRouter.post(
   asyncHandler(async (req, res) => {
     const b = req.body ?? {};
     if (!b.name) throw new HttpError(400, "name is required");
+    const insertAfterMinutes = optionalNonNegativeInteger(b.insertAfterMinutes, "insertAfterMinutes");
     const result = await db
       .prepare(`INSERT INTO iptv_playlists (name, enabled, insert_after_minutes, insert_after_each_item) VALUES (?, ?, ?, ?)`)
-      .run(b.name, b.enabled ?? 1, b.insertAfterMinutes ?? null, b.insertAfterEachItem ? 1 : 0);
+      .run(b.name, flag(b.enabled), insertAfterMinutes, b.insertAfterEachItem ? 1 : 0);
     const row = await db.prepare("SELECT * FROM iptv_playlists WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(iptvPlaylistFromRow(row));
   })
@@ -80,7 +95,8 @@ iptvRouter.patch(
     for (const [key, col] of Object.entries(map)) {
       if (b[key] === undefined) continue;
       sets.push(`${col} = ?`);
-      values.push(key === "insertAfterEachItem" ? (b[key] ? 1 : 0) : b[key]);
+      const flagKey = key === "enabled" || key === "insertAfterEachItem";
+      values.push(flagKey ? (b[key] ? 1 : 0) : key === "insertAfterMinutes" ? optionalNonNegativeInteger(b[key], key) : b[key]);
     }
     if (sets.length > 0) {
       values.push(req.params.id);
@@ -120,6 +136,7 @@ iptvRouter.post(
     if (!b.externalUrl && !b.mediaItemId && !b.episodeId) {
       throw new HttpError(400, "One of externalUrl, mediaItemId or episodeId is required");
     }
+    const durationSeconds = optionalNonNegativeInteger(b.durationSeconds, "durationSeconds");
     const maxPos = (await db.prepare("SELECT COALESCE(MAX(position), -1) AS p FROM iptv_playlist_items WHERE playlist_id = ?").get(req.params.id)) as {
       p: number;
     };
@@ -129,7 +146,7 @@ iptvRouter.post(
         `INSERT INTO iptv_playlist_items (playlist_id, position, title, external_url, media_item_id, episode_id, duration_seconds)
          VALUES (?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(req.params.id, maxPos.p + 1, b.title, b.externalUrl || null, b.mediaItemId || null, b.episodeId || null, b.durationSeconds ?? null);
+      .run(req.params.id, maxPos.p + 1, b.title, b.externalUrl || null, b.mediaItemId || null, b.episodeId || null, durationSeconds);
     const row = await db.prepare("SELECT * FROM iptv_playlist_items WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(iptvPlaylistItemFromRow(row));
   })
@@ -188,7 +205,7 @@ iptvRouter.post(
     if (!b.name || !b.url) throw new HttpError(400, "name and url are required");
     const result = await db
       .prepare("INSERT INTO iptv_filler_clips (name, url, category, enabled) VALUES (?, ?, ?, ?)")
-      .run(b.name, b.url, b.category || null, b.enabled ?? 1);
+      .run(b.name, b.url, b.category || null, flag(b.enabled));
     const row = await db.prepare("SELECT * FROM iptv_filler_clips WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(iptvFillerClipFromRow(row));
   })
@@ -204,7 +221,7 @@ iptvRouter.patch(
     for (const [key, col] of Object.entries(map)) {
       if (b[key] === undefined) continue;
       sets.push(`${col} = ?`);
-      values.push(b[key]);
+      values.push(key === "enabled" ? (b[key] ? 1 : 0) : b[key]);
     }
     if (sets.length > 0) {
       values.push(req.params.id);
@@ -346,12 +363,13 @@ iptvPublicRouter.get(
          WHERE pf.playlist_id = ? AND f.enabled = 1 ORDER BY pf.position`
       )
       .all(req.params.playlistId)) as { name: string; url: string }[];
-    // req.protocol/req.get("host") reflect what nginx's proxy_set_header actually forwards, which
-    // is just the bare hostname with no port (nginx's $host variable drops it) — wrong for AoNarr's
-    // typical non-default port. Settings → General's "External URL" exists precisely for "a link
-    // back to itself from somewhere other than the browser" (this endpoint is fetched by the media
-    // server, never by a browser with its own window.location to fall back on) — prefer it, and
-    // only fall back to the possibly-portless proxy guess when it's unset.
+    // req.protocol/req.get("host") are only a guess at how the media server reaches AoNarr: the
+    // bundled nginx configs forward the Host the client sent, port included ($http_host), but a
+    // reverse proxy in front of them can rewrite it or drop the port, and req.protocol is the scheme
+    // of the last hop into Node — plain http behind a TLS-terminating proxy. Settings → General's
+    // "External URL" exists precisely for "a link back to itself from somewhere other than the
+    // browser" (this endpoint is fetched by the media server, never by a browser with its own
+    // window.location to fall back on) — prefer it, and only fall back to the guess when it's unset.
     const origin = getSetting("externalUrl") || `${req.protocol}://${req.get("host")}`;
     const m3u = buildM3u(playlist, items, fillers, origin, req.query.token as string);
 

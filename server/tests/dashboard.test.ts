@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import request from "supertest";
@@ -158,6 +160,51 @@ describe("GET /api/dashboard/library-sizes", () => {
       expect(res.body.author).toBe(500);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Statting every library file used to block the event loop; now that the stats yield, requests
+  // arriving mid-recompute must join it rather than each start another full pass over the library.
+  it("shares one in-flight recompute between requests that arrive while it is still statting files", async () => {
+    const realStat = fsp.stat.bind(fsp) as (p: string) => Promise<fs.Stats>;
+    let releaseStats!: () => void;
+    const statsGate = new Promise<void>((resolve) => (releaseStats = resolve));
+    const statSpy = vi.spyOn(fsp, "stat").mockImplementation((async (p: string) => {
+      await statsGate;
+      return realStat(p);
+    }) as any);
+    // Holds every stat until the second request has reached the app, so the two requests overlap.
+    let arrived = 0;
+    const server = http.createServer((req, res) => {
+      if (++arrived === 2) releaseStats();
+      app(req, res);
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      // Past the 10-minute cache the previous test filled.
+      vi.setSystemTime(Date.now() + 11 * 60 * 1000);
+      const [first, second] = await Promise.all([
+        request(server).get("/api/dashboard/library-sizes").set("X-Api-Key", apiKey),
+        request(server).get("/api/dashboard/library-sizes").set("X-Api-Key", apiKey),
+      ]);
+      const statsForOverlappingPair = statSpy.mock.calls.length;
+
+      statSpy.mockClear();
+      vi.setSystemTime(Date.now() + 11 * 60 * 1000);
+      const alone = await request(server).get("/api/dashboard/library-sizes").set("X-Api-Key", apiKey);
+      const statsForOneRecompute = statSpy.mock.calls.length;
+
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(second.body).toEqual(first.body);
+      expect(alone.body).toEqual(first.body);
+      expect(statsForOneRecompute).toBeGreaterThan(0);
+      expect(statsForOverlappingPair).toBe(statsForOneRecompute);
+    } finally {
+      vi.useRealTimers();
+      statSpy.mockRestore();
+      server.close();
     }
   });
 });

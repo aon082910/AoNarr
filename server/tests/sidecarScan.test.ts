@@ -18,7 +18,8 @@ const fetchSeriesSeasonsFor = vi.fn();
 const fetchArtistAlbumsFor = vi.fn();
 const fetchCollectionChildrenFor = vi.fn();
 const fetchMovieByTmdbId = vi.fn();
-vi.mock("../src/services/metadata.js", () => ({
+vi.mock("../src/services/metadata.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/services/metadata.js")>()),
   searchMetadata: (...args: unknown[]) => searchMetadata(...args),
   fetchByExternalId: (...args: unknown[]) => fetchByExternalId(...args),
   fetchSeriesEpisodesFor: (...args: unknown[]) => fetchSeriesEpisodesFor(...args),

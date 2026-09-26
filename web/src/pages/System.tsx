@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, downloadFile, getApiKey, getSessionToken, uploadRaw } from "../api/client.js";
+import { api, downloadFile, openEventStream, uploadRaw } from "../api/client.js";
 import FolderPicker from "../components/FolderPicker.js";
 import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
@@ -186,6 +186,7 @@ export default function System() {
   const mediaTypes = useMediaTypes();
   const [tab, setTab] = useState("overview");
   const [status, setStatus] = useState<SystemStatus | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [resources, setResources] = useState<SystemResources | null>(null);
   const [health, setHealth] = useState<HealthReport | null>(null);
   const { sortRows: sortIndexerHealth, sortableHeader: indexerHealthHeader } = useSortableTable<IndexerHealth, "indexer" | "status" | "rate">("indexer");
@@ -356,25 +357,21 @@ export default function System() {
       setLogsStreamConnected(false);
       return;
     }
-    const apiKey = getApiKey();
-    const sessionToken = getSessionToken();
-    const authParam = apiKey ? `apikey=${encodeURIComponent(apiKey)}` : sessionToken ? `sessionToken=${encodeURIComponent(sessionToken)}` : null;
-    if (!authParam) return;
-
-    const stream = new EventSource(`/api/system/logs/stream?${authParam}`);
-    stream.onopen = () => setLogsStreamConnected(true);
-    stream.onerror = () => setLogsStreamConnected(false);
-    stream.addEventListener("log", (e: MessageEvent) => {
-      if (!logsLiveRef.current) return;
-      const entry = JSON.parse(e.data) as LogEntry;
-      const { level, search } = logFilterRef.current;
-      if (level && entry.level !== level) return;
-      if (search.trim() && !entry.message.toLowerCase().includes(search.trim().toLowerCase())) return;
-      setLogs((prev) => [entry, ...(prev ?? [])].slice(0, 2000));
+    const closeStream = openEventStream("/system/logs/stream", (stream) => {
+      stream.onopen = () => setLogsStreamConnected(true);
+      stream.onerror = () => setLogsStreamConnected(false);
+      stream.addEventListener("log", (e: MessageEvent) => {
+        if (!logsLiveRef.current) return;
+        const entry = JSON.parse(e.data) as LogEntry;
+        const { level, search } = logFilterRef.current;
+        if (level && entry.level !== level) return;
+        if (search.trim() && !entry.message.toLowerCase().includes(search.trim().toLowerCase())) return;
+        setLogs((prev) => [entry, ...(prev ?? [])].slice(0, 2000));
+      });
     });
 
     return () => {
-      stream.close();
+      closeStream();
       setLogsStreamConnected(false);
     };
   }, [tab]);
@@ -396,7 +393,13 @@ export default function System() {
   }
 
   useEffect(() => {
-    api.get<SystemStatus>("/system/status").then(setStatus);
+    api.get<SystemStatus>("/system/status").then(
+      (s) => {
+        setStatus(s);
+        setLoadError(null);
+      },
+      (e) => setLoadError((e as Error).message)
+    );
     loadHealth();
     loadLogFiles();
     api.get<Record<string, string>>("/settings").then(setSettings);
@@ -416,6 +419,7 @@ export default function System() {
     api
       .get<ArchivalCandidate[]>("/system/archival/upcoming")
       .then(setUpcomingArchivals)
+      .catch((e) => notify.error((e as Error).message))
       .finally(() => setLoadingUpcoming(false));
   }
 
@@ -425,6 +429,8 @@ export default function System() {
       await api.post("/system/archival/run", {});
       notify.success("Archival run complete — check the media items that had files for changes.");
       if (upcomingArchivals) loadUpcomingArchivals();
+    } catch (e) {
+      notify.error(`Archival run failed: ${(e as Error).message}`);
     } finally {
       setArchiving(false);
     }
@@ -433,9 +439,12 @@ export default function System() {
   async function runTraktSyncNow() {
     setSyncingTrakt(true);
     try {
-      const result = await api.post<{ added: number; error?: string }>("/system/trakt-sync/run", {});
+      const result = await api.post<{ added: number; error?: string; warning?: string }>("/system/trakt-sync/run", {});
       if (result.error) notify.error(`Trakt sync failed: ${result.error}`);
+      else if (result.warning) notify.info(`Trakt sync added ${result.added} new item(s); ${result.warning}`, 8000);
       else notify.success(`Trakt sync added ${result.added} new item(s).`);
+    } catch (e) {
+      notify.error(`Trakt sync failed: ${(e as Error).message}`);
     } finally {
       setSyncingTrakt(false);
     }
@@ -444,9 +453,12 @@ export default function System() {
   async function runPlexWatchlistSyncNow() {
     setSyncingPlexWatchlist(true);
     try {
-      const result = await api.post<{ added: number; error?: string }>("/system/plex-watchlist-sync/run", {});
+      const result = await api.post<{ added: number; error?: string; warning?: string }>("/system/plex-watchlist-sync/run", {});
       if (result.error) notify.error(`Plex watchlist sync failed: ${result.error}`);
+      else if (result.warning) notify.info(`Plex watchlist sync added ${result.added} new item(s); ${result.warning}`, 8000);
       else notify.success(`Plex watchlist sync added ${result.added} new item(s).`);
+    } catch (e) {
+      notify.error(`Plex watchlist sync failed: ${(e as Error).message}`);
     } finally {
       setSyncingPlexWatchlist(false);
     }
@@ -471,6 +483,8 @@ export default function System() {
         skippedMusic: number;
       }>(`/media/rename-files${qs}`, {});
       setRenameResult(result);
+    } catch (e) {
+      notify.error(`Rename failed: ${(e as Error).message}`);
     } finally {
       setRenaming(false);
     }
@@ -481,6 +495,8 @@ export default function System() {
     try {
       const result = await api.get<UnmonitoredNoFileItem[]>("/system/cleanup/unmonitored");
       setUnmonitoredNoFile(result);
+    } catch (e) {
+      notify.error((e as Error).message);
     } finally {
       setCleanupLoading(null);
     }
@@ -524,6 +540,8 @@ export default function System() {
     try {
       const result = await api.get<DuplicateFileGroup[]>("/system/cleanup/duplicate-files");
       setDuplicateFiles(result);
+    } catch (e) {
+      notify.error((e as Error).message);
     } finally {
       setCleanupLoading(null);
     }
@@ -541,6 +559,8 @@ export default function System() {
       } else {
         notify.info("A library scan is already running — check the Jobs page for its progress.");
       }
+    } catch (e) {
+      notify.error(`Couldn't start the library scan: ${(e as Error).message}`);
     } finally {
       setScanningLibrary(false);
     }
@@ -554,6 +574,8 @@ export default function System() {
       );
       setOrphaned(result.orphaned);
       setOrphanedIncremental(result.incremental);
+    } catch (e) {
+      notify.error(`Orphaned-file scan failed: ${(e as Error).message}`);
     } finally {
       setScanning(false);
     }
@@ -586,6 +608,8 @@ export default function System() {
       // "Backup Now" populates the list below immediately, same as Radarr's own does.
       await downloadFile("/system/backup", "aonarr-backup.aonarrbackup");
       loadBackups();
+    } catch (e) {
+      notify.error(`Backup failed: ${(e as Error).message}`);
     } finally {
       setBackingUp(false);
     }
@@ -628,7 +652,7 @@ export default function System() {
     }
   }
 
-  if (!status) return <p className="empty">Loading...</p>;
+  if (!status) return <p className="empty">{loadError ?? "Loading..."}</p>;
 
   return (
     <div>

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { isRatingBlocked } from "../services/contentRatings.js";
+import { CONTENT_RATING_ORDER, contentRatingRank } from "../services/contentRatings.js";
 
 import { toFts5Query } from "../services/mediaQuery.js";
 
@@ -20,34 +20,65 @@ librarySearchRouter.get(
     const q = (req.query.q as string | undefined)?.trim();
     if (!q) throw new HttpError(400, "q query param is required");
 
+    // A household account's library/rating restriction is part of the query itself (same
+    // predicates buildMediaQuery uses) so it applies before any row is dropped or capped.
+    const restrictions: string[] = [];
+    const restrictionParams: unknown[] = [];
+    if (!req.auth?.isAdmin) {
+      const allowedTypes = req.auth?.user?.allowedTypes ?? [];
+      if (allowedTypes.length === 0) {
+        res.json([]);
+        return;
+      }
+      restrictions.push(`m.type IN (${allowedTypes.map(() => "?").join(",")})`);
+      restrictionParams.push(...allowedTypes);
+      const maxRank = contentRatingRank(req.auth?.user?.maxContentRating ?? null);
+      const blocked = maxRank === null ? [] : CONTENT_RATING_ORDER.filter((_, idx) => idx > maxRank);
+      if (blocked.length > 0) {
+        restrictions.push(`(m.content_rating IS NULL OR m.content_rating NOT IN (${blocked.map(() => "?").join(",")}))`);
+        restrictionParams.push(...blocked);
+      }
+    }
+    const andRestrictions = restrictions.map((r) => ` AND ${r}`).join("");
+
     let rows: any[];
     if (db.dialect === "postgres") {
       const like = `%${q}%`;
       rows = (await db
         .prepare(
-          `SELECT id AS "mediaItemId", type, title, year, poster_url AS "posterUrl", content_rating AS "contentRating", 'title' AS "matchedOn", NULL AS "matchDetail"
-           FROM media_items WHERE title ILIKE ?
+          `SELECT m.id AS "mediaItemId", m.type, m.title, m.year, m.poster_url AS "posterUrl", m.content_rating AS "contentRating", 'title' AS "matchedOn", NULL AS "matchDetail"
+           FROM media_items m WHERE m.title ILIKE ?${andRestrictions}
            UNION ALL
            SELECT m.id, m.type, m.title, m.year, m.poster_url, m.content_rating, 'episode', e.title
-           FROM episodes e JOIN media_items m ON m.id = e.media_item_id WHERE e.title ILIKE ?
+           FROM episodes e JOIN media_items m ON m.id = e.media_item_id WHERE e.title ILIKE ?${andRestrictions}
            UNION ALL
            SELECT m.id, m.type, m.title, m.year, m.poster_url, m.content_rating, 'child', s.title
-           FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE s.title ILIKE ?`
+           FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE s.title ILIKE ?${andRestrictions}`
         )
-        .all(like, like, like)) as any[];
+        .all(like, ...restrictionParams, like, ...restrictionParams, like, ...restrictionParams)) as any[];
     } else {
       const ftsQuery = toFts5Query(q);
+      // One row per media item, picked in SQL: the FTS table holds a row per item, episode and
+      // child, and FTS5 yields them oldest-first, so capping or deduping the raw hits afterwards
+      // let a large old series crowd every other item (and every item a household can see) out.
       rows = ftsQuery
         ? ((await db
             .prepare(
               `SELECT m.id AS "mediaItemId", m.type, m.title, m.year, m.poster_url AS "posterUrl", m.content_rating AS "contentRating",
-                      f.match_type AS "matchedOn", f.match_detail AS "matchDetail"
-               FROM library_search_fts f
-               JOIN media_items m ON m.id = f.media_item_id
-               WHERE f.title MATCH ?
-               LIMIT 300`
+                      h.match_type AS "matchedOn", h.match_detail AS "matchDetail"
+               FROM (
+                 SELECT f.media_item_id, f.match_type, f.match_detail,
+                        ROW_NUMBER() OVER (
+                          PARTITION BY f.media_item_id
+                          ORDER BY CASE WHEN f.match_type = 'title' THEN 0 ELSE 1 END, f.rowid
+                        ) AS pick
+                 FROM library_search_fts f
+                 WHERE f.title MATCH ?
+               ) h
+               JOIN media_items m ON m.id = h.media_item_id
+               WHERE h.pick = 1${andRestrictions}`
             )
-            .all(ftsQuery)) as any[])
+            .all(ftsQuery, ...restrictionParams)) as any[])
         : [];
     }
 
@@ -60,15 +91,7 @@ librarySearchRouter.get(
       }
     }
 
-    let results = Array.from(byId.values()).sort((a, b) => a.title.localeCompare(b.title));
-
-    if (!req.auth?.isAdmin) {
-      const allowedTypes = req.auth?.user?.allowedTypes ?? [];
-      results = results.filter((r) => allowedTypes.includes(r.type));
-      const maxRating = req.auth?.user?.maxContentRating;
-      if (maxRating) results = results.filter((r) => !isRatingBlocked(r.contentRating, maxRating));
-    }
-
+    const results = Array.from(byId.values()).sort((a, b) => a.title.localeCompare(b.title));
     res.json(results.slice(0, 100));
   })
 );

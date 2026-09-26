@@ -11,7 +11,9 @@ const IrcConnectionCtor = vi.fn().mockImplementation((config: any, callback: (te
   capturedCallbacks.push(callback);
   return { start: startMock, stop: stopMock };
 });
-vi.mock("../src/services/ircClient.js", () => ({
+vi.mock("../src/services/ircClient.js", async (importOriginal) => ({
+  // The real parseAnnouncerNicks, so the manager's parsing of the stored announcers is exercised.
+  ...(await importOriginal<typeof import("../src/services/ircClient.js")>()),
   // ircFeedManager.ts does `new IrcConnection(...)` — an arrow-function indirection would throw
   // "is not a constructor", so this must be a plain function. It doesn't need `new` internally:
   // IrcConnectionCtor's mockImplementation explicitly returns a plain object either way, and JS's
@@ -59,15 +61,16 @@ async function insertFeed(overrides: Record<string, unknown> = {}): Promise<numb
     announceRegex = "(?<title>.+) (?<url>https?://\\S+)",
     protocol = "torrent",
     enabled = 1,
+    announcers = null,
   } = overrides;
   return Number(
     (
       await db
         .prepare(
-          `INSERT INTO irc_feeds (name, host, port, use_ssl, nickname, sasl_user, sasl_pass, channel, announce_regex, protocol, enabled)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO irc_feeds (name, host, port, use_ssl, nickname, sasl_user, sasl_pass, channel, announce_regex, protocol, enabled, announcers)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
-        .run(name, host, port, useSsl, nickname, saslUser, saslPass, channel, announceRegex, protocol, enabled)
+        .run(name, host, port, useSsl, nickname, saslUser, saslPass, channel, announceRegex, protocol, enabled, announcers)
     ).lastInsertRowid
   );
 }
@@ -123,6 +126,22 @@ describe("restartIrcFeeds", () => {
 
     expect(stopMock).toHaveBeenCalledTimes(1); // the first feed's connection was stopped
     expect(IrcConnectionCtor).toHaveBeenCalledTimes(3); // 1 (first call) + 2 (second call, both feeds now enabled)
+  });
+
+  it("passes the feed's announcer nicks, split on commas and whitespace, so only their lines are acted on", async () => {
+    await insertFeed({ announcers: " AnnounceBot, BackupBot  ThirdBot " });
+
+    await restartIrcFeeds();
+
+    expect(capturedConfigs[0].announcers).toEqual(["AnnounceBot", "BackupBot", "ThirdBot"]);
+  });
+
+  it("passes no announcers when none are set, so any sender in the channel is still accepted", async () => {
+    await insertFeed({ announcers: null });
+
+    await restartIrcFeeds();
+
+    expect(capturedConfigs[0].announcers).toEqual([]);
   });
 
   it("wires the announce callback to call handleAnnounce with the feed and announce text", async () => {

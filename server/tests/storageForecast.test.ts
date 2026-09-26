@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -8,6 +8,10 @@ let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 async function insertRootFolder(): Promise<{ id: number; realPath: string }> {
@@ -28,6 +32,47 @@ describe("recordDiskUsageSamples", () => {
     const rows = (await db.prepare("SELECT * FROM disk_usage_samples WHERE root_folder_id = ?").all(id)) as any[];
     expect(rows).toHaveLength(1);
     expect(rows[0].total_bytes).toBeGreaterThan(0);
+  });
+
+  it("records the space the server can actually use, not blocks reserved for root", async () => {
+    const { recordDiskUsageSamples } = await import("../src/services/storageForecast.js");
+    const { id, realPath } = await insertRootFolder();
+    const realStatfs = fs.statfsSync;
+    vi.spyOn(fs, "statfsSync").mockImplementation(((p: string, ...rest: unknown[]) =>
+      p === realPath ? ({ bfree: 30, bavail: 10, blocks: 100, bsize: 1000 } as any) : (realStatfs as any)(p, ...rest)) as any);
+
+    await recordDiskUsageSamples();
+
+    const row = (await db.prepare("SELECT free_bytes, total_bytes FROM disk_usage_samples WHERE root_folder_id = ?").get(id)) as {
+      free_bytes: number | string;
+      total_bytes: number | string;
+    };
+    expect({ free: Number(row.free_bytes), total: Number(row.total_bytes) }).toEqual({ free: 10_000, total: 100_000 });
+  });
+
+  it("drops samples recorded when reserved blocks still counted as free, once", async () => {
+    const { recordDiskUsageSamples } = await import("../src/services/storageForecast.js");
+    const { deleteSetting } = await import("../src/services/settingsStore.js");
+    const { id } = await insertRootFolder();
+    const insertOldSample = () =>
+      db
+        .prepare("INSERT INTO disk_usage_samples (root_folder_id, free_bytes, total_bytes, sampled_at) VALUES (?, 1, 1000, ?)")
+        .run(id, new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString());
+    const oldSampleCount = async () =>
+      Number(((await db.prepare("SELECT COUNT(*) AS n FROM disk_usage_samples WHERE root_folder_id = ? AND free_bytes = 1").get(id)) as { n: number | string }).n);
+    deleteSetting("diskUsageSamplesUsableSpace");
+    await insertOldSample();
+
+    await recordDiskUsageSamples();
+
+    expect(await oldSampleCount()).toBe(0);
+    expect(await db.prepare("SELECT id FROM disk_usage_samples WHERE root_folder_id = ?").get(id)).toBeDefined();
+
+    // Rows written after that aren't dropped again.
+    await insertOldSample();
+    await recordDiskUsageSamples();
+
+    expect(await oldSampleCount()).toBe(1);
   });
 
   it("doesn't record a second sample for the same folder on the same calendar day", async () => {

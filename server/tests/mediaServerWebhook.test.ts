@@ -1,13 +1,18 @@
 import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
+import request from "supertest";
+import type { Express } from "express";
 import { setupTestDb } from "./helpers/testDb.js";
 
 const fetchWatchedFiles = vi.fn();
 const resolvePlexFilePath = vi.fn();
+const resolveJellyfinLikeFilePath = vi.fn();
 vi.mock("../src/services/mediaServer.js", () => ({
   fetchWatchedFiles: (...args: unknown[]) => fetchWatchedFiles(...args),
   resolvePlexFilePath: (...args: unknown[]) => resolvePlexFilePath(...args),
+  resolveJellyfinLikeFilePath: (...args: unknown[]) => resolveJellyfinLikeFilePath(...args),
 }));
 
+let app: Express;
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let parsePlexPayload: (typeof import("../src/services/mediaServerWebhook.js"))["parsePlexPayload"];
 let parseJellyfinEmbyPayload: (typeof import("../src/services/mediaServerWebhook.js"))["parseJellyfinEmbyPayload"];
@@ -16,7 +21,7 @@ let syncWatchStatusFromMediaServer: (typeof import("../src/services/mediaServerW
 let setSetting: (key: string, value: string) => void;
 
 beforeAll(async () => {
-  ({ db } = await setupTestDb());
+  ({ app, db } = await setupTestDb());
   ({ parsePlexPayload, parseJellyfinEmbyPayload, recordWatchEvent, syncWatchStatusFromMediaServer } = await import(
     "../src/services/mediaServerWebhook.js"
   ));
@@ -112,8 +117,36 @@ describe("parseJellyfinEmbyPayload", () => {
     expect(parseJellyfinEmbyPayload({ Path: "/media/z.mkv" })).toBeNull();
   });
 
-  it("returns null when there's no path anywhere in the payload", () => {
-    expect(parseJellyfinEmbyPayload({ NotificationType: "PlaybackStop", PlayedToCompletion: true })).toBeNull();
+  // The first payload in this file with neither a path nor an item id — the hint is logged once per process.
+  it("returns null, logging a template hint once, when there's neither a path nor an item id anywhere", async () => {
+    const { log } = await import("../src/services/logger.js");
+    const info = vi.spyOn(log, "info").mockImplementation(() => {});
+    try {
+      expect(parseJellyfinEmbyPayload({ NotificationType: "PlaybackStop", PlayedToCompletion: true })).toBeNull();
+      expect(parseJellyfinEmbyPayload({ NotificationType: "PlaybackStop", PlayedToCompletion: true, Path: "" })).toBeNull();
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(String(info.mock.calls[0][0])).toContain('"ItemId": "{{ItemId}}"');
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it("falls back to Jellyfin's ItemId when the payload has no usable path", () => {
+    // The Jellyfin plugin has no Path variable, so a "{{Path}}" template renders an empty string.
+    expect(parseJellyfinEmbyPayload({ NotificationType: "PlaybackStop", PlayedToCompletion: "True", Path: "", ItemId: "a1b2-c3d4" })).toEqual({
+      filePath: "",
+      itemId: "a1b2-c3d4",
+    });
+    expect(parseJellyfinEmbyPayload({ NotificationType: "PlaybackStop", PlayedToCompletion: "True", ItemId: "abc123" })).toEqual({
+      filePath: "",
+      itemId: "abc123",
+    });
+    // A real path still wins over the id.
+    expect(parseJellyfinEmbyPayload({ NotificationType: "PlaybackStop", PlayedToCompletion: true, Path: "/media/x.mkv", ItemId: "abc123" })).toEqual({
+      filePath: "/media/x.mkv",
+    });
+    // Still gated on completion.
+    expect(parseJellyfinEmbyPayload({ NotificationType: "PlaybackStop", PlayedToCompletion: "False", ItemId: "abc123" })).toBeNull();
   });
 });
 
@@ -177,6 +210,31 @@ describe("recordWatchEvent", () => {
     expect(result).toEqual({ mediaItemId: artistId, episodeId: null, subItemId });
   });
 
+  it("resolves an item-id-only signal through the media server, then matches the resolved path", async () => {
+    const id = await insertMovie("Jellyfin Watched Movie", "/media/movies/Jellyfin Watched Movie/movie.mkv");
+    resolveJellyfinLikeFilePath.mockResolvedValueOnce("/jf/movies/Jellyfin Watched Movie/movie.mkv");
+    const signal = { filePath: "", itemId: "abc123" };
+
+    const result = await recordWatchEvent(signal);
+
+    expect(resolveJellyfinLikeFilePath).toHaveBeenCalledWith("abc123");
+    expect(result).toEqual({ mediaItemId: id, episodeId: null, subItemId: null });
+    expect(signal.filePath).toBe("/jf/movies/Jellyfin Watched Movie/movie.mkv");
+  });
+
+  it("records nothing when an item id can't be resolved, or the lookup fails", async () => {
+    const before = (await db.prepare("SELECT COUNT(*) AS c FROM watch_events").get()) as { c: number };
+
+    resolveJellyfinLikeFilePath.mockResolvedValueOnce(null);
+    expect(await recordWatchEvent({ filePath: "", itemId: "unknown-id" })).toBeNull();
+    resolveJellyfinLikeFilePath.mockRejectedValueOnce(new Error("connection refused"));
+    expect(await recordWatchEvent({ filePath: "", itemId: "abc123" })).toBeNull();
+    expect(await recordWatchEvent({ filePath: "" })).toBeNull();
+
+    const after = (await db.prepare("SELECT COUNT(*) AS c FROM watch_events").get()) as { c: number };
+    expect(Number(after.c)).toBe(Number(before.c));
+  });
+
   it("returns null and records nothing when no library file matches", async () => {
     const before = (await db.prepare("SELECT COUNT(*) AS c FROM watch_events").get()) as { c: number };
 
@@ -185,6 +243,54 @@ describe("recordWatchEvent", () => {
     expect(result).toBeNull();
     const after = (await db.prepare("SELECT COUNT(*) AS c FROM watch_events").get()) as { c: number };
     expect(Number(after.c)).toBe(Number(before.c));
+  });
+});
+
+describe("POST /api/webhooks/media-server diagnostics", () => {
+  const token = "webhook-diagnostics-token";
+
+  async function postJellyfinStop(extra: Record<string, unknown>): Promise<string[]> {
+    setSetting("mediaServerWebhookToken", token);
+    const { log } = await import("../src/services/logger.js");
+    const info = vi.spyOn(log, "info");
+    try {
+      const res = await request(app)
+        .post(`/api/webhooks/media-server?token=${token}`)
+        .send({ NotificationType: "PlaybackStop", PlayedToCompletion: true, ...extra });
+      expect(res.status).toBe(200);
+      return info.mock.calls.map((args) => args.map(String).join(" "));
+    } finally {
+      info.mockRestore();
+    }
+  }
+
+  it("logs only the resolve failure, pointing at the media server settings, when an item id doesn't resolve", async () => {
+    resolveJellyfinLikeFilePath.mockResolvedValueOnce(null);
+
+    const lines = await postJellyfinStop({ ItemId: "unresolvable-item" });
+
+    const webhookLines = lines.filter((l) => l.includes("[webhook]"));
+    expect(webhookLines).toHaveLength(1);
+    expect(webhookLines[0]).toContain("media server item unresolvable-item didn't resolve to a file path");
+    expect(webhookLines[0]).toContain("Jellyfin/Emby server URL and token");
+    expect(webhookLines[0]).toContain("Media Server Sync");
+    expect(lines.some((l) => l.includes("didn't match any library file"))).toBe(false);
+  });
+
+  it("names the resolved path and the item id when a resolved item matches no library file", async () => {
+    resolveJellyfinLikeFilePath.mockResolvedValueOnce("/jf/movies/Nowhere/nowhere.mkv");
+
+    const lines = await postJellyfinStop({ ItemId: "resolved-item" });
+
+    expect(lines).toContain(
+      `[webhook] watch event for "/jf/movies/Nowhere/nowhere.mkv" (media server item resolved-item) didn't match any library file`
+    );
+  });
+
+  it("names the payload's own path when it matches no library file", async () => {
+    const lines = await postJellyfinStop({ Path: "/media/movies/Unknown/unknown.mkv" });
+
+    expect(lines).toContain(`[webhook] watch event for "/media/movies/Unknown/unknown.mkv" didn't match any library file`);
   });
 });
 

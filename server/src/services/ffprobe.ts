@@ -183,6 +183,36 @@ export async function probeMediaInfo(filePath: string): Promise<MediaInfo | null
   }
 }
 
+export interface AudioFileTags {
+  artist: string | null;
+  albumArtist: string | null;
+  author: string | null;
+  album: string | null;
+  title: string | null;
+}
+
+/** An audio file's own tags (ID3/MP4/Vorbis) — container-level tags first, then the first audio
+ * stream's (where Ogg keeps its Vorbis comments). Tag-name case varies by muxer ("ARTIST" vs
+ * "artist"), so names are compared lowercased. Returns null (never throws), like probeMediaInfo. */
+export async function probeAudioTags(filePath: string): Promise<AudioFileTags | null> {
+  try {
+    const data = await probeJson(filePath);
+    const tags = new Map<string, string>();
+    const audioStream = (data.streams ?? []).find((s: any) => s.codec_type === "audio");
+    for (const source of [data.format?.tags, audioStream?.tags]) {
+      for (const [key, value] of Object.entries(source ?? {})) {
+        const text = typeof value === "string" ? value.trim() : "";
+        if (text && !tags.has(key.toLowerCase())) tags.set(key.toLowerCase(), text);
+      }
+    }
+    const tag = (name: string) => tags.get(name) ?? null;
+    return { artist: tag("artist"), albumArtist: tag("album_artist"), author: tag("author"), album: tag("album"), title: tag("title") };
+  } catch (err) {
+    logProbeFailure(filePath, err);
+    return null;
+  }
+}
+
 /** The container duration in seconds, unrounded. probeMediaInfo's durationSeconds is rounded to
  * whole seconds, which is fine for display but drifts by up to half a second per file when summed
  * into chapter offsets. Returns null (never throws), like probeMediaInfo. */

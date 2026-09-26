@@ -218,6 +218,33 @@ describe("duplicateCheck", () => {
     expect(group!.key).toContain("ext::tmdb:42424");
     expect(group!.items.map((i) => i.matchedProviders).flat()).toEqual(expect.arrayContaining(["tmdb", "tvdb"]));
   });
+
+  it("never offers two root folders' 'Unknown Author' buckets as duplicates, but still an admin-matched one", async () => {
+    const { findDuplicateGroups, findPossibleDuplicates } = await import("../src/services/duplicateCheck.js");
+    const insertAuthor = async (title: string, externalIds: string | null) =>
+      Number(
+        (
+          await db
+            .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status, external_ids) VALUES ('author', ?, ?, 0, 1, 'unknown', ?)`)
+            .run(title, title.toLowerCase(), externalIds)
+        ).lastInsertRowid
+      );
+    // Scan & Import files each root's unidentified books under that root's own placeholder.
+    const bucketA = await insertAuthor("Unknown Author", null);
+    const bucketB = await insertAuthor("Unknown Author", "{}");
+
+    const groups = await findDuplicateGroups("author");
+    expect(groups.filter((g) => g.items.some((i) => i.id === bucketA || i.id === bucketB))).toEqual([]);
+    expect(await findPossibleDuplicates("author", "Unknown Author", null)).toEqual([]);
+
+    // Matched to a real author (Different Match), it is one — and a duplicate of another like it.
+    const matchedA = await insertAuthor("Unknown Author", JSON.stringify({ openlibrary: "OL1A" }));
+    const matchedB = await insertAuthor("Unknown Author", JSON.stringify({ openlibrary: "OL2A" }));
+    const after = await findDuplicateGroups("author");
+    const matchedGroup = after.find((g) => g.items.some((i) => i.id === matchedA));
+    expect(matchedGroup!.items.map((i) => i.id).sort((a, b) => a - b)).toEqual([matchedA, matchedB]);
+    expect((await findPossibleDuplicates("author", "Unknown Author", null)).map((d) => d.id).sort((a, b) => a - b)).toEqual([matchedA, matchedB]);
+  });
 });
 
 describe("mergeMediaItems: guard branches", () => {
@@ -393,7 +420,9 @@ describe("mergeMediaItems: not-yet-converted (legacy_shape) course/adult items",
     const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
     const keeperId = await insertLegacy("course", "Legacy Course Merge", "collection", 0);
     const loserId = await insertLegacy("course", "Legacy Course Merge", "collection", 1);
-    await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file) VALUES (?, 'Lesson 1', 0)").run(keeperId);
+    const keeperLesson1Id = Number(
+      (await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file) VALUES (?, 'Lesson 1', 0)").run(keeperId)).lastInsertRowid
+    );
     await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file, file_path) VALUES (?, 'Lesson 1', 1, '/courses/dupe-lesson1.mp4')").run(loserId);
     const lesson2Id = Number(
       (await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file, file_path) VALUES (?, 'Lesson 2', 1, '/courses/lesson2.mp4')").run(loserId))
@@ -404,7 +433,9 @@ describe("mergeMediaItems: not-yet-converted (legacy_shape) course/adult items",
 
     const moved = (await db.prepare("SELECT media_item_id FROM sub_items WHERE id = ?").get(lesson2Id)) as any;
     expect(moved?.media_item_id).toBe(keeperId);
-    expect(recycleFile).toHaveBeenCalledWith("/courses/dupe-lesson1.mp4", "course", expect.stringContaining("Lesson 1"), null);
+    // The keeper's own Lesson 1 had no file, so it takes the loser's instead of the file being recycled.
+    expect(((await db.prepare("SELECT file_path FROM sub_items WHERE id = ?").get(keeperLesson1Id)) as any).file_path).toBe("/courses/dupe-lesson1.mp4");
+    expect(recycleFile).not.toHaveBeenCalled();
     // Rolled up from sub_items (the legacy shape's children), not from the empty episodes table.
     expect(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(keeperId)) as any).has_file).toBe(1);
   });
@@ -520,6 +551,257 @@ describe("mergeMediaItems: tag/collection membership and other REASSIGN_TABLES",
 
     expect((await db.prepare("SELECT * FROM blocklist WHERE media_item_id = ?").get(keeperId)) as any).toMatchObject({ release_title: "Bad Release" });
     expect((await db.prepare("SELECT * FROM queue WHERE media_item_id = ?").get(keeperId)) as any).toMatchObject({ title: "Queued Release" });
+  });
+});
+
+describe("mergeMediaItems: a colliding child adopts the loser's file", () => {
+  async function insertItem(type: string, title: string): Promise<number> {
+    return Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES (?, ?, ?, 1, 0, 'unknown')`).run(type, title, title.toLowerCase()))
+        .lastInsertRowid
+    );
+  }
+  async function insertEpisode(itemId: number, season: number, episode: number, file: { path: string; quality?: string; mediaInfo?: string; size?: number } | null) {
+    return Number(
+      (
+        await db
+          .prepare(
+            "INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path, quality, media_info, size_bytes) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)"
+          )
+          .run(itemId, season, episode, `S${season}E${episode}`, file ? 1 : 0, file?.path ?? null, file?.quality ?? null, file?.mediaInfo ?? null, file?.size ?? null)
+      ).lastInsertRowid
+    );
+  }
+
+  it("episodic: the keeper's fileless episode takes the loser's file, and what pointed at the loser's episode follows it", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertItem("series", "Adopt Show");
+    const loserId = await insertItem("series", "Adopt Show (2019)");
+    await insertEpisode(keeperId, 1, 1, { path: "/tv/Adopt Show/S01E01.mkv" });
+    const keeperS2 = await insertEpisode(keeperId, 2, 1, null);
+    await insertEpisode(loserId, 1, 1, null);
+    const loserS2 = await insertEpisode(loserId, 2, 1, { path: "/tv/Adopt Show (2019)/S02E01.mkv", quality: "WEBDL-1080p", mediaInfo: '{"videoCodec":"h264"}', size: 123456 });
+    await db.prepare("INSERT INTO queue (media_item_id, episode_id, title) VALUES (?, ?, 'Adopt.Show.S02E01.1080p')").run(loserId, loserS2);
+    await db.prepare("INSERT INTO watch_events (media_item_id, episode_id) VALUES (?, ?)").run(loserId, loserS2);
+    const playlistId = Number((await db.prepare("INSERT INTO iptv_playlists (name) VALUES ('Adopt Channel')").run()).lastInsertRowid);
+    await db.prepare("INSERT INTO iptv_playlist_items (playlist_id, title, media_item_id, episode_id) VALUES (?, 'S02E01', ?, ?)").run(playlistId, loserId, loserS2);
+    await db
+      .prepare(
+        "INSERT INTO corrupt_media_review (table_name, row_id, media_item_id, media_type, file_path, title, reason) VALUES ('episodes', ?, ?, 'series', ?, 'S02E01', 'decode error')"
+      )
+      .run(loserS2, loserId, "/tv/Adopt Show (2019)/S02E01.mkv");
+
+    await mergeMediaItems(keeperId, [loserId], true);
+
+    const adopted = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(keeperS2)) as any;
+    expect(adopted).toMatchObject({ has_file: 1, file_path: "/tv/Adopt Show (2019)/S02E01.mkv", quality: "WEBDL-1080p", media_info: '{"videoCodec":"h264"}' });
+    expect(Number(adopted.size_bytes)).toBe(123456);
+    expect(recycleFile).not.toHaveBeenCalled();
+    expect(await db.prepare("SELECT id FROM episodes WHERE id = ?").get(loserS2)).toBeUndefined();
+    expect((await db.prepare("SELECT media_item_id, episode_id FROM queue WHERE title = 'Adopt.Show.S02E01.1080p'").get()) as any).toEqual({ media_item_id: keeperId, episode_id: keeperS2 });
+    expect((await db.prepare("SELECT media_item_id FROM watch_events WHERE episode_id = ?").get(keeperS2)) as any).toEqual({ media_item_id: keeperId });
+    expect((await db.prepare("SELECT media_item_id, episode_id FROM iptv_playlist_items WHERE playlist_id = ?").get(playlistId)) as any).toEqual({
+      media_item_id: keeperId,
+      episode_id: keeperS2,
+    });
+    expect(((await db.prepare("SELECT row_id FROM corrupt_media_review WHERE file_path = ?").get("/tv/Adopt Show (2019)/S02E01.mkv")) as any).row_id).toBe(keeperS2);
+  });
+
+  it("episodic: never recycles a loser's file that is the very file the keeper's episode uses", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertItem("series", "Shared File Show");
+    const loserId = await insertItem("series", "Shared File Show");
+    await insertEpisode(keeperId, 1, 1, { path: "/tv/Shared File Show/S01E01.mkv" });
+    await insertEpisode(loserId, 1, 1, { path: "/tv/Shared File Show/S01E01.mkv" });
+
+    await mergeMediaItems(keeperId, [loserId], true);
+
+    expect(recycleFile).not.toHaveBeenCalled();
+  });
+
+  it("episodic: keeps a multi-episode file the keeper adopted through one episode though another collided with a filed keeper episode", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertItem("series", "Double Show");
+    const loserId = await insertItem("series", "Double Show");
+    await insertEpisode(keeperId, 1, 1, { path: "/tv/Double Show/S01E01.mkv" });
+    const keeperE2 = await insertEpisode(keeperId, 1, 2, null);
+    await insertEpisode(loserId, 1, 1, { path: "/tv/Double Show (2)/S01E01-E02.mkv" });
+    await insertEpisode(loserId, 1, 2, { path: "/tv/Double Show (2)/S01E01-E02.mkv" });
+
+    await mergeMediaItems(keeperId, [loserId], true);
+
+    expect(((await db.prepare("SELECT file_path FROM episodes WHERE id = ?").get(keeperE2)) as any).file_path).toBe("/tv/Double Show (2)/S01E01-E02.mkv");
+    expect(recycleFile).not.toHaveBeenCalled();
+  });
+
+  it("episodic: a multi-episode loser file the keeper doesn't use is recycled once, not once per episode", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertItem("series", "Double Dupe Show");
+    const loserId = await insertItem("series", "Double Dupe Show");
+    await insertEpisode(keeperId, 1, 1, { path: "/tv/Double Dupe Show/S01E01.mkv" });
+    await insertEpisode(keeperId, 1, 2, { path: "/tv/Double Dupe Show/S01E02.mkv" });
+    await insertEpisode(loserId, 1, 1, { path: "/tv/Double Dupe Show/S01E01-E02.mkv" });
+    await insertEpisode(loserId, 1, 2, { path: "/tv/Double Dupe Show/S01E01-E02.mkv" });
+
+    await mergeMediaItems(keeperId, [loserId], true);
+
+    expect(recycleFile).toHaveBeenCalledTimes(1);
+    expect(recycleFile).toHaveBeenCalledWith("/tv/Double Dupe Show/S01E01-E02.mkv", "series", expect.stringContaining("Double Dupe Show"), null);
+  });
+
+  it("collection: never recycles a loser book that is the keeper's book folder or the file inside it", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const insertBook = (itemId: number, filePath: string) =>
+      db.prepare("INSERT INTO sub_items (media_item_id, title, has_file, file_path) VALUES (?, 'The Book', 1, ?)").run(itemId, filePath);
+
+    // Imported keeper (folder) vs scanned loser (the file inside it).
+    let keeperId = await insertItem("audiobook", "Folder Author");
+    let loserId = await insertItem("audiobook", "Folder Author");
+    await insertBook(keeperId, "/books/Folder Author/The Book");
+    await insertBook(loserId, "/books/Folder Author/The Book/The Book.m4b");
+    await mergeMediaItems(keeperId, [loserId], true);
+    expect(recycleFile).not.toHaveBeenCalled();
+
+    // And the reverse: recycling the loser's folder would take the keeper's file with it.
+    keeperId = await insertItem("audiobook", "File Author");
+    loserId = await insertItem("audiobook", "File Author");
+    await insertBook(keeperId, "/books/File Author/The Book/The Book.m4b");
+    await insertBook(loserId, "/books/File Author/The Book");
+    await mergeMediaItems(keeperId, [loserId], true);
+    expect(recycleFile).not.toHaveBeenCalled();
+
+    // A sibling folder that merely shares a name prefix is still the loser's own copy.
+    keeperId = await insertItem("audiobook", "Prefix Author");
+    loserId = await insertItem("audiobook", "Prefix Author");
+    await insertBook(keeperId, "/books/Prefix Author/The Book");
+    await insertBook(loserId, "/books/Prefix Author/The Book (1)");
+    await mergeMediaItems(keeperId, [loserId], true);
+    expect(recycleFile).toHaveBeenCalledWith("/books/Prefix Author/The Book (1)", "audiobook", expect.stringContaining("The Book"), null);
+  });
+
+  it("collection: a loser album inside the keeper's artist folder is still recycled", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertItem("artist", "Root Band");
+    const loserId = await insertItem("artist", "Root Band");
+    await db.prepare("UPDATE media_items SET path = '/music/Root Band' WHERE id IN (?, ?)").run(keeperId, loserId);
+    await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file, file_path) VALUES (?, 'Album', 1, '/music/Root Band/Album')").run(keeperId);
+    await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file, file_path) VALUES (?, 'Album', 1, '/music/Root Band/Album [FLAC]')").run(loserId);
+
+    await mergeMediaItems(keeperId, [loserId], true);
+
+    expect(recycleFile).toHaveBeenCalledWith("/music/Root Band/Album [FLAC]", "artist", expect.stringContaining("Album"), null);
+  });
+
+  it("single: never recycles a loser path that contains, or sits inside, the keeper's", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertMovie("Nested Movie", 2011, 1);
+    await db.prepare("UPDATE media_items SET path = '/movies/Nested Movie (2011)/Nested Movie.mkv' WHERE id = ?").run(keeperId);
+    const loserId = await insertMovie("Nested Movie", 2011, 1);
+    await db.prepare("UPDATE media_items SET path = '/movies/Nested Movie (2011)' WHERE id = ?").run(loserId);
+
+    await mergeMediaItems(keeperId, [loserId], true);
+
+    expect(recycleFile).not.toHaveBeenCalled();
+  });
+
+  it("episodic: moves the loser's season artwork for seasons the keeper has none for", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertItem("series", "Season Art Show");
+    const loserId = await insertItem("series", "Season Art Show");
+    await db.prepare("INSERT INTO seasons (media_item_id, season_number, poster_url) VALUES (?, 1, 'keeper-s1.jpg')").run(keeperId);
+    await db.prepare("INSERT INTO seasons (media_item_id, season_number, poster_url) VALUES (?, 1, 'loser-s1.jpg')").run(loserId);
+    await db.prepare("INSERT INTO seasons (media_item_id, season_number, poster_url) VALUES (?, 2, 'loser-s2.jpg')").run(loserId);
+
+    await mergeMediaItems(keeperId, [loserId], false);
+
+    const seasons = (await db.prepare("SELECT season_number, poster_url FROM seasons WHERE media_item_id = ? ORDER BY season_number").all(keeperId)) as any[];
+    expect(seasons).toEqual([
+      { season_number: 1, poster_url: "keeper-s1.jpg" },
+      { season_number: 2, poster_url: "loser-s2.jpg" },
+    ]);
+  });
+
+  it("collection: the keeper's fileless album takes the loser's folder and tracks", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertItem("artist", "Adopt Band");
+    const loserId = await insertItem("artist", "Adopt Band");
+    const keeperAlbum = Number((await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file) VALUES (?, 'The Album', 0)").run(keeperId)).lastInsertRowid);
+    await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title, has_file) VALUES (?, 1, 'One', 0)").run(keeperAlbum);
+    await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title, has_file) VALUES (?, 2, 'Two', 0)").run(keeperAlbum);
+    const loserAlbum = Number(
+      (
+        await db
+          .prepare("INSERT INTO sub_items (media_item_id, title, has_file, file_path, quality, size_bytes) VALUES (?, 'The Album', 1, '/music/Adopt Band/The Album', 'FLAC', 999)")
+          .run(loserId)
+      ).lastInsertRowid
+    );
+    for (const n of [1, 2, 3]) {
+      await db
+        .prepare("INSERT INTO tracks (sub_item_id, track_number, title, has_file, file_path) VALUES (?, ?, ?, 1, ?)")
+        .run(loserAlbum, n, `Track ${n}`, `/music/Adopt Band/The Album/0${n}.flac`);
+    }
+    await db.prepare("INSERT INTO queue (media_item_id, sub_item_id, title) VALUES (?, ?, 'Adopt.Band-The.Album-FLAC')").run(loserId, loserAlbum);
+
+    await mergeMediaItems(keeperId, [loserId], true);
+
+    const album = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(keeperAlbum)) as any;
+    expect(album).toMatchObject({ has_file: 1, file_path: "/music/Adopt Band/The Album", quality: "FLAC" });
+    expect(Number(album.size_bytes)).toBe(999);
+    const tracks = (await db.prepare("SELECT track_number, has_file, file_path FROM tracks WHERE sub_item_id = ? ORDER BY track_number").all(keeperAlbum)) as any[];
+    expect(tracks).toEqual([1, 2, 3].map((n) => ({ track_number: n, has_file: 1, file_path: `/music/Adopt Band/The Album/0${n}.flac` })));
+    expect(recycleFile).not.toHaveBeenCalled();
+    expect(((await db.prepare("SELECT sub_item_id FROM queue WHERE title = 'Adopt.Band-The.Album-FLAC'").get()) as any).sub_item_id).toBe(keeperAlbum);
+    expect(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(keeperId)) as any).has_file).toBe(1);
+  });
+
+  it("single: the adopted file's size comes along, and the loser's playlist and recycle-bin entries move to the keeper", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertMovie("Heat Adopt", 1995, 0);
+    const loserId = await insertMovie("Heat Adopt", 1995, 1);
+    await db.prepare("UPDATE media_items SET path = '/movies/Heat (1995)/Heat.mkv', size_bytes = 5000 WHERE id = ?").run(loserId);
+    const playlistId = Number((await db.prepare("INSERT INTO iptv_playlists (name) VALUES ('Friday Night')").run()).lastInsertRowid);
+    await db.prepare("INSERT INTO iptv_playlist_items (playlist_id, title, media_item_id) VALUES (?, 'Heat', ?)").run(playlistId, loserId);
+    await db
+      .prepare("INSERT INTO recycle_bin (media_item_id, media_type, title, original_path, recycle_path) VALUES (?, 'movie', 'Heat', '/movies/old.mkv', '/recycle/old.mkv')")
+      .run(loserId);
+
+    await mergeMediaItems(keeperId, [loserId], false);
+
+    const keeper = (await db.prepare("SELECT has_file, path, size_bytes FROM media_items WHERE id = ?").get(keeperId)) as any;
+    expect(keeper.path).toBe("/movies/Heat (1995)/Heat.mkv");
+    expect(Number(keeper.size_bytes)).toBe(5000);
+    expect(((await db.prepare("SELECT media_item_id FROM iptv_playlist_items WHERE playlist_id = ?").get(playlistId)) as any).media_item_id).toBe(keeperId);
+    expect(((await db.prepare("SELECT media_item_id FROM recycle_bin WHERE original_path = '/movies/old.mkv'").get()) as any).media_item_id).toBe(keeperId);
+  });
+
+  it("brings a loser's local-artwork poster reference along with its poster URL", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertMovie("Amelie Poster", 2001, 1);
+    const loserId = await insertMovie("Amelie Poster", 2001, 0, { posterUrl: "/api/media/local-artwork/tok-amelie" });
+    await db.prepare("UPDATE media_items SET local_poster_path = '/config/artwork/amelie.jpg', local_poster_token = 'tok-amelie' WHERE id = ?").run(loserId);
+
+    await mergeMediaItems(keeperId, [loserId], false);
+
+    expect(await db.prepare("SELECT poster_url, local_poster_path, local_poster_token FROM media_items WHERE id = ?").get(keeperId)).toEqual({
+      poster_url: "/api/media/local-artwork/tok-amelie",
+      local_poster_path: "/config/artwork/amelie.jpg",
+      local_poster_token: "tok-amelie",
+    });
+  });
+
+  it("keeps the keeper's own poster and its local-artwork reference when it already has one", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const keeperId = await insertMovie("Own Poster", 2001, 1, { posterUrl: "/api/media/local-artwork/tok-keeper" });
+    await db.prepare("UPDATE media_items SET local_poster_path = '/config/artwork/keeper.jpg', local_poster_token = 'tok-keeper' WHERE id = ?").run(keeperId);
+    const loserId = await insertMovie("Own Poster", 2001, 0, { posterUrl: "https://image.tmdb.org/loser.jpg" });
+
+    await mergeMediaItems(keeperId, [loserId], false);
+
+    expect(await db.prepare("SELECT poster_url, local_poster_path, local_poster_token FROM media_items WHERE id = ?").get(keeperId)).toEqual({
+      poster_url: "/api/media/local-artwork/tok-keeper",
+      local_poster_path: "/config/artwork/keeper.jpg",
+      local_poster_token: "tok-keeper",
+    });
   });
 });
 

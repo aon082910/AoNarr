@@ -82,15 +82,15 @@ describe("findUpgradeCandidates", () => {
     expect(found!.target).toBe("A Show S02E07");
   });
 
-  it("flags a sub-item (album/book) below cutoff and labels it with the parent + child title", async () => {
+  it("flags a sub-item (a channel's video) below cutoff and labels it with the parent + child title", async () => {
     const { findUpgradeCandidates } = await import("../src/services/upgradeCandidates.js");
-    const profileId = await insertProfile("Music Profile", "Bluray-1080p");
-    const artistId = Number(
+    const profileId = await insertProfile("Video Profile", "Bluray-1080p");
+    const channelId = Number(
       (
         await db
           .prepare(
             `INSERT INTO media_items (type, title, sort_title, monitored, has_file, quality_profile_id, status)
-             VALUES ('artist', 'An Artist', 'an artist', 1, 1, ?, 'unknown')`
+             VALUES ('video', 'A Channel', 'a channel', 1, 1, ?, 'unknown')`
           )
           .run(profileId)
       ).lastInsertRowid
@@ -98,15 +98,15 @@ describe("findUpgradeCandidates", () => {
     const subItemId = Number(
       (
         await db
-          .prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, quality) VALUES (?, 'An Album', 1, 1, 'SD')")
-          .run(artistId)
+          .prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, quality) VALUES (?, 'A Video', 1, 1, 'SD')")
+          .run(channelId)
       ).lastInsertRowid
     );
 
     const candidates = await findUpgradeCandidates();
     const found = candidates.find((c) => c.subItemId === subItemId);
     expect(found).toBeDefined();
-    expect(found!.target).toBe("An Artist - An Album");
+    expect(found!.target).toBe("A Channel - A Video");
   });
 
   it("skips an item with no quality profile assigned rather than throwing", async () => {
@@ -129,7 +129,7 @@ describe("findUpgradeCandidates", () => {
 });
 
 describe("findUpgradeCandidates — unranked qualities and unmonitored rows", () => {
-  async function insertParent(type: "movie" | "series" | "artist", title: string, profileId: number, monitored: number, quality: string | null = null): Promise<number> {
+  async function insertParent(type: "movie" | "series" | "artist" | "author" | "rom" | "video", title: string, profileId: number, monitored: number, quality: string | null = null): Promise<number> {
     return Number(
       (
         await db
@@ -213,10 +213,10 @@ describe("findUpgradeCandidates — unranked qualities and unmonitored rows", ()
   it("counts a sub-item only when both it and its parent are monitored", async () => {
     const { findUpgradeCandidates } = await import("../src/services/upgradeCandidates.js");
     const profileId = await insertProfile("Sub-Item Monitoring Profile", "Bluray-1080p");
-    const monitoredArtist = await insertParent("artist", "Monitored Artist", profileId, 1);
+    const monitoredArtist = await insertParent("video", "Monitored Channel", profileId, 1);
     const bothMonitored = await insertSubItem(monitoredArtist, "Monitored Album", 1, "SD");
     const subItemUnmonitored = await insertSubItem(monitoredArtist, "Unmonitored Album", 0, "SD");
-    const unmonitoredArtist = await insertParent("artist", "Unmonitored Artist", profileId, 0);
+    const unmonitoredArtist = await insertParent("video", "Unmonitored Channel", profileId, 0);
     const parentUnmonitored = await insertSubItem(unmonitoredArtist, "Orphaned Album", 1, "SD");
 
     const candidates = await findUpgradeCandidates();
@@ -224,5 +224,45 @@ describe("findUpgradeCandidates — unranked qualities and unmonitored rows", ()
     expect(candidates.find((c) => c.subItemId === bothMonitored)).toBeDefined();
     expect(candidates.find((c) => c.subItemId === subItemUnmonitored)).toBeUndefined();
     expect(candidates.find((c) => c.subItemId === parentUnmonitored)).toBeUndefined();
+  });
+
+  it("never lists a type without quality tiers (a ROM, a book, an album), however its quality ranks", async () => {
+    const { findUpgradeCandidates } = await import("../src/services/upgradeCandidates.js");
+    const profileId = await insertProfile("No Tiers Profile", "Remux-2160p");
+    const rom = await insertParent("rom", "Low Ranked Rom", profileId, 1, "SD");
+    const author = await insertParent("author", "An Author", profileId, 1);
+    const book = await insertSubItem(author, "A Book", 1, "SD");
+    const artist = await insertParent("artist", "Tierless Artist", profileId, 1);
+    const album = await insertSubItem(artist, "An Album", 1, "SD");
+    const movie = await insertParent("movie", "Low Ranked Movie", profileId, 1, "SD");
+
+    const candidates = await findUpgradeCandidates();
+
+    expect(candidates.find((c) => c.mediaItemId === rom)).toBeUndefined();
+    expect(candidates.find((c) => c.subItemId === book)).toBeUndefined();
+    expect(candidates.find((c) => c.subItemId === album)).toBeUndefined();
+    expect(candidates.find((c) => c.mediaItemId === movie)).toBeDefined();
+  });
+
+  it("never lists a video downloaded straight from YouTube, which has no other quality to upgrade to", async () => {
+    const { findUpgradeCandidates } = await import("../src/services/upgradeCandidates.js");
+    const profileId = await insertProfile("YouTube Channel Profile", "Bluray-1080p");
+    const channel = await insertParent("video", "YouTube Channel", profileId, 1);
+    const youtubeVideo = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO sub_items (media_item_id, title, monitored, has_file, quality, external_provider, external_id)
+             VALUES (?, 'Title 720p', 1, 1, 'WEBDL-720p', 'youtube', 'dQw4w9WgXcQ')`
+          )
+          .run(channel)
+      ).lastInsertRowid
+    );
+    const indexerVideo = await insertSubItem(channel, "Indexer Video", 1, "WEBDL-720p");
+
+    const candidates = await findUpgradeCandidates();
+
+    expect(candidates.find((c) => c.subItemId === youtubeVideo)).toBeUndefined();
+    expect(candidates.find((c) => c.subItemId === indexerVideo)).toBeDefined();
   });
 });

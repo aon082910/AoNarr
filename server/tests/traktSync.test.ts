@@ -1,23 +1,49 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { setupTestDb } from "./helpers/testDb.js";
 
 const fetchSeriesEpisodesFor = vi.fn();
-vi.mock("../src/services/metadata.js", () => ({
+vi.mock("../src/services/metadata.js", async (importOriginal) => ({
+  isEpisodeMonitoredByDefault: (await importOriginal<typeof import("../src/services/metadata.js")>()).isEpisodeMonitoredByDefault,
   fetchSeriesEpisodesFor: (...args: unknown[]) => fetchSeriesEpisodesFor(...args),
 }));
+
+/** Pass-through root-folder auto-select with an optional hook that runs once the sync has taken
+ * its existing-ids snapshot. */
+const rootFolderGate = vi.hoisted(() => ({ hook: null as null | (() => Promise<void>) }));
+vi.mock("../src/services/rootFolderSelect.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/services/rootFolderSelect.js")>();
+  return {
+    ...actual,
+    autoSelectRootFolderId: async (mediaType: string) => {
+      if (rootFolderGate.hook) await rootFolderGate.hook();
+      return actual.autoSelectRootFolderId(mediaType);
+    },
+  };
+});
 
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let runTraktSync: (typeof import("../src/services/traktSync.js"))["runTraktSync"];
 let setSetting: (key: string, value: string) => void;
+const rootFolderIds: Record<string, number> = {};
+
+async function addRootFolder(mediaType: string): Promise<number> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `aonarr-traktsync-${mediaType}-`));
+  return Number((await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, ?)").run(dir, mediaType)).lastInsertRowid);
+}
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
   ({ runTraktSync } = await import("../src/services/traktSync.js"));
   ({ setSetting } = await import("../src/services/settingsStore.js"));
+  for (const type of ["movie", "series"]) rootFolderIds[type] = await addRootFolder(type);
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  rootFolderGate.hook = null;
   setSetting("traktSyncEnabled", "0");
   setSetting("traktSyncUrl", "");
   setSetting("traktClientId", "");
@@ -99,6 +125,18 @@ describe("runTraktSync — list URL parsing", () => {
     expect(fetchMock.mock.calls[0][0]).toBe("https://api.trakt.tv/users/someuser/lists/to-watch/items?extended=full");
   });
 
+  it("sends a User-Agent along with the Trakt API headers (Cloudflare blocks requests without one)", async () => {
+    enableSync();
+    const fetchMock = mockTraktResponse([]);
+
+    await runTraktSync();
+
+    const headers = (fetchMock.mock.calls[0] as any[])[1].headers as Record<string, string>;
+    expect(headers["User-Agent"]).toContain("AoNarr");
+    expect(headers["trakt-api-key"]).toBe("trakt-client-id-value");
+    expect(headers["trakt-api-version"]).toBe("2");
+  });
+
   it("reports an error (not a throw) when the Trakt request fails", async () => {
     enableSync();
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 429 }) as any));
@@ -120,7 +158,70 @@ describe("runTraktSync — movies", () => {
     expect(result.added).toBe(1);
     const row = (await db.prepare("SELECT * FROM media_items WHERE title = 'Trakt Movie'").get()) as any;
     expect(row.type).toBe("movie");
+    expect(row.root_folder_id).toBe(rootFolderIds.movie);
     expect(JSON.parse(row.external_ids)).toEqual({ tmdb: "4001", trakt: "9001" });
+  });
+
+  it("skips a movie when no movie root folder is configured, and reports why as a warning, not a failure", async () => {
+    enableSync();
+    await db.prepare("DELETE FROM root_folders WHERE media_type = 'movie'").run();
+    const { log } = await import("../src/services/logger.js");
+    const warn = vi.spyOn(log, "warn");
+    try {
+      mockTraktResponse([movieEntry({ title: "No Root Folder Trakt Movie", ids: { tmdb: 4101, trakt: 9101 } })]);
+
+      const result = await runTraktSync();
+
+      // Recurs on every run while the list holds the title, so it must not fail each scheduled run
+      // that finds nothing else new.
+      expect(result).toEqual({ added: 0, warning: "1 item(s) not added: no root folder is configured for movie" });
+      expect(await db.prepare("SELECT id FROM media_items WHERE title = 'No Root Folder Trakt Movie'").get()).toBeUndefined();
+      // The caller (scheduler job or Run-now route) reports the warning; logging it here too duplicates it.
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("item(s) not added"));
+    } finally {
+      warn.mockRestore();
+      rootFolderIds.movie = await addRootFolder("movie");
+    }
+  });
+
+  it("reports skipped items as a warning, not a failure, when it still added others", async () => {
+    enableSync();
+    await db.prepare("DELETE FROM root_folders WHERE media_type = 'movie'").run();
+    try {
+      mockTraktResponse([
+        movieEntry({ title: "Skipped No Root Trakt Movie", ids: { tmdb: 4111, trakt: 9111 } }),
+        { show: { title: "Added Alongside Trakt Show", ids: { tmdb: 5111, trakt: 9112 } } },
+      ]);
+      fetchSeriesEpisodesFor.mockResolvedValueOnce([]);
+
+      const result = await runTraktSync();
+
+      expect(result).toEqual({ added: 1, warning: "1 item(s) not added: no root folder is configured for movie" });
+      expect(await db.prepare("SELECT id FROM media_items WHERE title = 'Skipped No Root Trakt Movie'").get()).toBeUndefined();
+      const show = (await db.prepare("SELECT root_folder_id FROM media_items WHERE title = 'Added Alongside Trakt Show'").get()) as any;
+      expect(show.root_folder_id).toBe(rootFolderIds.series);
+    } finally {
+      rootFolderIds.movie = await addRootFolder("movie");
+    }
+  });
+
+  it("does not add a movie another source inserted after this sync's start-of-run snapshot", async () => {
+    enableSync();
+    mockTraktResponse([movieEntry({ title: "Raced Trakt Movie", ids: { tmdb: 4201, trakt: 9201 } })]);
+    // Root-folder selection runs after the existing-ids snapshot; another source (an import list, a
+    // request approval) adds the same title while this sync is in flight.
+    rootFolderGate.hook = async () => {
+      rootFolderGate.hook = null;
+      await db
+        .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, status, external_ids) VALUES ('movie', 'Raced Trakt Movie', 'raced trakt movie', 1, 'missing', ?)`)
+        .run(JSON.stringify({ tmdb: "4201" }));
+    };
+
+    const result = await runTraktSync();
+
+    expect(result).toEqual({ added: 0 });
+    const count = (await db.prepare("SELECT COUNT(*) AS c FROM media_items WHERE title = 'Raced Trakt Movie'").get()) as { c: number | string };
+    expect(Number(count.c)).toBe(1);
   });
 
   it("skips a movie with no tmdb id", async () => {
@@ -173,8 +274,30 @@ describe("runTraktSync — shows", () => {
     expect(result.added).toBe(1);
     const show = (await db.prepare("SELECT * FROM media_items WHERE title = 'Trakt Show'").get()) as any;
     expect(show.type).toBe("series");
+    expect(show.root_folder_id).toBe(rootFolderIds.series);
     const episodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").all(show.id)) as any[];
     expect(episodes).toHaveLength(1);
+  });
+
+  it("adds Season 0 specials unmonitored and regular episodes monitored", async () => {
+    enableSync();
+    mockTraktResponse([{ show: { title: "Trakt Show With Specials", year: 2019, ids: { tmdb: 5003, trakt: 9103 } } }]);
+    fetchSeriesEpisodesFor.mockResolvedValueOnce([
+      { seasonNumber: 0, episodeNumber: 1, title: "Making Of", airDate: "2019-01-01", overview: "" },
+      { seasonNumber: 1, episodeNumber: 1, title: "Pilot", airDate: "2019-02-01", overview: "" },
+    ]);
+
+    const result = await runTraktSync();
+
+    expect(result).toEqual({ added: 1 });
+    const show = (await db.prepare("SELECT id FROM media_items WHERE title = 'Trakt Show With Specials'").get()) as any;
+    const episodes = (await db
+      .prepare("SELECT season_number, monitored FROM episodes WHERE media_item_id = ? ORDER BY season_number")
+      .all(show.id)) as any[];
+    expect(episodes.map((e) => [e.season_number, Number(e.monitored)])).toEqual([
+      [0, 0],
+      [1, 1],
+    ]);
   });
 
   it("still adds the show even when fetching its episode list fails", async () => {

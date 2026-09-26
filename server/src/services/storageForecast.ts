@@ -1,12 +1,22 @@
 import fs from "node:fs";
 import { db } from "../db/index.js";
 import { nowOffsetExpr } from "../db/asyncDb.js";
+import { getSetting, setSetting } from "./settingsStore.js";
 
 const SAMPLE_RETENTION_DAYS = 90;
+const USABLE_SPACE_SAMPLES_SETTING = "diskUsageSamplesUsableSpace";
 
 /** Records one free/total-space sample per root folder — at most once per calendar day per
  * folder, so repeated calls (e.g. every /system/status request) don't flood the table. */
 export async function recordDiskUsageSamples(): Promise<void> {
+  // Samples used to count the blocks reserved for root as free. A trend line drawn from one of
+  // those to a newer sample would read that reserve (5% of the disk on ext4) as space used up, so
+  // the old ones are dropped once.
+  if (getSetting(USABLE_SPACE_SAMPLES_SETTING) !== "1") {
+    await db.prepare("DELETE FROM disk_usage_samples").run();
+    setSetting(USABLE_SPACE_SAMPLES_SETTING, "1");
+  }
+
   const folders = (await db.prepare("SELECT id, path FROM root_folders").all()) as { id: number; path: string }[];
   const today = new Date().toISOString().slice(0, 10);
 
@@ -20,7 +30,7 @@ export async function recordDiskUsageSamples(): Promise<void> {
       const stat = fs.statfsSync(folder.path);
       await db
         .prepare("INSERT INTO disk_usage_samples (root_folder_id, free_bytes, total_bytes) VALUES (?, ?, ?)")
-        .run(folder.id, stat.bfree * stat.bsize, stat.blocks * stat.bsize);
+        .run(folder.id, stat.bavail * stat.bsize, stat.blocks * stat.bsize);
     } catch {
       // root folder path not reachable right now — skip, try again next call
     }

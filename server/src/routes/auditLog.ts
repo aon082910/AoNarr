@@ -20,7 +20,7 @@ auditLogRouter.get(
     const rows = await db
       .prepare(
         `SELECT id, user_id AS "userId", username, event_type AS "eventType", detail, created_at AS "createdAt"
-         FROM audit_log ORDER BY created_at DESC LIMIT ? OFFSET ?`
+         FROM audit_log ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
       )
       .all(pageSize, offset);
     res.json({ rows, total: Number(total), page, pageSize, totalPages: Math.max(1, Math.ceil(Number(total) / pageSize)) });

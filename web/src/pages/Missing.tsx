@@ -235,15 +235,20 @@ export default function Missing() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [byKey, setByKey] = useState<Map<string, MissingRow>>(new Map());
   const [searching, setSearching] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   function load() {
-    api.get<MissingResponse>("/wanted/missing").then((d) => {
-      setData(d);
-      const map = new Map<string, MissingRow>();
-      for (const r of [...d.movies, ...d.episodes, ...d.subItems]) map.set(rowKey(r), r);
-      setByKey(map);
-      setSelected(new Set());
-    });
+    api.get<MissingResponse>("/wanted/missing").then(
+      (d) => {
+        setData(d);
+        setLoadError(null);
+        const map = new Map<string, MissingRow>();
+        for (const r of [...d.movies, ...d.episodes, ...d.subItems]) map.set(rowKey(r), r);
+        setByKey(map);
+        setSelected(new Set());
+      },
+      (e) => setLoadError((e as Error).message)
+    );
   }
 
   useEffect(load, []);
@@ -286,11 +291,17 @@ export default function Missing() {
     await searchRows(rows);
   }
 
-  if (!data) return <p className="empty">Loading...</p>;
+  if (!data) return <p className="empty">{loadError ?? "Loading..."}</p>;
 
   return (
     <div>
       <h1>Missing</h1>
+      {/* A failed refresh (e.g. after a search) keeps the previous rows on screen. */}
+      {loadError && (
+        <p role="alert" style={{ color: "var(--danger)" }}>
+          Couldn't refresh this list: {loadError}
+        </p>
+      )}
       {selected.size > 0 && (
         <div className="form-panel" style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <strong>{selected.size} selected</strong>

@@ -2,10 +2,18 @@ import { log } from "./logger.js";
 import { db } from "../db/index.js";
 import { nowExpr } from "../db/asyncDb.js";
 import { getSetting } from "./settingsStore.js";
-import { fetchAlbumTracksFor, fetchArtistAlbumsFor, fetchSeriesEpisodesFor, searchMetadata, TMDB_IMAGE_BASE } from "./metadata.js";
+import {
+  fetchAlbumTracksFor,
+  fetchArtistAlbumsFor,
+  fetchSeriesEpisodesFor,
+  isEpisodeMonitoredByDefault,
+  searchMetadata,
+  TMDB_IMAGE_BASE,
+} from "./metadata.js";
 import { isExcluded } from "./importExclusions.js";
 import { findPossibleDuplicates } from "./duplicateCheck.js";
 import { queueForReview } from "./importReview.js";
+import { autoSelectRootFolderId } from "./rootFolderSelect.js";
 
 export interface ImportListRow {
   id: number;
@@ -15,6 +23,8 @@ export interface ImportListRow {
   url: string;
   enabled: number;
   quality_profile_id: number | null;
+  /** Per-list root folder, used for items of its own media type; otherwise the type's auto-selected one. */
+  root_folder_id: number | null;
   last_synced_at: string | null;
   last_added_count: number | null;
   last_error: string | null;
@@ -22,6 +32,113 @@ export interface ImportListRow {
   min_votes: number | null;
   exclude_genres: string | null; // JSON array of lowercased genre names
   created_at: string;
+}
+
+/** The media types each type of list adds items of. */
+export const IMPORT_LIST_MEDIA_TYPES: Record<ImportListRow["type"], string[]> = {
+  trakt: ["movie", "series"],
+  imdb: ["movie", "series"],
+  tmdb: ["movie", "series"],
+  lastfm: ["artist"],
+};
+
+/**
+ * Import lists, the Trakt/Plex watchlist syncs and the Overseerr webhook all add a title by
+ * checking "already in the library?" and then INSERTing, with network awaits in between, and the
+ * scheduled ones share a default cron slot. media_items has no unique key on external ids, so the
+ * final re-check and the INSERT run under this one in-process lock; otherwise two sources adding the
+ * same new title both insert it. Never call it re-entrantly (fn must not take the lock itself).
+ */
+let libraryAddTail: Promise<unknown> = Promise.resolve();
+
+export function withLibraryAddLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = libraryAddTail.then(() => fn());
+  libraryAddTail = run.catch(() => undefined);
+  return run;
+}
+
+/** Exact tmdb-id lookup (the LIKE only narrows the scan; the parsed JSON decides). */
+export async function libraryHasTmdbId(type: string, tmdbId: string): Promise<boolean> {
+  const rows = (await db
+    .prepare("SELECT external_ids FROM media_items WHERE type = ? AND external_ids LIKE ?")
+    .all(type, `%${tmdbId}%`)) as { external_ids: string | null }[];
+  return rows.some((row) => {
+    try {
+      const parsed = JSON.parse(row.external_ids ?? "{}");
+      return parsed?.tmdb != null && String(parsed.tmdb) === tmdbId;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** Runs `insert` only if no item of `type` has this tmdb id yet, atomically with respect to every
+ * other caller of the library-add lock. Resolves to null when the title was already there. */
+export function insertUnlessTmdbIdExists<T>(type: string, tmdbId: string, insert: () => Promise<T>): Promise<T | null> {
+  return withLibraryAddLock(async () => ((await libraryHasTmdbId(type, tmdbId)) ? null : insert()));
+}
+
+/**
+ * Chooses the root folder a synced item is created under: the list's own folder when it has one for
+ * that media type, else the same auto-select the Add route uses. An item that would get no root
+ * folder is not created at all, because the importer refuses such an item's finished download and
+ * the queue row is never retried; the skips are counted so the sync can report why.
+ */
+export class RootFolderPicker {
+  private readonly preferredId: number | null;
+  private readonly resolved = new Map<string, number | null>();
+  private readonly skipped = new Map<string, number>();
+
+  constructor(preferredId: number | null = null) {
+    this.preferredId = preferredId;
+  }
+
+  async pick(type: string): Promise<number | null> {
+    if (!this.resolved.has(type)) this.resolved.set(type, await this.resolve(type));
+    const id = this.resolved.get(type) ?? null;
+    if (id == null) this.skipped.set(type, (this.skipped.get(type) ?? 0) + 1);
+    return id;
+  }
+
+  private async resolve(type: string): Promise<number | null> {
+    if (this.preferredId != null) {
+      const row = (await db.prepare("SELECT media_type FROM root_folders WHERE id = ?").get(this.preferredId)) as
+        | { media_type: string }
+        | undefined;
+      if (row?.media_type === type) return this.preferredId;
+    }
+    return autoSelectRootFolderId(type);
+  }
+
+  /**
+   * Null when nothing was skipped for lack of a root folder. Syncs report this as a `warning`, never
+   * as their `error`, even when they added nothing: a list keeps holding titles of a media type the
+   * install doesn't manage, so the same skip recurs on every run and would otherwise fail each
+   * scheduled run that happens to find nothing else new.
+   */
+  skippedSummary(): string | null {
+    if (this.skipped.size === 0) return null;
+    const total = [...this.skipped.values()].reduce((sum, n) => sum + n, 0);
+    return `${total} item(s) not added: no root folder is configured for ${[...this.skipped.keys()].join(", ")}`;
+  }
+}
+
+/** Trakt sits behind Cloudflare, which answers Node fetch's default "node" User-Agent with an HTML
+ * 403 block page before the request reaches the API. Same identity metadata.ts's Trakt calls use. */
+const TRAKT_USER_AGENT = "AoNarr/0.1 (self-hosted media manager)";
+
+export function traktListHeaders(clientId: string): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    "trakt-api-version": "2",
+    "trakt-api-key": clientId,
+    "User-Agent": TRAKT_USER_AGENT,
+  };
+}
+
+interface ListSyncContext {
+  qualityProfileId: number | null;
+  rootFolders: RootFolderPicker;
 }
 
 /**
@@ -93,9 +210,9 @@ async function insertSeriesEpisodes(mediaItemId: number | bigint | null, externa
     await db
       .prepare(
         `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-         VALUES (?, ?, ?, ?, ?, ?, 1)`
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
+      .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview, isEpisodeMonitoredByDefault(ep) ? 1 : 0);
   }
 }
 
@@ -162,7 +279,7 @@ function parseTraktListUrl(url: string): TraktListTarget | null {
   return { username: m[1], listSlug: m[2] ?? null };
 }
 
-async function syncTraktList(list: ImportListRow, qualityProfileId: number | null): Promise<number> {
+async function syncTraktList(list: ImportListRow, ctx: ListSyncContext): Promise<number> {
   const clientId = getSetting("traktClientId");
   if (!clientId) throw new Error("Set a Trakt API client ID in Settings before using a Trakt import list");
   const target = parseTraktListUrl(list.url);
@@ -173,7 +290,7 @@ async function syncTraktList(list: ImportListRow, qualityProfileId: number | nul
   // adding but not enough for passesListFilters to have anything to check.
   const path = target.listSlug ? `lists/${target.listSlug}/items` : "watchlist";
   const res = await fetch(`https://api.trakt.tv/users/${target.username}/${path}?extended=full`, {
-    headers: { "trakt-api-version": "2", "trakt-api-key": clientId, "Content-Type": "application/json" },
+    headers: traktListHeaders(clientId),
   });
   if (!res.ok) throw new Error(`Trakt list request failed: HTTP ${res.status}`);
   const items = (await res.json()) as any[];
@@ -194,21 +311,26 @@ async function syncTraktList(list: ImportListRow, qualityProfileId: number | nul
           await queueForReview({ source: list.name, importListId: list.id, type: "movie", title: m.title, year: m.year ?? null });
           continue;
         }
-        await db
-          .prepare(
-            `INSERT INTO media_items (type, title, sort_title, year, overview, external_ids, quality_profile_id, monitored, status)
-             VALUES ('movie', ?, ?, ?, ?, ?, ?, 1, 'missing')`
-          )
-          .run(
-            m.title,
-            m.title.toLowerCase(),
-            m.year ?? null,
-            m.overview ?? null,
-            JSON.stringify({ tmdb: String(tmdbId), trakt: String(m.ids?.trakt ?? "") }),
-            qualityProfileId
-          );
+        const rootFolderId = await ctx.rootFolders.pick("movie");
+        if (rootFolderId == null) continue;
+        const inserted = await insertUnlessTmdbIdExists("movie", String(tmdbId), () =>
+          db
+            .prepare(
+              `INSERT INTO media_items (type, title, sort_title, year, overview, external_ids, root_folder_id, quality_profile_id, monitored, status)
+               VALUES ('movie', ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
+            )
+            .run(
+              m.title,
+              m.title.toLowerCase(),
+              m.year ?? null,
+              m.overview ?? null,
+              JSON.stringify({ tmdb: String(tmdbId), trakt: String(m.ids?.trakt ?? "") }),
+              rootFolderId,
+              ctx.qualityProfileId
+            )
+        );
         existingMovies.add(String(tmdbId));
-        added++;
+        if (inserted) added++;
       } else if (entry.show) {
         const s = entry.show;
         const tmdbId = s.ids?.tmdb;
@@ -219,15 +341,20 @@ async function syncTraktList(list: ImportListRow, qualityProfileId: number | nul
           await queueForReview({ source: list.name, importListId: list.id, type: "series", title: s.title, year: s.year ?? null });
           continue;
         }
+        const rootFolderId = await ctx.rootFolders.pick("series");
+        if (rootFolderId == null) continue;
         const externalIds = { tmdb: String(tmdbId), trakt: String(s.ids?.trakt ?? "") };
-        const result = await db
-          .prepare(
-            `INSERT INTO media_items (type, title, sort_title, year, overview, external_ids, quality_profile_id, monitored, status)
-             VALUES ('series', ?, ?, ?, ?, ?, ?, 1, 'missing')`
-          )
-          .run(s.title, s.title.toLowerCase(), s.year ?? null, s.overview ?? null, JSON.stringify(externalIds), qualityProfileId);
-        await insertSeriesEpisodes(result.lastInsertRowid, externalIds);
+        const result = await insertUnlessTmdbIdExists("series", String(tmdbId), () =>
+          db
+            .prepare(
+              `INSERT INTO media_items (type, title, sort_title, year, overview, external_ids, root_folder_id, quality_profile_id, monitored, status)
+               VALUES ('series', ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
+            )
+            .run(s.title, s.title.toLowerCase(), s.year ?? null, s.overview ?? null, JSON.stringify(externalIds), rootFolderId, ctx.qualityProfileId)
+        );
         existingSeries.add(String(tmdbId));
+        if (!result) continue;
+        await insertSeriesEpisodes(result.lastInsertRowid, externalIds);
         added++;
       }
     } catch (err) {
@@ -292,13 +419,35 @@ function splitCsvLine(line: string): string[] {
   return out;
 }
 
-async function syncImdbList(list: ImportListRow, qualityProfileId: number | null): Promise<number> {
+/** isExcluded for every provider id a metadata hit carries (an exclusion made on delete is keyed on
+ * whichever id the deleted row listed first), plus the title/year fallback. */
+async function isExcludedByAnyId(type: string, title: string, year: number | null, externalIds: Record<string, string>): Promise<boolean> {
+  const ids = Object.entries(externalIds ?? {}).filter(([, id]) => id);
+  if (ids.length === 0) return isExcluded(type, title, year);
+  for (const [provider, id] of ids) {
+    if (await isExcluded(type, title, year, String(id), provider)) return true;
+  }
+  return false;
+}
+
+async function syncImdbList(list: ImportListRow, ctx: ListSyncContext): Promise<number> {
   const listId = parseImdbListId(list.url);
   if (!listId) throw new Error("URL is not a recognized IMDb list URL (expected imdb.com/list/ls.../)");
 
   const res = await fetch(`https://www.imdb.com/list/${listId}/export`);
   if (!res.ok) throw new Error(`IMDb list export failed: HTTP ${res.status}`);
-  const rows = parseCsv(await res.text());
+  // IMDb's bot protection answers server-side requests with 202 and an empty challenge body. That
+  // counts as ok to fetch, and parsing it would record a clean "0 added" sync on every run instead
+  // of telling the admin the list was never read.
+  if (res.status !== 200 || res.headers.get("x-amzn-waf-action")) {
+    throw new Error(`IMDb refused the list export (HTTP ${res.status}, bot challenge); IMDb currently blocks server-side list exports`);
+  }
+  const text = await res.text();
+  const headerLine = text.replace(/^﻿/, "").split(/\r?\n/, 1)[0] ?? "";
+  if (!splitCsvLine(headerLine).includes("Title")) {
+    throw new Error("IMDb list export did not return a CSV (no Title column); IMDb may be blocking server-side list exports");
+  }
+  const rows = parseCsv(text);
 
   let added = 0;
   for (const row of rows) {
@@ -323,28 +472,42 @@ async function syncImdbList(list: ImportListRow, qualityProfileId: number | null
         await queueForReview({ source: list.name, importListId: list.id, type, title, year });
         continue;
       }
+      // The row is stored under the provider's title/year/ids, not IMDb's, so that is what the next
+      // sync has to find; checking only the CSV's spelling re-adds the title on every sync whenever
+      // the two differ ("Dune: Part One" vs "Dune", or a festival-vs-release year).
+      const bestYear = best.year ?? null;
+      const bestIds = best.externalIds ?? {};
+      if ((await findPossibleDuplicates(type, best.title, bestYear, bestIds)).length > 0) continue;
+      if (await isExcludedByAnyId(type, best.title, bestYear, bestIds)) continue;
       if (list.require_review) {
         await queueForReview({ source: list.name, importListId: list.id, type, title: best.title, year: best.year });
         continue;
       }
 
-      const insertResult = await db
-        .prepare(
-          `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, quality_profile_id, monitored, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
-        )
-        .run(
-          type,
-          best.title,
-          best.title.toLowerCase(),
-          best.year,
-          best.overview,
-          best.posterUrl,
-          JSON.stringify(best.externalIds),
-          qualityProfileId
-        );
+      const rootFolderId = await ctx.rootFolders.pick(type);
+      if (rootFolderId == null) continue;
+      const insertResult = await withLibraryAddLock(async () => {
+        if ((await findPossibleDuplicates(type, best.title, bestYear, bestIds)).length > 0) return null;
+        return db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
+          )
+          .run(
+            type,
+            best.title,
+            best.title.toLowerCase(),
+            best.year,
+            best.overview,
+            best.posterUrl,
+            JSON.stringify(bestIds),
+            rootFolderId,
+            ctx.qualityProfileId
+          );
+      });
+      if (!insertResult) continue;
 
-      if (type === "series") await insertSeriesEpisodes(insertResult.lastInsertRowid, best.externalIds as any);
+      if (type === "series") await insertSeriesEpisodes(insertResult.lastInsertRowid, bestIds);
       added++;
     } catch (err) {
       log.warn(`[importLists] IMDb list "${list.name}" failed to add "${title}":`, (err as Error).message);
@@ -366,7 +529,7 @@ function parseLastfmUsername(url: string): string | null {
  * Last.fm has to a "playlist" to import from (it has no user-created playlist concept itself,
  * unlike Spotify/Apple Music, whose APIs require a paid developer account and OAuth per-user
  * consent this app has no way to broker). */
-async function syncLastfmList(list: ImportListRow, qualityProfileId: number | null): Promise<number> {
+async function syncLastfmList(list: ImportListRow, ctx: ListSyncContext): Promise<number> {
   const key = getSetting("lastfmApiKey");
   if (!key) throw new Error("Set a Last.fm API key in Settings before using a Last.fm import list");
   const username = parseLastfmUsername(list.url);
@@ -398,13 +561,19 @@ async function syncLastfmList(list: ImportListRow, qualityProfileId: number | nu
         continue;
       }
 
+      const rootFolderId = await ctx.rootFolders.pick("artist");
+      if (rootFolderId == null) continue;
       const externalIds = { lastfm: a.mbid || title };
-      const insertResult = await db
-        .prepare(
-          `INSERT INTO media_items (type, title, sort_title, external_ids, quality_profile_id, monitored, status)
-           VALUES ('artist', ?, ?, ?, ?, 1, 'missing')`
-        )
-        .run(title, title.toLowerCase(), JSON.stringify(externalIds), qualityProfileId);
+      const insertResult = await withLibraryAddLock(async () => {
+        if ((await findPossibleDuplicates("artist", title, null, externalIds)).length > 0) return null;
+        return db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, external_ids, root_folder_id, quality_profile_id, monitored, status)
+             VALUES ('artist', ?, ?, ?, ?, ?, 1, 'missing')`
+          )
+          .run(title, title.toLowerCase(), JSON.stringify(externalIds), rootFolderId, ctx.qualityProfileId);
+      });
+      if (!insertResult) continue;
       await insertArtistAlbums(insertResult.lastInsertRowid, externalIds);
       added++;
     } catch (err) {
@@ -431,16 +600,37 @@ function parseTmdbListId(url: string): string | null {
  * the library the same way syncTraktList does (by TMDB id, not title, to avoid false-duplicate
  * misses).
  */
-async function syncTmdbList(list: ImportListRow, qualityProfileId: number | null): Promise<number> {
+/** TMDB's v3 list endpoint returns `items` 20 per page; the cap only guards against a response
+ * that never signals its last page. */
+const TMDB_LIST_MAX_PAGES = 500;
+
+async function fetchTmdbListItems(listId: string, apiKey: string): Promise<any[]> {
+  const items: any[] = [];
+  for (let page = 1; page <= TMDB_LIST_MAX_PAGES; page++) {
+    const res = await fetch(`https://api.themoviedb.org/3/list/${listId}?api_key=${apiKey}&page=${page}`);
+    if (!res.ok) throw new Error(`TMDB list request failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+    const pageItems: any[] = Array.isArray(body?.items) ? body.items : [];
+    items.push(...pageItems);
+    if (pageItems.length === 0) break;
+    const totalPages = Number(body?.total_pages);
+    const itemCount = Number(body?.item_count);
+    if (Number.isFinite(totalPages) && totalPages > 0) {
+      if (page >= totalPages) break;
+    } else if (!(Number.isFinite(itemCount) && items.length < itemCount)) {
+      break;
+    }
+  }
+  return items;
+}
+
+async function syncTmdbList(list: ImportListRow, ctx: ListSyncContext): Promise<number> {
   const apiKey = getSetting("tmdbApiKey");
   if (!apiKey) throw new Error("Set a TMDB API key in Settings before using a TMDB import list");
   const listId = parseTmdbListId(list.url);
   if (!listId) throw new Error("URL is not a recognized TMDB list URL (expected themoviedb.org/list/<id> or a bare numeric id)");
 
-  const res = await fetch(`https://api.themoviedb.org/3/list/${listId}?api_key=${apiKey}`);
-  if (!res.ok) throw new Error(`TMDB list request failed: HTTP ${res.status}`);
-  const body: any = await res.json();
-  const items: any[] = Array.isArray(body?.items) ? body.items : [];
+  const items = await fetchTmdbListItems(listId, apiKey);
 
   const existingMovies = await existingTmdbIds("movie");
   const existingSeries = await existingTmdbIds("series");
@@ -464,16 +654,21 @@ async function syncTmdbList(list: ImportListRow, qualityProfileId: number | null
           await queueForReview({ source: list.name, importListId: list.id, type: "series", title, year });
           continue;
         }
+        const rootFolderId = await ctx.rootFolders.pick("series");
+        if (rootFolderId == null) continue;
         const externalIds = { tmdb: String(tmdbId) };
         const posterUrl = entry.poster_path ? `${TMDB_IMAGE_BASE}${entry.poster_path}` : null;
-        const result = await db
-          .prepare(
-            `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, quality_profile_id, monitored, status)
-             VALUES ('series', ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
-          )
-          .run(title, title.toLowerCase(), year, entry.overview ?? null, posterUrl, JSON.stringify(externalIds), qualityProfileId);
-        await insertSeriesEpisodes(result.lastInsertRowid, externalIds);
+        const result = await insertUnlessTmdbIdExists("series", String(tmdbId), () =>
+          db
+            .prepare(
+              `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status)
+               VALUES ('series', ?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
+            )
+            .run(title, title.toLowerCase(), year, entry.overview ?? null, posterUrl, JSON.stringify(externalIds), rootFolderId, ctx.qualityProfileId)
+        );
         existingSeries.add(String(tmdbId));
+        if (!result) continue;
+        await insertSeriesEpisodes(result.lastInsertRowid, externalIds);
         added++;
       } else {
         if (existingMovies.has(String(tmdbId))) continue;
@@ -487,22 +682,27 @@ async function syncTmdbList(list: ImportListRow, qualityProfileId: number | null
           await queueForReview({ source: list.name, importListId: list.id, type: "movie", title, year });
           continue;
         }
-        await db
-          .prepare(
-            `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, quality_profile_id, monitored, status)
-             VALUES ('movie', ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
-          )
-          .run(
-            title,
-            title.toLowerCase(),
-            year,
-            entry.overview ?? null,
-            entry.poster_path ? `${TMDB_IMAGE_BASE}${entry.poster_path}` : null,
-            JSON.stringify({ tmdb: String(tmdbId) }),
-            qualityProfileId
-          );
+        const rootFolderId = await ctx.rootFolders.pick("movie");
+        if (rootFolderId == null) continue;
+        const inserted = await insertUnlessTmdbIdExists("movie", String(tmdbId), () =>
+          db
+            .prepare(
+              `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status)
+               VALUES ('movie', ?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
+            )
+            .run(
+              title,
+              title.toLowerCase(),
+              year,
+              entry.overview ?? null,
+              entry.poster_path ? `${TMDB_IMAGE_BASE}${entry.poster_path}` : null,
+              JSON.stringify({ tmdb: String(tmdbId) }),
+              rootFolderId,
+              ctx.qualityProfileId
+            )
+        );
         existingMovies.add(String(tmdbId));
-        added++;
+        if (inserted) added++;
       }
     } catch (err) {
       log.warn(`[importLists] TMDB list "${list.name}" failed to add an item:`, (err as Error).message);
@@ -512,25 +712,30 @@ async function syncTmdbList(list: ImportListRow, qualityProfileId: number | null
   return added;
 }
 
-export async function syncImportList(list: ImportListRow): Promise<{ added: number; error?: string }> {
+/** `error`: the sync failed. `warning`: it added `added` items but skipped others. Either is also
+ * stored in last_error, the list's only status column (a warning with the added count in front,
+ * since the list shows last_error in place of that count). */
+export async function syncImportList(list: ImportListRow): Promise<{ added: number; error?: string; warning?: string }> {
   const qualityProfileId =
     list.quality_profile_id ??
     ((await db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get()) as { id: number } | undefined)?.id ??
     null;
+  const ctx: ListSyncContext = { qualityProfileId, rootFolders: new RootFolderPicker(list.root_folder_id ?? null) };
 
   try {
     const added =
       list.type === "trakt"
-        ? await syncTraktList(list, qualityProfileId)
+        ? await syncTraktList(list, ctx)
         : list.type === "lastfm"
-          ? await syncLastfmList(list, qualityProfileId)
+          ? await syncLastfmList(list, ctx)
           : list.type === "tmdb"
-            ? await syncTmdbList(list, qualityProfileId)
-            : await syncImdbList(list, qualityProfileId);
+            ? await syncTmdbList(list, ctx)
+            : await syncImdbList(list, ctx);
+    const warning = ctx.rootFolders.skippedSummary();
     await db
-      .prepare(`UPDATE import_lists SET last_synced_at = ${nowExpr(db)}, last_added_count = ?, last_error = NULL WHERE id = ?`)
-      .run(added, list.id);
-    return { added };
+      .prepare(`UPDATE import_lists SET last_synced_at = ${nowExpr(db)}, last_added_count = ?, last_error = ? WHERE id = ?`)
+      .run(added, warning ? `Added ${added}; ${warning}` : null, list.id);
+    return warning ? { added, warning } : { added };
   } catch (err) {
     const message = (err as Error).message;
     await db
@@ -550,6 +755,7 @@ export async function runAllImportLists(signal?: AbortSignal): Promise<void> {
     }
     const result = await syncImportList(list);
     if (result.error) log.warn(`[importLists] "${list.name}" failed:`, result.error);
+    else if (result.warning) log.warn(`[importLists] "${list.name}" added ${result.added} item(s); ${result.warning}`);
     else if (result.added > 0) log.info(`[importLists] "${list.name}" added ${result.added} item(s)`);
   }
 }

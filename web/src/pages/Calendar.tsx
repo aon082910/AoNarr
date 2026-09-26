@@ -58,6 +58,7 @@ export default function Calendar() {
   const [mode, setMode] = useState<"month" | "agenda">("month");
   const [viewMonth, setViewMonth] = useState<Date>(() => startOfMonth(new Date()));
   const [entries, setEntries] = useState<CalendarEntry[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [daysBack, setDaysBack] = useState(7);
   const [daysForward, setDaysForward] = useState(21);
   const [icsUrl, setIcsUrl] = useState<string | null>(null);
@@ -85,9 +86,16 @@ export default function Calendar() {
       start = toIsoDate(s);
       end = toIsoDate(e);
     }
-    api.get<CalendarEntry[]>(`/wanted/calendar?start=${start}&end=${end}`).then((res) => {
-      if (seq === loadSeq.current) setEntries(res);
-    });
+    api.get<CalendarEntry[]>(`/wanted/calendar?start=${start}&end=${end}`).then(
+      (res) => {
+        if (seq !== loadSeq.current) return;
+        setEntries(res);
+        setLoadError(null);
+      },
+      (e) => {
+        if (seq === loadSeq.current) setLoadError((e as Error).message);
+      }
+    );
   }
 
   useEffect(load, [mode, viewMonth, daysBack, daysForward]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -137,7 +145,7 @@ export default function Calendar() {
     if (entry.kind === "media") navigate(`/media/${entry.mediaItemId}`);
   }
 
-  if (!entries) return <p className="empty">Loading...</p>;
+  if (!entries) return <p className="empty">{loadError ?? "Loading..."}</p>;
 
   const grouped = new Map<string, CalendarEntry[]>();
   for (const entry of entries) {
@@ -196,6 +204,14 @@ export default function Calendar() {
           </>
         }
       />
+
+      {/* A failed month/range change keeps the previous range's entries, which would otherwise read
+          as "nothing scheduled" with no hint that the fetch failed. */}
+      {loadError && (
+        <p role="alert" style={{ color: "var(--danger)" }}>
+          Couldn't load the calendar: {loadError}
+        </p>
+      )}
 
       {showAddEvent && (
         <form className="form-panel" onSubmit={addCustomEvent} style={{ marginBottom: 16 }}>

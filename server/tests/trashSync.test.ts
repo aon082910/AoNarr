@@ -47,6 +47,103 @@ describe("syncTrashFormats", () => {
     expect(result.error).toMatch(/HTTP 503/);
   });
 
+  it("keeps the listing failure as the app's last sync result", async () => {
+    const { syncTrashFormats, getLastTrashSyncResult } = await import("../src/services/trashSync.js");
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 502 }) as any));
+
+    const before = Date.now();
+    await syncTrashFormats("sonarr");
+
+    const stored = getLastTrashSyncResult("sonarr");
+    expect(stored).toMatchObject({ app: "sonarr", added: 0, updated: 0, unsupported: [], partiallyUnsupported: [], failed: [] });
+    expect(stored!.error).toMatch(/HTTP 502/);
+    expect(Date.parse(stored!.finishedAt)).toBeGreaterThanOrEqual(before - 1000);
+  });
+
+  it("keeps a finished sync's counts and names as the app's last result, persisted to the settings table", async () => {
+    const { syncTrashFormats, getLastTrashSyncResult } = await import("../src/services/trashSync.js");
+    await db.prepare("INSERT INTO custom_formats (name, patterns, media_types, trash_id) VALUES ('Persist Manual', '[]', NULL, NULL)").run();
+    mockGithub(
+      [
+        { name: "persist-added.json", download_url: "https://raw/persist-added.json", type: "file" },
+        { name: "persist-partial.json", download_url: "https://raw/persist-partial.json", type: "file" },
+        { name: "persist-unsupported.json", download_url: "https://raw/persist-unsupported.json", type: "file" },
+        { name: "persist-collide.json", download_url: "https://raw/persist-collide.json", type: "file" },
+      ],
+      {
+        "https://raw/persist-added.json": {
+          trash_id: "persist-added",
+          name: "Persist Added",
+          specifications: [{ implementation: "ReleaseGroupSpecification", fields: { value: "FLUX" } }],
+        },
+        "https://raw/persist-partial.json": {
+          trash_id: "persist-partial",
+          name: "Persist Partial",
+          specifications: [
+            { implementation: "ReleaseTitleSpecification", fields: { value: "\\bHDR\\b" } },
+            { implementation: "LanguageSpecification", fields: { value: 1 } },
+          ],
+        },
+        "https://raw/persist-unsupported.json": {
+          trash_id: "persist-unsupported",
+          name: "Persist Unsupported",
+          specifications: [{ implementation: "LanguageSpecification", fields: { value: 1 } }],
+        },
+        "https://raw/persist-collide.json": {
+          trash_id: "persist-collide",
+          name: "Persist Manual",
+          specifications: [{ implementation: "ReleaseGroupSpecification", fields: { value: "NTb" } }],
+        },
+      }
+    );
+
+    const result = await syncTrashFormats("radarr");
+
+    const stored = getLastTrashSyncResult("radarr");
+    expect(stored).toMatchObject({
+      app: "radarr",
+      added: result.added,
+      updated: result.updated,
+      unsupported: ["Persist Unsupported"],
+      partiallyUnsupported: [{ name: "Persist Partial", skipped: expect.any(Array) }],
+      failed: [{ name: "Persist Manual", error: expect.stringContaining("already uses this name") }],
+      error: null,
+    });
+    expect(stored!.added).toBe(2);
+    expect(stored!.partiallyUnsupported[0].skipped.length).toBeGreaterThan(0);
+
+    // The settings write is fire-and-forget, so wait for the row rather than assuming it landed.
+    await vi.waitFor(async () => {
+      const row = (await db.prepare("SELECT value FROM settings WHERE key = ?").get("trashSyncLastResultRadarr")) as { value: string } | undefined;
+      expect(row && JSON.parse(row.value).finishedAt).toBe(stored!.finishedAt);
+    });
+  });
+
+  it("reports a malformed specification list as failed instead of aborting the rest of the sync", async () => {
+    const { syncTrashFormats, getLastTrashSyncResult } = await import("../src/services/trashSync.js");
+    mockGithub(
+      [
+        { name: "null-spec.json", download_url: "https://raw/null-spec.json", type: "file" },
+        { name: "after-null-spec.json", download_url: "https://raw/after-null-spec.json", type: "file" },
+      ],
+      {
+        "https://raw/null-spec.json": { trash_id: "null-spec", name: "Null Spec Format", specifications: [null] },
+        "https://raw/after-null-spec.json": {
+          trash_id: "after-null-spec",
+          name: "After Null Spec",
+          specifications: [{ implementation: "ReleaseGroupSpecification", fields: { value: "HONE" } }],
+        },
+      }
+    );
+
+    const result = await syncTrashFormats("radarr");
+
+    expect(result.added).toBe(1);
+    expect(result.failed).toEqual([{ name: "Null Spec Format", error: expect.any(String) }]);
+    expect(getLastTrashSyncResult("radarr")!.failed.map((f) => f.name)).toEqual(["Null Spec Format"]);
+    expect(await db.prepare("SELECT id FROM custom_formats WHERE trash_id = ?").get("after-null-spec")).toBeDefined();
+  });
+
   it("filters the directory listing to .json files only, then adds a new format", async () => {
     const { syncTrashFormats } = await import("../src/services/trashSync.js");
     mockGithub(
@@ -128,15 +225,17 @@ describe("syncTrashFormats", () => {
     expect(await db.prepare("SELECT id FROM custom_formats WHERE trash_id = ?").get("trash-unsupported-1")).toBeUndefined();
   });
 
-  it("skips a malformed entry (missing trash_id) without affecting the rest of the sync", async () => {
+  it("reports a malformed entry (missing trash_id) as failed without affecting the rest of the sync", async () => {
     const { syncTrashFormats } = await import("../src/services/trashSync.js");
     mockGithub(
       [
         { name: "malformed.json", download_url: "https://raw/malformed.json", type: "file" },
+        { name: "nameless.json", download_url: "https://raw/nameless.json", type: "file" },
         { name: "valid-alongside-malformed.json", download_url: "https://raw/valid-alongside-malformed.json", type: "file" },
       ],
       {
         "https://raw/malformed.json": { name: "No Trash Id", specifications: [] },
+        "https://raw/nameless.json": { trash_id: "trash-nameless-1", specifications: "not-a-list" },
         "https://raw/valid-alongside-malformed.json": {
           trash_id: "trash-valid-alongside-1",
           name: "Valid Alongside Malformed",
@@ -148,11 +247,16 @@ describe("syncTrashFormats", () => {
     const result = await syncTrashFormats("radarr");
     expect(result.added).toBe(1);
     expect(result.unsupported).not.toContain("No Trash Id");
+    expect(result.failed).toEqual([
+      { name: "No Trash Id", error: "not a valid custom format file" },
+      { name: "nameless.json", error: "not a valid custom format file" },
+    ]);
     expect(await db.prepare("SELECT id FROM custom_formats WHERE trash_id = ?").get("trash-valid-alongside-1")).toBeDefined();
+    expect(await db.prepare("SELECT id FROM custom_formats WHERE trash_id = ?").get("trash-nameless-1")).toBeUndefined();
   });
 
-  it("treats a per-file download failure or thrown error as skippable, without failing the whole sync", async () => {
-    const { syncTrashFormats } = await import("../src/services/trashSync.js");
+  it("reports a per-file download failure or thrown error as failed, without failing the whole sync", async () => {
+    const { syncTrashFormats, getLastTrashSyncResult } = await import("../src/services/trashSync.js");
     mockGithub(
       [
         { name: "broken.json", download_url: "https://raw/broken.json", type: "file" },
@@ -171,6 +275,12 @@ describe("syncTrashFormats", () => {
 
     const result = await syncTrashFormats("radarr");
     expect(result.added).toBe(1);
+    expect(result.error).toBeUndefined();
+    expect(result.failed).toEqual([
+      { name: "broken.json", error: "download failed: HTTP 404" },
+      { name: "throws.json", error: "download failed: simulated network failure" },
+    ]);
+    expect(getLastTrashSyncResult("radarr")!.failed.map((f) => f.name)).toEqual(["broken.json", "throws.json"]);
     expect(await db.prepare("SELECT id FROM custom_formats WHERE trash_id = ?").get("trash-fine-1")).toBeDefined();
   });
 
@@ -188,6 +298,49 @@ describe("syncTrashFormats", () => {
     const result = await syncTrashFormats("radarr");
     expect(result.added).toBe(0);
     expect(result.updated).toBe(0);
+    expect(result.failed).toEqual([{ name: "Manual Collide", error: expect.stringContaining("already uses this name") }]);
     expect(await db.prepare("SELECT id FROM custom_formats WHERE trash_id = ?").get("trash-collide-1")).toBeUndefined();
+    const manual = (await db.prepare("SELECT * FROM custom_formats WHERE name = 'Manual Collide'").get()) as any;
+    expect(manual.trash_id).toBeNull();
+  });
+
+  it("syncs a Sonarr format whose name an already-synced Radarr format uses, under an app-suffixed name", async () => {
+    const { syncTrashFormats, appScopedFormatName } = await import("../src/services/trashSync.js");
+    mockGithub([{ name: "br-disk.json", download_url: "https://raw/radarr-br-disk.json", type: "file" }], {
+      "https://raw/radarr-br-disk.json": {
+        trash_id: "radarr-br-disk",
+        name: "Shared BR-DISK",
+        specifications: [{ implementation: "ReleaseTitleSpecification", fields: { value: "\\bBR-?DISK\\b" } }],
+      },
+    });
+    expect((await syncTrashFormats("radarr")).added).toBe(1);
+
+    const sonarrFile = (value: string) => ({
+      "https://raw/sonarr-br-disk.json": {
+        trash_id: "sonarr-br-disk",
+        name: "Shared BR-DISK",
+        specifications: [{ implementation: "ReleaseTitleSpecification", fields: { value } }],
+      },
+    });
+    mockGithub([{ name: "br-disk.json", download_url: "https://raw/sonarr-br-disk.json", type: "file" }], sonarrFile("\\bBR-?DISK\\b"));
+    const sonarr = await syncTrashFormats("sonarr");
+
+    expect(sonarr).toMatchObject({ added: 1, failed: [] });
+    const radarrRow = (await db.prepare("SELECT * FROM custom_formats WHERE trash_id = 'radarr-br-disk'").get()) as any;
+    expect(radarrRow.name).toBe("Shared BR-DISK");
+    expect(JSON.parse(radarrRow.media_types)).toEqual(["movie", "ppv"]);
+    const sonarrRow = (await db.prepare("SELECT * FROM custom_formats WHERE trash_id = 'sonarr-br-disk'").get()) as any;
+    expect(sonarrRow.name).toBe("Shared BR-DISK (Sonarr)");
+    expect(appScopedFormatName("Shared BR-DISK", "sonarr")).toBe(sonarrRow.name);
+    expect(JSON.parse(sonarrRow.media_types)).toEqual(["series", "anime", "sports"]);
+
+    // A re-sync updates the suffixed format in place instead of colliding on the plain name again.
+    mockGithub([{ name: "br-disk.json", download_url: "https://raw/sonarr-br-disk.json", type: "file" }], sonarrFile("\\bBD-?DISK\\b"));
+    const resync = await syncTrashFormats("sonarr");
+
+    expect(resync).toMatchObject({ added: 0, updated: 1, failed: [] });
+    const updated = (await db.prepare("SELECT * FROM custom_formats WHERE trash_id = 'sonarr-br-disk'").get()) as any;
+    expect(updated.name).toBe("Shared BR-DISK (Sonarr)");
+    expect(updated.patterns).toContain("BD-?DISK");
   });
 });

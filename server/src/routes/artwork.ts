@@ -3,7 +3,7 @@ import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { mediaItemFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { fetchArtworkFor } from "../services/metadata.js";
+import { fetchArtworkFor, proxyScreenscraperArtwork } from "../services/metadata.js";
 
 export const artworkRouter = Router();
 artworkRouter.use(requireAdmin);
@@ -40,13 +40,16 @@ artworkRouter.post(
     // outright ("could not determine data type of parameter $2"), so no pick ever saved there.
     const sets: string[] = [];
     const values: unknown[] = [];
-    if (posterUrl) {
-      sets.push("poster_url = ?", "local_poster_path = NULL", "local_poster_token = NULL");
-      values.push(posterUrl);
-    }
-    if (backdropUrl) {
-      sets.push("backdrop_url = ?", "local_backdrop_path = NULL", "local_backdrop_token = NULL");
-      values.push(backdropUrl);
+    // A ScreenScraper pick is the exception: it is stored behind the local-artwork proxy, since its
+    // image URL only works with the admin's ScreenScraper credentials added.
+    for (const [column, value] of [
+      ["poster", posterUrl],
+      ["backdrop", backdropUrl],
+    ] as const) {
+      if (!value) continue;
+      const proxied = typeof value === "string" ? proxyScreenscraperArtwork(value) : null;
+      sets.push(`${column}_url = ?`, `local_${column}_path = ?`, `local_${column}_token = ?`);
+      values.push(proxied?.url ?? value, proxied?.localPath ?? null, proxied?.token ?? null);
     }
     const result = await db.prepare(`UPDATE media_items SET ${sets.join(", ")} WHERE id = ?`).run(...values, req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Media item not found");

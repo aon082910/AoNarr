@@ -3,6 +3,9 @@ import path from "node:path";
 import AdmZip from "adm-zip";
 import { parseStringPromise } from "xml2js";
 
+/** Real ComicInfo.xml files are a few KiB. */
+const MAX_COMICINFO_BYTES = 1024 * 1024;
+
 export interface ComicInfoResult {
   /** The series/collection-level title (ComicInfo.xml's <Series>) — distinct from `title`, which
    * is this one issue's own title, since a single ComicInfo.xml carries both at once (unlike
@@ -53,7 +56,10 @@ export function findComicInfoInCbz(filePath: string): string | null {
   try {
     const zip = new AdmZip(filePath);
     const entry = zip.getEntries().find((e) => !e.isDirectory && path.basename(e.entryName).toLowerCase() === "comicinfo.xml");
-    return entry ? entry.getData().toString("utf-8") : null;
+    if (!entry) return null;
+    // getData() inflates the whole entry into memory, up to whatever size its header declares.
+    if (entry.header.size > MAX_COMICINFO_BYTES || entry.header.compressedSize > MAX_COMICINFO_BYTES) return null;
+    return entry.getData().toString("utf-8");
   } catch {
     return null;
   }

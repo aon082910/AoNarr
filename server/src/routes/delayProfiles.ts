@@ -7,6 +7,13 @@ import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 export const delayProfilesRouter = Router();
 delayProfilesRouter.use(requireAdmin);
 
+/** The delay/order columns are INTEGER NOT NULL: Postgres rejects a fractional or non-numeric value. */
+function nonNegativeInteger(value: unknown, field: string): number {
+  const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
+  if (!Number.isFinite(n) || n < 0 || n > 2147483647) throw new HttpError(400, `${field} must be a number of 0 or more`);
+  return Math.round(n);
+}
+
 delayProfilesRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
@@ -19,6 +26,8 @@ delayProfilesRouter.post(
   "/",
   asyncHandler(async (req, res) => {
     const b = req.body ?? {};
+    const usenetDelay = b.usenetDelayMinutes == null ? 0 : nonNegativeInteger(b.usenetDelayMinutes, "usenetDelayMinutes");
+    const torrentDelay = b.torrentDelayMinutes == null ? 0 : nonNegativeInteger(b.torrentDelayMinutes, "torrentDelayMinutes");
     if (b.tagId != null) {
       const existing = await db.prepare("SELECT id FROM delay_profiles WHERE tag_id = ?").get(b.tagId);
       if (existing) throw new HttpError(400, "A delay profile for this tag already exists");
@@ -36,8 +45,8 @@ delayProfilesRouter.post(
         b.tagId ?? null,
         b.enableUsenet === false ? 0 : 1,
         b.enableTorrent === false ? 0 : 1,
-        b.usenetDelayMinutes ?? 0,
-        b.torrentDelayMinutes ?? 0,
+        usenetDelay,
+        torrentDelay,
         b.bypassIfHighestQuality ? 1 : 0,
         (maxOrder.m ?? -1) + 1
       );
@@ -64,7 +73,7 @@ delayProfilesRouter.patch(
     for (const [key, col] of Object.entries(map)) {
       if (b[key] !== undefined) {
         sets.push(`${col} = ?`);
-        values.push(booleanKeys.has(key) ? (b[key] ? 1 : 0) : b[key]);
+        values.push(booleanKeys.has(key) ? (b[key] ? 1 : 0) : nonNegativeInteger(b[key], key));
       }
     }
     if (sets.length > 0) {

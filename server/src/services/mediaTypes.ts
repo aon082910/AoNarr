@@ -50,6 +50,10 @@ export interface MediaTypeConfig {
    * filename/folder-guessing. Left unset for types with no real-world sidecar convention (ROMs,
    * Online Videos, Podcasts) rather than a poor-fit guess. */
   sidecarFormat?: "kodi-video" | "kodi-music" | "comicinfo" | "opf";
+  /** Collection-only: the parent Scan & Import files a loose root-folder file under when neither
+   * its metadata nor its filename names an author/series — see isPlaceholderParent. Unset for a
+   * type whose loose root files are skipped instead (Music, Online Videos, Podcasts). */
+  placeholderParentTitle?: string;
 }
 
 const VIDEO_EXT = [".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v"];
@@ -63,7 +67,7 @@ const ROM_EXT = [".zip", ".7z", ".nes", ".sfc", ".smc", ".gba", ".gbc", ".gb", "
  * running ffprobe against a file it was never going to understand (an ebook, comic archive, ROM,
  * etc.), which just produced a scary-looking "[ffprobe] could not probe ..." warning in the logs
  * for something that was never broken. */
-const PROBEABLE_EXT = new Set([...VIDEO_EXT, ...AUDIO_EXT, ".m4b"]);
+const PROBEABLE_EXT = new Set([...VIDEO_EXT, ...AUDIO_EXT, ".m4b", ".webm"]);
 
 export function isProbeableFile(filePath: string): boolean {
   const dot = filePath.lastIndexOf(".");
@@ -168,6 +172,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     metadataProviders: ["openlibrary", "googlebooks", "itunes", "hardcover", "goodreads", "audnexus"],
     defaultProvider: "openlibrary",
     sidecarFormat: "opf",
+    placeholderParentTitle: "Unknown Author",
   },
   audiobook: {
     key: "audiobook",
@@ -184,6 +189,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     defaultProvider: "openlibrary",
     multiFilePerChild: true,
     sidecarFormat: "opf",
+    placeholderParentTitle: "Unknown Author",
   },
   comic: {
     key: "comic",
@@ -195,6 +201,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     metadataProviders: ["comicvine"],
     defaultProvider: "comicvine",
     sidecarFormat: "comicinfo",
+    placeholderParentTitle: "Unknown Series",
   },
   manga: {
     key: "manga",
@@ -211,6 +218,7 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     // for the same reason.
     defaultProvider: "mangadex",
     sidecarFormat: "comicinfo",
+    placeholderParentTitle: "Unknown Series",
   },
   rom: {
     key: "rom",
@@ -234,7 +242,10 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     label: "Online Videos",
     shape: "collection",
     childLabel: "Video",
-    extensions: VIDEO_EXT,
+    // yt-dlp keeps a single-stream download in its source container (YouTube's is often .webm),
+    // and an audio-only client transcodes to .mp3 — without these the finished download is never
+    // found and the grab fails and is blocklisted.
+    extensions: [...VIDEO_EXT, ".webm", ".mp3"],
     indexerCategory: "5000",
     metadataProviders: ["youtube", "vimeo"],
     defaultProvider: "youtube",
@@ -314,4 +325,36 @@ export function typeKeysByShape(shape: MediaShape): string[] {
  * majority, and every row of every other type) is completely unaffected. */
 export function effectiveShape(item: { type: string; legacyShape?: string | null }): MediaShape {
   return (item.legacyShape as MediaShape | null | undefined) ?? getMediaTypeConfig(item.type).shape;
+}
+
+function hasExternalIds(raw: unknown): boolean {
+  let ids = raw;
+  if (typeof raw === "string") {
+    try {
+      ids = raw.trim() ? JSON.parse(raw) : null;
+    } catch {
+      return raw.trim() !== "";
+    }
+  }
+  return !!ids && typeof ids === "object" && Object.values(ids as Record<string, unknown>).some((v) => v != null && String(v) !== "");
+}
+
+const normalizePlaceholderTitle = (title: string) =>
+  title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+/** Whether a media_items row is the "Unknown Author"/"Unknown Series" bucket Scan & Import files
+ * unidentifiable loose root-folder files under, rather than a real author/series. Such a row must
+ * never be searched for at a metadata provider (the top hit for "Unknown Author" is a stranger it
+ * would be renamed after, dragging every unidentified book along) nor auto-searched for releases.
+ * Keyed on the placeholder title — compared the way Scan & Import matches titles, so a user's own
+ * "Unknown author" folder, which collects the same files, is covered too — AND no external ids, so
+ * a row an admin deliberately matched (Different Match) stops being treated as one. Accepts a raw
+ * DB row or a mapped item. */
+export function isPlaceholderParent(item: { type: string; title?: string | null; external_ids?: unknown; externalIds?: unknown }): boolean {
+  const placeholder = MEDIA_TYPES[item.type]?.placeholderParentTitle;
+  if (!placeholder || !item.title || normalizePlaceholderTitle(item.title) !== normalizePlaceholderTitle(placeholder)) return false;
+  return !hasExternalIds(item.external_ids ?? item.externalIds);
 }

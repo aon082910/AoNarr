@@ -1,6 +1,6 @@
 import { log } from "./logger.js";
 import { parseStringPromise } from "xml2js";
-import { getMediaTypeConfig } from "./mediaTypes.js";
+import { getMediaTypeConfig, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
 import { getSetting } from "./settingsStore.js";
 import { recordIndexerHealth } from "./indexerHealth.js";
 import type { DdlIndexerConfig, Indexer, MediaType, SearchResult } from "../types/index.js";
@@ -18,6 +18,66 @@ function categoriesForMediaType(type: MediaType): string {
   return getMediaTypeConfig(type).indexerCategory;
 }
 
+/** Online Videos and Podcasts are pulled from the channel/feed itself, never from an indexer. */
+const NON_INDEXER_MEDIA_TYPES = new Set(["video", "podcast"]);
+
+/** Every library type an indexer can be searched for — the default for a new indexer's
+ * media_types, so an indexer added without an explicit list is used for all of them. */
+export const INDEXER_MEDIA_TYPES: string[] = MEDIA_TYPE_KEYS.filter((k) => !NON_INDEXER_MEDIA_TYPES.has(k));
+export const DEFAULT_INDEXER_MEDIA_TYPES = INDEXER_MEDIA_TYPES.join(",");
+
+/** `size` stays numeric (0) when the indexer never reported one, so existing consumers keep
+ * working, but `sizeKnown: false` marks it so a size-bound check can skip the release instead of
+ * reading it as a 0-byte file and rejecting it. */
+export type IndexerSearchResult = SearchResult & { sizeKnown?: boolean };
+
+const SIZE_UNIT_POWER: Record<string, number> = { K: 1, M: 2, G: 3, T: 4 };
+
+/** Bytes from a numeric size or a human-readable one ("1.4 GB", "1,234.5 MiB", "2.1GiB") — JSON
+ * search APIs often report the latter. KB/MB/GB are 1024-based, as in the *Arr apps. */
+function parseSizeBytes(raw: unknown): number {
+  if (raw == null || raw === "") return NaN;
+  if (typeof raw === "number") return raw;
+  const text = String(raw).trim();
+  const plain = Number(text);
+  if (text !== "" && Number.isFinite(plain)) return plain;
+  // A comma before exactly three digits groups thousands; any other one is a decimal comma.
+  const normalized = text.replace(/,(?=\d{3}(?!\d))/g, "").replace(",", ".");
+  const match = normalized.match(/^(\d+(?:\.\d+)?)\s*(?:([KMGT])(?:i?B)?|B|bytes?)?$/i);
+  if (!match) return NaN;
+  return Number(match[1]) * 1024 ** (match[2] ? SIZE_UNIT_POWER[match[2].toUpperCase()] : 0);
+}
+
+function sizeFields(raw: unknown): { size: number; sizeKnown?: false } {
+  const n = Math.round(parseSizeBytes(raw));
+  return Number.isFinite(n) && n > 0 ? { size: n } : { size: 0, sizeKnown: false };
+}
+
+/** Torznab/Newznab report API failures (bad key, request limit, removed indexer) as an
+ * `<error code=".." description=".."/>` document, frequently with HTTP 200 — Jackett always does —
+ * so the status code alone reads a dead indexer as a healthy one that just found nothing. */
+export function indexerApiError(parsed: unknown): { code: string; description: string } | null {
+  if (!parsed || typeof parsed !== "object" || !("error" in parsed)) return null;
+  const attrs = (parsed as { error?: { $?: Record<string, unknown> } }).error?.$ ?? {};
+  return { code: String(attrs.code ?? ""), description: String(attrs.description ?? "unknown error") };
+}
+
+/** Newznab 500/501 are "request/download limit reached"; Prowlarr uses 429 for its own backoff. */
+const RATE_LIMIT_ERROR_CODES = new Set(["429", "500", "501"]);
+
+class IndexerRateLimitError extends Error {}
+
+function throwIfIndexerApiError(indexer: Indexer, parsed: unknown): void {
+  const apiError = indexerApiError(parsed);
+  if (!apiError) return;
+  const message = `Indexer "${indexer.name}" error ${apiError.code}: ${apiError.description}`;
+  throw RATE_LIMIT_ERROR_CODES.has(apiError.code) ? new IndexerRateLimitError(message) : new Error(message);
+}
+
+function hasRoot(parsed: unknown, root: string): boolean {
+  return !!parsed && typeof parsed === "object" && root in parsed;
+}
+
 /** Every real indexer request gets a hard timeout so one slow/hanging source can't stall the
  * whole fan-out in searchAllIndexers — Promise.allSettled already isolates failures, but without
  * a timeout a single indexer that never responds would still hold up the overall search forever. */
@@ -31,6 +91,20 @@ const SEARCH_TIMEOUT_MS = 20_000;
  * clicking "Search" expects a live result, not a few-minutes-stale one. */
 const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
 const searchCache = new Map<string, { expiresAt: number; results: SearchResult[] }>();
+
+/** Entries are (re)inserted at the end with a fixed TTL, so Map order is expiry order and expired
+ * ones are always at the front. Without this, every distinct query ever searched (a new episode,
+ * a daily show's air date) keeps its full result list for the life of the process. */
+function pruneSearchCache(now: number): void {
+  for (const [key, entry] of searchCache) {
+    if (entry.expiresAt > now) break;
+    searchCache.delete(key);
+  }
+}
+
+export function searchCacheSize(): number {
+  return searchCache.size;
+}
 
 function cacheKey(indexerId: number, query: string, mediaType: MediaType, externalIds?: Record<string, string>): string {
   // imdb/tmdb ids (when present) change the actual request URL sent to the indexer (see
@@ -130,10 +204,30 @@ export async function checkIndexerHealth(indexer: Indexer): Promise<{ ok: boolea
     }
     const res = await fetchIndexerText(url, indexer, 10_000);
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    if (indexer.protocol === "torznab" || indexer.protocol === "newznab") {
+      const parsed = await parseStringPromise(res.text, { explicitArray: true, mergeAttrs: false });
+      const apiError = indexerApiError(parsed);
+      if (apiError) return { ok: false, error: `Indexer error ${apiError.code}: ${apiError.description}` };
+      if (!hasRoot(parsed, "caps")) return { ok: false, error: "Response has no <caps> element — not a Torznab/Newznab API" };
+    }
     return { ok: true };
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }
+}
+
+/** Newznab 201 "Incorrect parameter" / 203 "Function not available". Jackett answers any `imdbid`
+ * sent to an indexer without movie-imdb search with a 201 (HTTP 200), even on a plain t=search, so
+ * the id params turn a search that works fine without them into an error. */
+const ID_PARAMS_REJECTED_CODES = new Set(["201", "203"]);
+/** Indexers (id + url) whose id-narrowed search was rejected but whose plain one worked — later
+ * searches leave the ids off rather than paying for a failed request first every time. */
+const idParamsRejectedBy = new Set<string>();
+
+async function fetchTorznabFeed(indexer: Indexer, url: string): Promise<any> {
+  const res = await fetchIndexerText(url, indexer, SEARCH_TIMEOUT_MS);
+  if (!res.ok) throw new Error(`Indexer "${indexer.name}" returned HTTP ${res.status}`);
+  return parseStringPromise(res.text, { explicitArray: true, mergeAttrs: false });
 }
 
 async function searchTorznabNewznab(
@@ -142,33 +236,44 @@ async function searchTorznabNewznab(
   mediaType: MediaType,
   externalIds?: Record<string, string>
 ): Promise<SearchResult[]> {
-  const url = new URL(indexer.url.replace(/\/+$/, "") + "/api");
-  url.searchParams.set("t", "search");
-  url.searchParams.set("q", query);
   const cats = indexer.categories?.trim() || categoriesForMediaType(mediaType);
-  url.searchParams.set("cat", cats);
-  if (indexer.apiKey) url.searchParams.set("apikey", indexer.apiKey);
-  // Best-effort narrowing for indexers that support Torznab's id-search params — harmless for ones
-  // that don't (an unrecognized param is simply ignored), tightens results for ones that do. Only
-  // meaningful for movie/TV-shaped categories; other shapes (music, books, ROMs, ...) have no such
-  // id space in Torznab's spec.
-  if (["movie", "series", "anime", "sports", "ppv"].includes(mediaType)) {
-    if (externalIds?.imdb) url.searchParams.set("imdbid", externalIds.imdb.replace(/^tt/i, ""));
-    if (externalIds?.tmdb) url.searchParams.set("tmdbid", externalIds.tmdb);
+  const searchUrl = (withIds: boolean): string => {
+    const url = new URL(indexer.url.replace(/\/+$/, "") + "/api");
+    url.searchParams.set("t", "search");
+    url.searchParams.set("q", query);
+    url.searchParams.set("cat", cats);
+    if (indexer.apiKey) url.searchParams.set("apikey", indexer.apiKey);
+    if (withIds) {
+      if (externalIds?.imdb) url.searchParams.set("imdbid", externalIds.imdb.replace(/^tt/i, ""));
+      if (externalIds?.tmdb) url.searchParams.set("tmdbid", externalIds.tmdb);
+    }
+    return url.toString();
+  };
+  // Best-effort narrowing for indexers that support Torznab's id-search params, retried without
+  // them for one that rejects them. Only meaningful for movie/TV-shaped categories; other shapes
+  // (music, books, ROMs, ...) have no such id space in Torznab's spec.
+  const idParamsKey = `${indexer.id}:${indexer.url}`;
+  const sendIds =
+    ["movie", "series", "anime", "sports", "ppv"].includes(mediaType) &&
+    !!(externalIds?.imdb || externalIds?.tmdb) &&
+    !idParamsRejectedBy.has(idParamsKey);
+
+  let parsed = await fetchTorznabFeed(indexer, searchUrl(sendIds));
+  if (sendIds && ID_PARAMS_REJECTED_CODES.has(indexerApiError(parsed)?.code ?? "")) {
+    parsed = await fetchTorznabFeed(indexer, searchUrl(false));
+    if (!indexerApiError(parsed) && hasRoot(parsed, "rss")) idParamsRejectedBy.add(idParamsKey);
   }
+  throwIfIndexerApiError(indexer, parsed);
+  if (!hasRoot(parsed, "rss")) throw new Error(`Indexer "${indexer.name}" returned a response with no <rss> feed`);
 
-  const res = await fetchIndexerText(url.toString(), indexer, SEARCH_TIMEOUT_MS);
-  if (!res.ok) throw new Error(`Indexer "${indexer.name}" returned HTTP ${res.status}`);
-  const parsed = await parseStringPromise(res.text, { explicitArray: true, mergeAttrs: false });
-
-  const items: any[] = parsed?.rss?.channel?.[0]?.item ?? [];
-  const results: SearchResult[] = [];
+  const items: any[] = parsed.rss?.channel?.[0]?.item ?? [];
+  const results: IndexerSearchResult[] = [];
 
   for (const item of items) {
     const title = item.title?.[0] ?? "unknown";
     const enclosure = item.enclosure?.[0]?.$;
     const downloadUrl = enclosure?.url ?? item.link?.[0] ?? "";
-    const size = enclosure?.length ? Number(enclosure.length) : 0;
+    let rawSize: unknown = enclosure?.length;
     const pubDate = item.pubDate?.[0] ?? null;
 
     let seeders: number | null = null;
@@ -177,10 +282,13 @@ async function searchTorznabNewznab(
     let downloadVolumeFactor: number | null = null;
     let imdbId: string | null = null;
     let tmdbId: string | null = null;
-    const torznabAttrs: any[] = item["torznab:attr"] ?? item.attr ?? [];
+    // xml2js keeps namespace prefixes on element names: Torznab feeds use <torznab:attr>, Newznab
+    // feeds (usenet indexers, NZBHydra, Prowlarr's usenet proxy) use <newznab:attr>.
+    const torznabAttrs: any[] = [...(item["torznab:attr"] ?? []), ...(item["newznab:attr"] ?? []), ...(item.attr ?? [])];
     for (const attr of torznabAttrs) {
       const a = attr?.$;
       if (!a) continue;
+      if (a.name === "size" && !(Number(rawSize) > 0)) rawSize = a.value;
       if (a.name === "seeders") seeders = Number(a.value);
       if (a.name === "peers") peers = Number(a.value);
       if (a.name === "leechers") leechers = Number(a.value);
@@ -204,7 +312,7 @@ async function searchTorznabNewznab(
       indexerId: indexer.id,
       indexerName: indexer.name,
       title,
-      size,
+      ...sizeFields(rawSize),
       seeders,
       leechers,
       publishDate: pubDate,
@@ -220,6 +328,23 @@ async function searchTorznabNewznab(
   return results;
 }
 
+/** An RSS item can point at a .torrent, a magnet link, an NZB or a direct file — tracker feeds
+ * carry torrents, so hard-coding "http" would hand them to the Direct HTTP client, which saves the
+ * .torrent itself as the "download" (or can't fetch a magnet: at all). */
+function rssItemProtocol(downloadUrl: string, enclosureType: unknown): SearchResult["protocol"] {
+  const url = String(downloadUrl);
+  const type = typeof enclosureType === "string" ? enclosureType.trim().toLowerCase() : "";
+  let path = url.toLowerCase();
+  try {
+    path = new URL(url).pathname.toLowerCase();
+  } catch {
+    // not an absolute URL — match against the raw string
+  }
+  if (/^magnet:/i.test(url) || type === "application/x-bittorrent" || path.endsWith(".torrent")) return "torrent";
+  if (type === "application/x-nzb" || path.endsWith(".nzb")) return "usenet";
+  return "http";
+}
+
 /** Plain RSS 2.0 — no Torznab search-attr extensions assumed, so no seeders/category, and the
  * query can't be sent to the feed (many such feeds are a fixed "latest" list); results are
  * simply title-filtered client-side against the query. */
@@ -230,7 +355,7 @@ async function searchRss(indexer: Indexer, query: string): Promise<SearchResult[
   const items: any[] = parsed?.rss?.channel?.[0]?.item ?? [];
   const needle = query.toLowerCase();
 
-  const results: SearchResult[] = [];
+  const results: IndexerSearchResult[] = [];
   for (const item of items) {
     const title: string = item.title?.[0] ?? "unknown";
     if (!title.toLowerCase().includes(needle)) continue;
@@ -242,12 +367,12 @@ async function searchRss(indexer: Indexer, query: string): Promise<SearchResult[
       indexerId: indexer.id,
       indexerName: indexer.name,
       title,
-      size: enclosure?.length ? Number(enclosure.length) : 0,
+      ...sizeFields(enclosure?.length),
       seeders: null,
       leechers: null,
       publishDate: item.pubDate?.[0] ?? null,
       downloadUrl,
-      protocol: "http",
+      protocol: rssItemProtocol(downloadUrl, enclosure?.type),
       category: null,
     });
   }
@@ -294,7 +419,7 @@ async function searchDdl(indexer: Indexer, query: string): Promise<SearchResult[
     throw new Error(`Indexer "${indexer.name}": resultsPath "${cfg.resultsPath ?? ""}" did not resolve to an array`);
   }
 
-  const results: SearchResult[] = [];
+  const results: IndexerSearchResult[] = [];
   for (const item of items) {
     const title = getByDotPath(item, cfg.titleField);
     const downloadUrl = getByDotPath(item, cfg.downloadUrlField);
@@ -306,7 +431,7 @@ async function searchDdl(indexer: Indexer, query: string): Promise<SearchResult[
       indexerId: indexer.id,
       indexerName: indexer.name,
       title: String(title),
-      size: rawSize != null ? Number(rawSize) : 0,
+      ...sizeFields(rawSize),
       seeders: rawSeeders != null ? Number(rawSeeders) : null,
       leechers: null,
       publishDate: cfg.publishDateField ? (getByDotPath(item, cfg.publishDateField) ?? null) : null,
@@ -343,10 +468,16 @@ function isOverQueryLimit(indexer: Indexer): boolean {
   return timestamps.length >= limit;
 }
 
-function recordQueryLimitRequest(indexerId: number): void {
-  const timestamps = requestTimestamps.get(indexerId) ?? [];
+/** Only tracked for an indexer with a limit — isOverQueryLimit (which prunes the window) returns
+ * early without one, so recording regardless grew an unlimited indexer's array forever. */
+function recordQueryLimitRequest(indexer: Indexer): void {
+  if (!indexer.queryLimitPerHour || indexer.queryLimitPerHour <= 0) {
+    requestTimestamps.delete(indexer.id);
+    return;
+  }
+  const timestamps = requestTimestamps.get(indexer.id) ?? [];
   timestamps.push(Date.now());
-  requestTimestamps.set(indexerId, timestamps);
+  requestTimestamps.set(indexer.id, timestamps);
 }
 
 export function isIndexerBackedOff(indexerId: number): boolean {
@@ -355,9 +486,9 @@ export function isIndexerBackedOff(indexerId: number): boolean {
 }
 
 function recordIfRateLimited(indexer: Indexer, err: unknown): void {
-  if (err instanceof Error && /HTTP 429/.test(err.message)) {
+  if (err instanceof IndexerRateLimitError || (err instanceof Error && /HTTP 429/.test(err.message))) {
     backoffUntil.set(indexer.id, Date.now() + BACKOFF_MS);
-    log.warn(`[indexerClient] "${indexer.name}" returned 429 — backing off for ${BACKOFF_MS / 60000}m`);
+    log.warn(`[indexerClient] "${indexer.name}" is rate limiting requests — backing off for ${BACKOFF_MS / 60000}m`);
   }
 }
 
@@ -373,7 +504,7 @@ export async function searchIndexer(
   if (isOverQueryLimit(indexer)) {
     throw new Error(`Indexer "${indexer.name}" has hit its configured query limit for this hour — skipping`);
   }
-  recordQueryLimitRequest(indexer.id);
+  recordQueryLimitRequest(indexer);
   const startedAt = Date.now();
   try {
     let results: SearchResult[];
@@ -399,9 +530,13 @@ async function searchIndexerCached(indexer: Indexer, query: string, mediaType: M
   const key = cacheKey(indexer.id, query, mediaType, externalIds);
   const cached = searchCache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.results;
+  if (cached) searchCache.delete(key);
 
   const results = await searchIndexer(indexer, query, mediaType, externalIds);
-  searchCache.set(key, { expiresAt: Date.now() + SEARCH_CACHE_TTL_MS, results });
+  const now = Date.now();
+  pruneSearchCache(now);
+  searchCache.delete(key);
+  searchCache.set(key, { expiresAt: now + SEARCH_CACHE_TTL_MS, results });
   return results;
 }
 

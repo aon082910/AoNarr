@@ -11,6 +11,8 @@ import { DEFAULT_QUALITY_ORDER } from "../services/quality.js";
  * only acts when the table it seeds is still empty.
  */
 export async function seedPostgresDefaults(db: AsyncDb): Promise<void> {
+  await upgradeLegacyPostgresColumns(db);
+
   const qualityCount = Number(((await db.prepare("SELECT COUNT(*) AS c FROM qualities").get()) as { c: number }).c);
   if (qualityCount === 0) {
     for (let rank = 0; rank < DEFAULT_QUALITY_ORDER.length; rank++) {
@@ -39,5 +41,57 @@ export async function seedPostgresDefaults(db: AsyncDb): Promise<void> {
     console.log(`[startup] generated AoNarr API key: ${apiKey}`);
     console.log("Use this to log into the web UI. Find it again later in Settings.");
     console.log("=".repeat(60));
+  }
+}
+
+const INDEXER_DEFAULT_MEDIA_TYPES = "movie,series,anime,sports,ppv,artist,author,audiobook,comic,manga,rom,course,adult";
+// Every value indexers.media_types was ever given implicitly: past schema defaults plus the
+// add-indexer route's old fallback.
+const LEGACY_INDEXER_MEDIA_TYPE_DEFAULTS = [
+  "movie,series,artist,author",
+  "movie,series,anime,artist,author,comic,rom,video,course,adult",
+  "movie,series,anime,artist,author,audiobook,comic,rom,video,course,adult",
+  "movie,series,anime,artist,author,audiobook,comic,manga,rom,video,course,adult",
+];
+
+/**
+ * Brings a Postgres database created from an older schema.postgres.sql up to date (CREATE TABLE IF
+ * NOT EXISTS never changes an existing column), on every Postgres startup, before anything reads it:
+ * - queue.progress was REAL, which is float4 on Postgres. A client's full-precision progress never
+ *   equalled the value read back, so every poll counted as movement and stalled downloads were
+ *   never cleaned up.
+ * - indexers.media_types' default never included sports or ppv, so indexers added without an
+ *   explicit list (Jackett/Prowlarr sync) were never searched for them. Rows are widened only while
+ *   the old default is still in place, so this runs once and never overrides a list an admin picks
+ *   later (the SQLite twin is client.ts's upgradeIndexerMediaTypesDefault).
+ */
+export async function upgradeLegacyPostgresColumns(db: AsyncDb): Promise<void> {
+  if (db.dialect !== "postgres") return;
+
+  const progress = (await db
+    .prepare(
+      `SELECT data_type FROM information_schema.columns
+       WHERE table_schema = current_schema() AND table_name = 'queue' AND column_name = 'progress'`
+    )
+    .get()) as { data_type: string } | undefined;
+  if (progress?.data_type === "real") {
+    await db.exec(`ALTER TABLE queue ALTER COLUMN progress TYPE DOUBLE PRECISION USING progress::double precision`);
+  }
+
+  const mediaTypes = (await db
+    .prepare(
+      `SELECT column_default FROM information_schema.columns
+       WHERE table_schema = current_schema() AND table_name = 'indexers' AND column_name = 'media_types'`
+    )
+    .get()) as { column_default: string | null } | undefined;
+  if (mediaTypes && !(mediaTypes.column_default ?? "").includes(`'${INDEXER_DEFAULT_MEDIA_TYPES}'`)) {
+    await db.transaction(async () => {
+      await db.exec(`ALTER TABLE indexers ALTER COLUMN media_types SET DEFAULT '${INDEXER_DEFAULT_MEDIA_TYPES}'`);
+      await db
+        .prepare(
+          `UPDATE indexers SET media_types = ? WHERE media_types IN (${LEGACY_INDEXER_MEDIA_TYPE_DEFAULTS.map(() => "?").join(", ")})`
+        )
+        .run(INDEXER_DEFAULT_MEDIA_TYPES, ...LEGACY_INDEXER_MEDIA_TYPE_DEFAULTS);
+    });
   }
 }

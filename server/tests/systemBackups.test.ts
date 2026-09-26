@@ -176,19 +176,45 @@ describe("POST /api/system/backup/restore — encryption key", () => {
     }
   );
 
+  /** Posts `upload` as a Postgres restore and waits for the route to finish with it, which ends in a
+   * process exit (stubbed here) once any bundled key has been dealt with. */
+  async function restorePostgresUpload(upload: Buffer): Promise<{ message: string }> {
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    try {
+      const res = await request(app)
+        .post("/api/system/backup/restore")
+        .set("X-Api-Key", apiKey)
+        .set("Content-Type", "application/octet-stream")
+        .send(upload);
+      expect(res.status).toBe(200);
+      await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0), { timeout: 3000 });
+      return res.body;
+    } finally {
+      exit.mockRestore();
+    }
+  }
+
   /** Posts a Postgres bundle carrying otherKey and waits until the route has decided on the key. */
   async function restorePostgresBundle(): Promise<void> {
     keyDecisions.length = 0;
-    const res = await request(app)
-      .post("/api/system/backup/restore")
-      .set("X-Api-Key", apiKey)
-      .set("Content-Type", "application/octet-stream")
-      .send(bundleWith(Buffer.from("PGDMP-not-really-a-dump"), otherKey));
-    expect(res.status).toBe(200);
-    await vi.waitFor(() => expect(keyDecisions).toHaveLength(1));
+    await restorePostgresUpload(bundleWith(Buffer.from("PGDMP-not-really-a-dump"), otherKey));
+    expect(keyDecisions).toHaveLength(1);
     await keyDecisions[0];
-    await new Promise((resolve) => setImmediate(resolve));
   }
+
+  // pg_restore --clean swaps every table under the running process, so its settings/quality caches
+  // and schema migrations would otherwise stay pre-restore until some unrelated restart.
+  it.runIf(process.env.AONARR_DATABASE_DRIVER === "postgres")(
+    "restarts the process after a Postgres restore, whether pg_restore succeeded or reported errors",
+    async () => {
+      restorePostgres.mockReset().mockResolvedValue(undefined);
+      const succeeded = await restorePostgresUpload(Buffer.from("PGDMP-legacy-single-file-dump"));
+      expect(succeeded.message).toMatch(/restart/);
+
+      restorePostgres.mockReset().mockRejectedValue(new Error("pg_restore: error: could not execute query: ERROR:  relation already exists"));
+      await restorePostgresUpload(Buffer.from("PGDMP-legacy-single-file-dump"));
+    }
+  );
 
   it.runIf(process.env.AONARR_DATABASE_DRIVER === "postgres")(
     "leaves the current key in place when pg_restore fails before touching the database",
@@ -238,6 +264,200 @@ describe("POST /api/system/backup/restore — encryption key", () => {
       }
     }
   );
+});
+
+describe("POST /api/system/backup/restore — running imports", () => {
+  /** Holds an import of `queueId` under the queue import lock until the returned function is called. */
+  async function holdImport(queueId: number): Promise<{ finish: () => void; done: Promise<boolean> }> {
+    const { withQueueImportLock } = await import("../src/services/downloadClient.js");
+    let finish!: () => void;
+    const done = withQueueImportLock(queueId, () => new Promise<void>((resolve) => (finish = resolve)));
+    return { finish: () => finish(), done };
+  }
+
+  /** Runs a "queuePoll" job that, like pollQueue, imports `queueIds` one after another under the lock
+   * with a database call and an I/O round trip (the next client's status call) after each, and
+   * ignores cancellation. Each import runs until `finishNext`. */
+  async function runQueuePoll(queueIds: number[]) {
+    const { registerJob, runJobNow, isJobRunning, startAllJobs } = await import("../src/services/jobRegistry.js");
+    const { withQueueImportLock } = await import("../src/services/downloadClient.js");
+    const pending: (() => void)[] = [];
+    let started = 0;
+    registerJob({
+      key: "queuePoll",
+      name: "Queue poll",
+      scheduleType: "interval",
+      defaultSchedule: "20",
+      run: async () => {
+        for (const id of queueIds) {
+          await withQueueImportLock(id, () => {
+            started++;
+            return new Promise<void>((resolve) => pending.push(resolve));
+          });
+          await db.prepare("SELECT COUNT(*) AS n FROM queue").get();
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+      },
+    });
+    // An earlier restore in this file stopped every job; the restore under test stops them again.
+    startAllJobs();
+    expect(runJobNow("queuePoll")).toBe("started");
+    return {
+      started: () => started,
+      finishNext: () => pending.shift()?.(),
+      finishAll: () => pending.splice(0).forEach((resolve) => resolve()),
+      running: () => isJobRunning("queuePoll"),
+    };
+  }
+
+  it.skipIf(process.env.AONARR_DATABASE_DRIVER === "postgres")(
+    "waits for a running import to settle before closing and replacing the SQLite database, refreshing the rollback copy first",
+    async () => {
+      const { config } = await import("../src/config.js");
+      const { db: sqliteDb } = await import("../src/db/client.js");
+      const Database = (await import("better-sqlite3")).default;
+      vi.useFakeTimers({ toFake: ["setTimeout"] });
+      const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+      // Stops the restore at its destructive step, so this file's own database survives the test.
+      const close = vi.spyOn(sqliteDb, "close").mockImplementation(() => {
+        throw new Error("stopped before the file swap");
+      });
+      const importing = await holdImport(9001);
+      try {
+        const sqliteHeader = Buffer.concat([Buffer.from("SQLite format 3\0", "utf-8"), Buffer.alloc(84)]);
+        const res = await request(app)
+          .post("/api/system/backup/restore")
+          .set("X-Api-Key", apiKey)
+          .set("Content-Type", "application/octet-stream")
+          .send(sqliteHeader);
+        expect(res.status).toBe(200);
+
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(close).not.toHaveBeenCalled();
+        expect(exit).not.toHaveBeenCalled();
+
+        // Committed by the import after the route's first rollback copy.
+        await db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("importedDuringRestoreWait", "1");
+        importing.finish();
+        expect(await importing.done).toBe(true);
+        await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
+        expect(close).toHaveBeenCalledTimes(1);
+
+        const rollback = new Database(`${config.dbPath}.pre-restore`, { readonly: true });
+        try {
+          expect(rollback.prepare("SELECT value FROM settings WHERE key = ?").get("importedDuringRestoreWait")).toEqual({ value: "1" });
+        } finally {
+          rollback.close();
+        }
+      } finally {
+        importing.finish();
+        vi.clearAllTimers();
+        vi.useRealTimers();
+        exit.mockRestore();
+        close.mockRestore();
+        await db.prepare("DELETE FROM settings WHERE key = ?").run("importedDuringRestoreWait");
+        fs.rmSync(`${keyPath}.pre-restore`, { force: true });
+        fs.rmSync(`${config.dbPath}.pre-restore`, { force: true });
+      }
+    }
+  );
+
+  it.skipIf(process.env.AONARR_DATABASE_DRIVER === "postgres")(
+    "waits out a queue poll between its imports before replacing the SQLite database",
+    async () => {
+      const { config } = await import("../src/config.js");
+      const { db: sqliteDb } = await import("../src/db/client.js");
+      vi.useFakeTimers({ toFake: ["setTimeout"] });
+      const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+      const close = vi.spyOn(sqliteDb, "close").mockImplementation(() => {
+        throw new Error("stopped before the file swap");
+      });
+      const poll = await runQueuePoll([9101, 9102]);
+      try {
+        const sqliteHeader = Buffer.concat([Buffer.from("SQLite format 3\0", "utf-8"), Buffer.alloc(84)]);
+        const res = await request(app)
+          .post("/api/system/backup/restore")
+          .set("X-Api-Key", apiKey)
+          .set("Content-Type", "application/octet-stream")
+          .send(sqliteHeader);
+        expect(res.status).toBe(200);
+        await vi.advanceTimersByTimeAsync(1000);
+
+        poll.finishNext();
+        await vi.waitFor(() => expect(poll.started()).toBe(2));
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(close).not.toHaveBeenCalled();
+        expect(exit).not.toHaveBeenCalled();
+
+        poll.finishNext();
+        await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
+        expect(poll.running()).toBe(false);
+        expect(close).toHaveBeenCalledTimes(1);
+      } finally {
+        poll.finishAll();
+        vi.clearAllTimers();
+        vi.useRealTimers();
+        exit.mockRestore();
+        close.mockRestore();
+        fs.rmSync(`${keyPath}.pre-restore`, { force: true });
+        fs.rmSync(`${config.dbPath}.pre-restore`, { force: true });
+      }
+    }
+  );
+
+  it.runIf(process.env.AONARR_DATABASE_DRIVER === "postgres")("waits out a queue poll between its imports before running pg_restore", async () => {
+    restorePostgres.mockReset().mockResolvedValue(undefined);
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const poll = await runQueuePoll([9201, 9202]);
+    try {
+      const res = await request(app)
+        .post("/api/system/backup/restore")
+        .set("X-Api-Key", apiKey)
+        .set("Content-Type", "application/octet-stream")
+        .send(Buffer.from("PGDMP-legacy-single-file-dump"));
+      expect(res.status).toBe(200);
+
+      poll.finishNext();
+      await vi.waitFor(() => expect(poll.started()).toBe(2));
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(restorePostgres).not.toHaveBeenCalled();
+      expect(exit).not.toHaveBeenCalled();
+
+      poll.finishNext();
+      await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0), { timeout: 3000 });
+      expect(poll.running()).toBe(false);
+      expect(restorePostgres).toHaveBeenCalledTimes(1);
+    } finally {
+      poll.finishAll();
+      exit.mockRestore();
+    }
+  });
+
+  it.runIf(process.env.AONARR_DATABASE_DRIVER === "postgres")("waits for a running import to settle before running pg_restore", async () => {
+    restorePostgres.mockReset().mockResolvedValue(undefined);
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const importing = await holdImport(9002);
+    try {
+      const res = await request(app)
+        .post("/api/system/backup/restore")
+        .set("X-Api-Key", apiKey)
+        .set("Content-Type", "application/octet-stream")
+        .send(Buffer.from("PGDMP-legacy-single-file-dump"));
+      expect(res.status).toBe(200);
+
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(restorePostgres).not.toHaveBeenCalled();
+      expect(exit).not.toHaveBeenCalled();
+
+      importing.finish();
+      expect(await importing.done).toBe(true);
+      await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0), { timeout: 3000 });
+      expect(restorePostgres).toHaveBeenCalledTimes(1);
+    } finally {
+      importing.finish();
+      exit.mockRestore();
+    }
+  });
 });
 
 /** encryptValue under a key other than the installed one, via the real encryption.ts format. */

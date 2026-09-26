@@ -7,15 +7,16 @@ import { PlusCircleIcon, ZapIcon } from "../components/NavIcons.js";
 import { PencilIcon, TrashIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
+import { useMediaTypes } from "../hooks/useMediaTypes.js";
 
 type Protocol = "torznab" | "newznab" | "rss" | "ddl";
 
-// Same labels Activity.tsx's own PROTOCOL_LABELS uses for this identical field on the Queue page —
-// the Add-Indexer <select> below already spells these out in its option text, but the table (which
-// reads straight off the Indexer object, not the select) was printing the raw enum value.
+// The table reads straight off the Indexer object, not the Add-Indexer <select>, so without this it
+// printed the raw enum value. An RSS feed isn't necessarily torrents — each item is routed by its
+// enclosure (.torrent/magnet, .nzb, or a direct file).
 const PROTOCOL_LABELS: Record<Protocol, string> = {
   torznab: "Torrent",
-  rss: "Torrent (RSS)",
+  rss: "RSS",
   newznab: "Usenet",
   ddl: "DDL",
 };
@@ -41,11 +42,29 @@ export default function Indexers() {
   const [seedersField, setSeedersField] = useState("");
   const [publishDateField, setPublishDateField] = useState("");
   const [useFlareSolverr, setUseFlareSolverr] = useState(false);
+  // null = a new indexer left on the default (every indexer-searchable type); the server fills it in.
+  const [selectedTypes, setSelectedTypes] = useState<string[] | null>(null);
+  const [indexerTypeKeys, setIndexerTypeKeys] = useState<string[]>([]);
+  const mediaTypeInfos = useMediaTypes();
 
   function load() {
     api.get<Indexer[]>("/indexers").then(setIndexers);
   }
   useEffect(load, []);
+  useEffect(() => {
+    api.get<string[]>("/indexers/media-types").then(setIndexerTypeKeys).catch(() => {});
+  }, []);
+
+  function isTypeSelected(key: string): boolean {
+    return selectedTypes === null ? true : selectedTypes.includes(key);
+  }
+
+  function toggleType(key: string) {
+    setSelectedTypes((prev) => {
+      const base = prev ?? indexerTypeKeys;
+      return base.includes(key) ? base.filter((t) => t !== key) : [...base, key];
+    });
+  }
 
   function resetForm() {
     setName("");
@@ -53,6 +72,7 @@ export default function Indexers() {
     setUrl("");
     setApiKey("");
     setUseFlareSolverr(false);
+    setSelectedTypes(null);
     setResultsPath("");
     setTitleField("title");
     setSizeField("size");
@@ -73,6 +93,7 @@ export default function Indexers() {
     setUrl(i.url);
     setApiKey(i.apiKey ?? "");
     setUseFlareSolverr(!!i.useFlareSolverr);
+    setSelectedTypes((i.mediaTypes ?? "").split(",").map((t) => t.trim()).filter(Boolean));
     let ddlConfig: Record<string, any> = {};
     try {
       ddlConfig = i.config ? JSON.parse(i.config) : {};
@@ -92,6 +113,10 @@ export default function Indexers() {
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (!name || !url) return;
+    if (selectedTypes !== null && !selectedTypes.some((t) => indexerTypeKeys.length === 0 || indexerTypeKeys.includes(t))) {
+      notify.error("Pick at least one media type for this indexer to be searched for.");
+      return;
+    }
     const config =
       protocol === "ddl"
         ? {
@@ -103,7 +128,15 @@ export default function Indexers() {
             publishDateField: publishDateField || null,
           }
         : null;
-    const body = { name, protocol, url, apiKey: apiKey || null, config, useFlareSolverr };
+    const body = {
+      name,
+      protocol,
+      url,
+      apiKey: apiKey || null,
+      config,
+      useFlareSolverr,
+      ...(selectedTypes !== null ? { mediaTypes: selectedTypes.join(",") } : {}),
+    };
     try {
       if (mode === "add") {
         await api.post("/indexers", body);
@@ -309,6 +342,16 @@ export default function Indexers() {
             <input id="indexers-publish-date-field-optional-9" value={publishDateField} onChange={(e) => setPublishDateField(e.target.value)} />
           </>
         )}
+
+        <label id="indexers-media-types-label">Media types (searched for)</label>
+        <div role="group" aria-labelledby="indexers-media-types-label" style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+          {indexerTypeKeys.map((key) => (
+            <label key={key} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <input type="checkbox" checked={isTypeSelected(key)} onChange={() => toggleType(key)} />
+              {mediaTypeInfos.find((t) => t.key === key)?.label ?? key}
+            </label>
+          ))}
+        </div>
 
         {protocol !== "ddl" && (
           <label style={{ display: "flex", alignItems: "center", gap: 6 }}>

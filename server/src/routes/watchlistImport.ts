@@ -2,7 +2,7 @@ import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { searchMetadata, fetchSeriesEpisodesFor } from "../services/metadata.js";
+import { searchMetadata, fetchSeriesEpisodesFor, isEpisodeMonitoredByDefault } from "../services/metadata.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { queueForReview } from "../services/importReview.js";
@@ -91,9 +91,9 @@ watchlistImportRouter.post(
             await db
               .prepare(
                 `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-                 VALUES (?, ?, ?, ?, ?, ?, 1)`
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`
               )
-              .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
+              .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview, isEpisodeMonitoredByDefault(ep) ? 1 : 0);
           }
         }
 

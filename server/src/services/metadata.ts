@@ -1,5 +1,10 @@
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import * as cheerio from "cheerio";
 import { parseStringPromise } from "xml2js";
+import { config } from "../config.js";
+import { db } from "../db/index.js";
 import { getSetting } from "./settingsStore.js";
 import { MEDIA_TYPES, getMediaTypeConfig } from "./mediaTypes.js";
 import { CONTENT_RATING_ORDER } from "./contentRatings.js";
@@ -73,6 +78,33 @@ export interface MetadataEpisode {
   overview: string | null;
 }
 
+/** Sonarr's default: Season 0 specials (featurettes, recaps, shorts) are added unmonitored, so they
+ * don't flood Wanted and the missing search. Only TVDB lists them among a provider's own episodes.
+ * The `monitored` value for a provider episode newly inserted on Add or Refresh. */
+export function isEpisodeMonitoredByDefault(episode: Pick<MetadataEpisode, "seasonNumber">): boolean {
+  return episode.seasonNumber !== 0;
+}
+
+/** The episodes still to air (`today` is a YYYY-MM-DD date), for the "future episodes" monitor
+ * option. A null air date alone doesn't make an episode upcoming: a provider can list episodes it
+ * knows have aired without dating them (AniList numbers every episode before its next airing one,
+ * but its schedule covers only a long runner's most recent ones). An undated episode that a later,
+ * already-aired episode of the same season follows has aired too. Treated as upcoming, a "future
+ * episodes" add of such a show monitored and searched its entire back catalogue. */
+export function upcomingEpisodes<T extends Pick<MetadataEpisode, "seasonNumber" | "episodeNumber" | "airDate">>(
+  episodes: T[],
+  today: string
+): T[] {
+  const lastAiredBySeason = new Map<number, number>();
+  for (const e of episodes) {
+    if (!e.airDate || e.airDate.slice(0, 10) >= today) continue;
+    lastAiredBySeason.set(e.seasonNumber, Math.max(lastAiredBySeason.get(e.seasonNumber) ?? -Infinity, e.episodeNumber));
+  }
+  return episodes.filter((e) =>
+    e.airDate ? e.airDate.slice(0, 10) >= today : e.episodeNumber > (lastAiredBySeason.get(e.seasonNumber) ?? -Infinity)
+  );
+}
+
 export interface MetadataSeason {
   seasonNumber: number;
   posterUrl: string | null;
@@ -83,6 +115,10 @@ export interface MetadataSubItem {
   releaseDate: string | null;
   externalId?: string;
   posterUrl?: string | null;
+  /** Podcast episodes only: the feed item's `<guid>`. Unlike `externalId` (the enclosure URL, which
+   * is also the download source), it survives a tracking-prefix change, host migration or query
+   * stamp on the enclosure, so it is the key to recognize an already-known episode by. */
+  guid?: string;
 }
 
 export interface MetadataTrack {
@@ -110,6 +146,69 @@ function requireSetting(key: string, label: string): string {
   const value = getSetting(key);
   if (!value) throw new Error(`${label} is not configured. Add one in Settings.`);
   return value;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Holds each request to a per-minute-limited API until at least `gapMs` after the previous one,
+ * across every call in the process. Refresh lists one artist or volume after another, so spacing
+ * only the pages within one list still let a list's last page and the next list's first go out
+ * back to back, and a run of them went over the limit. */
+function requestSpacer(gapMs: number): () => Promise<void> {
+  let lastAt = -Infinity;
+  return async () => {
+    for (;;) {
+      const now = Date.now();
+      if (now < lastAt) lastAt = now; // the clock was set back: wait one gap from now, not until it catches up
+      const wait = lastAt + gapMs - now;
+      if (wait <= 0) {
+        lastAt = now;
+        return;
+      }
+      await sleep(wait);
+    }
+  };
+}
+
+/** Reads every page of a provider's paged child list (albums, books, issues, chapters) — Add and
+ * Refresh both only ever see what this returns, so a first-page-only read left the rest missing
+ * for good. `fetchPage` gets the page index and how many raw items were collected so far (the
+ * offset, for offset-based APIs). Only a first-page failure throws: a later one keeps what was
+ * already read, since Add and Refresh only ever add missing children and the next Refresh picks
+ * up the rest, whereas throwing would drop even the pages that did load. */
+async function collectPages<T>(maxPages: number, fetchPage: (page: number, collected: number) => Promise<{ items: T[]; done: boolean }>): Promise<T[]> {
+  const all: T[] = [];
+  for (let page = 0; page < maxPages; page++) {
+    let result: { items: T[]; done: boolean };
+    try {
+      result = await fetchPage(page, all.length);
+    } catch (err) {
+      if (page === 0) throw err;
+      break;
+    }
+    all.push(...result.items);
+    if (result.done || result.items.length === 0) break;
+  }
+  return all;
+}
+
+/** A provider timestamp as the calendar date in the broadcaster's own time zone. Sliced as a UTC
+ * string, a US evening broadcast (Sunday 9pm ET is Monday 01:00Z) lands on the next day, which
+ * breaks daily-show air-date matching. Falls back to the UTC date for a missing/unknown zone. */
+function dateInTimeZone(timestamp: Date, timeZone: string | null | undefined): string | null {
+  if (isNaN(timestamp.getTime())) return null;
+  if (timeZone) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(timestamp);
+      const part = (type: string) => parts.find((p) => p.type === type)?.value;
+      return `${part("year")}-${part("month")}-${part("day")}`;
+    } catch {
+      // RangeError for a zone name Intl doesn't know — use the UTC date below
+    }
+  }
+  return timestamp.toISOString().slice(0, 10);
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +432,7 @@ async function searchMoviesTrakt(query: string): Promise<MetadataSearchResult[]>
   const clientId = requireSetting("traktClientId", "Trakt Client ID");
   const url = new URL("https://api.trakt.tv/search/movie");
   url.searchParams.set("query", query);
+  url.searchParams.set("extended", "full"); // the minimal default response has no overview
 
   const res = await fetch(url.toString(), { headers: traktHeaders(clientId) });
   if (!res.ok) throw new Error(`Trakt movie search failed: HTTP ${res.status}`);
@@ -564,6 +664,7 @@ async function searchSeriesTrakt(query: string): Promise<MetadataSearchResult[]>
   const clientId = requireSetting("traktClientId", "Trakt Client ID");
   const url = new URL("https://api.trakt.tv/search/show");
   url.searchParams.set("query", query);
+  url.searchParams.set("extended", "full"); // the minimal default response has no overview
 
   const res = await fetch(url.toString(), { headers: traktHeaders(clientId) });
   if (!res.ok) throw new Error(`Trakt series search failed: HTTP ${res.status}`);
@@ -581,11 +682,21 @@ async function searchSeriesTrakt(query: string): Promise<MetadataSearchResult[]>
 async function fetchSeriesEpisodesTrakt(traktId: string): Promise<MetadataEpisode[]> {
   const clientId = requireSetting("traktClientId", "Trakt Client ID");
   const url = new URL(`https://api.trakt.tv/shows/${traktId}/seasons`);
-  url.searchParams.set("extended", "episodes");
+  // Plain `extended=episodes` returns bare episode stubs with no first_aired/overview — every
+  // Trakt-sourced episode then had a null air date, so daily shows were never searched and the
+  // "future" monitor option monitored the whole back catalogue.
+  url.searchParams.set("extended", "full,episodes");
 
-  const res = await fetch(url.toString(), { headers: traktHeaders(clientId) });
+  // first_aired is a UTC timestamp; the show's airs.timezone turns it into the local air date.
+  // Best-effort: without it the date falls back to UTC rather than failing the episode list.
+  const [res, showRes] = await Promise.all([
+    fetch(url.toString(), { headers: traktHeaders(clientId) }),
+    fetch(`https://api.trakt.tv/shows/${traktId}?extended=full`, { headers: traktHeaders(clientId) }).catch(() => null),
+  ]);
   if (!res.ok) throw new Error(`Trakt season lookup failed: HTTP ${res.status}`);
   const body: any = await res.json();
+  const show: any = showRes?.ok ? await showRes.json().catch(() => null) : null;
+  const timeZone: string | null = show?.airs?.timezone ?? null;
 
   const episodes: MetadataEpisode[] = [];
   for (const season of body ?? []) {
@@ -595,7 +706,7 @@ async function fetchSeriesEpisodesTrakt(traktId: string): Promise<MetadataEpisod
         seasonNumber: season.number,
         episodeNumber: ep.number,
         title: ep.title || null,
-        airDate: ep.first_aired ? ep.first_aired.slice(0, 10) : null,
+        airDate: ep.first_aired ? dateInTimeZone(new Date(ep.first_aired), timeZone) : null,
         overview: ep.overview || null,
       });
     }
@@ -641,30 +752,103 @@ async function searchSeriesAnilist(query: string): Promise<MetadataSearchResult[
   }));
 }
 
+/** AniList's airingAt is an absolute timestamp; anime air dates are Japanese broadcast dates. */
+const ANILIST_BROADCAST_TIME_ZONE = "Asia/Tokyo";
+/** AniList's per-page maximum. */
+const ANILIST_PAGE_SIZE = 50;
+
+async function anilistEpisodeQuery(query: string, variables: Record<string, number>): Promise<any> {
+  const res = await fetch("https://graphql.anilist.co", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, variables }),
+  });
+  if (!res.ok) throw new Error(`AniList episode lookup failed: HTTP ${res.status}`);
+  return res.json();
+}
+
 /**
  * AniList's public API doesn't expose per-episode titles/air dates through a simple query (that
  * needs the airing-schedule API), so this generates placeholder numbered episodes from the total
  * count — enough to track monitoring/download status per episode, titles just won't be filled in.
+ *
+ * A show still airing with no announced total (One Piece, Detective Conan) has `episodes: null`;
+ * its `nextAiringEpisode` (or, between cours, its latest aired schedule entry) supplies the count
+ * instead. Without it such a show never got any episode rows at all.
+ *
+ * Air dates come from AniList's airing schedule: every aired entry it has (newest first, so a cap
+ * only drops the oldest) and the next ones to air. On a long runner that schedule reaches back only
+ * a few seasons (One Piece's starts at episode 1123), so the older episodes stay undated — followed
+ * by dated, already-aired ones, which is what marks them as aired rather than upcoming (see
+ * upcomingEpisodes).
  */
 async function fetchSeriesEpisodesAnilist(anilistId: string): Promise<MetadataEpisode[]> {
-  const gql = `query ($id: Int) { Media(id: $id, type: ANIME) { episodes } }`;
-  const res = await fetch("https://graphql.anilist.co", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query: gql, variables: { id: Number(anilistId) } }),
+  const variables = { id: Number(anilistId) };
+  const airedPage = `pageInfo { hasNextPage } airingSchedules(mediaId: $id, notYetAired: false, sort: EPISODE_DESC) { episode airingAt }`;
+  let media: any = null;
+  let upcoming: any[] = [];
+  const aired = await collectPages<any>(10, async (page) => {
+    if (page === 0) {
+      const body = await anilistEpisodeQuery(
+        `query ($id: Int) {
+          Media(id: $id, type: ANIME) { episodes status endDate { year month day } nextAiringEpisode { episode airingAt } }
+          aired: Page(perPage: ${ANILIST_PAGE_SIZE}) { ${airedPage} }
+          upcoming: Page(perPage: ${ANILIST_PAGE_SIZE}) { airingSchedules(mediaId: $id, notYetAired: true, sort: EPISODE) { episode airingAt } }
+        }`,
+        variables
+      );
+      media = body?.data?.Media ?? null;
+      upcoming = body?.data?.upcoming?.airingSchedules ?? [];
+      return { items: body?.data?.aired?.airingSchedules ?? [], done: !body?.data?.aired?.pageInfo?.hasNextPage };
+    }
+    const body = await anilistEpisodeQuery(
+      `query ($id: Int, $page: Int) { aired: Page(page: $page, perPage: ${ANILIST_PAGE_SIZE}) { ${airedPage} } }`,
+      { ...variables, page: page + 1 }
+    );
+    return { items: body?.data?.aired?.airingSchedules ?? [], done: !body?.data?.aired?.pageInfo?.hasNextPage };
   });
-  if (!res.ok) throw new Error(`AniList episode lookup failed: HTTP ${res.status}`);
-  const body: any = await res.json();
 
-  const count: number | null = body?.data?.Media?.episodes ?? null;
+  const next = media?.nextAiringEpisode;
+  const nextNumber = typeof next?.episode === "number" && next.episode > 0 ? next.episode : 0;
+  const airDates = new Map<number, string>();
+  for (const entry of [...aired, ...upcoming, next]) {
+    if (typeof entry?.episode !== "number" || typeof entry.airingAt !== "number") continue;
+    const date = dateInTimeZone(new Date(entry.airingAt * 1000), ANILIST_BROADCAST_TIME_ZONE);
+    if (date) airDates.set(entry.episode, date);
+  }
+  const lastAired = Math.max(0, ...aired.map((entry) => (typeof entry?.episode === "number" ? entry.episode : 0)));
+  const count = Math.max(Number(media?.episodes) || 0, nextNumber, lastAired);
   if (!count) return [];
-  return Array.from({ length: count }, (_, i) => ({
+  const episodes: MetadataEpisode[] = Array.from({ length: count }, (_, i) => ({
     seasonNumber: 1,
     episodeNumber: i + 1,
     title: null,
-    airDate: null,
+    airDate: airDates.get(i + 1) ?? null,
     overview: null,
   }));
+  // A finished show has aired every episode, but its schedule is often partial or missing (older
+  // shows have none), leaving the tail undated and so counted as upcoming. Dating the final episode
+  // marks every undated one before it as aired (see upcomingEpisodes). Lacking an end date, the
+  // latest aired schedule entry is still a day the finale can't have preceded.
+  const final = episodes[episodes.length - 1];
+  if ((media?.status === "FINISHED" || media?.status === "CANCELLED") && !final.airDate) {
+    const latestAired = aired
+      .map((entry) => (typeof entry?.episode === "number" ? airDates.get(entry.episode) : undefined))
+      .filter((date): date is string => !!date)
+      .sort()
+      .pop();
+    final.airDate = anilistFuzzyDate(media.endDate) ?? latestAired ?? "1970-01-01";
+  }
+  return episodes;
+}
+
+/** An AniList FuzzyDate as YYYY-MM-DD, a missing month or day taken as the first: the earliest day
+ * it can mean. Null without a year. */
+function anilistFuzzyDate(date: { year?: unknown; month?: unknown; day?: unknown } | null | undefined): string | null {
+  const year = Number(date?.year);
+  if (!Number.isInteger(year) || year <= 0) return null;
+  const part = (value: unknown) => String(Number.isInteger(Number(value)) && Number(value) > 0 ? Number(value) : 1).padStart(2, "0");
+  return `${String(year).padStart(4, "0")}-${part(date?.month)}-${part(date?.day)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -701,18 +885,28 @@ function configuredAlbumTypes(): string[] {
   return types.length > 0 ? types : ["album"];
 }
 
+/** MusicBrainz allows about one request per second per client and answers faster paging with 503s. */
+const MUSICBRAINZ_PAGE_GAP_MS = 1100;
+
 async function fetchArtistAlbumsMusicbrainz(mbid: string): Promise<MetadataSubItem[]> {
-  const url = new URL("https://musicbrainz.org/ws/2/release-group");
-  url.searchParams.set("artist", mbid);
-  url.searchParams.set("fmt", "json");
-  url.searchParams.set("limit", "100");
-  url.searchParams.set("type", configuredAlbumTypes().join("|"));
+  const types = configuredAlbumTypes().join("|");
+  const groups = await collectPages<any>(20, async (page, collected) => {
+    if (page > 0) await sleep(MUSICBRAINZ_PAGE_GAP_MS);
+    const url = new URL("https://musicbrainz.org/ws/2/release-group");
+    url.searchParams.set("artist", mbid);
+    url.searchParams.set("fmt", "json");
+    url.searchParams.set("limit", "100");
+    url.searchParams.set("offset", String(collected));
+    url.searchParams.set("type", types);
 
-  const res = await fetch(url.toString(), { headers: { "User-Agent": MUSICBRAINZ_USER_AGENT } });
-  if (!res.ok) throw new Error(`MusicBrainz album lookup failed: HTTP ${res.status}`);
-  const body: any = await res.json();
+    const res = await fetch(url.toString(), { headers: { "User-Agent": MUSICBRAINZ_USER_AGENT } });
+    if (!res.ok) throw new Error(`MusicBrainz album lookup failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+    const items: any[] = body["release-groups"] ?? [];
+    return { items, done: collected + items.length >= (Number(body["release-group-count"]) || 0) };
+  });
 
-  return (body["release-groups"] ?? []).map((rg: any) => ({
+  return groups.map((rg: any) => ({
     title: rg.title,
     releaseDate: rg["first-release-date"] || null,
     externalId: rg.id,
@@ -794,11 +988,14 @@ async function searchArtistsDeezer(query: string): Promise<MetadataSearchResult[
 }
 
 async function fetchArtistAlbumsDeezer(deezerArtistId: string): Promise<MetadataSubItem[]> {
-  const res = await fetch(`https://api.deezer.com/artist/${deezerArtistId}/albums?limit=100`);
-  if (!res.ok) throw new Error(`Deezer album lookup failed: HTTP ${res.status}`);
-  const body: any = await res.json();
+  const albums = await collectPages<any>(20, async (_page, collected) => {
+    const res = await fetch(`https://api.deezer.com/artist/${deezerArtistId}/albums?limit=100&index=${collected}`);
+    if (!res.ok) throw new Error(`Deezer album lookup failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+    return { items: body.data ?? [], done: !body.next };
+  });
 
-  return (body.data ?? []).map((al: any) => ({
+  return albums.map((al: any) => ({
     title: al.title,
     releaseDate: al.release_date || null,
     externalId: String(al.id),
@@ -862,20 +1059,30 @@ async function searchArtistsDiscogs(query: string): Promise<MetadataSearchResult
   }));
 }
 
+/** Discogs allows 60 authenticated requests per rolling minute. Unpaced, one large discography
+ * (Pink Floyd is 37 pages) followed by the next artist on Refresh went past it, and the 429s
+ * silently truncated the same artists on every Refresh. */
+const discogsReleasePageSlot = requestSpacer(1100);
+
 async function fetchArtistAlbumsDiscogs(discogsArtistId: string): Promise<MetadataSubItem[]> {
   const token = requireSetting("discogsToken", "Discogs personal access token");
-  const url = new URL(`https://api.discogs.com/artists/${discogsArtistId}/releases`);
-  url.searchParams.set("token", token);
-  url.searchParams.set("per_page", "100");
-  url.searchParams.set("sort", "year");
+  const releases = await collectPages<any>(50, async (page) => {
+    await discogsReleasePageSlot();
+    const url = new URL(`https://api.discogs.com/artists/${discogsArtistId}/releases`);
+    url.searchParams.set("token", token);
+    url.searchParams.set("per_page", "100");
+    url.searchParams.set("page", String(page + 1));
+    url.searchParams.set("sort", "year");
 
-  const res = await fetch(url.toString(), { headers: { "User-Agent": DISCOGS_USER_AGENT } });
-  if (!res.ok) throw new Error(`Discogs release lookup failed: HTTP ${res.status}`);
-  const body: any = await res.json();
+    const res = await fetch(url.toString(), { headers: { "User-Agent": DISCOGS_USER_AGENT } });
+    if (!res.ok) throw new Error(`Discogs release lookup failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+    return { items: body.releases ?? [], done: page + 1 >= (Number(body.pagination?.pages) || 0) };
+  });
 
   const seen = new Set<string>();
   const results: MetadataSubItem[] = [];
-  for (const r of body.releases ?? []) {
+  for (const r of releases) {
     if (r.role && r.role !== "Main") continue; // skip appearances/remixes credited to this artist
     if (seen.has(r.title)) continue;
     seen.add(r.title);
@@ -957,15 +1164,20 @@ async function searchAuthorsOpenlibrary(query: string): Promise<MetadataSearchRe
 }
 
 async function fetchAuthorBooksOpenlibrary(openLibraryKey: string): Promise<MetadataSubItem[]> {
-  const url = `https://openlibrary.org/authors/${openLibraryKey}/works.json`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Open Library works lookup failed: HTTP ${res.status}`);
-  const body: any = await res.json();
+  // Without an explicit limit this endpoint returns only 50 works (of 600+ for a prolific author).
+  const works = await collectPages<any>(10, async (_page, collected) => {
+    const url = `https://openlibrary.org/authors/${openLibraryKey}/works.json?limit=1000&offset=${collected}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Open Library works lookup failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+    const items: any[] = body.entries ?? [];
+    return { items, done: collected + items.length >= (Number(body.size) || 0) };
+  });
 
   // A handful of Open Library "work" entries carry no title at all (data-quality gaps in their
   // catalog, not a query issue on our end) — sub_items.title is NOT NULL, so skip those rather
   // than let one bad entry fail the whole author's book-list insert transaction.
-  return (body.entries ?? [])
+  return works
     .filter((w: any) => w.title)
     .map((w: any) => ({
       title: w.title,
@@ -1003,19 +1215,32 @@ async function searchAuthorsGoogleBooks(query: string): Promise<MetadataSearchRe
 
 async function fetchAuthorBooksGoogleBooks(authorName: string): Promise<MetadataSubItem[]> {
   const key = getSetting("googleBooksApiKey");
-  const url = new URL("https://www.googleapis.com/books/v1/volumes");
-  url.searchParams.set("q", `inauthor:"${authorName}"`);
-  url.searchParams.set("maxResults", "40");
-  if (key) url.searchParams.set("key", key);
+  // 40 is the API's per-request maximum; its totalItems is only an estimate, so a short page ends it.
+  const volumes = await collectPages<any>(10, async (_page, collected) => {
+    const url = new URL("https://www.googleapis.com/books/v1/volumes");
+    url.searchParams.set("q", `inauthor:"${authorName}"`);
+    url.searchParams.set("maxResults", "40");
+    url.searchParams.set("startIndex", String(collected));
+    if (key) url.searchParams.set("key", key);
 
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`Google Books works lookup failed: HTTP ${res.status}`);
-  const body: any = await res.json();
+    const res = await fetch(url.toString());
+    if (!res.ok) throw new Error(`Google Books works lookup failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+    const items: any[] = body.items ?? [];
+    return { items, done: items.length < 40 };
+  });
 
-  return (body.items ?? []).map((item: any) => ({
-    title: item.volumeInfo?.title ?? "Untitled",
-    releaseDate: item.volumeInfo?.publishedDate || null,
-  }));
+  // Google Books lists every edition as its own volume, which multiplies once several pages are
+  // read — one child per title, the same key Refresh uses to spot a book it already has.
+  const seen = new Set<string>();
+  const books: MetadataSubItem[] = [];
+  for (const item of volumes) {
+    const title = item.volumeInfo?.title ?? "Untitled";
+    if (seen.has(title)) continue;
+    seen.add(title);
+    books.push({ title, releaseDate: item.volumeInfo?.publishedDate || null });
+  }
+  return books;
 }
 
 /** Apple's iTunes Search API — public, keyless, official. Searches ebooks by title/keyword like
@@ -1155,10 +1380,16 @@ async function searchAuthorsGoodreads(query: string): Promise<MetadataSearchResu
 }
 
 async function fetchAuthorBooksGoodreads(authorId: string): Promise<MetadataSubItem[]> {
-  const res = await fetch(`https://www.goodreads.com/author/list/${authorId}`, { headers: { "User-Agent": GOODREADS_USER_AGENT } });
-  if (!res.ok) throw new Error(`Goodreads author book list failed: HTTP ${res.status}`);
-  const $ = cheerio.load(await res.text());
-  return parseGoodreadsBookRows($).map((row) => ({
+  // The list is paged (30 rows by default); follows the page's own "next" link.
+  const rows = await collectPages<ReturnType<typeof parseGoodreadsBookRows>[number]>(10, async (page) => {
+    const res = await fetch(`https://www.goodreads.com/author/list/${authorId}?page=${page + 1}&per_page=100`, {
+      headers: { "User-Agent": GOODREADS_USER_AGENT },
+    });
+    if (!res.ok) throw new Error(`Goodreads author book list failed: HTTP ${res.status}`);
+    const $ = cheerio.load(await res.text());
+    return { items: parseGoodreadsBookRows($), done: $("a.next_page").length === 0 };
+  });
+  return rows.map((row) => ({
     title: row.title,
     releaseDate: row.year ? `${row.year}-01-01` : null,
   }));
@@ -1297,21 +1528,32 @@ async function searchComicsComicVine(query: string): Promise<MetadataSearchResul
   }));
 }
 
+/** Comic Vine blocks clients that request too fast (velocity detection, on top of 200 requests per
+ * resource per hour); Mylar spaces its calls 2 seconds apart for the same reason. */
+const comicvineIssuePageSlot = requestSpacer(2000);
+
 async function fetchComicIssuesComicVine(volumeId: string): Promise<MetadataSubItem[]> {
   const key = requireSetting("comicVineApiKey", "Comic Vine API key");
-  const url = new URL("https://comicvine.gamespot.com/api/issues/");
-  url.searchParams.set("api_key", key);
-  url.searchParams.set("format", "json");
-  url.searchParams.set("filter", `volume:${volumeId}`);
-  url.searchParams.set("field_list", "id,issue_number,name,cover_date");
-  url.searchParams.set("limit", "100");
-  url.searchParams.set("sort", "issue_number:asc");
+  // 100 is the API's per-request maximum; long runs (Detective Comics) have over 1000 issues.
+  const issues = await collectPages<any>(50, async (_page, collected) => {
+    await comicvineIssuePageSlot();
+    const url = new URL("https://comicvine.gamespot.com/api/issues/");
+    url.searchParams.set("api_key", key);
+    url.searchParams.set("format", "json");
+    url.searchParams.set("filter", `volume:${volumeId}`);
+    url.searchParams.set("field_list", "id,issue_number,name,cover_date");
+    url.searchParams.set("limit", "100");
+    url.searchParams.set("offset", String(collected));
+    url.searchParams.set("sort", "issue_number:asc");
 
-  const res = await fetch(url.toString(), { headers: { "User-Agent": COMICVINE_USER_AGENT } });
-  if (!res.ok) throw new Error(`Comic Vine issue lookup failed: HTTP ${res.status}`);
-  const body: any = await res.json();
+    const res = await fetch(url.toString(), { headers: { "User-Agent": COMICVINE_USER_AGENT } });
+    if (!res.ok) throw new Error(`Comic Vine issue lookup failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+    const items: any[] = body.results ?? [];
+    return { items, done: collected + items.length >= (Number(body.number_of_total_results) || 0) };
+  });
 
-  return (body.results ?? []).map((issue: any) => ({
+  return issues.map((issue: any) => ({
     title: issue.name ? `#${issue.issue_number} - ${issue.name}` : `#${issue.issue_number}`,
     releaseDate: issue.cover_date || null,
     externalId: String(issue.id),
@@ -1498,6 +1740,262 @@ function screenscraperParams(creds: ReturnType<typeof screenscraperCreds>): URLS
   return params;
 }
 
+/** ScreenScraper echoes every credential a request carried (the dev password and the admin's own
+ * account password included) into each media `url` it returns, and its media endpoints refuse any
+ * request without the dev credentials. Stored as-is, such a URL handed the admin's ScreenScraper
+ * password to every account that can see the ROM library (and into exported NFOs). So a media URL
+ * only ever leaves this module credential-free behind this prefix — the same pattern as
+ * mediaServer.ts's MEDIA_SERVER_ARTWORK_PREFIX — to be served through the token-gated
+ * local-artwork proxy, which re-adds the credentials server-side (fetchScreenscraperArtwork). */
+export const SCREENSCRAPER_ARTWORK_PREFIX = "screenscraper:";
+const SCREENSCRAPER_CREDENTIAL_PARAMS = new Set(["devid", "devpassword", "ssid", "sspassword"]);
+
+export function isScreenscraperArtworkRef(value: string | null | undefined): value is string {
+  return !!value && value.startsWith(SCREENSCRAPER_ARTWORK_PREFIX);
+}
+
+function parseScreenscraperUrl(value: string): URL | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  const host = url.hostname.toLowerCase();
+  return host === "screenscraper.fr" || host.endsWith(".screenscraper.fr") ? url : null;
+}
+
+/** A ScreenScraper URL (or an existing reference) as a credential-free reference; null for anything
+ * that isn't a ScreenScraper URL. */
+function screenscraperArtworkRef(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const url = parseScreenscraperUrl(isScreenscraperArtworkRef(value) ? value.slice(SCREENSCRAPER_ARTWORK_PREFIX.length) : value);
+  if (!url) return null;
+  for (const key of [...url.searchParams.keys()]) {
+    if (SCREENSCRAPER_CREDENTIAL_PARAMS.has(key.toLowerCase())) url.searchParams.delete(key);
+  }
+  url.protocol = "https:";
+  return `${SCREENSCRAPER_ARTWORK_PREFIX}${url.toString()}`;
+}
+
+/** The poster_url/local_*_path/local_*_token values that serve a ScreenScraper image through the
+ * local-artwork proxy — for any code storing a provider's artwork value into media_items. Null when
+ * `value` isn't ScreenScraper artwork (store it as-is). */
+export function proxyScreenscraperArtwork(value: string | null | undefined): { url: string; localPath: string; token: string } | null {
+  const ref = screenscraperArtworkRef(value);
+  if (!ref) return null;
+  const token = crypto.randomBytes(20).toString("hex");
+  return { url: `/api/media/local-artwork/${token}`, localPath: ref, token };
+}
+
+/** ScreenScraper serves an account only so many simultaneous requests (its maxthreads, 1 for most
+ * members) and refuses the rest with HTTP 429/430, so a ROM grid asking for dozens of posters at
+ * once came back mostly refused. Every request to it runs one at a time, with its body read before
+ * the next one starts. API calls (a search, a game lookup) always go ahead of waiting image
+ * downloads: someone is waiting on them, while the first view of an uncached ROM library can queue
+ * hundreds of posters, and a search stuck behind those outlasted the reverse proxy's timeout. */
+type ScreenscraperLane = "api" | "image";
+const screenscraperLanes: Record<ScreenscraperLane, (() => Promise<void>)[]> = { api: [], image: [] };
+let screenscraperBusy = false;
+
+function screenscraperRequest<T>(lane: ScreenscraperLane, task: () => Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    screenscraperLanes[lane].push(() => Promise.resolve().then(task).then(resolve, reject));
+    void runScreenscraperQueue();
+  });
+}
+
+async function runScreenscraperQueue(): Promise<void> {
+  if (screenscraperBusy) return;
+  screenscraperBusy = true;
+  try {
+    let next: (() => Promise<void>) | undefined;
+    while ((next = screenscraperLanes.api.shift() ?? screenscraperLanes.image.shift())) await next();
+  } finally {
+    screenscraperBusy = false;
+  }
+}
+
+/** A queued ScreenScraper API call. The timeout matters more than usual here: one hung request
+ * would hold up every later ScreenScraper request behind it. */
+function screenscraperJson(url: string, label: string): Promise<any> {
+  return screenscraperRequest("api", async () => {
+    const res = await fetchWithTimeout(url, {}, 30_000);
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => undefined);
+      throw new Error(`${label} failed: HTTP ${res.status}`);
+    }
+    return res.json();
+  });
+}
+
+/** Raster types only, each with the extension its cached copy is stored under: the proxy serves
+ * them from AoNarr's own origin, where an SVG could run script. */
+const SCREENSCRAPER_IMAGE_EXTENSIONS: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
+const screenscraperArtworkLoads = new Map<string, Promise<{ data: Buffer; type: string } | null>>();
+/** Past this many image downloads waiting their turn, another is refused rather than queued (and
+ * not remembered as failed), so the browser asks for it again on a later view. */
+const SCREENSCRAPER_IMAGE_BACKLOG = 32;
+/** A failed image download (keyed like the disk cache) isn't tried again for this long, so each
+ * view of a grid showing it doesn't queue it again — with ScreenScraper down, for its full timeout. */
+const SCREENSCRAPER_IMAGE_RETRY_MS = 5 * 60_000;
+const screenscraperArtworkFailures = new Map<string, number>();
+
+function screenscraperArtworkCachePath(key: string, ext: string): string {
+  return path.join(config.configDir, "cache", "screenscraper", `${key}.${ext}`);
+}
+
+/** One ScreenScraper image for the local-artwork proxy. Each image is downloaded once and then
+ * served from a disk cache (keyed by its credential-free reference), since every download counts
+ * against the admin's daily ScreenScraper quota. The configured credentials are added only for the
+ * download, and only ScreenScraper's own media endpoints are ever sent them: a reference can come
+ * from a stored poster_url, and the credentials must never reach any other URL. Null when the
+ * reference isn't a media URL, or the image isn't cached and ScreenScraper isn't configured, doesn't
+ * answer with an image, failed to within the last few minutes, or has too many downloads waiting. */
+export async function fetchScreenscraperArtwork(ref: string): Promise<Response | null> {
+  if (!isScreenscraperArtworkRef(ref)) return null;
+  const url = parseScreenscraperUrl(ref.slice(SCREENSCRAPER_ARTWORK_PREFIX.length));
+  if (!url || !/^\/api2\/media\w*\.php$/i.test(url.pathname)) return null;
+  for (const key of [...url.searchParams.keys()]) {
+    if (SCREENSCRAPER_CREDENTIAL_PARAMS.has(key.toLowerCase())) url.searchParams.delete(key);
+  }
+  url.protocol = "https:";
+  // Re-serialized in a fixed order, so the same image stored with and without credentials (which
+  // re-encodes the query when they're stripped) shares one cache entry.
+  url.searchParams.sort();
+  const key = crypto.createHash("sha256").update(url.toString()).digest("hex");
+  let load = screenscraperArtworkLoads.get(key);
+  if (!load) {
+    load = loadScreenscraperArtwork(url, key).finally(() => screenscraperArtworkLoads.delete(key));
+    screenscraperArtworkLoads.set(key, load);
+  }
+  const image = await load;
+  return image ? new Response(new Uint8Array(image.data), { headers: { "content-type": image.type } }) : null;
+}
+
+async function loadScreenscraperArtwork(url: URL, key: string): Promise<{ data: Buffer; type: string } | null> {
+  for (const [type, ext] of Object.entries(SCREENSCRAPER_IMAGE_EXTENSIONS)) {
+    try {
+      return { data: await fs.promises.readFile(screenscraperArtworkCachePath(key, ext)), type };
+    } catch {
+      // not cached as this type
+    }
+  }
+  const devid = getSetting("screenscraperDevId");
+  const devpassword = getSetting("screenscraperDevPassword");
+  if (!devid || !devpassword) return null;
+  const failedAt = screenscraperArtworkFailures.get(key);
+  if (failedAt !== undefined) {
+    if (Date.now() - failedAt < SCREENSCRAPER_IMAGE_RETRY_MS) return null;
+    screenscraperArtworkFailures.delete(key);
+  }
+  if (screenscraperLanes.image.length >= SCREENSCRAPER_IMAGE_BACKLOG) return null;
+  url.searchParams.set("devid", devid);
+  url.searchParams.set("devpassword", devpassword);
+  const ssid = getSetting("screenscraperUserId");
+  const sspassword = getSetting("screenscraperUserPassword");
+  if (ssid) url.searchParams.set("ssid", ssid);
+  if (sspassword) url.searchParams.set("sspassword", sspassword);
+  if (!url.searchParams.has("softname")) url.searchParams.set("softname", "AoNarr");
+
+  return screenscraperRequest("image", async () => {
+    let image: { data: Buffer; type: string; ext: string } | null = null;
+    try {
+      const res = await fetch(url.toString(), { signal: AbortSignal.timeout(15_000) });
+      const type = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+      const ext = SCREENSCRAPER_IMAGE_EXTENSIONS[type];
+      if (res.ok && ext) image = { data: Buffer.from(await res.arrayBuffer()), type, ext };
+      else await res.body?.cancel().catch(() => undefined);
+    } catch {
+      // a timeout or network error is a failed download like any other
+    }
+    if (!image) {
+      screenscraperArtworkFailures.set(key, Date.now());
+      return null;
+    }
+    const file = screenscraperArtworkCachePath(key, image.ext);
+    try {
+      await fs.promises.mkdir(path.dirname(file), { recursive: true });
+      await fs.promises.writeFile(`${file}.tmp`, image.data);
+      await fs.promises.rename(`${file}.tmp`, file);
+    } catch {
+      // an unwritable config dir only costs the cache; this image is still served
+    }
+    return { data: image.data, type: image.type };
+  });
+}
+
+const SCREENSCRAPER_CREDENTIAL_LIKE = "%screenscraper.fr%password=%";
+const SCREENSCRAPER_REF_LIKE = `${SCREENSCRAPER_ARTWORK_PREFIX}%`;
+
+function redactScreenscraperUrls(value: unknown): unknown {
+  if (typeof value === "string") return parseScreenscraperUrl(value) ? screenscraperArtworkRef(value) : value;
+  if (Array.isArray(value)) return value.map(redactScreenscraperUrls);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redactScreenscraperUrls(v)]));
+  }
+  return value;
+}
+
+/** Startup migration: moves every stored ScreenScraper image behind the local-artwork proxy — URLs
+ * saved with the credentials in them, and bare references a caller stored as-is. Also scrubs the
+ * provider results staged in extra_metadata, and clears System-group logos and request posters that
+ * came from ScreenScraper (neither has a proxy route). Idempotent: a converted row no longer matches
+ * the LIKE filters. Returns the number of rows changed. */
+export async function migrateScreenscraperArtwork(): Promise<number> {
+  const rows = (await db
+    .prepare(
+      `SELECT id, poster_url, backdrop_url, extra_metadata FROM media_items
+       WHERE poster_url LIKE ? OR poster_url LIKE ? OR backdrop_url LIKE ? OR backdrop_url LIKE ? OR extra_metadata LIKE ?`
+    )
+    .all(SCREENSCRAPER_CREDENTIAL_LIKE, SCREENSCRAPER_REF_LIKE, SCREENSCRAPER_CREDENTIAL_LIKE, SCREENSCRAPER_REF_LIKE, SCREENSCRAPER_CREDENTIAL_LIKE)) as {
+    id: number;
+    poster_url: string | null;
+    backdrop_url: string | null;
+    extra_metadata: string | null;
+  }[];
+
+  let changed = 0;
+  for (const row of rows) {
+    const sets: string[] = [];
+    const values: unknown[] = [];
+    const poster = proxyScreenscraperArtwork(row.poster_url);
+    if (poster) {
+      sets.push("poster_url = ?", "local_poster_path = ?", "local_poster_token = ?");
+      values.push(poster.url, poster.localPath, poster.token);
+    }
+    const backdrop = proxyScreenscraperArtwork(row.backdrop_url);
+    if (backdrop) {
+      sets.push("backdrop_url = ?", "local_backdrop_path = ?", "local_backdrop_token = ?");
+      values.push(backdrop.url, backdrop.localPath, backdrop.token);
+    }
+    if (row.extra_metadata?.includes("password=")) {
+      try {
+        const scrubbed = JSON.stringify(redactScreenscraperUrls(JSON.parse(row.extra_metadata)));
+        if (scrubbed !== row.extra_metadata) {
+          sets.push("extra_metadata = ?");
+          values.push(scrubbed);
+        }
+      } catch {
+        // not valid JSON — nothing this migration can safely rewrite
+      }
+    }
+    if (sets.length === 0) continue;
+    await db.prepare(`UPDATE media_items SET ${sets.join(", ")} WHERE id = ?`).run(...values, row.id);
+    changed++;
+  }
+
+  const logos = await db
+    .prepare("UPDATE library_groups SET logo_url = NULL WHERE logo_url LIKE ? OR logo_url LIKE ?")
+    .run(SCREENSCRAPER_CREDENTIAL_LIKE, SCREENSCRAPER_REF_LIKE);
+  // A request has no local-artwork token to proxy through, and approving one drops a ScreenScraper
+  // poster anyway (not an allowed request poster host).
+  const requestPosters = await db
+    .prepare("UPDATE requests SET poster_url = NULL WHERE poster_url LIKE ? OR poster_url LIKE ?")
+    .run(SCREENSCRAPER_CREDENTIAL_LIKE, SCREENSCRAPER_REF_LIKE);
+  return changed + logos.changes + requestPosters.changes;
+}
+
 /** Region/language fields on ScreenScraper come back as an array of {region/langue, text} — "wor"
  * (world) is the most game-agnostic pick, falling back to whatever's first. */
 function screenscraperLocalized(entries: any[] | undefined, keyField: "region" | "langue", preferred: string): string | null {
@@ -1510,9 +2008,7 @@ async function searchRomsScreenscraper(query: string): Promise<MetadataSearchRes
   url.search = screenscraperParams(screenscraperCreds()).toString();
   url.searchParams.set("recherche", query);
 
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`ScreenScraper search failed: HTTP ${res.status}`);
-  const body: any = await res.json();
+  const body: any = await screenscraperJson(url.toString(), "ScreenScraper search");
   const games: any[] = body?.response?.jeux ?? [];
 
   return games.map((g) => {
@@ -1522,7 +2018,7 @@ async function searchRomsScreenscraper(query: string): Promise<MetadataSearchRes
       title: screenscraperLocalized(g.noms, "region", "wor") ?? g.nom ?? "Unknown",
       year: dateStr ? Number(String(dateStr).slice(0, 4)) || null : null,
       overview: screenscraperLocalized(g.synopsis, "langue", "en"),
-      posterUrl: boxart,
+      posterUrl: screenscraperArtworkRef(boxart),
       externalIds: { screenscraper: String(g.id) },
     };
   });
@@ -1532,9 +2028,7 @@ async function fetchScreenscraperGame(id: string): Promise<any | null> {
   const url = new URL("https://api.screenscraper.fr/api2/jeuInfos.php");
   url.search = screenscraperParams(screenscraperCreds()).toString();
   url.searchParams.set("gameid", id);
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`ScreenScraper game lookup failed: HTTP ${res.status}`);
-  const body: any = await res.json();
+  const body: any = await screenscraperJson(url.toString(), "ScreenScraper game lookup");
   return body?.response?.jeu ?? null;
 }
 
@@ -1542,21 +2036,26 @@ async function fetchRomDetailsScreenscraper(id: string): Promise<RomDetails> {
   const g = await fetchScreenscraperGame(id);
   if (!g) return { overview: null, system: null, maker: null, systemLogoUrl: null };
   const system = g.systeme?.text ?? null;
-  const wheel = (g.medias ?? []).find((m: any) => m.type === "wheel" || m.type === "wheel-hd")?.url ?? null;
+  // The game's "wheel" media is not used for the System group's logo: it is this one game's title
+  // art, and it is only reachable with the ScreenScraper credentials, which a group logo (stored as
+  // a plain URL, with no proxy) would expose.
   return {
     overview: screenscraperLocalized(g.synopsis, "langue", "en"),
     system,
     maker: g.developpeur?.text ?? g.editeur?.text ?? null,
-    systemLogoUrl: wheel ?? (system ? await fetchIgdbPlatformLogo(system).catch(() => null) : null),
+    systemLogoUrl: system ? await fetchIgdbPlatformLogo(system).catch(() => null) : null,
   };
 }
 
 async function fetchArtworkScreenscraper(id: string): Promise<ArtworkOptions> {
   const g = await fetchScreenscraperGame(id);
   const medias: any[] = g?.medias ?? [];
-  const posters = medias.filter((m) => m.type === "box-2D" || m.type === "box-3D" || m.type === "box-texture").map((m) => m.url).filter(Boolean);
-  const backgrounds = medias.filter((m) => m.type === "fanart" || m.type === "ss" || m.type === "screenshot").map((m) => m.url).filter(Boolean);
-  return { posters, backgrounds, logos: [] };
+  const refs = (types: string[]) =>
+    medias
+      .filter((m) => types.includes(m.type))
+      .map((m) => screenscraperArtworkRef(m.url))
+      .filter((u): u is string => !!u);
+  return { posters: refs(["box-2D", "box-3D", "box-texture"]), backgrounds: refs(["fanart", "ss", "screenshot"]), logos: [] };
 }
 
 async function searchRomsTheGamesDb(query: string): Promise<MetadataSearchResult[]> {
@@ -1822,8 +2321,19 @@ async function searchPodcastsItunes(query: string): Promise<MetadataSearchResult
 /** Parses a podcast's own RSS feed for its episode list — each `<item>`'s `<enclosure url>` is
  * the direct, already-downloadable audio file URL, so unlike YouTube (an opaque video id that
  * yt-dlp resolves) this needs no download-client-specific resolution step at all: the http
- * download client (see downloadClient.ts's HttpDownloadAdapter) can fetch it directly. */
+ * download client (see downloadClient.ts's HttpDownloadAdapter) can fetch it directly. That URL
+ * is not a stable identity, though (tracking prefixes come and go, hosts migrate, ad re-insertion
+ * stamps the query), so each episode also carries its `<guid>` for recognizing it across such a
+ * change. */
 async function fetchPodcastEpisodesRss(feedUrl: string): Promise<MetadataSubItem[]> {
+  // Node's fetch() also answers data: URLs; a feed is only ever a web URL.
+  let protocol: string | null = null;
+  try {
+    protocol = new URL(feedUrl).protocol;
+  } catch {
+    // not a URL at all
+  }
+  if (protocol !== "http:" && protocol !== "https:") throw new Error("Podcast feed URL must be an http:// or https:// URL");
   const res = await fetch(feedUrl);
   if (!res.ok) throw new Error(`Podcast feed fetch failed: HTTP ${res.status}`);
   const xml = await res.text();
@@ -1837,10 +2347,14 @@ async function fetchPodcastEpisodesRss(feedUrl: string): Promise<MetadataSubItem
     if (!enclosureUrl) continue;
     const title = item.title?.[0] ?? "Untitled episode";
     const pubDate = item.pubDate?.[0] ? new Date(item.pubDate[0]) : null;
+    // xml2js yields a bare string for <guid>x</guid> but {_, $} once it has attributes (isPermaLink).
+    const rawGuid = item.guid?.[0];
+    const guid = String((typeof rawGuid === "object" ? rawGuid?._ : rawGuid) ?? "").trim();
     episodes.push({
       title,
       releaseDate: pubDate && !isNaN(pubDate.getTime()) ? pubDate.toISOString().slice(0, 10) : null,
       externalId: enclosureUrl,
+      ...(guid ? { guid } : {}),
     });
   }
   return episodes;
@@ -1969,18 +2483,27 @@ async function searchMangaMangadex(query: string): Promise<MetadataSearchResult[
  * chapter is routinely re-translated by multiple scanlation groups, keeping whichever the API
  * returns first under the requested `order[chapter]=asc` sort. */
 async function fetchMangaChaptersMangadex(mangaId: string): Promise<MetadataSubItem[]> {
-  const url = new URL(`https://api.mangadex.org/manga/${mangaId}/feed`);
-  url.searchParams.set("translatedLanguage[]", "en");
-  url.searchParams.set("order[chapter]", "asc");
-  url.searchParams.set("limit", "500");
+  // 500 is the feed's per-request maximum, and MangaDex rejects offset + limit past 10000.
+  const MANGADEX_PAGE = 500;
+  const MANGADEX_WINDOW = 10000;
+  const entries = await collectPages<any>(MANGADEX_WINDOW / MANGADEX_PAGE, async (_page, collected) => {
+    const url = new URL(`https://api.mangadex.org/manga/${mangaId}/feed`);
+    url.searchParams.set("translatedLanguage[]", "en");
+    url.searchParams.set("order[chapter]", "asc");
+    url.searchParams.set("limit", String(MANGADEX_PAGE));
+    url.searchParams.set("offset", String(collected));
 
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`MangaDex chapter lookup failed: HTTP ${res.status}`);
-  const body: any = await res.json();
+    const res = await fetch(url.toString());
+    if (!res.ok) throw new Error(`MangaDex chapter lookup failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+    const items: any[] = body.data ?? [];
+    const next = collected + items.length;
+    return { items, done: next >= (Number(body.total) || 0) || next + MANGADEX_PAGE > MANGADEX_WINDOW };
+  });
 
   const seenChapters = new Set<string>();
   const results: MetadataSubItem[] = [];
-  for (const c of body.data ?? []) {
+  for (const c of entries) {
     const num = c.attributes?.chapter;
     if (!num || seenChapters.has(num)) continue;
     seenChapters.add(num);
@@ -2174,6 +2697,25 @@ export async function fetchByExternalId(type: MediaType, provider: string, id: s
 
     case "trakt": {
       const clientId = requireSetting("traktClientId", "Trakt Client ID");
+      // Trakt's movie and show ids are separate numbering spaces: a movie's id looked up under
+      // /shows/ returns whatever unrelated show shares the number, and Refresh then overwrote the
+      // movie's overview/year with that show's.
+      if (type === "movie" || type === "ppv") {
+        const res = await fetch(`https://api.trakt.tv/movies/${encodeURIComponent(id)}?extended=full`, { headers: traktHeaders(clientId) });
+        if (!res.ok) throw new Error(res.status === 404 ? `No Trakt movie found for id "${id}"` : `Trakt lookup failed: HTTP ${res.status}`);
+        const m: any = await res.json();
+        if (!m) throw new Error(`No Trakt movie found for id "${id}"`);
+        return {
+          title: m.title,
+          year: m.year ?? null,
+          overview: m.overview || null,
+          posterUrl: null, // Trakt hosts no images
+          externalIds: { trakt: String(m.ids.trakt), ...(m.ids.imdb ? { imdb: m.ids.imdb } : {}) },
+          releaseDate: m.released || null,
+          runtimeMinutes: typeof m.runtime === "number" && m.runtime > 0 ? m.runtime : null,
+          contentRating: normalizeContentRating(m.certification),
+        };
+      }
       const res = await fetch(`https://api.trakt.tv/shows/${encodeURIComponent(id)}?extended=full`, { headers: traktHeaders(clientId) });
       if (!res.ok) throw new Error(res.status === 404 ? `No Trakt show found for id "${id}"` : `Trakt lookup failed: HTTP ${res.status}`);
       const s: any = await res.json();

@@ -23,7 +23,7 @@ rootFoldersRouter.get(
         const folder = rootFolderFromRow(row);
         try {
           const stat = fs.statfsSync(folder.path);
-          const freeBytes = stat.bfree * stat.bsize;
+          const freeBytes = stat.bavail * stat.bsize;
           const totalBytes = stat.blocks * stat.bsize;
           // Unrounded — rootFolderSelect.ts's isRootFolderOverQuota() compares this same percentage
           // against quotaPercent without rounding either, so the "over quota" badge here has to
@@ -50,6 +50,20 @@ rootFoldersRouter.post(
   })
 );
 
+/** The largest value a Postgres INTEGER column holds. */
+const MAX_INTEGER_COLUMN = 2_147_483_647;
+
+/** A nullable limit from the request body: null turns it off; anything else must be a number from
+ * 0 up to `max`, stored rounded since both columns are integers and Postgres rejects a fraction. */
+function optionalWholeNumber(value: unknown, field: string, max: number): number | null {
+  if (value === null) return null;
+  const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
+  if (!Number.isFinite(n) || n < 0 || n > max) {
+    throw new HttpError(400, `${field} must be a number from 0 to ${max}, or null to turn it off`);
+  }
+  return Math.round(n);
+}
+
 rootFoldersRouter.patch(
   "/:id",
   asyncHandler(async (req, res) => {
@@ -62,7 +76,7 @@ rootFoldersRouter.patch(
     }
     if (b.quotaPercent !== undefined) {
       sets.push("quota_percent = ?");
-      values.push(b.quotaPercent === null ? null : Number(b.quotaPercent));
+      values.push(optionalWholeNumber(b.quotaPercent, "quotaPercent", 100));
     }
     if (b.pauseGrabsAtQuota !== undefined) {
       sets.push("pause_grabs_at_quota = ?");
@@ -70,7 +84,7 @@ rootFoldersRouter.patch(
     }
     if (b.minFreeSpaceGb !== undefined) {
       sets.push("min_free_space_gb = ?");
-      values.push(b.minFreeSpaceGb === null ? null : Number(b.minFreeSpaceGb));
+      values.push(optionalWholeNumber(b.minFreeSpaceGb, "minFreeSpaceGb", MAX_INTEGER_COLUMN));
     }
     if (sets.length > 0) {
       values.push(req.params.id);

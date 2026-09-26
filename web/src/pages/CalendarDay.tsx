@@ -27,10 +27,23 @@ export default function CalendarDay() {
   const navigate = useNavigate();
   const mediaTypes = useMediaTypes();
   const [entries, setEntries] = useState<CalendarEntry[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     setEntries(null);
-    api.get<CalendarEntry[]>(`/wanted/calendar?start=${date}&end=${date}`).then(setEntries);
+    setLoadError(null);
+    api.get<CalendarEntry[]>(`/wanted/calendar?start=${date}&end=${date}`).then(
+      (res) => {
+        if (!cancelled) setEntries(res);
+      },
+      (e) => {
+        if (!cancelled) setLoadError((e as Error).message);
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
   }, [date]);
 
   const parsed = new Date(`${date}T00:00:00`);
@@ -57,7 +70,7 @@ export default function CalendarDay() {
       </p>
       <h1>{formatted}</h1>
 
-      {!entries && <p className="empty">Loading...</p>}
+      {!entries && <p className="empty">{loadError ?? "Loading..."}</p>}
       {entries && entries.length === 0 && <p className="empty">Nothing scheduled for this date.</p>}
       {entries && entries.length > 0 && (
         <div className="grid" style={{ gridTemplateColumns: "1fr" }}>

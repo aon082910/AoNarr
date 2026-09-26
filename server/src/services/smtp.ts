@@ -27,6 +27,79 @@ function toCrlf(text: string): string {
   return text.replace(/\r\n|\r|\n/g, "\r\n");
 }
 
+const NON_ASCII = /[^\x00-\x7f]/;
+
+/** RFC 2047 "B" encoded-words for a header value with non-ASCII characters (raw 8-bit bytes aren't
+ * allowed in a header); ASCII passes through. Split on character boundaries at 39 bytes, so each
+ * word stays within 75 characters and each folded line within 76, "Subject: " included. */
+function encodeHeaderWords(text: string): string {
+  if (!NON_ASCII.test(text)) return text;
+  const chunks: string[] = [];
+  let chunk = "";
+  for (const ch of text) {
+    if (chunk && Buffer.byteLength(chunk + ch, "utf8") > 39) {
+      chunks.push(chunk);
+      chunk = "";
+    }
+    chunk += ch;
+  }
+  if (chunk) chunks.push(chunk);
+  return chunks.map((c) => `=?UTF-8?B?${Buffer.from(c, "utf8").toString("base64")}?=`).join("\r\n ");
+}
+
+function wrapBase64(data: Buffer): string {
+  return data.toString("base64").replace(/(.{76})(?=.)/g, "$1\r\n");
+}
+
+/** A text/plain part's headers and body. A UTF-8 body with non-ASCII characters is base64-encoded:
+ * undeclared 8-bit data is only allowed to a relay that advertised 8BITMIME. */
+function textPart(body: string): string[] {
+  const text = toCrlf(body);
+  if (!NON_ASCII.test(text)) return [`Content-Type: text/plain; charset=utf-8`, `Content-Transfer-Encoding: 7bit`, "", text];
+  return [`Content-Type: text/plain; charset=utf-8`, `Content-Transfer-Encoding: base64`, "", wrapBase64(Buffer.from(text, "utf8"))];
+}
+
+/** RFC 2231 extended-value characters, which is encodeURIComponent's set minus ' ( ) *. */
+function rfc2231Encode(ch: string): string {
+  return encodeURIComponent(ch).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+/** A file name as MIME parameters: a quoted ASCII fallback (accents folded; other non-ASCII,
+ * quotes, backslashes and control characters dropped) plus, when that lost anything, the full
+ * UTF-8 name as an RFC 2231 extended parameter — split into continuations so no header line
+ * outgrows SMTP's line limit. */
+function fileNameParams(param: string, filename: string): string[] {
+  const name = filename
+    .replace(/[\x00-\x1f\x7f]+/g, " ")
+    .replace(/[\ud800-\udfff]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  let fallback = name
+    .normalize("NFD")
+    .replace(/\p{M}+/gu, "")
+    .replace(/[^\x20-\x7e]+|["\\]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!fallback || fallback.startsWith(".")) fallback = `attachment${fallback}`;
+  const params = [`${param}="${fallback}"`];
+  if (fallback === name) return params;
+
+  const segments: string[] = [];
+  let segment = "";
+  for (const ch of name) {
+    const encoded = rfc2231Encode(ch);
+    if (segment && segment.length + encoded.length > 60) {
+      segments.push(segment);
+      segment = "";
+    }
+    segment += encoded;
+  }
+  if (segment) segments.push(segment);
+  if (segments.length === 1) params.push(`${param}*=UTF-8''${segments[0]}`);
+  else segments.forEach((s, i) => params.push(i === 0 ? `${param}*0*=UTF-8''${s}` : `${param}*${i}*=${s}`));
+  return params;
+}
+
 function armIdleTimeout(socket: net.Socket, cfg: SmtpConfig): void {
   socket.setTimeout(SMTP_IDLE_TIMEOUT_MS);
   socket.once("timeout", () => {
@@ -127,10 +200,9 @@ export async function sendEmail(cfg: SmtpConfig, subject: string, body: string):
     const rawMessage = [
       `From: AoNarr <${cfg.from}>`,
       `To: <${cfg.to}>`,
-      `Subject: ${subject}`,
-      `Content-Type: text/plain; charset=utf-8`,
-      "",
-      toCrlf(body),
+      `Subject: ${encodeHeaderWords(subject)}`,
+      `MIME-Version: 1.0`,
+      ...textPart(body),
     ].join("\r\n");
     // Escaped on the fully-assembled message, not on `body` in isolation — a body starting with
     // "." needs the \r\n that precedes it (from the join above) to already be in place for the
@@ -163,25 +235,22 @@ export async function sendEmailWithAttachment(cfg: SmtpConfig, subject: string, 
     await send("DATA");
 
     const boundary = `aonarr-${crypto.randomBytes(12).toString("hex")}`;
-    const base64Content = attachment.content.toString("base64").replace(/(.{76})/g, "$1\r\n");
     const rawMessage = [
       `From: AoNarr <${cfg.from}>`,
       `To: <${cfg.to}>`,
-      `Subject: ${subject}`,
+      `Subject: ${encodeHeaderWords(subject)}`,
       `MIME-Version: 1.0`,
       `Content-Type: multipart/mixed; boundary="${boundary}"`,
       "",
       `--${boundary}`,
-      `Content-Type: text/plain; charset=utf-8`,
-      "",
-      toCrlf(body),
+      ...textPart(body),
       "",
       `--${boundary}`,
-      `Content-Type: ${attachment.contentType}; name="${attachment.filename}"`,
+      [`Content-Type: ${attachment.contentType}`, ...fileNameParams("name", attachment.filename)].join(";\r\n "),
       `Content-Transfer-Encoding: base64`,
-      `Content-Disposition: attachment; filename="${attachment.filename}"`,
+      ["Content-Disposition: attachment", ...fileNameParams("filename", attachment.filename)].join(";\r\n "),
       "",
-      base64Content,
+      wrapBase64(attachment.content),
       "",
       `--${boundary}--`,
     ].join("\r\n");

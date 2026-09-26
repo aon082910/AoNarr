@@ -12,12 +12,21 @@ export interface IrcFeedConfig {
   saslUser: string | null;
   saslPass: string | null;
   channel: string;
+  /** Nicks allowed to announce (the tracker's announce bot). Empty/absent accepts any sender. */
+  announcers?: string[] | null;
+}
+
+/** A feed's announcer setting as an admin types it ("AnnounceBot, BackupBot"): nicks separated by
+ * commas and/or whitespace. */
+export function parseAnnouncerNicks(raw: string | null | undefined): string[] {
+  return (raw ?? "").split(/[\s,]+/).filter(Boolean);
 }
 
 /**
  * Minimal IRC client — connect, optional SASL PLAIN auth, join one channel, hand every PRIVMSG in
- * it to a callback. Implemented directly on Node's net/tls sockets (same reasoning as smtp.ts's
- * hand-rolled SMTP client elsewhere in this codebase): IRC is a small, well-specified (RFC 1459/
+ * it (from the configured announcers, when any are set) to a callback. Implemented directly on
+ * Node's net/tls sockets (same reasoning as smtp.ts's hand-rolled SMTP client elsewhere in this
+ * codebase): IRC is a small, well-specified (RFC 1459/
  * 2812), line-based text protocol, and this only ever needs to sit in one channel and read
  * announces — not a general-purpose IRC library's worth of functionality (DCC, multi-channel,
  * CTCP, etc.).
@@ -146,9 +155,18 @@ export class IrcConnection {
       return;
     }
 
-    const privmsg = line.match(/^:\S+ PRIVMSG (\S+) :(.*)$/);
-    if (privmsg && privmsg[1].toLowerCase() === this.config.channel.toLowerCase()) {
-      this.onMessage(privmsg[2]);
+    const privmsg = line.match(/^:(\S+) PRIVMSG (\S+) :(.*)$/);
+    if (privmsg && privmsg[2].toLowerCase() === this.config.channel.toLowerCase() && this.isFromAnnouncer(privmsg[1])) {
+      this.onMessage(privmsg[3]);
     }
+  }
+
+  // The announce's URL is sent straight to the download client, so in a channel where ordinary
+  // members can speak, anyone could otherwise post an announce-shaped line with their own URL.
+  private isFromAnnouncer(prefix: string): boolean {
+    const announcers = this.config.announcers ?? [];
+    if (announcers.length === 0) return true;
+    const nick = prefix.split("!")[0].split("@")[0].toLowerCase();
+    return announcers.some((a) => a.toLowerCase() === nick);
   }
 }

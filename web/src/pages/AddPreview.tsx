@@ -7,6 +7,7 @@ import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
 import type { LibraryGroup, MediaItem, MediaType, MetadataSearchResult, QualityProfile, RootFolder } from "../types.js";
 import { formatBytes } from "../utils/format.js";
+import { displayableImageUrl } from "../utils/artwork.js";
 import { CalendarIcon, ClockIcon, StarIcon, BriefcaseIcon } from "../components/NavIcons.js";
 
 type MonitorStrategy = "all" | "future" | "missing" | "existing" | "recent" | "firstSeason" | "latestSeason" | "pilot" | "none";
@@ -131,6 +132,8 @@ export default function AddPreview() {
 
   const { type, result, manual } = state;
   const foldersForType = rootFolders.filter((f) => f.mediaType === type);
+  const posterSrc = displayableImageUrl(result.posterUrl);
+  const backdropSrc = displayableImageUrl(result.backdropUrl);
 
   async function doImport(confirmDuplicate = false) {
     if (!title.trim()) return;
@@ -184,11 +187,11 @@ export default function AddPreview() {
 
   return (
     <div>
-      <div className="media-backdrop" style={result.backdropUrl ? { backgroundImage: `url(${result.backdropUrl})`, backgroundSize: "cover" } : undefined}>
+      <div className="media-backdrop" style={backdropSrc ? { backgroundImage: `url(${backdropSrc})`, backgroundSize: "cover" } : undefined}>
         <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
           <div style={{ width: 160, flexShrink: 0 }}>
-            {result.posterUrl ? (
-              <img src={result.posterUrl} alt="" style={{ width: "100%", borderRadius: 6 }} />
+            {posterSrc ? (
+              <img src={posterSrc} alt="" style={{ width: "100%", borderRadius: 6 }} />
             ) : (
               <div className="poster" style={{ width: "100%" }}>
                 No poster

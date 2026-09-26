@@ -1,10 +1,10 @@
-import { useRef, useState } from "react";
-import { api, avatarUrl, uploadFormFile } from "../api/client.js";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { api, setSessionToken, uploadFormFile, useAvatarUrl } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
 import { notify } from "../utils/notify.js";
 import { PencilIcon, TrashIcon } from "../components/ActionIcons.js";
 import { GlobeIcon, PlusCircleIcon, UserIcon } from "../components/NavIcons.js";
-import type { SocialLink } from "../types.js";
+import type { SocialLink, User } from "../types.js";
 
 /** Self-service profile (photo, display name, bio, social links) plus two-factor setup for the
  * logged-in account — household or admin-via-session. Reachable by everyone (unlike Settings,
@@ -28,12 +28,54 @@ export default function Account() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const avatarInputRef = useRef<HTMLInputElement>(null);
-  // Bumped after every avatar upload so the <img> URL changes and the browser doesn't keep showing
-  // a cached copy of the old photo at the same URL.
+  // Bumped after every avatar upload so the new photo is fetched instead of the old one staying up.
   const [avatarVersion, setAvatarVersion] = useState(0);
+
+  // Signed in with the API key on an instance that has no admin account yet (an install from before
+  // admin login existed, or one set up headless): the login screen's own setup form is only offered
+  // to a brand-new install, so this is where that first account gets created.
+  const [needsAdminAccount, setNeedsAdminAccount] = useState(false);
+  const [adminUsername, setAdminUsername] = useState("");
+  const [adminPassword, setAdminPassword] = useState("");
+  const [adminConfirmPassword, setAdminConfirmPassword] = useState("");
+  const [adminError, setAdminError] = useState<string | null>(null);
+  const [creatingAdmin, setCreatingAdmin] = useState(false);
+
+  useEffect(() => {
+    if (auth.user || !auth.isAdmin) return;
+    api
+      .get<User[]>("/users")
+      .then((users) => setNeedsAdminAccount(!users.some((u) => u.role === "admin")))
+      .catch(() => setNeedsAdminAccount(false));
+  }, [auth.user, auth.isAdmin]);
+
+  async function createAdminAccount(e: FormEvent) {
+    e.preventDefault();
+    if (!adminUsername.trim() || !adminPassword) return;
+    if (adminPassword.length < 8) {
+      setAdminError("Password must be at least 8 characters");
+      return;
+    }
+    if (adminPassword !== adminConfirmPassword) {
+      setAdminError("Passwords don't match");
+      return;
+    }
+    setCreatingAdmin(true);
+    setAdminError(null);
+    try {
+      const result = await api.post<{ token: string }>("/auth/setup", { username: adminUsername.trim(), password: adminPassword });
+      setSessionToken(result.token);
+      window.location.reload();
+    } catch (err) {
+      setAdminError((err as Error).message);
+    } finally {
+      setCreatingAdmin(false);
+    }
+  }
 
   const enabled = !!auth.user?.totpEnabled;
   const username = auth.user?.username ?? "";
+  const currentAvatarUrl = useAvatarUrl(auth.user?.id, !!auth.user?.avatarPath, avatarVersion);
 
   async function startSetup() {
     setError(null);
@@ -120,11 +162,34 @@ export default function Account() {
           Signed in via the instance API key — profile and two-factor setup here apply to
           household/admin accounts. The API key's own TOTP option lives in Settings.
         </p>
+        {needsAdminAccount && (
+          <form className="form-panel" onSubmit={createAdminAccount} style={{ maxWidth: 420 }}>
+            <h2 style={{ marginTop: 0 }}>Create an admin account</h2>
+            <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
+              This instance has no admin account yet. Create one to sign in with a username and
+              password — the API key keeps working for scripts and integrations.
+            </p>
+            <label htmlFor="account-admin-username">Username</label>
+            <input id="account-admin-username" value={adminUsername} onChange={(e) => setAdminUsername(e.target.value)} />
+            <label htmlFor="account-admin-password">Password</label>
+            <input id="account-admin-password" type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} />
+            <label htmlFor="account-admin-confirm-password">Confirm password</label>
+            <input
+              id="account-admin-confirm-password"
+              type="password"
+              value={adminConfirmPassword}
+              onChange={(e) => setAdminConfirmPassword(e.target.value)}
+            />
+            {adminError && <p style={{ color: "var(--danger)" }}>{adminError}</p>}
+            <button type="submit" disabled={creatingAdmin}>
+              {creatingAdmin ? "Creating..." : "Create admin account"}
+            </button>
+          </form>
+        )}
       </div>
     );
   }
 
-  const currentAvatarUrl = auth.user.avatarPath ? avatarUrl(auth.user.id) : null;
   const savedSocialLinks = auth.user.socialLinks ?? [];
   const savedBio = auth.user.bio ?? "";
 
@@ -151,12 +216,7 @@ export default function Account() {
           }}
         >
           {currentAvatarUrl ? (
-            <img
-              key={avatarVersion}
-              src={`${currentAvatarUrl}${currentAvatarUrl.includes("?") ? "&" : "?"}v=${avatarVersion}`}
-              alt=""
-              style={{ width: "100%", height: "100%", objectFit: "cover" }}
-            />
+            <img src={currentAvatarUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
           ) : (
             <UserIcon />
           )}
@@ -211,12 +271,7 @@ export default function Account() {
                 }}
               >
                 {currentAvatarUrl ? (
-                  <img
-                    key={avatarVersion}
-                    src={`${currentAvatarUrl}${currentAvatarUrl.includes("?") ? "&" : "?"}v=${avatarVersion}`}
-                    alt=""
-                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                  />
+                  <img src={currentAvatarUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                 ) : (
                   <UserIcon />
                 )}

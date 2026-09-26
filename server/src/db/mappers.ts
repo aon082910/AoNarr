@@ -192,6 +192,7 @@ export function queueItemFromRow(row: any) {
     updatedAt: row.updated_at,
     retryCount: row.retry_count ?? 0,
     downloadPath: row.download_path ?? null,
+    importSkippedReason: row.import_skipped_reason ?? null,
   };
 }
 
@@ -323,6 +324,7 @@ export function ircFeedFromRow(row: any) {
     announceRegex: row.announce_regex,
     protocol: row.protocol,
     enabled: row.enabled,
+    announcers: (row.announcers ?? null) as string | null,
     createdAt: row.created_at,
   };
 }

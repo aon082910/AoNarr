@@ -77,6 +77,34 @@ notifications across all of them.
 logic actually branches on — not the specific type. Adding an 11th library is a config entry in
 `services/mediaTypes.ts`, not new branching logic scattered through the codebase.
 
+### Folder layout for Scan & Import
+
+For the collection libraries, **Scan & Import** takes the first folder under a root folder as the
+parent item and the file (or, for Music/Audiobooks, the next folder down) as the child:
+
+| Library | Layout |
+|---|---|
+| Books | `Author/Book.epub` or `Author/Book Title/Book.epub` |
+| Audiobooks | `Author/Book Title/01 - Chapter.mp3` (or one `.m4b`) |
+| Comics / Manga | `Series/Issue 001.cbz` |
+| Music | `Artist/Album/01 - Track.flac` |
+
+A book, audiobook, comic or manga file sitting **directly in the root folder** is imported too: its
+author/series and title come from its own metadata — a same-named `.opf` beside it, the
+EPUB/MOBI/AZW3/PDF's embedded author and title, an audiobook's tags, a comic's `ComicInfo.xml` —
+or from an `Author - Title.epub` / `Series 001.cbz` filename. The formats of one book
+(`Dune.epub` + `Dune.pdf`) are identified together and filed as one book. Anything still
+unidentified is filed under an unmonitored **Unknown Author** / **Unknown Series** item (one per
+root folder), which Refresh and metadata matching never rename. A loose audiobook must be the whole
+book in one file: chapter/part files (`Chapter 01.mp3`, `01 - Intro.mp3`, `Book Part 1.m4b`,
+several files tagged as the same book) are skipped until they're moved into `Author/Book Title/`;
+numbered `.m4b` files (`Mistborn 1.m4b`, `Mistborn 2.m4b`) are separate books. A book in its own
+folder directly under the root (`Book Title/book.epub`, the only book in that folder) is filed
+under the author its `.opf` or embedded metadata names when that metadata's title matches the
+folder. Music files loose in the root are skipped (the scan log says to use `Artist/Album/`). A
+Calibre `metadata.opf` only applies to the book it sits beside when that folder holds just that
+one book.
+
 ## Features
 
 - **10 libraries on 3 shapes** — single-file items (Movies, ROMs, Adult), episodic items with
@@ -115,6 +143,12 @@ logic actually branches on — not the specific type. Adding an 11th library is 
   and renames into the item's root folder using Sonarr/Radarr-style naming, and marks it
   downloaded. A season-pack folder with several episodes correctly splits across each episode's
   own queue entry instead of colliding.
+- **Archive unpacking** — a completed download's `.zip`, `.7z` and `.rar` archives (multi-volume
+  `.partNN.rar` / `.r00` sets included) are unpacked into a folder beside them before import.
+  ZIP is handled natively; the Docker images bundle `7z` (Debian's `p7zip-full`) for 7z and `unrar`
+  (from Debian's non-free component — freeware that permits redistribution) for RAR, on both amd64
+  and arm64. Password-protected, incomplete or oversized archives are skipped with the reason in
+  the log; a ROM library's `.zip`/`.7z` files are imported as-is.
 - **Manual import** — browse the downloads folder from a media item's page and assign any file
   to it (or a specific episode/album/book) yourself, for anything auto-match couldn't resolve.
 - **Calendar** and **Missing** views — upcoming episode/album/book release dates, and everything
@@ -335,9 +369,12 @@ logic actually branches on — not the specific type. Adding an 11th library is 
   Jellyfin/Emby's Webhook plugin) and a "recently watched" item shows up on the Dashboard
   immediately instead of waiting for the next scheduled poll; supports Plex's `media.scrobble`
   event and Jellyfin/Emby-style `PlaybackStop` JSON, matched to a library file the same way
-  auto-archival's poller already does. A playback stop only counts as watched when it played to
-  completion, so a Jellyfin webhook template must include
-  `"PlayedToCompletion": "{{PlayedToCompletion}}"` (alongside `NotificationType` and `Path`), or
+  auto-archival's poller already does. A Jellyfin playback stop (the plugin sends no file path) is
+  resolved to a file by looking its `ItemId` up on the configured media server, so the Jellyfin
+  server URL and token must be set under Media Server; Emby's payload carries the file path, so it
+  needs no lookup. A Jellyfin/Emby stop only counts as watched when it played to completion, so
+  a Jellyfin webhook template must include the `"ItemId": "{{ItemId}}"` and
+  `"PlayedToCompletion": "{{PlayedToCompletion}}"` properties (alongside `NotificationType`), or
   enable "Send All Properties"; Emby sends `PlaybackInfo.PlayedToCompletion` on its own, and its
   `item.markplayed` event also counts.
 - **Self-hosted API docs** — Swagger UI at `/api-docs`, served from `GET /api/openapi.json`
@@ -579,6 +616,26 @@ grabs the best release that fits the quality profile, and imports it (subtitles 
 your download client finishes. Check **Missing** for what's still outstanding and **Calendar**
 for what's coming up; use **Manual Import** on a media item's page for anything that didn't
 auto-resolve.
+
+### Other sites calling the API from a browser (CORS)
+
+The bundled web UI never needs any CORS setting — behind any reverse proxy (including one that
+rewrites `Host` or drops the port), over plain HTTP, or in the Vite dev server. Only a page served
+from a *different* origin that calls the API from the browser (a dashboard widget, a userscript)
+has to be allowed, either under **Settings → General → Security → Allowed CORS origins** or with
+the optional `AONARR_CORS_ALLOWED_ORIGINS` environment variable:
+
+- set it on the container that runs the API — `aonarr` (all-in-one) or `aonarr-server`, not
+  `aonarr-web`;
+- a comma-separated list of origins (scheme, host and port, no path), e.g.
+  `AONARR_CORS_ALLOWED_ORIGINS=https://dash.example.com,http://homarr.lan:7575`;
+- merged with the Settings list, and applied without going through the UI;
+- `*` allows every origin (not recommended: with Authentication disabled, any page a LAN user
+  visits could then drive the API).
+
+Without an entry, other sites' pages can't read the API's responses, and form or plain-text posts
+from them are refused with `Cross-origin request from … refused`. Scripts and server-to-server
+integrations (curl, webhooks, other *arr apps) send no `Origin` and never need it.
 
 ## Verification
 

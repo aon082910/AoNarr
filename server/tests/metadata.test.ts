@@ -4,15 +4,17 @@ import { setupTestDb } from "./helpers/testDb.js";
 let metadata: typeof import("../src/services/metadata.js");
 let setSetting: (typeof import("../src/services/settingsStore.js"))["setSetting"];
 let deleteSetting: (typeof import("../src/services/settingsStore.js"))["deleteSetting"];
+let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 
 beforeAll(async () => {
-  await setupTestDb();
+  ({ db } = await setupTestDb());
   metadata = await import("../src/services/metadata.js");
   ({ setSetting, deleteSetting } = await import("../src/services/settingsStore.js"));
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 // Credential/preference keys this file reads via getSetting/requireSetting — reset to "" (falsy,
@@ -335,6 +337,14 @@ describe("searchMetadata: series/anime/sports/ppv", () => {
     expect(results[0]).toEqual({ title: "X", year: 2010, overview: "ov", posterUrl: null, externalIds: { trakt: "3" } });
   });
 
+  it("Trakt movie and show search request extended=full, since the minimal response carries no overview", async () => {
+    setSetting("traktClientId", "cid");
+    const fetchMock = stub([{ test: (u) => u.includes("api.trakt.tv/search/"), response: ok([]) }]);
+    await metadata.searchMetadata("movie", "x", "trakt");
+    await metadata.searchMetadata("series", "x", "trakt");
+    expect(fetchMock.mock.calls.map((c) => new URL(String(c[0])).searchParams.get("extended"))).toEqual(["full", "full"]);
+  });
+
   it("AniList (anime) prefers the English title and normalizes averageScore to a 0-10 scale", async () => {
     stub([
       {
@@ -577,12 +587,36 @@ describe("searchMetadata: comics/manga/roms/video/podcast/adult", () => {
     stub([
       {
         test: (u) => u.includes("jeuRecherche.php"),
-        response: ok({ response: { jeux: [{ id: 1, noms: [{ region: "wor", text: "Game1" }], dates: [{ region: "wor", text: "2000-01-01" }], synopsis: [{ langue: "en", text: "Syn" }], medias: [{ type: "box-2D", url: "http://box" }] }, { id: 2, nom: "Fallback Name" }] } }),
+        response: ok({ response: { jeux: [{ id: 1, noms: [{ region: "wor", text: "Game1" }], dates: [{ region: "wor", text: "2000-01-01" }], synopsis: [{ langue: "en", text: "Syn" }], medias: [{ type: "box-2D", url: "https://neoclone.screenscraper.fr/api2/mediaJeu.php?jeuid=1&media=box-2D(wor)" }] }, { id: 2, nom: "Fallback Name" }] } }),
       },
     ]);
     const results = await metadata.searchMetadata("rom", "x", "screenscraper");
-    expect(results[0]).toEqual({ title: "Game1", year: 2000, overview: "Syn", posterUrl: "http://box", externalIds: { screenscraper: "1" } });
+    expect(results[0]).toEqual({
+      title: "Game1",
+      year: 2000,
+      overview: "Syn",
+      posterUrl: "screenscraper:https://neoclone.screenscraper.fr/api2/mediaJeu.php?jeuid=1&media=box-2D(wor)",
+      externalIds: { screenscraper: "1" },
+    });
     expect(results[1].title).toBe("Fallback Name");
+    expect(results[1].posterUrl).toBeNull();
+  });
+
+  it("ScreenScraper rom search never returns the dev or user credentials ScreenScraper echoes into its media URLs", async () => {
+    setSetting("screenscraperDevId", "dev-id-1");
+    setSetting("screenscraperDevPassword", "dev-secret-1");
+    setSetting("screenscraperUserId", "admin-user");
+    setSetting("screenscraperUserPassword", "admin-secret-1");
+    const echoed =
+      "https://neoclone.screenscraper.fr/api2/mediaJeu.php?devid=dev-id-1&devpassword=dev-secret-1&softname=AoNarr&ssid=admin-user&sspassword=admin-secret-1&systemeid=1&jeuid=3&media=box-2D(wor)";
+    stub([{ test: (u) => u.includes("jeuRecherche.php"), response: ok({ response: { jeux: [{ id: 3, nom: "Game3", medias: [{ type: "box-2D", url: echoed }] }] } }) }]);
+
+    const [result] = await metadata.searchMetadata("rom", "x", "screenscraper");
+    const serialized = JSON.stringify(result);
+    for (const secret of ["dev-id-1", "dev-secret-1", "admin-user", "admin-secret-1"]) expect(serialized).not.toContain(secret);
+    expect(metadata.isScreenscraperArtworkRef(result.posterUrl)).toBe(true);
+    const ref = new URL(result.posterUrl!.slice(metadata.SCREENSCRAPER_ARTWORK_PREFIX.length));
+    expect([...ref.searchParams.keys()].sort()).toEqual(["jeuid", "media", "softname", "systemeid"]);
   });
 
   it("TheGamesDB rom search resolves boxart via the base_url + per-game image list, falling back to base_url.original when .medium is absent", async () => {
@@ -731,6 +765,48 @@ describe("fetchByExternalId", () => {
 
     stub([{ test: (u) => u.includes("api.trakt.tv/shows/999"), response: notOk(404) }]);
     await expect(metadata.fetchByExternalId("series", "trakt", "999")).rejects.toThrow('No Trakt show found for id "999"');
+  });
+
+  it("trakt: looks a movie/ppv id up under /movies/ (a separate id space from shows) and maps the movie fields", async () => {
+    setSetting("traktClientId", "cid");
+    const fetchMock = stub([
+      {
+        test: (u) => u.startsWith("https://api.trakt.tv/movies/12?"),
+        response: ok({ title: "Film", year: 1999, overview: "ov", released: "1999-03-31", runtime: 136, certification: "R", ids: { trakt: 12, imdb: "tt0133093", tmdb: 603 } }),
+      },
+      { test: (u) => u.includes("api.trakt.tv/shows/"), response: ok({ title: "Unrelated Show", year: 2020, ids: { trakt: 12 } }) },
+    ]);
+    const expected = {
+      title: "Film",
+      year: 1999,
+      overview: "ov",
+      posterUrl: null,
+      externalIds: { trakt: "12", imdb: "tt0133093" },
+      releaseDate: "1999-03-31",
+      runtimeMinutes: 136,
+      contentRating: "R",
+    };
+    expect(await metadata.fetchByExternalId("movie", "trakt", "12")).toEqual(expected);
+    expect(await metadata.fetchByExternalId("ppv", "trakt", "12")).toEqual(expected);
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("/shows/"))).toBe(false);
+    expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get("extended")).toBe("full");
+
+    stub([{ test: (u) => u.includes("api.trakt.tv/movies/5"), response: ok({ title: "Bare", ids: { trakt: 5 }, runtime: 0, certification: "Not Rated" }) }]);
+    expect(await metadata.fetchByExternalId("movie", "trakt", "5")).toEqual({
+      title: "Bare",
+      year: null,
+      overview: null,
+      posterUrl: null,
+      externalIds: { trakt: "5" },
+      releaseDate: null,
+      runtimeMinutes: null,
+      contentRating: null,
+    });
+
+    stub([{ test: (u) => u.includes("api.trakt.tv/movies/999"), response: notOk(404) }]);
+    await expect(metadata.fetchByExternalId("movie", "trakt", "999")).rejects.toThrow('No Trakt movie found for id "999"');
+    stub([{ test: (u) => u.includes("api.trakt.tv/movies/6"), response: notOk(502) }]);
+    await expect(metadata.fetchByExternalId("movie", "trakt", "6")).rejects.toThrow("Trakt lookup failed: HTTP 502");
   });
 
   it("anilist: only populates runtimeMinutes for the anime type, and throws when the id has no match", async () => {
@@ -1103,12 +1179,224 @@ describe("fetchSeriesEpisodesFor", () => {
     ]);
   });
 
+  it("Trakt: requests full episode objects and turns the UTC first_aired into the show's local air date", async () => {
+    setSetting("traktClientId", "cid");
+    const fetchMock = stub([
+      {
+        test: (u) => u.includes("api.trakt.tv/shows/7/seasons"),
+        response: ok([
+          {
+            number: 1,
+            episodes: [
+              // Sunday 9pm Eastern (EDT) — already Monday in UTC
+              { number: 1, title: "Pilot", first_aired: "2014-07-14T01:00:00.000Z", overview: "ov" },
+              { number: 2, title: "Two", first_aired: "2014-07-20T16:00:00.000Z", overview: null },
+            ],
+          },
+        ]),
+      },
+      { test: (u) => u.startsWith("https://api.trakt.tv/shows/7?"), response: ok({ title: "Show", airs: { day: "Sunday", time: "21:00", timezone: "America/New_York" } }) },
+    ]);
+    expect(await metadata.fetchSeriesEpisodesFor({ trakt: "7" })).toEqual([
+      { seasonNumber: 1, episodeNumber: 1, title: "Pilot", airDate: "2014-07-13", overview: "ov" },
+      { seasonNumber: 1, episodeNumber: 2, title: "Two", airDate: "2014-07-20", overview: null },
+    ]);
+    const seasonsCall = fetchMock.mock.calls.map((c) => String(c[0])).find((u) => u.includes("/seasons"))!;
+    expect(new URL(seasonsCall).searchParams.get("extended")).toBe("full,episodes");
+  });
+
+  it("Trakt: falls back to the UTC date when the show's time zone is unavailable or unknown", async () => {
+    setSetting("traktClientId", "cid");
+    const seasons = ok([{ number: 1, episodes: [{ number: 1, first_aired: "2014-07-14T01:00:00.000Z" }] }]);
+    stub([
+      { test: (u) => u.includes("api.trakt.tv/shows/7/seasons"), response: seasons },
+      { test: (u) => u.startsWith("https://api.trakt.tv/shows/7?"), response: notOk(500) },
+    ]);
+    expect((await metadata.fetchSeriesEpisodesFor({ trakt: "7" }))[0].airDate).toBe("2014-07-14");
+
+    stub([
+      { test: (u) => u.includes("api.trakt.tv/shows/8/seasons"), response: ok([{ number: 1, episodes: [{ number: 1, first_aired: "2014-07-14T01:00:00.000Z" }] }]) },
+      { test: (u) => u.startsWith("https://api.trakt.tv/shows/8?"), response: ok({ airs: { timezone: "Not/AZone" } }) },
+    ]);
+    expect((await metadata.fetchSeriesEpisodesFor({ trakt: "8" }))[0].airDate).toBe("2014-07-14");
+  });
+
   it("AniList: a null/zero episode count returns [] rather than an empty placeholder list", async () => {
     stub([{ test: (u) => u.includes("graphql.anilist.co"), response: ok({ data: { Media: { episodes: null } } }) }]);
     await expect(metadata.fetchSeriesEpisodesFor({ anilist: "3" })).resolves.toEqual([]);
 
     stub([{ test: (u) => u.includes("graphql.anilist.co"), response: ok({ data: { Media: { episodes: 0 } } }) }]);
     await expect(metadata.fetchSeriesEpisodesFor({ anilist: "4" })).resolves.toEqual([]);
+  });
+
+  it("AniList: a show still airing with no announced total gets every aired episode plus the next one, dated in Japan", async () => {
+    // AniList returns episodes: null for ongoing shows like One Piece; nextAiringEpisode is the only count.
+    // 2024-01-06T16:00:00Z is 2024-01-07 01:00 JST.
+    const fetchMock = stub([
+      { test: (u) => u.includes("graphql.anilist.co"), response: ok({ data: { Media: { episodes: null, nextAiringEpisode: { episode: 3, airingAt: Date.UTC(2024, 0, 6, 16) / 1000 } } } }) },
+    ]);
+    expect(await metadata.fetchSeriesEpisodesFor({ anilist: "21" })).toEqual([
+      { seasonNumber: 1, episodeNumber: 1, title: null, airDate: null, overview: null },
+      { seasonNumber: 1, episodeNumber: 2, title: null, airDate: null, overview: null },
+      { seasonNumber: 1, episodeNumber: 3, title: null, airDate: "2024-01-07", overview: null },
+    ]);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).query).toContain("nextAiringEpisode");
+
+    // A known total still wins, and the next episode inside it gets its date.
+    stub([{ test: (u) => u.includes("graphql.anilist.co"), response: ok({ data: { Media: { episodes: 4, nextAiringEpisode: { episode: 2, airingAt: Date.UTC(2024, 0, 6, 16) / 1000 } } } }) }]);
+    const known = await metadata.fetchSeriesEpisodesFor({ anilist: "22" });
+    expect(known.map((e) => e.airDate)).toEqual([null, "2024-01-07", null, null]);
+  });
+
+  it("AniList: dates episodes from the latest aired and upcoming airing-schedule entries, in the same request", async () => {
+    const at = (day: number) => Date.UTC(2026, 8, day, 16) / 1000; // 16:00Z is 01:00 the next day in Japan
+    const fetchMock = stub([
+      {
+        test: (u) => u.includes("graphql.anilist.co"),
+        response: ok({
+          data: {
+            Media: { episodes: null, nextAiringEpisode: { episode: 6, airingAt: at(26) } },
+            // AniList's schedule for a long runner starts well after episode 1
+            aired: { airingSchedules: [{ episode: 5, airingAt: at(19) }, { episode: 4, airingAt: at(12) }] },
+            // scheduled past the count AniList has settled on: not listed yet
+            upcoming: { airingSchedules: [{ episode: 6, airingAt: at(26) }, { episode: 7, airingAt: at(33) }] },
+          },
+        }),
+      },
+    ]);
+    const episodes = await metadata.fetchSeriesEpisodesFor({ anilist: "21" });
+    expect(episodes.map((e) => [e.episodeNumber, e.airDate])).toEqual([
+      [1, null],
+      [2, null],
+      [3, null],
+      [4, "2026-09-13"],
+      [5, "2026-09-20"],
+      [6, "2026-09-27"],
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const { query, variables } = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(query).toMatch(/airingSchedules\(mediaId: \$id, notYetAired: false, sort: EPISODE_DESC\)/);
+    expect(query).toMatch(/airingSchedules\(mediaId: \$id, notYetAired: true, sort: EPISODE\)/);
+    expect(variables).toEqual({ id: 21 });
+
+    // "Future episodes" on such a show: the undated back catalogue has aired, only the next one hasn't.
+    expect(metadata.upcomingEpisodes(episodes, "2026-09-25").map((e) => e.episodeNumber)).toEqual([6]);
+  });
+
+  it("AniList: reads every page of the aired schedule, and counts a show between cours by its latest aired episode", async () => {
+    const at = (day: number) => Date.UTC(2026, 6, day, 16) / 1000; // 16:00Z is 01:00 the next day in Japan
+    const firstPage = {
+      data: {
+        // between cours: no total and nothing scheduled next
+        Media: { episodes: null, nextAiringEpisode: null },
+        aired: { pageInfo: { hasNextPage: true }, airingSchedules: [{ episode: 4, airingAt: at(22) }, { episode: 3, airingAt: at(15) }] },
+        upcoming: { airingSchedules: [] },
+      },
+    };
+    const fetchMock = stub([
+      {
+        test: (u) => u.includes("graphql.anilist.co"),
+        response: (_u: string, init: any) =>
+          JSON.parse(init.body).variables.page === 2
+            ? ok({ data: { aired: { pageInfo: { hasNextPage: false }, airingSchedules: [{ episode: 2, airingAt: at(8) }] } } })
+            : ok(firstPage),
+      },
+    ]);
+    const episodes = await metadata.fetchSeriesEpisodesFor({ anilist: "30" });
+    expect(episodes.map((e) => [e.episodeNumber, e.airDate])).toEqual([
+      [1, null],
+      [2, "2026-07-09"],
+      [3, "2026-07-16"],
+      [4, "2026-07-23"],
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const { query, variables } = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(variables).toEqual({ id: 30, page: 2 });
+    expect(query).toMatch(/Page\(page: \$page, perPage: 50\) \{ pageInfo \{ hasNextPage \} airingSchedules\(mediaId: \$id, notYetAired: false, sort: EPISODE_DESC\)/);
+    expect(query).not.toContain("Media(");
+
+    // A later page failing keeps what the first one dated; a first-page failure still throws.
+    stub([
+      {
+        test: (u) => u.includes("graphql.anilist.co"),
+        response: (_u: string, init: any) => (JSON.parse(init.body).variables.page === 2 ? notOk(429) : ok(firstPage)),
+      },
+    ]);
+    expect((await metadata.fetchSeriesEpisodesFor({ anilist: "30" })).map((e) => e.airDate)).toEqual([null, null, "2026-07-16", "2026-07-23"]);
+    stub([{ test: (u) => u.includes("graphql.anilist.co"), response: notOk(500) }]);
+    await expect(metadata.fetchSeriesEpisodesFor({ anilist: "30" })).rejects.toThrow("AniList episode lookup failed: HTTP 500");
+  });
+
+  it("AniList: a finished show whose schedule stops short has every episode aired, its finale dated by the end date", async () => {
+    const at = (day: number) => Date.UTC(2018, 0, day, 16) / 1000; // 16:00Z is 01:00 the next day in Japan
+    const fetchMock = stub([
+      {
+        test: (u) => u.includes("graphql.anilist.co"),
+        response: ok({
+          data: {
+            Media: { episodes: 3, status: "FINISHED", endDate: { year: 2018, month: 3, day: 26 }, nextAiringEpisode: null },
+            aired: { pageInfo: { hasNextPage: false }, airingSchedules: [{ episode: 1, airingAt: at(8) }] },
+            upcoming: { airingSchedules: [] },
+          },
+        }),
+      },
+    ]);
+    const episodes = await metadata.fetchSeriesEpisodesFor({ anilist: "101925" });
+    expect(episodes.map((e) => [e.episodeNumber, e.airDate])).toEqual([
+      [1, "2018-01-09"],
+      [2, null],
+      [3, "2018-03-26"],
+    ]);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).query).toMatch(/status endDate \{ year month day \}/);
+    expect(metadata.upcomingEpisodes(episodes, "2026-09-25")).toEqual([]);
+  });
+
+  it("AniList: a finished or cancelled show's undated finale falls back to a partial end date, then its latest aired entry", async () => {
+    const media = (extra: Record<string, unknown>, airingSchedules: unknown[] = []) =>
+      stub([
+        {
+          test: (u) => u.includes("graphql.anilist.co"),
+          response: ok({ data: { Media: { episodes: 4, nextAiringEpisode: null, ...extra }, aired: { pageInfo: { hasNextPage: false }, airingSchedules }, upcoming: { airingSchedules: [] } } }),
+        },
+      ]);
+    const finale = async () => (await metadata.fetchSeriesEpisodesFor({ anilist: "40" })).map((e) => e.airDate);
+
+    media({ status: "CANCELLED", endDate: { year: 2004, month: 7, day: null } });
+    expect(await finale()).toEqual([null, null, null, "2004-07-01"]);
+    media({ status: "FINISHED", endDate: { year: 1999, month: null, day: null } });
+    expect(await finale()).toEqual([null, null, null, "1999-01-01"]);
+    media({ status: "FINISHED", endDate: { year: null, month: null, day: null } }, [{ episode: 2, airingAt: Date.UTC(2016, 4, 1, 12) / 1000 }]);
+    expect(await finale()).toEqual([null, "2016-05-01", null, "2016-05-01"]);
+    media({ status: "FINISHED", endDate: null });
+    const undated = await metadata.fetchSeriesEpisodesFor({ anilist: "40" });
+    expect(metadata.upcomingEpisodes(undated, "2026-09-25")).toEqual([]);
+
+    // a show still airing keeps its undated tail upcoming
+    media({ status: "RELEASING", endDate: null });
+    expect(await finale()).toEqual([null, null, null, null]);
+  });
+});
+
+describe("upcomingEpisodes", () => {
+  const ep = (seasonNumber: number, episodeNumber: number, airDate: string | null) => ({ seasonNumber, episodeNumber, airDate });
+
+  it("keeps episodes dated today or later, and undated ones no aired episode of their season follows", () => {
+    const episodes = [
+      ep(1, 1, "2026-01-01"),
+      ep(1, 2, null), // a gap before an aired episode: aired
+      ep(1, 3, "2026-01-15"),
+      ep(1, 4, "2026-09-25"), // airs today
+      ep(1, 5, null), // not announced yet
+      ep(2, 1, null), // a new season with nothing aired
+      ep(2, 2, "2026-10-01"),
+      ep(0, 1, null), // specials are judged within season 0 alone
+    ];
+    expect(metadata.upcomingEpisodes(episodes, "2026-09-25")).toEqual([ep(1, 4, "2026-09-25"), ep(1, 5, null), ep(2, 1, null), ep(2, 2, "2026-10-01"), ep(0, 1, null)]);
+  });
+
+  it("treats every undated episode as upcoming when nothing has aired, and compares full timestamps by date", () => {
+    expect(metadata.upcomingEpisodes([ep(1, 1, null), ep(1, 2, null)], "2026-09-25")).toHaveLength(2);
+    expect(metadata.upcomingEpisodes([ep(1, 1, "2026-09-24T23:00:00Z"), ep(1, 2, "2026-09-25T01:00:00Z")], "2026-09-25")).toEqual([ep(1, 2, "2026-09-25T01:00:00Z")]);
   });
 });
 
@@ -1205,6 +1493,113 @@ describe("fetchArtistAlbumsFor", () => {
 
   it("returns null when no known artist id is present", async () => {
     await expect(metadata.fetchArtistAlbumsFor({})).resolves.toBeNull();
+  });
+
+  it("MusicBrainz: pages by offset up to release-group-count, about one request per second", async () => {
+    vi.useFakeTimers();
+    const fetchMock = stub([
+      {
+        test: (u) => u.includes("musicbrainz.org/ws/2/release-group"),
+        response: (u: string) => {
+          const offset = Number(new URL(u).searchParams.get("offset"));
+          const count = offset === 200 ? 25 : 100;
+          return ok({ "release-group-count": 225, "release-groups": Array.from({ length: count }, (_, i) => ({ id: `rg-${offset + i}`, title: `Album ${offset + i}` })) });
+        },
+      },
+    ]);
+    const pending = metadata.fetchArtistAlbumsFor({ musicbrainz: "mbid-zappa" });
+    await vi.runAllTimersAsync();
+    const result = await pending;
+    expect(result?.albums).toHaveLength(225);
+    expect(result?.albums[224]).toEqual({ title: "Album 224", releaseDate: null, externalId: "rg-224" });
+    expect(fetchMock.mock.calls.map((c) => new URL(String(c[0])).searchParams.get("offset"))).toEqual(["0", "100", "200"]);
+  });
+
+  it("MusicBrainz: a later page failing keeps the pages already read, while a first-page failure still throws", async () => {
+    vi.useFakeTimers();
+    stub([
+      {
+        test: (u) => u.includes("musicbrainz.org/ws/2/release-group"),
+        response: (u: string) =>
+          new URL(u).searchParams.get("offset") === "0"
+            ? ok({ "release-group-count": 150, "release-groups": Array.from({ length: 100 }, (_, i) => ({ id: `rg-${i}`, title: `Album ${i}` })) })
+            : notOk(503),
+      },
+    ]);
+    const pending = metadata.fetchArtistAlbumsFor({ musicbrainz: "mbid-1" });
+    await vi.runAllTimersAsync();
+    expect((await pending)?.albums).toHaveLength(100);
+
+    stub([{ test: (u) => u.includes("musicbrainz.org/ws/2/release-group"), response: notOk(503) }]);
+    await expect(metadata.fetchArtistAlbumsFor({ musicbrainz: "mbid-1" })).rejects.toThrow("MusicBrainz album lookup failed: HTTP 503");
+  });
+
+  it("Deezer: follows `next` via the index param instead of stopping at 100 albums", async () => {
+    const fetchMock = stub([
+      {
+        test: (u) => u.includes("api.deezer.com/artist/12246/albums"),
+        response: (u: string) =>
+          new URL(u).searchParams.get("index") === "0"
+            ? ok({ total: 119, next: "https://api.deezer.com/artist/12246/albums?index=100", data: Array.from({ length: 100 }, (_, i) => ({ id: i, title: `A${i}` })) })
+            : ok({ total: 119, data: Array.from({ length: 19 }, (_, i) => ({ id: 100 + i, title: `A${100 + i}` })) }),
+      },
+    ]);
+    const result = await metadata.fetchArtistAlbumsFor({ deezer: "12246" });
+    expect(result?.albums).toHaveLength(119);
+    expect(fetchMock.mock.calls.map((c) => new URL(String(c[0])).searchParams.get("index"))).toEqual(["0", "100"]);
+  });
+
+  it("Discogs: reads every page up to pagination.pages before filtering and deduping, spaced to stay under 60 requests a minute", async () => {
+    // The spacing is process-wide, so start well clear of the request an earlier test made.
+    vi.useFakeTimers({ now: Date.now() + 60_000 });
+    setSetting("discogsToken", "tok");
+    const fetchMock = stub([
+      {
+        test: (u) => u.includes("api.discogs.com/artists/45467/releases"),
+        response: (u: string) => {
+          const page = Number(new URL(u).searchParams.get("page"));
+          const releases =
+            page === 1
+              ? [{ role: "Main", title: "Early", year: 1967, id: 1 }]
+              : page === 2
+                ? [{ role: "Main", title: "Early", year: 1968, id: 2 }, { role: "Main", title: "Middle", year: 1973, id: 3 }]
+                : [{ role: "Main", title: "Late", year: 2014, id: 4 }];
+          return ok({ pagination: { page, pages: 3 }, releases });
+        },
+      },
+      { test: (u) => u.includes("api.discogs.com/artists/45468/releases"), response: ok({ pagination: { page: 1, pages: 1 }, releases: [{ role: "Main", title: "Solo", id: 9 }] }) },
+    ]);
+    const pending = metadata.fetchArtistAlbumsFor({ discogs: "45467" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // the first page goes out straight away
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await vi.runAllTimersAsync();
+    const result = await pending;
+    expect(result?.albums.map((a) => a.title)).toEqual(["Early", "Middle", "Late"]);
+    expect(fetchMock.mock.calls.map((c) => new URL(String(c[0])).searchParams.get("page"))).toEqual(["1", "2", "3"]);
+
+    // Refresh lists the next artist straight after: its first page waits out the gap too.
+    const nextArtist = metadata.fetchArtistAlbumsFor({ discogs: "45468" });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect((await nextArtist)?.albums.map((a) => a.title)).toEqual(["Solo"]);
+
+    // Two lists fetched at once (a manual Refresh during the scheduled one) take turns as well.
+    await vi.advanceTimersByTimeAsync(1100);
+    fetchMock.mockClear();
+    const both = Promise.all([metadata.fetchArtistAlbumsFor({ discogs: "45468" }), metadata.fetchArtistAlbumsFor({ discogs: "45468" })]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1099);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await both;
   });
 });
 
@@ -1466,6 +1861,157 @@ describe("fetchCollectionChildrenFor", () => {
   it("returns {provider:null, children:[]} when no known id is present (e.g. Courses)", async () => {
     await expect(metadata.fetchCollectionChildrenFor({})).resolves.toEqual({ provider: null, children: [] });
   });
+
+  it("openlibrary: asks for large pages and follows offset up to the author's total work count", async () => {
+    const fetchMock = stub([
+      {
+        test: (u) => u.includes("openlibrary.org/authors/OL19981A/works.json"),
+        response: (u: string) => {
+          const params = new URL(u).searchParams;
+          const offset = Number(params.get("offset"));
+          const count = Math.min(Number(params.get("limit")), 1250 - offset);
+          return ok({ size: 1250, entries: Array.from({ length: count }, (_, i) => ({ title: `Work ${offset + i}` })) });
+        },
+      },
+    ]);
+    const { children } = await metadata.fetchCollectionChildrenFor({ openlibrary: "OL19981A" });
+    expect(children).toHaveLength(1250);
+    expect(children[1249]).toEqual({ title: "Work 1249", releaseDate: null });
+    expect(fetchMock.mock.calls.map((c) => new URL(String(c[0])).searchParams.get("offset"))).toEqual(["0", "1000"]);
+    expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get("limit")).toBe("1000");
+  });
+
+  it("googlebooks: pages with startIndex until a short page, keeping one child per title across editions", async () => {
+    const fetchMock = stub([
+      {
+        test: (u) => u.includes("googleapis.com/books"),
+        response: (u: string) => {
+          const start = Number(new URL(u).searchParams.get("startIndex"));
+          if (start === 0) return ok({ items: Array.from({ length: 40 }, (_, i) => ({ volumeInfo: { title: `Book ${i}` } })) });
+          return ok({ items: [{ volumeInfo: { title: "Book 0", publishedDate: "2001" } }, { volumeInfo: { title: "Book 40", publishedDate: "2002" } }] });
+        },
+      },
+    ]);
+    const { children } = await metadata.fetchCollectionChildrenFor({ googlebooks: "Author1" });
+    expect(children).toHaveLength(41);
+    expect(children[40]).toEqual({ title: "Book 40", releaseDate: "2002" });
+    expect(fetchMock.mock.calls.map((c) => new URL(String(c[0])).searchParams.get("startIndex"))).toEqual(["0", "40"]);
+  });
+
+  it("goodreads: follows the list page's next link across pages", async () => {
+    const row = (title: string) => `<tr itemtype="http://schema.org/Book"><td><a class="bookTitle"><span itemprop="name">${title}</span></a></td></tr>`;
+    const fetchMock = stub([
+      {
+        test: (u) => u.includes("goodreads.com/author/list/3389"),
+        response: (u: string) =>
+          new URL(u).searchParams.get("page") === "1"
+            ? okText(`<table>${row("First")}</table><a class="next_page" rel="next" href="/author/list/3389?page=2&amp;per_page=100">next</a>`)
+            : okText(`<table>${row("Second")}</table><span class="next_page disabled">next</span>`),
+      },
+    ]);
+    const { children } = await metadata.fetchCollectionChildrenFor({ goodreads: "3389" });
+    expect(children.map((c) => c.title)).toEqual(["First", "Second"]);
+    expect(fetchMock.mock.calls.map((c) => new URL(String(c[0])).searchParams.get("page"))).toEqual(["1", "2"]);
+  });
+
+  it("comicvine: pages by offset until number_of_total_results, two seconds apart", async () => {
+    // The spacing is process-wide, so start well clear of the request an earlier test made.
+    vi.useFakeTimers({ now: Date.now() + 60_000 });
+    setSetting("comicVineApiKey", "k");
+    const fetchMock = stub([
+      {
+        test: (u) => u.includes("comicvine.gamespot.com/api/issues") && u.includes("volume%3A796"),
+        response: (u: string) => {
+          const offset = Number(new URL(u).searchParams.get("offset"));
+          const count = offset === 200 ? 50 : 100;
+          return ok({ number_of_total_results: 250, results: Array.from({ length: count }, (_, i) => ({ id: offset + i, issue_number: String(offset + i + 1) })) });
+        },
+      },
+      { test: (u) => u.includes("comicvine.gamespot.com/api/issues"), response: ok({ number_of_total_results: 1, results: [{ id: 5000, issue_number: "1" }] }) },
+    ]);
+    const pending = metadata.fetchCollectionChildrenFor({ comicvine: "796" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await vi.runAllTimersAsync();
+    const { children } = await pending;
+    expect(children).toHaveLength(250);
+    expect(children[249]).toEqual({ title: "#250", releaseDate: null, externalId: "249" });
+    expect(fetchMock.mock.calls.map((c) => new URL(String(c[0])).searchParams.get("offset"))).toEqual(["0", "100", "200"]);
+
+    // The next volume on Refresh waits out the gap too, even for its first page.
+    const nextVolume = metadata.fetchCollectionChildrenFor({ comicvine: "797" });
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect((await nextVolume).children).toEqual([{ title: "#1", releaseDate: null, externalId: "5000" }]);
+  });
+
+  it("mangadex: pages the feed by offset until total, deduping chapter numbers across page boundaries", async () => {
+    const fetchMock = stub([
+      {
+        test: (u) => u.includes("api.mangadex.org/manga/m2/feed"),
+        response: (u: string) => {
+          const offset = Number(new URL(u).searchParams.get("offset"));
+          // two scanlations of (almost) every chapter; chapter 251's pair straddles the page boundary
+          const data = Array.from({ length: offset === 0 ? 500 : 300 }, (_, i) => {
+            const n = offset + i;
+            return { id: `c${n}`, attributes: { chapter: String(Math.floor((n + 1) / 2) + 1) } };
+          });
+          return ok({ total: 800, data });
+        },
+      },
+    ]);
+    const { children } = await metadata.fetchCollectionChildrenFor({ mangadex: "m2" });
+    expect(children).toHaveLength(401);
+    expect(children[250]).toEqual({ title: "Chapter 251", releaseDate: null, externalId: "c499" });
+    expect(children[400].title).toBe("Chapter 401");
+    expect(fetchMock.mock.calls.map((c) => new URL(String(c[0])).searchParams.get("offset"))).toEqual(["0", "500"]);
+  });
+
+  it("mangadex: stops at the API's 10000-entry window instead of requesting an offset it rejects", async () => {
+    const fetchMock = stub([
+      {
+        test: (u) => u.includes("api.mangadex.org/manga/m3/feed"),
+        response: (u: string) => {
+          const offset = Number(new URL(u).searchParams.get("offset"));
+          return ok({ total: 50000, data: Array.from({ length: 500 }, (_, i) => ({ id: `c${offset + i}`, attributes: { chapter: String(offset + i + 1) } })) });
+        },
+      },
+    ]);
+    const { children } = await metadata.fetchCollectionChildrenFor({ mangadex: "m3" });
+    expect(children).toHaveLength(10000);
+    const offsets = fetchMock.mock.calls.map((c) => Number(new URL(String(c[0])).searchParams.get("offset")));
+    expect(Math.max(...offsets) + 500).toBeLessThanOrEqual(10000);
+  });
+
+  it("podcastFeed: carries each item's <guid>, with or without attributes, and omits it when the item has none", async () => {
+    const rss = `<rss><channel>
+      <item><title>Ep1</title><guid isPermaLink="false">guid-1</guid><enclosure url="https://chtbl.com/track/X/cdn.example/1.mp3"/></item>
+      <item><title>Ep2</title><guid> guid-2 </guid><enclosure url="https://cdn.example/2.mp3"/></item>
+      <item><title>Ep3</title><enclosure url="https://cdn.example/3.mp3"/></item>
+    </channel></rss>`;
+    stub([{ test: (u) => u === "https://feed.example/guid.xml", response: okText(rss) }]);
+    const { children } = await metadata.fetchCollectionChildrenFor({ podcastFeed: "https://feed.example/guid.xml" });
+    expect(children).toEqual([
+      { title: "Ep1", releaseDate: null, externalId: "https://chtbl.com/track/X/cdn.example/1.mp3", guid: "guid-1" },
+      { title: "Ep2", releaseDate: null, externalId: "https://cdn.example/2.mp3", guid: "guid-2" },
+      { title: "Ep3", releaseDate: null, externalId: "https://cdn.example/3.mp3" },
+    ]);
+    expect(children[2]).not.toHaveProperty("guid");
+  });
+
+  it("podcastFeed: refuses a feed URL that isn't http(s), without fetching it", async () => {
+    const fetchMock = stub([{ test: () => true, response: okText("<rss><channel></channel></rss>") }]);
+    for (const feed of ["data:application/rss+xml,<rss><channel></channel></rss>", "file:///etc/passwd", "ftp://feed.example/rss.xml", "not a url"]) {
+      await expect(metadata.fetchCollectionChildrenFor({ podcastFeed: feed })).rejects.toThrow("Podcast feed URL must be an http:// or https:// URL");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1518,11 +2064,22 @@ describe("fetchRomDetailsFor", () => {
     expect(await metadata.fetchRomDetailsFor({ igdb: "999" })).toEqual({ overview: null, system: null, maker: null, systemLogoUrl: null });
   });
 
-  it("ScreenScraper: maps system/overview/maker, prefers a wheel image over an IGDB fallback, and falls back to the first entry when the preferred region/language is absent", async () => {
+  it("ScreenScraper: maps system/overview/maker, never uses the credential-bearing wheel image as the System logo, and falls back to the first entry when the preferred region/language is absent", async () => {
     setSetting("screenscraperDevId", "d");
     setSetting("screenscraperDevPassword", "p");
-    stub([{ test: (u) => u.includes("jeuInfos.php"), response: ok({ response: { jeu: { systeme: { text: "NES" }, synopsis: [{ langue: "en", text: "Syn" }], developpeur: { text: "Dev1" }, medias: [{ type: "wheel", url: "http://wheel" }] } } }) }]);
-    expect(await metadata.fetchRomDetailsFor({ screenscraper: "1" })).toEqual({ overview: "Syn", system: "NES", maker: "Dev1", systemLogoUrl: "http://wheel" });
+    const wheel = "https://neoclone.screenscraper.fr/api2/mediaJeu.php?devid=d&devpassword=p&jeuid=1&media=wheel(wor)";
+    stub([{ test: (u) => u.includes("jeuInfos.php"), response: ok({ response: { jeu: { systeme: { text: "NES" }, synopsis: [{ langue: "en", text: "Syn" }], developpeur: { text: "Dev1" }, medias: [{ type: "wheel", url: wheel }] } } }) }]);
+    expect(await metadata.fetchRomDetailsFor({ screenscraper: "1" })).toEqual({ overview: "Syn", system: "NES", maker: "Dev1", systemLogoUrl: null });
+
+    // the IGDB platform logo is still used when IGDB is configured
+    setSetting("igdbClientId", "cid");
+    setSetting("igdbClientSecret", "csecret");
+    stub([
+      { test: (u) => u.includes("jeuInfos.php"), response: ok({ response: { jeu: { systeme: { text: "NES" }, medias: [{ type: "wheel", url: wheel }] } } }) },
+      { test: (u) => u.includes("id.twitch.tv"), response: ok({ access_token: "tok", expires_in: 3600 }) },
+      { test: (u) => u.includes("api.igdb.com/v4/platforms"), response: ok([{ platform_logo: { url: "//img/t_thumb/nes.jpg" } }]) },
+    ]);
+    expect((await metadata.fetchRomDetailsFor({ screenscraper: "1" }))?.systemLogoUrl).toBe("https://img/t_logo_med/nes.jpg");
 
     stub([{ test: (u) => u.includes("jeuInfos.php"), response: ok({ response: { jeu: { systeme: { text: "SNES" }, synopsis: [{ langue: "fr", text: "Synopsis francaise" }] } } }) }]);
     const noEnglishSynopsis = await metadata.fetchRomDetailsFor({ screenscraper: "2" });
@@ -1587,11 +2144,22 @@ describe("fetchArtworkFor", () => {
     expect(await metadata.fetchArtworkFor("rom", { igdb: "1" })).toEqual({ posters: ["https://img/t_cover_big/c.jpg", "https://img/t_cover_big/a.jpg"], backgrounds: ["https://img/t_screenshot_huge/s.jpg"], logos: [] });
   });
 
-  it("rom via screenscraper: filters media by type into posters vs backgrounds", async () => {
+  it("rom via screenscraper: filters media by type into posters vs backgrounds, as credential-free references", async () => {
     setSetting("screenscraperDevId", "d");
     setSetting("screenscraperDevPassword", "p");
-    stub([{ test: (u) => u.includes("jeuInfos.php"), response: ok({ response: { jeu: { medias: [{ type: "box-2D", url: "http://box" }, { type: "fanart", url: "http://fa" }, { type: "wheel", url: "http://ignored" }] } } }) }]);
-    expect(await metadata.fetchArtworkFor("rom", { screenscraper: "1" })).toEqual({ posters: ["http://box"], backgrounds: ["http://fa"], logos: [] });
+    setSetting("screenscraperUserPassword", "admin-secret");
+    const media = (kind: string) => `https://neoclone.screenscraper.fr/api2/mediaJeu.php?devid=d&devpassword=p&ssid=u&sspassword=admin-secret&jeuid=1&media=${kind}`;
+    stub([
+      {
+        test: (u) => u.includes("jeuInfos.php"),
+        response: ok({ response: { jeu: { medias: [{ type: "box-2D", url: media("box-2D") }, { type: "fanart", url: media("fanart") }, { type: "wheel", url: media("wheel") }, { type: "box-3D" }] } } }),
+      },
+    ]);
+    expect(await metadata.fetchArtworkFor("rom", { screenscraper: "1" })).toEqual({
+      posters: ["screenscraper:https://neoclone.screenscraper.fr/api2/mediaJeu.php?jeuid=1&media=box-2D"],
+      backgrounds: ["screenscraper:https://neoclone.screenscraper.fr/api2/mediaJeu.php?jeuid=1&media=fanart"],
+      logos: [],
+    });
   });
 
   it("rom via thegamesdb: resolves the images list against the base_url, falling back through original then medium when large is absent", async () => {
@@ -1733,5 +2301,365 @@ describe("fetchPersonDetails", () => {
       { tmdbId: 1, title: "M1", year: 2020, character: "C1", posterUrl: "https://image.tmdb.org/t/p/w342/p1.jpg", mediaType: "movie" },
       { tmdbId: 2, title: "S1", year: 2018, character: "C2", posterUrl: null, mediaType: "series" },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ScreenScraper artwork references — the image proxy half and the startup migration
+// ---------------------------------------------------------------------------
+
+describe("ScreenScraper artwork references", () => {
+  const credentialed =
+    "https://neoclone.screenscraper.fr/api2/mediaJeu.php?devid=dev-id-9&devpassword=dev-secret-9&softname=AoNarr&ssid=admin-9&sspassword=admin-secret-9&systemeid=1&jeuid=3&media=box-2D(wor)";
+
+  function image(contentType = "image/png", bytes = [1, 2, 3]) {
+    return new Response(new Uint8Array(bytes), { status: 200, headers: { "content-type": contentType } });
+  }
+
+  // A refused download, with its unread body's cancel() observable.
+  function refused(contentType: string, status = 200) {
+    const cancel = vi.fn(async () => undefined);
+    return { response: { ok: status < 400, status, headers: new Headers({ "content-type": contentType }), body: { cancel } }, cancel };
+  }
+
+  function configure() {
+    setSetting("screenscraperDevId", "dev-id-9");
+    setSetting("screenscraperDevPassword", "dev-secret-9");
+    setSetting("screenscraperUserId", "admin-9");
+    setSetting("screenscraperUserPassword", "admin-secret-9");
+  }
+
+  const mediaRef = (jeuid: number, media = "box-2D(wor)") => `screenscraper:https://neoclone.screenscraper.fr/api2/mediaJeu.php?jeuid=${jeuid}&media=${media}`;
+
+  it("proxyScreenscraperArtwork turns a ScreenScraper URL or reference into local-artwork proxy columns, and leaves anything else alone", () => {
+    const proxied = metadata.proxyScreenscraperArtwork(credentialed)!;
+    expect(proxied.url).toBe(`/api/media/local-artwork/${proxied.token}`);
+    expect(proxied.token).toMatch(/^[0-9a-f]{40}$/);
+    expect(proxied.localPath.startsWith(metadata.SCREENSCRAPER_ARTWORK_PREFIX)).toBe(true);
+    expect(proxied.localPath).not.toMatch(/dev-id-9|dev-secret-9|admin-9|admin-secret-9/);
+
+    expect(metadata.proxyScreenscraperArtwork(proxied.localPath)?.localPath).toBe(proxied.localPath);
+    expect(metadata.proxyScreenscraperArtwork("https://image.tmdb.org/t/p/w342/x.jpg")).toBeNull();
+    expect(metadata.proxyScreenscraperArtwork("/api/media/local-artwork/abc")).toBeNull();
+    expect(metadata.proxyScreenscraperArtwork(null)).toBeNull();
+  });
+
+  it("fetchScreenscraperArtwork adds the configured credentials server-side and returns only images", async () => {
+    configure();
+    const ref = metadata.proxyScreenscraperArtwork(credentialed)!.localPath;
+    const fetchMock = stub([{ test: (u) => u.startsWith("https://neoclone.screenscraper.fr/api2/mediaJeu.php"), response: () => image("image/png", [7, 8, 9]) }]);
+
+    const res = await metadata.fetchScreenscraperArtwork(ref);
+    expect(res?.headers.get("content-type")).toBe("image/png");
+    expect([...new Uint8Array(await res!.arrayBuffer())]).toEqual([7, 8, 9]);
+    const sent = new URL(String(fetchMock.mock.calls[0][0]));
+    expect(sent.searchParams.get("devid")).toBe("dev-id-9");
+    expect(sent.searchParams.get("devpassword")).toBe("dev-secret-9");
+    expect(sent.searchParams.get("ssid")).toBe("admin-9");
+    expect(sent.searchParams.get("sspassword")).toBe("admin-secret-9");
+    expect(sent.searchParams.get("jeuid")).toBe("3");
+    expect(sent.searchParams.get("media")).toBe("box-2D(wor)");
+
+    // ScreenScraper answers a refused request with a 200 text/html error page, not an image; the
+    // unread body is cancelled rather than left holding the connection
+    const html = refused("text/html; charset=utf-8");
+    stub([{ test: (u) => u.includes("screenscraper.fr"), response: html.response }]);
+    await expect(metadata.fetchScreenscraperArtwork(mediaRef(40))).resolves.toBeNull();
+    expect(html.cancel).toHaveBeenCalledTimes(1);
+
+    // same for an HTTP error (ScreenScraper's 429/430 thread and quota refusals), and for SVG,
+    // which could run script once served from AoNarr's own origin
+    for (const [i, r] of [refused("image/png", 430), refused("image/svg+xml")].entries()) {
+      stub([{ test: (u) => u.includes("screenscraper.fr"), response: r.response }]);
+      await expect(metadata.fetchScreenscraperArtwork(mediaRef(41 + i))).resolves.toBeNull();
+      expect(r.cancel).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("fetchScreenscraperArtwork downloads each image once, then serves it from the disk cache", async () => {
+    configure();
+    const fetchMock = stub([{ test: (u) => u.includes("screenscraper.fr"), response: () => image("image/jpeg; charset=binary", [4, 5]) }]);
+    const first = await metadata.fetchScreenscraperArtwork(mediaRef(50));
+    expect([...new Uint8Array(await first!.arrayBuffer())]).toEqual([4, 5]);
+
+    // the same image, whichever credentials its stored URL once carried, costs no further download
+    // — even with ScreenScraper no longer configured
+    setSetting("screenscraperDevPassword", "");
+    const again = await metadata.fetchScreenscraperArtwork(
+      "screenscraper:https://neoclone.screenscraper.fr/api2/mediaJeu.php?devid=old&devpassword=old&jeuid=50&media=box-2D(wor)"
+    );
+    expect(again?.headers.get("content-type")).toBe("image/jpeg");
+    expect([...new Uint8Array(await again!.arrayBuffer())]).toEqual([4, 5]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // a refused download isn't cached on disk: once the retry window has passed, it's tried again
+    configure();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    stub([{ test: (u) => u.includes("screenscraper.fr"), response: refused("text/html").response }]);
+    await expect(metadata.fetchScreenscraperArtwork(mediaRef(51))).resolves.toBeNull();
+    vi.setSystemTime(Date.now() + 5 * 60_000);
+    const retry = stub([{ test: (u) => u.includes("screenscraper.fr"), response: () => image() }]);
+    await expect(metadata.fetchScreenscraperArtwork(mediaRef(51))).resolves.not.toBeNull();
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetchScreenscraperArtwork doesn't queue a failed image again for a few minutes, however many views ask for it", async () => {
+    configure();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    // ScreenScraper down: the download itself fails
+    const down = stub([
+      {
+        test: (u) => u.includes("screenscraper.fr"),
+        response: () => {
+          throw new TypeError("fetch failed");
+        },
+      },
+    ]);
+    await expect(metadata.fetchScreenscraperArtwork(mediaRef(500))).resolves.toBeNull();
+    expect(down).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(Date.now() + 4 * 60_000);
+    await expect(metadata.fetchScreenscraperArtwork(mediaRef(500))).resolves.toBeNull();
+    // the same image under a differently-credentialed stored URL is the same failed image
+    await expect(
+      metadata.fetchScreenscraperArtwork("screenscraper:https://neoclone.screenscraper.fr/api2/mediaJeu.php?devid=old&devpassword=old&jeuid=500&media=box-2D(wor)")
+    ).resolves.toBeNull();
+    expect(down).toHaveBeenCalledTimes(1);
+
+    // another image is unaffected
+    const up = stub([{ test: (u) => u.includes("screenscraper.fr"), response: () => image() }]);
+    await expect(metadata.fetchScreenscraperArtwork(mediaRef(501))).resolves.not.toBeNull();
+    expect(up).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetchScreenscraperArtwork refuses, without remembering it as failed, an image past the download backlog", async () => {
+    configure();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const fetchMock = stub([
+      {
+        test: (u) => u.includes("screenscraper.fr"),
+        response: async () => {
+          await gate;
+          return image();
+        },
+      },
+    ]);
+
+    // the first view of a big uncached ROM library: one download in flight, the rest waiting
+    const refs = Array.from({ length: 40 }, (_, i) => mediaRef(600 + i));
+    const refusedRefs: string[] = [];
+    const loads = refs.map((ref) =>
+      metadata.fetchScreenscraperArtwork(ref).then((res) => {
+        if (!res) refusedRefs.push(ref);
+        return res;
+      })
+    );
+    // one in flight plus a backlog of 32; the other 7 are refused straight away
+    try {
+      await vi.waitFor(() => expect(refusedRefs).toHaveLength(7));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      // a hung download would hold up every later test's ScreenScraper request
+      release();
+    }
+    const results = await Promise.all(loads);
+    expect(results.filter((r) => r !== null)).toHaveLength(33);
+    expect(fetchMock).toHaveBeenCalledTimes(33);
+
+    // a refused one downloads on the next view
+    await expect(metadata.fetchScreenscraperArtwork(refusedRefs[0])).resolves.not.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(34);
+  });
+
+  it("a ScreenScraper lookup waiting behind image downloads runs as soon as the one in flight finishes", async () => {
+    configure();
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => (releaseFirst = resolve));
+    stub([
+      {
+        test: (u) => u.includes("/api2/mediaJeu.php"),
+        response: async (u: string) => {
+          const jeuid = new URL(u).searchParams.get("jeuid");
+          order.push(`image ${jeuid}`);
+          if (jeuid === "700") await firstGate;
+          return image();
+        },
+      },
+      {
+        test: (u) => u.includes("/api2/jeuRecherche.php"),
+        response: () => {
+          order.push("search");
+          return ok({ response: { jeux: [] } });
+        },
+      },
+    ]);
+
+    const first = metadata.fetchScreenscraperArtwork(mediaRef(700));
+    let images: Promise<Response | null>[] = [];
+    let search: Promise<unknown> = Promise.resolve();
+    try {
+      await vi.waitFor(() => expect(order).toEqual(["image 700"]));
+      images = Array.from({ length: 5 }, (_, i) => metadata.fetchScreenscraperArtwork(mediaRef(701 + i)));
+      // let the other five finish their disk-cache checks and join the queue behind it, then the search
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      search = metadata.searchMetadata("rom", "x", "screenscraper");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(order).toEqual(["image 700"]);
+    } finally {
+      releaseFirst();
+    }
+    await Promise.all([first, ...images, search]);
+
+    expect(order[0]).toBe("image 700");
+    expect(order[1]).toBe("search");
+    expect(order.slice(2).sort()).toEqual(["image 701", "image 702", "image 703", "image 704", "image 705"]);
+  });
+
+  it("fetchScreenscraperArtwork sends ScreenScraper one request at a time, and one download per image however many ask for it", async () => {
+    configure();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const fetchMock = stub([
+      {
+        test: (u) => u.includes("screenscraper.fr"),
+        response: async () => {
+          inFlight++;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          inFlight--;
+          return image();
+        },
+      },
+    ]);
+    // a ROM grid asking for a dozen posters at once, one of them twice
+    const refs = [...Array.from({ length: 12 }, (_, i) => mediaRef(60 + i)), mediaRef(60)];
+    const results = await Promise.all(refs.map((r) => metadata.fetchScreenscraperArtwork(r)));
+    expect(results.every((r) => r !== null)).toBe(true);
+    expect(maxInFlight).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(12);
+  });
+
+  it("ScreenScraper lookups share the one-at-a-time queue with the image downloads", async () => {
+    configure();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const track = (body: () => any) => async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight--;
+      return body();
+    };
+    stub([
+      { test: (u) => u.includes("/api2/mediaJeu.php"), response: track(() => image()) },
+      { test: (u) => u.includes("/api2/jeuInfos.php"), response: track(() => ok({ response: { jeu: { id: 1, medias: [] } } })) },
+      { test: (u) => u.includes("/api2/jeuRecherche.php"), response: track(() => ok({ response: { jeux: [] } })) },
+    ]);
+    await Promise.all([
+      metadata.fetchScreenscraperArtwork(mediaRef(80)),
+      metadata.fetchArtworkFor("rom", { screenscraper: "1" }),
+      metadata.searchMetadata("rom", "x", "screenscraper"),
+      metadata.fetchScreenscraperArtwork(mediaRef(81)),
+    ]);
+    expect(maxInFlight).toBe(1);
+
+    // a failed lookup doesn't jam the queue for the requests behind it
+    stub([
+      { test: (u) => u.includes("/api2/jeuRecherche.php"), response: notOk(503) },
+      { test: (u) => u.includes("/api2/mediaJeu.php"), response: () => image() },
+    ]);
+    const [search, art] = await Promise.allSettled([metadata.searchMetadata("rom", "x", "screenscraper"), metadata.fetchScreenscraperArtwork(mediaRef(82))]);
+    expect(search).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: "ScreenScraper search failed: HTTP 503" }) });
+    expect(art).toMatchObject({ status: "fulfilled" });
+    expect((art as PromiseFulfilledResult<Response | null>).value).not.toBeNull();
+  });
+
+  it("fetchScreenscraperArtwork never sends the credentials anywhere but ScreenScraper's media endpoints", async () => {
+    setSetting("screenscraperDevId", "dev-id-9");
+    setSetting("screenscraperDevPassword", "dev-secret-9");
+    const fetchMock = stub([{ test: () => true, response: image() }]);
+    for (const ref of [
+      "screenscraper:https://evil.example/api2/mediaJeu.php?jeuid=1",
+      "screenscraper:https://screenscraper.fr.evil.example/api2/mediaJeu.php?jeuid=1",
+      "screenscraper:https://api.screenscraper.fr/api2/jeuInfos.php?gameid=1",
+      "screenscraper:not a url",
+      "https://neoclone.screenscraper.fr/api2/mediaJeu.php?jeuid=1",
+    ]) {
+      await expect(metadata.fetchScreenscraperArtwork(ref)).resolves.toBeNull();
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    setSetting("screenscraperDevPassword", "");
+    await expect(metadata.fetchScreenscraperArtwork("screenscraper:https://neoclone.screenscraper.fr/api2/mediaJeu.php?jeuid=1")).resolves.toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("migrateScreenscraperArtwork moves stored credentialed URLs and bare references behind the proxy, scrubs extra_metadata, and clears ScreenScraper group logos", async () => {
+    const bareRef = "screenscraper:https://neoclone.screenscraper.fr/api2/mediaJeu.php?jeuid=3&media=fanart";
+    const extra = JSON.stringify({ screenscraper: { title: "Game", posterUrl: credentialed, externalIds: { screenscraper: "3" } } });
+    const romId = Number(
+      (
+        await db
+          .prepare("INSERT INTO media_items (type, title, sort_title, poster_url, backdrop_url, extra_metadata) VALUES ('rom', 'Game', 'game', ?, ?, ?)")
+          .run(credentialed, bareRef, extra)
+      ).lastInsertRowid
+    );
+    const otherExtra = JSON.stringify({ other: { posterUrl: "https://cdn.example/p.jpg?password=not-ours" } });
+    const otherId = Number(
+      (
+        await db
+          .prepare("INSERT INTO media_items (type, title, sort_title, poster_url, extra_metadata) VALUES ('movie', 'Film', 'film', ?, ?)")
+          .run("https://image.tmdb.org/t/p/w342/x.jpg", otherExtra)
+      ).lastInsertRowid
+    );
+    const ssGroupId = Number(
+      (await db.prepare("INSERT INTO library_groups (media_type, kind, name, sort_name, logo_url) VALUES ('rom', 'system', 'NES', 'nes', ?)").run(credentialed)).lastInsertRowid
+    );
+    const igdbGroupId = Number(
+      (await db.prepare("INSERT INTO library_groups (media_type, kind, name, sort_name, logo_url) VALUES ('rom', 'system', 'SNES', 'snes', ?)").run("https://images.igdb.com/logo.png")).lastInsertRowid
+    );
+    // requests made from a ScreenScraper search result stored its credentialed poster URL
+    const requesterId = Number((await db.prepare("INSERT INTO users (username, password_hash) VALUES ('ss-requester', 'x')").run()).lastInsertRowid);
+    const insertRequest = async (title: string, posterUrl: string) =>
+      Number((await db.prepare("INSERT INTO requests (user_id, type, title, poster_url) VALUES (?, 'rom', ?, ?)").run(requesterId, title, posterUrl)).lastInsertRowid);
+    const credentialedRequestId = await insertRequest("Requested Game", credentialed);
+    const refRequestId = await insertRequest("Requested Game 2", bareRef);
+    const tmdbRequestId = await insertRequest("Requested Film", "https://image.tmdb.org/t/p/w342/r.jpg");
+
+    expect(await metadata.migrateScreenscraperArtwork()).toBe(4);
+
+    const rom = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(romId)) as any;
+    expect(rom.poster_url).toBe(`/api/media/local-artwork/${rom.local_poster_token}`);
+    expect(rom.local_poster_path).toBe("screenscraper:https://neoclone.screenscraper.fr/api2/mediaJeu.php?softname=AoNarr&systemeid=1&jeuid=3&media=box-2D%28wor%29");
+    expect(rom.backdrop_url).toBe(`/api/media/local-artwork/${rom.local_backdrop_token}`);
+    expect(rom.local_backdrop_path).toBe(bareRef);
+    expect(rom.local_poster_token).not.toBe(rom.local_backdrop_token);
+    expect(JSON.stringify(rom)).not.toMatch(/dev-id-9|dev-secret-9|admin-9|admin-secret-9/);
+    expect(JSON.parse(rom.extra_metadata).screenscraper.posterUrl).toBe(rom.local_poster_path);
+    expect(JSON.parse(rom.extra_metadata).screenscraper.externalIds).toEqual({ screenscraper: "3" });
+
+    const other = (await db.prepare("SELECT poster_url, extra_metadata, local_poster_path FROM media_items WHERE id = ?").get(otherId)) as any;
+    expect(other).toEqual({ poster_url: "https://image.tmdb.org/t/p/w342/x.jpg", extra_metadata: otherExtra, local_poster_path: null });
+
+    expect(((await db.prepare("SELECT logo_url FROM library_groups WHERE id = ?").get(ssGroupId)) as any).logo_url).toBeNull();
+    expect(((await db.prepare("SELECT logo_url FROM library_groups WHERE id = ?").get(igdbGroupId)) as any).logo_url).toBe("https://images.igdb.com/logo.png");
+
+    const requestPoster = async (id: number) => ((await db.prepare("SELECT poster_url FROM requests WHERE id = ?").get(id)) as any).poster_url;
+    expect(await requestPoster(credentialedRequestId)).toBeNull();
+    expect(await requestPoster(refRequestId)).toBeNull();
+    expect(await requestPoster(tmdbRequestId)).toBe("https://image.tmdb.org/t/p/w342/r.jpg");
+
+    // idempotent: nothing left to convert
+    expect(await metadata.migrateScreenscraperArtwork()).toBe(0);
+  });
+});
+
+describe("isEpisodeMonitoredByDefault", () => {
+  it("adds Season 0 specials unmonitored and every regular season monitored", () => {
+    expect(metadata.isEpisodeMonitoredByDefault({ seasonNumber: 0 })).toBe(false);
+    expect(metadata.isEpisodeMonitoredByDefault({ seasonNumber: 1 })).toBe(true);
+    expect(metadata.isEpisodeMonitoredByDefault({ seasonNumber: 30 })).toBe(true);
   });
 });

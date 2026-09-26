@@ -16,7 +16,7 @@ import { notifyGrabbed } from "../services/notifications.js";
 import { notifyQueueChanged } from "../services/realtime.js";
 import { scoreRelease } from "../services/customFormatScoring.js";
 import { log } from "../services/logger.js";
-import { sizeWithinQualityBounds } from "../services/quality.js";
+import { knownReleaseSize, sizeWithinQualityBounds, usesQualityTiers } from "../services/quality.js";
 import { getBlocklistedTitles, isBlocklisted } from "../services/blocklist.js";
 import { matchTierFor, type TargetIdentity } from "../services/scheduler.js";
 import { searchSlskd } from "../services/soulseek.js";
@@ -181,6 +181,9 @@ searchRouter.get(
     }
 
     const blocklisted = await getBlocklistedTitles(item.id);
+    // Same auto-grab rules as chooseBestResult: a type with no quality tiers (music, books, ...)
+    // takes any quality, and a size of 0 means the indexer didn't report one.
+    const tiered = usesQualityTiers(item.type);
     // Same "plain whole-item search" condition that populated identityExternalIds above (no
     // episode/season/sub-item target) — an episodic/collection search already confirms identity a
     // different way, so identity stays null for those and matchTierFor always returns 0 for them.
@@ -193,9 +196,10 @@ searchRouter.get(
           : targetSeason !== null
             ? parsed.seasonNumber === targetSeason
             : true;
+      const size = knownReleaseSize(r.size);
       const { totalScore, matches, rejected, rejectReason } = await scoreRelease(
         r.title,
-        r.size ?? null,
+        size,
         item.qualityProfileId,
         item.type,
         r.downloadVolumeFactor ?? null,
@@ -206,8 +210,8 @@ searchRouter.get(
         ...r,
         parsedQuality: parsed.quality,
         matchesTarget,
-        allowedByProfile: allowedQualities.length === 0 || allowedQualities.includes(parsed.quality),
-        sizeAllowed: sizeWithinQualityBounds(parsed.quality, r.size ?? null),
+        allowedByProfile: !tiered || allowedQualities.length === 0 || allowedQualities.includes(parsed.quality),
+        sizeAllowed: !tiered || sizeWithinQualityBounds(parsed.quality, size),
         formatScore: totalScore,
         formatMatches: matches.map((m) => m.name),
         matchTier: matchTierFor(r, identity),
@@ -262,7 +266,7 @@ searchRouter.post(
       clientRow = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(b.downloadClientId);
       if (!clientRow) throw new HttpError(404, "Download client not found");
     } else {
-      const enabled = ((await db.prepare("SELECT * FROM download_clients WHERE enabled = 1").all()) as any[]).map(downloadClientFromRow);
+      const enabled = ((await db.prepare("SELECT * FROM download_clients WHERE enabled = 1 ORDER BY id").all()) as any[]).map(downloadClientFromRow);
       if (enabled.length === 0) throw new HttpError(400, "Add and enable a download client first");
       const picked = pickClientForProtocol(enabled as any, protocol);
       if (!picked) throw new HttpError(400, `No enabled download client can handle a "${protocol}" release`);
@@ -273,6 +277,8 @@ searchRouter.post(
     const adapter = getDownloadClientAdapter(client.type);
     const grab = await adapter.addDownload(client, b.downloadUrl, client.category, b.title, protocol);
     const parsedTitle = parseReleaseTitle(b.title ?? "");
+    // queue.size is BIGINT: Postgres rejects a fractional size after the client already took the download.
+    const size = b.size == null || !Number.isFinite(Number(b.size)) ? null : Math.round(Number(b.size));
     const quality = parsedTitle.quality;
     // A full-season pack grabbed for one episode is recorded against its season too, so the rest of
     // that season counts as queued (see scheduler.ts isAlreadyQueued) and the importer places it all.
@@ -296,7 +302,7 @@ searchRouter.post(
         b.indexerId ?? null,
         client.id,
         grab.downloadId,
-        b.size ?? null,
+        size,
         quality
       );
 

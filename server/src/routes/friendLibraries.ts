@@ -3,12 +3,31 @@ import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { compareFriendLibrary, type FriendLibraryConfig } from "../services/friendLibraries.js";
+import { decryptValue, encryptValue, isEncryptedValue } from "../services/encryption.js";
 
 export const friendLibrariesRouter = Router();
 friendLibrariesRouter.use(requireAdmin);
 
 function fromRow(row: any) {
   return { id: row.id, name: row.name, type: row.type, url: row.url, createdAt: row.created_at };
+}
+
+/** The stored access token, decrypted. A row saved before tokens were encrypted at rest is re-saved
+ * encrypted the first time it's used. */
+async function friendToken(row: { id: number; name: string; token: string }): Promise<string> {
+  if (!isEncryptedValue(row.token)) {
+    // Only while the row still holds the token read above: one replaced through PATCH in the
+    // meantime must not be overwritten with the old one.
+    await db
+      .prepare("UPDATE friend_libraries SET token = ? WHERE id = ? AND token = ?")
+      .run(encryptValue(row.token), row.id, row.token);
+    return row.token;
+  }
+  try {
+    return decryptValue(row.token);
+  } catch {
+    throw new HttpError(500, `The stored token for "${row.name}" can't be decrypted (encryption.key changed) — re-enter it`);
+  }
 }
 
 friendLibrariesRouter.get(
@@ -27,7 +46,7 @@ friendLibrariesRouter.post(
     if (!["plex", "jellyfin", "emby"].includes(b.type)) throw new HttpError(400, "type must be plex, jellyfin or emby");
     const result = await db
       .prepare("INSERT INTO friend_libraries (name, type, url, token) VALUES (?, ?, ?, ?)")
-      .run(b.name, b.type, b.url.replace(/\/+$/, ""), b.token);
+      .run(b.name, b.type, b.url.replace(/\/+$/, ""), encryptValue(String(b.token)));
     const row = await db.prepare("SELECT * FROM friend_libraries WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(fromRow(row));
   })
@@ -56,7 +75,7 @@ friendLibrariesRouter.patch(
     }
     if (b.token) {
       sets.push("token = ?");
-      values.push(b.token);
+      values.push(encryptValue(String(b.token)));
     }
     if (sets.length > 0) {
       values.push(req.params.id);
@@ -84,7 +103,7 @@ friendLibrariesRouter.get(
   asyncHandler(async (req, res) => {
     const row = (await db.prepare("SELECT * FROM friend_libraries WHERE id = ?").get(req.params.id)) as any;
     if (!row) throw new HttpError(404, "Friend library not found");
-    const cfg: FriendLibraryConfig = { id: row.id, name: row.name, type: row.type, url: row.url, token: row.token };
+    const cfg: FriendLibraryConfig = { id: row.id, name: row.name, type: row.type, url: row.url, token: await friendToken(row) };
     try {
       const missing = await compareFriendLibrary(cfg);
       res.json(missing);

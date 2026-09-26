@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useParams } from "react-router-dom";
-import { setSessionToken } from "../api/client.js";
+import { setSessionToken, UI_REQUEST_HEADERS } from "../api/client.js";
 
 interface InvitePreview {
   valid: true;
@@ -46,7 +46,7 @@ export default function InviteAcceptPage() {
     try {
       const res = await fetch(`/api/invite/${token}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { ...UI_REQUEST_HEADERS, "Content-Type": "application/json" },
         body: JSON.stringify({ username: username.trim(), password }),
       });
       const body = await res.json();

@@ -11,14 +11,17 @@ import path from "node:path";
  *
  * Config is read from env vars at module-import time (see src/config.ts) — env vars MUST be set
  * before anything imports src/config.ts (transitively, via src/db/index.js), so every import here
- * is a dynamic `await import(...)`, never a static top-level one.
+ * is a dynamic `await import(...)`, never a static top-level one. A test file's own static imports
+ * can still load src/config.ts first, which is why tests/helpers/isolateDataDirs.ts (a vitest
+ * setup file) already points both variables at a per-file temp dir before any test module loads;
+ * the same directory is reused here so config.ts and process.env agree either way.
  *
  * Postgres has no per-file filesystem isolation (every test file shares one live database), so its
  * public schema is dropped and recreated before the app's own startup (schema create + default
  * seeding) runs — the same effect as SQLite's fresh temp file, just for a shared server.
  */
 export async function setupTestDb() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-test-"));
+  const dir = process.env.AONARR_TEST_DATA_DIR ?? fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-test-"));
   process.env.AONARR_CONFIG_DIR = dir;
   process.env.AONARR_DOWNLOADS_DIR = dir;
 

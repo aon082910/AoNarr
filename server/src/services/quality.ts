@@ -1,5 +1,6 @@
 import { db } from "../db/index.js";
 import { log } from "./logger.js";
+import { MEDIA_TYPES } from "./mediaTypes.js";
 
 /** Seed order used to populate the `qualities` table on first boot. Editable afterward via Settings. */
 export const DEFAULT_QUALITY_ORDER = [
@@ -83,18 +84,40 @@ export function invalidateQualityRankCache(): void {
 
 /** How far a release's size is from its quality's configured preferred size, in MB — smaller is
  * better. Used only as a tiebreaker between releases already equal on format score/seeders/group
- * reputation, never to reject anything (unlike min/max size bounds). No preferred size configured,
- * or no size on the release, is treated as a neutral tie (0), not a penalty. */
+ * reputation, never to reject anything (unlike min/max size bounds). No preferred size configured
+ * is treated as a neutral tie (0), not a penalty. A release whose size the indexer didn't report
+ * is no evidence of being near the preferred size, so it ranks after every reported size
+ * (Number.MAX_VALUE rather than Infinity, so two of them still compare as a tie). */
 export function preferredSizeDistance(qualityName: string | null, sizeBytes: number | null): number {
-  if (!qualityName || sizeBytes == null) return 0;
+  if (!qualityName) return 0;
   const preferredMb = preferredSizeCache.get(qualityName);
   if (preferredMb == null) return 0;
+  if (sizeBytes == null) return Number.MAX_VALUE;
   return Math.abs(sizeBytes / 1_000_000 - preferredMb);
 }
 
 export function qualityRank(name: string | null): number {
   if (!name) return -1;
   return rankCache.get(name) ?? -1;
+}
+
+/**
+ * The quality ladder is video-only (resolution + source), so an album, ebook, comic, ROM or podcast
+ * release always parses as "Unknown". Judging such a type by its profile's tiers filters out every
+ * release it could ever find; for these types any quality is acceptable and there is no quality to
+ * upgrade by. Derived from the type's file extensions: a type with no video extension has no tiers.
+ */
+export function usesQualityTiers(mediaType: string): boolean {
+  const config = MEDIA_TYPES[mediaType];
+  if (!config) return true;
+  const videoExtensions = new Set(MEDIA_TYPES.movie.extensions);
+  return config.extensions.some((ext) => videoExtensions.has(ext));
+}
+
+/** Several indexer adapters report a size of 0 when the indexer gave none. Taken literally, that
+ * fails every configured minimum size and matches every "smaller than" size custom format. */
+export function knownReleaseSize(size: number | null | undefined): number | null {
+  return typeof size === "number" && Number.isFinite(size) && size > 0 ? size : null;
 }
 
 /**

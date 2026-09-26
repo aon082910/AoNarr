@@ -183,19 +183,6 @@ export default function Users() {
       </div>
       {users.length === 0 && <p className="empty">No household accounts yet.</p>}
 
-      {newInviteUrl && (
-        <div className="form-panel" style={{ marginBottom: 16 }}>
-          <label htmlFor="users-invite-link-share-this-with-the-person-y-1">Invite link — share this with the person you're inviting</label>
-          <input id="users-invite-link-share-this-with-the-person-y-1" value={newInviteUrl} readOnly onFocus={(e) => e.target.select()} />
-          <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
-            One-time use — it stops working the moment they finish creating their account.
-          </p>
-          <button type="button" className="icon-button" onClick={() => setNewInviteUrl(null)} title="Dismiss" aria-label="Dismiss">
-            <XIcon />
-          </button>
-        </div>
-      )}
-
       {mode !== null && (mode === "add" || editingUser) && (
         <Modal title={mode === "add" ? "Add User" : `Edit — ${editingUser!.username}`} onClose={() => setMode(null)}>
           <form className="form-panel" onSubmit={submit} style={{ padding: 0 }}>
@@ -260,6 +247,20 @@ export default function Users() {
                   share the generated link — they pick their own username/password instead of you typing
                   it in for them.
                 </p>
+                {/* Shown here, not in the page body: the page body sits behind this modal's
+                 * overlay, where the admin couldn't see or copy the link just generated. */}
+                {newInviteUrl && (
+                  <div className="form-panel" style={{ marginBottom: 16 }}>
+                    <label htmlFor="users-invite-link-share-this-with-the-person-y-1">Invite link — share this with the person you're inviting</label>
+                    <input id="users-invite-link-share-this-with-the-person-y-1" value={newInviteUrl} readOnly onFocus={(e) => e.target.select()} />
+                    <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+                      One-time use — it stops working the moment they finish creating their account.
+                    </p>
+                    <button type="button" className="icon-button" onClick={() => setNewInviteUrl(null)} title="Dismiss" aria-label="Dismiss">
+                      <XIcon />
+                    </button>
+                  </div>
+                )}
                 {!showInviteForm && (
                   <button type="button" onClick={() => setShowInviteForm(true)}>
                     Create invite link

@@ -37,7 +37,7 @@ importReviewRouter.get(
       total: number | string;
     };
     const rows = await db
-      .prepare(`SELECT * FROM import_review_items WHERE ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+      .prepare(`SELECT * FROM import_review_items WHERE ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
       .all(...params, limit, offset);
     res.json({ items: (rows as any[]).map(importReviewItemFromRow), total: Number(countRow.total) });
   })

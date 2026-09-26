@@ -121,15 +121,63 @@ export async function findMusicSidecars(
   return { artist, album };
 }
 
+/** Where a per-item sidecar is being looked up for, so a folder-wide sidecar file (metadata.opf,
+ * a bare ComicInfo.xml) is only trusted when it can only be describing this one file. */
+export interface FolderSidecarScope {
+  /** The item's own folder IS the item (an Audiobooks book folder), so its folder-wide sidecar
+   * always describes it. */
+  folderIsChild?: boolean;
+  /** The type's file extensions — without folderIsChild, a folder-wide sidecar only applies when
+   * the folder holds no other item of this type. Defaults to the file's own extension. */
+  extensions?: readonly string[];
+  /** The library root the file sits in. A folder-wide sidecar in the root itself never applies to
+   * a file loose in that root — it names no particular file. */
+  rootPath?: string | null;
+}
+
+/** Filesystem clutter a Mac or NAS leaves beside real files, never media: macOS AppleDouble
+ * companions ("._Dune.epub", a few-KB resource fork written next to every file a Mac copies onto an
+ * SMB share or exFAT drive), .DS_Store, and the metadata folders of macOS and Netatalk. */
+export function isOsMetadataEntry(name: string): boolean {
+  return name.startsWith("._") || /^\.(?:DS_Store|AppleDouble|AppleDB|AppleDesktop|Trashes|Spotlight-V100|fseventsd|TemporaryItems)$/i.test(name);
+}
+
+/** Whether `filePath` is the only item of its type in its folder — the same book saved in several
+ * formats ("Title.epub" + "Title.mobi") still counts as one. */
+export function holdsOnlyThisItem(filePath: string, extensions?: readonly string[]): boolean {
+  const exts = (extensions ?? [path.extname(filePath)]).map((e) => e.toLowerCase());
+  const own = path.basename(filePath, path.extname(filePath)).toLowerCase();
+  try {
+    for (const entry of fs.readdirSync(path.dirname(filePath), { withFileTypes: true })) {
+      if (!entry.isFile() || isOsMetadataEntry(entry.name) || !exts.includes(path.extname(entry.name).toLowerCase())) continue;
+      if (path.basename(entry.name, path.extname(entry.name)).toLowerCase() !== own) return false;
+    }
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+/** The folder-wide sidecar's text, when it exists and may describe `filePath` (see FolderSidecarScope). */
+function readFolderSidecar(filePath: string, name: string, scope: FolderSidecarScope): string | null {
+  const sidecarPath = path.join(path.dirname(filePath), name);
+  if (!fs.existsSync(sidecarPath)) return null;
+  if (scope.rootPath && path.resolve(path.dirname(filePath)) === path.resolve(scope.rootPath)) return null;
+  if (!scope.folderIsChild && !holdsOnlyThisItem(filePath, scope.extensions)) return null;
+  return readIfExists(sidecarPath);
+}
+
 /** ComicInfo.xml for one comic/manga issue — checked inside the archive first (the real-world
- * convention for a .cbz, via findComicInfoInCbz), then an external sidecar next to the file
- * (either a bare "ComicInfo.xml" or "<basename>.xml") for anything else (.cbr, .pdf, or a .cbz
- * that just doesn't have one embedded). */
-export async function findComicSidecar(filePath: string): Promise<SidecarMetadata | null> {
+ * convention for a .cbz, via findComicInfoInCbz), then an external "<basename>.xml" next to the
+ * file, then a bare "ComicInfo.xml" in its folder for anything else (.cbr, .pdf, or a .cbz that
+ * just doesn't have one embedded) — the bare one only when it can't be another issue's (see
+ * FolderSidecarScope); otherwise every issue in a series folder took the same title and all but
+ * the first were skipped as duplicates. */
+export async function findComicSidecar(filePath: string, scope: FolderSidecarScope = {}): Promise<SidecarMetadata | null> {
   const embedded = findComicInfoInCbz(filePath);
   const base = path.basename(filePath, path.extname(filePath));
   const dir = path.dirname(filePath);
-  const xml = embedded ?? readIfExists(path.join(dir, "ComicInfo.xml")) ?? readIfExists(path.join(dir, `${base}.xml`));
+  const xml = embedded ?? readIfExists(path.join(dir, `${base}.xml`)) ?? readFolderSidecar(filePath, "ComicInfo.xml", scope);
   if (!xml) return null;
   try {
     const parsed = await parseComicInfoXml(xml);
@@ -148,9 +196,16 @@ export async function findComicSidecar(filePath: string): Promise<SidecarMetadat
   }
 }
 
-/** Calibre's metadata.opf, sitting in the same folder as the book/audiobook file itself. */
-export async function findOpfSidecar(filePath: string): Promise<SidecarMetadata | null> {
-  const xml = readIfExists(path.join(path.dirname(filePath), "metadata.opf"));
+/** An OPF describing one book/audiobook: its own "<basename>.opf" first, then Calibre's
+ * metadata.opf in the same folder — the latter only when the folder can't hold another book it
+ * might be describing instead (see FolderSidecarScope); a stray metadata.opf in an author folder
+ * of several books otherwise gave every one of them the same title. */
+export async function findOpfSidecar(filePath: string, scope: FolderSidecarScope = {}): Promise<SidecarMetadata | null> {
+  const ownPath = path.join(path.dirname(filePath), `${path.basename(filePath, path.extname(filePath))}.opf`);
+  return (await parseOpfSidecar(readIfExists(ownPath))) ?? (await parseOpfSidecar(readFolderSidecar(filePath, "metadata.opf", scope)));
+}
+
+async function parseOpfSidecar(xml: string | null): Promise<SidecarMetadata | null> {
   if (!xml) return null;
   try {
     const parsed = await parseOpf(xml);
@@ -173,14 +228,19 @@ export async function findOpfSidecar(filePath: string): Promise<SidecarMetadata 
  * file — everything except the music (two-folder) and show-level (tvshow.nfo) cases, which need
  * more than one path and are called directly by their own exports above. Returns null outright for
  * a type with no `sidecarFormat` configured, so every call site can call this unconditionally. */
-export async function findFileSidecar(typeConfig: MediaTypeConfig, filePath: string): Promise<SidecarMetadata | null> {
+export async function findFileSidecar(
+  typeConfig: MediaTypeConfig,
+  filePath: string,
+  rootPath?: string | null
+): Promise<SidecarMetadata | null> {
+  const scope: FolderSidecarScope = { folderIsChild: !!typeConfig.multiFilePerChild, extensions: typeConfig.extensions, rootPath };
   switch (typeConfig.sidecarFormat) {
     case "kodi-video":
       return typeConfig.shape === "episodic" ? findEpisodeSidecar(filePath) : findMovieSidecar(filePath);
     case "comicinfo":
-      return findComicSidecar(filePath);
+      return findComicSidecar(filePath, scope);
     case "opf":
-      return findOpfSidecar(filePath);
+      return findOpfSidecar(filePath, scope);
     default:
       return null;
   }

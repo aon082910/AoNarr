@@ -1,11 +1,15 @@
 import { db } from "../db/index.js";
 import { pathTail } from "./archival.js";
-import { fetchWatchedFiles, resolvePlexFilePath } from "./mediaServer.js";
+import { fetchWatchedFiles, resolveJellyfinLikeFilePath, resolvePlexFilePath } from "./mediaServer.js";
 import { getSetting, setSetting } from "./settingsStore.js";
 import { log } from "./logger.js";
 
 export interface WebhookWatchSignal {
+  /** Empty when only `itemId` is known; recordWatchEvent fills it in once it resolves the id, and
+   * leaves it empty (having logged why) when the id doesn't resolve. */
   filePath: string;
+  /** Jellyfin/Emby item id, for a payload that carries no file path (Jellyfin's plugin never does). */
+  itemId?: string;
 }
 
 /**
@@ -33,16 +37,20 @@ function isTrueFlag(value: unknown): boolean {
 }
 
 let loggedMissingCompletionFlag = false;
+let loggedMissingItemRef = false;
 
 /**
  * Jellyfin's "Webhook" plugin and Emby's "Webhooks" plugin both send configurable JSON — this
- * reads the field names their default templates use (`NotificationType`/`Path` for Jellyfin's
- * plugin, `Event`/`Item.Path` for Emby's). A playback-stop notification fires on every stop, even
- * a few seconds in, so it only counts as "watched" when the payload says playback reached the end
- * (`PlayedToCompletion`, top-level for Jellyfin, under `PlaybackInfo` for Emby). Emby's explicit
- * `item.markplayed` event is a watched signal on its own. A Jellyfin Generic-destination template
- * has to include `"PlayedToCompletion": "{{PlayedToCompletion}}"` (or enable "Send All
- * Properties"); one without it records nothing, logged once so the template is diagnosable.
+ * reads the field names their default templates use (`NotificationType`/`ItemId` for Jellyfin's
+ * plugin, `Event`/`Item.Path` for Emby's). Jellyfin's plugin has no file-path variable at all, so
+ * its payload is identified by `ItemId` and resolved to a path through the configured server by
+ * recordWatchEvent (a `Path` field is still used when a payload has one). A playback-stop
+ * notification fires on every stop, even a few seconds in, so it only counts as "watched" when the
+ * payload says playback reached the end (`PlayedToCompletion`, top-level for Jellyfin, under
+ * `PlaybackInfo` for Emby). Emby's explicit `item.markplayed` event is a watched signal on its own.
+ * A Jellyfin Generic-destination template has to include `"ItemId": "{{ItemId}}"` and
+ * `"PlayedToCompletion": "{{PlayedToCompletion}}"` (or enable "Send All Properties"); one without
+ * them records nothing, logged once so the template is diagnosable.
  */
 export function parseJellyfinEmbyPayload(body: any): WebhookWatchSignal | null {
   const notificationType = String(body?.NotificationType ?? body?.Event ?? "");
@@ -58,16 +66,44 @@ export function parseJellyfinEmbyPayload(body: any): WebhookWatchSignal | null {
     if (!isTrueFlag(body?.PlayedToCompletion) && !isTrueFlag(body?.PlaybackInfo?.PlayedToCompletion)) return null;
   }
 
-  const file = body?.Path ?? body?.Item?.Path;
-  return typeof file === "string" && file ? { filePath: file } : null;
+  // `||`, not `??`: a Jellyfin template's "{{Path}}" renders as an empty string.
+  const file = body?.Path || body?.Item?.Path;
+  if (typeof file === "string" && file) return { filePath: file };
+  const itemId = body?.ItemId ?? body?.Item?.Id;
+  if ((typeof itemId === "string" || typeof itemId === "number") && String(itemId).trim()) {
+    return { filePath: "", itemId: String(itemId).trim() };
+  }
+  if (!loggedMissingItemRef) {
+    loggedMissingItemRef = true;
+    log.info(
+      `[webhook] a Jellyfin/Emby watched event had neither an ItemId nor a Path, so it can't be matched to a library file — add "ItemId": "{{ItemId}}" to the Jellyfin webhook template (or enable "Send All Properties")`
+    );
+  }
+  return null;
 }
 
 /** Records a watch event and returns which library entity it matched, or null if nothing in the
  * library resolves to this file path (same tail-matching heuristic auto-archival uses, since the
- * media server and AoNarr often see the same file under different mount points). */
+ * media server and AoNarr often see the same file under different mount points). A signal with
+ * only an item id is resolved to its path through the media server first. */
 export async function recordWatchEvent(
   signal: WebhookWatchSignal
 ): Promise<{ mediaItemId: number; episodeId: number | null; subItemId: number | null } | null> {
+  if (!signal.filePath && signal.itemId) {
+    const itemId = signal.itemId;
+    const resolved = await resolveJellyfinLikeFilePath(itemId).catch((err: Error) => {
+      log.warn(`[webhook] could not look up media server item ${itemId}:`, err.message);
+      return null;
+    });
+    if (!resolved) {
+      log.info(
+        `[webhook] media server item ${itemId} didn't resolve to a file path, so the watch wasn't recorded — looking it up needs the Jellyfin/Emby server URL and token set under Settings → Media Management → Media Server Sync`
+      );
+      return null;
+    }
+    signal.filePath = resolved;
+  }
+  if (!signal.filePath) return null;
   const tail = pathTail(signal.filePath);
 
   const items = (await db.prepare("SELECT id, path FROM media_items WHERE path IS NOT NULL").all()) as { id: number; path: string }[];

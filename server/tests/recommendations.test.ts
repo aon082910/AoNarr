@@ -9,7 +9,8 @@ vi.mock("../src/services/mediaServer.js", () => ({
 }));
 
 const fetchSeriesEpisodesFor = vi.fn();
-vi.mock("../src/services/metadata.js", () => ({
+vi.mock("../src/services/metadata.js", async (importOriginal) => ({
+  isEpisodeMonitoredByDefault: (await importOriginal<typeof import("../src/services/metadata.js")>()).isEpisodeMonitoredByDefault,
   fetchSeriesEpisodesFor: (...args: unknown[]) => fetchSeriesEpisodesFor(...args),
 }));
 

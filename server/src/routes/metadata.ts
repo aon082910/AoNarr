@@ -9,10 +9,13 @@ import {
   fetchCollectionChildrenFor,
   fetchRomDetailsFor,
   fetchSeriesEpisodesFor,
+  isEpisodeMonitoredByDefault,
   METADATA_DEFAULT_PROVIDERS,
   METADATA_PROVIDERS,
   parseProviderUrl,
+  proxyScreenscraperArtwork,
   searchMetadata,
+  upcomingEpisodes,
 } from "../services/metadata.js";
 import { insertTracksForAlbum } from "../services/importLists.js";
 import { matchAdditionalProviders } from "../services/libraryScan.js";
@@ -48,9 +51,7 @@ function episodesToMonitor(
     case "existing":
       return new Set();
     case "future":
-      return new Set(
-        episodes.filter((e) => !e.airDate || e.airDate.slice(0, 10) >= today).map((e) => key(e.seasonNumber, e.episodeNumber))
-      );
+      return new Set(upcomingEpisodes(episodes, today).map((e) => key(e.seasonNumber, e.episodeNumber)));
     case "recent":
     case "latestSeason":
       return new Set(episodes.filter((e) => e.seasonNumber === maxSeason).map((e) => key(e.seasonNumber, e.episodeNumber)));
@@ -190,12 +191,16 @@ metadataRouter.post(
 
     const externalIds = b.externalIds ?? {};
     const rootFolderId = b.rootFolderId ?? (await autoSelectRootFolderId(b.type));
+    // ScreenScraper artwork only loads with the admin's ScreenScraper credentials added, so it is
+    // stored behind the local-artwork proxy rather than as a URL the browser fetches itself.
+    const poster = typeof b.posterUrl === "string" ? proxyScreenscraperArtwork(b.posterUrl) : null;
+    const backdrop = typeof b.backdropUrl === "string" ? proxyScreenscraperArtwork(b.backdropUrl) : null;
 
     const result = await db
       .prepare(
         `INSERT INTO media_items
-         (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability, series_type, backdrop_url, rating, runtime_minutes, studio, content_rating, genres, extra_metadata)
-         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability, @seriesType, @backdropUrl, @rating, @runtimeMinutes, @studio, @contentRating, @genres, @extraMetadata)`
+         (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability, series_type, backdrop_url, rating, runtime_minutes, studio, content_rating, genres, extra_metadata, local_poster_path, local_poster_token, local_backdrop_path, local_backdrop_token)
+         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability, @seriesType, @backdropUrl, @rating, @runtimeMinutes, @studio, @contentRating, @genres, @extraMetadata, @localPosterPath, @localPosterToken, @localBackdropPath, @localBackdropToken)`
       )
       .run({
         type: b.type,
@@ -203,7 +208,7 @@ metadataRouter.post(
         sortTitle: b.title.toLowerCase(),
         year: b.year ?? null,
         overview: b.overview ?? null,
-        posterUrl: b.posterUrl ?? null,
+        posterUrl: poster?.url ?? b.posterUrl ?? null,
         externalIds: JSON.stringify(externalIds),
         rootFolderId,
         qualityProfileId: b.qualityProfileId ?? null,
@@ -217,7 +222,7 @@ metadataRouter.post(
         releaseDate: b.releaseDate ?? null,
         minimumAvailability: b.minimumAvailability ?? getSetting("defaultMinimumAvailability") ?? "announced",
         seriesType: b.seriesType ?? null,
-        backdropUrl: b.backdropUrl ?? null,
+        backdropUrl: backdrop?.url ?? b.backdropUrl ?? null,
         rating: b.rating ?? null,
         runtimeMinutes: b.runtimeMinutes ?? null,
         studio: b.studio ?? null,
@@ -227,6 +232,10 @@ metadataRouter.post(
         // a full performer-as-entity system (no dedicated performer pages/filtering) — see
         // searchAdultThePornDb in metadata.ts for where this comes from.
         extraMetadata: Array.isArray(b.performers) && b.performers.length > 0 ? JSON.stringify({ performers: b.performers }) : null,
+        localPosterPath: poster?.localPath ?? null,
+        localPosterToken: poster?.token ?? null,
+        localBackdropPath: backdrop?.localPath ?? null,
+        localBackdropToken: backdrop?.token ?? null,
       });
 
     const mediaItemId = result.lastInsertRowid;
@@ -259,7 +268,7 @@ metadataRouter.post(
             await db
               .prepare(
                 `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored, absolute_episode_number)
-                 VALUES (?, ?, ?, ?, ?, ?, 1, ?)`
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
               )
               .run(
                 mediaItemId,
@@ -268,6 +277,7 @@ metadataRouter.post(
                 ep.title,
                 ep.airDate,
                 ep.overview,
+                isEpisodeMonitoredByDefault(ep) ? 1 : 0,
                 absoluteByKey.get(`${ep.seasonNumber}:${ep.episodeNumber}`) ?? null
               );
           }
@@ -321,9 +331,11 @@ metadataRouter.post(
           // so an artist with dozens of albums doesn't leave its own add half-finished if one
           // album's track fetch is slow or fails. Without this, a newly-added artist's albums sat
           // with an empty track list until an admin clicked "Fetch tracks" on each one by hand.
-          for (const { id, externalId } of insertedAlbumIds) {
-            await insertTracksForAlbum(id, result.provider, externalId);
-          }
+          // Not awaited: at MusicBrainz's ~1 request/second, a prolific artist's few hundred albums
+          // take minutes, past the reverse proxy's timeout for this request.
+          void (async () => {
+            for (const { id, externalId } of insertedAlbumIds) await insertTracksForAlbum(id, result.provider, externalId);
+          })().catch((err) => log.warn(`[metadata] track import failed for "${b.title}":`, (err as Error).message));
         }
       } else if (typeConfig.shape === "collection") {
         const result = await fetchCollectionChildrenFor(externalIds);

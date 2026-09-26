@@ -7,6 +7,7 @@ import { formatBytes, formatServerTimestamp } from "../utils/format.js";
 import { RotateCcwIcon } from "../components/NavIcons.js";
 import { TrashIcon, XIcon } from "../components/ActionIcons.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
+import { notify } from "../utils/notify.js";
 
 /** Grouped by library type so browsing it mirrors the actual library folder structure — same
  * grouping the server's recycle_bin.media_type + physical recycle-bin/{type}/ layout use. */
@@ -24,12 +25,21 @@ export default function RecycleBin() {
 
   async function recycleReviewItem(id: number, title: string) {
     if (!(await confirmDialog({ title: "Recycle item", message: `Move "${title}" to the recycle bin and mark it missing?` }))) return;
-    await api.post(`/corrupt-media-review/${id}/recycle`, {});
+    try {
+      const result = await api.post<{ stale?: boolean; message?: string } | undefined>(`/corrupt-media-review/${id}/recycle`, {});
+      if (result?.stale) notify.info(result.message || "This file has changed since it was flagged, so nothing was recycled");
+    } catch (err) {
+      notify.error((err as Error).message);
+    }
     load();
   }
 
   async function dismissReviewItem(id: number) {
-    await api.post(`/corrupt-media-review/${id}/dismiss`, {});
+    try {
+      await api.post(`/corrupt-media-review/${id}/dismiss`, {});
+    } catch (err) {
+      notify.error((err as Error).message);
+    }
     load();
   }
 

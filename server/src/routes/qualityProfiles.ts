@@ -70,8 +70,33 @@ qualityProfilesRouter.patch(
 qualityProfilesRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
-    const result = await db.prepare("DELETE FROM quality_profiles WHERE id = ?").run(req.params.id);
-    if (result.changes === 0) throw new HttpError(404, "Quality profile not found");
+    const profile = (await db.prepare("SELECT id, name FROM quality_profiles WHERE id = ?").get(req.params.id)) as
+      | { id: number; name: string }
+      | undefined;
+    if (!profile) throw new HttpError(404, "Quality profile not found");
+
+    // Both references are ON DELETE SET NULL, and an item with no profile is auto-searched with no
+    // quality restriction at all (first result wins), so an in-use profile is never deleted.
+    const usage = (await db
+      .prepare(
+        `SELECT (SELECT COUNT(*) FROM media_items WHERE quality_profile_id = ?) AS items,
+                (SELECT COUNT(*) FROM import_lists WHERE quality_profile_id = ?) AS lists`
+      )
+      .get(profile.id, profile.id)) as { items: number | string; lists: number | string };
+    const items = Number(usage.items);
+    const lists = Number(usage.lists);
+    if (items > 0 || lists > 0) {
+      const users = [
+        items > 0 ? `${items} media item${items === 1 ? "" : "s"}` : null,
+        lists > 0 ? `${lists} import list${lists === 1 ? "" : "s"}` : null,
+      ].filter(Boolean);
+      throw new HttpError(
+        409,
+        `Quality profile "${profile.name}" is still used by ${users.join(" and ")}. Move them to another profile before deleting it.`
+      );
+    }
+
+    await db.prepare("DELETE FROM quality_profiles WHERE id = ?").run(profile.id);
     res.status(204).send();
   })
 );

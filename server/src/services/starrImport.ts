@@ -11,6 +11,7 @@ import {
   type MediaServerSeriesImportResult,
 } from "./mediaServerImport.js";
 import { translateTrashFormat, type TrashCustomFormat } from "./trashFormats.js";
+import { appScopedFormatName } from "./trashSync.js";
 import { log } from "./logger.js";
 
 /**
@@ -773,6 +774,18 @@ export async function previewStarrQualityProfiles(baseUrl: string, apiKey: strin
   return profiles.map((p) => translateStarrQualityProfile(p, rankByName));
 }
 
+/** Once both TRaSH syncs have run, a shared format name (BR-DISK, LQ...) exists twice: the plain
+ * name is whichever app synced first and the other app's copy carries an app suffix. A profile's
+ * scores belong on its own app's copy. Whisparr has no TRaSH sync, so only the plain name applies. */
+async function formatIdForApp(name: string, app: StarrFormatApp): Promise<number | null> {
+  const candidates = app === "whisparr" ? [name] : [appScopedFormatName(name, app), name];
+  for (const candidate of candidates) {
+    const row = (await db.prepare("SELECT id FROM custom_formats WHERE name = ?").get(candidate)) as { id: number } | undefined;
+    if (row) return row.id;
+  }
+  return null;
+}
+
 export interface StarrQualityProfileImportResult {
   added: number;
   skipped: { name: string; reason: string }[];
@@ -811,11 +824,11 @@ export async function importStarrQualityProfiles(
 
       for (const formatItem of profile.formatItems ?? []) {
         if (!formatItem.score) continue;
-        const existingFormat = (await db.prepare("SELECT id FROM custom_formats WHERE name = ?").get(formatItem.name)) as { id: number } | undefined;
-        if (!existingFormat) continue;
+        const formatId = await formatIdForApp(formatItem.name, app);
+        if (formatId == null) continue;
         await db
           .prepare("INSERT INTO quality_profile_format_scores (quality_profile_id, custom_format_id, score) VALUES (?, ?, ?)")
-          .run(newProfileId, existingFormat.id, formatItem.score);
+          .run(newProfileId, formatId, formatItem.score);
       }
     } catch (err) {
       // Most likely quality_profiles.name's UNIQUE constraint — skip it rather than aborting the

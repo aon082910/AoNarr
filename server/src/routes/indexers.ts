@@ -3,9 +3,9 @@ import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { indexerFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { searchIndexer } from "../services/indexerClient.js";
+import { DEFAULT_INDEXER_MEDIA_TYPES, INDEXER_MEDIA_TYPES, searchIndexer } from "../services/indexerClient.js";
 import { attachIndexerHealth } from "../services/indexerHealth.js";
-import { syncFromProwlarr } from "../services/prowlarrSync.js";
+import { mergeSyncedIndexerConfig, syncFromProwlarr } from "../services/prowlarrSync.js";
 import { syncFromJackett } from "../services/jackettSync.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { encryptValue } from "../services/encryption.js";
@@ -21,6 +21,14 @@ indexersRouter.get(
     const indexers = rows.map(indexerFromRow);
     await attachIndexerHealth(indexers);
     res.json(indexers);
+  })
+);
+
+/** The library types an indexer can be assigned to, for the add/edit form's checkboxes. */
+indexersRouter.get(
+  "/media-types",
+  asyncHandler(async (_req, res) => {
+    res.json(INDEXER_MEDIA_TYPES);
   })
 );
 
@@ -59,7 +67,7 @@ indexersRouter.post(
         url: b.url,
         apiKey: b.apiKey ? encryptValue(b.apiKey) : null,
         categories: b.categories ?? "",
-        mediaTypes: b.mediaTypes ?? "movie,series,artist,author",
+        mediaTypes: b.mediaTypes ?? DEFAULT_INDEXER_MEDIA_TYPES,
         enabled: b.enabled === false ? 0 : 1,
         priority: b.priority ?? 25,
         config: b.config ? JSON.stringify(b.config) : null,
@@ -106,8 +114,13 @@ indexersRouter.patch(
       }
     }
     if (b.config !== undefined) {
+      // A Prowlarr/Jackett-synced row is found again only by the sync id stored in its config, so
+      // an edit that replaces config must carry that id over or the next sync inserts a duplicate.
+      const existing = (await db.prepare("SELECT config FROM indexers WHERE id = ?").get(req.params.id)) as
+        | { config: string | null }
+        | undefined;
       sets.push("config = ?");
-      values.push(b.config ? JSON.stringify(b.config) : null);
+      values.push(mergeSyncedIndexerConfig(existing?.config ?? null, b.config || null));
     }
     if (sets.length > 0) {
       values.push(req.params.id);

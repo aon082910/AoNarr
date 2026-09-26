@@ -2,7 +2,7 @@ import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { syncImportList, type ImportListRow } from "../services/importLists.js";
+import { IMPORT_LIST_MEDIA_TYPES, syncImportList, type ImportListRow } from "../services/importLists.js";
 
 export const importListsRouter = Router();
 importListsRouter.use(requireAdmin);
@@ -26,19 +26,40 @@ function normalizeGenresInput(value: unknown): string | null {
   return genres.length > 0 ? JSON.stringify(genres) : null;
 }
 
+/** The largest value a Postgres INTEGER column holds. */
+const MAX_INTEGER_COLUMN = 2_147_483_647;
+
+/** A list's own root folder from the request body: null or '' leaves the choice to auto-select;
+ * anything else has to be an existing folder of a media type the list adds. */
+async function rootFolderIdInput(value: unknown, listType: ImportListRow["type"]): Promise<number | null> {
+  if (value === undefined || value === null || value === "") return null;
+  const id = typeof value === "number" ? value : typeof value === "string" && /^\d+$/.test(value.trim()) ? Number(value) : NaN;
+  if (!Number.isInteger(id) || id < 1 || id > MAX_INTEGER_COLUMN) {
+    throw new HttpError(400, "rootFolderId must be a root folder's id, or null to pick one automatically");
+  }
+  const folder = (await db.prepare("SELECT media_type FROM root_folders WHERE id = ?").get(id)) as { media_type: string } | undefined;
+  if (!folder) throw new HttpError(400, `Root folder ${id} doesn't exist`);
+  const addable = IMPORT_LIST_MEDIA_TYPES[listType];
+  if (!addable.includes(folder.media_type)) {
+    throw new HttpError(400, `This list adds ${addable.join(" and ")} items, so it can't use a ${folder.media_type} root folder`);
+  }
+  return id;
+}
+
 importListsRouter.post(
   "/",
   asyncHandler(async (req, res) => {
-    const { name, type, url, qualityProfileId, enabled, requireReview, minRating, minVotes, excludeGenres } = req.body ?? {};
+    const { name, type, url, qualityProfileId, enabled, requireReview, minRating, minVotes, excludeGenres, rootFolderId } = req.body ?? {};
     if (!name || !url) throw new HttpError(400, "name and url are required");
-    if (!["trakt", "imdb", "lastfm", "tmdb"].includes(type)) {
+    if (!Object.hasOwn(IMPORT_LIST_MEDIA_TYPES, type)) {
       throw new HttpError(400, "type must be 'trakt', 'imdb', 'lastfm' or 'tmdb'");
     }
+    const listRootFolderId = await rootFolderIdInput(rootFolderId, type);
 
     const result = await db
       .prepare(
-        `INSERT INTO import_lists (name, type, url, enabled, quality_profile_id, require_review, min_rating, min_votes, exclude_genres)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO import_lists (name, type, url, enabled, quality_profile_id, require_review, min_rating, min_votes, exclude_genres, root_folder_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         name,
@@ -49,7 +70,8 @@ importListsRouter.post(
         requireReview ? 1 : 0,
         minRating === undefined || minRating === null || minRating === "" ? null : Number(minRating),
         minVotes === undefined || minVotes === null || minVotes === "" ? null : Number(minVotes),
-        normalizeGenresInput(excludeGenres)
+        normalizeGenresInput(excludeGenres),
+        listRootFolderId
       );
     const row = await db.prepare("SELECT * FROM import_lists WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(row);
@@ -59,7 +81,7 @@ importListsRouter.post(
 importListsRouter.patch(
   "/:id",
   asyncHandler(async (req, res) => {
-    const existing = await db.prepare("SELECT * FROM import_lists WHERE id = ?").get(req.params.id);
+    const existing = (await db.prepare("SELECT * FROM import_lists WHERE id = ?").get(req.params.id)) as ImportListRow | undefined;
     if (!existing) throw new HttpError(404, "Import list not found");
 
     const b = req.body ?? {};
@@ -98,6 +120,10 @@ importListsRouter.patch(
     if (b.excludeGenres !== undefined) {
       sets.push("exclude_genres = ?");
       values.push(normalizeGenresInput(b.excludeGenres));
+    }
+    if (b.rootFolderId !== undefined) {
+      sets.push("root_folder_id = ?");
+      values.push(await rootFolderIdInput(b.rootFolderId, existing.type));
     }
 
     if (sets.length > 0) {

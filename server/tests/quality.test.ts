@@ -75,6 +75,10 @@ describe("quality", () => {
     expect(preferredSizeDistance("Bluray-1080p", 6000 * 1_000_000)).toBe(2000);
     expect(preferredSizeDistance("WEBDL-1080p", 6000 * 1_000_000)).toBe(0); // no preferred size configured
     expect(preferredSizeDistance(null, 6000 * 1_000_000)).toBe(0);
+    // An unreported size ranks after every reported one, but only where a preferred size is set.
+    expect(preferredSizeDistance("Bluray-1080p", null)).toBeGreaterThan(preferredSizeDistance("Bluray-1080p", 100_000 * 1_000_000));
+    expect(preferredSizeDistance("Bluray-1080p", null) - preferredSizeDistance("Bluray-1080p", null)).toBe(0);
+    expect(preferredSizeDistance("WEBDL-1080p", null)).toBe(0);
   });
 
   it("enforces only the minimum bound when max_size_mb is left unconfigured", async () => {
@@ -110,6 +114,25 @@ describe("quality", () => {
     // Remux-2160p over WEBDL-1080p by rank, not just return whichever candidate came first.
     const best = pickBestAllowedQuality(["WEBDL-1080p", "Remux-2160p"], allowed, "SD");
     expect(best).toBe("Remux-2160p");
+  });
+
+  it("gives quality tiers only to media types whose files are video", async () => {
+    const { usesQualityTiers } = await import("../src/services/quality.js");
+    for (const type of ["movie", "series", "anime", "sports", "ppv", "video", "course", "adult"]) {
+      expect(usesQualityTiers(type)).toBe(true);
+    }
+    for (const type of ["artist", "author", "audiobook", "comic", "manga", "rom", "podcast"]) {
+      expect(usesQualityTiers(type)).toBe(false);
+    }
+  });
+
+  it("treats a missing, zero or non-finite release size as unknown", async () => {
+    const { knownReleaseSize } = await import("../src/services/quality.js");
+    expect(knownReleaseSize(0)).toBeNull();
+    expect(knownReleaseSize(Number.NaN)).toBeNull();
+    expect(knownReleaseSize(null)).toBeNull();
+    expect(knownReleaseSize(undefined)).toBeNull();
+    expect(knownReleaseSize(5_000_000_000)).toBe(5_000_000_000);
   });
 
   it("invalidateQualityRankCache asynchronously refreshes the caches without the caller awaiting it", async () => {

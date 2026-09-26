@@ -8,6 +8,13 @@ import { invalidateQualityRankCache } from "../services/quality.js";
 export const qualitiesRouter = Router();
 qualitiesRouter.use(requireAdmin);
 
+/** The size columns are INTEGER: Postgres rejects a fractional or non-numeric value outright. */
+function nonNegativeInteger(value: unknown, field: string): number {
+  const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
+  if (!Number.isFinite(n) || n < 0 || n > 2147483647) throw new HttpError(400, `${field} must be a number of 0 or more`);
+  return Math.round(n);
+}
+
 qualitiesRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
@@ -30,17 +37,14 @@ qualitiesRouter.patch(
       const current = (await db.prepare("SELECT name FROM qualities WHERE id = ?").get(req.params.id)) as { name: string } | undefined;
       if (current && b.name !== current.name) throw new HttpError(400, "Quality names can't be changed — they must match what the release parser detects");
     }
-    if (b.minSizeMb !== undefined) {
-      sets.push("min_size_mb = ?");
-      values.push(b.minSizeMb);
-    }
-    if (b.maxSizeMb !== undefined) {
-      sets.push("max_size_mb = ?");
-      values.push(b.maxSizeMb);
-    }
-    if (b.preferredSizeMb !== undefined) {
-      sets.push("preferred_size_mb = ?");
-      values.push(b.preferredSizeMb);
+    for (const [key, col] of [
+      ["minSizeMb", "min_size_mb"],
+      ["maxSizeMb", "max_size_mb"],
+      ["preferredSizeMb", "preferred_size_mb"],
+    ] as const) {
+      if (b[key] === undefined) continue;
+      sets.push(`${col} = ?`);
+      values.push(b[key] === null ? null : nonNegativeInteger(b[key], key));
     }
     if (sets.length > 0) {
       values.push(req.params.id);

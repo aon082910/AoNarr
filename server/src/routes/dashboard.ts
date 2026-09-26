@@ -1,5 +1,5 @@
 import { Router } from "express";
-import fs from "node:fs";
+import fsp from "node:fs/promises";
 import { db } from "../db/index.js";
 import { mediaItemFromRow } from "../db/mappers.js";
 import { asyncHandler } from "../middleware/errorHandler.js";
@@ -110,21 +110,37 @@ dashboardRouter.get(
  * episode/sub_item/track file_path, statting each file directly rather than trusting the stored
  * `size_bytes` column (populated at import time, but can drift if a file is replaced/edited on
  * disk outside AoNarr afterward). Cached for 10 minutes since this stats every file in the
- * library on a cache miss. */
+ * library on a cache miss.
+ *
+ * The stats are async with bounded concurrency, and concurrent cache misses share one in-flight
+ * recompute: a synchronous stat per file over tens of thousands of files on an NFS/SMB mount
+ * blocked the event loop (every other request, SSE stream and webhook) for tens of seconds on
+ * every cache miss. */
 let sizeCache: { at: number; sizes: Record<string, number> } | null = null;
+let sizeInFlight: Promise<Record<string, number>> | null = null;
 const SIZE_CACHE_TTL_MS = 10 * 60 * 1000;
+const SIZE_STAT_CONCURRENCY = 8;
 
-function addSize(sizes: Record<string, number>, type: string, filePath: string | null, folderSizeBytes: number | null = null) {
-  if (!filePath) return;
+interface SizeEntry {
+  key: string;
+  filePath: string;
+  folderSizeBytes: number | null;
+}
+
+function addEntry(entries: SizeEntry[], key: string, filePath: string | null, folderSizeBytes: number | null = null) {
+  if (filePath) entries.push({ key, filePath, folderSizeBytes });
+}
+
+async function entryBytes(entry: SizeEntry): Promise<number | null> {
   try {
-    const stat = fs.statSync(filePath);
+    const stat = await fsp.stat(entry.filePath);
     // A folder's own stat size is only its directory entry (~4 KB), not its contents — an album's
     // or audiobook's files are counted through their own `tracks` rows instead, or through the
     // size recorded at import when no track row holds them.
-    const bytes = stat.isFile() ? stat.size : folderSizeBytes;
-    if (bytes) sizes[type] = (sizes[type] ?? 0) + bytes;
+    return stat.isFile() ? stat.size : entry.folderSizeBytes;
   } catch {
     // file listed in the DB but missing on disk — skip rather than crash the whole computation
+    return null;
   }
 }
 
@@ -136,16 +152,16 @@ function sizeKey(type: string, contentRating: string | null): string {
 }
 
 async function computeLibrarySizes(): Promise<Record<string, number>> {
-  const sizes: Record<string, number> = {};
+  const entries: SizeEntry[] = [];
   for (const row of (await db.prepare("SELECT type, path, content_rating FROM media_items WHERE has_file = 1").all()) as any[]) {
-    addSize(sizes, sizeKey(row.type, row.content_rating), row.path);
+    addEntry(entries, sizeKey(row.type, row.content_rating), row.path);
   }
   for (const row of (await db
     .prepare(
       `SELECT m.type, e.file_path, m.content_rating FROM episodes e JOIN media_items m ON m.id = e.media_item_id WHERE e.has_file = 1`
     )
     .all()) as any[]) {
-    addSize(sizes, sizeKey(row.type, row.content_rating), row.file_path);
+    addEntry(entries, sizeKey(row.type, row.content_rating), row.file_path);
   }
   // Multi-file sub-items (a Music album, an Audiobook) keep the album folder in file_path and each
   // real file in `tracks` — sum those, and don't also count the sub-item's own path for them.
@@ -158,7 +174,7 @@ async function computeLibrarySizes(): Promise<Record<string, number>> {
     )
     .all()) as any[]) {
     subItemsWithTracks.add(Number(row.sub_item_id));
-    addSize(sizes, sizeKey(row.type, row.content_rating), row.file_path);
+    addEntry(entries, sizeKey(row.type, row.content_rating), row.file_path);
   }
   for (const row of (await db
     .prepare(
@@ -166,21 +182,43 @@ async function computeLibrarySizes(): Promise<Record<string, number>> {
     )
     .all()) as any[]) {
     if (subItemsWithTracks.has(Number(row.id))) continue;
-    addSize(sizes, sizeKey(row.type, row.content_rating), row.file_path, row.size_bytes == null ? null : Number(row.size_bytes));
+    addEntry(entries, sizeKey(row.type, row.content_rating), row.file_path, row.size_bytes == null ? null : Number(row.size_bytes));
   }
+
+  const sizes: Record<string, number> = {};
+  let next = 0;
+  async function worker() {
+    while (next < entries.length) {
+      const entry = entries[next++];
+      const bytes = await entryBytes(entry);
+      if (bytes) sizes[entry.key] = (sizes[entry.key] ?? 0) + bytes;
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(SIZE_STAT_CONCURRENCY, entries.length) }, worker));
   return sizes;
+}
+
+function getLibrarySizes(): Promise<Record<string, number>> {
+  if (sizeCache && Date.now() - sizeCache.at <= SIZE_CACHE_TTL_MS) return Promise.resolve(sizeCache.sizes);
+  sizeInFlight ??= computeLibrarySizes()
+    .then((sizes) => {
+      sizeCache = { at: Date.now(), sizes };
+      return sizes;
+    })
+    .finally(() => {
+      sizeInFlight = null;
+    });
+  return sizeInFlight;
 }
 
 dashboardRouter.get(
   "/library-sizes",
   asyncHandler(async (req, res) => {
-    if (!sizeCache || Date.now() - sizeCache.at > SIZE_CACHE_TTL_MS) {
-      sizeCache = { at: Date.now(), sizes: await computeLibrarySizes() };
-    }
+    const cachedSizes = await getLibrarySizes();
     const allowedTypes = allowedTypesFor(req);
     const blocked = ratingBlockedFor(req);
     const sizes: Record<string, number> = {};
-    for (const [key, bytes] of Object.entries(sizeCache.sizes)) {
+    for (const [key, bytes] of Object.entries(cachedSizes)) {
       const [type, contentRating] = key.split("");
       if (allowedTypes && !allowedTypes.includes(type)) continue;
       if (blocked(contentRating || null)) continue;

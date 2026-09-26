@@ -119,6 +119,11 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS local_backdrop_token TEXT`,
   `ALTER TABLE release_profiles ADD COLUMN IF NOT EXISTS indexer_ids TEXT`,
   `ALTER TABLE release_profiles ADD COLUMN IF NOT EXISTS tag_ids TEXT`,
+  `ALTER TABLE irc_feeds ADD COLUMN IF NOT EXISTS announcers TEXT`,
+  `ALTER TABLE queue ADD COLUMN IF NOT EXISTS import_started_at TEXT`,
+  `ALTER TABLE queue ADD COLUMN IF NOT EXISTS import_skipped_reason TEXT`,
+  `ALTER TABLE queue ADD COLUMN IF NOT EXISTS import_resume_state INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE import_lists ADD COLUMN IF NOT EXISTS root_folder_id INTEGER REFERENCES root_folders(id) ON DELETE SET NULL`,
 ];
 
 /**
@@ -148,6 +153,22 @@ export async function migratePostgresSchema(db: AsyncDb): Promise<void> {
     await db.exec(stmt);
   }
   await ensureLegacyShapeColumn(db);
+  await backfillMissingRootFolders(db);
+}
+
+/** Postgres copy of client.ts's backfillMissingRootFolders() — see there for why. Queue rows that
+ * already finished and stuck at 'completed' still need Activity's Retry import. */
+export async function backfillMissingRootFolders(db: AsyncDb): Promise<number> {
+  const { changes } = await db
+    .prepare(
+      `UPDATE media_items
+       SET root_folder_id = (SELECT id FROM root_folders rf WHERE rf.media_type = media_items.type)
+       WHERE root_folder_id IS NULL AND has_file = 0
+         AND (SELECT COUNT(*) FROM root_folders rf WHERE rf.media_type = media_items.type) = 1`
+    )
+    .run();
+  if (changes > 0) console.log(`[startup] assigned the only root folder of their type to ${changes} item(s) that had none`);
+  return changes;
 }
 
 /**

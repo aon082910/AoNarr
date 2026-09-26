@@ -11,6 +11,8 @@ import {
   findComicSidecar,
   findOpfSidecar,
   findFileSidecar,
+  holdsOnlyThisItem,
+  isOsMetadataEntry,
 } from "../src/services/sidecarMetadata.js";
 import { getMediaTypeConfig } from "../src/services/mediaTypes.js";
 
@@ -151,6 +153,17 @@ describe("findComicSidecar", () => {
     expect(result?.parentTitle).toBe("Spider-Man");
   });
 
+  it("ignores a bare ComicInfo.xml in a folder of several issues, but uses an issue's own '<basename>.xml'", async () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "issue1.cbr");
+    fs.writeFileSync(filePath, "not a real archive");
+    fs.writeFileSync(path.join(dir, "issue2.cbr"), "not a real archive");
+    fs.writeFileSync(path.join(dir, "ComicInfo.xml"), `<ComicInfo><Series>Spider-Man</Series><Title>Issue One</Title></ComicInfo>`);
+    expect(await findComicSidecar(filePath)).toBeNull();
+    fs.writeFileSync(path.join(dir, "issue1.xml"), `<ComicInfo><Series>Spider-Man</Series><Title>Own Issue</Title></ComicInfo>`);
+    expect((await findComicSidecar(filePath))?.title).toBe("Own Issue");
+  });
+
   it("returns null when neither the archive nor the folder has ComicInfo.xml", async () => {
     const dir = tmpDir();
     const filePath = path.join(dir, "issue1.cbz");
@@ -176,6 +189,61 @@ describe("findOpfSidecar", () => {
   it("returns null when there's no metadata.opf", async () => {
     const dir = tmpDir();
     expect(await findOpfSidecar(path.join(dir, "book.epub"))).toBeNull();
+  });
+
+  const opf = (title: string) => `<package><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>${title}</dc:title></metadata></package>`;
+
+  it("prefers the book's own '<basename>.opf' over metadata.opf", async () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "book.epub");
+    fs.writeFileSync(filePath, "fake epub");
+    fs.writeFileSync(path.join(dir, "book.opf"), opf("Own Title"));
+    fs.writeFileSync(path.join(dir, "metadata.opf"), opf("Folder Title"));
+    expect((await findOpfSidecar(filePath))?.title).toBe("Own Title");
+  });
+
+  it("ignores metadata.opf in a folder holding another book, unless the folder is the book (audiobooks)", async () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "one.epub");
+    fs.writeFileSync(filePath, "fake epub");
+    fs.writeFileSync(path.join(dir, "two.pdf"), "fake pdf");
+    fs.writeFileSync(path.join(dir, "metadata.opf"), opf("Folder Title"));
+    const bookExts = getMediaTypeConfig("author").extensions;
+    expect(await findOpfSidecar(filePath, { extensions: bookExts })).toBeNull();
+    expect((await findOpfSidecar(filePath, { extensions: bookExts, folderIsChild: true }))?.title).toBe("Folder Title");
+  });
+
+  it("never applies a library root's own metadata.opf to a file loose in that root", async () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "loose.epub");
+    fs.writeFileSync(filePath, "fake epub");
+    fs.writeFileSync(path.join(dir, "metadata.opf"), opf("Root Title"));
+    expect(await findOpfSidecar(filePath, { rootPath: dir, folderIsChild: true })).toBeNull();
+    fs.writeFileSync(path.join(dir, "loose.opf"), opf("Own Title"));
+    expect((await findOpfSidecar(filePath, { rootPath: dir }))?.title).toBe("Own Title");
+  });
+
+  it("a macOS AppleDouble companion ('._Dune.epub') doesn't count as a second book in the folder", async () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "Dune.epub");
+    fs.writeFileSync(filePath, "fake epub");
+    fs.writeFileSync(path.join(dir, "._Dune.epub"), "resource fork");
+    fs.writeFileSync(path.join(dir, ".DS_Store"), "finder data");
+    fs.writeFileSync(path.join(dir, "metadata.opf"), opf("Dune"));
+    const bookExts = getMediaTypeConfig("author").extensions;
+    expect(holdsOnlyThisItem(filePath, bookExts)).toBe(true);
+    expect((await findOpfSidecar(filePath, { extensions: bookExts }))?.title).toBe("Dune");
+  });
+});
+
+describe("isOsMetadataEntry", () => {
+  it("recognizes AppleDouble companions and macOS/Netatalk metadata, not real names starting with a dot", () => {
+    for (const name of ["._Dune.epub", "._Show.S01E01.mkv", ".DS_Store", ".AppleDouble", ".Trashes", ".Spotlight-V100", ".fseventsd"]) {
+      expect(isOsMetadataEntry(name), name).toBe(true);
+    }
+    for (const name of ["Dune.epub", ".hack Sign", ".hack SIGN - S01E01.mkv", "_Dune.epub"]) {
+      expect(isOsMetadataEntry(name), name).toBe(false);
+    }
   });
 });
 

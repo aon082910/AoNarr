@@ -1,19 +1,30 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { setupTestDb } from "./helpers/testDb.js";
 
 const fetchSeriesEpisodesFor = vi.fn();
-vi.mock("../src/services/metadata.js", () => ({
+vi.mock("../src/services/metadata.js", async (importOriginal) => ({
+  isEpisodeMonitoredByDefault: (await importOriginal<typeof import("../src/services/metadata.js")>()).isEpisodeMonitoredByDefault,
   fetchSeriesEpisodesFor: (...args: unknown[]) => fetchSeriesEpisodesFor(...args),
 }));
 
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let runPlexWatchlistSync: (typeof import("../src/services/plexWatchlistSync.js"))["runPlexWatchlistSync"];
 let setSetting: (key: string, value: string) => void;
+const rootFolderIds: Record<string, number> = {};
+
+async function addRootFolder(mediaType: string): Promise<number> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `aonarr-plexwatchlist-${mediaType}-`));
+  return Number((await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, ?)").run(dir, mediaType)).lastInsertRowid);
+}
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
   ({ runPlexWatchlistSync } = await import("../src/services/plexWatchlistSync.js"));
   ({ setSetting } = await import("../src/services/settingsStore.js"));
+  for (const type of ["movie", "series"]) rootFolderIds[type] = await addRootFolder(type);
 });
 
 afterEach(() => {
@@ -105,6 +116,72 @@ describe("runPlexWatchlistSync — movies", () => {
     expect(row.type).toBe("movie");
     expect(row.poster_url).toBe("https://metadata-static.plex.tv/library/metadata/1/thumb");
     expect(JSON.parse(row.external_ids)).toEqual({ tmdb: "5001" });
+    expect(row.root_folder_id).toBe(rootFolderIds.movie);
+  });
+
+  it("skips a movie when no movie root folder is configured, and reports why as a warning, not a failure", async () => {
+    enableSync();
+    await db.prepare("DELETE FROM root_folders WHERE media_type = 'movie'").run();
+    const { log } = await import("../src/services/logger.js");
+    const warn = vi.spyOn(log, "warn");
+    try {
+      mockWatchlist([movieItem({ title: "No Root Folder Movie", Guid: [{ id: "tmdb://5101" }] })]);
+
+      const result = await runPlexWatchlistSync();
+
+      expect(result).toEqual({ added: 0, warning: "1 item(s) not added: no root folder is configured for movie" });
+      expect(await db.prepare("SELECT id FROM media_items WHERE title = 'No Root Folder Movie'").get()).toBeUndefined();
+      // The caller (scheduler job or Run-now route) reports the warning; logging it here too duplicates it.
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("item(s) not added"));
+    } finally {
+      warn.mockRestore();
+      rootFolderIds.movie = await addRootFolder("movie");
+    }
+  });
+
+  it("reports skipped items as a warning, not a failure, when it still added others", async () => {
+    enableSync();
+    await db.prepare("DELETE FROM root_folders WHERE media_type = 'movie'").run();
+    try {
+      mockWatchlist([
+        movieItem({ title: "Skipped No Root Movie", Guid: [{ id: "tmdb://5111" }] }),
+        { type: "show", title: "Added Alongside Show", Guid: [{ id: "tmdb://5112" }] },
+      ]);
+      fetchSeriesEpisodesFor.mockResolvedValueOnce([]);
+
+      const result = await runPlexWatchlistSync();
+
+      expect(result).toEqual({ added: 1, warning: "1 item(s) not added: no root folder is configured for movie" });
+      expect(await db.prepare("SELECT id FROM media_items WHERE title = 'Skipped No Root Movie'").get()).toBeUndefined();
+      const show = (await db.prepare("SELECT root_folder_id FROM media_items WHERE title = 'Added Alongside Show'").get()) as any;
+      expect(show.root_folder_id).toBe(rootFolderIds.series);
+    } finally {
+      rootFolderIds.movie = await addRootFolder("movie");
+    }
+  });
+
+  it("does not add a movie another source inserted after this sync's start-of-run snapshot", async () => {
+    enableSync();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.includes("/library/sections/watchlist/all")) {
+          return { ok: true, json: async () => ({ MediaContainer: { Metadata: [{ type: "movie", title: "Raced Movie", ratingKey: "raced-key" }] } }) };
+        }
+        // The per-item metadata lookup runs after the existing-ids snapshot; another source (Trakt,
+        // an import list, an Overseerr approval) adds the same title while it is in flight.
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, status, external_ids) VALUES ('movie', 'Raced Movie', 'raced movie', 1, 'missing', ?)`)
+          .run(JSON.stringify({ tmdb: "5201" }));
+        return { ok: true, json: async () => ({ MediaContainer: { Metadata: [{ Guid: [{ id: "tmdb://5201" }] }] } }) };
+      })
+    );
+
+    const result = await runPlexWatchlistSync();
+
+    expect(result.added).toBe(0);
+    const count = (await db.prepare("SELECT COUNT(*) AS c FROM media_items WHERE title = 'Raced Movie'").get()) as { c: number | string };
+    expect(Number(count.c)).toBe(1);
   });
 
   it("skips a movie already in the library (matched by tmdb id)", async () => {
@@ -257,6 +334,7 @@ describe("runPlexWatchlistSync — shows", () => {
     expect(result.added).toBe(1);
     const show = (await db.prepare("SELECT * FROM media_items WHERE title = 'Watchlist Show'").get()) as any;
     expect(show.type).toBe("series");
+    expect(show.root_folder_id).toBe(rootFolderIds.series);
     expect(show.poster_url).toBe("https://already-absolute.example.com/t.jpg");
     const episodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").all(show.id)) as any[];
     expect(episodes).toHaveLength(1);
