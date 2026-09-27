@@ -1063,14 +1063,39 @@ describe("refreshLibraryMetadata / refreshOneMediaItem", () => {
       (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('movie','guessed title','guessed title',1,0,'missing')`).run())
         .lastInsertRowid
     );
-    searchMetadata.mockResolvedValue([{ title: "Real Title", year: 2020, overview: "O", posterUrl: "P", externalIds: { tmdb: "1" } }]);
+    // Same title as the item's own guessed one, just properly cased — a real provider match for
+    // this movie, not merely an unrelated hit its search query happened to also turn up.
+    searchMetadata.mockResolvedValue([{ title: "Guessed Title", year: 2020, overview: "O", posterUrl: "P", externalIds: { tmdb: "1" } }]);
 
     const result = await refreshOneMediaItem(id);
 
     expect(result.ok).toBe(true);
     const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(id)) as any;
-    expect(row.title).toBe("Real Title");
+    expect(row.title).toBe("Guessed Title");
     expect(JSON.parse(row.external_ids)).toEqual({ tmdb: "1" });
+  });
+
+  it("regression: never matches an unmatched movie/ROM/adult item to a same-year hit whose title doesn't agree", async () => {
+    // The actual production incident this guards against: a folder named "28 Days (2000)" scanned
+    // in with no metadata yet (guessed title "28 Days"), then a scheduled Refresh's title search
+    // turned up an unrelated hit ("28 Days Later") that merely matched the search query and the
+    // year window — and, since "single"-shape items had no title check here (unlike episodic ones
+    // already did), silently overwrote both the title and external_ids with the wrong movie's.
+    const id = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('movie','28 Days','28 days',2000,1,0,'missing')`)
+          .run()
+      ).lastInsertRowid
+    );
+    searchMetadata.mockResolvedValue([{ title: "28 Days Later", year: 2000, overview: "Zombie outbreak", posterUrl: null, externalIds: { tmdb: "170" } }]);
+
+    const result = await refreshOneMediaItem(id);
+
+    expect(result.ok).toBe(false);
+    const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(id)) as any;
+    expect(row.title).toBe("28 Days");
+    expect(JSON.parse(row.external_ids ?? "{}")).toEqual({});
   });
 
   it("populates the real provider status in place of the 'unknown'/'missing' placeholder, when the provider returns one", async () => {

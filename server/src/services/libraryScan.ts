@@ -2015,15 +2015,24 @@ async function refreshOneItem(
         const knownYear = item.year != null ? Number(item.year) : null;
         const results = await searchMetadata(type as any, item.title, undefined, knownYear);
         const yearAgrees = (r: MetadataSearchResult) => knownYear == null || r.year == null || Math.abs(r.year - knownYear) <= 1;
-        // A title search can't tell two same-named authors/artists/shows apart. An already-matched
-        // item (one whose provider has no by-id lookup: MusicBrainz, Deezer, Open Library, ...) only
-        // takes a hit carrying one of its own ids — the first same-named hit put another person's
-        // bio, photo and year on it on every scheduled refresh. An unmatched show only takes a hit
-        // whose title the scan itself would have accepted.
+        // A title search can't tell two same-named authors/artists apart, so "collection"-shape
+        // items (author/artist) intentionally skip this check — a folder guessed as "Tolkien" or
+        // "Beatles" is meant to match a hit titled "J.R.R. Tolkien"/"The Beatles" with no title
+        // agreement required at all, same as always. An already-matched item (one whose provider
+        // has no by-id lookup: MusicBrainz, Deezer, Open Library, ...) only takes a hit carrying
+        // one of its own ids — the first same-named hit put another person's bio, photo and year on
+        // it on every scheduled refresh. But a "single"-shape item (movie/ROM/PPV) has no such
+        // excuse: it used to fall under the same `typeConfig.shape !== "episodic"` bypass as
+        // collection, so ANY same-year(-ish) hit was accepted with its title entirely unchecked. A
+        // guessed title too short or generic for its provider's own search to rank correctly ("28
+        // Days" for a "28 Days (2000)" folder) then had this item's title AND external_ids silently
+        // overwritten with a same-year but unrelated hit's ("28 Days Later", 2002) on the very next
+        // scheduled Refresh — this is what actually produced the "duplicate" that
+        // services/duplicateCheck.ts later (correctly) flagged: two rows sharing that wrong id.
         const isThisItem = (r: MetadataSearchResult) =>
           alreadyMatched
             ? Object.entries(r.externalIds ?? {}).some(([key, value]) => ownExternalIds[key] != null && String(ownExternalIds[key]) === String(value))
-            : typeConfig.shape !== "episodic" || !!typeConfig.sequentialEpisodeFallback || sameTitleIgnoringQualifier(r.title, item.title);
+            : typeConfig.shape === "collection" || !!typeConfig.sequentialEpisodeFallback || sameTitleIgnoringQualifier(r.title, item.title);
         best = results.find((r) => yearAgrees(r) && isThisItem(r)) ?? null;
       } catch {
         // No metadata provider configured at all (course) or the search call itself failed — for a
@@ -2032,6 +2041,15 @@ async function refreshOneItem(
         // every other type's contract (no metadata found = a failed refresh) is preserved by the
         // `!typeConfig.sequentialEpisodeFallback` check right below.
       }
+    }
+    // A sidecar's own title (movieSidecar.title, via resolveSidecarEnrichment above) never goes
+    // through isThisItem's check — a stale or copy-pasted .nfo with the wrong id would otherwise
+    // still overwrite an unmatched "single"-shape item's (movie/ROM/PPV) title and external_ids
+    // unconditionally (the newTitle branch below takes best.title as-is for "single" shape).
+    // Discard it here, the same as a title-search hit that failed isThisItem, rather than trust it
+    // unverified.
+    if (best && !alreadyMatched && typeConfig.shape === "single" && !sameTitleIgnoringQualifier(best.title, item.title)) {
+      best = null;
     }
     // An already-matched show/artist/author with no show-level data found keeps its own and still
     // has its episodes/children synced from its ids below.
