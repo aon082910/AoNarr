@@ -249,7 +249,7 @@ export default function Duplicates() {
                         <span className="badge danger">Unmatched</span>
                       )}
                     </td>
-                    <td>{item.childCount > 0 ? item.childCount : ""}</td>
+                    <td>{item.childCount > 0 ? `${item.childHaveCount}/${item.childCount}` : ""}</td>
                     <td>
                       <MonitorToggle monitored={item.monitored} onToggle={() => toggleItemMonitored(item)} />
                     </td>

@@ -81,6 +81,11 @@ export interface DuplicateGroupItem {
   monitored: boolean;
   addedAt: string | null;
   childCount: number;
+  /** How many of `childCount`'s episodes/sub-items actually have a file — the signal that should
+   * decide "suggested keeper" for an episodic/collection item, since `childCount` alone counts
+   * every episode a provider lists (including ones nobody's downloaded), not how much real content
+   * this row actually holds. */
+  childHaveCount: number;
   suggestedKeeper: boolean;
   quality: string | null;
   contentRating: string | null;
@@ -124,17 +129,22 @@ function buildGroupItems(rowsInGroup: any[]): DuplicateGroupItem[] {
     monitored: !!row.monitored,
     addedAt: row.added_at,
     childCount: row.childCount ?? 0,
+    childHaveCount: row.childHaveCount ?? 0,
     suggestedKeeper: false,
     quality: row.quality,
     contentRating: row.content_rating,
     matchedProviders: matchedProvidersFor(row),
   }));
 
-  // Suggested keeper: has a file/children over one that doesn't, then the most children, then the
-  // earliest-added (most likely the "real" original entry, not a re-scan artifact) — purely a UI
-  // hint, the admin picks the actual keeper explicitly.
+  // Suggested keeper: has a file/children over one that doesn't, then the most actually-downloaded
+  // children (not just the most listed — a show matched to a provider with a more complete episode
+  // list, e.g. one that includes every special, isn't "more complete" if most of those rows have no
+  // file; the one with more real content should win), then the most listed children as a tiebreak,
+  // then the earliest-added (most likely the "real" original entry, not a re-scan artifact) —
+  // purely a UI hint, the admin picks the actual keeper explicitly.
   const best = [...items].sort((a, b) => {
     if (a.hasFile !== b.hasFile) return a.hasFile ? -1 : 1;
+    if (a.childHaveCount !== b.childHaveCount) return b.childHaveCount - a.childHaveCount;
     if (a.childCount !== b.childCount) return b.childCount - a.childCount;
     return (a.addedAt ?? "").localeCompare(b.addedAt ?? "");
   })[0];

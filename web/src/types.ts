@@ -522,6 +522,7 @@ export interface DuplicateGroupItem {
   monitored: boolean;
   addedAt: string | null;
   childCount: number;
+  childHaveCount: number;
   suggestedKeeper: boolean;
   quality: string | null;
   contentRating: string | null;

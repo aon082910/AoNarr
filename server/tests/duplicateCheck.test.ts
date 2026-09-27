@@ -477,6 +477,47 @@ describe("mergeMediaItems: not-yet-converted (legacy_shape) course/adult items",
     expect(group.items.find((i) => i.id === withLessonsId)).toMatchObject({ childCount: 2, suggestedKeeper: true });
     expect(group.items.find((i) => i.id === emptyId)).toMatchObject({ childCount: 0, suggestedKeeper: false });
   });
+
+  it("findDuplicateGroups suggests the show with more downloaded episodes, not just more listed ones", async () => {
+    // The real-world case this guards against: one match (e.g. TVDB) lists every special and so has
+    // a higher total episode count, while the other (e.g. TMDB) lists fewer episodes overall but the
+    // admin has actually downloaded far more of them. The one with more real content should be
+    // suggested, not the one whose provider happens to list more rows.
+    const { findDuplicateGroups } = await import("../src/services/duplicateCheck.js");
+    const moreListedId = (
+      await db
+        .prepare(
+          `INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status, external_ids)
+           VALUES ('series', 'Suggest Test Show', 'suggest test show', 2020, 1, 1, 'unknown', '{"tvdb":"1"}')`
+        )
+        .run()
+    ).lastInsertRowid as number;
+    const fewerListedId = (
+      await db
+        .prepare(
+          `INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status, external_ids)
+           VALUES ('series', 'Suggest Test Show', 'suggest test show', 2020, 1, 1, 'unknown', '{"tmdb":"1"}')`
+        )
+        .run()
+    ).lastInsertRowid as number;
+    // moreListedId: 5 listed episodes, only 1 downloaded.
+    for (let ep = 1; ep <= 5; ep++) {
+      await db
+        .prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?, 1, ?, ?, 1, ?)")
+        .run(moreListedId, ep, `Ep ${ep}`, ep === 1 ? 1 : 0);
+    }
+    // fewerListedId: 2 listed episodes, both downloaded.
+    for (let ep = 1; ep <= 2; ep++) {
+      await db
+        .prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?, 1, ?, ?, 1, 1)")
+        .run(fewerListedId, ep, `Ep ${ep}`);
+    }
+
+    const group = (await findDuplicateGroups("series")).find((g) => g.title === "Suggest Test Show")!;
+    expect(group).toBeDefined();
+    expect(group.items.find((i) => i.id === moreListedId)).toMatchObject({ childCount: 5, childHaveCount: 1, suggestedKeeper: false });
+    expect(group.items.find((i) => i.id === fewerListedId)).toMatchObject({ childCount: 2, childHaveCount: 2, suggestedKeeper: true });
+  });
 });
 
 describe("mergeMediaItems: global search index (SQLite FTS)", () => {
