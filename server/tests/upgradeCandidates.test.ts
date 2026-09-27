@@ -1,10 +1,18 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import { setupTestDb } from "./helpers/testDb.js";
 
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
+});
+
+// findUpgradeCandidates() caches its result for 5 minutes (see upgradeCandidates.ts) — without
+// this, whichever test runs first populates the cache and every later test in this file sees that
+// same stale candidate list instead of one reflecting its own just-inserted rows.
+beforeEach(async () => {
+  const { clearUpgradeCandidatesCache } = await import("../src/services/upgradeCandidates.js");
+  clearUpgradeCandidatesCache();
 });
 
 async function insertProfile(name: string, cutoff: string): Promise<number> {

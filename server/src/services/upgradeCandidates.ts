@@ -64,6 +64,15 @@ const CANDIDATES_TTL_MS = 5 * 60 * 1000;
 let candidatesCache: { at: number; candidates: UpgradeCandidate[] } | null = null;
 let candidatesInFlight: Promise<UpgradeCandidate[]> | null = null;
 
+/** Test-only escape hatch: a test that inserts rows and immediately calls findUpgradeCandidates()
+ * needs a fresh scan, not whatever an earlier test in the same run already cached. Production code
+ * never calls this — the TTL/in-flight dance above is what keeps a real instance's repeated page
+ * loads cheap. */
+export function clearUpgradeCandidatesCache(): void {
+  candidatesCache = null;
+  candidatesInFlight = null;
+}
+
 export function findUpgradeCandidates(): Promise<UpgradeCandidate[]> {
   if (candidatesCache && Date.now() - candidatesCache.at < CANDIDATES_TTL_MS) {
     return Promise.resolve(candidatesCache.candidates);

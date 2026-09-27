@@ -119,16 +119,16 @@ describe("pathTail", () => {
 
 describe("findWatchedMatch", () => {
   it("matches a watched file by path tail regardless of mount-point prefix", async () => {
-    const { findWatchedMatch } = await import("../src/services/archival.js");
+    const { findWatchedMatch, buildWatchedIndex } = await import("../src/services/archival.js");
     const watched = [{ path: "/plex/movies/Dune (2021)/Dune.mkv", lastPlayedAt: new Date() }];
-    const match = findWatchedMatch("/aonarr/movies/Dune (2021)/Dune.mkv", watched);
+    const match = findWatchedMatch("/aonarr/movies/Dune (2021)/Dune.mkv", buildWatchedIndex(watched));
     expect(match).toBe(watched[0]);
   });
 
   it("returns null for a null path or when nothing matches", async () => {
-    const { findWatchedMatch } = await import("../src/services/archival.js");
-    expect(findWatchedMatch(null, [{ path: "/x/y/z.mkv", lastPlayedAt: new Date() }])).toBeNull();
-    expect(findWatchedMatch("/a/b/c.mkv", [])).toBeNull();
+    const { findWatchedMatch, buildWatchedIndex } = await import("../src/services/archival.js");
+    expect(findWatchedMatch(null, buildWatchedIndex([{ path: "/x/y/z.mkv", lastPlayedAt: new Date() }]))).toBeNull();
+    expect(findWatchedMatch("/a/b/c.mkv", buildWatchedIndex([]))).toBeNull();
   });
 });
 
