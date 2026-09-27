@@ -397,7 +397,12 @@ function isSharedDownloadFolder(dir: string, releaseTitle: string | undefined): 
   if (titleTokens.length === 0) return false;
   const name = path.basename(dir);
   const dirTokens = new Set(normalizeTokens(name));
-  if (titleTokens.some((t) => dirTokens.has(t))) return false;
+  // Every one of the release's own significant title words must appear in the folder's name for
+  // this to short-circuit as "this download's own folder" — sharing just one of them (e.g. a
+  // multi-word show/artist title's least distinctive word) isn't enough, or a differently-named
+  // release sharing that one word would pass as this download's own and sweep its unrelated files
+  // into the import (or, via cleanupDownloadSourceFolder, get its folder deleted as "leftovers").
+  if (titleTokens.every((t) => dirTokens.has(t))) return false;
   // A torrent folder named without the artist or show ("25 (2015) [FLAC]" for "Adele - 25 (2015)
   // [FLAC]", "1989 [FLAC]" for "Taylor Swift - 1989 [FLAC]") is still named by nothing but the
   // release's own words and numbers. One such word alone is not enough: a save folder called

@@ -455,6 +455,20 @@ describe("findDownloadedFile", () => {
     expect(findDownloadedFile("Lost.S01.COMPLETE.1080p.BluRay", "series", { season: 1, episode: 3 }, saveFolder, { category: "tv" })).toBeNull();
   });
 
+  it("requires every word of a multi-word title in a save folder name, not just one of them", () => {
+    // A folder named for only one of "Breaking Bad"'s two words used to short-circuit as this
+    // download's own folder (isSharedDownloadFolder's old `.some()` check), skipping the
+    // series-title-in-path filter entirely and letting a different show's same-numbered episode
+    // through on season/episode alone.
+    const saveFolder = path.join(downloadsDir, "Bad Shows");
+    writeDownloadFile(path.join("Bad Shows", "Other.Show.S01E05.1080p.mkv"));
+
+    expect(findDownloadedFile("Breaking.Bad.S01E05.1080p.WEB-DL", "series", { season: 1, episode: 5 }, saveFolder)).toBeNull();
+
+    const wanted = writeDownloadFile(path.join("Bad Shows", "Breaking.Bad.S01E05.1080p.mkv"));
+    expect(findDownloadedFile("Breaking.Bad.S01E05.1080p.WEB-DL", "series", { season: 1, episode: 5 }, saveFolder)).toBe(wanted);
+  });
+
   it("matches an indexer title's apostrophes and accents against release names that drop them", () => {
     const wanted = writeDownloadFile(path.join("Greys.Anatomy.S01E05.1080p", "Greys.Anatomy.S01E05.1080p.mkv"));
     writeDownloadFile(path.join("Pokemon.S01E05.1080p", "Pokemon.S01E05.1080p.mkv"));
