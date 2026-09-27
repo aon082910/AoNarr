@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS media_items (
   rating REAL, -- provider vote average (e.g. TMDB's 0-10 score) shown alongside quality/status badges
   runtime_minutes INTEGER,
   size_bytes INTEGER, -- imported file size, for the Library page's "Size on disk" column/sort (single-shape items only — episodic/collection parents don't roll this up from their children)
-  studio TEXT -- movies only; TMDB's first-listed production company, Radarr's "Studio" field
+  studio TEXT, -- movies only; TMDB's first-listed production company, Radarr's "Studio" field
+  last_auto_searched_at TEXT -- single-shape items only (movies/ROMs/adult); when runAutoSearch last actually searched this item, NULL if never — see scheduler.ts's per-cycle cap/fair-ordering
 );
 
 CREATE INDEX IF NOT EXISTS idx_media_items_type ON media_items(type);
@@ -82,6 +83,7 @@ CREATE TABLE IF NOT EXISTS episodes (
   has_file INTEGER NOT NULL DEFAULT 0,
   quality TEXT,
   file_path TEXT,
+  last_auto_searched_at TEXT, -- when runAutoSearch last actually searched this episode, NULL if never — see scheduler.ts's per-cycle cap/fair-ordering
   UNIQUE(media_item_id, season_number, episode_number)
 );
 -- The UNIQUE constraint above already gives media_item_id its own usable index (leftmost column
@@ -105,7 +107,8 @@ CREATE TABLE IF NOT EXISTS sub_items (
   series_name TEXT, -- admin-tagged (no provider populates this today); links books across the
                      -- same or different parent authors that belong to one series
   series_position REAL, -- non-integer allowed (e.g. 2.5) for a novella/interstitial between two mainline books
-  narrator TEXT -- Audiobooks only; who reads this edition, distinct from the author/parent
+  narrator TEXT, -- Audiobooks only; who reads this edition, distinct from the author/parent
+  last_auto_searched_at TEXT -- when runAutoSearch last actually searched this sub-item, NULL if never — see scheduler.ts's per-cycle cap/fair-ordering
 );
 -- Unlike episodes, sub_items has no UNIQUE constraint touching media_item_id at all — every
 -- "this artist/author's albums/books" or "what's still missing" lookup was a bare, unindexed FK

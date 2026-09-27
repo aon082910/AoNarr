@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import { Worker } from "node:worker_threads";
 import AdmZip from "adm-zip";
 import { parseStringPromise } from "xml2js";
-import pdfParse from "pdf-parse";
 import { findIsbnInIdentifiers } from "./isbn.js";
 
 /**
@@ -358,23 +358,78 @@ export function cleanPdfTitle(raw: unknown): string | null {
 // adm-zip and pdf.js both hold the whole file in memory, and a scheduled scan reads every new loose
 // book this way — a huge scanned PDF or illustrated EPUB is identified from its filename instead.
 export const MAX_EMBEDDED_READ_BYTES: Record<string, number> = { ".epub": 200 * 1024 * 1024, ".pdf": 100 * 1024 * 1024 };
-// pdf.js runs in-process; a pathological file must not hold the library scan (and its lock) hostage.
+// pdf.js runs its parse to completion on whatever thread calls it, with no opportunity for a same-
+// thread timer to preempt it — a same-thread Promise.race can only fire between event-loop turns, so
+// it does nothing against a pathological/malicious PDF that keeps pdf.js in one long *synchronous*
+// loop. Only another thread's forced termination can stop that, so the actual parse runs in a
+// worker_thread (see pdfInfoWorker.ts) that gets killed outright if it overruns this timeout, instead
+// of freezing the whole server for as long as pdf.js keeps running.
 export const PDF_INFO_TIMEOUT_MS = 15_000;
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
-    timer.unref?.();
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+type WorkerOutcome<T> = { ok: true; result: T } | { ok: false; error: string };
+
+// The worker script the PDF parse actually runs in. Resolved by extension so this finds
+// pdfInfoWorker.ts directly under `tsx watch` (dev) as well as the pdfInfoWorker.js it becomes under
+// dist/ (production build) — pdfInfoWorker.ts imports its own sibling with a "./bookFileMetadata.js"
+// specifier exactly like every other file in this project, and only tsx's loader (or the real
+// compiled dist/ layout) can resolve that back to a .ts file; plain `vitest run` cannot, so a worker
+// spawned from a test would fail to load it. That's why bookFileMetadata.test.ts uses
+// __setPdfInfoWorkerUrlForTests to point runInWorkerWithTimeout at small throwaway worker scripts
+// instead of this one, rather than mocking pdf-parse across a real worker boundary.
+let pdfInfoWorkerUrl: string | URL = new URL(`./pdfInfoWorker${path.extname(import.meta.url)}`, import.meta.url);
+
+/** Test-only seam letting bookFileMetadata.test.ts redirect readPdfInfo's worker dispatch to a
+ * throwaway script instead of the real pdf-parse-based one. Never called from production code. */
+export function __setPdfInfoWorkerUrlForTests(url: string | URL): void {
+  pdfInfoWorkerUrl = url;
 }
 
-/** The PDF's document-info Author/Title from one cheap single-page parse. */
+/**
+ * Runs `workerPath` as a real worker_thread with `workerData`, and forcibly terminates it — an
+ * OS-level kill that a synchronous infinite loop cannot resist — if it hasn't posted a `{ok, ...}`
+ * response within `timeoutMs`. Exported (rather than folded into readPdfInfo) so a test can point it
+ * at a deliberately hanging worker script with a short timeout, to confirm termination actually
+ * happens without waiting out the real production timeout.
+ */
+export function runInWorkerWithTimeout<T>(workerPath: string | URL, workerData: unknown, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const worker = new Worker(workerPath, { workerData });
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      // Wait for terminate() itself to settle (it resolves once the worker thread has actually
+      // stopped) before rejecting, so a caller never sees "timed out" while the killed worker's
+      // busy loop is still tearing down in the background.
+      worker.terminate().finally(() => reject(new Error(`timed out after ${timeoutMs}ms`)));
+    }, timeoutMs);
+    timer.unref?.();
+    worker.once("message", (message: WorkerOutcome<T>) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      worker.terminate().finally(() => (message.ok ? resolve(message.result) : reject(new Error(message.error))));
+    });
+    worker.once("error", (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    worker.once("exit", (code: number) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(`pdf info worker exited with code ${code} before responding`));
+    });
+  });
+}
+
+/** The PDF's document-info Author/Title from one cheap single-page parse, run in a worker_thread
+ * (see PDF_INFO_TIMEOUT_MS above) so a pathological or malicious PDF can be killed outright instead
+ * of freezing the whole server. */
 export async function readPdfInfo(filePath: string): Promise<EmbeddedBookMetadata> {
-  const data = await withTimeout(pdfParse(fs.readFileSync(filePath), { max: 1 }), PDF_INFO_TIMEOUT_MS);
-  const info = (data?.info ?? {}) as Record<string, unknown>;
-  return { title: cleanPdfTitle(info.Title), author: cleanPdfAuthor(info.Author), isbn: null };
+  return runInWorkerWithTimeout<EmbeddedBookMetadata>(pdfInfoWorkerUrl, { filePath }, PDF_INFO_TIMEOUT_MS);
 }
 
 /** Embedded title/author/ISBN for an EPUB, MOBI/AZW/AZW3 or PDF — null for any other format, one

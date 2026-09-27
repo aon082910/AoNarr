@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS media_items (
   rating REAL,
   runtime_minutes INTEGER,
   size_bytes BIGINT,
-  studio TEXT
+  studio TEXT,
+  last_auto_searched_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_media_items_type ON media_items(type);
@@ -78,6 +79,7 @@ CREATE TABLE IF NOT EXISTS episodes (
   has_file INTEGER NOT NULL DEFAULT 0,
   quality TEXT,
   file_path TEXT,
+  last_auto_searched_at TEXT,
   UNIQUE(media_item_id, season_number, episode_number)
 );
 CREATE INDEX IF NOT EXISTS idx_episodes_media_item_has_file ON episodes(media_item_id, has_file);
@@ -96,7 +98,8 @@ CREATE TABLE IF NOT EXISTS sub_items (
   file_path TEXT,
   series_name TEXT,
   series_position REAL,
-  narrator TEXT
+  narrator TEXT,
+  last_auto_searched_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sub_items_media_item_has_file ON sub_items(media_item_id, has_file);
 

@@ -134,6 +134,11 @@ ensureColumn("queue", "import_skipped_reason", "import_skipped_reason TEXT");
 ensureColumn("queue", "import_resume_state", "import_resume_state INTEGER NOT NULL DEFAULT 0");
 // A list's own root folder for the items of its media type (see services/importLists.ts's RootFolderPicker).
 ensureColumn("import_lists", "root_folder_id", "root_folder_id INTEGER REFERENCES root_folders(id) ON DELETE SET NULL");
+// When runAutoSearch last actually searched this target, NULL if never — see scheduler.ts's
+// per-cycle cap (config.ts's autoSearchMaxPerCycle) and its oldest-searched-first fair ordering.
+ensureColumn("media_items", "last_auto_searched_at", "last_auto_searched_at TEXT");
+ensureColumn("episodes", "last_auto_searched_at", "last_auto_searched_at TEXT");
+ensureColumn("sub_items", "last_auto_searched_at", "last_auto_searched_at TEXT");
 
 /**
  * One-time transition marker for the course/adult "collection"/"single" -> "episodic" shape change

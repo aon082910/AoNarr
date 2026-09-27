@@ -2,9 +2,11 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vite
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { pathToFileURL } from "node:url";
 import AdmZip from "adm-zip";
 import { setupTestDb } from "./helpers/testDb.js";
 import { buildMobi, writeEpub } from "./helpers/bookFixtures.js";
+import { __setPdfInfoWorkerUrlForTests, cleanPdfAuthor, cleanPdfTitle } from "../src/services/bookFileMetadata.js";
 
 const probeMediaInfo = vi.fn();
 const probeAudioTags = vi.fn();
@@ -13,8 +15,13 @@ vi.mock("../src/services/ffprobe.js", () => ({
   probeAudioTags: (...args: unknown[]) => probeAudioTags(...args),
 }));
 
-const pdfParse = vi.fn();
-vi.mock("pdf-parse", () => ({ default: (...args: unknown[]) => pdfParse(...args) }));
+// readBookFileMetadata's .pdf branch now runs the real pdf-parse call inside a real worker_thread
+// (see bookFileMetadata.ts's readPdfInfo/runInWorkerWithTimeout and pdfInfoWorker.ts) rather than on
+// this thread, so a `vi.mock("pdf-parse")` registered here can no longer reach it — a worker_thread
+// loads its own separate module registry. The PDF-related tests below use
+// __setPdfInfoWorkerUrlForTests (the same seam bookFileMetadata.test.ts's "via a real worker_thread"
+// tests use) to point that dispatch at small throwaway worker scripts instead, written by the
+// helpers declared further down (after tmpRoot exists).
 
 const searchMetadata = vi.fn();
 const fetchByExternalId = vi.fn();
@@ -79,7 +86,6 @@ beforeEach(async () => {
 
   probeMediaInfo.mockReset().mockResolvedValue(null);
   probeAudioTags.mockReset().mockResolvedValue(null);
-  pdfParse.mockReset().mockRejectedValue(new Error("not a pdf"));
   searchMetadata.mockReset().mockResolvedValue([]);
   fetchByExternalId.mockReset().mockRejectedValue(new Error("not mocked"));
   fetchSeriesEpisodesFor.mockReset().mockResolvedValue([]);
@@ -90,6 +96,12 @@ beforeEach(async () => {
   fetchMovieByTmdbId.mockReset().mockResolvedValue({});
 
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-looseroot-"));
+  // Same default every test starts from as the old pdfParse.mockRejectedValue(new Error("not a
+  // pdf")): a stray .pdf file that some future test forgets to point at its own worker script fails
+  // the read (readBookFileMetadata's catch swallows it to null) instead of silently succeeding.
+  // Reset here (rather than left dangling from the previous test) so this file's use of the seam
+  // never leaks into whatever test runs after it.
+  __setPdfInfoWorkerUrlForTests(erroringWorker());
 });
 
 afterEach(() => {
@@ -129,6 +141,71 @@ async function insertItem(type: string, title: string, externalIds: Record<strin
     .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status, external_ids) VALUES (?, ?, ?, ?, 1, 'unknown', ?)`)
     .run(type, title, title.toLowerCase(), monitored, externalIds ? JSON.stringify(externalIds) : null);
   return Number(result.lastInsertRowid);
+}
+
+// --- PDF worker-thread test seam --------------------------------------------------------------
+// readBookFileMetadata's .pdf branch dispatches the actual pdf-parse call into a real worker_thread
+// (see the note by the imports above). These helpers write small throwaway .mjs worker scripts into
+// this test's own tmpRoot — a real, standalone JS file with none of tsx's/vitest's module resolution
+// helping out, exactly like bookFileMetadata.test.ts's "via a real worker_thread" tests — and return
+// a file:// URL for __setPdfInfoWorkerUrlForTests. Written under tmpRoot (not under any root
+// folder's own path), so they're never themselves picked up by a scan, and are deleted with
+// everything else in afterEach.
+
+function writeWorkerScript(name: string, body: string): URL {
+  const file = path.join(tmpRoot, name);
+  fs.writeFileSync(file, body);
+  return pathToFileURL(file);
+}
+
+// The same Title/Author cleanup parsePdfInfoTask (pdfInfoWorker.ts) applies, computed here on the
+// main thread with the real cleanPdfTitle/cleanPdfAuthor. A canned worker result built from this is
+// exactly what production would have produced for the same raw pdf-parse `info` object, not a
+// hand-picked approximation of it.
+function pdfWorkerResult(raw: { Title?: unknown; Author?: unknown }): { title: string | null; author: string | null; isbn: null } {
+  return { title: cleanPdfTitle(raw.Title), author: cleanPdfAuthor(raw.Author), isbn: null };
+}
+
+const respondingWorker = (result: unknown) =>
+  writeWorkerScript(
+    `worker-respond-${Math.random().toString(36).slice(2)}.mjs`,
+    `import { parentPort } from "node:worker_threads";\nparentPort.postMessage({ ok: true, result: ${JSON.stringify(result)} });\n`
+  );
+
+const erroringWorker = () =>
+  writeWorkerScript(
+    `worker-error-${Math.random().toString(36).slice(2)}.mjs`,
+    `import { parentPort } from "node:worker_threads";\nparentPort.postMessage({ ok: false, error: "not a pdf" });\n`
+  );
+
+// Branches on the PDF file's own bytes (read straight off disk, exactly as pdf-parse itself would
+// have read them) rather than its path — mirrors the old
+// `pdfParse.mockImplementation((buf) => buf.toString().includes(...) ? A : B)` pattern used when two
+// loose files in the same test got different canned info depending on which one was actually read.
+function respondingWorkerByFileContent(rules: { includes: string; result: unknown }[], fallback: unknown): URL {
+  const branches = rules.map((r) => `if (content.includes(${JSON.stringify(r.includes)})) result = ${JSON.stringify(r.result)};`).join("\n");
+  return writeWorkerScript(
+    `worker-bycontent-${Math.random().toString(36).slice(2)}.mjs`,
+    `import fs from "node:fs";\nimport { parentPort, workerData } from "node:worker_threads";\nconst content = fs.readFileSync(workerData.filePath, "utf8");\nlet result = ${JSON.stringify(
+      fallback
+    )};\n${branches}\nparentPort.postMessage({ ok: true, result });\n`
+  );
+}
+
+// A responding worker that also records each dispatch to a counter file on disk (the worker thread
+// still has ordinary fs access) — the replacement for asserting on a mocked pdf-parse's call count
+// (`toHaveBeenCalledTimes`/`not.toHaveBeenCalled`), now that the real dispatch happens inside a real
+// worker_thread this file's old vi.mock("pdf-parse") could never reach anyway.
+function countingWorker(result: unknown): { url: URL; callCount: () => number } {
+  const countFile = path.join(tmpRoot, `worker-count-${Math.random().toString(36).slice(2)}.txt`);
+  fs.writeFileSync(countFile, "");
+  const url = writeWorkerScript(
+    `worker-counting-${Math.random().toString(36).slice(2)}.mjs`,
+    `import fs from "node:fs";\nimport { parentPort } from "node:worker_threads";\nfs.appendFileSync(${JSON.stringify(countFile)}, "x");\nparentPort.postMessage({ ok: true, result: ${JSON.stringify(
+      result
+    )} });\n`
+  );
+  return { url, callCount: () => fs.readFileSync(countFile, "utf8").length };
 }
 
 // ---------------------------------------------------------------------------
@@ -189,10 +266,11 @@ describe("Books: a book file loose in the root folder", () => {
     const folder = await insertRootFolder("author");
     writeFile(folder.path, "cc.pdf", "%PDF-1.4 book");
     writeFile(folder.path, "report.pdf", "%PDF-1.4 report");
-    pdfParse.mockImplementation(async (buf: Buffer) =>
-      buf.toString().includes("report")
-        ? { numpages: 1, info: { Title: "Quarterly Report", Author: "Microsoft Word" } }
-        : { numpages: 1, info: { Title: "Clean Code", Author: "Robert C. Martin" } }
+    __setPdfInfoWorkerUrlForTests(
+      respondingWorkerByFileContent(
+        [{ includes: "report", result: pdfWorkerResult({ Title: "Quarterly Report", Author: "Microsoft Word" }) }],
+        pdfWorkerResult({ Title: "Clean Code", Author: "Robert C. Martin" })
+      )
     );
 
     await scanAndImportLibrary("author");
@@ -260,7 +338,7 @@ describe("Books: a book file loose in the root folder", () => {
     const folder = await insertRootFolder("author");
     writeFile(folder.path, "Stephen King - The Stand.mobi", buildMobi({ fullName: "Layout 1" }));
     writeFile(folder.path, "Carrie - Stephen King.pdf", "%PDF-1.4 carrie");
-    pdfParse.mockResolvedValue({ numpages: 1, info: { Title: "Carrie", Author: "" } });
+    __setPdfInfoWorkerUrlForTests(respondingWorker(pdfWorkerResult({ Title: "Carrie", Author: "" })));
 
     await scanAndImportLibrary("author");
 
@@ -348,7 +426,7 @@ describe("Books: files a Mac or a download site leaves behind", () => {
     const folder = await insertRootFolder("author");
     writeFile(folder.path, "Clean Architecture.pdf", "%PDF-1.4 one");
     writeFile(folder.path, "Other Book.pdf", "%PDF-1.4 two");
-    pdfParse.mockResolvedValue({ numpages: 1, info: { Title: "www.it-ebooks.info", Author: "www.it-ebooks.info" } });
+    __setPdfInfoWorkerUrlForTests(respondingWorker(pdfWorkerResult({ Title: "www.it-ebooks.info", Author: "www.it-ebooks.info" })));
 
     const result = await scanAndImportLibrary("author");
 
@@ -363,7 +441,7 @@ describe("Books: embedded metadata that only half-identifies a loose book", () =
   it("files a PDF whose Author is a default account name ('Windows User') under the unmonitored Unknown Author", async () => {
     const folder = await insertRootFolder("author");
     writeFile(folder.path, "Quarterly Handbook.pdf", "%PDF-1.4 handbook");
-    pdfParse.mockResolvedValue({ numpages: 1, info: { Title: "", Author: "Windows User" } });
+    __setPdfInfoWorkerUrlForTests(respondingWorker(pdfWorkerResult({ Title: "", Author: "Windows User" })));
     searchMetadata.mockResolvedValue([{ title: "Some Stranger", year: null, overview: "x", posterUrl: null, externalIds: { openlibrary: "OL1A" } }]);
 
     await scanAndImportLibrary("author");
@@ -380,7 +458,7 @@ describe("Books: embedded metadata that only half-identifies a loose book", () =
     writeFile(folder.path, "Deep Learning - Adaptive Computation.pdf", "%PDF-1.4 one");
     writeFile(folder.path, "Ian Goodfellow - Deep Learning Book.pdf", "%PDF-1.4 two");
     writeFile(folder.path, "Machine Learning - Ian Goodfellow.pdf", "%PDF-1.4 three");
-    pdfParse.mockResolvedValue({ numpages: 1, info: { Title: "Microsoft Word - dl.docx", Author: "Ian Goodfellow" } });
+    __setPdfInfoWorkerUrlForTests(respondingWorker(pdfWorkerResult({ Title: "Microsoft Word - dl.docx", Author: "Ian Goodfellow" })));
 
     await scanAndImportLibrary("author");
 
@@ -400,7 +478,8 @@ describe("Books: one book in several formats is identified once", () => {
     const dir = path.join(folder.path, "Dune");
     const epub = writeEpub(path.join(dir, "Dune.epub"), { title: "Dune", creators: [{ name: "Frank Herbert" }] });
     const pdf = writeFile(dir, "Dune.pdf", "%PDF-1.4 no info");
-    pdfParse.mockResolvedValue({ numpages: 1, info: {} });
+    const pdfWorker = countingWorker(pdfWorkerResult({}));
+    __setPdfInfoWorkerUrlForTests(pdfWorker.url);
 
     const result = await scanAndImportLibrary("author");
 
@@ -411,7 +490,7 @@ describe("Books: one book in several formats is identified once", () => {
     const children = await childrenOf(all[0].id);
     expect(children).toMatchObject([{ title: "Dune", has_file: 1 }]);
     expect([epub, pdf]).toContain(children[0].file_path);
-    expect(pdfParse).not.toHaveBeenCalled(); // the EPUB said everything, so the PDF was never parsed
+    expect(pdfWorker.callCount()).toBe(0); // the EPUB said everything, so the PDF was never parsed
   });
 
   it("uses whichever format has the metadata when the first one read has none", async () => {
@@ -419,7 +498,7 @@ describe("Books: one book in several formats is identified once", () => {
     const dir = path.join(folder.path, "Dune");
     writeFile(dir, "Dune.epub", "not a zip");
     writeFile(dir, "Dune.pdf", "%PDF-1.4 dune");
-    pdfParse.mockResolvedValue({ numpages: 1, info: { Title: "Dune", Author: "Frank Herbert" } });
+    __setPdfInfoWorkerUrlForTests(respondingWorker(pdfWorkerResult({ Title: "Dune", Author: "Frank Herbert" })));
 
     const result = await scanAndImportLibrary("author");
 
@@ -431,7 +510,7 @@ describe("Books: one book in several formats is identified once", () => {
     const folder = await insertRootFolder("author");
     writeEpub(path.join(folder.path, "Book.epub"), { title: "The Real Title" });
     writeFile(folder.path, "Book.pdf", "%PDF-1.4 no info");
-    pdfParse.mockResolvedValue({ numpages: 1, info: {} });
+    __setPdfInfoWorkerUrlForTests(respondingWorker(pdfWorkerResult({})));
 
     const result = await scanAndImportLibrary("author");
 
@@ -446,14 +525,15 @@ describe("Books: one book in several formats is identified once", () => {
     writeEpub(path.join(folder.path, "Dune.epub"), { title: "Dune", creators: [{ name: "Frank Herbert" }] });
     await scanAndImportLibrary("author");
     writeFile(folder.path, "Dune.pdf", "%PDF-1.4");
-    pdfParse.mockResolvedValue({ numpages: 1, info: { Title: "Dune", Author: "Someone Else" } });
+    const pdfWorker = countingWorker(pdfWorkerResult({ Title: "Dune", Author: "Someone Else" }));
+    __setPdfInfoWorkerUrlForTests(pdfWorker.url);
 
     const result = await scanAndImportLibrary("author");
 
     expect(result).toMatchObject({ matched: 0, skipped: 1 });
     expect(result.skippedFiles[0].reason).toContain("already has a file");
     expect((await parents("author")).map((a) => a.title)).toEqual(["Frank Herbert"]);
-    expect(pdfParse).not.toHaveBeenCalled();
+    expect(pdfWorker.callCount()).toBe(0);
   });
 
   it("an upgraded library's folder-named author keeps a new format of its book (no second author)", async () => {
@@ -463,7 +543,8 @@ describe("Books: one book in several formats is identified once", () => {
     const legacyId = await insertItem("author", "Dune");
     await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, file_path) VALUES (?, 'Dune', 1, 1, ?)").run(legacyId, epub);
     writeFile(dir, "Dune.pdf", "%PDF-1.4");
-    pdfParse.mockResolvedValue({ numpages: 1, info: { Title: "Dune", Author: "Frank Herbert" } });
+    const pdfWorker = countingWorker(pdfWorkerResult({ Title: "Dune", Author: "Frank Herbert" }));
+    __setPdfInfoWorkerUrlForTests(pdfWorker.url);
 
     for (let scan = 0; scan < 3; scan++) {
       const result = await scanAndImportLibrary("author");
@@ -471,7 +552,7 @@ describe("Books: one book in several formats is identified once", () => {
       expect(result.skippedFiles[0].reason).toContain('matched existing "Dune" which already has a file');
     }
     expect((await parents("author")).map((a) => a.title)).toEqual(["Dune"]);
-    expect(pdfParse).not.toHaveBeenCalled();
+    expect(pdfWorker.callCount()).toBe(0);
   });
 
   it("never re-reads a lone author folder's second format on later scans", async () => {
@@ -480,10 +561,11 @@ describe("Books: one book in several formats is identified once", () => {
     writeFile(dir, "Carrie.epub");
     await scanAndImportLibrary("author");
     writeFile(dir, "Carrie.pdf", "%PDF-1.4");
-    pdfParse.mockResolvedValue({ numpages: 1, info: { Title: "Carrie", Author: "Stephen King" } });
+    const pdfWorker = countingWorker(pdfWorkerResult({ Title: "Carrie", Author: "Stephen King" }));
+    __setPdfInfoWorkerUrlForTests(pdfWorker.url);
 
     for (let scan = 0; scan < 3; scan++) expect(await scanAndImportLibrary("author")).toMatchObject({ matched: 0, skipped: 1 });
-    expect(pdfParse).not.toHaveBeenCalled();
+    expect(pdfWorker.callCount()).toBe(0);
     expect((await parents("author")).map((a) => a.title)).toEqual(["Stephen King"]);
   });
 
@@ -492,13 +574,14 @@ describe("Books: one book in several formats is identified once", () => {
     const kingId = await insertItem("author", "Stephen King");
     await db.prepare(`INSERT INTO sub_items (media_item_id, title, monitored, has_file, file_path) VALUES (?, 'The Stand', 1, 1, '/elsewhere/The Stand.epub')`).run(kingId);
     writeFile(folder.path, "stand.pdf", "%PDF-1.4");
-    pdfParse.mockResolvedValue({ numpages: 1, info: { Title: "The Stand", Author: "Stephen King" } });
+    const pdfWorker = countingWorker(pdfWorkerResult({ Title: "The Stand", Author: "Stephen King" }));
+    __setPdfInfoWorkerUrlForTests(pdfWorker.url);
 
     for (let scan = 0; scan < 3; scan++) {
       const result = await scanAndImportLibrary("author");
       expect(result).toMatchObject({ matched: 0, skipped: 1 });
     }
-    expect(pdfParse).toHaveBeenCalledTimes(1);
+    expect(pdfWorker.callCount()).toBe(1);
   });
 });
 

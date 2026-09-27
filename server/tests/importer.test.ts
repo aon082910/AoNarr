@@ -2054,6 +2054,33 @@ describe("placeAlbumFiles", () => {
       ]);
     });
 
+    it("never puts the second disc on the first disc's tracks when disc 1's folder is deleted outright, not merely emptied", async () => {
+      const folder = await insertRootFolder("artist");
+      const { artistId, albumId, albumFolder } = await insertTwoDiscAlbum(folder.id);
+      const { cd1, cd2 } = writeDiscs();
+
+      await importBatches(artistId, albumId, [cd1]);
+      // Disc 1's folder is gone from disk entirely (e.g. cleaned up by the download client) —
+      // unlike the "emptied" case above, fs.readdirSync(albumSourceDir) won't list it at all.
+      fs.rmSync(path.dirname(cd1[0]), { recursive: true, force: true });
+
+      const result = await placeFile({ itemId: artistId, episodeId: null, subItemId: albumId, sourceFile: cd2[0], quality: "FLAC" });
+
+      expect(fs.readFileSync(path.join(albumFolder, "01 - Do I Wanna Know.flac"), "utf-8")).toBe("disc 1 track 1");
+      expect(fs.readFileSync(path.join(albumFolder, "02 - R U Mine.flac"), "utf-8")).toBe("disc 1 track 2");
+      // Nothing left on disk to count disc 1's tracks from, so disc 2's pick is refused as track 3
+      // ("Bonus One") and instead kept unmatched in its own disc folder, rather than silently
+      // landing on — and colliding with — disc 1's already-imported track 1.
+      expect(result.destPath).toBe(path.join(albumFolder, "CD2", "01 - Bonus One.flac"));
+      expect(fs.readFileSync(result.destPath, "utf-8")).toBe("disc 2 track 1");
+      expect(await trackFiles(albumId)).toEqual([
+        [1, path.join(albumFolder, "01 - Do I Wanna Know.flac")],
+        [1, path.join(albumFolder, "02 - R U Mine.flac")],
+        [0, null],
+        [0, null],
+      ]);
+    });
+
     it("refuses a pick whose destination already holds a file rather than overwriting it", async () => {
       const folder = await insertRootFolder("artist");
       const { artistId, albumId, albumFolder } = await insertTwoDiscAlbum(folder.id);

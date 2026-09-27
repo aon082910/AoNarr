@@ -1476,11 +1476,12 @@ export async function placeAlbumFiles(params: {
     siblings = collectAudioFiles(sourceDir);
   } else {
     // A hand-picked file only needs the discs around it.
+    const discNumberOf = (name: string): number => Number(name.match(/(\d+)/)?.[1]) || 0;
     const discFolderNames = fs
       .readdirSync(albumSourceDir, { withFileTypes: true })
       .filter((e) => e.isDirectory() && (!onlyAnchor || DISC_SUBFOLDER_RE.test(e.name)))
       .map((e) => e.name)
-      .sort((a, b) => (Number(a.match(/(\d+)/)?.[1]) || 0) - (Number(b.match(/(\d+)/)?.[1]) || 0));
+      .sort((a, b) => discNumberOf(a) - discNumberOf(b));
     siblings = onlyAnchor ? [] : collectAudioFiles(albumSourceDir);
     // Picked one folder at a time, an earlier pick may already have moved a disc's files out:
     // counted from what was left, disc 2's "01" landed on disc 1's track 1, over its file. Discs
@@ -1489,12 +1490,35 @@ export async function placeAlbumFiles(params: {
       const numbers = files.map((f) => Number(/^(\d{1,3})(?!\d)/.exec(path.basename(f))?.[1])).sort((a, b) => a - b);
       return numbers.length > 0 && numbers.every((n, i) => n === i + 1);
     };
-    let offset: number | null = 0;
+    // Keyed by each folder's OWN disc number (parsed above), not by position in a listing that
+    // may no longer hold every earlier disc — a disc folder deleted outright from disk (as
+    // opposed to merely emptied by an earlier pick) is simply absent here, rather than shifting
+    // the disc after it into the gap.
+    const fileCountByDisc = new Map<number, number>();
+    const filesByDisc = new Map<number, string[]>();
     for (const discName of discFolderNames) {
       const discFiles = collectAudioFiles(path.join(albumSourceDir, discName));
-      if (offset !== null) for (const f of discFiles) trackNumberOffsetForFile.set(f, offset);
+      const discNumber = discNumberOf(discName);
+      filesByDisc.set(discNumber, discFiles);
       siblings.push(...discFiles);
-      if (offset !== null) offset = onlyAnchor && !numberedFromOne(discFiles) ? null : offset + discFiles.length;
+      if (!onlyAnchor || numberedFromOne(discFiles)) fileCountByDisc.set(discNumber, discFiles.length);
+    }
+    // Mirrors discOffset below: a disc's offset is the sum of every earlier disc's own file
+    // count, and — same as that function — refuses to guess (returns null) when an earlier disc
+    // isn't in fileCountByDisc, whether its folder is missing from the listing entirely or its
+    // files failed numberedFromOne.
+    const subfolderOffset = (disc: number): number | null => {
+      let offset = 0;
+      for (let d = 1; d < disc; d++) {
+        const count = fileCountByDisc.get(d);
+        if (count === undefined) return null;
+        offset += count;
+      }
+      return offset;
+    };
+    for (const [discNumber, discFiles] of filesByDisc) {
+      const offset = subfolderOffset(discNumber);
+      if (offset !== null) for (const f of discFiles) trackNumberOffsetForFile.set(f, offset);
     }
   }
 

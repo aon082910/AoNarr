@@ -124,6 +124,11 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE queue ADD COLUMN IF NOT EXISTS import_skipped_reason TEXT`,
   `ALTER TABLE queue ADD COLUMN IF NOT EXISTS import_resume_state INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE import_lists ADD COLUMN IF NOT EXISTS root_folder_id INTEGER REFERENCES root_folders(id) ON DELETE SET NULL`,
+  // When runAutoSearch last actually searched this target, NULL if never — see scheduler.ts's
+  // per-cycle cap (config.ts's autoSearchMaxPerCycle) and its oldest-searched-first fair ordering.
+  `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS last_auto_searched_at TEXT`,
+  `ALTER TABLE episodes ADD COLUMN IF NOT EXISTS last_auto_searched_at TEXT`,
+  `ALTER TABLE sub_items ADD COLUMN IF NOT EXISTS last_auto_searched_at TEXT`,
 ];
 
 /**

@@ -2,22 +2,29 @@ import { describe, it, expect, beforeAll, beforeEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { pathToFileURL } from "node:url";
 import { buildMobi, writeEpub } from "./helpers/bookFixtures.js";
 
 const pdfParse = vi.fn();
 vi.mock("pdf-parse", () => ({ default: (...args: unknown[]) => pdfParse(...args) }));
 
 import {
+  __setPdfInfoWorkerUrlForTests,
   cleanEmbeddedAuthor,
   cleanPdfAuthor,
   cleanPdfTitle,
   firstAuthor,
   MAX_EMBEDDED_READ_BYTES,
   parseMobiMetadata,
-  PDF_INFO_TIMEOUT_MS,
   readBookFileMetadata,
   readEpubPackage,
+  runInWorkerWithTimeout,
 } from "../src/services/bookFileMetadata.js";
+// The plain pdf-parse-calling function pdfInfoWorker.ts also runs as a worker_thread's entry point
+// (see bookFileMetadata.ts's runInWorkerWithTimeout). Imported directly here — not through a real
+// worker — so the `vi.mock("pdf-parse")` above actually intercepts it: a real worker_thread gets its
+// own separate module registry that a main-thread vi.mock() can never reach.
+import { parsePdfInfoTask } from "../src/services/pdfInfoWorker.js";
 
 const REAL_ISBN_13 = "9780132350884";
 
@@ -28,6 +35,37 @@ beforeAll(() => {
 beforeEach(() => {
   pdfParse.mockReset();
 });
+
+// A worker script has to be a real, standalone JS file (no TypeScript, no project imports) — Node
+// loads it directly, with none of tsx's or vitest's module resolution helping out. Each helper here
+// writes one into tmpDir and returns its file:// URL for __setPdfInfoWorkerUrlForTests / a direct
+// runInWorkerWithTimeout call.
+function writeWorkerScript(name: string, body: string): URL {
+  const file = path.join(tmpDir, name);
+  fs.writeFileSync(file, body);
+  return pathToFileURL(file);
+}
+
+const respondingWorker = (result: unknown) =>
+  writeWorkerScript(
+    `worker-respond-${Math.random().toString(36).slice(2)}.mjs`,
+    `import { parentPort } from "node:worker_threads";\nparentPort.postMessage({ ok: true, result: ${JSON.stringify(result)} });\n`
+  );
+
+const erroringWorker = () =>
+  writeWorkerScript(
+    `worker-error-${Math.random().toString(36).slice(2)}.mjs`,
+    `import { parentPort } from "node:worker_threads";\nparentPort.postMessage({ ok: false, error: "boom" });\n`
+  );
+
+const hangingWorker = () =>
+  writeWorkerScript(
+    `worker-hang-${Math.random().toString(36).slice(2)}.mjs`,
+    // A tight synchronous loop — the same shape of thing pdf.js can get stuck in on a pathological
+    // PDF. Only worker.terminate()'s OS-level kill can stop this; nothing posted from inside it ever
+    // reaches the parent, and no same-thread timer could preempt it if this ran in-process instead.
+    `while (true) { /* busy */ }\n`
+  );
 
 describe("firstAuthor", () => {
   it("keeps a single author as-is", () => {
@@ -334,12 +372,18 @@ describe("PDF info", () => {
     expect(parseMobiMetadata(buildMobi({ palmName: "x", fullName: "Amazon.com" }))?.title).toBe("x");
   });
 
+  // parsePdfInfoTask is the plain function pdfInfoWorker.ts calls both as a real worker_thread's
+  // entry point and (here) when a test imports it directly — the only way pdf-parse's vi.mock above
+  // can reach it, since a real worker thread has its own separate module registry. readBookFileMetadata
+  // itself now runs the real pdf-parse call inside a worker_thread (see "readPdfInfo/readBookFileMetadata
+  // — via a real worker_thread" below for that wiring, tested with throwaway worker scripts instead of a
+  // mocked pdf-parse).
   it("reads Author/Title from one single-page pdf-parse pass", async () => {
     const file = path.join(tmpDir, "scan.pdf");
     fs.writeFileSync(file, "%PDF-1.4 fake");
     pdfParse.mockResolvedValue({ numpages: 400, info: { Title: "Clean Code", Author: "Robert C. Martin" } });
 
-    expect(await readBookFileMetadata(file)).toEqual({ title: "Clean Code", author: "Robert C. Martin", isbn: null });
+    expect(await parsePdfInfoTask(file)).toEqual({ title: "Clean Code", author: "Robert C. Martin", isbn: null });
     expect(pdfParse).toHaveBeenCalledTimes(1);
     expect(pdfParse.mock.calls[0][1]).toEqual({ max: 1 });
   });
@@ -348,28 +392,57 @@ describe("PDF info", () => {
     const file = path.join(tmpDir, "junk.pdf");
     fs.writeFileSync(file, "%PDF-1.4 fake");
     pdfParse.mockResolvedValue({ numpages: 1, info: { Title: "Real Title", Author: "Microsoft Word" } });
-    expect(await readBookFileMetadata(file)).toEqual({ title: "Real Title", author: null, isbn: null });
+    expect(await parsePdfInfoTask(file)).toEqual({ title: "Real Title", author: null, isbn: null });
   });
 
-  it("returns null (never throws) when pdf-parse rejects", async () => {
+  it("rejects (does not swallow the error) when pdf-parse rejects", async () => {
     const file = path.join(tmpDir, "broken.pdf");
     fs.writeFileSync(file, "not a pdf");
     pdfParse.mockRejectedValue(new Error("Invalid PDF structure"));
+    await expect(parsePdfInfoTask(file)).rejects.toThrow("Invalid PDF structure");
+  });
+});
+
+describe("readPdfInfo/readBookFileMetadata — via a real worker_thread", () => {
+  // These exercise the real production wiring — readBookFileMetadata's .pdf branch, readPdfInfo, and
+  // runInWorkerWithTimeout all run for real, with a genuine worker_thread spawned and torn down. Only
+  // the worker's *script* is swapped out (via __setPdfInfoWorkerUrlForTests), for two reasons: a real
+  // worker_thread can't be reached by the pdf-parse vi.mock() above (see the previous describe block),
+  // and the real pdfInfoWorker.ts can only be loaded by something that maps a "./bookFileMetadata.js"
+  // import back to bookFileMetadata.ts — tsx's loader (dev) or the compiled dist/ layout (production),
+  // neither of which is present when `vitest run` spawns a plain worker_thread.
+  it("returns the worker's result through the real dispatch/message-passing path", async () => {
+    __setPdfInfoWorkerUrlForTests(respondingWorker({ title: "Clean Code", author: "Robert C. Martin", isbn: null }));
+    const file = path.join(tmpDir, "real-worker.pdf");
+    fs.writeFileSync(file, "%PDF-1.4 fake");
+    expect(await readBookFileMetadata(file)).toEqual({ title: "Clean Code", author: "Robert C. Martin", isbn: null });
+  });
+
+  it("resolves to null (via readBookFileMetadata's catch) when the worker reports an error", async () => {
+    __setPdfInfoWorkerUrlForTests(erroringWorker());
+    const file = path.join(tmpDir, "real-worker-error.pdf");
+    fs.writeFileSync(file, "%PDF-1.4 fake");
     await expect(readBookFileMetadata(file)).resolves.toBeNull();
   });
 
-  it("gives up (null) on a parse that never finishes", async () => {
-    const file = path.join(tmpDir, "stuck.pdf");
-    fs.writeFileSync(file, "%PDF-1.4 fake");
-    pdfParse.mockReturnValue(new Promise(() => {}));
-    vi.useFakeTimers();
-    try {
-      const pending = readBookFileMetadata(file);
-      await vi.advanceTimersByTimeAsync(PDF_INFO_TIMEOUT_MS + 1);
-      await expect(pending).resolves.toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
+  it("kills a worker stuck in a synchronous loop instead of waiting forever, within roughly the given timeout", async () => {
+    const startedAt = Date.now();
+    await expect(runInWorkerWithTimeout(hangingWorker(), {}, 300)).rejects.toThrow(/timed out after 300ms/);
+    // Real wall-clock time (no fake timers): proves the worker's busy loop was actually torn down —
+    // runInWorkerWithTimeout awaits worker.terminate() itself before rejecting — and did so promptly,
+    // not merely that our own timer fired on schedule (the old same-thread Promise.race would "fire"
+    // just as reliably while the process stayed frozen; this asserts the process wasn't stuck instead).
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
+
+  it("resolves normally through a real worker/message round trip with no timeout involved", async () => {
+    const result = await runInWorkerWithTimeout(respondingWorker({ hello: "world" }), {}, 5_000);
+    expect(result).toEqual({ hello: "world" });
+  });
+
+  it("rejects if the worker exits without ever posting a response", async () => {
+    const silentExit = writeWorkerScript(`worker-silent-${Math.random().toString(36).slice(2)}.mjs`, "// exits immediately, posts nothing\n");
+    await expect(runInWorkerWithTimeout(silentExit, {}, 5_000)).rejects.toThrow(/exited with code/);
   });
 });
 
@@ -383,14 +456,16 @@ describe("readBookFileMetadata — size cap", () => {
   }
 
   it("never loads a PDF or EPUB larger than the cap", async () => {
-    pdfParse.mockResolvedValue({ numpages: 1, info: { Title: "Huge", Author: "Someone Real" } });
+    // Points the PDF worker at a script that doesn't exist: if the size cap didn't gate the dispatch
+    // (the bug this would catch), readBookFileMetadata would try to spawn it and reject/throw instead
+    // of returning null, since nothing here mocks pdf-parse for a real worker_thread to see anyway.
+    __setPdfInfoWorkerUrlForTests(new URL("file:///no/such/pdf-info-worker.mjs"));
     expect(await readBookFileMetadata(sparseFile("huge.pdf", MAX_EMBEDDED_READ_BYTES[".pdf"] + 1))).toBeNull();
     expect(await readBookFileMetadata(sparseFile("huge.epub", MAX_EMBEDDED_READ_BYTES[".epub"] + 1))).toBeNull();
-    expect(pdfParse).not.toHaveBeenCalled();
   });
 
   it("still reads a PDF under the cap", async () => {
-    pdfParse.mockResolvedValue({ numpages: 1, info: { Title: "Fits", Author: "Someone Real" } });
+    __setPdfInfoWorkerUrlForTests(respondingWorker({ title: "Fits", author: "Someone Real", isbn: null }));
     expect(await readBookFileMetadata(sparseFile("fits.pdf", 1024))).toEqual({ title: "Fits", author: "Someone Real", isbn: null });
   });
 });

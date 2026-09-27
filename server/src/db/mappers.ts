@@ -47,6 +47,7 @@ export function mediaItemFromRow(row: any) {
     // codebase that has to do the same thing under the Postgres driver.
     sizeBytes: row.size_bytes == null ? null : Number(row.size_bytes),
     studio: row.studio,
+    lastAutoSearchedAt: row.last_auto_searched_at,
   };
 }
 

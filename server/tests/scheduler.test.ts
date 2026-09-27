@@ -81,6 +81,7 @@ vi.mock("../src/services/plexWatchlistSync.js", async (importOriginal) => ({
 }));
 
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
+let config: (typeof import("../src/config.js"))["config"];
 let setSetting: (typeof import("../src/services/settingsStore.js"))["setSetting"];
 let isAlreadyQueued: (typeof import("../src/services/scheduler.js"))["isAlreadyQueued"];
 let grab: (typeof import("../src/services/scheduler.js"))["grab"];
@@ -103,9 +104,12 @@ let ImportSkippedError: (typeof import("../src/services/importer.js"))["ImportSk
 let chooseBestResult: (typeof import("../src/services/scheduler.js"))["chooseBestResult"];
 let matchTierFor: (typeof import("../src/services/scheduler.js"))["matchTierFor"];
 let autoSearchCronSchedule: (typeof import("../src/services/scheduler.js"))["autoSearchCronSchedule"];
+let DEFAULT_AUTO_SEARCH_MAX_PER_CYCLE: number;
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
+  ({ config } = await import("../src/config.js"));
+  DEFAULT_AUTO_SEARCH_MAX_PER_CYCLE = config.autoSearchMaxPerCycle;
   ({ setSetting } = await import("../src/services/settingsStore.js"));
   ({ ImportSkippedError } = await import("../src/services/importer.js"));
   ({
@@ -168,6 +172,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.useRealTimers();
+  config.autoSearchMaxPerCycle = DEFAULT_AUTO_SEARCH_MAX_PER_CYCLE;
 });
 
 async function insertQualityProfile(overrides: Record<string, unknown> = {}): Promise<number> {
@@ -944,6 +949,150 @@ describe("runAutoSearch", () => {
     await runAutoSearch(controller.signal);
 
     expect(searchAllIndexers).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Per-cycle cap (AONARR_AUTO_SEARCH_MAX_PER_CYCLE) + fair oldest-first ordering
+  // -------------------------------------------------------------------------
+
+  it("caps how many candidates it actually searches in one cycle", async () => {
+    await insertClient();
+    getDownloadClientAdapter.mockReturnValue(fakeAdapter());
+    searchAllIndexers.mockResolvedValue([]);
+    config.autoSearchMaxPerCycle = 2;
+    for (let i = 0; i < 5; i++) {
+      await insertMovie({ title: `Movie ${i}`, sort_title: `movie ${i}` });
+    }
+
+    await runAutoSearch();
+
+    expect(searchAllIndexers).toHaveBeenCalledTimes(2);
+  });
+
+  it("doesn't cap anything when the configured max is 0 (unlimited, the pre-cap behavior)", async () => {
+    await insertClient();
+    getDownloadClientAdapter.mockReturnValue(fakeAdapter());
+    searchAllIndexers.mockResolvedValue([]);
+    config.autoSearchMaxPerCycle = 0;
+    for (let i = 0; i < 5; i++) {
+      await insertMovie({ title: `Movie ${i}`, sort_title: `movie ${i}` });
+    }
+
+    await runAutoSearch();
+
+    expect(searchAllIndexers).toHaveBeenCalledTimes(5);
+  });
+
+  it("searches candidates oldest-searched-first, with a never-searched one ahead of any already-searched one", async () => {
+    await insertClient();
+    getDownloadClientAdapter.mockReturnValue(fakeAdapter());
+    searchAllIndexers.mockResolvedValue([]);
+    config.autoSearchMaxPerCycle = 1;
+    const recent = await insertMovie({ title: "Recently Searched", sort_title: "recently searched" });
+    const stale = await insertMovie({ title: "Stale Search", sort_title: "stale search" });
+    await insertMovie({ title: "Never Searched", sort_title: "never searched" }); // last_auto_searched_at stays NULL
+    await db.prepare("UPDATE media_items SET last_auto_searched_at = ? WHERE id = ?").run(new Date().toISOString(), recent.id);
+    await db
+      .prepare("UPDATE media_items SET last_auto_searched_at = ? WHERE id = ?")
+      .run(new Date(Date.now() - 24 * 60 * 60_000).toISOString(), stale.id);
+
+    await runAutoSearch();
+
+    expect(searchAllIndexers).toHaveBeenCalledTimes(1);
+    expect(searchAllIndexers.mock.calls[0][1]).toContain("Never Searched");
+  });
+
+  it("picks the oldest-stamped candidate next once every candidate has been searched at least once", async () => {
+    await insertClient();
+    getDownloadClientAdapter.mockReturnValue(fakeAdapter());
+    searchAllIndexers.mockResolvedValue([]);
+    config.autoSearchMaxPerCycle = 1;
+    const older = await insertMovie({ title: "Older Search", sort_title: "older search" });
+    const newer = await insertMovie({ title: "Newer Search", sort_title: "newer search" });
+    await db
+      .prepare("UPDATE media_items SET last_auto_searched_at = ? WHERE id = ?")
+      .run(new Date(Date.now() - 24 * 60 * 60_000).toISOString(), older.id);
+    await db.prepare("UPDATE media_items SET last_auto_searched_at = ? WHERE id = ?").run(new Date().toISOString(), newer.id);
+
+    await runAutoSearch();
+
+    expect(searchAllIndexers).toHaveBeenCalledTimes(1);
+    expect(searchAllIndexers.mock.calls[0][1]).toContain("Older Search");
+  });
+
+  it("stamps a searched candidate's last_auto_searched_at, so a second cycle picks a different one from the first once the backlog exceeds the cap", async () => {
+    await insertClient();
+    getDownloadClientAdapter.mockReturnValue(fakeAdapter());
+    searchAllIndexers.mockResolvedValue([]);
+    config.autoSearchMaxPerCycle = 1;
+    const first = await insertMovie({ title: "First Movie", sort_title: "aaa first movie" });
+    await insertMovie({ title: "Second Movie", sort_title: "zzz second movie" });
+
+    await runAutoSearch();
+    expect(searchAllIndexers).toHaveBeenCalledTimes(1);
+    const firstCycleQuery = searchAllIndexers.mock.calls[0][1];
+
+    const stamped = (await db.prepare("SELECT last_auto_searched_at FROM media_items WHERE id = ?").get(first.id)) as {
+      last_auto_searched_at: string | null;
+    };
+    expect(stamped.last_auto_searched_at).not.toBeNull();
+
+    searchAllIndexers.mockClear();
+    await runAutoSearch();
+
+    expect(searchAllIndexers).toHaveBeenCalledTimes(1);
+    expect(searchAllIndexers.mock.calls[0][1]).not.toBe(firstCycleQuery);
+  });
+
+  it("doesn't stamp a candidate that was skipped without an actual search (already queued)", async () => {
+    await insertClient();
+    getDownloadClientAdapter.mockReturnValue(fakeAdapter());
+    searchAllIndexers.mockResolvedValue([]);
+    const queued = await insertMovie({ title: "Queued", sort_title: "queued" });
+    await db.prepare("INSERT INTO queue (media_item_id, title, status) VALUES (?, 'x', 'queued')").run(queued.id);
+
+    await runAutoSearch();
+
+    expect(searchAllIndexers).not.toHaveBeenCalled();
+    const row = (await db.prepare("SELECT last_auto_searched_at FROM media_items WHERE id = ?").get(queued.id)) as {
+      last_auto_searched_at: string | null;
+    };
+    expect(row.last_auto_searched_at).toBeNull();
+  });
+
+  it("spreads a backlog bigger than the cap across multiple cycles instead of re-searching the same leaves forever", async () => {
+    await insertClient();
+    getDownloadClientAdapter.mockReturnValue(fakeAdapter());
+    searchAllIndexers.mockResolvedValue([]);
+    config.autoSearchMaxPerCycle = 2;
+    const showA = await insertSeries("Show A");
+    const showB = await insertSeries("Show B");
+    // Show A alone has more missing episodes than one cycle's whole cap — a flat "first N in row
+    // order" cap with no rotation would re-search the same two of Show A's episodes every cycle and
+    // never reach Show B's at all (the exact starvation this fix exists to avoid).
+    const a1 = await insertEpisode(showA, 1, 1);
+    const a2 = await insertEpisode(showA, 1, 2);
+    const a3 = await insertEpisode(showA, 1, 3);
+    const b1 = await insertEpisode(showB, 1, 1);
+
+    await runAutoSearch();
+    expect(searchAllIndexers).toHaveBeenCalledTimes(2);
+    const searchedAfterCycle1 = new Set(
+      ((await db.prepare("SELECT id FROM episodes WHERE last_auto_searched_at IS NOT NULL").all()) as { id: number }[]).map((r) => r.id)
+    );
+    expect(searchedAfterCycle1.size).toBe(2);
+
+    searchAllIndexers.mockClear();
+    await runAutoSearch();
+    expect(searchAllIndexers).toHaveBeenCalledTimes(2);
+    const searchedAfterCycle2 = (
+      (await db.prepare("SELECT id FROM episodes WHERE last_auto_searched_at IS NOT NULL").all()) as { id: number }[]
+    ).map((r) => r.id);
+
+    // Every episode of both shows has now been searched at least once across the two cycles —
+    // nothing was starved, including Show B's, which a per-show (rather than global) cap or a
+    // non-rotating order would have left untouched forever.
+    expect(new Set(searchedAfterCycle2)).toEqual(new Set([a1, a2, a3, b1]));
   });
 });
 

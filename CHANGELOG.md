@@ -3,6 +3,59 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 349 — Fixed 3 of Round 348's known limitations, corrected an undocumented Round 348 fix
+
+An investigation into Round 348's documented limitations found that 3 of the 4 items were actually
+fixable, not inherent — and that one item's own note was wrong about what had shipped. Each fix was
+independently adversarially reviewed; the review caught two real regressions before they shipped
+(a broken test-mock seam, and a concurrency race), both repaired and re-verified.
+
+### Fixed
+
+- **A pathological PDF could stall the whole server, not just the scan.** The 15-second PDF-parse
+  timeout was a same-thread `Promise.race`, which cannot interrupt pdf.js if it gets stuck in a
+  synchronous loop on a malformed or malicious file — so the "timeout" did nothing and the entire
+  process (every other in-flight request, not just the scan) could freeze for as long as pdf.js kept
+  running. The parse now runs in a `worker_thread` that is force-`terminate()`d on timeout, a real
+  OS-enforced interrupt (`services/bookFileMetadata.ts`, new `services/pdfInfoWorker.ts`).
+- **Hand-picking disc 2 of an album after disc 1's folder was deleted outright no longer numbers its
+  tracks from 1.** The per-disc track-number offset for the CD1/CD2-subfolder layout was computed by
+  a folder's position in the current directory listing, not by the disc number in its own name — so
+  a missing disc 1 folder made disc 2 look like disc 1 and could overwrite disc 1's already-imported
+  track 1. Offsets are now indexed by each folder's own disc number and refuse to guess (rather than
+  silently mis-numbering) when an earlier disc isn't present, matching the single-folder Picard/
+  iTunes layout's existing behaviour (`services/importer.ts`).
+- **The Missing/Cutoff-Unmet auto-search cycle had no cap.** Every cycle (default every 30 minutes)
+  searched every monitored item lacking a file, with no ceiling — for a large library, thousands of
+  full multi-indexer searches per cycle. `AONARR_AUTO_SEARCH_MAX_PER_CYCLE` (default 500; 0/unset =
+  unlimited) now caps it, with candidates ordered oldest-searched-first (a new `last_auto_searched_at`
+  column) so a backlog larger than the cap rotates across cycles instead of starving anything
+  (`services/scheduler.ts`).
+
+### Correction to Round 348's notes
+
+- The storage forecast's free-space fix (reading `bavail` instead of `bfree`, which excludes the
+  filesystem blocks reserved for root that AoNarr can never actually write into) shipped in Round 348
+  (`e533944`) along with a one-time wipe of old `disk_usage_samples` rows — this was never written
+  up, and Round 348's "a wipe was judged worse" note was wrong: a wipe is exactly what shipped.
+  Expect the Storage forecast to show "-" for a day or two after upgrading past that commit while new
+  samples accumulate; it resolves on its own once two `bavail`-based samples span 12+ hours
+  (`services/storageForecast.ts`).
+
+### Tests
+
+- New regression tests: a real worker_thread killing a genuine synchronous busy-loop within ~300ms
+  (the PDF fix), disc 1's folder deleted outright before hand-picking disc 2 (the multi-disc fix), and
+  7 tests covering the auto-search cap/ordering/starvation behaviour. The full suite passes on SQLite
+  (2,845 passed, 13 skipped) and Postgres 15 (2,845 passed, 14 skipped).
+
+### Known limitations (carried over from Round 348, still true)
+
+- An audio-only fansub title with no video marker (e.g. `[Group] Show - 05 [AAC]`) still doesn't
+  report its leading group. Traced to the exact guard responsible: it's indistinguishable from a
+  music/audiobook title using the identical `[X] Y - NN [AUDIO_TAG]` convention without a media-type
+  hint threaded through parseReleaseTitle's ~25 call sites — a real trade-off, not a fixable bug.
+
 ## Round 348 — Loose books in library roots, second full audit (~180 fixes), and the deferred features
 
 A second multi-agent audit pass (14 cross-cutting lenses: SQLite/Postgres parity, permissions,

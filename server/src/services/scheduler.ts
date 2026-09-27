@@ -101,6 +101,34 @@ async function mapWithConcurrency<T>(items: T[], concurrency: number, fn: (item:
   }
 }
 
+/**
+ * Like mapWithConcurrency, but never runs two DIFFERENT media items' candidates concurrently with
+ * each other: `candidates` is walked in exactly the order given (runAutoSearch's fair
+ * oldest-searched-first sort), and only a run of up to `concurrency` consecutive-in-order
+ * candidates that all belong to the SAME media item is ever awaited together. That restores the
+ * cross-item-sequential guarantee some shared, only-safe-sequentially state depends on — notably
+ * the `unavailable` download-client map (populated only once a grab against a client has actually
+ * failed; two different items' candidates racing to read it before either failure registers would
+ * both send a real grab to a client already known to be dead) — while still letting one item's own
+ * leaf candidates (its episodes, its sub-items) run with concurrency up to `concurrency` among
+ * themselves, same as grab()'s own documented invariant just below ("Grabs for one media item run
+ * one at a time. Episode searches run concurrently").
+ */
+async function forEachCandidateAcrossItemsSequentially(
+  candidates: AutoSearchCandidate[],
+  concurrency: number,
+  fn: (candidate: AutoSearchCandidate) => Promise<void>
+): Promise<void> {
+  let i = 0;
+  while (i < candidates.length) {
+    const itemId = candidates[i].item.id;
+    let j = i + 1;
+    while (j < candidates.length && j - i < concurrency && candidates[j].item.id === itemId) j++;
+    await mapWithConcurrency(candidates.slice(i, j), concurrency, fn);
+    i = j;
+  }
+}
+
 async function rowsToIndexers(): Promise<Indexer[]> {
   return ((await db.prepare("SELECT * FROM indexers").all()) as any[]).map(indexerFromRow);
 }
@@ -867,6 +895,21 @@ interface DirectDownloadBudget {
   /** `clients`, minus the in-process ones once the budget is spent. */
   usableClients(): DownloadClient[];
   consume(client: DownloadClient): void;
+  /**
+   * Synchronously checks and reserves one slot for `client` — a single check-and-decrement with no
+   * `await` in between, the same way reserveSearchSlot (see runAutoSearch) guards the per-cycle
+   * cap. Always true, reserving nothing, for a client whose type isn't direct-download at all,
+   * since no budget applies to it; otherwise true (and one slot spent) only while a slot is free.
+   * Where a plain `available` read followed by a later `consume()` can race — several of one media
+   * item's own leaf candidates run concurrently (see forEachCandidateAcrossItemsSequentially) and
+   * can all read `available` before any of them has awaited far enough to call `consume` — this
+   * can't, since the check and the decrement happen in the same synchronous step.
+   */
+  reserve(client: DownloadClient): boolean;
+  /** Gives back a slot `reserve` took but that turned out unused — the grab it guarded wasn't
+   * actually sent (already covered by a concurrent sibling, refused, or the client threw). No-op
+   * for a client whose type isn't direct-download. */
+  release(client: DownloadClient): void;
 }
 
 async function directDownloadBudget(clients: DownloadClient[]): Promise<DirectDownloadBudget> {
@@ -894,6 +937,15 @@ async function directDownloadBudget(clients: DownloadClient[]): Promise<DirectDo
     usableClients: () => (free > 0 ? clients : clients.filter((c) => !DIRECT_CLIENT_TYPES.has(c.type))),
     consume(client) {
       if (DIRECT_CLIENT_TYPES.has(client.type)) free--;
+    },
+    reserve(client) {
+      if (!DIRECT_CLIENT_TYPES.has(client.type)) return true;
+      if (free <= 0) return false;
+      free--;
+      return true;
+    },
+    release(client) {
+      if (DIRECT_CLIENT_TYPES.has(client.type)) free++;
     },
   };
 }
@@ -1049,7 +1101,56 @@ function isOutsideSearchWindow(): boolean {
   return within === null ? false : !within;
 }
 
-/** For each monitored, fileless target (movie / episode / album / book), search and grab the best release. */
+/** One leaf runAutoSearch can search this cycle: a whole single-shape item, one episode of an
+ * episodic-shape item, or one sub-item of a collection-shape item. `lastSearchedAt` is that leaf's
+ * own `last_auto_searched_at` column — what the fair ordering below sorts candidates by. */
+interface AutoSearchCandidate {
+  item: MediaItem;
+  shape: "single" | "episodic" | "collection";
+  episode?: any;
+  subItem?: any;
+  lastSearchedAt: string | null;
+  /** Discovery order — the tiebreaker for candidates that tie on lastSearchedAt (typically every
+   * candidate, the first time this ever runs and nothing has a timestamp yet), so behavior with an
+   * empty or small-enough backlog matches today's plain per-item/per-row order exactly. */
+  seq: number;
+}
+
+/** Marks `table.id` as searched this auto-search cycle, so next cycle's oldest-first ordering (see
+ * AutoSearchCandidate above) naturally rotates on to whatever wasn't reached this time. */
+async function stampAutoSearched(table: "media_items" | "episodes" | "sub_items", id: number): Promise<void> {
+  await db.prepare(`UPDATE ${table} SET last_auto_searched_at = ${nowExpr(db)} WHERE id = ?`).run(id);
+}
+
+/** Per-item state shared by every candidate leaf of that item (its quality profile, delay profile,
+ * blocklist, ...) — computed once per item no matter how many of its episodes/sub-items end up as
+ * candidates, the same way the old per-item loop computed it once before fanning out to them. */
+interface AutoSearchItemContext {
+  allowedQualities: string[];
+  cutoff: string;
+  minFormatScore: number;
+  delayProfile: DelayProfile | null;
+  blocklisted: Set<string>;
+  overQuota: boolean;
+  isDaily: boolean;
+  /** Video/podcast collection sub-items only — see titlesBlocklistedWithinHours. */
+  recentDirectFailures: Set<string>;
+}
+
+/**
+ * For each monitored, fileless target (movie / episode / album / book), search and grab the best release.
+ *
+ * config.ts's `autoSearchMaxPerCycle` bounds how many targets this actually searches in one pass —
+ * every monitored item's own missing episodes/sub-items scale with library size, and this runs
+ * unattended every `searchIntervalMinutes`, so nothing here used to bound the total volume of full
+ * multi-indexer searches one cycle could issue. A flat "first N in row order" cap would be unsafe on
+ * its own: with a fixed, unchanging candidate order, the same early rows would be re-searched every
+ * cycle and later ones would never be reached once the backlog exceeds the cap. Instead, every
+ * candidate (single item / episode / sub-item) is stamped with when it was last searched
+ * (stampAutoSearched), and candidates are considered oldest-searched-first, never-searched first of
+ * all (see AutoSearchCandidate's sort below), so a backlog bigger than the cap spreads its coverage
+ * across multiple cycles instead of starving whatever doesn't fit in this one.
+ */
 export async function runAutoSearch(signal?: AbortSignal) {
   if (isWithinQuietHours()) {
     log.info("[scheduler] skipping auto-search: within configured quiet hours");
@@ -1081,166 +1182,315 @@ export async function runAutoSearch(signal?: AbortSignal) {
     (await db.prepare("SELECT * FROM media_items WHERE monitored = 1").all()) as any[]
   ).map(mediaItemFromRow) as MediaItem[];
 
+  // Every leaf this cycle could search, across every monitored item, before any cap or ordering is
+  // applied — discovered the same way the old per-item loop found its own episodes/sub-items, just
+  // gathered up front instead of searched immediately, so the ordering/cap below sees the whole
+  // cycle's pool at once instead of only one item's.
+  let seq = 0;
+  const candidates: AutoSearchCandidate[] = [];
   for (const item of monitoredItems) {
-    if (signal?.aborted) {
-      log.info("[scheduler] auto-search cancelled");
-      return;
+    // Cheap to check even though neither ever actually fires mid-discovery today (this map starts
+    // empty and nothing populates it until the processing loop below runs) — it's a guard against
+    // wasted per-item episode/sub-item queries if that ever changes, and against continuing to
+    // discover once the caller's abort signal has already fired.
+    if (signal?.aborted || noClientReachable()) break;
+    const shape = getMediaTypeConfig(item.type).shape;
+    if (shape === "single") {
+      candidates.push({ item, shape, lastSearchedAt: item.lastAutoSearchedAt ?? null, seq: seq++ });
+    } else if (shape === "episodic") {
+      const episodes = (await db
+        .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND monitored = 1 AND has_file = 0")
+        .all(item.id)) as any[];
+      for (const episode of episodes) {
+        candidates.push({ item, shape, episode, lastSearchedAt: episode.last_auto_searched_at ?? null, seq: seq++ });
+      }
+    } else {
+      // collection shape: albums / books / comic issues / videos / lessons
+      const subItems = (await db
+        .prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND monitored = 1 AND has_file = 0")
+        .all(item.id)) as any[];
+      for (const subItem of subItems) {
+        candidates.push({ item, shape, subItem, lastSearchedAt: subItem.last_auto_searched_at ?? null, seq: seq++ });
+      }
     }
-    if (noClientReachable()) {
-      log.info("[scheduler] auto-search stopped: no download client is reachable");
-      return;
-    }
-    if (await isRootFolderOverQuota(item.rootFolderId)) {
-      log.info(`[scheduler] skipping "${item.title}": its root folder is at/over its configured quota`);
-      continue;
-    }
+  }
 
-    const profile = await getQualityProfile(item.qualityProfileId);
-    const allowedQualities = profile?.allowedQualities ?? [];
-    const cutoff = profile?.cutoff ?? "";
-    const minFormatScore = profile?.minFormatScore ?? 0;
-    const delayProfile = pickDelayProfile(delayProfiles, await tagIdsForMediaItem(item.id));
+  // Oldest-searched-first, never-searched (NULL, folded to "" so it sorts first of all) ahead of
+  // everything else; `seq` (discovery order) breaks ties, so with nothing stamped yet — every fresh
+  // install, or any cycle whose whole backlog already fit under the cap — this is exactly today's
+  // per-item/per-row order.
+  candidates.sort((a, b) => {
+    const aKey = a.lastSearchedAt ?? "";
+    const bKey = b.lastSearchedAt ?? "";
+    return aKey < bKey ? -1 : aKey > bKey ? 1 : a.seq - b.seq;
+  });
 
-    try {
-      const shape = getMediaTypeConfig(item.type).shape;
-      const blocklisted = await getBlocklistedTitles(item.id);
+  const cap = config.autoSearchMaxPerCycle > 0 ? config.autoSearchMaxPerCycle : Infinity;
+  let searchedCount = 0;
+  // Reserves this cycle's next search slot for the one real search/grab-attempt call it's placed
+  // right before — synchronously, with no `await` between the check and the increment. That's what
+  // keeps concurrent candidates (mapWithConcurrency below) from all passing the check at once and
+  // overshooting the cap: only the first of them can see the pre-increment count in the same tick.
+  const reserveSearchSlot = (): boolean => {
+    if (searchedCount >= cap) return false;
+    searchedCount++;
+    return true;
+  };
 
-      const grabBestFor = async (
-        results: SearchResult[],
-        target: ReleaseTarget | null,
-        identity: TargetIdentity | null,
-        episodeId: number | null,
-        subItemId: number | null,
-        name: TargetName | null
-      ) => {
-        const usable = directBudget.usableClients().filter((c) => !unavailable.has(c.id));
-        let outcome: Awaited<ReturnType<typeof grabBestRelease>>;
-        try {
-          outcome = await grabBestRelease(
-            results,
-            usable,
-            (remaining) =>
-              chooseBestResult(
-                remaining,
-                allowedQualities,
-                cutoff,
-                item.qualityProfileId,
-                minFormatScore,
-                target,
-                blocklisted,
-                item.type,
-                delayProfile,
-                identity,
-                item.id,
-                { clients: usable, name, indexers }
-              ),
-            (client, chosen) => grab(client, item, episodeId, subItemId, chosen)
-          );
-        } catch (err) {
-          if (noteUnavailableClient(err, unavailable)) return;
-          throw err;
+  let cancelled = false;
+  let clientsExhausted = false;
+  const loggedItemErrors = new Set<number>();
+  const itemContexts = new Map<number, Promise<AutoSearchItemContext>>();
+
+  function getItemContext(item: MediaItem): Promise<AutoSearchItemContext> {
+    let ctx = itemContexts.get(item.id);
+    if (!ctx) {
+      ctx = (async (): Promise<AutoSearchItemContext> => {
+        if (await isRootFolderOverQuota(item.rootFolderId)) {
+          log.info(`[scheduler] skipping "${item.title}": its root folder is at/over its configured quota`);
+          return {
+            allowedQualities: [],
+            cutoff: "",
+            minFormatScore: 0,
+            delayProfile: null,
+            blocklisted: new Set<string>(),
+            overQuota: true,
+            isDaily: false,
+            recentDirectFailures: new Set<string>(),
+          };
         }
-        if (outcome?.grabbed) directBudget.consume(outcome.client);
-        else if (!outcome && results.length > 0 && results.every((r) => !pickClientForProtocol(clients, r.protocol))) {
-          log.warn(`[scheduler] ${whyNothingGrabbed(results, clients, usable, undefined)}, skipping "${item.title}"`);
-        }
-      };
-
-      if (shape === "single") {
-        if (item.hasFile || (await isAlreadyQueued(item.id, null, null))) continue;
-        if (!isReleaseAvailableForSearch(item)) {
-          log.info(`[scheduler] skipping "${item.title}": not yet available per its minimum-availability setting`);
-          continue;
-        }
-        const query = item.year ? `${item.title} ${item.year}` : item.title;
-        const identity: TargetIdentity = { year: item.year, externalIds: item.externalIds ? JSON.parse(item.externalIds) : {} };
-        const results = await searchAllIndexers(indexers, query, item.type, false, identity.externalIds);
-        await grabBestFor(results, null, identity, null, null, { title: item.title });
-      } else if (shape === "episodic") {
-        const episodes = (await db
-          .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND monitored = 1 AND has_file = 0")
-          .all(item.id)) as any[];
-
-        const isDaily = item.seriesType === "daily";
-        await mapWithConcurrency(episodes, 3, async (ep) => {
-          // Caught per episode: one failure used to reject the whole batch and skip every later
-          // episode of the show, on every pass.
-          try {
-            if (noClientReachable() || (await isAlreadyQueued(item.id, ep.id, null))) return;
-            if (isDaily && !ep.air_date) return; // nothing to search by yet (air date not known)
-            // A future-dated episode has no real release to find yet — searching for one anyway
-            // just returns noise (unrelated titles that happen to match the query) and risks a
-            // false-positive grab. Only compare the date portion (not time-of-day) since an air
-            // date is stored as a bare date with no timezone/time — "today" should still search.
-            if (ep.air_date && ep.air_date.slice(0, 10) > new Date().toISOString().slice(0, 10)) return;
-            // Scene-numbered (TheXEM) season/episode wins the search QUERY when known — that's the
-            // numbering a scene-mapped show's releases actually use — while matching still accepts
-            // either numbering (see releaseMatchesEpisode's OR), since not every release for such a
-            // show necessarily follows the scene convention.
-            const searchSeason = ep.scene_season_number ?? ep.season_number;
-            const searchEpisode = ep.scene_episode_number ?? ep.episode_number;
-            const query = isDaily
-              ? `${item.title} ${ep.air_date}`
-              : `${item.title} S${String(searchSeason).padStart(2, "0")}E${String(searchEpisode).padStart(2, "0")}`;
-            const results = await searchAllIndexers(indexers, query, item.type);
-            const target: ReleaseTarget = isDaily
-              ? { airDate: ep.air_date }
-              : {
-                  season: ep.season_number,
-                  episode: ep.episode_number,
-                  sceneSeason: ep.scene_season_number,
-                  sceneEpisode: ep.scene_episode_number,
-                  absoluteEpisode: item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, ep.season_number, ep.episode_number) : null,
-                };
-            await grabBestFor(results, target, null, ep.id, null, null);
-          } catch (err) {
-            log.warn(`[scheduler] auto-search failed for "${item.title}" S${ep.season_number}E${ep.episode_number}:`, (err as Error).message);
-          }
-        });
-      } else {
-        // collection shape: albums / books / comic issues / videos / lessons
-        const subItems = (await db
-          .prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND monitored = 1 AND has_file = 0")
-          .all(item.id)) as any[];
+        const profile = await getQualityProfile(item.qualityProfileId);
+        const delayProfile = pickDelayProfile(delayProfiles, await tagIdsForMediaItem(item.id));
+        const blocklisted = await getBlocklistedTitles(item.id);
         // A direct grab (yt-dlp, an RSS enclosure) has no other release to fall back to: re-grabbing
         // a failed one every pass would just fail and re-notify, but skipping it for good would
         // strand everything that failed during a transient outage (an outdated yt-dlp, a CDN 5xx).
         const recentDirectFailures =
           item.type === "video" || item.type === "podcast" ? await titlesBlocklistedWithinHours(item.id, 24) : new Set<string>();
+        return {
+          allowedQualities: profile?.allowedQualities ?? [],
+          cutoff: profile?.cutoff ?? "",
+          minFormatScore: profile?.minFormatScore ?? 0,
+          delayProfile,
+          blocklisted,
+          overQuota: false,
+          isDaily: item.seriesType === "daily",
+          recentDirectFailures,
+        };
+      })();
+      itemContexts.set(item.id, ctx);
+    }
+    return ctx;
+  }
 
-        for (const sub of subItems) {
-          if (noClientReachable()) break;
-          try {
-            if (await isAlreadyQueued(item.id, null, sub.id)) continue;
+  const grabBestFor = async (
+    item: MediaItem,
+    ctx: AutoSearchItemContext,
+    results: SearchResult[],
+    target: ReleaseTarget | null,
+    identity: TargetIdentity | null,
+    episodeId: number | null,
+    subItemId: number | null,
+    name: TargetName | null
+  ) => {
+    const usable = directBudget.usableClients().filter((c) => !unavailable.has(c.id));
+    // Reserves (and, if the grab doesn't pan out, gives back) the direct-download budget
+    // synchronously around the actual grab, rather than checking `usable` once up front and
+    // consuming only after grab() resolves: up to 3 of this item's own leaf candidates can be
+    // attempting a grab at once (forEachCandidateAcrossItemsSequentially below), and a plain
+    // check-then-consume-later would let all of them see the same pre-consumption budget — see
+    // DirectDownloadBudget.reserve's own comment.
+    const send = async (client: DownloadClient, chosen: ChosenResult) => {
+      if (!directBudget.reserve(client)) return false;
+      try {
+        const grabbed = await grab(client, item, episodeId, subItemId, chosen);
+        if (!grabbed) directBudget.release(client);
+        return grabbed;
+      } catch (err) {
+        directBudget.release(client);
+        throw err;
+      }
+    };
+    let outcome: Awaited<ReturnType<typeof grabBestRelease>>;
+    try {
+      outcome = await grabBestRelease(
+        results,
+        usable,
+        (remaining) =>
+          chooseBestResult(
+            remaining,
+            ctx.allowedQualities,
+            ctx.cutoff,
+            item.qualityProfileId,
+            ctx.minFormatScore,
+            target,
+            ctx.blocklisted,
+            item.type,
+            ctx.delayProfile,
+            identity,
+            item.id,
+            { clients: usable, name, indexers }
+          ),
+        send
+      );
+    } catch (err) {
+      if (noteUnavailableClient(err, unavailable)) return;
+      throw err;
+    }
+    if (!outcome && results.length > 0 && results.every((r) => !pickClientForProtocol(clients, r.protocol))) {
+      log.warn(`[scheduler] ${whyNothingGrabbed(results, clients, usable, undefined)}, skipping "${item.title}"`);
+    }
+  };
 
-            // Online Videos and podcast episodes aren't on Torznab/Newznab indexers at all — they're
-            // grabbed directly via the YouTube id / RSS enclosure URL stored at discovery time.
-            const direct = directSourceFor(item, sub);
-            if (direct) {
-              if (recentDirectFailures.has(sub.title)) continue;
-              const directClient = clients.find((c) => c.type === direct.clientType);
-              if (!directClient) {
-                log.warn(`[scheduler] no "${direct.clientType}" download client configured, skipping "${sub.title}"`);
-                continue;
-              }
-              if (!directBudget.available) {
-                deferredDirect++;
-                continue;
-              }
-              if (await grab(directClient, item, null, sub.id, direct.chosen)) directBudget.consume(directClient);
-              continue;
-            }
+  async function searchSingle(item: MediaItem, ctx: AutoSearchItemContext): Promise<void> {
+    if (item.hasFile || (await isAlreadyQueued(item.id, null, null))) return;
+    if (!isReleaseAvailableForSearch(item)) {
+      log.info(`[scheduler] skipping "${item.title}": not yet available per its minimum-availability setting`);
+      return;
+    }
+    if (!reserveSearchSlot()) return;
+    const query = item.year ? `${item.title} ${item.year}` : item.title;
+    const identity: TargetIdentity = { year: item.year, externalIds: item.externalIds ? JSON.parse(item.externalIds) : {} };
+    const results = await searchAllIndexers(indexers, query, item.type, false, identity.externalIds);
+    await stampAutoSearched("media_items", item.id);
+    await grabBestFor(item, ctx, results, null, identity, null, null, { title: item.title });
+  }
 
-            const results = await searchAllIndexers(indexers, `${item.title} ${sub.title}`, item.type);
-            await grabBestFor(results, null, null, null, sub.id, { title: sub.title, parentTitle: item.title });
-          } catch (err) {
-            log.warn(`[scheduler] auto-search failed for "${item.title}" / "${sub.title}":`, (err as Error).message);
-          }
+  async function searchEpisode(item: MediaItem, ctx: AutoSearchItemContext, ep: any): Promise<void> {
+    if (await isAlreadyQueued(item.id, ep.id, null)) return;
+    if (ctx.isDaily && !ep.air_date) return; // nothing to search by yet (air date not known)
+    // A future-dated episode has no real release to find yet — searching for one anyway just
+    // returns noise (unrelated titles that happen to match the query) and risks a false-positive
+    // grab. Only compare the date portion (not time-of-day) since an air date is stored as a bare
+    // date with no timezone/time — "today" should still search.
+    if (ep.air_date && ep.air_date.slice(0, 10) > new Date().toISOString().slice(0, 10)) return;
+    if (!reserveSearchSlot()) return;
+    // Scene-numbered (TheXEM) season/episode wins the search QUERY when known — that's the numbering
+    // a scene-mapped show's releases actually use — while matching still accepts either numbering
+    // (see releaseMatchesEpisode's OR), since not every release for such a show necessarily follows
+    // the scene convention.
+    const searchSeason = ep.scene_season_number ?? ep.season_number;
+    const searchEpisode = ep.scene_episode_number ?? ep.episode_number;
+    const query = ctx.isDaily
+      ? `${item.title} ${ep.air_date}`
+      : `${item.title} S${String(searchSeason).padStart(2, "0")}E${String(searchEpisode).padStart(2, "0")}`;
+    const results = await searchAllIndexers(indexers, query, item.type);
+    await stampAutoSearched("episodes", ep.id);
+    const target: ReleaseTarget = ctx.isDaily
+      ? { airDate: ep.air_date }
+      : {
+          season: ep.season_number,
+          episode: ep.episode_number,
+          sceneSeason: ep.scene_season_number,
+          sceneEpisode: ep.scene_episode_number,
+          absoluteEpisode: item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, ep.season_number, ep.episode_number) : null,
+        };
+    await grabBestFor(item, ctx, results, target, null, ep.id, null, null);
+  }
+
+  async function searchSubItem(item: MediaItem, ctx: AutoSearchItemContext, sub: any): Promise<void> {
+    if (await isAlreadyQueued(item.id, null, sub.id)) return;
+
+    // Online Videos and podcast episodes aren't on Torznab/Newznab indexers at all — they're
+    // grabbed directly via the YouTube id / RSS enclosure URL stored at discovery time.
+    const direct = directSourceFor(item, sub);
+    if (direct) {
+      if (ctx.recentDirectFailures.has(sub.title)) return;
+      const directClient = clients.find((c) => c.type === direct.clientType);
+      if (!directClient) {
+        log.warn(`[scheduler] no "${direct.clientType}" download client configured, skipping "${sub.title}"`);
+        return;
+      }
+      // Reserves the slot synchronously, before the grab, rather than checking `available` and
+      // consuming only afterward: several of this channel's other sub-items can be running this
+      // same check concurrently (up to 3 at once), and a plain check-then-consume-later would let
+      // all of them see the same pre-consumption budget — see DirectDownloadBudget.reserve's
+      // own comment.
+      if (!directBudget.reserve(directClient)) {
+        deferredDirect++;
+        return;
+      }
+      if (!reserveSearchSlot()) {
+        directBudget.release(directClient);
+        return;
+      }
+      let grabbed: boolean;
+      try {
+        grabbed = await grab(directClient, item, null, sub.id, direct.chosen);
+      } catch (err) {
+        directBudget.release(directClient);
+        throw err;
+      }
+      if (!grabbed) directBudget.release(directClient);
+      await stampAutoSearched("sub_items", sub.id);
+      return;
+    }
+
+    if (!reserveSearchSlot()) return;
+    const results = await searchAllIndexers(indexers, `${item.title} ${sub.title}`, item.type);
+    await stampAutoSearched("sub_items", sub.id);
+    await grabBestFor(item, ctx, results, null, null, null, sub.id, { title: sub.title, parentTitle: item.title });
+  }
+
+  // The concurrency-3 burst throttle still applies, now across this cycle's whole selected
+  // candidate pool rather than one show's episodes at a time — but, per
+  // forEachCandidateAcrossItemsSequentially's own comment, never lets two DIFFERENT media items'
+  // candidates run at once: only a run of up to 3 consecutive-in-order candidates that share one
+  // item ever overlaps. That's strictly tighter on worst-case simultaneous indexer load than
+  // before (multiple shows could each run their own 3 concurrently), never looser, and it's what
+  // keeps this safe for the `unavailable` client map and the direct-download budget above, both of
+  // which only ever tolerated one media item's own leaves racing each other, never two different
+  // items'.
+  await forEachCandidateAcrossItemsSequentially(candidates, 3, async (candidate) => {
+    if (signal?.aborted) {
+      cancelled = true;
+      return;
+    }
+    if (noClientReachable()) {
+      clientsExhausted = true;
+      return;
+    }
+    const { item } = candidate;
+    try {
+      const ctx = await getItemContext(item);
+      if (ctx.overQuota) return;
+      if (candidate.shape === "single") {
+        await searchSingle(item, ctx);
+      } else if (candidate.shape === "episodic") {
+        // Caught per episode: one failure used to reject the whole batch and skip every later
+        // episode of the show, on every pass.
+        try {
+          await searchEpisode(item, ctx, candidate.episode);
+        } catch (err) {
+          log.warn(
+            `[scheduler] auto-search failed for "${item.title}" S${candidate.episode.season_number}E${candidate.episode.episode_number}:`,
+            (err as Error).message
+          );
+        }
+      } else {
+        try {
+          await searchSubItem(item, ctx, candidate.subItem);
+        } catch (err) {
+          log.warn(`[scheduler] auto-search failed for "${item.title}" / "${candidate.subItem.title}":`, (err as Error).message);
         }
       }
     } catch (err) {
-      log.warn(`[scheduler] auto-search failed for "${item.title}":`, (err as Error).message);
+      // getItemContext's promise is shared by every candidate of this item — only log its failure
+      // once, the same way the old per-item loop's own single try/catch only logged it once.
+      if (!loggedItemErrors.has(item.id)) {
+        loggedItemErrors.add(item.id);
+        log.warn(`[scheduler] auto-search failed for "${item.title}":`, (err as Error).message);
+      }
     }
+  });
+
+  if (cancelled) {
+    log.info("[scheduler] auto-search cancelled");
+    return;
+  }
+  if (clientsExhausted) {
+    log.info("[scheduler] auto-search stopped: no download client is reachable");
+    return;
   }
   if (deferredDirect > 0) {
     log.info(`[scheduler] ${deferredDirect} direct download(s) left for a later pass: ${MAX_ACTIVE_DIRECT_DOWNLOADS} already running`);
