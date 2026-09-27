@@ -1,4 +1,5 @@
 import { db } from "../db/index.js";
+import { log } from "./logger.js";
 import { parseReleaseTitle, type ReleaseFlag } from "./releaseParser.js";
 
 export type IndexerFlag = "freeleech" | "halfleech";
@@ -391,5 +392,12 @@ export async function scoreRelease(
   }
 
   const totalScore = matches.reduce((sum, m) => sum + m.score, 0) + profileResult.scoreBonus;
+
+  if (rejected) {
+    log.info(`[customFormats] "${releaseTitle}" rejected: ${rejectReason}`);
+  } else if (matches.length > 0) {
+    log.info(`[customFormats] "${releaseTitle}": score ${totalScore} (${matches.map((m) => m.name).join(", ")})`);
+  }
+
   return { totalScore, matches, rejected, rejectReason };
 }

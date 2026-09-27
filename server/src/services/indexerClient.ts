@@ -589,6 +589,7 @@ async function runSearch(
     if (s.status === "fulfilled") results.push(...s.value);
     else log.warn("Indexer search failed:", s.reason?.message ?? s.reason);
   }
+  log.info(`[indexerClient] "${query}": queried ${applicable.length} indexer(s), ${results.length} result(s)`);
   return results;
 }
 

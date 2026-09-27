@@ -4,3 +4,5 @@ data/
 *.log
 .DS_Store
 *.tsbuildinfo
+.mcp.json
+AoNarr.md

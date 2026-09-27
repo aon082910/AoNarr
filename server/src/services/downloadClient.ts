@@ -892,6 +892,7 @@ class HttpDownloadAdapter implements DownloadClientAdapter {
           if (total > 0) this.jobs.set(downloadId, { progress: Math.min(received / total, 0.99), status: "downloading" });
         });
         this.jobs.set(downloadId, { progress: 1, status: "completed", remotePath: dest });
+        log.info(`[http-download] completed "${releaseTitle ?? downloadUrl}"`);
       } catch (err) {
         log.warn(`[http-download] failed for "${releaseTitle ?? downloadUrl}":`, (err as Error).message);
         this.jobs.set(downloadId, { progress: 0, status: "failed" });
@@ -998,6 +999,7 @@ class YtdlpAdapter implements DownloadClientAdapter {
       if (code === 0) {
         readPrintedPath(stdoutLine);
         this.jobs.set(downloadId, finalPath ? { progress: 1, status: "completed", remotePath: finalPath } : { progress: 1, status: "completed" });
+        log.info(`[ytdlp] completed "${releaseTitle ?? downloadUrl}"`);
       } else {
         log.warn(`[ytdlp] failed for "${releaseTitle ?? downloadUrl}" (exit ${code}):`, stderrTail.trim().split("\n").pop());
         this.jobs.set(downloadId, { progress: 0, status: "failed" });
@@ -1090,6 +1092,7 @@ class RealDebridAdapter implements DownloadClientAdapter {
         }
 
         this.jobs.set(downloadId, completedJob(dir, saved));
+        log.info(`[real-debrid] completed "${releaseTitle ?? downloadUrl}"`);
       } catch (err) {
         log.warn(`[real-debrid] failed for "${releaseTitle ?? downloadUrl}":`, (err as Error).message);
         this.jobs.set(downloadId, { progress: 0, status: "failed" });
@@ -1219,6 +1222,7 @@ class TorBoxAdapter implements DownloadClientAdapter {
         }
 
         this.jobs.set(downloadId, completedJob(dir, saved));
+        log.info(`[torbox] completed "${releaseTitle ?? downloadUrl}"`);
       } catch (err) {
         log.warn(`[torbox] failed for "${releaseTitle ?? downloadUrl}":`, (err as Error).message);
         this.jobs.set(downloadId, { progress: 0, status: "failed" });
@@ -1438,6 +1442,7 @@ class AllDebridAdapter implements DownloadClientAdapter {
         }
 
         this.jobs.set(downloadId, completedJob(dir, saved));
+        log.info(`[alldebrid] completed "${releaseTitle ?? downloadUrl}"`);
       } catch (err) {
         log.warn(`[alldebrid] failed for "${releaseTitle ?? downloadUrl}":`, (err as Error).message);
         this.jobs.set(downloadId, { progress: 0, status: "failed" });

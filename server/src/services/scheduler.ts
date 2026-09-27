@@ -376,6 +376,9 @@ export interface ChooseOptions {
   name?: TargetName | null;
   /** Indexer priorities (lower is preferred), a ranking key for types with no quality tiers. */
   indexers?: Pick<Indexer, "id" | "priority">[];
+  /** Human-readable "media title" (plus episode/season where relevant) for this call's log lines
+   * only — has no effect on matching/scoring. Omitted = log lines drop the "for ..." suffix. */
+  label?: string | null;
 }
 
 /** indexers.priority's column default. */
@@ -601,7 +604,13 @@ export async function chooseBestResult(
   mediaItemId: number | null = null,
   options: ChooseOptions = {}
 ): Promise<ChosenResult | null> {
-  const { clients, upgradeFromRank = null, name = null } = options;
+  const { clients, upgradeFromRank = null, name = null, label = null } = options;
+  const targetSuffix = target
+    ? "airDate" in target
+      ? ` (${target.airDate})`
+      : ` S${String(target.season).padStart(2, "0")}E${String(target.episode).padStart(2, "0")}`
+    : "";
+  const forLabel = label ? ` for "${label}${targetSuffix}"` : "";
   const tiered = usesQualityTiers(mediaType);
   if (!tiered) {
     if (upgradeFromRank !== null) return null;
@@ -638,7 +647,10 @@ export async function chooseBestResult(
     // a mislabeled or fake release (e.g. a 200MB file claiming to be 1080p).
     return sizeWithinQualityBounds(parsed.quality, size);
   });
-  if (relevant.length === 0) return null;
+  if (relevant.length === 0) {
+    log.info(`[scheduler] no eligible releases among ${results.length} result(s)${forLabel}`);
+    return null;
+  }
 
   // The tier comes from releases that survived every rejection: picked first, one oversized or
   // must-not-matched release at the top tier left nothing to grab even with the next tier on offer.
@@ -687,7 +699,10 @@ export async function chooseBestResult(
     }
     if (candidates.length > 0) break;
   }
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) {
+    log.info(`[scheduler] ${relevant.length} eligible release(s)${forLabel}, but none met the minimum format score`);
+    return null;
+  }
 
   // getGroupReputation is now async (DB-backed) — a .sort() comparator can't await, so reputation
   // for every distinct release group in play is precomputed into a plain Map first, and the
@@ -720,6 +735,9 @@ export async function chooseBestResult(
       preferredSizeDistance(a.quality, a.size) - preferredSizeDistance(b.quality, b.size)
   );
   const winner = candidates[0];
+  if (winner) {
+    log.info(`[scheduler] picked "${winner.result.title}" (${winner.quality}, score ${winner.totalScore})${forLabel}`);
+  }
   return winner ? { result: winner.result, quality: winner.quality } : null;
 }
 
@@ -1329,7 +1347,7 @@ export async function runAutoSearch(signal?: AbortSignal) {
             ctx.delayProfile,
             identity,
             item.id,
-            { clients: usable, name, indexers }
+            { clients: usable, name, indexers, label: item.title }
           ),
         send
       );
@@ -1653,6 +1671,7 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
             upgradeFromRank: upgradeFrom === undefined ? null : qualityRank(upgradeFrom),
             name,
             indexers: ctx.indexers,
+            label: item.title,
           }
         ),
       (client, chosen) => grab(client, item, episodeId, subItemId, chosen)
@@ -2109,7 +2128,7 @@ export async function retryFailedGrab(
           delayProfile,
           identity,
           item.id,
-          { clients, upgradeFromRank: onDisk === undefined ? null : qualityRank(onDisk), name, indexers }
+          { clients, upgradeFromRank: onDisk === undefined ? null : qualityRank(onDisk), name, indexers, label: mediaTitle }
         ),
       (client, chosen) =>
         grab(client, item, match.episodeId, match.subItemId, chosen, match.retryCount + (releaseAtFault ? 1 : 0), seasonPack)
