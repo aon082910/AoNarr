@@ -768,38 +768,68 @@ CREATE VIRTUAL TABLE IF NOT EXISTS library_search_fts USING fts5(
   title
 );
 
+-- FTS5 virtual tables can't take a normal CREATE INDEX, so match_type/source_id above are
+-- UNINDEXED and any UPDATE/DELETE trigger that filters on them (instead of on `rowid`, the one
+-- access path an FTS5 table always indexes) does a full scan of the whole virtual table — fine
+-- for a rare single-row lookup, ruinous once it fires per-row inside a bulk operation: merging two
+-- large duplicate TV shows (thousands of episodes re-parented) fired the episodes UPDATE trigger
+-- once per moved episode, each one scanning the library's full 160k+-row search index, and froze
+-- the app solid (Round 360). This table maps (match_type, source_id) to the matching
+-- FTS row's own rowid — a real, indexed lookup — so the triggers below can resolve straight to
+-- `WHERE rowid = ...` instead of scanning by the unindexed columns. Existing installs get a
+-- one-time backfill plus a trigger-definition upgrade in db/client.ts, since CREATE TRIGGER IF NOT
+-- EXISTS never replaces a trigger that already exists under the old definition.
+CREATE TABLE IF NOT EXISTS library_search_fts_lookup (
+  match_type TEXT NOT NULL,
+  source_id INTEGER NOT NULL,
+  fts_rowid INTEGER NOT NULL,
+  PRIMARY KEY (match_type, source_id)
+) WITHOUT ROWID;
+
 CREATE TRIGGER IF NOT EXISTS trg_fts_media_items_ai AFTER INSERT ON media_items BEGIN
   INSERT INTO library_search_fts(media_item_id, match_type, source_id, match_detail, title)
   VALUES (new.id, 'title', new.id, NULL, new.title);
+  INSERT INTO library_search_fts_lookup(match_type, source_id, fts_rowid) VALUES ('title', new.id, last_insert_rowid());
 END;
 CREATE TRIGGER IF NOT EXISTS trg_fts_media_items_au AFTER UPDATE OF title ON media_items BEGIN
-  UPDATE library_search_fts SET title = new.title WHERE match_type = 'title' AND source_id = new.id;
+  UPDATE library_search_fts SET title = new.title
+  WHERE rowid = (SELECT fts_rowid FROM library_search_fts_lookup WHERE match_type = 'title' AND source_id = new.id);
 END;
 CREATE TRIGGER IF NOT EXISTS trg_fts_media_items_ad AFTER DELETE ON media_items BEGIN
-  DELETE FROM library_search_fts WHERE match_type = 'title' AND source_id = old.id;
+  DELETE FROM library_search_fts
+  WHERE rowid = (SELECT fts_rowid FROM library_search_fts_lookup WHERE match_type = 'title' AND source_id = old.id);
+  DELETE FROM library_search_fts_lookup WHERE match_type = 'title' AND source_id = old.id;
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_fts_episodes_ai AFTER INSERT ON episodes BEGIN
   INSERT INTO library_search_fts(media_item_id, match_type, source_id, match_detail, title)
   VALUES (new.media_item_id, 'episode', new.id, new.title, new.title);
+  INSERT INTO library_search_fts_lookup(match_type, source_id, fts_rowid) VALUES ('episode', new.id, last_insert_rowid());
 END;
 -- The episode/sub_item update triggers also fire on media_item_id so a re-parented row (duplicate
 -- merge, series split) stays searchable under its new item. db/client.ts replaces older title-only
--- versions of these two triggers on existing databases.
+-- and pre-lookup-table versions of these triggers on existing databases.
 CREATE TRIGGER IF NOT EXISTS trg_fts_episodes_au AFTER UPDATE OF title, media_item_id ON episodes BEGIN
-  UPDATE library_search_fts SET title = new.title, match_detail = new.title, media_item_id = new.media_item_id WHERE match_type = 'episode' AND source_id = old.id;
+  UPDATE library_search_fts SET title = new.title, match_detail = new.title, media_item_id = new.media_item_id
+  WHERE rowid = (SELECT fts_rowid FROM library_search_fts_lookup WHERE match_type = 'episode' AND source_id = old.id);
 END;
 CREATE TRIGGER IF NOT EXISTS trg_fts_episodes_ad AFTER DELETE ON episodes BEGIN
-  DELETE FROM library_search_fts WHERE match_type = 'episode' AND source_id = old.id;
+  DELETE FROM library_search_fts
+  WHERE rowid = (SELECT fts_rowid FROM library_search_fts_lookup WHERE match_type = 'episode' AND source_id = old.id);
+  DELETE FROM library_search_fts_lookup WHERE match_type = 'episode' AND source_id = old.id;
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_fts_sub_items_ai AFTER INSERT ON sub_items BEGIN
   INSERT INTO library_search_fts(media_item_id, match_type, source_id, match_detail, title)
   VALUES (new.media_item_id, 'child', new.id, new.title, new.title);
+  INSERT INTO library_search_fts_lookup(match_type, source_id, fts_rowid) VALUES ('child', new.id, last_insert_rowid());
 END;
 CREATE TRIGGER IF NOT EXISTS trg_fts_sub_items_au AFTER UPDATE OF title, media_item_id ON sub_items BEGIN
-  UPDATE library_search_fts SET title = new.title, match_detail = new.title, media_item_id = new.media_item_id WHERE match_type = 'child' AND source_id = old.id;
+  UPDATE library_search_fts SET title = new.title, match_detail = new.title, media_item_id = new.media_item_id
+  WHERE rowid = (SELECT fts_rowid FROM library_search_fts_lookup WHERE match_type = 'child' AND source_id = old.id);
 END;
 CREATE TRIGGER IF NOT EXISTS trg_fts_sub_items_ad AFTER DELETE ON sub_items BEGIN
-  DELETE FROM library_search_fts WHERE match_type = 'child' AND source_id = old.id;
+  DELETE FROM library_search_fts
+  WHERE rowid = (SELECT fts_rowid FROM library_search_fts_lookup WHERE match_type = 'child' AND source_id = old.id);
+  DELETE FROM library_search_fts_lookup WHERE match_type = 'child' AND source_id = old.id;
 END;

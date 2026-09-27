@@ -421,4 +421,62 @@ describe("free-text search follows episodes/sub-items moved to a different item"
     await db.prepare("UPDATE sub_items SET media_item_id = ? WHERE id = ?").run(from, subItemId);
     expect(await idsMatchingSearch("Numbat Rarities")).toEqual([from]);
   });
+
+  it("the startup upgrade backfills the FTS lookup table and replaces pre-lookup-table triggers", async () => {
+    if (db.dialect === "postgres") return;
+    const { db: rawDb, upgradeFtsLookupTable } = await import("../src/db/client.js");
+    // Simulate an install from before library_search_fts_lookup existed: triggers that filter
+    // library_search_fts directly by match_type/source_id instead of resolving through the lookup
+    // table, and a row already sitting in library_search_fts with no corresponding lookup row.
+    rawDb.exec(`
+      DROP TRIGGER trg_fts_sub_items_ai;
+      CREATE TRIGGER trg_fts_sub_items_ai AFTER INSERT ON sub_items BEGIN
+        INSERT INTO library_search_fts(media_item_id, match_type, source_id, match_detail, title)
+        VALUES (new.media_item_id, 'child', new.id, new.title, new.title);
+      END;
+      DROP TRIGGER trg_fts_sub_items_au;
+      CREATE TRIGGER trg_fts_sub_items_au AFTER UPDATE OF title, media_item_id ON sub_items BEGIN
+        UPDATE library_search_fts SET title = new.title, match_detail = new.title, media_item_id = new.media_item_id
+        WHERE match_type = 'child' AND source_id = old.id;
+      END;
+      DROP TRIGGER trg_fts_sub_items_ad;
+      CREATE TRIGGER trg_fts_sub_items_ad AFTER DELETE ON sub_items BEGIN
+        DELETE FROM library_search_fts WHERE match_type = 'child' AND source_id = old.id;
+      END;
+    `);
+    const band = await insertParent("artist", "Pre Lookup Band");
+    const subItemId = await insertSubItem(band, "Bilby Sessions");
+    expect(await idsMatchingSearch("Bilby Sessions")).toEqual([band]);
+    const lookupRowBefore = rawDb
+      .prepare("SELECT * FROM library_search_fts_lookup WHERE match_type = 'child' AND source_id = ?")
+      .get(subItemId);
+    expect(lookupRowBefore).toBeUndefined(); // the old triggers never wrote one
+
+    upgradeFtsLookupTable();
+
+    for (const trigger of ["trg_fts_sub_items_ai", "trg_fts_sub_items_au", "trg_fts_sub_items_ad"]) {
+      const row = rawDb.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(trigger) as { sql: string };
+      expect(row.sql).toContain("library_search_fts_lookup");
+    }
+    // Backfilled from the pre-existing library_search_fts row, pointing at its real rowid.
+    const ftsRow = rawDb.prepare("SELECT rowid FROM library_search_fts WHERE match_type = 'child' AND source_id = ?").get(subItemId) as {
+      rowid: number;
+    };
+    const lookupRowAfter = rawDb
+      .prepare("SELECT fts_rowid FROM library_search_fts_lookup WHERE match_type = 'child' AND source_id = ?")
+      .get(subItemId) as { fts_rowid: number };
+    expect(lookupRowAfter.fts_rowid).toBe(ftsRow.rowid);
+
+    // Idempotent, and the recreated triggers keep the lookup table (and search index) correct
+    // going forward — insert, move, and delete all still work.
+    upgradeFtsLookupTable();
+    const newBand = await insertParent("artist", "Post Lookup Band");
+    await db.prepare("UPDATE sub_items SET media_item_id = ? WHERE id = ?").run(newBand, subItemId);
+    expect(await idsMatchingSearch("Bilby Sessions")).toEqual([newBand]);
+    await db.prepare("DELETE FROM sub_items WHERE id = ?").run(subItemId);
+    expect(await idsMatchingSearch("Bilby Sessions")).toEqual([]);
+    expect(
+      rawDb.prepare("SELECT * FROM library_search_fts_lookup WHERE match_type = 'child' AND source_id = ?").get(subItemId)
+    ).toBeUndefined();
+  });
 });

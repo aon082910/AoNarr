@@ -608,6 +608,70 @@ export function upgradeFtsReparentTriggers(): void {
 upgradeFtsReparentTriggers();
 
 /**
+ * `library_search_fts_lookup` (see schema.sql) lets the FTS update/delete triggers resolve straight
+ * to `rowid` instead of scanning the whole (unindexed-by-column) virtual table — added after a
+ * large duplicate merge, re-parenting thousands of episodes, froze the app doing exactly that scan
+ * once per row (Round 360). An install that already has `library_search_fts` rows from
+ * before this table existed needs them backfilled once, the same way the FTS table's own backfill
+ * above handles rows from before *it* existed; and every trigger that inserts/updates/deletes FTS
+ * rows needs recreating from schema.sql, since CREATE TRIGGER IF NOT EXISTS never replaces one that
+ * already exists under the old, lookup-table-less definition.
+ */
+export function upgradeFtsLookupTable(): void {
+  // Keyed on "which FTS rows have no lookup entry yet" rather than "is the lookup table
+  // completely empty" — the latter would only backfill on the very first upgrade and miss any
+  // FTS row created later by a not-yet-upgraded trigger (e.g. a downgrade-then-reupgrade, or one
+  // trigger reverted independently of the others). The NOT EXISTS subquery is an indexed point
+  // lookup against library_search_fts_lookup's PK either way, so this costs nothing extra when
+  // there's genuinely nothing missing.
+  const missing = (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM library_search_fts f
+         WHERE NOT EXISTS (SELECT 1 FROM library_search_fts_lookup l WHERE l.match_type = f.match_type AND l.source_id = f.source_id)`
+      )
+      .get() as { c: number }
+  ).c;
+  if (missing > 0) {
+    db.exec(`
+      INSERT INTO library_search_fts_lookup (match_type, source_id, fts_rowid)
+      SELECT f.match_type, f.source_id, f.rowid FROM library_search_fts f
+      WHERE NOT EXISTS (SELECT 1 FROM library_search_fts_lookup l WHERE l.match_type = f.match_type AND l.source_id = f.source_id);
+    `);
+    console.log(`[startup] backfilled library_search_fts_lookup for ${missing} search index row(s) missing one`);
+  }
+
+  const triggers = [
+    "trg_fts_media_items_ai",
+    "trg_fts_media_items_au",
+    "trg_fts_media_items_ad",
+    "trg_fts_episodes_ai",
+    "trg_fts_episodes_au",
+    "trg_fts_episodes_ad",
+    "trg_fts_sub_items_ai",
+    "trg_fts_sub_items_au",
+    "trg_fts_sub_items_ad",
+  ];
+  const outdated = triggers.filter((trigger) => {
+    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(trigger) as
+      | { sql: string }
+      | undefined;
+    return !row || !row.sql.includes("library_search_fts_lookup");
+  });
+  if (outdated.length === 0) return;
+
+  db.transaction(() => {
+    for (const trigger of outdated) {
+      const createSql = schemaSql.match(new RegExp(`CREATE TRIGGER IF NOT EXISTS ${trigger}\\b[\\s\\S]*?\\bEND;`))?.[0];
+      if (!createSql) throw new Error(`schema.sql has no definition for trigger ${trigger}`);
+      db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+      db.exec(createSql);
+    }
+  })();
+}
+upgradeFtsLookupTable();
+
+/**
  * Items added by import lists, Plex watchlist sync, Trakt and Overseerr used to be created with no
  * root folder, so they were still searched and grabbed but every finished download failed to import
  * ("has no root folder configured"). Filled in only where that type has exactly one root folder, so
