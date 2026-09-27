@@ -21,7 +21,7 @@ import { requireAdmin } from "../middleware/auth.js";
 import { effectiveShape, getMediaTypeConfig, isPlaceholderParent, isProbeableFile, isValidMediaType } from "../services/mediaTypes.js";
 import { attachChildCounts } from "../services/childCounts.js";
 import { notifyQueueChanged } from "../services/realtime.js";
-import { buildMediaQuery, clampLimit, clampOffset, MEDIA_SORT_COLUMNS } from "../services/mediaQuery.js";
+import { buildMediaQuery, clampLimit, clampOffset, MEDIA_SORT_COLUMNS, getTmdbLibraryIndex } from "../services/mediaQuery.js";
 import { syncSceneNumbering } from "../services/sceneNumbering.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
@@ -1144,27 +1144,24 @@ mediaRouter.get(
       return;
     }
 
-    const libraryRows = (await db.prepare("SELECT id, title, external_ids, content_rating FROM media_items WHERE type = 'movie'").all()) as any[];
+    // Same shared, cached index discover.ts/people.ts use — a per-request full movie-table scan
+    // + JSON.parse here fired on every single movie detail page that belongs to a collection.
     const maxContentRating = req.auth?.user?.maxContentRating ?? null;
-    const byTmdbId = new Map<string, { id: number; title: string }>();
-    for (const r of libraryRows) {
-      if (!r.external_ids) continue;
+    const tmdbIndex = await getTmdbLibraryIndex();
+    const byTmdbId = new Map<string, number>();
+    for (const [key, entry] of tmdbIndex) {
+      if (entry.type !== "movie") continue;
       // Same gate as discover.ts/people.ts: a part above the viewer's rating cap must not come back
       // with its library id, which reveals an item that account can't open.
-      if (maxContentRating && isRatingBlocked(r.content_rating ?? null, maxContentRating)) continue;
-      try {
-        const ids = JSON.parse(r.external_ids);
-        if (ids?.tmdb) byTmdbId.set(String(ids.tmdb), { id: r.id, title: r.title });
-      } catch {
-        // malformed external_ids on an old row — skip it rather than fail the whole panel
-      }
+      if (maxContentRating && isRatingBlocked(entry.contentRating, maxContentRating)) continue;
+      byTmdbId.set(key.slice("movie:".length), entry.mediaItemId);
     }
 
     res.json({
       ...collection,
       parts: collection.parts.map((p) => ({
         ...p,
-        libraryItemId: byTmdbId.get(String(p.tmdbId))?.id ?? null,
+        libraryItemId: byTmdbId.get(String(p.tmdbId)) ?? null,
       })),
     });
   })

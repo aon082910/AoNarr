@@ -4,7 +4,7 @@ import { db } from "../db/index.js";
 import { mediaItemFromRow } from "../db/mappers.js";
 import { asyncHandler } from "../middleware/errorHandler.js";
 import { fetchWatchedFiles, getMediaServerConfig } from "../services/mediaServer.js";
-import { findWatchedMatch } from "../services/archival.js";
+import { findWatchedMatch, buildWatchedIndex } from "../services/archival.js";
 import { isRatingBlocked } from "../services/contentRatings.js";
 import { log } from "../services/logger.js";
 
@@ -297,6 +297,7 @@ dashboardRouter.get(
       return;
     }
 
+    const watchedIndex = buildWatchedIndex(watched);
     const items = (await db.prepare("SELECT * FROM media_items WHERE has_file = 1").all()) as any[];
     const episodes = (await db
       .prepare("SELECT e.*, m.title AS parent_title, m.type AS parent_type, m.content_rating AS parent_rating FROM episodes e JOIN media_items m ON m.id = e.media_item_id WHERE e.has_file = 1")
@@ -312,12 +313,12 @@ dashboardRouter.get(
 
     for (const item of items) {
       if (allowedTypes && (!allowedTypes.includes(item.type) || blocked(item.content_rating ?? null))) continue;
-      const match = findWatchedMatch(item.path, watched);
+      const match = findWatchedMatch(item.path, watchedIndex);
       if (match) upsert(`${item.id}--`, { mediaItemId: item.id, type: item.type, label: item.title, watchedAt: match.lastPlayedAt.toISOString() });
     }
     for (const ep of episodes) {
       if (allowedTypes && (!allowedTypes.includes(ep.parent_type) || blocked(ep.parent_rating ?? null))) continue;
-      const match = findWatchedMatch(ep.file_path, watched);
+      const match = findWatchedMatch(ep.file_path, watchedIndex);
       if (match) {
         const label = `${ep.parent_title} — S${String(ep.season_number).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}`;
         upsert(`${ep.media_item_id}-${ep.id}-`, { mediaItemId: ep.media_item_id, type: ep.parent_type, label, watchedAt: match.lastPlayedAt.toISOString() });
@@ -325,7 +326,7 @@ dashboardRouter.get(
     }
     for (const sub of subItems) {
       if (allowedTypes && (!allowedTypes.includes(sub.parent_type) || blocked(sub.parent_rating ?? null))) continue;
-      const match = findWatchedMatch(sub.file_path, watched);
+      const match = findWatchedMatch(sub.file_path, watchedIndex);
       if (match) {
         upsert(`${sub.media_item_id}--${sub.id}`, {
           mediaItemId: sub.media_item_id,

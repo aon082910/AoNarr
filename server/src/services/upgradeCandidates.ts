@@ -53,7 +53,33 @@ export function isDirectSource(type: string, provider: string | null, externalId
  * (music, books, ROMs) and direct-source videos are left out: a search refuses to upgrade them,
  * having no quality to go by.
  */
-export async function findUpgradeCandidates(): Promise<UpgradeCandidate[]> {
+/** Scans every monitored, downloaded movie/episode/sub-item (up to the full library — tens of
+ * thousands of rows on a large one) on every call, with no server-side bound: routes/wanted.ts's
+ * Cutoff Unmet page and routes/system.ts's health check both called this fresh on every hit, so
+ * just opening either page re-ran the full scan. A short TTL, same idea and duration as
+ * routes/metrics.ts's own cache of this same function, makes repeated page loads/polls within a
+ * few minutes reuse one scan instead of repeating it — quality/has_file only change on an
+ * import, which happens far less often than a status page gets opened. */
+const CANDIDATES_TTL_MS = 5 * 60 * 1000;
+let candidatesCache: { at: number; candidates: UpgradeCandidate[] } | null = null;
+let candidatesInFlight: Promise<UpgradeCandidate[]> | null = null;
+
+export function findUpgradeCandidates(): Promise<UpgradeCandidate[]> {
+  if (candidatesCache && Date.now() - candidatesCache.at < CANDIDATES_TTL_MS) {
+    return Promise.resolve(candidatesCache.candidates);
+  }
+  candidatesInFlight ??= findUpgradeCandidatesUncached()
+    .then((candidates) => {
+      candidatesCache = { at: Date.now(), candidates };
+      return candidates;
+    })
+    .finally(() => {
+      candidatesInFlight = null;
+    });
+  return candidatesInFlight;
+}
+
+async function findUpgradeCandidatesUncached(): Promise<UpgradeCandidate[]> {
   const profiles = await loadProfiles();
   const candidates: UpgradeCandidate[] = [];
 

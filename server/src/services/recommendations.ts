@@ -2,7 +2,7 @@ import { db } from "../db/index.js";
 import { getSetting } from "./settingsStore.js";
 import { isExcluded } from "./importExclusions.js";
 import { fetchWatchedFiles, getMediaServerConfig } from "./mediaServer.js";
-import { findWatchedMatch } from "./archival.js";
+import { findWatchedMatch, buildWatchedIndex } from "./archival.js";
 import { autoSelectRootFolderId } from "./rootFolderSelect.js";
 import { fetchSeriesEpisodesFor, isEpisodeMonitoredByDefault } from "./metadata.js";
 import { log } from "./logger.js";
@@ -58,6 +58,7 @@ async function recentlyWatchedLibraryItems(type: "movie" | "series"): Promise<{ 
     return [];
   }
   if (watched.length === 0) return [];
+  const watchedIndex = buildWatchedIndex(watched);
 
   const rows =
     type === "movie"
@@ -78,7 +79,7 @@ async function recentlyWatchedLibraryItems(type: "movie" | "series"): Promise<{ 
   // title (unique enough within one library type here).
   const byTitle = new Map<string, { title: string; externalIds: Record<string, string>; lastPlayedAt: number }>();
   for (const row of rows) {
-    const match = findWatchedMatch(row.path, watched);
+    const match = findWatchedMatch(row.path, watchedIndex);
     if (!match) continue;
     const lastPlayedAt = match.lastPlayedAt.getTime();
     const existing = byTitle.get(row.title);

@@ -362,3 +362,55 @@ export function clampOffset(raw: unknown): number {
   const n = parseInt(String(raw ?? 0), 10);
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
+
+export interface TmdbLibraryEntry {
+  mediaItemId: number;
+  type: string;
+  contentRating: string | null;
+}
+
+/** routes/discover.ts and routes/people.ts both cross-reference an external result set against
+ * the library by TMDB id — each was independently loading every movie/series row (unbounded,
+ * ~19,381 on a large library) and JSON.parse-ing external_ids on every single request just to
+ * build this same lookup. The per-user filtering (content rating, allowed types) differs, so only
+ * the expensive, user-independent part — the DB fetch + JSON.parse — is cached here; callers
+ * apply their own filtering over the small in-memory Map afterward, which is cheap. */
+const TMDB_INDEX_TTL_MS = 5 * 60 * 1000;
+let tmdbIndexCache: { at: number; index: Map<string, TmdbLibraryEntry> } | null = null;
+let tmdbIndexInFlight: Promise<Map<string, TmdbLibraryEntry>> | null = null;
+
+async function buildTmdbLibraryIndexUncached(): Promise<Map<string, TmdbLibraryEntry>> {
+  const rows = (await db.prepare("SELECT id, type, external_ids, content_rating FROM media_items WHERE type IN ('movie','series')").all()) as {
+    id: number;
+    type: string;
+    external_ids: string | null;
+    content_rating: string | null;
+  }[];
+  const index = new Map<string, TmdbLibraryEntry>();
+  for (const r of rows) {
+    if (!r.external_ids) continue;
+    try {
+      const ids = JSON.parse(r.external_ids);
+      if (ids?.tmdb) index.set(`${r.type}:${ids.tmdb}`, { mediaItemId: r.id, type: r.type, contentRating: r.content_rating });
+    } catch {
+      // malformed external_ids on an old row — skip it rather than fail the whole lookup
+    }
+  }
+  return index;
+}
+
+/** Keyed `"movie:<tmdbId>"` / `"series:<tmdbId>"`. */
+export function getTmdbLibraryIndex(): Promise<Map<string, TmdbLibraryEntry>> {
+  if (tmdbIndexCache && Date.now() - tmdbIndexCache.at < TMDB_INDEX_TTL_MS) {
+    return Promise.resolve(tmdbIndexCache.index);
+  }
+  tmdbIndexInFlight ??= buildTmdbLibraryIndexUncached()
+    .then((index) => {
+      tmdbIndexCache = { at: Date.now(), index };
+      return index;
+    })
+    .finally(() => {
+      tmdbIndexInFlight = null;
+    });
+  return tmdbIndexInFlight;
+}

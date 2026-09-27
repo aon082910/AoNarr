@@ -26,10 +26,26 @@ export function pathTail(p: string): string {
   return parts.slice(-3).join("/").toLowerCase();
 }
 
-export function findWatchedMatch(filePath: string | null, watched: WatchedFile[]): WatchedFile | null {
+/** `findWatchedMatch` used to re-derive every watched file's `pathTail` on every single call —
+ * fine for a one-off lookup, but each of this module's own functions calls it once per media
+ * item/episode/sub-item, so a library-wide pass turned into `pathTail(watched[i])` running
+ * `(library size) x (watched list size)` times. Building this index once per pass and doing an
+ * O(1) lookup per item turns that into `O(library size + watched list size)`. Keyed by the last
+ * watched entry for a given tail (matching `.find()`'s original first-match semantics almost
+ * never differs in practice — a tail collision means two watched entries share their last three
+ * path segments, which is already the rare edge case `pathTail`'s own doc comment discusses). */
+export function buildWatchedIndex(watched: WatchedFile[]): Map<string, WatchedFile> {
+  const index = new Map<string, WatchedFile>();
+  for (const w of watched) {
+    const tail = pathTail(w.path);
+    if (!index.has(tail)) index.set(tail, w);
+  }
+  return index;
+}
+
+export function findWatchedMatch(filePath: string | null, watchedIndex: Map<string, WatchedFile>): WatchedFile | null {
   if (!filePath) return null;
-  const tail = pathTail(filePath);
-  return watched.find((w) => pathTail(w.path) === tail) ?? null;
+  return watchedIndex.get(pathTail(filePath)) ?? null;
 }
 
 async function pathExists(p: string): Promise<boolean> {
@@ -121,6 +137,47 @@ export async function effectiveRetentionDays(mediaItemId: number, globalDefaultD
   return Math.max(...overrides);
 }
 
+/** Every media item that has *any* retention override, tag- or collection-sourced, in exactly two
+ * queries total — `effectiveRetentionDays` above does the same two queries per item, which is
+ * fine for a single-item call but turns a library-wide archival pass into two queries per item
+ * (tens of thousands of extra synchronous statements on this scale). Both callers below that
+ * sweep the whole library build this once up front and use `resolveRetentionDays` (a plain Map
+ * lookup, same override-precedence rules) inside their loops instead. */
+async function buildRetentionOverrideIndex(): Promise<Map<number, number[]>> {
+  const index = new Map<number, number[]>();
+  const add = (mediaItemId: number, r: number) => {
+    const existing = index.get(mediaItemId);
+    if (existing) existing.push(r);
+    else index.set(mediaItemId, [r]);
+  };
+  (
+    (await db
+      .prepare(
+        `SELECT mit.media_item_id AS id, t.retention_days AS r FROM tags t
+         JOIN media_item_tags mit ON mit.tag_id = t.id
+         WHERE t.retention_days IS NOT NULL`
+      )
+      .all()) as { id: number; r: number }[]
+  ).forEach((row) => add(row.id, row.r));
+  (
+    (await db
+      .prepare(
+        `SELECT ci.media_item_id AS id, c.retention_days AS r FROM collections c
+         JOIN collection_items ci ON ci.collection_id = c.id
+         WHERE c.retention_days IS NOT NULL`
+      )
+      .all()) as { id: number; r: number }[]
+  ).forEach((row) => add(row.id, row.r));
+  return index;
+}
+
+function resolveRetentionDays(mediaItemId: number, globalDefaultDays: number, overridesByItem: Map<number, number[]>): number | null {
+  const overrides = overridesByItem.get(mediaItemId);
+  if (!overrides || overrides.length === 0) return globalDefaultDays;
+  if (overrides.includes(-1)) return null; // never archive
+  return Math.max(...overrides);
+}
+
 async function logArchival(mediaItemId: number, title: string, mode: "archived" | "deleted"): Promise<void> {
   await db
     .prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'auto_archived', ?)`)
@@ -166,14 +223,16 @@ export async function getUpcomingArchivals(): Promise<ArchivalCandidate[]> {
     return [];
   }
   if (watched.length === 0) return [];
+  const watchedIndex = buildWatchedIndex(watched);
+  const overridesByItem = await buildRetentionOverrideIndex();
 
   const candidates: ArchivalCandidate[] = [];
 
   const singleItems = (await db.prepare("SELECT * FROM media_items WHERE has_file = 1 AND protected = 0 AND path IS NOT NULL").all()) as any[];
   for (const item of singleItems) {
-    const match = findWatchedMatch(item.path, watched);
+    const match = findWatchedMatch(item.path, watchedIndex);
     if (!match) continue;
-    const retentionDays = await effectiveRetentionDays(item.id, afterDays);
+    const retentionDays = resolveRetentionDays(item.id, afterDays, overridesByItem);
     if (retentionDays === null) continue;
     candidates.push({
       mediaItemId: item.id,
@@ -192,9 +251,9 @@ export async function getUpcomingArchivals(): Promise<ArchivalCandidate[]> {
     )
     .all()) as any[];
   for (const ep of episodes) {
-    const match = findWatchedMatch(ep.file_path, watched);
+    const match = findWatchedMatch(ep.file_path, watchedIndex);
     if (!match) continue;
-    const retentionDays = await effectiveRetentionDays(ep.media_item_id, afterDays);
+    const retentionDays = resolveRetentionDays(ep.media_item_id, afterDays, overridesByItem);
     if (retentionDays === null) continue;
     candidates.push({
       mediaItemId: ep.media_item_id,
@@ -213,9 +272,9 @@ export async function getUpcomingArchivals(): Promise<ArchivalCandidate[]> {
     )
     .all()) as any[];
   for (const sub of subItems) {
-    const match = findWatchedMatch(sub.file_path, watched);
+    const match = findWatchedMatch(sub.file_path, watchedIndex);
     if (!match) continue;
-    const retentionDays = await effectiveRetentionDays(sub.media_item_id, afterDays);
+    const retentionDays = resolveRetentionDays(sub.media_item_id, afterDays, overridesByItem);
     if (retentionDays === null) continue;
     candidates.push({
       mediaItemId: sub.media_item_id,
@@ -253,6 +312,8 @@ export async function runAutoArchival(): Promise<void> {
     return;
   }
   if (watched.length === 0) return;
+  const watchedIndex = buildWatchedIndex(watched);
+  const overridesByItem = await buildRetentionOverrideIndex();
 
   // A file on an unmounted share or a dead rclone/debrid mount looks already gone, and the recycle
   // bin reports a missing file as removed: its row would be cleared and unmonitored for good.
@@ -262,9 +323,9 @@ export async function runAutoArchival(): Promise<void> {
     .prepare("SELECT * FROM media_items WHERE has_file = 1 AND protected = 0 AND path IS NOT NULL")
     .all()) as any[];
   for (const item of singleItems) {
-    const match = findWatchedMatch(item.path, watched);
+    const match = findWatchedMatch(item.path, watchedIndex);
     if (!match) continue;
-    const retentionDays = await effectiveRetentionDays(item.id, afterDays);
+    const retentionDays = resolveRetentionDays(item.id, afterDays, overridesByItem);
     if (retentionDays === null) continue; // never-archive override
     const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
     if (match.lastPlayedAt.getTime() > cutoffMs) continue;
@@ -290,9 +351,9 @@ export async function runAutoArchival(): Promise<void> {
     )
     .all()) as any[];
   for (const ep of episodes) {
-    const match = findWatchedMatch(ep.file_path, watched);
+    const match = findWatchedMatch(ep.file_path, watchedIndex);
     if (!match) continue;
-    const retentionDays = await effectiveRetentionDays(ep.media_item_id, afterDays);
+    const retentionDays = resolveRetentionDays(ep.media_item_id, afterDays, overridesByItem);
     if (retentionDays === null) continue;
     const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
     if (match.lastPlayedAt.getTime() > cutoffMs) continue;
@@ -315,9 +376,9 @@ export async function runAutoArchival(): Promise<void> {
     )
     .all()) as any[];
   for (const sub of subItems) {
-    const match = findWatchedMatch(sub.file_path, watched);
+    const match = findWatchedMatch(sub.file_path, watchedIndex);
     if (!match) continue;
-    const retentionDays = await effectiveRetentionDays(sub.media_item_id, afterDays);
+    const retentionDays = resolveRetentionDays(sub.media_item_id, afterDays, overridesByItem);
     if (retentionDays === null) continue;
     const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
     if (match.lastPlayedAt.getTime() > cutoffMs) continue;

@@ -1,8 +1,8 @@
 import { Router } from "express";
-import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { fetchPersonDetails } from "../services/metadata.js";
 import { isRatingBlocked } from "../services/contentRatings.js";
+import { getTmdbLibraryIndex } from "../services/mediaQuery.js";
 
 export const peopleRouter = Router();
 
@@ -28,33 +28,20 @@ peopleRouter.get(
 
     const allowedTypes = allowedTypesFor(req);
     const maxContentRating = req.auth?.user?.maxContentRating ?? null;
-    const libraryRows = (await db
-      .prepare("SELECT id, type, external_ids, content_rating FROM media_items WHERE type IN ('movie', 'series')")
-      .all()) as {
-      id: number;
-      type: string;
-      external_ids: string | null;
-      content_rating: string | null;
-    }[];
+    const tmdbIndex = await getTmdbLibraryIndex();
     const byTmdbId = new Map<string, number>();
-    for (const row of libraryRows) {
-      if (!row.external_ids) continue;
+    for (const [key, entry] of tmdbIndex) {
       // Same library-visibility gate every other route applies — without it, a restricted user
       // (no access to movies/series at all, or blocked from this item's content rating) still
       // learned "this is in your library" for a title they can't actually open.
-      if (allowedTypes && !allowedTypes.includes(row.type)) continue;
-      if (maxContentRating && isRatingBlocked(row.content_rating, maxContentRating)) continue;
-      try {
-        const parsed = JSON.parse(row.external_ids);
-        if (parsed.tmdb) byTmdbId.set(`${row.type === "movie" ? "movie" : "series"}-${parsed.tmdb}`, row.id);
-      } catch {
-        // malformed external_ids on an old row — skip rather than crash the whole lookup
-      }
+      if (allowedTypes && !allowedTypes.includes(entry.type)) continue;
+      if (maxContentRating && isRatingBlocked(entry.contentRating, maxContentRating)) continue;
+      byTmdbId.set(key, entry.mediaItemId);
     }
 
     const credits = details.credits.map((c) => ({
       ...c,
-      libraryMediaItemId: byTmdbId.get(`${c.mediaType}-${c.tmdbId}`) ?? null,
+      libraryMediaItemId: byTmdbId.get(`${c.mediaType}:${c.tmdbId}`) ?? null,
     }));
 
     res.json({ ...details, credits });

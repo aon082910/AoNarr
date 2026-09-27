@@ -13,16 +13,27 @@ const languageDisplayNames = new Intl.DisplayNames(["en"], { type: "language" })
  * the duplication. Falls back to the raw (uppercased) code for something it doesn't recognize at
  * all — it echoes well-formed-but-unknown input back unchanged rather than throwing, which is how
  * that case is detected. */
+// getLibraryAnalysis calls this once per audio/subtitle stream across the whole library (well over
+// 100,000 calls on a large one), but the actual set of distinct language codes that appear in a
+// real library is tiny (a few dozen at most) — Intl.DisplayNames.of() is the expensive part of
+// this function (a full CLDR locale lookup), so memoizing by the trimmed input turns "resolve the
+// same handful of codes over and over" into "resolve each one once."
+const languageCache = new Map<string, string>();
+
 export function normalizeLanguage(raw: string | null | undefined): string {
   const trimmed = (raw ?? "").trim().toLowerCase();
   if (!trimmed || trimmed === "und" || trimmed === "unk" || trimmed === "n/a" || trimmed === "null") return "Unknown";
+  const cached = languageCache.get(trimmed);
+  if (cached !== undefined) return cached;
+  let resolved: string;
   try {
-    const resolved = languageDisplayNames.of(trimmed);
-    if (!resolved || resolved.toLowerCase() === trimmed) return trimmed.toUpperCase();
-    return resolved;
+    const displayName = languageDisplayNames.of(trimmed);
+    resolved = !displayName || displayName.toLowerCase() === trimmed ? trimmed.toUpperCase() : displayName;
   } catch {
-    return trimmed.toUpperCase();
+    resolved = trimmed.toUpperCase();
   }
+  languageCache.set(trimmed, resolved);
+  return resolved;
 }
 
 /** Buckets actual pixel dimensions into the same named tiers the rest of the app already uses for

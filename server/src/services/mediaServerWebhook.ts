@@ -105,8 +105,22 @@ export async function recordWatchEvent(
   }
   if (!signal.filePath) return null;
   const tail = pathTail(signal.filePath);
+  // A LIKE filter on the filename alone isn't sufficient for correctness on its own — two
+  // different shows can share a generic episode filename ("S01E01.mkv"), which is exactly why
+  // pathTail compares the last three segments, not just the basename — but it narrows the
+  // candidate set pulled into JS from every row in the table (up to 108,903 episodes) down to just
+  // the ones that could plausibly match, before the precise pathTail() comparison below picks the
+  // right one out of that much smaller set.
+  const basename = signal.filePath.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? signal.filePath;
+  // pathTail()'s own comparison is case-insensitive (it lowercases both sides) — SQLite's LIKE
+  // already is too for ASCII, but Postgres's isn't, so this has to use ILIKE there or a
+  // differently-cased filename would be narrowed away before the pathTail() check below ever runs.
+  const likeOp = db.dialect === "postgres" ? "ILIKE" : "LIKE";
 
-  const items = (await db.prepare("SELECT id, path FROM media_items WHERE path IS NOT NULL").all()) as { id: number; path: string }[];
+  const items = (await db.prepare(`SELECT id, path FROM media_items WHERE path IS NOT NULL AND path ${likeOp} '%' || ?`).all(basename)) as {
+    id: number;
+    path: string;
+  }[];
   const item = items.find((r) => pathTail(r.path) === tail);
   if (item) {
     await db.prepare("INSERT INTO watch_events (media_item_id) VALUES (?)").run(item.id);
@@ -114,8 +128,8 @@ export async function recordWatchEvent(
   }
 
   const episodes = (await db
-    .prepare("SELECT id, media_item_id, file_path FROM episodes WHERE file_path IS NOT NULL")
-    .all()) as { id: number; media_item_id: number; file_path: string }[];
+    .prepare(`SELECT id, media_item_id, file_path FROM episodes WHERE file_path IS NOT NULL AND file_path ${likeOp} '%' || ?`)
+    .all(basename)) as { id: number; media_item_id: number; file_path: string }[];
   const episode = episodes.find((r) => pathTail(r.file_path) === tail);
   if (episode) {
     await db.prepare("INSERT INTO watch_events (media_item_id, episode_id) VALUES (?, ?)").run(episode.media_item_id, episode.id);
@@ -123,8 +137,8 @@ export async function recordWatchEvent(
   }
 
   const subItems = (await db
-    .prepare("SELECT id, media_item_id, file_path FROM sub_items WHERE file_path IS NOT NULL")
-    .all()) as { id: number; media_item_id: number; file_path: string }[];
+    .prepare(`SELECT id, media_item_id, file_path FROM sub_items WHERE file_path IS NOT NULL AND file_path ${likeOp} '%' || ?`)
+    .all(basename)) as { id: number; media_item_id: number; file_path: string }[];
   const subItem = subItems.find((r) => pathTail(r.file_path) === tail);
   if (subItem) {
     await db.prepare("INSERT INTO watch_events (media_item_id, sub_item_id) VALUES (?, ?)").run(subItem.media_item_id, subItem.id);
