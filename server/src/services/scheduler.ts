@@ -618,19 +618,50 @@ export async function chooseBestResult(
     cutoff = "";
   }
 
+  // Radarr/Sonarr-style per-release rejection reasons — each filter below is unchanged logic,
+  // just with a log.info added on the reject path so a search's container-log trail shows why
+  // every candidate that didn't make it was dropped, not just the final survivor count.
   const withParsed = results
-    .filter((r) => !blocklisted.has(r.title))
-    .filter((r) => !clients || pickClientForProtocol(clients, r.protocol) !== null)
+    .filter((r) => {
+      if (blocklisted.has(r.title)) {
+        log.info(`[scheduler] rejected "${r.title}": blocklisted`);
+        return false;
+      }
+      return true;
+    })
+    .filter((r) => {
+      if (clients && pickClientForProtocol(clients, r.protocol) === null) {
+        log.info(`[scheduler] rejected "${r.title}": no configured download client handles its protocol (${r.protocol})`);
+        return false;
+      }
+      return true;
+    })
     .map((r) => ({ result: r, parsed: parseReleaseTitle(r.title), size: knownReleaseSize(r.size) }))
-    .filter(({ result, parsed }) => isEligibleForDelay(parsed.quality, cutoff, result, delayProfile));
+    .filter(({ result, parsed }) => {
+      if (!isEligibleForDelay(parsed.quality, cutoff, result, delayProfile)) {
+        log.info(`[scheduler] rejected "${result.title}": not yet eligible under the configured delay profile`);
+        return false;
+      }
+      return true;
+    });
 
   const episodeFiltered = !target
     ? withParsed
     : "airDate" in target
-    ? withParsed.filter(({ parsed }) => releaseMatchesAirDate(parsed, target.airDate))
-    : withParsed.filter(({ parsed }) =>
-        releaseMatchesEpisode(parsed, target.season, target.episode, target.sceneSeason, target.sceneEpisode, target.absoluteEpisode)
-      );
+    ? withParsed.filter(({ result, parsed }) => {
+        const ok = releaseMatchesAirDate(parsed, target.airDate);
+        if (!ok) log.info(`[scheduler] rejected "${result.title}": doesn't match the target air date (${target.airDate})`);
+        return ok;
+      })
+    : withParsed.filter(({ result, parsed }) => {
+        const ok = releaseMatchesEpisode(parsed, target.season, target.episode, target.sceneSeason, target.sceneEpisode, target.absoluteEpisode);
+        if (!ok) {
+          log.info(
+            `[scheduler] rejected "${result.title}": doesn't match the target episode (S${String(target.season).padStart(2, "0")}E${String(target.episode).padStart(2, "0")})`
+          );
+        }
+        return ok;
+      });
 
   const allowed = new Set(allowedQualities);
   const namesMainTitleOnly = new Set<SearchResult>();
@@ -639,13 +670,24 @@ export async function chooseBestResult(
       if (!name) return true;
       const match = releaseNameMatch(result.title, name, mediaType);
       if (match === "main") namesMainTitleOnly.add(result);
+      if (match === null) log.info(`[scheduler] rejected "${result.title}": title doesn't match "${name.title}"`);
       return match !== null;
     }
-    if (allowed.size > 0 && !allowed.has(parsed.quality)) return false;
-    if (upgradeFromRank !== null && qualityRank(parsed.quality) <= upgradeFromRank) return false;
+    if (allowed.size > 0 && !allowed.has(parsed.quality)) {
+      log.info(`[scheduler] rejected "${result.title}": quality "${parsed.quality}" isn't allowed by this quality profile`);
+      return false;
+    }
+    if (upgradeFromRank !== null && qualityRank(parsed.quality) <= upgradeFromRank) {
+      log.info(`[scheduler] rejected "${result.title}": quality "${parsed.quality}" isn't an upgrade over what's already on disk`);
+      return false;
+    }
     // Drop releases whose size doesn't fit their claimed quality's configured size range — usually
     // a mislabeled or fake release (e.g. a 200MB file claiming to be 1080p).
-    return sizeWithinQualityBounds(parsed.quality, size);
+    if (!sizeWithinQualityBounds(parsed.quality, size)) {
+      log.info(`[scheduler] rejected "${result.title}": size doesn't fit this quality's configured size range`);
+      return false;
+    }
+    return true;
   });
   if (relevant.length === 0) {
     log.info(`[scheduler] no eligible releases among ${results.length} result(s)${forLabel}`);
@@ -2442,7 +2484,16 @@ async function applyClientStatuses(client: DownloadClient, relevant: QueueItem[]
       trackStalledFlag(match.id, status.status === "downloading" && !progressChanged && status.stalled === true);
       notifyQueueChanged();
 
+      // Download-monitor visibility, Radarr/Sonarr-style: one line for "started downloading" and
+      // one for "finished, importing" — not per-poll progress (that would fire every 20s per
+      // active download) but the two transitions someone watching container logs actually cares
+      // about.
+      if (match.status === "queued" && status.status === "downloading") {
+        log.info(`[scheduler] "${match.title}" started downloading via "${client.name}"`);
+      }
+
       if (status.status === "completed") {
+        log.info(`[scheduler] "${match.title}" finished downloading via "${client.name}" — importing`);
         if (await importCompletedDownload(match, sharedDownloadImported)) sharedDownloadImported = true;
       } else if (status.status === "failed") {
         if (status.failureReason === DOWNLOAD_INTERRUPTED_REASON) {

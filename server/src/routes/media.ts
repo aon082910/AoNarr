@@ -1479,6 +1479,7 @@ mediaRouter.post(
     const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(result.lastInsertRowid);
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "media_added", `${b.title} (${b.type})`);
+    log.info(`[media] added "${b.title}"${b.year ? ` (${b.year})` : ""} to the library (${b.type})`);
     res.status(201).json(mediaItemFromRow(row));
   })
 );

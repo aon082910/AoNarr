@@ -578,6 +578,9 @@ async function runSearch(
   bypassCache: boolean,
   externalIds?: Record<string, string>
 ): Promise<SearchResult[]> {
+  if (applicable.length > 0) {
+    log.info(`[indexerClient] searching ${applicable.length} indexer(s) for "${query}"`);
+  }
   const settled = await Promise.allSettled(
     applicable.map((i) =>
       bypassCache ? searchIndexer(i, query, mediaType, externalIds) : searchIndexerCached(i, query, mediaType, externalIds)
