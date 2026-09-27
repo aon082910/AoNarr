@@ -42,6 +42,19 @@ await migrateScreenscraperArtwork().catch((err) => log.warn("[startup] ScreenScr
 /** Deep enough for every library naming template's folders. */
 const STALE_TEMP_SWEEP_DEPTH = 4;
 
+/** A `setImmediate` yield only defers to the *next* event loop tick — for a library with tens of
+ * thousands of directories (a season-by-season TV library easily has more directories than media
+ * items), that's still thousands of consecutive turns fired back-to-back with no real gap, which
+ * on a large library measurably starved concurrent HTTP request handling of a fair share of the
+ * event loop for minutes after every boot. A real (if tiny) per-directory delay spreads the same
+ * work over minutes of wall-clock time instead, so it never dominates — this sweep has no
+ * user-facing deadline, unlike a request in flight. */
+const SWEEP_DIR_DELAY_MS = 15;
+/** Runs after the app is already serving traffic (see the `listen` callback below), delayed
+ * further still so the first couple of minutes after a restart or update — when an admin is most
+ * likely actively poking at the UI — are left completely undisturbed by this background sweep. */
+const SWEEP_STARTUP_DELAY_MS = 2 * 60 * 1000;
+
 /** An import cut off by a restart leaves a `.aonarr-tmp-*` partial copy beside its destination; the
  * next import to that same file removes it, but one whose destination is never imported again
  * would stay forever. removeStaleImportTemps only takes temps untouched for an hour and never an
@@ -59,7 +72,7 @@ async function sweepStaleImportTemps(): Promise<void> {
     }
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setTimeout(resolve, SWEEP_DIR_DELAY_MS));
       await visit(path.join(dir, entry.name), depth + 1);
     }
   };
@@ -70,7 +83,9 @@ const server = app.listen(config.port, () => {
   log.info(`AoNarr server listening on port ${config.port}`);
   startScheduler();
   restartIrcFeeds().catch((err) => log.warn("[irc] failed to start feeds:", err.message));
-  sweepStaleImportTemps().catch((err) => log.warn("[startup] stale import temp sweep failed:", err.message));
+  setTimeout(() => {
+    sweepStaleImportTemps().catch((err) => log.warn("[startup] stale import temp sweep failed:", err.message));
+  }, SWEEP_STARTUP_DELAY_MS);
 });
 
 /**
