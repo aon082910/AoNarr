@@ -178,6 +178,8 @@ CREATE TABLE IF NOT EXISTS queue (
 );
 CREATE INDEX IF NOT EXISTS idx_queue_media_item_id ON queue(media_item_id);
 CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
+CREATE INDEX IF NOT EXISTS idx_queue_episode_id ON queue(episode_id);
+CREATE INDEX IF NOT EXISTS idx_queue_sub_item_id ON queue(sub_item_id);
 
 CREATE TABLE IF NOT EXISTS history (
   id SERIAL PRIMARY KEY,
@@ -217,6 +219,8 @@ CREATE TABLE IF NOT EXISTS iptv_playlist_items (
   episode_id INTEGER REFERENCES episodes(id) ON DELETE CASCADE,
   duration_seconds INTEGER
 );
+CREATE INDEX IF NOT EXISTS idx_iptv_playlist_items_media_item_id ON iptv_playlist_items(media_item_id);
+CREATE INDEX IF NOT EXISTS idx_iptv_playlist_items_episode_id ON iptv_playlist_items(episode_id);
 
 CREATE TABLE IF NOT EXISTS iptv_filler_clips (
   id SERIAL PRIMARY KEY,
@@ -389,6 +393,7 @@ CREATE TABLE IF NOT EXISTS recycle_bin (
   restoring INTEGER NOT NULL DEFAULT 0, -- 1 while an async restore is in flight (large files move off the request thread)
   restore_error TEXT -- set if the last restore attempt failed, cleared on the next attempt
 );
+CREATE INDEX IF NOT EXISTS idx_recycle_bin_media_item_id ON recycle_bin(media_item_id);
 
 -- Files the corrupt-media check (services/corruptMediaCheck.ts) flagged as failing validation,
 -- held here instead of being recycled immediately when "review before recycling" is enabled in
@@ -420,6 +425,7 @@ CREATE TABLE IF NOT EXISTS corrupt_media_review (
   reason TEXT NOT NULL,
   detected_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
 );
+CREATE INDEX IF NOT EXISTS idx_corrupt_media_review_media_item_id ON corrupt_media_review(media_item_id);
 
 -- A public, unauthenticated read-only link to one media item's overview/poster — for sharing
 -- outside the household without handing out a login. Revocable; optionally expiring.
@@ -430,6 +436,7 @@ CREATE TABLE IF NOT EXISTS share_links (
   created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
   expires_at TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_share_links_media_item_id ON share_links(media_item_id);
 
 -- Recurring "auto-add anything new here" sources, checked on the same schedule as auto-search.
 -- Distinct from watchlist_import (one-time CSV upload): these are re-fetched every cycle.
@@ -542,6 +549,7 @@ CREATE TABLE IF NOT EXISTS requests (
   created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
   resolved_at TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_requests_media_item_id ON requests(media_item_id);
 
 -- Releases the scheduler/manual search should never grab again for a given media item — e.g. a
 -- grab that turned out to be fake/corrupt/mislabeled.
@@ -565,6 +573,11 @@ CREATE TABLE IF NOT EXISTS watch_events (
   sub_item_id INTEGER REFERENCES sub_items(id) ON DELETE CASCADE,
   watched_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
 );
+-- See schema.sql's copy of this table for why these matter: mergeMediaItems re-points every one of
+-- a loser's rows here on every duplicate merge, and this table has no natural cap on growth.
+CREATE INDEX IF NOT EXISTS idx_watch_events_media_item_id ON watch_events(media_item_id);
+CREATE INDEX IF NOT EXISTS idx_watch_events_episode_id ON watch_events(episode_id);
+CREATE INDEX IF NOT EXISTS idx_watch_events_sub_item_id ON watch_events(sub_item_id);
 
 -- Per-release-group grab outcome history — a group that keeps producing releases that fail to
 -- import (fake/mislabeled/corrupt) or get blocklisted is a weak tiebreaker signal against one
