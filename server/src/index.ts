@@ -49,7 +49,7 @@ const STALE_TEMP_SWEEP_DEPTH = 4;
 async function sweepStaleImportTemps(): Promise<void> {
   const roots = (await db.prepare("SELECT path FROM root_folders").all()) as { path: string }[];
   const visit = async (dir: string, depth: number): Promise<void> => {
-    removeStaleImportTemps(dir);
+    await removeStaleImportTemps(dir);
     if (depth >= STALE_TEMP_SWEEP_DEPTH) return;
     let entries: fs.Dirent[];
     try {

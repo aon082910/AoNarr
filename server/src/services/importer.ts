@@ -754,10 +754,10 @@ function tempPrefixFor(dest: string): string {
  * once — the retry after a restart comes within minutes, long before an age limit would pass. Any
  * other temp only once untouched for an hour, which spares a copy another process sharing the
  * library is still writing. */
-export function removeStaleImportTemps(dir: string, forDest?: string): void {
+export async function removeStaleImportTemps(dir: string, forDest?: string): Promise<void> {
   let names: string[];
   try {
-    names = fs.readdirSync(dir);
+    names = await fsp.readdir(dir);
   } catch {
     return;
   }
@@ -767,9 +767,9 @@ export function removeStaleImportTemps(dir: string, forDest?: string): void {
     const full = path.join(dir, name);
     if (!name.startsWith(TEMP_PREFIX) || activeTemps.has(path.resolve(full))) continue;
     try {
-      const st = fs.lstatSync(full);
+      const st = await fsp.lstat(full);
       if (st.isDirectory()) continue;
-      if ((ownPrefix && name.startsWith(ownPrefix)) || st.mtimeMs < cutoff) fs.rmSync(full, { force: true });
+      if ((ownPrefix && name.startsWith(ownPrefix)) || st.mtimeMs < cutoff) await fsp.rm(full, { force: true });
     } catch {
       // gone already, or not removable — best effort
     }
@@ -788,7 +788,7 @@ function removeQuietly(target: string): void {
  * temporary name beside it, flushed, then renamed over it. Copying straight onto dest truncated an
  * upgrade's existing library file first, so a failed or interrupted copy destroyed it. */
 async function copyIntoPlace(src: string, dest: string): Promise<void> {
-  removeStaleImportTemps(path.dirname(dest), dest);
+  await removeStaleImportTemps(path.dirname(dest), dest);
   const tmp = tempPathNextTo(dest);
   activeTemps.add(path.resolve(tmp));
   try {
