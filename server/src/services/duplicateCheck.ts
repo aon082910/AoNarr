@@ -355,10 +355,74 @@ export async function mergeMediaItems(
   if (!keeper) throw new Error("Keeper item not found");
   const shape = effectiveShape({ type: keeper.type, legacyShape: keeper.legacy_shape });
 
+  // Built once for the whole merge (not once per loser, and never re-queried per episode) and kept
+  // in sync in-memory as episodes move over or adopt a file, so a second loser in the same call
+  // sees the first loser's just-added episodes without going back to the DB. Collisions used to be
+  // found via a fresh `SELECT ... WHERE media_item_id = ? AND season_number = ? AND episode_number
+  // = ?` query per LOSER EPISODE — an unindexed scan of every one of the keeper's own episodes,
+  // repeated once per loser episode. Confirmed live: merging two shows with 5,566 and 2,619
+  // episodes froze the whole app solid well past any reasonable timeout — the exact same failure
+  // mode as the watch_events bug (Round 358), just an O(n×m) scan instead of a missing index; same
+  // fix philosophy as the original findWatchedMatch bug this whole investigation started from (see
+  // [[aonarr-performance-audit-and-fixes]]) — build an O(1) lookup index once instead of a
+  // per-item scan.
+  const keeperEpisodesByKey =
+    shape === "episodic"
+      ? new Map(
+          (
+            (await db
+              .prepare("SELECT id, season_number, episode_number, has_file FROM episodes WHERE media_item_id = ?")
+              .all(keeperId)) as { id: number; season_number: number; episode_number: number; has_file: number }[]
+          ).map((e) => [`${e.season_number}:${e.episode_number}`, e])
+        )
+      : null;
+
+  // Same reasoning and fix shape as keeperEpisodesByKey above, for "collection" shape's sub_items
+  // (books, albums, comics, ...) — this used to re-fetch the keeper's whole sub_items list on every
+  // loser AND `.find()` it per loser sub-item (an O(n) title-normalize-and-compare scan repeated
+  // per loser sub-item); a Map built once and kept in sync is both fewer DB round trips and O(1)
+  // per lookup instead of O(n).
+  const keeperSubsByTitle =
+    shape === "collection"
+      ? new Map(
+          (
+            (await db.prepare("SELECT id, title, has_file FROM sub_items WHERE media_item_id = ?").all(keeperId)) as {
+              id: number;
+              title: string;
+              has_file: number;
+            }[]
+          ).map((s) => [normalizeTitle(s.title), s])
+        )
+      : null;
+
   const upsertIgnore = (table: string, cols: string, values: string) =>
     db.dialect === "postgres"
       ? `INSERT INTO ${table} (${cols}) ${values} ON CONFLICT DO NOTHING`
       : `INSERT OR IGNORE INTO ${table} (${cols}) ${values}`;
+
+  // `db.prepare()` re-parses its SQL text from scratch every call — cheap once, but the whole point
+  // of a prepared statement is reusing the parse across many executions, and the loops below run
+  // once per episode/sub-item (thousands, for a large show/collection). Preparing each statement
+  // once here and reusing it via .run()/.get() is what actually makes those loops cheap; combined
+  // with the Map-based collision lookups above, this is what turned the 5,566+2,619-episode merge
+  // that used to freeze the app into one that completes normally.
+  const stmt = {
+    moveEpisode: db.prepare("UPDATE episodes SET media_item_id = ? WHERE id = ?"),
+    adoptEpisodeFile: db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?"),
+    corruptReviewEpisode: db.prepare("UPDATE corrupt_media_review SET row_id = ? WHERE table_name = 'episodes' AND row_id = ?"),
+    episodeRef: new Map(EPISODE_REF_TABLES.map((t) => [t, db.prepare(`UPDATE ${t} SET episode_id = ? WHERE episode_id = ?`)])),
+    moveSubItem: db.prepare("UPDATE sub_items SET media_item_id = ? WHERE id = ?"),
+    adoptSubItemFile: db.prepare("UPDATE sub_items SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?"),
+    keeperHasTrackFile: db.prepare("SELECT id FROM tracks WHERE sub_item_id = ? AND has_file = 1"),
+    deleteFilelessTracks: db.prepare(
+      `DELETE FROM tracks WHERE sub_item_id = ? AND has_file = 0 AND track_number IN (SELECT track_number FROM tracks WHERE sub_item_id = ?)`
+    ),
+    moveTracks: db.prepare(
+      `UPDATE tracks SET sub_item_id = ? WHERE sub_item_id = ? AND track_number NOT IN (SELECT track_number FROM tracks WHERE sub_item_id = ?)`
+    ),
+    corruptReviewSubItem: db.prepare("UPDATE corrupt_media_review SET row_id = ? WHERE table_name = 'sub_items' AND row_id = ?"),
+    subItemRef: new Map(SUB_ITEM_REF_TABLES.map((t) => [t, db.prepare(`UPDATE ${t} SET sub_item_id = ? WHERE sub_item_id = ?`)])),
+  };
 
   // Recycling moves files (a cross-device move is a full copy), so it runs only after the
   // transaction commits: awaiting it inside would hold the shared connection mid-transaction, and a
@@ -380,23 +444,22 @@ export async function mergeMediaItems(
       if (shape === "episodic") {
         const loserEpisodes = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").all(loserId)) as any[];
         for (const ep of loserEpisodes) {
-          const collision = (await db
-            .prepare("SELECT id, has_file FROM episodes WHERE media_item_id = ? AND season_number = ? AND episode_number = ?")
-            .get(keeperId, ep.season_number, ep.episode_number)) as { id: number; has_file: number } | undefined;
+          const key = `${ep.season_number}:${ep.episode_number}`;
+          const collision = keeperEpisodesByKey!.get(key);
           if (!collision) {
-            await db.prepare("UPDATE episodes SET media_item_id = ? WHERE id = ?").run(keeperId, ep.id);
+            await stmt.moveEpisode.run(keeperId, ep.id);
+            keeperEpisodesByKey!.set(key, { id: ep.id, season_number: ep.season_number, episode_number: ep.episode_number, has_file: ep.has_file });
             continue;
           }
           if (!collision.has_file && ep.has_file && ep.file_path) {
-            await db
-              .prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?")
-              .run(ep.file_path, ep.quality, ep.media_info, ep.size_bytes ?? null, collision.id);
-            await db.prepare("UPDATE corrupt_media_review SET row_id = ? WHERE table_name = 'episodes' AND row_id = ?").run(collision.id, ep.id);
+            await stmt.adoptEpisodeFile.run(ep.file_path, ep.quality, ep.media_info, ep.size_bytes ?? null, collision.id);
+            await stmt.corruptReviewEpisode.run(collision.id, ep.id);
+            collision.has_file = 1; // keep the in-memory index in sync with what the row now has
           } else if (deleteFiles && ep.file_path) {
             toRecycle.push({ path: ep.file_path, type: keeper.type, title: `${loser.title} S${ep.season_number}E${ep.episode_number}` });
           }
           for (const table of EPISODE_REF_TABLES) {
-            await db.prepare(`UPDATE ${table} SET episode_id = ? WHERE episode_id = ?`).run(collision.id, ep.id);
+            await stmt.episodeRef.get(table)!.run(collision.id, ep.id);
           }
         }
         await db
@@ -406,41 +469,29 @@ export async function mergeMediaItems(
           )
           .run(keeperId, loserId, keeperId);
       } else if (shape === "collection") {
-        const keeperSubs = (await db.prepare("SELECT id, title, has_file FROM sub_items WHERE media_item_id = ?").all(keeperId)) as any[];
         const loserSubs = (await db.prepare("SELECT * FROM sub_items WHERE media_item_id = ?").all(loserId)) as any[];
         for (const sub of loserSubs) {
-          const collision = keeperSubs.find((k) => normalizeTitle(k.title) === normalizeTitle(sub.title));
+          const subKey = normalizeTitle(sub.title);
+          const collision = keeperSubsByTitle!.get(subKey);
           if (!collision) {
-            await db.prepare("UPDATE sub_items SET media_item_id = ? WHERE id = ?").run(keeperId, sub.id);
+            await stmt.moveSubItem.run(keeperId, sub.id);
+            keeperSubsByTitle!.set(subKey, { id: sub.id, title: sub.title, has_file: sub.has_file });
             continue;
           }
-          const keeperHasTrackFile =
-            !collision.has_file && !!(await db.prepare("SELECT id FROM tracks WHERE sub_item_id = ? AND has_file = 1").get(collision.id));
+          const keeperHasTrackFile = !collision.has_file && !!(await stmt.keeperHasTrackFile.get(collision.id));
           if (!collision.has_file && !keeperHasTrackFile && sub.has_file && sub.file_path) {
-            await db
-              .prepare("UPDATE sub_items SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?")
-              .run(sub.file_path, sub.quality, sub.media_info, sub.size_bytes ?? null, collision.id);
+            await stmt.adoptSubItemFile.run(sub.file_path, sub.quality, sub.media_info, sub.size_bytes ?? null, collision.id);
             // An album's/audiobook's files are its tracks: the loser's replace the keeper's
             // fileless track rows wherever the track numbers overlap.
-            await db
-              .prepare(
-                `DELETE FROM tracks WHERE sub_item_id = ? AND has_file = 0
-                 AND track_number IN (SELECT track_number FROM tracks WHERE sub_item_id = ?)`
-              )
-              .run(collision.id, sub.id);
-            await db
-              .prepare(
-                `UPDATE tracks SET sub_item_id = ?
-                 WHERE sub_item_id = ? AND track_number NOT IN (SELECT track_number FROM tracks WHERE sub_item_id = ?)`
-              )
-              .run(collision.id, sub.id, collision.id);
-            await db.prepare("UPDATE corrupt_media_review SET row_id = ? WHERE table_name = 'sub_items' AND row_id = ?").run(collision.id, sub.id);
+            await stmt.deleteFilelessTracks.run(collision.id, sub.id);
+            await stmt.moveTracks.run(collision.id, sub.id, collision.id);
+            await stmt.corruptReviewSubItem.run(collision.id, sub.id);
             collision.has_file = 1;
           } else if (deleteFiles && sub.file_path) {
             toRecycle.push({ path: sub.file_path, type: keeper.type, title: `${loser.title} — ${sub.title}` });
           }
           for (const table of SUB_ITEM_REF_TABLES) {
-            await db.prepare(`UPDATE ${table} SET sub_item_id = ? WHERE sub_item_id = ?`).run(collision.id, sub.id);
+            await stmt.subItemRef.get(table)!.run(collision.id, sub.id);
           }
         }
       } else if (!keeper.has_file && loser.has_file) {
