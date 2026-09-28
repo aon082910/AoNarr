@@ -2751,3 +2751,93 @@ describe("isEpisodeMonitoredByDefault", () => {
     expect(metadata.isEpisodeMonitoredByDefault({ seasonNumber: 30 })).toBe(true);
   });
 });
+
+// Deliberately the LAST describe block in this file: every test here uses vi.useFakeTimers with a
+// "now" pushed ahead of real time, which leaves traktRequestSlot's process-wide `lastAt` sitting in
+// that fake future even after the test switches back to real timers in afterEach. A real-timer
+// Trakt test running *after* one of these would see `lastAt` far in its own future and hang for
+// however long that offset was (minutes) waiting for real time to catch up — exactly the trap the
+// Discogs/ComicVine spacer tests elsewhere in this file avoid by being the last test to touch their
+// own spacer. Each test below uses its own distinct, well-separated offset rather than one shared
+// value: these tests run in well under a millisecond of real wall-clock time each, so back-to-back
+// tests sharing one offset would still collide with whatever the previous test's fake clock already
+// advanced past (see the same reasoning in the Discogs test's own comment, one test earlier there
+// vs. four here).
+describe("Trakt: pacing and 429 handling (every Trakt call goes through the same shared slot)", () => {
+  it("spaces two back-to-back calls ~400ms apart instead of firing both at once", async () => {
+    vi.useFakeTimers({ now: Date.now() + 120_000 });
+    setSetting("traktClientId", "cid");
+    const fetchMock = stub([{ test: (u) => u.includes("api.trakt.tv/search/movie"), response: ok([]) }]);
+
+    const pending = Promise.all([metadata.searchMetadata("movie", "a", "trakt"), metadata.searchMetadata("movie", "b", "trakt")]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // the first call goes out straight away
+    await vi.advanceTimersByTimeAsync(399);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await pending;
+  });
+
+  it("waits out a 429's Retry-After header, then retries and succeeds", async () => {
+    vi.useFakeTimers({ now: Date.now() + 240_000 });
+    setSetting("traktClientId", "cid");
+    let calls = 0;
+    const fetchMock = stub([
+      {
+        test: (u) => u.includes("api.trakt.tv/search/show"),
+        response: () => {
+          calls++;
+          return calls === 1 ? { ok: false, status: 429, headers: new Headers({ "Retry-After": "5" }), json: async () => ({}) } : ok([{ show: { title: "X", year: 2010, ids: { trakt: 1 } } }]);
+        },
+      },
+    ]);
+
+    const pending = metadata.searchMetadata("series", "x", "trakt");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // still waiting out Retry-After
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const results = await pending;
+    expect(results[0].title).toBe("X");
+  });
+
+  it("falls back to a 2s wait when Trakt sends a 429 with no Retry-After header", async () => {
+    vi.useFakeTimers({ now: Date.now() + 360_000 });
+    setSetting("traktClientId", "cid");
+    let calls = 0;
+    stub([
+      {
+        test: (u) => u.includes("api.trakt.tv/search/movie"),
+        response: () => {
+          calls++;
+          return calls === 1 ? { ok: false, status: 429, headers: new Headers(), json: async () => ({}) } : ok([]);
+        },
+      },
+    ]);
+
+    const pending = metadata.searchMetadata("movie", "x", "trakt");
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(calls).toBe(2);
+    await pending;
+  });
+
+  it("gives up after 3 retries and lets the 429 surface as a normal HTTP-status error", async () => {
+    vi.useFakeTimers({ now: Date.now() + 480_000 });
+    setSetting("traktClientId", "cid");
+    const fetchMock = stub([
+      { test: (u) => u.includes("api.trakt.tv/search/movie"), response: { ok: false, status: 429, headers: new Headers({ "Retry-After": "1" }), json: async () => ({}) } },
+    ]);
+
+    const pending = metadata.searchMetadata("movie", "x", "trakt").catch((e: Error) => e);
+    await vi.runAllTimersAsync();
+    const result = await pending;
+    expect(result).toBeInstanceOf(Error);
+    expect((result as Error).message).toBe("Trakt movie search failed: HTTP 429");
+    expect(fetchMock).toHaveBeenCalledTimes(4); // the initial attempt plus 3 retries
+  });
+});

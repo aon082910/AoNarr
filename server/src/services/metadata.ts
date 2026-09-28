@@ -5,6 +5,7 @@ import * as cheerio from "cheerio";
 import { parseStringPromise } from "xml2js";
 import { config } from "../config.js";
 import { db } from "../db/index.js";
+import { log } from "./logger.js";
 import { getSetting } from "./settingsStore.js";
 import { MEDIA_TYPES, getMediaTypeConfig } from "./mediaTypes.js";
 import { CONTENT_RATING_ORDER } from "./contentRatings.js";
@@ -428,13 +429,37 @@ function traktHeaders(clientId: string): Record<string, string> {
   };
 }
 
+/** Trakt's documented limit is 1000 GET calls per 5 minutes (an average of one every 300ms), but
+ * real-world reports (their own forums/GitHub issues) show even ~1s spacing alone still 429s
+ * sometimes — the limit is enforced as a burst window, not a smooth average, so pacing alone isn't
+ * airtight the way it is for Discogs/ComicVine below. 400ms keeps comfortably under the documented
+ * average while staying fast for the common case (one item's search + episode fetch = 2-3 calls). */
+const traktRequestSlot = requestSpacer(400);
+
+/** Every Trakt call funnels through here: paced by traktRequestSlot, and a 429 (which Trakt's own
+ * API docs say every client must be prepared to handle, not just avoid) waits out the `Retry-After`
+ * header — or a conservative default when Trakt doesn't send one — and retries a few times before
+ * giving up, instead of the search/lookup failing outright on what's usually a transient burst. */
+async function traktFetch(url: string, clientId: string): Promise<Response> {
+  const headers = traktHeaders(clientId);
+  for (let attempt = 0; ; attempt++) {
+    await traktRequestSlot();
+    const res = await fetch(url, { headers });
+    if (res.status !== 429 || attempt >= 3) return res;
+    const retryAfterSeconds = Number(res.headers.get("Retry-After"));
+    const waitMs = (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? retryAfterSeconds : 2) * 1000;
+    log.warn(`[metadata] Trakt rate limit hit, waiting ${waitMs}ms before retry ${attempt + 1}/3`);
+    await sleep(waitMs);
+  }
+}
+
 async function searchMoviesTrakt(query: string): Promise<MetadataSearchResult[]> {
   const clientId = requireSetting("traktClientId", "Trakt Client ID");
   const url = new URL("https://api.trakt.tv/search/movie");
   url.searchParams.set("query", query);
   url.searchParams.set("extended", "full"); // the minimal default response has no overview
 
-  const res = await fetch(url.toString(), { headers: traktHeaders(clientId) });
+  const res = await traktFetch(url.toString(), clientId);
   if (!res.ok) throw new Error(`Trakt movie search failed: HTTP ${res.status}`);
   const body: any = await res.json();
 
@@ -666,7 +691,7 @@ async function searchSeriesTrakt(query: string): Promise<MetadataSearchResult[]>
   url.searchParams.set("query", query);
   url.searchParams.set("extended", "full"); // the minimal default response has no overview
 
-  const res = await fetch(url.toString(), { headers: traktHeaders(clientId) });
+  const res = await traktFetch(url.toString(), clientId);
   if (!res.ok) throw new Error(`Trakt series search failed: HTTP ${res.status}`);
   const body: any = await res.json();
 
@@ -690,8 +715,8 @@ async function fetchSeriesEpisodesTrakt(traktId: string): Promise<MetadataEpisod
   // first_aired is a UTC timestamp; the show's airs.timezone turns it into the local air date.
   // Best-effort: without it the date falls back to UTC rather than failing the episode list.
   const [res, showRes] = await Promise.all([
-    fetch(url.toString(), { headers: traktHeaders(clientId) }),
-    fetch(`https://api.trakt.tv/shows/${traktId}?extended=full`, { headers: traktHeaders(clientId) }).catch(() => null),
+    traktFetch(url.toString(), clientId),
+    traktFetch(`https://api.trakt.tv/shows/${traktId}?extended=full`, clientId).catch(() => null),
   ]);
   if (!res.ok) throw new Error(`Trakt season lookup failed: HTTP ${res.status}`);
   const body: any = await res.json();
@@ -2821,7 +2846,7 @@ export async function fetchByExternalId(type: MediaType, provider: string, id: s
       // /shows/ returns whatever unrelated show shares the number, and Refresh then overwrote the
       // movie's overview/year with that show's.
       if (type === "movie" || type === "ppv") {
-        const res = await fetch(`https://api.trakt.tv/movies/${encodeURIComponent(id)}?extended=full`, { headers: traktHeaders(clientId) });
+        const res = await traktFetch(`https://api.trakt.tv/movies/${encodeURIComponent(id)}?extended=full`, clientId);
         if (!res.ok) throw new Error(res.status === 404 ? `No Trakt movie found for id "${id}"` : `Trakt lookup failed: HTTP ${res.status}`);
         const m: any = await res.json();
         if (!m) throw new Error(`No Trakt movie found for id "${id}"`);
@@ -2836,7 +2861,7 @@ export async function fetchByExternalId(type: MediaType, provider: string, id: s
           contentRating: normalizeContentRating(m.certification),
         };
       }
-      const res = await fetch(`https://api.trakt.tv/shows/${encodeURIComponent(id)}?extended=full`, { headers: traktHeaders(clientId) });
+      const res = await traktFetch(`https://api.trakt.tv/shows/${encodeURIComponent(id)}?extended=full`, clientId);
       if (!res.ok) throw new Error(res.status === 404 ? `No Trakt show found for id "${id}"` : `Trakt lookup failed: HTTP ${res.status}`);
       const s: any = await res.json();
       if (!s) throw new Error(`No Trakt show found for id "${id}"`);
