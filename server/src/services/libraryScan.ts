@@ -122,17 +122,30 @@ export function sameTitleIgnoringQualifier(a: string, b: string): boolean {
 
 /** The search hit that is verifiably the titled item: the same title and a year within one of its
  * own, an exact-year hit first — a same-titled show a year apart ("Queer as Folk" UK 1999 vs US
- * 2000) passes the ±1 check and a provider may rank it first. */
+ * 2000) passes the ±1 check and a provider may rank it first.
+ *
+ * A SOLE title hit is accepted under the same year tolerance as before regardless of whether this
+ * item's own year, or the hit's, is known — a daily show's air-date-derived year or a search API
+ * missing a year field must not make an otherwise-unambiguous match fail.
+ *
+ * Two or more title hits is a different situation: a remake/reboot competing for the same title,
+ * which can only be told apart by year, and only when BOTH sides' years are actually known.
+ * Falling through to "accept whichever one the provider ranked first" (an unknown item year) or
+ * "accept a candidate whose own year field happens to be missing" (an unknown hit year) here is
+ * exactly how a 1987 show once got matched to its own 2012 reboot's provider ids instead — so an
+ * unknown year anywhere in an ambiguous multi-hit set means no match, not a guess. */
 export function pickVerifiedProviderHit<T extends { title: string; year?: number | null }>(
   results: T[],
   title: string,
   year: number | null
 ): T | undefined {
   const titleHits = results.filter((r) => sameTitleIgnoringQualifier(r.title, title));
-  return (
-    (year != null ? titleHits.find((r) => r.year === year) : undefined) ??
-    titleHits.find((r) => year == null || r.year == null || Math.abs(r.year - year) <= 1)
-  );
+  if (titleHits.length <= 1) {
+    const hit = titleHits[0];
+    return !hit || year == null || hit.year == null || Math.abs(hit.year - year) <= 1 ? hit : undefined;
+  }
+  if (year == null) return undefined;
+  return titleHits.find((r) => r.year === year) ?? titleHits.find((r) => r.year != null && Math.abs(r.year - year) <= 1);
 }
 
 /** Upserts one `tracks` row for a file inside a multiFilePerChild (Music) album folder — parses a

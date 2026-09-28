@@ -2198,10 +2198,39 @@ describe("matchAdditionalProviders", () => {
     expect(fetchSeriesEpisodesForProvider).not.toHaveBeenCalledWith("tvdb", "UK");
     const specials = (await db.prepare("SELECT title FROM episodes WHERE media_item_id = ? AND season_number = 0").all(showId)) as any[];
     expect(specials.map((e) => e.title)).toEqual(["US Special"]);
-    // Without an exact-year hit, the first one within a year; without a year, the first title hit.
+    // Without an exact-year hit, the closest one within a year of the item's own; with more than
+    // one title hit and no year to disambiguate by, no match at all (see the dedicated test below).
     expect(pickVerifiedProviderHit(tvdbHits, "Queer as Folk", 2001)?.externalIds.tvdb).toBe("US");
-    expect(pickVerifiedProviderHit(tvdbHits, "Queer as Folk", null)?.externalIds.tvdb).toBe("UK");
+    expect(pickVerifiedProviderHit(tvdbHits, "Queer as Folk", null)).toBeUndefined();
     expect(pickVerifiedProviderHit(tvdbHits, "Queer as Folk", 2005)).toBeUndefined();
+  });
+
+  it("pickVerifiedProviderHit: a sole title hit is still trusted with no year info anywhere, but two competing same-titled hits need a real year on both sides — never the provider's own ranking", () => {
+    // A single candidate is unambiguous regardless of year availability, matching a daily show's
+    // air-date-derived filename year or a provider search result with no year field at all.
+    const soleHit = [{ title: "Iconic America", year: null, overview: null, posterUrl: null, externalIds: { tvdb: "1" } }];
+    expect(pickVerifiedProviderHit(soleHit, "Iconic America", null)?.externalIds.tvdb).toBe("1");
+    expect(pickVerifiedProviderHit(soleHit, "Iconic America", 2023)?.externalIds.tvdb).toBe("1");
+
+    // Two shows share this exact title a generation apart (the 1987 cartoon vs. the 2012 reboot) --
+    // accepting the provider's own top-ranked hit here, because the item's year happened to be
+    // unset, is exactly the bug that once matched a real 1987 show to its 2012 reboot's provider
+    // ids instead (Round 362). No year at all to disambiguate by must mean no match, not a guess,
+    // no matter which hit the provider's search API ranks first.
+    const remakeHits = [
+      { title: "Teenage Mutant Ninja Turtles", year: 2012, overview: null, posterUrl: null, externalIds: { tmdb: "51817" } },
+      { title: "Teenage Mutant Ninja Turtles", year: 1987, overview: null, posterUrl: null, externalIds: { tmdb: "160" } },
+    ];
+    expect(pickVerifiedProviderHit(remakeHits, "Teenage Mutant Ninja Turtles", null)).toBeUndefined();
+    // With the item's own year known, the exact-year sibling wins even though it ranks second.
+    expect(pickVerifiedProviderHit(remakeHits, "Teenage Mutant Ninja Turtles", 1987)?.externalIds.tmdb).toBe("160");
+    // A candidate missing its own year is no longer an automatic pass-through once there's a
+    // competing same-titled sibling to disambiguate against.
+    const oneYearMissing = [
+      { title: "Teenage Mutant Ninja Turtles", year: null, overview: null, posterUrl: null, externalIds: { tmdb: "51817" } },
+      { title: "Teenage Mutant Ninja Turtles", year: 1987, overview: null, posterUrl: null, externalIds: { tmdb: "160" } },
+    ];
+    expect(pickVerifiedProviderHit(oneYearMissing, "Teenage Mutant Ninja Turtles", 1987)?.externalIds.tmdb).toBe("160");
   });
 
   it("merges only another provider's Season 0 specials, never its other seasons", async () => {
