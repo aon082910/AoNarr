@@ -245,7 +245,8 @@ metadataRouter.post(
       const rootFolderRow = (await db.prepare("SELECT path FROM root_folders WHERE id = ?").get(rootFolderId)) as
         | { path: string }
         | undefined;
-      if (rootFolderRow) createLibraryFolderSkeleton({ type: b.type, title: b.title, year: b.year ?? null }, rootFolderRow.path);
+      if (rootFolderRow)
+        createLibraryFolderSkeleton({ type: b.type, title: b.title, year: b.year ?? null, externalIds: JSON.stringify(externalIds) }, rootFolderRow.path);
     }
 
     try {

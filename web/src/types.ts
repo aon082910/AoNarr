@@ -9,6 +9,9 @@ export interface MediaTypeInfo {
   hasMetadataSearch: boolean;
   multiFilePerChild: boolean;
   groupLevels: string[];
+  /** Providers this type can actually match through (e.g. ["tmdb", "tvdb", "tvmaze", "trakt"] for
+   * TV Shows) — drives which `{<provider>Id}` naming tokens NamingSetupModal offers. */
+  metadataProviders: string[];
 }
 
 export interface LibraryGroup {

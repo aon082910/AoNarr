@@ -17,6 +17,10 @@ mediaTypesRouter.get(
         hasMetadataSearch: t.metadataProviders.length > 0,
         multiFilePerChild: !!t.multiFilePerChild,
         groupLevels: t.groupLevels ?? [],
+        // Lets the naming-template UI offer a provider-id token ({tmdbId}, {tvdbId}, ...) for
+        // exactly the providers this type can actually match through — see naming.ts's
+        // providerIdVars, which renders whichever of these ids the item was actually matched to.
+        metadataProviders: t.metadataProviders,
       }))
     );
   })

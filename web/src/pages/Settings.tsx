@@ -2096,7 +2096,7 @@ export default function Settings() {
                 ))}
                 <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
                   <label htmlFor="settings-naming-artist-track-template">
-                    Music track filename (tokens: {"{trackNumber}"}, {"{trackTitle}"}, {"{parentTitle}"}, {"{childTitle}"})
+                    Music track filename (tokens: {"{trackNumber}"}, {"{trackTitle}"}, {"{parentTitle}"}, {"{childTitle}"}, {"{providerId}"}, {"{providerKey}"}, {"{musicbrainzId}"}, ...)
                   </label>
                   <p style={{ color: "var(--muted)", fontSize: "0.78rem", marginTop: 0 }}>
                     The Music config above only templates the album folder — individual track files
@@ -2480,6 +2480,7 @@ export default function Settings() {
             <NamingSetupModal
               typeLabel={t.label}
               shape={t.shape}
+              metadataProviders={t.metadataProviders}
               defaultTemplate={shapeDefault}
               initialTemplate={initialTemplate}
               initialEnabled={settings[enabledKey] !== "0"}

@@ -47,6 +47,39 @@ const PREVIEW_VARS_BY_SHAPE: Record<MediaShape, Record<string, string | number>>
   collection: { parentTitle: "Example Artist", childTitle: "Example Album", quality: "FLAC" },
 };
 
+/** A short example id per provider, just for the live preview — matches naming.ts's providerIdVars
+ * token shape ({<provider>Id}) but has no bearing on what a real item actually renders. */
+function exampleProviderId(provider: string): string {
+  return provider === "imdb" ? "tt1234567" : "12345";
+}
+
+/** Every type gets the same "matched provider" naming ability (the ask this was built for): one
+ * `{<provider>Id}` token per provider that type can actually match through (e.g. {tmdbId},
+ * {tvdbId} for TV Shows; {musicbrainzId} for Music), plus a generic {providerId}/{providerKey}
+ * pair for "whichever provider this particular item happened to match" — useful since several
+ * types can match through more than one provider and not every item uses the same one. A type
+ * with no metadata providers at all (Courses — folder-titled, never provider-matched) gets none of
+ * these, since they'd only ever render empty. */
+function providerTokens(metadataProviders: string[]): TokenOption[] {
+  if (metadataProviders.length === 0) return [];
+  const specific = metadataProviders.map((p) => ({ token: `{${p}Id}`, label: `${p} ID (only if matched via ${p})` }));
+  return [
+    { token: "{providerId}", label: "Matched provider's ID (whichever provider this item matched through)" },
+    { token: "{providerKey}", label: "Matched provider's name (e.g. \"tmdb\")" },
+    ...specific,
+  ];
+}
+
+function providerPreviewVars(metadataProviders: string[]): Record<string, string> {
+  if (metadataProviders.length === 0) return {};
+  const vars: Record<string, string> = {};
+  for (const p of metadataProviders) vars[`${p}Id`] = exampleProviderId(p);
+  const primary = metadataProviders[0];
+  vars.providerId = exampleProviderId(primary);
+  vars.providerKey = primary;
+  return vars;
+}
+
 /** Same rendering rule the server's naming.ts uses — kept in sync deliberately so the live preview
  * here matches exactly what an actual import would produce. */
 function renderTemplate(template: string, vars: Record<string, string | number>): string {
@@ -61,6 +94,7 @@ function renderTemplate(template: string, vars: Record<string, string | number>)
 export default function NamingSetupModal({
   typeLabel,
   shape,
+  metadataProviders,
   defaultTemplate,
   initialTemplate,
   initialEnabled,
@@ -69,6 +103,8 @@ export default function NamingSetupModal({
 }: {
   typeLabel: string;
   shape: MediaShape;
+  /** Providers this library type can actually match through — see MediaTypeInfo.metadataProviders. */
+  metadataProviders: string[];
   defaultTemplate: string;
   initialTemplate: string;
   initialEnabled: boolean;
@@ -79,6 +115,8 @@ export default function NamingSetupModal({
   const [enabled, setEnabled] = useState(initialEnabled);
   const [saving, setSaving] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const tokens = [...TOKENS_BY_SHAPE[shape], ...providerTokens(metadataProviders)];
+  const previewVars = { ...PREVIEW_VARS_BY_SHAPE[shape], ...providerPreviewVars(metadataProviders) };
 
   function insertToken(token: string) {
     const input = inputRef.current;
@@ -109,8 +147,8 @@ export default function NamingSetupModal({
   }
 
   const preview = enabled
-    ? renderTemplate(template, PREVIEW_VARS_BY_SHAPE[shape])
-    : `(kept as originally downloaded — only the folder structure "${renderTemplate(template, PREVIEW_VARS_BY_SHAPE[shape]).split("/").slice(0, -1).join("/") || "(root)"}" still applies)`;
+    ? renderTemplate(template, previewVars)
+    : `(kept as originally downloaded — only the folder structure "${renderTemplate(template, previewVars).split("/").slice(0, -1).join("/") || "(root)"}" still applies)`;
 
   return (
     <Modal title={`Naming setup — ${typeLabel}`} onClose={onClose} maxWidth={560}>
@@ -133,7 +171,7 @@ export default function NamingSetupModal({
 
       <p style={{ color: "var(--muted)", fontSize: "0.8rem", margin: "10px 0 4px" }}>Insert a token:</p>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-        {TOKENS_BY_SHAPE[shape].map((opt) => (
+        {tokens.map((opt) => (
           <button
             key={opt.token}
             type="button"

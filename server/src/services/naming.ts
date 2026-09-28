@@ -1,4 +1,4 @@
-import type { MediaShape } from "./mediaTypes.js";
+import { getMediaTypeConfig, type MediaShape } from "./mediaTypes.js";
 
 /** Renders `{token}` / `{token:00}` (zero-padded) placeholders in a naming template. */
 export function renderTemplate(template: string, vars: Record<string, string | number>): string {
@@ -34,3 +34,40 @@ export const DEFAULT_SHAPE_TEMPLATES: Record<MediaShape, string> = {
  * {parentTitle} (artist), {childTitle} (album). Same enable/disable toggle as the album-folder
  * template (`namingEnabledArtist`) — there's no separate on/off switch for this. */
 export const DEFAULT_TRACK_TEMPLATE = "{trackNumber:00} - {trackTitle}";
+
+/**
+ * Naming-template vars for whichever metadata provider(s) an item is matched to — lets a template
+ * embed the matched id, e.g. `{title} ({year}) [tmdb-{tmdbId}]` or `{title} ({year}) [{providerKey}-{providerId}]`.
+ * Two flavors, both derived from the same `externalIds` blob, so nothing new has to be fetched or
+ * stored — every naming call site already has the item's `externalIds` on hand:
+ * - One `{<provider>Id}` token per id actually present (`{tmdbId}`, `{tvdbId}`, `{imdbId}`,
+ *   `{musicbrainzId}`, ...) — for a template that wants a *specific* provider regardless of which
+ *   one this particular item happened to match through.
+ * - A generic `{providerId}`/`{providerKey}` pair for the item's PRIMARY provider — its type's
+ *   `defaultProvider` if that id is populated, else the first populated id in the type's declared
+ *   `metadataProviders` order, else whatever's there — for a template that just wants "however
+ *   this one got matched" without hardcoding a provider name that won't apply to every item of
+ *   that type (e.g. Anime matches primarily via AniList but sometimes only has a TVDB id).
+ */
+export function providerIdVars(item: { type: string; externalIds: string | null }): Record<string, string> {
+  let ids: Record<string, string> = {};
+  if (item.externalIds) {
+    try {
+      ids = JSON.parse(item.externalIds);
+    } catch {
+      ids = {};
+    }
+  }
+  const vars: Record<string, string> = {};
+  for (const [provider, id] of Object.entries(ids)) {
+    if (id) vars[`${provider}Id`] = id;
+  }
+  const config = getMediaTypeConfig(item.type);
+  const preferenceOrder = [config.defaultProvider, ...config.metadataProviders].filter((p): p is string => !!p);
+  const primary = preferenceOrder.find((p) => ids[p]) ?? Object.keys(ids).find((p) => ids[p]);
+  if (primary) {
+    vars.providerId = ids[primary];
+    vars.providerKey = primary;
+  }
+  return vars;
+}

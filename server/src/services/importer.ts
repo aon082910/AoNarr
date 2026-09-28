@@ -24,7 +24,7 @@ import {
 import { unpackDownloadedArchives } from "./archiveExtract.js";
 import { removeQueueItemDownload } from "./downloadClient.js";
 import { syncSubtitleToVideo } from "./subtitleSync.js";
-import { DEFAULT_SHAPE_TEMPLATES, DEFAULT_TRACK_TEMPLATE, renderTemplate } from "./naming.js";
+import { DEFAULT_SHAPE_TEMPLATES, DEFAULT_TRACK_TEMPLATE, providerIdVars, renderTemplate } from "./naming.js";
 import { effectiveShape, getMediaTypeConfig, isProbeableFile, type MediaShape } from "./mediaTypes.js";
 import { qualityRank, usesQualityTiers } from "./quality.js";
 import { getSetting } from "./settingsStore.js";
@@ -963,12 +963,13 @@ function collectionChildDestinations(
   quality: string | null,
   ext: string,
   sourceFile: string,
-  namingEnabled: boolean
+  namingEnabled: boolean,
+  providerVars: Record<string, string> = {}
 ): { destPath: string; fileLabel: string }[] {
   const render = (suffix: string) =>
     resolveDest(
       rootFolderPath,
-      renderPathSegments(template, { parentTitle, childTitle: `${child.title}${suffix}`, quality: quality ?? "" }),
+      renderPathSegments(template, { parentTitle, childTitle: `${child.title}${suffix}`, quality: quality ?? "", ...providerVars }),
       ext,
       sourceFile,
       namingEnabled
@@ -1016,13 +1017,17 @@ export class ImportSkippedError extends Error {}
  * throws — a failed mkdir here (permissions, a stale mount) shouldn't fail adding the item itself,
  * the same "best effort, log and move on" contract every other filesystem side-effect in this file
  * follows. */
-export function createLibraryFolderSkeleton(item: { type: MediaType; title: string; year: number | null }, rootFolderPath: string): void {
+export function createLibraryFolderSkeleton(
+  item: { type: MediaType; title: string; year: number | null; externalIds?: string | null },
+  rootFolderPath: string
+): void {
   try {
     const segments = renderPathSegments(getNamingTemplate(item.type), {
       title: item.title,
       parentTitle: item.title,
       year: item.year ?? "",
       quality: "",
+      ...providerIdVars({ type: item.type, externalIds: item.externalIds ?? null }),
     });
     if (segments.length === 0) return;
     const folder = path.join(rootFolderPath, segments[0]);
@@ -1117,7 +1122,7 @@ export async function placeFile(params: {
 
   if (shape === "single") {
     if (item.hasFile) replacedPaths = [item.path];
-    const segments = renderPathSegments(template, { title: item.title, year: item.year ?? "", quality: quality ?? "" });
+    const segments = renderPathSegments(template, { title: item.title, year: item.year ?? "", quality: quality ?? "", ...providerIdVars(item) });
     ({ destPath, fileLabel } = resolveDest(rootFolder.path, segments, ext, sourceFile, getNamingEnabled(item.type)));
   } else if (shape === "episodic" && episodeId) {
     const epRow = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(episodeId)) as any;
@@ -1207,6 +1212,7 @@ export async function placeFile(params: {
       episodeTitle: primaryEpRow.title ?? "",
       year: item.year ?? "",
       quality: quality ?? "",
+      ...providerIdVars(item),
     });
     ({ destPath, fileLabel } = resolveDest(rootFolder.path, segments, ext, sourceFile, getNamingEnabled(item.type)));
   } else if (shape === "collection" && subItemId) {
@@ -1214,7 +1220,17 @@ export async function placeFile(params: {
     if (!subRow) throw new Error(`Sub-item ${subItemId} not found`);
     hadFileBefore = !!subRow.has_file;
     if (subRow.has_file) replacedPaths = [subRow.file_path];
-    const candidates = collectionChildDestinations(rootFolder.path, template, item.title, subRow, quality, ext, sourceFile, getNamingEnabled(item.type));
+    const candidates = collectionChildDestinations(
+      rootFolder.path,
+      template,
+      item.title,
+      subRow,
+      quality,
+      ext,
+      sourceFile,
+      getNamingEnabled(item.type),
+      providerIdVars(item)
+    );
     let free: { destPath: string; fileLabel: string } | null = null;
     for (const candidate of candidates) {
       if (!(await isFileOfAnotherRow(candidate.destPath, item.id, [], subItemId))) {
@@ -1417,6 +1433,7 @@ export async function placeAlbumFiles(params: {
     parentTitle: item.title,
     childTitle: subRow.title,
     quality: quality ?? "",
+    ...providerIdVars(item),
   });
   const parentFolderSegments = templatedSegments.slice(0, -1);
   const albumFolderName =
@@ -1597,6 +1614,7 @@ export async function placeAlbumFiles(params: {
                 trackTitle: track.title,
                 parentTitle: item.title,
                 childTitle: subRow.title,
+                ...providerIdVars(item),
               })
             )
           ) + path.extname(src)
@@ -2072,6 +2090,7 @@ export async function placeSeasonPackFiles(params: {
       episodeTitle: primary.title ?? "",
       year: item.year ?? "",
       quality: quality ?? "",
+      ...providerIdVars(item),
     });
     const ext = path.extname(src);
     const { destPath: dest, fileLabel } = resolveDest(rootFolder.path, segments, ext, src, getNamingEnabled(item.type));
@@ -2637,7 +2656,7 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
     if (shape === "single") {
       if (!item.hasFile || !item.path) return;
       const ext = path.extname(item.path);
-      const segments = renderPathSegments(template, { title: item.title, year: item.year ?? "", quality: item.quality ?? "" });
+      const segments = renderPathSegments(template, { title: item.title, year: item.year ?? "", quality: item.quality ?? "", ...providerIdVars(item) });
       const { destPath } = resolveDest(rootFolder.path, segments, ext, item.path, namingEnabled);
       if (path.resolve(destPath) === path.resolve(item.path)) return;
       const conflict = renameConflict(item.path, destPath, claimed);
@@ -2692,6 +2711,7 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
           episodeTitle: primary.title ?? "",
           year: item.year ?? "",
           quality: primary.quality ?? "",
+          ...providerIdVars(item),
         });
         const { destPath } = resolveDest(rootFolder.path, segments, ext, primary.file_path, namingEnabled);
         if (path.resolve(destPath) === path.resolve(primary.file_path)) continue;
@@ -2724,7 +2744,17 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
       for (const subRow of subItems) {
         const ext = path.extname(subRow.file_path);
         const current = path.resolve(subRow.file_path);
-        const candidates = collectionChildDestinations(rootFolder.path, template, item.title, subRow, subRow.quality ?? null, ext, subRow.file_path, namingEnabled);
+        const candidates = collectionChildDestinations(
+          rootFolder.path,
+          template,
+          item.title,
+          subRow,
+          subRow.quality ?? null,
+          ext,
+          subRow.file_path,
+          namingEnabled,
+          providerIdVars(item)
+        );
         // The same choice placeFile makes: a name a same-titled sibling holds (or takes earlier in
         // this pass) passes to the next one, and a child already at one of its own names stays there.
         let destPath: string | null = null;
