@@ -1289,6 +1289,12 @@ mediaRouter.post(
  * ordinary PATCH endpoint) whether to promote one's overview/poster to primary. Matches by title
  * search rather than a shared external id, since providers rarely share id schemes.
  *
+ * `query` in the body overrides the auto-built "title year" search text — some providers' own
+ * search doesn't handle an "&", an apostrophe, or other punctuation in the title well, so the
+ * admin can retype it as whatever text that provider's search actually resolves correctly. Only
+ * changes what's sent to the provider; the verification below still checks a hit against this
+ * item's own recorded title/year, same as an unedited query would.
+ *
  * When the hit is verifiably this item (title and year, an exact year first — or the item's own
  * id, for a provider it already has one at), an
  * episodic item ALSO gets any Season 0 special the fetched provider lists that it doesn't have yet
@@ -1316,7 +1322,12 @@ mediaRouter.post(
       throw new HttpError(400, `"${provider}" is not a metadata provider for "${item.type}"`);
     }
 
-    const query = item.year ? `${item.title} ${item.year}` : item.title;
+    // The title+year default fails on some providers for a title with an "&", an apostrophe, or
+    // other punctuation their own search doesn't handle well — the admin can override it with
+    // whatever query text actually finds the right result there instead of being stuck with this
+    // one auto-built guess.
+    const customQuery = typeof req.body?.query === "string" ? req.body.query.trim() : "";
+    const query = customQuery || (item.year ? `${item.title} ${item.year}` : item.title);
     const results = await searchMetadata(item.type, query, provider);
     if (results.length === 0) throw new HttpError(404, `No "${provider}" result found for "${item.title}"`);
 

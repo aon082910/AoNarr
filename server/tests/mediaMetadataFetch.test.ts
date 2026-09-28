@@ -392,4 +392,54 @@ describe("POST /api/media/:id/metadata/fetch", () => {
     const res = await request(app).post(`/api/media/${showId}/metadata/fetch`).set("X-Api-Key", apiKey).send({ provider: "musicbrainz" });
     expect(res.status).toBe(400);
   });
+
+  it("searches with the auto-built title+year query when no override is given", async () => {
+    const showId = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status, external_ids) VALUES ('series', 'Fetch Test Show', 'fetch test show', 2020, 1, 0, 'missing', ?)`
+          )
+          .run(JSON.stringify({ tmdb: "1" }))
+      ).lastInsertRowid
+    );
+    searchMetadata.mockReset().mockResolvedValue([{ title: "Fetch Test Show", year: 2020, overview: null, posterUrl: null, externalIds: { tvdb: "42" } }]);
+    fetchSeriesEpisodesForProvider.mockReset().mockResolvedValue([]);
+
+    const res = await request(app).post(`/api/media/${showId}/metadata/fetch`).set("X-Api-Key", apiKey).send({ provider: "tvdb" });
+
+    expect(res.status).toBe(200);
+    expect(searchMetadata).toHaveBeenCalledWith("series", "Fetch Test Show 2020", "tvdb");
+  });
+
+  it("searches with a client-supplied query instead, for a title a provider's own search chokes on", async () => {
+    const showId = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status, external_ids) VALUES ('movie', 'Pride & Prejudice', 'pride and prejudice', 2005, 1, 0, 'missing', ?)`
+          )
+          .run(JSON.stringify({ tmdb: "1" }))
+      ).lastInsertRowid
+    );
+    searchMetadata.mockReset().mockResolvedValue([{ title: "Pride & Prejudice", year: 2005, overview: null, posterUrl: null, externalIds: { omdb: "42" } }]);
+
+    const res = await request(app)
+      .post(`/api/media/${showId}/metadata/fetch`)
+      .set("X-Api-Key", apiKey)
+      .send({ provider: "omdb", query: "Pride and Prejudice 2005" });
+
+    expect(res.status).toBe(200);
+    expect(searchMetadata).toHaveBeenCalledWith("movie", "Pride and Prejudice 2005", "omdb");
+  });
+
+  it("falls back to the auto-built query when the override is blank/whitespace-only", async () => {
+    const showId = await insertShow({ tmdb: "1" });
+    searchMetadata.mockReset().mockResolvedValue([{ title: "Fetch Test Show", year: 2020, overview: null, posterUrl: null, externalIds: { tvdb: "42" } }]);
+
+    const res = await request(app).post(`/api/media/${showId}/metadata/fetch`).set("X-Api-Key", apiKey).send({ provider: "tvdb", query: "   " });
+
+    expect(res.status).toBe(200);
+    expect(searchMetadata).toHaveBeenCalledWith("series", "Fetch Test Show", "tvdb");
+  });
 });

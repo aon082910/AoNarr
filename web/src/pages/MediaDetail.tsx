@@ -264,6 +264,11 @@ export default function MediaDetail() {
 
   const [showMetadataSources, setShowMetadataSources] = useState(false);
   const [sourcesError, setSourcesError] = useState<string | null>(null);
+  // Editable before any "Fetch from ..." click — some providers' own search doesn't handle an "&",
+  // an apostrophe, or other punctuation in the title well, so this starts at the same "title year"
+  // guess the backend used to always build unconditionally, but the admin can retype it to whatever
+  // text that provider's search actually resolves correctly.
+  const [sourcesQuery, setSourcesQuery] = useState("");
   const [showAllCast, setShowAllCast] = useState(false);
   const [showAllAltTitles, setShowAllAltTitles] = useState(false);
   const [showArtwork, setShowArtwork] = useState(false);
@@ -938,7 +943,11 @@ export default function MediaDetail() {
     setFetchingProvider(provider);
     setSourcesError(null);
     try {
-      const updated = await api.post<MediaDetailResponse & { episodesAdded?: number }>(`/media/${item.id}/metadata/fetch`, { provider });
+      const query = sourcesQuery.trim();
+      const updated = await api.post<MediaDetailResponse & { episodesAdded?: number }>(`/media/${item.id}/metadata/fetch`, {
+        provider,
+        ...(query && { query }),
+      });
       patchItem(item.id, (prev) => ({ ...prev, extraMetadata: updated.extraMetadata, externalIds: updated.externalIds }));
       // Episodes merge in immediately (non-destructive add-only, so there's no "which source wins"
       // choice to make first) — the 4-field merge table above still needs an explicit Apply, so
@@ -1544,7 +1553,10 @@ export default function MediaDetail() {
                 <ToolbarButton
                   icon={<GlobeIcon />}
                   label="Metadata Sources"
-                  onClick={() => setShowMetadataSources(true)}
+                  onClick={() => {
+                    setSourcesQuery(item.year ? `${item.title} ${item.year}` : item.title);
+                    setShowMetadataSources(true);
+                  }}
                   title="Additional Metadata Sources — pull a second opinion from another provider, merge in missing episodes, and pick which source wins per field"
                 />
               )}
@@ -2233,6 +2245,18 @@ export default function MediaDetail() {
             and matching (e.g. this provider's poster with that one's overview) is fine — then apply
             the merged result in one go.
           </p>
+          <label style={{ display: "block", marginBottom: 12 }}>
+            <span style={{ display: "block", fontSize: "0.85rem", color: "var(--muted)", marginBottom: 4 }}>
+              Search text (edit if a provider's own search chokes on an "&", an apostrophe, or other
+              punctuation in the title)
+            </span>
+            <input
+              type="text"
+              value={sourcesQuery}
+              onChange={(e) => setSourcesQuery(e.target.value)}
+              style={{ width: "100%" }}
+            />
+          </label>
           <div className="toolbar" style={{ marginBottom: 12 }}>
             {metadataProviders[item.type].map((p) => (
               <button key={p} type="button" className="secondary" onClick={() => fetchSupplemental(p)} disabled={fetchingProvider === p}>
