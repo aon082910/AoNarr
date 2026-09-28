@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { hasCredentials, setApiKey, setSessionToken, UI_REQUEST_HEADERS } from "../api/client.js";
 import { AuthProvider } from "../context/AuthContext.js";
 import { MediaAnalysisProvider } from "../context/MediaAnalysisContext.js";
+import { BackgroundJobsProvider } from "../context/BackgroundJobsContext.js";
 
 type Mode = "admin" | "user" | "apikey";
 
@@ -167,7 +168,9 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
   if (hasCreds)
     return (
       <AuthProvider>
-        <MediaAnalysisProvider>{children}</MediaAnalysisProvider>
+        <MediaAnalysisProvider>
+          <BackgroundJobsProvider>{children}</BackgroundJobsProvider>
+        </MediaAnalysisProvider>
       </AuthProvider>
     );
 

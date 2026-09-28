@@ -4,6 +4,16 @@ export function formatBytes(bytes: number | null): string {
   return gb >= 1000 ? `${(gb / 1000).toFixed(1)} TB` : `${gb.toFixed(1)} GB`;
 }
 
+/** Renders a runtime in minutes as "2h 15m" (or just "45m" under an hour, "3h" for an exact hour) —
+ * used by the Library table's Duration column. */
+export function formatDuration(totalMinutes: number | null | undefined): string {
+  if (!totalMinutes || totalMinutes <= 0) return "";
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours === 0) return `${minutes}m`;
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+}
+
 interface MediaInfoLike {
   videoCodec: string | null;
   audioCodec: string | null;

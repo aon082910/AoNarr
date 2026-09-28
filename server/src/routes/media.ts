@@ -25,6 +25,7 @@ import { buildMediaQuery, clampLimit, clampOffset, MEDIA_SORT_COLUMNS, getTmdbLi
 import { syncSceneNumbering } from "../services/sceneNumbering.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
+import { isBackgroundJobRunning } from "../services/backgroundJobs.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { CONTENT_RATING_ORDER, isRatingBlocked } from "../services/contentRatings.js";
 import {
@@ -70,7 +71,7 @@ import {
 import { corruptReason, handleCorrupt, type CorruptAction } from "../services/corruptMediaCheck.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { getSetting } from "../services/settingsStore.js";
-import { renameLibraryFiles, renameOneMediaItem } from "../services/importer.js";
+import { isOrganizeRunning, renameLibraryFiles, renameOneMediaItem } from "../services/importer.js";
 import { extractIsbnFromBookFile, fetchBookByIsbn } from "../services/bookIsbnScan.js";
 import { sendEmailWithAttachment } from "../services/smtp.js";
 import { convertSubItemToM4b, M4bConversionInProgressError } from "../services/audiobookConvert.js";
@@ -594,6 +595,10 @@ mediaRouter.post(
   asyncHandler(async (req, res) => {
     const type = req.query.type as string | undefined;
     if (!type || !isValidMediaType(type)) throw new HttpError(400, "A valid type is required");
+    if (isBackgroundJobRunning("scan", type)) {
+      res.json({ started: false, reason: "already-running" });
+      return;
+    }
     scanAndImportLibrary(type)
       .then((result) => {
         if (result.unsupported) {
@@ -617,7 +622,14 @@ mediaRouter.post(
   asyncHandler(async (req, res) => {
     const type = req.query.type as string | undefined;
     if (!type || !isValidMediaType(type)) throw new HttpError(400, "A valid type is required");
-    refreshLibraryMetadata(type)
+    if (isBackgroundJobRunning("refresh", type)) {
+      res.json({ started: false, reason: "already-running" });
+      return;
+    }
+    // An optional `mediaItemIds` in the body (the Library page's "selected items" bulk action)
+    // narrows this to just those items instead of the whole type.
+    const mediaItemIds = Array.isArray(req.body?.mediaItemIds) ? req.body.mediaItemIds.map(Number) : undefined;
+    refreshLibraryMetadata(type, undefined, mediaItemIds)
       .then((result) =>
         result.alreadyRunning
           ? log.info(`[refresh] "${type}": already running - skipped`)
@@ -638,7 +650,14 @@ mediaRouter.post(
   asyncHandler(async (req, res) => {
     const type = req.query.type as string | undefined;
     if (!type || !isValidMediaType(type)) throw new HttpError(400, "A valid type is required");
-    matchProvidersForLibrary(type)
+    if (isBackgroundJobRunning("matchProviders", type)) {
+      res.json({ started: false, reason: "already-running" });
+      return;
+    }
+    // An optional `mediaItemIds` in the body (the Library page's "selected items" bulk action)
+    // narrows this to just those items instead of the whole type.
+    const mediaItemIds = Array.isArray(req.body?.mediaItemIds) ? req.body.mediaItemIds.map(Number) : undefined;
+    matchProvidersForLibrary(type, mediaItemIds)
       .then((result) => log.info(`[match-providers] "${type}": matched ${result.providersMatched} provider(s) across ${result.itemsMatched} item(s)`))
       .catch((err) => log.warn(`[match-providers] "${type}" failed:`, (err as Error).message));
     res.json({ started: true });
@@ -1500,7 +1519,11 @@ mediaRouter.post(
 /**
  * Bulk "Rename Files" — retroactively re-renames every already-imported file whose naming
  * template has changed since it was imported, across the whole library or one type at a time.
- * Optional `?type=` scopes it; omitting it runs across everything.
+ * Optional `?type=` scopes it; omitting it runs across everything. An optional `mediaItemIds` in
+ * the body (the Library page's "selected items" bulk action) narrows it further to just those
+ * items — see renameLibraryFiles. Progress shows live in the Background Jobs widget for any
+ * non-preview run; a run already in progress for the same scope is rejected rather than starting
+ * a second, overlapping one that could race the first over the same files.
  */
 mediaRouter.post(
   "/rename-files",
@@ -1508,7 +1531,12 @@ mediaRouter.post(
   asyncHandler(async (req, res) => {
     const type = typeof req.query.type === "string" ? (req.query.type as MediaType) : undefined;
     if (type && !isValidMediaType(type)) throw new HttpError(400, `Unknown media type "${type}"`);
-    const result = await renameLibraryFiles(type, req.query.preview === "1");
+    const preview = req.query.preview === "1";
+    const mediaItemIds = Array.isArray(req.body?.mediaItemIds) ? req.body.mediaItemIds.map(Number) : undefined;
+    if (!preview && isOrganizeRunning(type)) {
+      throw new HttpError(409, "An Organize & Rename run is already in progress for this library — wait for it to finish.");
+    }
+    const result = await renameLibraryFiles(type, preview, mediaItemIds);
     res.json(result);
   })
 );

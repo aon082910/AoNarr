@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
+import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { SearchIcon } from "../components/NavIcons.js";
 import { ArrowRightIcon } from "../components/ActionIcons.js";
 import { ToolbarButton } from "../components/PageToolbar.js";
@@ -107,14 +108,17 @@ function Section({
 
 /** Episodes grouped by series, each with its own "Search all missing in this series" — the
  * flat episode list otherwise makes searching "everything missing from one show" a lot of
- * individual clicks. */
+ * individual clicks. Used for every episodic-shaped library (TV Shows, Anime, Sports, Courses,
+ * Adult), not just TV — `title` is the calling library's own label. */
 function EpisodesBySeries({
+  title,
   rows,
   selected,
   onToggle,
   onSearchOne,
   onSearchMany,
 }: {
+  title: string;
   rows: MissingRow[];
   selected: Set<string>;
   onToggle: (r: MissingRow) => void;
@@ -139,7 +143,7 @@ function EpisodesBySeries({
   return (
     <>
       <h2>
-        Episodes <span style={{ color: "var(--muted)", fontWeight: 400 }}>({rows.length})</span>
+        {title} <span style={{ color: "var(--muted)", fontWeight: 400 }}>({rows.length})</span>
       </h2>
       {rows.length > 0 && (
         <div className="toolbar" style={{ marginBottom: 10 }}>
@@ -230,12 +234,25 @@ function SeriesEpisodeTable({
   );
 }
 
+/** Groups every missing row by its own library type (media_items.type) — the server's three
+ * buckets (movies/episodes/subItems) are really "single-shape", "episodic", and "collection"
+ * combined across every type of that shape, which used to render as three lump sections mixing
+ * e.g. Online Videos/Books/Music together, or TV Shows/Anime/Sports/Adult together. Splitting by
+ * type instead means one section per library, same as the rest of the app. */
+function groupByType(rows: MissingRow[]): Record<string, MissingRow[]> {
+  return rows.reduce<Record<string, MissingRow[]>>((acc, r) => {
+    (acc[r.type] ??= []).push(r);
+    return acc;
+  }, {});
+}
+
 export default function Missing() {
   const [data, setData] = useState<MissingResponse | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [byKey, setByKey] = useState<Map<string, MissingRow>>(new Map());
   const [searching, setSearching] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const mediaTypes = useMediaTypes();
 
   function load() {
     api.get<MissingResponse>("/wanted/missing").then(
@@ -293,6 +310,13 @@ export default function Missing() {
 
   if (!data) return <p className="empty">{loadError ?? "Loading..."}</p>;
 
+  const grouped = groupByType([...data.movies, ...data.episodes, ...data.subItems]);
+  const typesPresent = Object.keys(grouped);
+  // Library-registry order (Movies, TV Shows, Anime, ... Adult) when it's loaded, falling back to
+  // whatever order the rows themselves came back in for the brief window before it is — every
+  // present type still gets a section either way, just possibly out of order for one render.
+  const orderedTypes = mediaTypes.length > 0 ? mediaTypes.map((t) => t.key).filter((k) => typesPresent.includes(k)) : typesPresent;
+
   return (
     <div>
       <h1>Missing</h1>
@@ -313,29 +337,36 @@ export default function Missing() {
           </button>
         </div>
       )}
-      <Section
-        title="Movies"
-        rows={data.movies}
-        selected={selected}
-        onToggle={toggle}
-        onSearchOne={(r) => searchRows([r])}
-        onSearchMany={searchRows}
-      />
-      <EpisodesBySeries
-        rows={data.episodes}
-        selected={selected}
-        onToggle={toggle}
-        onSearchOne={(r) => searchRows([r])}
-        onSearchMany={searchRows}
-      />
-      <Section
-        title="Albums & Books"
-        rows={data.subItems}
-        selected={selected}
-        onToggle={toggle}
-        onSearchOne={(r) => searchRows([r])}
-        onSearchMany={searchRows}
-      />
+      {typesPresent.length === 0 && <p className="empty">Nothing missing.</p>}
+      {orderedTypes.map((t) => {
+        const rows = grouped[t];
+        if (!rows || rows.length === 0) return null;
+        const label = mediaTypes.find((mt) => mt.key === t)?.label ?? t;
+        // Episodic-shaped libraries (TV Shows, Anime, Sports, Courses, Adult) group by series;
+        // everything else (single-shape movies/PPV/ROMs, and collection-shape music/books/etc.'s
+        // sub-items) is a flat list. A row has an episodeId only in the episodic case.
+        return rows.some((r) => r.episodeId !== null) ? (
+          <EpisodesBySeries
+            key={t}
+            title={label}
+            rows={rows}
+            selected={selected}
+            onToggle={toggle}
+            onSearchOne={(r) => searchRows([r])}
+            onSearchMany={searchRows}
+          />
+        ) : (
+          <Section
+            key={t}
+            title={label}
+            rows={rows}
+            selected={selected}
+            onToggle={toggle}
+            onSearchOne={(r) => searchRows([r])}
+            onSearchMany={searchRows}
+          />
+        );
+      })}
     </div>
   );
 }

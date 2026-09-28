@@ -417,6 +417,15 @@ button.topbar-action {
   flex-shrink: 0;
 }
 button.topbar-action:hover { background: rgba(255,255,255,0.14); opacity: 1; }
+/* Gear/Theme/Layout width/Log out carry no visible text (see NavIcons.tsx) — square instead of
+   auto-width-around-a-sentence, so the four sit as a uniform row of equal-sized icon buttons
+   instead of one oddly-narrow chip among wider text ones. Notifications keeps the wider default
+   (its two states, "Enable"/"Disable", read better as text than as one static bell icon). */
+button.topbar-action.icon-only {
+  width: 32px;
+  padding: 6px;
+  justify-content: center;
+}
 button.topbar-action:disabled { opacity: 0.5; cursor: default; }
 
 /* Same box (background, border, padding, radius) as input/select so a button sitting in the same
@@ -633,6 +642,93 @@ button.icon-button.danger:hover { background: rgba(224,92,92,0.15); }
 }
 .scroll-buttons button:hover { background: rgba(255,255,255,0.08); opacity: 1; }
 .scroll-buttons button:disabled { opacity: 0.35; cursor: default; }
+
+/* Minimizable background-job progress widget (Scan & Import, Refresh, Match All Providers, Analyze
+   Media) — mounted once in App.tsx, state lives in BackgroundJobsContext (mounted above App.tsx, so
+   it survives navigating anywhere). Bottom-LEFT, opposite .scroll-buttons, so the two floating
+   widgets never overlap. */
+.background-jobs-pill {
+  position: fixed;
+  left: 20px;
+  bottom: 20px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px 16px;
+  margin-top: 0;
+  font-size: 0.85rem;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+  width: 180px;
+}
+.background-jobs-pill:hover { background: rgba(255,255,255,0.08); opacity: 1; }
+.background-jobs-pill-text { display: flex; align-items: center; gap: 8px; }
+.background-jobs-pill .progress-bar { width: 100%; }
+.background-jobs-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  animation: background-jobs-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes background-jobs-spin { to { transform: rotate(360deg); } }
+
+/* A job whose total item count isn't known yet (still walking the filesystem, still counting rows)
+   gets a moving stripe instead of the bar just sitting at a static, misleadingly-"done"-looking
+   full width while it's actually still working. */
+.progress-bar.indeterminate > div {
+  width: 40% !important;
+  background: var(--accent) !important;
+  animation: background-jobs-indeterminate 1.2s ease-in-out infinite;
+}
+@keyframes background-jobs-indeterminate {
+  0% { margin-left: 0%; }
+  50% { margin-left: 60%; }
+  100% { margin-left: 0%; }
+}
+
+.background-jobs-panel {
+  position: fixed;
+  left: 20px;
+  bottom: 20px;
+  z-index: 40;
+  width: 320px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+.background-jobs-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 8px 10px 14px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+}
+.background-jobs-panel-body { padding: 4px; }
+.background-jobs-row { padding: 8px 10px; border-radius: 6px; }
+.background-jobs-row:hover { background: rgba(255,255,255,0.03); }
+.background-jobs-row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  margin-bottom: 6px;
+  gap: 8px;
+}
+.background-jobs-row-header .icon-button { width: 24px; height: 24px; }
+.background-jobs-row-status { color: var(--muted); font-size: 0.78rem; margin-top: 4px; }
 
 /* Sonarr/Radarr-style page toolbar — a full-content-width bar directly under a page's <h1>,
    split into a left (page actions) and right (view/sort/filter/search) group. Bleeds to the

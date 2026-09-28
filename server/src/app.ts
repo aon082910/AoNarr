@@ -63,6 +63,7 @@ import { discordCommandRouter, discordInteractionsRouter } from "./routes/discor
 import { ircFeedsRouter } from "./routes/ircFeeds.js";
 import { plexAuthRouter } from "./routes/plexAuth.js";
 import { mediaAnalysisRouter } from "./routes/mediaAnalysis.js";
+import { backgroundJobsRouter } from "./routes/backgroundJobs.js";
 import { importReviewRouter } from "./routes/importReview.js";
 import { mediaServerImportRouter } from "./routes/mediaServerImport.js";
 import { starrImportRouter } from "./routes/starrImport.js";
@@ -454,6 +455,7 @@ export async function createApp(): Promise<Express> {
   app.use("/api/theme.css", themeRouter);
   app.use("/api/friend-libraries", friendLibrariesRouter);
   app.use("/api/media-analysis", mediaAnalysisRouter);
+  app.use("/api/background-jobs", backgroundJobsRouter);
   app.use("/api/import-review", importReviewRouter);
   app.use("/api/media-server-import", mediaServerImportRouter);
   app.use("/api/starr-import", starrImportRouter);

@@ -5,10 +5,20 @@ import { setupTestDb } from "./helpers/testDb.js";
 
 const refreshOneMediaItem = vi.fn();
 const refreshLibraryMetadata = vi.fn();
+const matchProvidersForLibrary = vi.fn();
 vi.mock("../src/services/libraryScan.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/services/libraryScan.js")>()),
   refreshOneMediaItem: (...args: unknown[]) => refreshOneMediaItem(...args),
   refreshLibraryMetadata: (...args: unknown[]) => refreshLibraryMetadata(...args),
+  matchProvidersForLibrary: (...args: unknown[]) => matchProvidersForLibrary(...args),
+}));
+
+const renameLibraryFiles = vi.fn();
+const isOrganizeRunning = vi.fn();
+vi.mock("../src/services/importer.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/services/importer.js")>()),
+  renameLibraryFiles: (...args: unknown[]) => renameLibraryFiles(...args),
+  isOrganizeRunning: (...args: unknown[]) => isOrganizeRunning(...args),
 }));
 
 const corruptReason = vi.fn();
@@ -381,5 +391,68 @@ describe("POST /api/media/refresh", () => {
     await vi.waitFor(() => expect(info).toHaveBeenCalledWith('[refresh] "movie": already running - skipped'));
     expect(info).not.toHaveBeenCalledWith(expect.stringMatching(/^\[refresh\] "movie": updated/));
     info.mockRestore();
+  });
+
+  it("forwards mediaItemIds from the body — the Library page's bulk-selection 'Refresh' action", async () => {
+    refreshLibraryMetadata.mockReset().mockResolvedValue({ updated: 1, failed: 0, childrenAdded: 0 });
+
+    const res = await request(app).post("/api/media/refresh?type=movie").set("X-Api-Key", apiKey).send({ mediaItemIds: [1, 2, 3] });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ started: true });
+    await vi.waitFor(() => expect(refreshLibraryMetadata).toHaveBeenCalledWith("movie", undefined, [1, 2, 3]));
+  });
+});
+
+describe("POST /api/media/match-providers", () => {
+  it("forwards mediaItemIds from the body — the Library page's bulk-selection 'Match All Providers' action", async () => {
+    matchProvidersForLibrary.mockReset().mockResolvedValue({ itemsMatched: 1, providersMatched: 1 });
+
+    const res = await request(app).post("/api/media/match-providers?type=movie").set("X-Api-Key", apiKey).send({ mediaItemIds: [4, 5] });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ started: true });
+    await vi.waitFor(() => expect(matchProvidersForLibrary).toHaveBeenCalledWith("movie", [4, 5]));
+  });
+
+  it("omits mediaItemIds (undefined) for a plain whole-library run", async () => {
+    matchProvidersForLibrary.mockReset().mockResolvedValue({ itemsMatched: 0, providersMatched: 0 });
+
+    const res = await request(app).post("/api/media/match-providers?type=movie").set("X-Api-Key", apiKey).send({});
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(matchProvidersForLibrary).toHaveBeenCalledWith("movie", undefined));
+  });
+});
+
+describe("POST /api/media/rename-files", () => {
+  it("forwards mediaItemIds from the body — the Library page's bulk-selection 'Organize & Rename' action", async () => {
+    isOrganizeRunning.mockReset().mockReturnValue(false);
+    renameLibraryFiles.mockReset().mockResolvedValue({ renamed: [], errors: [], skippedMusic: 0 });
+
+    const res = await request(app).post("/api/media/rename-files?type=movie").set("X-Api-Key", apiKey).send({ mediaItemIds: [7, 8] });
+
+    expect(res.status).toBe(200);
+    expect(renameLibraryFiles).toHaveBeenCalledWith("movie", false, [7, 8]);
+  });
+
+  it("rejects a real (non-preview) run while one is already in progress for the type", async () => {
+    isOrganizeRunning.mockReset().mockReturnValue(true);
+    renameLibraryFiles.mockReset();
+
+    const res = await request(app).post("/api/media/rename-files?type=movie").set("X-Api-Key", apiKey).send({});
+
+    expect(res.status).toBe(409);
+    expect(renameLibraryFiles).not.toHaveBeenCalled();
+  });
+
+  it("still allows a preview while a real run is in progress", async () => {
+    isOrganizeRunning.mockReset().mockReturnValue(true);
+    renameLibraryFiles.mockReset().mockResolvedValue({ renamed: [], errors: [], skippedMusic: 0 });
+
+    const res = await request(app).post("/api/media/rename-files?type=movie&preview=1").set("X-Api-Key", apiKey).send({});
+
+    expect(res.status).toBe(200);
+    expect(renameLibraryFiles).toHaveBeenCalledWith("movie", true, undefined);
   });
 });

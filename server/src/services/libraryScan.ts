@@ -23,6 +23,7 @@ import {
   type MetadataSearchResult,
 } from "./metadata.js";
 import { log } from "./logger.js";
+import { startBackgroundJob, updateBackgroundJob, incrementBackgroundJobDone, finishBackgroundJob, isBackgroundJobRunning } from "./backgroundJobs.js";
 import {
   findFileSidecar,
   findShowSidecar,
@@ -930,10 +931,21 @@ export async function scanAndImportLibrary(
     return { matched: 0, created: 0, skipped: 0, skippedFiles: [], alreadyRunning: true };
   }
   if (!onlyTitle) scansInProgress.add(type);
+  // Only a whole-library scan (not a per-item one) gets a tracked progress entry — a per-item scan
+  // is fast and isn't what the client's progress widget is for. scanAndImportLibraryInner's own
+  // updateBackgroundJob/incrementBackgroundJobDone calls below are always made unconditionally and
+  // just no-op when there's no tracked job to update (see backgroundJobs.ts), so nothing here needs
+  // to thread a "is this job tracked" flag down into it.
+  const jobId = !onlyTitle ? startBackgroundJob("scan", type, `Scan & Import — ${getMediaTypeConfig(type).label}`) : null;
+  let errorMessage: string | undefined;
   try {
     return await runScanExclusively(type, () => scanAndImportLibraryInner(type, signal, onlyTitle, onlySeasonNumber, onlyMediaItemId));
+  } catch (err) {
+    errorMessage = (err as Error).message;
+    throw err;
   } finally {
     if (!onlyTitle) scansInProgress.delete(type);
+    if (jobId) finishBackgroundJob(jobId, errorMessage);
   }
 }
 
@@ -1029,8 +1041,13 @@ async function scanAndImportLibraryInner(
       (m) => Number(m.root_folder_id) === rootFolderId && isPlaceholderParent({ type, title: m.title, external_ids: m.external_ids })
     );
 
+  // No-ops when this particular call has no tracked job (a per-item scan — see
+  // scanAndImportLibrary's own comment on jobId above) — safe to call unconditionally.
+  updateBackgroundJob("scan", type, { total: files.length });
+
   for (const filePath of files) {
     if (signal?.aborted) break;
+    incrementBackgroundJobDone("scan", type);
     const base = path.basename(filePath, path.extname(filePath));
     const parentDir = path.dirname(filePath);
 
@@ -1695,17 +1712,31 @@ const refreshesInProgress = new Set<string>();
  * author, artist or series keeps the title Scan matches its files by either way (see refreshOneItem). */
 export async function refreshLibraryMetadata(
   type: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  mediaItemIds?: number[]
 ): Promise<{ updated: number; failed: number; childrenAdded: number; alreadyRunning?: boolean }> {
   // The Library page's Refresh button and the weekly job would otherwise walk the same items twice
-  // at once, each backfilling the same children.
+  // at once, each backfilling the same children. A selected-items run shares this same guard/slot,
+  // so it can't overlap a whole-library refresh for the same type either.
   if (refreshesInProgress.has(type)) {
     log.warn(`[libraryScan] a refresh of "${type}" is already running — skipping this overlapping request`);
     return { updated: 0, failed: 0, childrenAdded: 0, alreadyRunning: true };
   }
   refreshesInProgress.add(type);
+  const items = (
+    mediaItemIds && mediaItemIds.length > 0
+      ? await db
+          .prepare(`SELECT * FROM media_items WHERE type = ? AND id IN (${mediaItemIds.map(() => "?").join(",")})`)
+          .all(type, ...mediaItemIds)
+      : await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)
+  ) as any[];
+  const label =
+    mediaItemIds && mediaItemIds.length > 0
+      ? `Refresh — ${items.length} selected item(s) (${getMediaTypeConfig(type).label})`
+      : `Refresh — ${getMediaTypeConfig(type).label}`;
+  const jobId = startBackgroundJob("refresh", type, label, items.length);
+  let errorMessage: string | undefined;
   try {
-    const items = (await db.prepare("SELECT * FROM media_items WHERE type = ?").all(type)) as any[];
     const typeConfig = getMediaTypeConfig(type as any);
     let updated = 0;
     let failed = 0;
@@ -1720,11 +1751,16 @@ export async function refreshLibraryMetadata(
       } else {
         failed++;
       }
+      incrementBackgroundJobDone("refresh", type);
     }
 
     return { updated, failed, childrenAdded };
+  } catch (err) {
+    errorMessage = (err as Error).message;
+    throw err;
   } finally {
     refreshesInProgress.delete(type);
+    finishBackgroundJob(jobId, errorMessage);
   }
 }
 
@@ -2539,19 +2575,51 @@ export async function matchAdditionalProviders(mediaItemId: number): Promise<Pro
 
 /** Library-wide, one-time backfill version of matchAdditionalProviders above — for items that were
  * already imported before this feature existed, or that only ever got matched to one provider.
- * Sequential across items too, for the same rate-limit reasons. */
-export async function matchProvidersForLibrary(type: string): Promise<{ itemsMatched: number; providersMatched: number }> {
-  const items = (await db.prepare("SELECT id FROM media_items WHERE type = ?").all(type)) as { id: number }[];
+ * Sequential across items too, for the same rate-limit reasons. Progress (done/total) is tracked in
+ * services/backgroundJobs.ts, polled by the client's minimizable progress widget — this used to be
+ * pure fire-and-forget with no way to see it was even still running short of the Logs page. */
+export async function matchProvidersForLibrary(
+  type: string,
+  mediaItemIds?: number[]
+): Promise<{ itemsMatched: number; providersMatched: number; alreadyRunning?: boolean }> {
+  if (isBackgroundJobRunning("matchProviders", type)) {
+    log.warn(`[libraryScan] a match-providers run for "${type}" is already running — skipping this overlapping request`);
+    return { itemsMatched: 0, providersMatched: 0, alreadyRunning: true };
+  }
+  // Selected-items runs (from the Library page's bulk-selection toolbar) share this same
+  // `matchProviders:type` tracking slot as a whole-library run — the guard above already rejects
+  // two runs of either kind overlapping for the same type.
+  const items = (
+    mediaItemIds && mediaItemIds.length > 0
+      ? await db
+          .prepare(`SELECT id FROM media_items WHERE type = ? AND id IN (${mediaItemIds.map(() => "?").join(",")})`)
+          .all(type, ...mediaItemIds)
+      : await db.prepare("SELECT id FROM media_items WHERE type = ?").all(type)
+  ) as { id: number }[];
+  const label =
+    mediaItemIds && mediaItemIds.length > 0
+      ? `Match All Providers — ${items.length} selected item(s) (${getMediaTypeConfig(type).label})`
+      : `Match All Providers — ${getMediaTypeConfig(type).label}`;
+  const jobId = startBackgroundJob("matchProviders", type, label, items.length);
   let itemsMatched = 0;
   let providersMatched = 0;
-  for (const item of items) {
-    const results = await matchAdditionalProviders(item.id);
-    if (results.length > 0) {
-      itemsMatched++;
-      providersMatched += results.length;
+  let errorMessage: string | undefined;
+  try {
+    for (const item of items) {
+      const results = await matchAdditionalProviders(item.id);
+      if (results.length > 0) {
+        itemsMatched++;
+        providersMatched += results.length;
+      }
+      incrementBackgroundJobDone("matchProviders", type);
     }
+    return { itemsMatched, providersMatched };
+  } catch (err) {
+    errorMessage = (err as Error).message;
+    throw err;
+  } finally {
+    finishBackgroundJob(jobId, errorMessage);
   }
-  return { itemsMatched, providersMatched };
 }
 
 export interface ConvertToEpisodicResult {

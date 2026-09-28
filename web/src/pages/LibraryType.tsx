@@ -2,9 +2,10 @@ import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "r
 import { Link, useLocation, useNavigate, useNavigationType, useParams, useSearchParams } from "react-router-dom";
 import { api, downloadFile, uploadFormFile } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
+import { useBackgroundJobs } from "../context/BackgroundJobsContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { CustomColumn, LibraryGroup, MediaItem, QualityProfile, RootFolder, SavedLibraryView, Tag } from "../types.js";
-import { formatBytes, formatCalendarDate, parseServerTimestamp } from "../utils/format.js";
+import { formatBytes, formatCalendarDate, formatDuration, parseServerTimestamp } from "../utils/format.js";
 import DropdownMenu from "../components/DropdownMenu.js";
 import Modal from "../components/Modal.js";
 import MonitorToggle from "../components/MonitorToggle.js";
@@ -73,9 +74,10 @@ const EXTRA_FIELD_LABELS: Record<string, string> = {
   path: "Path",
   sizeOnDisk: "Size on disk",
   studio: "Studio",
+  duration: "Duration",
 };
-const DEFAULT_LIST_COLUMNS: ExtraField[] = ["year", "status", "monitored"];
-const DEFAULT_POSTER_FIELDS: ExtraField[] = ["year", "status", "monitored"];
+const DEFAULT_LIST_COLUMNS: ExtraField[] = ["year", "status", "monitored", "duration"];
+const DEFAULT_POSTER_FIELDS: ExtraField[] = ["year", "status", "monitored", "duration"];
 
 /** These three only ever have a value on a "single"-shape item (movie/rom/video/course/adult) —
  * `media_items.quality`/`.path`/`.size_bytes` are populated by importer.ts only when a file is
@@ -98,6 +100,19 @@ const SINGLE_SHAPE_ONLY_FIELDS = new Set(["quality", "path", "sizeOnDisk"]);
  * option there would bury real data on the rare item that has it, worse than an occasionally-empty
  * toggle. */
 const STUDIO_FIELD_TYPES = new Set(["movie", "adult", "ppv"]);
+
+/** `media_items.runtimeMinutes` only means "this row's own duration" for movie/ppv — a single file
+ * per item, one runtime. series/anime are "episodic" (one row per SHOW, not per episode) and do get
+ * a runtimeMinutes value from TMDB/AniList too, but it's a typical single-EPISODE length, not the
+ * show's own duration — showing a 22-minute sitcom's row as "Duration: 22m" would misrepresent a
+ * 5-season show as shorter than a 2-hour movie. rom is "single"-shape like movie/ppv but no game
+ * metadata provider (rawg/igdb/screenscraper/thegamesdb) supplies a runtime at all — games don't
+ * have one — so it would always render empty. Every other type's duration (music tracks, audiobook/
+ * podcast/video episodes) lives on a CHILD row (tracks/episodes/sub_items), not the parent row this
+ * table shows one line per — no rollup for those exists today (see the comment on
+ * SINGLE_SHAPE_ONLY_FIELDS above for the same "shape says single, but this field is never actually
+ * populated" trap this list avoids repeating). */
+const DURATION_FIELD_TYPES = new Set(["movie", "ppv"]);
 
 /** item.releaseDate is a date-only string ("2026-09-20") — new Date(str) parses that as UTC
  * midnight, which shifts the Unreleased/Missing boundary by the viewer's UTC offset (the same
@@ -167,6 +182,7 @@ function fieldValue(item: MediaItem, field: ExtraField, customColumns: CustomCol
   if (field === "path") return item.path ?? "";
   if (field === "sizeOnDisk") return typeof item.sizeBytes === "number" ? formatBytes(item.sizeBytes) : "";
   if (field === "studio") return item.studio ?? "";
+  if (field === "duration") return formatDuration(item.runtimeMinutes);
   if (field.startsWith("custom:")) {
     const col = customColumns.find((c) => c.id === Number(field.slice(7)));
     if (!col) return "";
@@ -529,6 +545,8 @@ export function LibraryItemGrid({
       { replace }
     );
   }
+  const paginationRef = useRef<HTMLDivElement>(null);
+
   // stats.total is the library's unfiltered item count (for the "N total" header badge, which has
   // always summed the whole type regardless of the current status/contentRating filter — see
   // loadStats() below). filteredTotal is the *current filtered view's* row count, returned by the
@@ -540,6 +558,35 @@ export function LibraryItemGrid({
   const [savedViews, setSavedViews] = useState<SavedLibraryView[]>([]);
   const [activeViewId, setActiveViewId] = useState<number | "">("");
   const [loading, setLoading] = useState(true);
+  // Scrolls the pagination row (at the bottom of the list) back into view once a Prev/Next click's
+  // fetch has actually finished — not immediately when `page` changes, which fires before the new
+  // (often differently-sized) page of rows has rendered, and *not* the instant `loading` clears
+  // either: load()'s `setItems`/`setFilteredTotal` (in its .then()) and `setLoading(false)` (in its
+  // .finally()) land in two separate render commits, so an effect keyed on `loading` alone still
+  // sometimes measured the OLD page's (different-length) table before the new rows had actually
+  // committed, computing a scroll target from a layout that was about to change out from under it.
+  // A short delay lets that second commit land first.
+  //
+  // The pending timer is tracked in its own ref rather than returned as this effect's cleanup
+  // function on purpose: a plain `return () => clearTimeout(timer)` gets invoked by React on
+  // *every* re-run of this effect, including a `loading` flicker completely unrelated to this page
+  // (e.g. a second, redundant fetch settling for the page that's already current) — that cancelled
+  // the pending scroll out from under it before it ever fired. Managing the timer explicitly here
+  // means only a genuine new page change (guarded by lastScrolledPageRef below) replaces it.
+  const lastScrolledPageRef = useRef(page);
+  const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (loading || lastScrolledPageRef.current === page) return;
+    lastScrolledPageRef.current = page;
+    if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+    scrollTimerRef.current = setTimeout(() => {
+      scrollTimerRef.current = null;
+      paginationRef.current?.scrollIntoView({ block: "end" });
+    }, 80);
+  }, [page, loading]);
+  useEffect(() => () => {
+    if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+  }, []);
   const [mediaServerConfigured, setMediaServerConfigured] = useState(false);
   const [showMediaServerImport, setShowMediaServerImport] = useState(false);
   const [mediaServerImportFolders, setMediaServerImportFolders] = useState<RootFolder[]>([]);
@@ -555,11 +602,16 @@ export function LibraryItemGrid({
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [tagToApply, setTagToApply] = useState<number | "">("");
   const [importingCsv, setImportingCsv] = useState(false);
-  const [scanning, setScanning] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [matchingProviders, setMatchingProviders] = useState(false);
+  const { jobs: backgroundJobs, startJob } = useBackgroundJobs();
+  const scanJob = backgroundJobs.find((j) => j.kind === "scan" && j.type === type && j.running);
+  const matchJob = backgroundJobs.find((j) => j.kind === "matchProviders" && j.type === type && j.running);
+  const refreshJob = backgroundJobs.find((j) => j.kind === "refresh" && j.type === type && j.running);
+  const organizeJob = backgroundJobs.find((j) => j.kind === "organize" && j.type === type && j.running);
   const [metadataProviderCount, setMetadataProviderCount] = useState(0);
   const [showRenamePreview, setShowRenamePreview] = useState(false);
+  // true when the open RenamePreviewModal is scoped to the current bulk selection rather than the
+  // whole library — see organizeSelected() below.
+  const [renameSelectedOnly, setRenameSelectedOnly] = useState(false);
   const [showExportBulk, setShowExportBulk] = useState(false);
   const [converting, setConverting] = useState(false);
   // "System" filter — only meaningful on ROM's flat "Browse all" page (groupId undefined here means
@@ -830,6 +882,7 @@ export function LibraryItemGrid({
     ...Object.keys(EXTRA_FIELD_LABELS).filter((f) => {
       if (SINGLE_SHAPE_ONLY_FIELDS.has(f) && typeInfo?.shape !== "single") return false;
       if (f === "studio" && !STUDIO_FIELD_TYPES.has(type)) return false;
+      if (f === "duration" && !DURATION_FIELD_TYPES.has(type)) return false;
       return true;
     }),
     ...customColumnsForType.map((c) => `custom:${c.id}`),
@@ -1228,41 +1281,56 @@ export function LibraryItemGrid({
   }
 
   async function scanAndImport() {
-    setScanning(true);
     try {
-      await api.post(`/media/scan-import?type=${type}`, {});
-      notify.info("Scan & import started in the background — this can take a while for a large library. Check the Logs page for the result, or come back to this list shortly.", 7000);
+      // Real live progress now shows in the minimizable Background Jobs widget (bottom-left, any
+      // page) instead of this "started, check the Logs page" toast — see BackgroundJobsContext.
+      await startJob("scan", type, `Scan & Import — ${typeLabel}`, `/media/scan-import?type=${type}`);
       pollAfterBackgroundJob();
     } catch (e) {
       notify.error((e as Error).message);
-    } finally {
-      setTimeout(() => setScanning(false), 5000);
     }
   }
 
   async function refreshLibrary() {
-    setRefreshing(true);
     try {
-      await api.post(`/media/refresh?type=${type}`, {});
-      notify.info("Refresh started in the background — check the Logs page for the result, or come back to this list shortly.", 6000);
+      await startJob("refresh", type, `Refresh — ${typeLabel}`, `/media/refresh?type=${type}`);
       pollAfterBackgroundJob();
     } catch (e) {
       notify.error((e as Error).message);
-    } finally {
-      setTimeout(() => setRefreshing(false), 5000);
     }
   }
 
   async function matchAllProviders() {
-    setMatchingProviders(true);
     try {
-      await api.post(`/media/match-providers?type=${type}`, {});
-      notify.info("Matching against every other configured provider in the background — check the Logs page for the result, or come back to this list shortly.", 6000);
+      await startJob("matchProviders", type, `Match All Providers — ${typeLabel}`, `/media/match-providers?type=${type}`);
       pollAfterBackgroundJob();
     } catch (e) {
       notify.error((e as Error).message);
-    } finally {
-      setTimeout(() => setMatchingProviders(false), 5000);
+    }
+  }
+
+  // Selected-items versions of Refresh/Match All Providers above, for the bulk-selection toolbar —
+  // same background job (and same "one at a time per type" slot server-side), just scoped to the
+  // current `selected` ids via the body instead of running across the whole library.
+  async function bulkRefresh() {
+    try {
+      await startJob("refresh", type, `Refresh — ${selected.size} selected item(s)`, `/media/refresh?type=${type}`, {
+        mediaItemIds: Array.from(selected),
+      });
+      pollAfterBackgroundJob();
+    } catch (e) {
+      notify.error((e as Error).message);
+    }
+  }
+
+  async function bulkMatchProviders() {
+    try {
+      await startJob("matchProviders", type, `Match All Providers — ${selected.size} selected item(s)`, `/media/match-providers?type=${type}`, {
+        mediaItemIds: Array.from(selected),
+      });
+      pollAfterBackgroundJob();
+    } catch (e) {
+      notify.error((e as Error).message);
     }
   }
 
@@ -1298,6 +1366,14 @@ export function LibraryItemGrid({
    * (RenamePreviewModal) of the exact from/to paths before committing, instead of a blind
    * confirm()/execute/after-the-fact-alert. */
   function organizeLibrary() {
+    setRenameSelectedOnly(false);
+    setShowRenamePreview(true);
+  }
+
+  /** Same preview/commit flow as organizeLibrary above, scoped to just the bulk-selected items —
+   * for the "Organize & Rename" button on the selection toolbar. */
+  function organizeSelected() {
+    setRenameSelectedOnly(true);
     setShowRenamePreview(true);
   }
 
@@ -1377,35 +1453,36 @@ export function LibraryItemGrid({
             {auth.isAdmin && (
               <ToolbarButton
                 icon={<ZapIcon />}
-                label={scanning ? "Scanning..." : "Scan & Import"}
+                label={scanJob ? "Scanning..." : "Scan & Import"}
                 onClick={scanAndImport}
-                disabled={scanning}
+                disabled={!!scanJob}
                 title="Scan & Import — scan this library's root folder(s) for media already on disk and import it"
               />
             )}
             {auth.isAdmin && (
               <ToolbarButton
                 icon={<RotateCcwIcon />}
-                label={refreshing ? "Refreshing..." : "Refresh"}
+                label={refreshJob ? "Refreshing..." : "Refresh"}
                 onClick={refreshLibrary}
-                disabled={refreshing}
+                disabled={!!refreshJob}
                 title="Refresh — re-pull overview/poster/year for every item in this library"
               />
             )}
             {auth.isAdmin && metadataProviderCount > 1 && (
               <ToolbarButton
                 icon={<GlobeIcon />}
-                label={matchingProviders ? "Matching..." : "Match All Providers"}
+                label={matchJob ? "Matching..." : "Match All Providers"}
                 onClick={matchAllProviders}
-                disabled={matchingProviders}
+                disabled={!!matchJob}
                 title="Match All Providers — for every item in this library, search every other configured metadata provider and merge in its id, staged metadata, and (for episodic types) any episode it lists that this item doesn't have yet"
               />
             )}
             {auth.isAdmin && (
               <ToolbarButton
                 icon={<FolderIcon />}
-                label="Organize & Rename"
+                label={organizeJob ? "Organizing..." : "Organize & Rename"}
                 onClick={organizeLibrary}
+                disabled={!!organizeJob}
                 title="Organize & Rename — move/rename every already-imported file in this library to match the current naming template (Settings → Media Management → Naming)"
               />
             )}
@@ -1698,6 +1775,38 @@ export function LibraryItemGrid({
           <button type="button" className="icon-button" onClick={bulkSearch} title="Search selected" aria-label="Search selected">
             <SearchIcon />
           </button>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={bulkRefresh}
+            disabled={!!refreshJob}
+            title={refreshJob ? "Refreshing..." : "Refresh selected — re-pull overview/poster/year for just these items"}
+            aria-label="Refresh selected"
+          >
+            <RotateCcwIcon />
+          </button>
+          {metadataProviderCount > 1 && (
+            <button
+              type="button"
+              className="icon-button"
+              onClick={bulkMatchProviders}
+              disabled={!!matchJob}
+              title={matchJob ? "Matching..." : "Match All Providers — for just these items, search every other configured metadata provider and merge in its id/metadata"}
+              aria-label="Match All Providers for selected"
+            >
+              <GlobeIcon />
+            </button>
+          )}
+          <button
+            type="button"
+            className="icon-button"
+            onClick={organizeSelected}
+            disabled={!!organizeJob}
+            title={organizeJob ? "Organizing..." : "Organize & Rename selected — move/rename just these items' already-imported files to match the current naming template"}
+            aria-label="Organize & Rename selected"
+          >
+            <FolderIcon />
+          </button>
           <button type="button" className="icon-button danger" onClick={bulkDelete} title="Remove" aria-label="Remove selected">
             <TrashIcon />
           </button>
@@ -1934,11 +2043,18 @@ export function LibraryItemGrid({
         </table>
       )}
 
-      {!loading && filteredTotal > 0 && (
-        <div className="toolbar" style={{ justifyContent: "center", marginTop: 20 }}>
+      {filteredTotal > 0 && (
+        <div ref={paginationRef} className="toolbar" style={{ justifyContent: "center", marginTop: 20 }}>
           {filteredTotal > pageSize && (
             <>
-              <button type="button" className="icon-button" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0} title="Previous page" aria-label="Previous page">
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={page === 0 || loading}
+                title="Previous page"
+                aria-label="Previous page"
+              >
                 <ChevronLeftIcon />
               </button>
               <span className="sub">
@@ -1948,7 +2064,7 @@ export function LibraryItemGrid({
                 type="button"
                 className="icon-button"
                 onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-                disabled={page >= totalPages - 1}
+                disabled={page >= totalPages - 1 || loading}
                 title="Next page"
                 aria-label="Next page"
               >
@@ -2048,7 +2164,8 @@ export function LibraryItemGrid({
       {showRenamePreview && (
         <RenamePreviewModal
           endpoint={`/media/rename-files?type=${type}`}
-          itemLabel={typeLabel}
+          itemLabel={renameSelectedOnly ? `${selected.size} selected item(s)` : typeLabel}
+          body={renameSelectedOnly ? { mediaItemIds: Array.from(selected) } : undefined}
           onClose={() => setShowRenamePreview(false)}
           onDone={onRenameDone}
         />

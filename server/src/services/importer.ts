@@ -33,6 +33,7 @@ import { recordGroupSuccess } from "./releaseGroupStats.js";
 import { detectSeasonEpisode, guessTitleFromText } from "./libraryScan.js";
 import { convertComicImagesBestEffort } from "./comicImageConvert.js";
 import { recycleFile } from "./recycleBin.js";
+import { finishBackgroundJob, incrementBackgroundJobDone, isBackgroundJobRunning, startBackgroundJob } from "./backgroundJobs.js";
 import type { MediaType } from "../types/index.js";
 
 // Shared across every "single"/"episodic" video library (Movies, TV Shows, Anime) so a just-moved
@@ -2524,23 +2525,56 @@ export interface RenameResult {
  * handles; the count is still reported (as `skippedMusic`, shared by both types) so a caller isn't
  * left thinking they were silently included.
  */
-export async function renameLibraryFiles(mediaType?: MediaType, dryRun = false): Promise<RenameResult> {
+export async function renameLibraryFiles(mediaType?: MediaType, dryRun = false, mediaItemIds?: number[]): Promise<RenameResult> {
   const result: RenameResult = { renamed: [], errors: [], skippedMusic: 0 };
 
   const itemRows = (
-    mediaType
+    mediaItemIds && mediaItemIds.length > 0
+      ? await db
+          .prepare(
+            `SELECT * FROM media_items WHERE id IN (${mediaItemIds.map(() => "?").join(",")})${mediaType ? " AND type = ?" : ""}`
+          )
+          .all(...mediaItemIds, ...(mediaType ? [mediaType] : []))
+      : mediaType
       ? await db.prepare("SELECT * FROM media_items WHERE type = ?").all(mediaType)
       : await db.prepare("SELECT * FROM media_items").all()
   ) as any[];
 
-  for (const mediaRow of itemRows) {
-    await renameOneItemRow(mediaRow, result, undefined, dryRun);
+  // Preview runs (dryRun) never touch anything and are cheap/instant even for a whole library, so
+  // they aren't tracked as a background job — only a real, committing run shows up in the widget.
+  // Selected-items runs share the same `kind:type` tracking slot as a whole-library run for that
+  // type (see backgroundJobs.ts's id scheme) so the two can't overlap and double-move a file.
+  const jobType = mediaType ?? "all";
+  const selectedCount = mediaItemIds?.length ?? 0;
+  const label =
+    selectedCount > 0
+      ? `Organize & Rename — ${selectedCount} selected item(s)${mediaType ? ` (${getMediaTypeConfig(mediaType).label})` : ""}`
+      : `Organize & Rename — ${mediaType ? getMediaTypeConfig(mediaType).label : "All Libraries"}`;
+  const jobId = !dryRun ? startBackgroundJob("organize", jobType, label, itemRows.length) : null;
+  let errorMessage: string | undefined;
+  try {
+    for (const mediaRow of itemRows) {
+      await renameOneItemRow(mediaRow, result, undefined, dryRun);
+      if (jobId) incrementBackgroundJobDone("organize", jobType);
+    }
+  } catch (err) {
+    errorMessage = (err as Error).message;
+    throw err;
+  } finally {
+    if (jobId) finishBackgroundJob(jobId, errorMessage);
   }
 
   if (result.renamed.length > 0 && !dryRun) {
     log.info(`[importer] renamed ${result.renamed.length} file(s) to match the current naming template`);
   }
   return result;
+}
+
+/** True while a real (non-preview) Organize & Rename run is in progress for a type ("all" for the
+ * no-type/whole-instance run) — checked by the route before starting another one, same guard
+ * scan/refresh/match-providers already use. */
+export function isOrganizeRunning(mediaType?: MediaType): boolean {
+  return isBackgroundJobRunning("organize", mediaType ?? "all");
 }
 
 /** Per-item version of renameLibraryFiles, for the "Organize & Rename" button on a single media

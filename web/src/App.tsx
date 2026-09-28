@@ -8,6 +8,7 @@ import NotificationsToggle from "./components/NotificationsToggle.js";
 import ThemeToggle from "./components/ThemeToggle.js";
 import LayoutWidthToggle from "./components/LayoutWidthToggle.js";
 import ScrollButtons from "./components/ScrollButtons.js";
+import BackgroundJobsWidget from "./components/BackgroundJobsWidget.js";
 import CommandPalette from "./components/CommandPalette.js";
 import Toaster from "./components/Toaster.js";
 import ConfirmModal from "./components/ConfirmModal.js";
@@ -54,6 +55,7 @@ import {
   ServerIcon,
   BellIcon,
   UserIcon,
+  LogOutIcon,
 } from "./components/NavIcons.js";
 
 // Every other page is lazy-loaded (route-based code splitting): Dashboard/Onboarding stay eager
@@ -384,6 +386,7 @@ export default function App() {
       </a>
       <ScrollToTop />
       <ScrollButtons />
+      <BackgroundJobsWidget />
       <CommandPalette />
       <Toaster />
       <ConfirmModal />
@@ -479,8 +482,8 @@ export default function App() {
               <ThemeToggle />
               <LayoutWidthToggle />
               <NotificationsToggle />
-              <button type="button" className="link-button" onClick={logout}>
-                Log out
+              <button type="button" className="link-button" onClick={logout} title="Log out" aria-label="Log out">
+                <LogOutIcon />
               </button>
             </div>
           </nav>
@@ -508,15 +511,15 @@ export default function App() {
           {isAdmin && visibleGroups.map((g) => <TopbarGroup key={g.key} label={g.label} icon={groupByKey.get(g.key)?.icon} links={groupByKey.get(g.key)?.links ?? []} />)}
           <div className="topbar-spacer" style={{ position: "relative" }}>
             {isAdmin && (
-              <button type="button" className="topbar-action" onClick={() => setCustomizingSidebar(true)} title="Layout options">
+              <button type="button" className="topbar-action icon-only" onClick={() => setCustomizingSidebar(true)} title="Layout options" aria-label="Layout options">
                 ⚙
               </button>
             )}
-            <ThemeToggle className="topbar-action" />
-            <LayoutWidthToggle className="topbar-action" />
+            <ThemeToggle className="topbar-action icon-only" />
+            <LayoutWidthToggle className="topbar-action icon-only" />
             <NotificationsToggle className="topbar-action" />
-            <button type="button" className="topbar-action" onClick={logout}>
-              Log out
+            <button type="button" className="topbar-action icon-only" onClick={logout} title="Log out" aria-label="Log out">
+              <LogOutIcon />
             </button>
           </div>
         </header>

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { MoonIcon, SunIcon } from "./NavIcons.js";
 
 const STORAGE_KEY = "aonarr_theme";
 
@@ -17,9 +18,11 @@ export default function ThemeToggle({ className = "link-button" }: { className?:
     else document.documentElement.removeAttribute("data-theme");
   }
 
+  const label = theme === "light" ? "Switch to dark theme" : "Switch to light theme";
+
   return (
-    <button type="button" className={className} onClick={toggle}>
-      {theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
+    <button type="button" className={className} onClick={toggle} title={label} aria-label={label}>
+      {theme === "light" ? <MoonIcon /> : <SunIcon />}
     </button>
   );
 }

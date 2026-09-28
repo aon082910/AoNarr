@@ -1346,6 +1346,23 @@ describe("refreshLibraryMetadata / refreshOneMediaItem", () => {
     expect(result).toEqual({ updated: 1, failed: 1, childrenAdded: 0 });
   });
 
+  it("scopes to mediaItemIds when given — for the Library page's bulk-selection action", async () => {
+    const willMatchId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('movie','Will Match','will match',1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('movie','Also Would Match','also would match',1,0,'missing')`).run();
+    // Echoes back whatever title it was searched for, so either item would match if it were
+    // actually attempted — isolating the assertion to "was this item's query even issued".
+    searchMetadata.mockImplementation(async (_type: string, title: string) => [{ title, year: 2020, overview: "O", posterUrl: null, externalIds: { tmdb: "1" } }]);
+
+    const result = await refreshLibraryMetadata("movie", undefined, [willMatchId]);
+
+    // Only the selected item was ever attempted — the other movie's title never got the chance to
+    // match, so it stays a failure rather than also counting as updated.
+    expect(result).toEqual({ updated: 1, failed: 0, childrenAdded: 0 });
+  });
+
   it("stops early once the AbortSignal fires between items", async () => {
     await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('movie','First','first',1,0,'missing')`).run();
     await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('movie','Second','second',1,0,'missing')`).run();
@@ -2399,6 +2416,28 @@ describe("matchProvidersForLibrary", () => {
     const result = await matchProvidersForLibrary("anime");
 
     expect(result).toEqual({ itemsMatched: 2, providersMatched: 2 });
+  });
+
+  it("scopes to mediaItemIds when given, leaving the type's other items untouched — for the Library page's bulk-selection action", async () => {
+    await db.prepare(`DELETE FROM media_items WHERE type = 'anime'`).run();
+    const id1 = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, external_ids, status) VALUES ('anime','Anime One','anime one',1,0,?,'missing')`)
+          .run(JSON.stringify({ anilist: "1", tmdb: "11" }))
+      ).lastInsertRowid
+    );
+    await db
+      .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, external_ids, status) VALUES ('anime','Anime Two','anime two',1,0,?,'missing')`)
+      .run(JSON.stringify({ anilist: "2", tmdb: "22" }));
+    searchMetadata.mockImplementation(async (_type: string, query: string, provider: string) =>
+      provider === "tvdb" ? [{ title: query, year: null, overview: null, posterUrl: null, externalIds: { tvdb: "1" } }] : []
+    );
+    fetchSeriesEpisodesForProvider.mockResolvedValue([]);
+
+    const result = await matchProvidersForLibrary("anime", [id1]);
+
+    expect(result).toEqual({ itemsMatched: 1, providersMatched: 1 });
   });
 });
 

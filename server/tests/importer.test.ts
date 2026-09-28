@@ -3504,6 +3504,25 @@ describe("renameLibraryFiles / renameOneMediaItem", () => {
     expect(result.errors[0].title).toBe("Broken Movie");
   });
 
+  it("scopes to mediaItemIds when given, leaving other items of the type untouched — for the Library page's bulk-selection action", async () => {
+    const folder = await insertRootFolder("movie");
+    const oldPathA = path.join(folder.path, "old-a.mkv");
+    const oldPathB = path.join(folder.path, "old-b.mkv");
+    fs.mkdirSync(path.dirname(oldPathA), { recursive: true });
+    fs.writeFileSync(oldPathA, "x");
+    fs.writeFileSync(oldPathB, "x");
+    const selected = await insertMovie({ root_folder_id: folder.id, has_file: 1, path: oldPathA, title: "Selected Movie", sort_title: "selected movie" });
+    const notSelected = await insertMovie({ root_folder_id: folder.id, has_file: 1, path: oldPathB, title: "Other Movie", sort_title: "other movie", year: 2022 });
+
+    const result = await renameLibraryFiles("movie", false, [selected.id]);
+
+    expect(result.renamed).toHaveLength(1);
+    expect(result.renamed[0].title).toBe("Selected Movie");
+    const untouchedRow = (await db.prepare("SELECT path FROM media_items WHERE id = ?").get(notSelected.id)) as any;
+    expect(untouchedRow.path).toBe(oldPathB); // never even considered
+    expect(fs.existsSync(oldPathB)).toBe(true);
+  });
+
   it("moves the file's own subtitles and .nfo along with it, then removes the emptied folder", async () => {
     const folder = await insertRootFolder("movie");
     const oldDir = path.join(folder.path, "Old Folder");

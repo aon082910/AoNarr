@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { MaximizeIcon, MinimizeIcon } from "./NavIcons.js";
 
 const STORAGE_KEY = "aonarr_layout_width";
 
@@ -17,9 +18,11 @@ export default function LayoutWidthToggle({ className = "link-button" }: { class
     else document.documentElement.removeAttribute("data-layout-width");
   }
 
+  const label = width === "full" ? "Switch to centered layout" : "Switch to full-width layout";
+
   return (
-    <button type="button" className={className} onClick={toggle}>
-      {width === "full" ? "Switch to centered layout" : "Switch to full-width layout"}
+    <button type="button" className={className} onClick={toggle} title={label} aria-label={label}>
+      {width === "full" ? <MinimizeIcon /> : <MaximizeIcon />}
     </button>
   );
 }

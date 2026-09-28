@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import Modal from "./Modal.js";
 import { api } from "../api/client.js";
+import { useBackgroundJobs } from "../context/BackgroundJobsContext.js";
 
 interface RenameResult {
   renamed: { title: string; from: string; to: string }[];
@@ -15,31 +16,43 @@ interface RenameResult {
 export default function RenamePreviewModal({
   endpoint,
   itemLabel,
+  body,
   onClose,
   onDone,
 }: {
   endpoint: string;
   itemLabel: string;
+  /** Extra JSON body merged into both the preview and apply POSTs — e.g. `{mediaItemIds}` for the
+   * Library page's "selected items" bulk action, scoping a whole-library endpoint down to just
+   * those items. Omit for the normal whole-item/whole-library case (an empty body). */
+  body?: Record<string, unknown>;
   onClose: () => void;
   onDone: (result: RenameResult) => void;
 }) {
   const [preview, setPreview] = useState<RenameResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
+  // A library-wide/selected-items commit below is tracked server-side as a "organize" background
+  // job (see backgroundJobs.ts) — un-minimizing here means it's visible right away instead of only
+  // surfacing once the next passive poll notices it, matching how the other job-triggering buttons
+  // (Scan & Import, Refresh, Match All Providers) already behave via startJob.
+  const { setMinimized } = useBackgroundJobs();
 
   useEffect(() => {
     const sep = endpoint.includes("?") ? "&" : "?";
     api
-      .post<RenameResult>(`${endpoint}${sep}preview=1`, {})
+      .post<RenameResult>(`${endpoint}${sep}preview=1`, body ?? {})
       .then(setPreview)
       .catch((e) => setError((e as Error).message));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [endpoint]);
 
   async function apply() {
     setApplying(true);
     setError(null);
+    setMinimized(false);
     try {
-      const result = await api.post<RenameResult>(endpoint, {});
+      const result = await api.post<RenameResult>(endpoint, body ?? {});
       onDone(result);
     } catch (e) {
       setError((e as Error).message);
