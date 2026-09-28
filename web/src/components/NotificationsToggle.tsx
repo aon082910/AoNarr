@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { isPushSubscribed, subscribeToPush, unsubscribeFromPush } from "../utils/push.js";
 import { notify } from "../utils/notify.js";
 
-export default function NotificationsToggle() {
+export default function NotificationsToggle({ className = "link-button" }: { className?: string }) {
   const [subscribed, setSubscribed] = useState(false);
   const [supported, setSupported] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -35,8 +35,8 @@ export default function NotificationsToggle() {
   if (!supported) return null;
 
   return (
-    <a onClick={busy ? undefined : toggle} style={{ cursor: busy ? "default" : "pointer" }}>
+    <button type="button" className={className} onClick={toggle} disabled={busy}>
       {subscribed ? "Disable notifications" : "Enable notifications"}
-    </a>
+    </button>
   );
 }

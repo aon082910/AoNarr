@@ -6,7 +6,7 @@ function getStoredWidth(): "centered" | "full" {
   return localStorage.getItem(STORAGE_KEY) === "full" ? "full" : "centered";
 }
 
-export default function LayoutWidthToggle() {
+export default function LayoutWidthToggle({ className = "link-button" }: { className?: string }) {
   const [width, setWidth] = useState<"centered" | "full">(getStoredWidth());
 
   function toggle() {
@@ -18,7 +18,7 @@ export default function LayoutWidthToggle() {
   }
 
   return (
-    <button type="button" className="link-button" onClick={toggle}>
+    <button type="button" className={className} onClick={toggle}>
       {width === "full" ? "Switch to centered layout" : "Switch to full-width layout"}
     </button>
   );

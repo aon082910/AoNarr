@@ -6,7 +6,7 @@ function getStoredTheme(): "light" | "dark" {
   return localStorage.getItem(STORAGE_KEY) === "light" ? "light" : "dark";
 }
 
-export default function ThemeToggle() {
+export default function ThemeToggle({ className = "link-button" }: { className?: string }) {
   const [theme, setTheme] = useState<"light" | "dark">(getStoredTheme());
 
   function toggle() {
@@ -18,7 +18,7 @@ export default function ThemeToggle() {
   }
 
   return (
-    <button type="button" className="link-button" onClick={toggle}>
+    <button type="button" className={className} onClick={toggle}>
       {theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
     </button>
   );

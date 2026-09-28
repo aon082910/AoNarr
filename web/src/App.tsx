@@ -7,6 +7,7 @@ import { useAuth } from "./context/AuthContext.js";
 import NotificationsToggle from "./components/NotificationsToggle.js";
 import ThemeToggle from "./components/ThemeToggle.js";
 import LayoutWidthToggle from "./components/LayoutWidthToggle.js";
+import ScrollButtons from "./components/ScrollButtons.js";
 import CommandPalette from "./components/CommandPalette.js";
 import Toaster from "./components/Toaster.js";
 import ConfirmModal from "./components/ConfirmModal.js";
@@ -382,6 +383,7 @@ export default function App() {
         Skip to main content
       </a>
       <ScrollToTop />
+      <ScrollButtons />
       <CommandPalette />
       <Toaster />
       <ConfirmModal />
@@ -477,9 +479,9 @@ export default function App() {
               <ThemeToggle />
               <LayoutWidthToggle />
               <NotificationsToggle />
-              <a onClick={logout} style={{ cursor: "pointer" }}>
+              <button type="button" className="link-button" onClick={logout}>
                 Log out
-              </a>
+              </button>
             </div>
           </nav>
         </>
@@ -506,16 +508,16 @@ export default function App() {
           {isAdmin && visibleGroups.map((g) => <TopbarGroup key={g.key} label={g.label} icon={groupByKey.get(g.key)?.icon} links={groupByKey.get(g.key)?.links ?? []} />)}
           <div className="topbar-spacer" style={{ position: "relative" }}>
             {isAdmin && (
-              <button type="button" className="secondary" onClick={() => setCustomizingSidebar(true)} title="Layout options">
+              <button type="button" className="topbar-action" onClick={() => setCustomizingSidebar(true)} title="Layout options">
                 ⚙
               </button>
             )}
-            <ThemeToggle />
-            <LayoutWidthToggle />
-            <NotificationsToggle />
-            <a onClick={logout} style={{ cursor: "pointer" }}>
+            <ThemeToggle className="topbar-action" />
+            <LayoutWidthToggle className="topbar-action" />
+            <NotificationsToggle className="topbar-action" />
+            <button type="button" className="topbar-action" onClick={logout}>
               Log out
-            </a>
+            </button>
           </div>
         </header>
       )}

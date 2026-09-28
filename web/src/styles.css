@@ -188,8 +188,6 @@ body {
 }
 .topbar-trigger:hover { color: var(--text); background: rgba(255,255,255,0.03); }
 .topbar-spacer { margin-left: auto; display: flex; align-items: center; gap: 4px; }
-.topbar-spacer a { color: var(--muted); text-decoration: none; padding: 6px 10px; font-size: 0.85rem; }
-.topbar-spacer a:hover { color: var(--text); }
 
 h1 { font-size: 1.6rem; margin: 0 0 20px; }
 h2 { font-size: 1.2rem; margin: 24px 0 12px; }
@@ -372,13 +370,12 @@ button.secondary { background: var(--border); }
 button.danger { background: var(--danger); }
 
 /* Resets a <button> down to look like the plain clickable text it replaces (the sidebar footer's
-   and topbar's Theme/Layout toggles) — real button semantics (keyboard-focusable, proper role)
-   without any of button's own default chrome (background/border/the margin-top above meant for a
-   button following a stacked label+input). Padding/hover are added back per container just below,
-   matching each container's own <a> siblings exactly (Log out, Enable notifications) — a bare
-   padding:0 reset left these with zero visual separation from their padded neighbors, especially
-   in the topbar where several sit inline on one line with nothing but a 4px gap between them,
-   reading as one run-on sentence instead of distinct controls. */
+   Theme/Layout/Notifications/Log out toggles) — real button semantics (keyboard-focusable, proper
+   role) without any of button's own default chrome (background/border/the margin-top above meant
+   for a button following a stacked label+input). Padding/hover are added back below, matching this
+   container's own layout. The topbar's equivalents use button.topbar-action instead (below) — a
+   visible button chip, not text, so it reads unambiguously as a button in a row that also holds a
+   real icon button (the gear). */
 button.link-button {
   background: none;
   border: none;
@@ -398,12 +395,29 @@ button.link-button {
   border-radius: 0;
 }
 .sidebar-footer .link-button:hover { color: var(--text); background: rgba(255,255,255,0.03); }
-.topbar-spacer .link-button {
-  padding: 6px 10px;
+
+/* The topbar's utility row (gear/Layout options, Theme, Layout width, Notifications, Log out) —
+   a compact but genuinely-buttoned chip (visible background, unlike .link-button's plain-text
+   reset above) so it's unambiguous these are buttons, sized to sit inline at a consistent 32px
+   height with its .topbar > a siblings instead of the default `button` rule's form-sized padding
+   and stray margin-top (the exact misalignment .topbar-trigger's own comment above already
+   documents for the "Library ▾" dropdown trigger — same fix, same reason, applied here too). */
+button.topbar-action {
+  background: var(--border);
+  color: var(--text);
+  border: none;
   border-radius: 6px;
-  color: var(--muted);
+  padding: 6px 10px;
+  margin-top: 0;
+  font-size: 0.85rem;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
-.topbar-spacer .link-button:hover { color: var(--text); }
+button.topbar-action:hover { background: rgba(255,255,255,0.14); opacity: 1; }
+button.topbar-action:disabled { opacity: 0.5; cursor: default; }
 
 /* Same box (background, border, padding, radius) as input/select so a button sitting in the same
    toolbar row as selects — a dropdown trigger, a scan/refresh action — looks like part of the
@@ -587,6 +601,38 @@ button.icon-button.danger:hover { background: rgba(224,92,92,0.15); }
   from { opacity: 0; transform: translateX(24px); }
   to { opacity: 1; transform: translateX(0); }
 }
+
+/* Floating scroll-to-top/scroll-to-bottom pair, rendered once in App.tsx so it appears on every
+   page (the app has exactly one scroll surface — the window/<html>, see .content's lack of its
+   own overflow-y — so this never needs to be page-specific). Sits well below the toast stack
+   (1500)/Modal (1000) so it can't ever cover an active dialog or an error toast. */
+.scroll-buttons {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.scroll-buttons button {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+  margin-top: 0;
+  padding: 0;
+  font-size: 1.1rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.scroll-buttons button:hover { background: rgba(255,255,255,0.08); opacity: 1; }
+.scroll-buttons button:disabled { opacity: 0.35; cursor: default; }
 
 /* Sonarr/Radarr-style page toolbar — a full-content-width bar directly under a page's <h1>,
    split into a left (page actions) and right (view/sort/filter/search) group. Bleeds to the
