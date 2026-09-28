@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import MonitorToggle from "../components/MonitorToggle.js";
+import SearchMatchModal, { type MetadataSearchResult } from "../components/SearchMatchModal.js";
 import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
@@ -47,11 +48,17 @@ interface NarratorSibling {
   parentTitle: string;
 }
 
+// Kept in sync by hand with server/src/services/metadata.ts's BOOK_SEARCH_FNS — only providers
+// with a genuine free-text book-title search endpoint of their own belong here (see that file's
+// doc comment on searchBooks for why the rest of the author providers aren't offered).
+const BOOK_SEARCH_PROVIDERS = ["openlibrary", "googlebooks"];
+
 interface SubItemDetailResponse {
   id: number;
   mediaItemId: number;
   title: string;
   releaseDate: string | null;
+  overview: string | null;
   externalId: string | null;
   externalProvider: string | null;
   monitored: 0 | 1;
@@ -88,6 +95,7 @@ export default function SubItemDetail() {
   const [scanningIsbn, setScanningIsbn] = useState(false);
   const [sendingToKindle, setSendingToKindle] = useState(false);
   const [convertingM4b, setConvertingM4b] = useState(false);
+  const [showSearchMatch, setShowSearchMatch] = useState(false);
 
   // Navigating between sibling sub-items (a series/narrator sibling link, or browser Back/Forward)
   // reuses this mounted component — without a request-ordering guard, a slower response for a
@@ -315,6 +323,27 @@ export default function SubItemDetail() {
     }
   }
 
+  async function applyRematch(result: MetadataSearchResult) {
+    if (!subItem) return;
+    const updated = await api.post<SubItemDetailResponse>(`/media/${mediaId}/subitems/${subItemId}/rematch`, {
+      title: result.title,
+      overview: result.overview,
+      posterUrl: result.posterUrl,
+      releaseDate: result.releaseDate ?? (result.year ? String(result.year) : null),
+      externalIds: result.externalIds,
+    });
+    patchSubItem(subItem.id, (prev) => ({
+      ...prev,
+      title: updated.title,
+      overview: updated.overview,
+      posterUrl: updated.posterUrl,
+      releaseDate: updated.releaseDate,
+      externalId: updated.externalId,
+      externalProvider: updated.externalProvider,
+    }));
+    setShowSearchMatch(false);
+  }
+
   async function editSeries() {
     if (!subItem) return;
     const result = await promptDialog({
@@ -380,6 +409,14 @@ export default function SubItemDetail() {
                   onClick={runSearch}
                   disabled={searching}
                   title={searching ? "Searching..." : "Search"}
+                />
+              )}
+              {subItem.parent?.type === "author" && (
+                <ToolbarButton
+                  icon={<SearchIcon />}
+                  label="Different Match"
+                  onClick={() => setShowSearchMatch(true)}
+                  title="Search for a different match — search this book's own title instead of trusting whatever title it was matched (or not matched) to, and pick the right result"
                 />
               )}
               {subItem.parent?.type === "author" && !!subItem.hasFile && (
@@ -503,6 +540,8 @@ export default function SubItemDetail() {
           </span>
         )}
       </div>
+
+      {subItem.overview && <p>{subItem.overview}</p>}
 
       {subItem.series.length > 0 && (
         <>
@@ -692,6 +731,20 @@ export default function SubItemDetail() {
             </table>
           )}
         </>
+      )}
+
+      {showSearchMatch && (
+        <SearchMatchModal
+          type="book"
+          initialQuery={subItem.title}
+          providers={BOOK_SEARCH_PROVIDERS}
+          searchPath={`/media/${mediaId}/subitems/${subItemId}/search`}
+          idMatch={false}
+          onClose={() => setShowSearchMatch(false)}
+          onSelect={applyRematch}
+          title="Search for a different book match"
+          description="Search this book's own title (not its author's) — useful when it was never matched at all, or matched to the wrong book. Picking a result re-points this book at it (title, overview, cover, release date, external id); the file already on disk is left alone."
+        />
       )}
     </div>
   );

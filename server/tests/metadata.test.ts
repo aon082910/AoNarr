@@ -427,11 +427,33 @@ describe("searchMetadata: artists", () => {
 });
 
 describe("searchMetadata: authors/audiobooks", () => {
-  it("Open Library author search maps fields, and handles a missing birth_date/top_work/key", async () => {
-    stub([{ test: (u) => u.includes("openlibrary.org/search/authors.json"), response: ok({ docs: [{ name: "Author", birth_date: "1950", top_work: "Book1", key: "OL1A" }] }) }]);
+  it("Open Library author search maps fields, enriches with a real bio via a follow-up author-detail call, and handles a missing birth_date/top_work/key", async () => {
+    stub([
+      { test: (u) => u.includes("openlibrary.org/search/authors.json"), response: ok({ docs: [{ name: "Author", birth_date: "1950", top_work: "Book1", key: "OL1A" }] }) },
+      { test: (u) => u.includes("openlibrary.org/authors/OL1A.json"), response: ok({ bio: "A real biography." }) },
+    ]);
     const results = await metadata.searchMetadata("author", "x", "openlibrary");
-    expect(results[0]).toEqual({ title: "Author", year: 1950, overview: "Known for: Book1", posterUrl: "https://covers.openlibrary.org/a/olid/OL1A-M.jpg", externalIds: { openlibrary: "OL1A" } });
+    expect(results[0]).toEqual({ title: "Author", year: 1950, overview: "A real biography.", posterUrl: "https://covers.openlibrary.org/a/olid/OL1A-M.jpg", externalIds: { openlibrary: "OL1A" } });
 
+    // The detail endpoint sometimes wraps text in Open Library's {type, value} wikitext shape
+    // instead of a bare string — both shapes must resolve to the same plain-string overview.
+    stub([
+      { test: (u) => u.includes("openlibrary.org/search/authors.json"), response: ok({ docs: [{ name: "Author2", key: "OL2A" }] }) },
+      { test: (u) => u.includes("openlibrary.org/authors/OL2A.json"), response: ok({ bio: { type: "/type/text", value: "Wrapped bio." } }) },
+    ]);
+    const wrapped = await metadata.searchMetadata("author", "x", "openlibrary");
+    expect(wrapped[0].overview).toBe("Wrapped bio.");
+
+    // No bio on the detail response (or the detail call failing outright) falls back to
+    // "Known for:", not null — the enrichment is best-effort, not a hard requirement.
+    stub([
+      { test: (u) => u.includes("openlibrary.org/search/authors.json"), response: ok({ docs: [{ name: "Author3", top_work: "Book3", key: "OL3A" }] }) },
+      { test: (u) => u.includes("openlibrary.org/authors/OL3A.json"), response: notOk(404) },
+    ]);
+    const noBio = await metadata.searchMetadata("author", "x", "openlibrary");
+    expect(noBio[0].overview).toBe("Known for: Book3");
+
+    // No key at all skips the detail fetch entirely — nothing to look up.
     stub([{ test: (u) => u.includes("openlibrary.org/search/authors.json"), response: ok({ docs: [{ name: "Bare Author" }] }) }]);
     const bare = await metadata.searchMetadata("author", "x", "openlibrary");
     expect(bare[0]).toEqual({ title: "Bare Author", year: null, overview: null, posterUrl: null, externalIds: { openlibrary: undefined } });
@@ -515,6 +537,72 @@ describe("searchMetadata: authors/audiobooks", () => {
   it("Audible books fall back to a null releaseDate when release_date is absent", async () => {
     stub([{ test: (u) => u.includes("api.audible.com"), response: ok({ products: [{ authors: [{ name: "Author1" }], title: "Book1" }] }) }]);
     expect(await metadata.fetchCollectionChildrenFor({ audible: "Author1" })).toEqual({ provider: "audible", children: [{ title: "Book1", releaseDate: null }] });
+  });
+});
+
+describe("searchBooks (a single book's own 'Different Match', distinct from author search above)", () => {
+  it("Open Library book search maps fields and enriches with a real work description via a follow-up call", async () => {
+    stub([
+      { test: (u) => u.includes("openlibrary.org/search.json"), response: ok({ docs: [{ key: "/works/OL1W", title: "The Book", first_publish_year: 2001, cover_i: 123, author_name: ["A. Author"] }] }) },
+      { test: (u) => u.includes("openlibrary.org/works/OL1W.json"), response: ok({ description: "A real description." }) },
+    ]);
+    const results = await metadata.searchBooks("x", "openlibrary");
+    expect(results[0]).toEqual({
+      title: "The Book",
+      year: 2001,
+      overview: "A real description.",
+      posterUrl: "https://covers.openlibrary.org/b/id/123-M.jpg",
+      externalIds: { openlibrary: "/works/OL1W" },
+      releaseDate: "2001",
+    });
+  });
+
+  it("Open Library book search unwraps a {type, value} description, and falls back to an author byline when none is available", async () => {
+    stub([
+      { test: (u) => u.includes("openlibrary.org/search.json"), response: ok({ docs: [{ key: "/works/OL2W", title: "Wrapped Desc Book" }] }) },
+      { test: (u) => u.includes("openlibrary.org/works/OL2W.json"), response: ok({ description: { type: "/type/text", value: "Wrapped." } }) },
+    ]);
+    expect((await metadata.searchBooks("x", "openlibrary"))[0].overview).toBe("Wrapped.");
+
+    stub([
+      { test: (u) => u.includes("openlibrary.org/search.json"), response: ok({ docs: [{ key: "/works/OL3W", title: "Another Book", author_name: ["A. Author", "B. Author"] }] }) },
+      { test: (u) => u.includes("openlibrary.org/works/OL3W.json"), response: notOk(404) },
+    ]);
+    const noDescription = await metadata.searchBooks("x", "openlibrary");
+    expect(noDescription[0].overview).toBe("by A. Author, B. Author");
+    expect(noDescription[0].year).toBeNull();
+  });
+
+  it("Google Books search uses the volume's own description/thumbnail directly, no follow-up call needed", async () => {
+    const fetchMock = stub([
+      {
+        test: (u) => u.includes("googleapis.com/books"),
+        response: ok({
+          items: [
+            {
+              id: "abc123",
+              volumeInfo: { title: "A Volume", publishedDate: "1999-05-01", description: "Real description.", imageLinks: { thumbnail: "http://t" }, authors: ["Someone"] },
+            },
+          ],
+        }),
+      },
+    ]);
+    const results = await metadata.searchBooks("x", "googlebooks");
+    expect(results[0]).toEqual({ title: "A Volume", year: 1999, overview: "Real description.", posterUrl: "http://t", externalIds: { googlebooks: "abc123" }, releaseDate: "1999-05-01" });
+    // Unlike Open Library above, Google Books' own search response already has everything —
+    // no per-result enrichment round trip.
+    expect(fetchMock.mock.calls).toHaveLength(1);
+  });
+
+  it("Google Books search falls back to an author byline when the volume has no description", async () => {
+    stub([{ test: (u) => u.includes("googleapis.com/books"), response: ok({ items: [{ id: "x", volumeInfo: { title: "No Desc", authors: ["Only Author"] } }] }) }]);
+    const results = await metadata.searchBooks("x", "googlebooks");
+    expect(results[0].overview).toBe("by Only Author");
+    expect(results[0].releaseDate).toBeNull();
+  });
+
+  it("rejects a provider with no book-title search implementation", async () => {
+    await expect(metadata.searchBooks("x", "hardcover")).rejects.toThrow('"hardcover" doesn\'t support searching for a book by title');
   });
 });
 

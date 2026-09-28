@@ -1146,6 +1146,15 @@ async function fetchArtistAlbumsLastfm(idOrName: string): Promise<MetadataSubIte
 // Authors: Open Library, Google Books
 // ---------------------------------------------------------------------------
 
+/** Open Library represents both an author's bio and a work's description as either a plain string
+ * or a "{type: '/type/text', value: '...'}" wikitext wrapper, depending on the record — never both
+ * shapes for the same field, but a caller can't predict which one a given entry uses. */
+function openLibraryText(value: unknown): string | null {
+  if (typeof value === "string") return value || null;
+  if (value && typeof value === "object" && typeof (value as any).value === "string") return (value as any).value || null;
+  return null;
+}
+
 async function searchAuthorsOpenlibrary(query: string): Promise<MetadataSearchResult[]> {
   const url = new URL("https://openlibrary.org/search/authors.json");
   url.searchParams.set("q", query);
@@ -1153,14 +1162,33 @@ async function searchAuthorsOpenlibrary(query: string): Promise<MetadataSearchRe
   const res = await fetch(url.toString());
   if (!res.ok) throw new Error(`Open Library author search failed: HTTP ${res.status}`);
   const body: any = await res.json();
+  const docs: any[] = body.docs ?? [];
 
-  return (body.docs ?? []).map((d: any) => ({
-    title: d.name,
-    year: d.birth_date ? Number(String(d.birth_date).slice(-4)) || null : null,
-    overview: d.top_work ? `Known for: ${d.top_work}` : null,
-    posterUrl: d.key ? `https://covers.openlibrary.org/a/olid/${d.key}-M.jpg` : null,
-    externalIds: { openlibrary: d.key },
-  }));
+  // The search endpoint above never includes a bio (just birth_date/top_work/work_count) — only
+  // the per-author detail endpoint does. Fetched concurrently per candidate, not just for whichever
+  // one ends up picked: a name search realistically returns a handful of results, not hundreds, so
+  // the extra round trip per candidate is cheap, and it lets the admin actually read a real bio
+  // before picking one rather than just the "Known for: X" placeholder every result used to show.
+  return Promise.all(
+    docs.map(async (d) => {
+      let bio: string | null = null;
+      if (d.key) {
+        try {
+          const detailRes = await fetch(`https://openlibrary.org/authors/${d.key}.json`);
+          if (detailRes.ok) bio = openLibraryText(((await detailRes.json()) as any).bio);
+        } catch {
+          // Best-effort enrichment only — the "Known for:" fallback below still gives a usable result.
+        }
+      }
+      return {
+        title: d.name,
+        year: d.birth_date ? Number(String(d.birth_date).slice(-4)) || null : null,
+        overview: bio || (d.top_work ? `Known for: ${d.top_work}` : null),
+        posterUrl: d.key ? `https://covers.openlibrary.org/a/olid/${d.key}-M.jpg` : null,
+        externalIds: { openlibrary: d.key },
+      };
+    })
+  );
 }
 
 async function fetchAuthorBooksOpenlibrary(openLibraryKey: string): Promise<MetadataSubItem[]> {
@@ -1446,6 +1474,98 @@ async function searchAuthorsAudnexus(query: string): Promise<MetadataSearchResul
     })
   );
   return results.filter((r): r is MetadataSearchResult => r !== null);
+}
+
+// ---------------------------------------------------------------------------
+// Books (not authors): title search for a single sub_item's own "Different Match" — every
+// function above searches/lists by AUTHOR (an author name, or an author id's book list), never by
+// a specific book's own title, so a wrongly-matched or unmatched book had nothing to search
+// against directly. Only two providers have a genuine free-text book-title search endpoint of
+// their own (as opposed to "list this author's books", which needs an author identity already in
+// hand, not a query string) — the rest of author.metadataProviders (itunes/hardcover/goodreads/
+// audnexus) are left out rather than bent into a book search they weren't built for.
+// ---------------------------------------------------------------------------
+
+/** Open Library's title search, enriched with each result's real description the same way author
+ * bios are above — search.json's docs[] never carries one, only the per-work detail endpoint does.
+ * Bounded to 20 results (never hundreds for a real book title), so the extra per-result round trip
+ * stays cheap. */
+async function searchBooksOpenlibrary(query: string): Promise<MetadataSearchResult[]> {
+  const url = new URL("https://openlibrary.org/search.json");
+  url.searchParams.set("q", query);
+  url.searchParams.set("limit", "20");
+  url.searchParams.set("fields", "key,title,first_publish_year,cover_i,author_name");
+
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`Open Library book search failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  const docs: any[] = body.docs ?? [];
+
+  return Promise.all(
+    docs.map(async (d) => {
+      let description: string | null = null;
+      if (d.key) {
+        try {
+          const workRes = await fetch(`https://openlibrary.org${d.key}.json`);
+          if (workRes.ok) description = openLibraryText(((await workRes.json()) as any).description);
+        } catch {
+          // Best-effort enrichment only — falls back to the author byline below.
+        }
+      }
+      return {
+        title: d.title,
+        year: d.first_publish_year ?? null,
+        overview: description || (d.author_name?.length ? `by ${d.author_name.join(", ")}` : null),
+        posterUrl: d.cover_i ? `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg` : null,
+        externalIds: { openlibrary: d.key },
+        releaseDate: d.first_publish_year ? String(d.first_publish_year) : null,
+      };
+    })
+  );
+}
+
+/** Google Books' volume search already includes a real per-book description and cover inline, no
+ * follow-up lookup needed (unlike the author-name search above, which only gets a book title as a
+ * "Known for:" placeholder since a *person* isn't itself a Google Books volume). */
+async function searchBooksGoogleBooks(query: string): Promise<MetadataSearchResult[]> {
+  const key = getSetting("googleBooksApiKey");
+  const url = new URL("https://www.googleapis.com/books/v1/volumes");
+  url.searchParams.set("q", query);
+  url.searchParams.set("maxResults", "20");
+  if (key) url.searchParams.set("key", key);
+
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`Google Books search failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+
+  return (body.items ?? []).map((item: any) => {
+    const info = item.volumeInfo ?? {};
+    const year = info.publishedDate ? Number(String(info.publishedDate).slice(0, 4)) || null : null;
+    return {
+      title: info.title ?? "Untitled",
+      year,
+      overview: info.description || (info.authors?.length ? `by ${info.authors.join(", ")}` : null),
+      posterUrl: info.imageLinks?.thumbnail || null,
+      externalIds: { googlebooks: item.id },
+      releaseDate: info.publishedDate || null,
+    };
+  });
+}
+
+const BOOK_SEARCH_FNS: Record<string, (query: string) => Promise<MetadataSearchResult[]>> = {
+  openlibrary: searchBooksOpenlibrary,
+  googlebooks: searchBooksGoogleBooks,
+};
+
+export const BOOK_SEARCH_PROVIDERS = Object.keys(BOOK_SEARCH_FNS);
+
+/** Title search scoped to a book itself, for routes/media.ts's sub-item "Different Match" —
+ * distinct from searchMetadata (which always searches AUTHORS for type "author", since that's
+ * what an author's own "Different Match"/Add flow needs). */
+export async function searchBooks(query: string, provider: string): Promise<MetadataSearchResult[]> {
+  const fn = BOOK_SEARCH_FNS[provider];
+  if (!fn) throw new Error(`"${provider}" doesn't support searching for a book by title`);
+  return fn(query);
 }
 
 // ---------------------------------------------------------------------------

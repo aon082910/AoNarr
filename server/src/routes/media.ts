@@ -35,7 +35,9 @@ import {
   fetchTmdbCollectionFor,
   fetchTrailerFor,
   proxyScreenscraperArtwork,
+  searchBooks,
   searchMetadata,
+  BOOK_SEARCH_PROVIDERS,
   type MetadataEpisode,
 } from "../services/metadata.js";
 import { pushWatchState } from "../services/mediaServer.js";
@@ -2304,6 +2306,75 @@ mediaRouter.patch(
     if (fileCleared) await rollUpParentMissing(req.params.id);
     const row = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(req.params.subItemId);
     if (!row) throw new HttpError(404, "Sub-item not found");
+    res.json(subItemFromRow(row));
+  })
+);
+
+/**
+ * "Different Match" for a single book, the sub-item equivalent of GET /metadata/search for an
+ * author/media_items row — every provider function everywhere else in this file searches/lists by
+ * AUTHOR, never by a specific book's own title, so a wrongly-matched or never-matched book had
+ * nothing to search against directly (see services/metadata.ts's searchBooks doc comment for why
+ * only two providers are offered here).
+ */
+mediaRouter.get(
+  "/:id/subitems/:subItemId/search",
+  asyncHandler(async (req, res) => {
+    const sub = (await db.prepare("SELECT id FROM sub_items WHERE id = ? AND media_item_id = ?").get(req.params.subItemId, req.params.id)) as any;
+    if (!sub) throw new HttpError(404, "Sub-item not found");
+
+    const query = req.query.query as string | undefined;
+    const provider = (req.query.provider as string | undefined) || BOOK_SEARCH_PROVIDERS[0];
+    const yearRaw = req.query.year as string | undefined;
+    const year = yearRaw ? parseInt(yearRaw, 10) : null;
+    if (!query) throw new HttpError(400, "query is required");
+
+    try {
+      let results = await searchBooks(query, provider);
+      // Same year-assisted re-ranking searchMetadata does for every other type — an exact-year hit
+      // sorts first without filtering anything else out, since a provider's year can legitimately
+      // be off by one (a reprint/reissue date recorded instead of the original).
+      if (Number.isFinite(year) && year) {
+        results = [...results].sort((a, b) => {
+          const aExact = a.year === year ? 0 : 1;
+          const bExact = b.year === year ? 0 : 1;
+          if (aExact !== bExact) return aExact - bExact;
+          const aDist = a.year != null ? Math.abs(a.year - year) : Infinity;
+          const bDist = b.year != null ? Math.abs(b.year - year) : Infinity;
+          return aDist - bDist;
+        });
+      }
+      res.json(results);
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+  })
+);
+
+/** Applies a book search result (see the /search route above) to this sub-item — title, overview,
+ * cover, release date, and the one external id the picked provider returned. Deliberately simpler
+ * than media_items' own /:id/rematch (no content rating/genres/backdrop/NFO sidecar/follow-up
+ * refresh — a book's own metadata surface is smaller, and nothing downstream keys off a sub-item's
+ * external id the way Refresh keys a whole show off its media_items one). */
+mediaRouter.post(
+  "/:id/subitems/:subItemId/rematch",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const sub = (await db.prepare("SELECT id FROM sub_items WHERE id = ? AND media_item_id = ?").get(req.params.subItemId, req.params.id)) as any;
+    if (!sub) throw new HttpError(404, "Sub-item not found");
+
+    const b = req.body ?? {};
+    if (!b.title) throw new HttpError(400, "title is required");
+    const externalIds: Record<string, string> = b.externalIds ?? {};
+    const [externalProvider, externalId] = Object.entries(externalIds)[0] ?? [null, null];
+
+    await db
+      .prepare("UPDATE sub_items SET title = ?, overview = ?, poster_url = ?, release_date = ?, external_id = ?, external_provider = ? WHERE id = ?")
+      .run(b.title, b.overview ?? null, b.posterUrl ?? null, b.releaseDate ?? null, externalId, externalProvider, req.params.subItemId);
+
+    const actor = auditActor(req);
+    logAuditEvent(actor.userId, actor.username, "subitem_rematched", `"${b.title}"`);
+    const row = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(req.params.subItemId);
     res.json(subItemFromRow(row));
   })
 );

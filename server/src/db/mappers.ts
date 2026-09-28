@@ -99,6 +99,7 @@ export function subItemFromRow(row: any) {
     mediaItemId: row.media_item_id,
     title: row.title,
     releaseDate: row.release_date,
+    overview: row.overview ?? null,
     externalId: row.external_id,
     externalProvider: row.external_provider,
     monitored: row.monitored,

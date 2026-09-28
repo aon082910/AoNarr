@@ -32,6 +32,8 @@ export default function SearchMatchModal({
   onSelect,
   title = "Search for a different match",
   description = 'Search with your own query instead of this item\'s current title — useful when the stored title is wrong or garbled and metadata lookups keep coming up empty. Picking a result re-points this item at it (title, year, overview, poster, external ids); episodes/files already on disk are left alone.',
+  searchPath,
+  idMatch = true,
 }: {
   type: string;
   initialQuery: string;
@@ -41,6 +43,14 @@ export default function SearchMatchModal({
   onSelect: (result: MetadataSearchResult) => void;
   title?: string;
   description?: string;
+  /** Overrides the title-search request path (still gets `?type=&query=&provider=&year=`
+   * appended) — for a caller searching something other than a top-level media item's own type,
+   * e.g. a book's own title instead of its author. Defaults to the ordinary `/metadata/search`. */
+  searchPath?: string;
+  /** The "By ID / URL" tab hits `/metadata/match`, which only exists for top-level media items —
+   * a caller with its own searchPath has nothing to point that at, so it hides the tab instead of
+   * offering a mode that would always fail. */
+  idMatch?: boolean;
 }) {
   const [query, setQuery] = useState(initialQuery);
   const [searchYear, setSearchYear] = useState(initialYear ? String(initialYear) : "");
@@ -60,7 +70,7 @@ export default function SearchMatchModal({
     setResults(null);
     try {
       const res = await api.get<MetadataSearchResult[]>(
-        `/metadata/search?type=${type}&query=${encodeURIComponent(query.trim())}&provider=${provider}${
+        `${searchPath ?? "/metadata/search"}?type=${type}&query=${encodeURIComponent(query.trim())}&provider=${provider}${
           searchYear.trim() ? `&year=${encodeURIComponent(searchYear.trim())}` : ""
         }`
       );
@@ -109,12 +119,16 @@ export default function SearchMatchModal({
       <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>{description}</p>
 
       <div className="toolbar" style={{ marginBottom: 8 }}>
-        <button type="button" className={searchMode === "title" ? "" : "secondary"} onClick={() => setSearchMode("title")}>
-          By title
-        </button>
-        <button type="button" className={searchMode === "id" ? "" : "secondary"} onClick={() => setSearchMode("id")}>
-          By ID / URL
-        </button>
+        {idMatch && (
+          <>
+            <button type="button" className={searchMode === "title" ? "" : "secondary"} onClick={() => setSearchMode("title")}>
+              By title
+            </button>
+            <button type="button" className={searchMode === "id" ? "" : "secondary"} onClick={() => setSearchMode("id")}>
+              By ID / URL
+            </button>
+          </>
+        )}
         {providers.length > 1 && (
           <select value={provider} onChange={(e) => setProvider(e.target.value)} style={{ maxWidth: 140 }}>
             {providers.map((p) => (
