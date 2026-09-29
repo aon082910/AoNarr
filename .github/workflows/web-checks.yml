@@ -1,0 +1,36 @@
+name: Web checks
+
+on:
+  push:
+    paths:
+      - "web/**"
+      - ".github/workflows/web-checks.yml"
+  pull_request:
+    paths:
+      - "web/**"
+      - ".github/workflows/web-checks.yml"
+
+# One job rather than three: the web package installs in seconds and each step is quick, so
+# splitting would mostly add three more `npm ci` runs. Steps still report separately in the UI.
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      # The same `tsc -b && vite build` the web and combined Dockerfiles run, so a change that
+      # would break the image build fails here first.
+      - name: Build
+        run: npm run build
