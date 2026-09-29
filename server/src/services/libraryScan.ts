@@ -2346,6 +2346,22 @@ export async function mergeEpisodesIntoItem(
     .prepare("SELECT id, season_number, episode_number, title, air_date FROM episodes WHERE media_item_id = ?")
     .all(mediaItemId)) as { id: number; season_number: number; episode_number: number; title: string | null; air_date: string | null }[];
   const existingByKey = new Map(existing.map((e) => [`${e.season_number}:${e.episode_number}`, e]));
+  // A second provider's own season split for a show can number the same real episodes completely
+  // differently from the item's primary provider (classic-cartoon syndication reruns are the
+  // repeat offender: TMDB lists them as the tail end of one season, a second provider splits them
+  // into their own following season) — matched by season+episode number alone, that list adds
+  // every one of them again as "new" under the other numbering, duplicating already-tracked
+  // episodes rather than filling a real gap (e.g. "A Pup Named Scooby-Doo"'s last 5 season-3
+  // episodes reappearing as all of season 4). A title this exact and non-placeholder is too
+  // specific a coincidence to be two different real episodes, so it's treated as the same one
+  // under different numbering and skipped rather than inserted a second time.
+  const existingByTitle = new Map<string, (typeof existing)[number]>();
+  for (const e of existing) {
+    const t = e.title?.trim() ?? "";
+    if (!t || PLACEHOLDER_EPISODE_TITLE.test(t)) continue;
+    const norm = normalizeForMatch(t);
+    if (norm && !existingByTitle.has(norm)) existingByTitle.set(norm, e);
+  }
   const tracksRegularEpisodes = existing.some((e) => Number(e.season_number) !== 0);
   const monitorNew = newEpisodeMonitor(episodes, existing, monitored, onlyRecentOnceTracked && tracksRegularEpisodes);
   let added = 0;
@@ -2353,6 +2369,14 @@ export async function mergeEpisodesIntoItem(
   for (const ep of filtered) {
     const row = existingByKey.get(`${ep.seasonNumber}:${ep.episodeNumber}`);
     if (!row) {
+      const epTitle = ep.title?.trim() ?? "";
+      const titleDup = epTitle && !PLACEHOLDER_EPISODE_TITLE.test(epTitle) ? existingByTitle.get(normalizeForMatch(epTitle)) : undefined;
+      if (titleDup) {
+        if (!titleDup.air_date && ep.airDate) {
+          await db.prepare("UPDATE episodes SET air_date = ? WHERE id = ?").run(ep.airDate, titleDup.id);
+        }
+        continue;
+      }
       const epMonitored = monitorNew(ep);
       await db
         .prepare(

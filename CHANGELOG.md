@@ -3,6 +3,39 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 371 — Fixed a duplicate-season episode bug (multi-provider episode merge)
+
+Reported: "A Pup Named Scooby-Doo"'s season 4 was the same 5 episodes as the end of season 3, just
+reordered — one metadata provider splits a show's episodes into a different season count than
+another, and AoNarr's merge logic had no way to notice the two lists overlapped.
+
+### Fixed
+
+- **`mergeEpisodesIntoItem()`** (the shared insert-if-missing logic behind Refresh,
+  Match All Providers, and a new show's first episode sync) deduped an incoming episode only by
+  season+episode number, never by title — so a second provider's own season split for the same
+  real episodes always looked like new ones. Added a title-based dedup check (the same
+  exact-normalized-match convention already used elsewhere in this file): a non-placeholder title
+  that already matches a tracked episode is now treated as the same episode under different
+  numbering and backfills its air date instead of duplicating it. Two different episodes that both
+  happen to carry a generic placeholder title ("Episode 5") are explicitly excluded from the check,
+  so they're never wrongly merged into each other.
+- **A library-wide sweep found the same pattern in 158 shows.** After separating real bugs from
+  coincidence (course lecture titles and talk-show segment titles both naturally recur across
+  different real episodes and needed excluding as false positives — see the CHANGELOG-adjacent
+  session notes / project memory for the classification method), **4,065 phantom duplicate episode
+  rows were removed across 91 shows**, backfilling 2,431 air dates onto the surviving rows first.
+  42 pairs across 9 shows turned out to be two genuinely separate downloaded files for the same
+  episode (real wasted disk space, not a database bug) — left untouched pending a decision on
+  whether to recycle the extra file.
+
+### Tests
+
+- `mergeEpisodesIntoItem`: the exact "A Pup Named Scooby-Doo" regression (a second provider's
+  differently-numbered episode list gets treated as duplicates, not new episodes, backfilling air
+  dates onto the existing rows) and a negative case (two different episodes sharing only a generic
+  placeholder title are never merged into each other).
+
 ## Round 370 — Duration column, a real Background Jobs widget, bulk-selected actions, icon-only
 topbar controls, and a Missing page broken down by library
 

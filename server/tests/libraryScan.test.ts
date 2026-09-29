@@ -2080,6 +2080,52 @@ describe("mergeEpisodesIntoItem", () => {
       { episode_number: 2, title: "Known", air_date: "2021-07-01" },
     ]);
   });
+
+  it("regression: a second provider's own season split for the same episodes (A Pup Named Scooby-Doo) is treated as duplicates, not new episodes", async () => {
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('series','A Pup Named Scooby-Doo','a pup named scooby doo',1,1,'downloaded')`).run())
+        .lastInsertRowid
+    );
+    // Season 3's last 5 episodes, as the item's own (primary) provider lists them — already
+    // downloaded, no air date backfilled yet for some.
+    await db
+      .prepare(
+        `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, monitored, has_file) VALUES (?,3,5,'Mayhem of the Moving Mollusk',NULL,1,1)`
+      )
+      .run(showId);
+    await db
+      .prepare(
+        `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, monitored, has_file) VALUES (?,3,9,'The Were-Doo of Doo Manor',NULL,1,1)`
+      )
+      .run(showId);
+
+    // A second provider lists the exact same two episodes as the start of its own "season 4".
+    const added = await mergeEpisodesIntoItem(showId, [
+      { seasonNumber: 4, episodeNumber: 1, title: "The Were-Doo of Doo Manor", airDate: "1991-08-03", overview: null },
+      { seasonNumber: 4, episodeNumber: 5, title: "Mayhem of the Moving Mollusk", airDate: "1991-08-17", overview: null },
+    ]);
+
+    expect(added).toBe(0); // neither is a new episode
+    const episodes = (await db.prepare("SELECT season_number, episode_number, title, air_date FROM episodes WHERE media_item_id = ? ORDER BY episode_number").all(showId)) as any[];
+    expect(episodes).toHaveLength(2); // no phantom season 4 rows created
+    // The other provider's air date backfills the existing (still season 3) rows instead.
+    expect(episodes.find((e) => e.title === "Mayhem of the Moving Mollusk")).toMatchObject({ season_number: 3, air_date: "1991-08-17" });
+    expect(episodes.find((e) => e.title === "The Were-Doo of Doo Manor")).toMatchObject({ season_number: 3, air_date: "1991-08-03" });
+  });
+
+  it("never treats two different episodes with the same placeholder title as duplicates of each other", async () => {
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('series','Placeholder Show','placeholder show',1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored) VALUES (?,1,1,'Episode 1',1)`).run(showId);
+
+    const added = await mergeEpisodesIntoItem(showId, [{ seasonNumber: 2, episodeNumber: 1, title: "Episode 1", airDate: null, overview: null }]);
+
+    expect(added).toBe(1); // a real, distinct episode that merely shares the generic placeholder title
+    const episodes = (await db.prepare("SELECT season_number, episode_number FROM episodes WHERE media_item_id = ?").all(showId)) as any[];
+    expect(episodes).toHaveLength(2);
+  });
 });
 
 describe("matchAdditionalProviders", () => {
