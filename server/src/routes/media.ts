@@ -1989,12 +1989,14 @@ mediaRouter.post(
   requireAdmin,
   asyncHandler(async (req, res) => {
     const b = req.body ?? {};
+    // better-sqlite3 (like Postgres) rejects binding a raw JS boolean — coerce to 1/0, while
+    // keeping the original ?? 1 default for null/undefined intact.
     const result = await db
       .prepare(
         `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, monitored)
          VALUES (?, ?, ?, ?, ?, ?)`
       )
-      .run(req.params.id, b.seasonNumber, b.episodeNumber, b.title ?? null, b.airDate ?? null, b.monitored ?? 1);
+      .run(req.params.id, b.seasonNumber, b.episodeNumber, b.title ?? null, b.airDate ?? null, (b.monitored ?? 1) ? 1 : 0);
     const row = await db.prepare("SELECT * FROM episodes WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(episodeFromRow(row));
   })
@@ -2221,12 +2223,14 @@ mediaRouter.post(
   asyncHandler(async (req, res) => {
     const b = req.body ?? {};
     if (!b.title) throw new HttpError(400, "title is required");
+    // better-sqlite3 (like Postgres) rejects binding a raw JS boolean — coerce to 1/0, while
+    // keeping the original ?? 1 default for null/undefined intact.
     const result = await db
       .prepare(
         `INSERT INTO sub_items (media_item_id, title, release_date, monitored)
          VALUES (?, ?, ?, ?)`
       )
-      .run(req.params.id, b.title, b.releaseDate ?? null, b.monitored ?? 1);
+      .run(req.params.id, b.title, b.releaseDate ?? null, (b.monitored ?? 1) ? 1 : 0);
     const row = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(subItemFromRow(row));
   })
