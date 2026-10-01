@@ -2512,7 +2512,7 @@ async function fetchPodcastEpisodesRss(feedUrl: string): Promise<MetadataSubItem
 
 async function searchAdultThePornDb(query: string): Promise<MetadataSearchResult[]> {
   const key = requireSetting("thePornDbApiKey", "ThePornDB API key");
-  const url = new URL("https://api.metadataapi.net/scenes");
+  const url = new URL("https://api.theporndb.net/scenes");
   url.searchParams.set("q", query);
   url.searchParams.set("limit", "15");
 
@@ -3248,7 +3248,7 @@ async function fetchArtworkVideoYoutube(channelId: string): Promise<ArtworkOptio
  * already stored, not a duplicate lookup. */
 async function fetchArtworkAdultThePornDb(sceneId: string): Promise<ArtworkOptions> {
   const key = requireSetting("thePornDbApiKey", "ThePornDB API key");
-  const res = await fetch(`https://api.metadataapi.net/scenes/${sceneId}`, {
+  const res = await fetch(`https://api.theporndb.net/scenes/${sceneId}`, {
     headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
   });
   if (!res.ok) throw new Error(`ThePornDB scene lookup failed: HTTP ${res.status}`);
