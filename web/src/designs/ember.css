@@ -1,0 +1,72 @@
+/* Design: Ember — tokens for dark (default) and light, plus signature rules.
+   [data-design-preview] lets the picker's mini-previews inherit the same tokens. */
+
+:is(:root[data-design="ember"], [data-design-preview="ember"]) {
+  --bg: #120e0b;
+  --panel: #1b1511;
+  --panel-2: #251d17;
+  --border: #382c23;
+  --border-strong: #4a3b2f;
+  --input-bg: #0e0b09;
+  --text: #f3ece6;
+  --muted: #b0a090;
+  --accent: #ff8a3d;
+  --accent-strong: #c2410c;
+  --on-accent: #ffffff;
+  --accent-text: #ffa766;
+  --accent-dim: #4a2a14;
+  --ok: #8fcf6a;
+  --ok-strong: #2b7a1f;
+  --ok-text: #9ddc78;
+  --danger: #ef6a5a;
+  --danger-strong: #c23535;
+  --danger-text: #ff8878;
+  --hover: rgba(255,200,150,.07);
+  --press: rgba(255,200,150,.13);
+  --ring: #ffa766;
+  --shadow-1: 0 1px 2px rgba(0,0,0,.45);
+  --shadow-2: 0 10px 30px rgba(0,0,0,.55);
+  --ring-soft: color-mix(in srgb, var(--ring) 28%, transparent);
+}
+
+:is(:root[data-theme="light"][data-design="ember"], :root[data-theme="light"] [data-design-preview="ember"]) {
+  --bg: #faf6f1;
+  --panel: #ffffff;
+  --panel-2: #fdf9f4;
+  --border: #eadfd3;
+  --border-strong: #d6c6b5;
+  --input-bg: #ffffff;
+  --text: #2a1d14;
+  --muted: #6b5848;
+  --accent: #d9570f;
+  --accent-strong: #c2410c;
+  --on-accent: #ffffff;
+  --accent-text: #b23a07;
+  --accent-dim: #ffe8d6;
+  --ok: #3f8f2a;
+  --ok-strong: #2b7a1f;
+  --ok-text: #2f7a1d;
+  --danger: #cc3a2c;
+  --danger-strong: #c23535;
+  --danger-text: #b72f22;
+  --hover: rgba(120,60,20,.06);
+  --press: rgba(120,60,20,.12);
+  --ring: #b23a07;
+  --shadow-1: 0 1px 2px rgba(90,50,20,.1);
+  --shadow-2: 0 10px 28px rgba(90,50,20,.18);
+  --ring-soft: color-mix(in srgb, var(--ring) 28%, transparent);
+}
+
+:is(:root[data-design="ember"], [data-design-preview="ember"]) {
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --r-sm: 6px; --r-btn: 8px; --r-card: 12px; --r-lg: 16px; --r-nav: 10px; --r-pill: 999px;
+  --h-weight: 700; --h-track: -0.01em; --th-case: uppercase;
+  --cell-pad: 10px 12px; --grid-gap: 18px; --sidebar-w: 236px;
+}
+
+:root[data-design="ember"] {
+  & body { background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 7%, var(--bg)), var(--bg) 340px) no-repeat, var(--bg); }
+  & .brand { color: var(--accent-text); }
+  & .card:hover { box-shadow: 0 0 0 1px var(--accent), 0 12px 32px color-mix(in srgb, var(--accent) 22%, transparent); }
+  & .toolbar-button:hover, & button.icon-button:hover { color: var(--accent-text); }
+}

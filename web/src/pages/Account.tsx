@@ -4,6 +4,7 @@ import { useAuth } from "../context/AuthContext.js";
 import { notify } from "../utils/notify.js";
 import { PencilIcon, TrashIcon } from "../components/ActionIcons.js";
 import { GlobeIcon, PlusCircleIcon, UserIcon } from "../components/NavIcons.js";
+import DesignPicker from "../components/DesignPicker.js";
 import type { SocialLink, User } from "../types.js";
 
 /** Self-service profile (photo, display name, bio, social links) plus two-factor setup for the
@@ -14,7 +15,7 @@ import type { SocialLink, User } from "../types.js";
  * switching to the form fields. */
 export default function Account() {
   const { auth, refresh } = useAuth();
-  const [tab, setTab] = useState<"profile" | "security">("profile");
+  const [tab, setTab] = useState<"profile" | "security" | "appearance">("profile");
   const [editing, setEditing] = useState(false);
 
   const [totpSetup, setTotpSetup] = useState<{ secret: string; otpauthUrl: string } | null>(null);
@@ -245,6 +246,7 @@ export default function Account() {
           [
             ["profile", "Profile"],
             ["security", "Security"],
+            ["appearance", "Appearance"],
           ] as const
         ).map(([key, label]) => (
           <button key={key} type="button" className={tab === key ? "" : "secondary"} onClick={() => setTab(key)}>
@@ -328,6 +330,13 @@ export default function Account() {
           !savedBio &&
           savedSocialLinks.length === 0 && <p className="empty">No bio or links yet — click "Edit profile" to add some.</p>
         )}
+      </div>
+
+      <div style={{ display: tab === "appearance" ? undefined : "none" }}>
+        <h2>Design</h2>
+        <div className="form-panel" style={{ maxWidth: 820 }}>
+          <DesignPicker />
+        </div>
       </div>
 
       <div style={{ display: tab === "security" ? undefined : "none" }}>

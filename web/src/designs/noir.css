@@ -1,0 +1,82 @@
+/* Design: Noir — tokens for dark (default) and light, plus signature rules.
+   [data-design-preview] lets the picker's mini-previews inherit the same tokens. */
+
+:is(:root[data-design="noir"], [data-design-preview="noir"]) {
+  --bg: #000000;
+  --panel: #0b0b0b;
+  --panel-2: #151515;
+  --border: #232323;
+  --border-strong: #343434;
+  --input-bg: #050505;
+  --text: #f2f2f2;
+  --muted: #a3a3a3;
+  --accent: #e6b450;
+  --accent-strong: #e6b450;
+  --on-accent: #1a1203;
+  --accent-text: #f0c872;
+  --accent-dim: #2b2210;
+  --ok: #5fbf7a;
+  --ok-strong: #1f7a3d;
+  --ok-text: #6fd08a;
+  --danger: #e5605f;
+  --danger-strong: #c23535;
+  --danger-text: #ff7b7b;
+  --hover: rgba(255,255,255,.06);
+  --press: rgba(255,255,255,.11);
+  --ring: #f0c872;
+  --shadow-1: 0 1px 2px rgba(0,0,0,.6);
+  --shadow-2: 0 12px 32px rgba(0,0,0,.75);
+  --ring-soft: color-mix(in srgb, var(--ring) 28%, transparent);
+}
+
+:is(:root[data-theme="light"][data-design="noir"], :root[data-theme="light"] [data-design-preview="noir"]) {
+  --bg: #f6f4ef;
+  --panel: #ffffff;
+  --panel-2: #faf8f3;
+  --border: #e6e2d8;
+  --border-strong: #cfc9ba;
+  --input-bg: #ffffff;
+  --text: #16130b;
+  --muted: #625b48;
+  --accent: #a87a12;
+  --accent-strong: #8a640c;
+  --on-accent: #ffffff;
+  --accent-text: #7a5808;
+  --accent-dim: #f6ecd2;
+  --ok: #2f9e52;
+  --ok-strong: #1f7a3d;
+  --ok-text: #1b7a3a;
+  --danger: #d33f3f;
+  --danger-strong: #c23535;
+  --danger-text: #c42f2f;
+  --hover: rgba(60,45,0,.06);
+  --press: rgba(60,45,0,.12);
+  --ring: #7a5808;
+  --shadow-1: 0 1px 2px rgba(60,45,0,.1);
+  --shadow-2: 0 10px 28px rgba(60,45,0,.16);
+  --ring-soft: color-mix(in srgb, var(--ring) 28%, transparent);
+}
+
+:is(:root[data-design="noir"], [data-design-preview="noir"]) {
+  --font: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --r-sm: 3px; --r-btn: 6px; --r-card: 6px; --r-lg: 10px; --r-nav: 6px; --r-pill: 4px;
+  --h-weight: 600; --h-track: 0.01em; --th-case: uppercase;
+  --cell-pad: 10px 12px; --grid-gap: 14px; --sidebar-w: 224px;
+}
+
+:root[data-design="noir"] {
+  --sidebar-bg: var(--bg);
+
+  & .sidebar { border-right-color: var(--border); }
+  & .page-toolbar { background: transparent; }
+  & .card { background: transparent; border-color: transparent; box-shadow: none; overflow: visible; }
+  & .card .poster { border-radius: var(--r-card); overflow: hidden; }
+  & .card .meta { padding: 10px 2px 4px; }
+  & .card:hover { border-color: transparent; box-shadow: none; }
+  & .card:hover .poster { box-shadow: 0 0 0 2px var(--accent), var(--shadow-2); }
+  & .card.static:hover .poster { box-shadow: none; }
+  & .brand { color: var(--accent-text); letter-spacing: 0.08em; text-transform: uppercase; font-size: 1.15rem; }
+  @media (prefers-reduced-motion: no-preference) {
+    & .card:hover { transform: translateY(-4px); }
+  }
+}

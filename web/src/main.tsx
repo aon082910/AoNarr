@@ -7,6 +7,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary.js";
 import SharePage from "./pages/SharePage.js";
 import InviteAcceptPage from "./pages/InviteAcceptPage.js";
 import "./styles.css";
+import "./designs/index.css";
 
 // Fetched and appended at runtime (rather than a static <link> in index.html) so it's guaranteed
 // to land after the bundled stylesheet in the DOM regardless of where Vite's build injects that

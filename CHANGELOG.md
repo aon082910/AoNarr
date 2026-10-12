@@ -3,6 +3,44 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 372 — Selectable UI designs (Classic + six redesigns)
+
+Added an in-app design picker. **Classic is the default and is unchanged** — nothing looks different
+until a user picks another design. The choice is per-browser (`localStorage`, key `aonarr_design`),
+like the light/dark theme and layout-width toggles, and every design supports both light and dark.
+
+### Added
+
+- **Six designs** — Midnight (refined slate-blue), Aurora (violet/teal, large rounded cards), Ember
+  (warm charcoal + amber), Noir (true black + gold, posters first), Paper (editorial ink, serif
+  headings, square corners), Terminal (monospace, dense, green). Source in `web/src/designs/`:
+  `modern.css` is the shared structural layer (every rule scoped under `:root[data-design]`, all
+  colors/radii/fonts/density from tokens), and `<id>.css` holds one design's tokens + signature rules.
+  Uses native CSS nesting, which Vite/esbuild lowers to plain selectors in the build.
+- **Picker** — palette button next to the theme toggle in the sidebar footer and the top bar
+  (`DesignToggle` → modal), plus an **Appearance** tab on the Account page (reachable by household
+  accounts too). `DesignPicker` is a native radio group with a live mini-preview per design, drawn
+  from that design's own tokens.
+- **`theme-init.js`** applies the saved design before React renders (no flash), and accepts
+  `?design=<id>` (e.g. `/?design=classic`) as a recovery link.
+
+### Fixed (in the new designs only — Classic is untouched)
+
+- Filled buttons and poster status strips now meet 4.5:1 text contrast (the original is 3.2:1 on
+  primary buttons, 2.3:1 white-on-green).
+- Visible `:focus-visible` rings on every control (the original has none).
+- Hover/pressed states use theme-aware tokens, so they show in light mode too.
+- 12px minimum text, 44px touch targets on coarse pointers, `prefers-reduced-motion` respected.
+- Palette contrast for all 12 design/theme combinations verified numerically (text ≥7:1, muted,
+  accent text, on-accent, status colors ≥4.5:1).
+
+### Known limitation
+
+- An admin's custom theme (Settings → General, free-form CSS served from `/api/theme.css`) is applied
+  on top of everything, but a selected design's rules are scoped under `:root[data-design]` and so
+  outrank plain `:root { --var }` or single-class overrides. Custom themes are reliable under
+  Classic; under another design they may need higher specificity. Not changed in this round.
+
 ## Round 371 — Fixed a duplicate-season episode bug (multi-provider episode merge)
 
 Reported: "A Pup Named Scooby-Doo"'s season 4 was the same 5 episodes as the end of season 3, just

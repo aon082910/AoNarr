@@ -419,6 +419,17 @@ export function MoonIcon() {
   );
 }
 
+export function PaletteIcon() {
+  return (
+    <Icon>
+      <path d="M12 2a10 10 0 1 0 0 20c1.1 0 2-.9 2-2 0-.5-.2-1-.5-1.3-.3-.4-.5-.8-.5-1.3 0-1.1.9-2 2-2h2.4a4.6 4.6 0 0 0 4.6-4.6C22 6 17.5 2 12 2z" />
+      <circle cx="7.5" cy="11" r="1" />
+      <circle cx="10.5" cy="7" r="1" />
+      <circle cx="15.5" cy="7.5" r="1" />
+    </Icon>
+  );
+}
+
 export function MaximizeIcon() {
   return (
     <Icon>

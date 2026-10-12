@@ -1,0 +1,77 @@
+/* Design: Terminal — tokens for dark (default) and light, plus signature rules.
+   [data-design-preview] lets the picker's mini-previews inherit the same tokens. */
+
+:is(:root[data-design="terminal"], [data-design-preview="terminal"]) {
+  --bg: #070b07;
+  --panel: #0d140d;
+  --panel-2: #142014;
+  --border: #1d3320;
+  --border-strong: #2b4a2f;
+  --input-bg: #050805;
+  --text: #cdeccd;
+  --muted: #85b085;
+  --accent: #2ee06f;
+  --accent-strong: #2ee06f;
+  --on-accent: #03140a;
+  --accent-text: #4dff94;
+  --accent-dim: #0f2d17;
+  --ok: #2ee06f;
+  --ok-strong: #1a7a3a;
+  --ok-text: #4dff94;
+  --danger: #ff5f5f;
+  --danger-strong: #c23535;
+  --danger-text: #ff8080;
+  --hover: rgba(77,255,148,.07);
+  --press: rgba(77,255,148,.14);
+  --ring: #4dff94;
+  --shadow-1: none;
+  --shadow-2: 0 8px 24px rgba(0,0,0,.6);
+  --ring-soft: color-mix(in srgb, var(--ring) 28%, transparent);
+}
+
+:is(:root[data-theme="light"][data-design="terminal"], :root[data-theme="light"] [data-design-preview="terminal"]) {
+  --bg: #eef5ee;
+  --panel: #fbfffb;
+  --panel-2: #f2f9f2;
+  --border: #c4dcc6;
+  --border-strong: #8fb292;
+  --input-bg: #ffffff;
+  --text: #0b2a14;
+  --muted: #40604a;
+  --accent: #11803f;
+  --accent-strong: #0f6e37;
+  --on-accent: #ffffff;
+  --accent-text: #0b6431;
+  --accent-dim: #d8f0dc;
+  --ok: #11803f;
+  --ok-strong: #1a7a3a;
+  --ok-text: #0b6431;
+  --danger: #c62f2f;
+  --danger-strong: #c23535;
+  --danger-text: #b02424;
+  --hover: rgba(10,80,30,.07);
+  --press: rgba(10,80,30,.13);
+  --ring: #0b6431;
+  --shadow-1: none;
+  --shadow-2: 0 8px 24px rgba(10,60,20,.16);
+  --ring-soft: color-mix(in srgb, var(--ring) 28%, transparent);
+}
+
+:is(:root[data-design="terminal"], [data-design-preview="terminal"]) {
+  --font: "Cascadia Mono", "Fira Code", "JetBrains Mono", Consolas, ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --r-sm: 2px; --r-btn: 2px; --r-card: 3px; --r-lg: 4px; --r-nav: 2px; --r-pill: 2px;
+  --h-weight: 600; --h-track: 0; --th-case: uppercase;
+  --cell-pad: 6px 10px; --grid-gap: 12px; --sidebar-w: 232px;
+}
+
+:root[data-design="terminal"] {
+  & h1::before { content: "> "; color: var(--accent-text); }
+  & h2::before { content: "# "; color: var(--muted); }
+  & .sidebar a { font-size: 0.88rem; }
+  & .card { box-shadow: none; }
+  & .card:hover { transform: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  & .card .meta .title { font-size: 0.85rem; }
+  & .badge { border-radius: var(--r-sm); border: 1px solid color-mix(in srgb, var(--accent-text) 40%, transparent); }
+  & .brand { letter-spacing: 0; }
+  & .sidebar .brand .nav-label::after { content: "_"; color: var(--accent-text); }
+}

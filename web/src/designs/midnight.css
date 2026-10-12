@@ -1,0 +1,67 @@
+/* Design: Midnight — tokens for dark (default) and light, plus signature rules.
+   [data-design-preview] lets the picker's mini-previews inherit the same tokens. */
+
+:is(:root[data-design="midnight"], [data-design-preview="midnight"]) {
+  --bg: #0f1116;
+  --panel: #171a22;
+  --panel-2: #1d2230;
+  --border: #2a303c;
+  --border-strong: #343a48;
+  --input-bg: #0b0d12;
+  --text: #e8eaf0;
+  --muted: #9aa1b2;
+  --accent: #4f8cff;
+  --accent-strong: #3b6fe0;
+  --on-accent: #ffffff;
+  --accent-text: #7aa7ff;
+  --accent-dim: #1f2f55;
+  --ok: #4fbf6a;
+  --ok-strong: #1f7a3d;
+  --ok-text: #5fd07d;
+  --danger: #e5605f;
+  --danger-strong: #c23535;
+  --danger-text: #ff7b7b;
+  --hover: rgba(255,255,255,.05);
+  --press: rgba(255,255,255,.09);
+  --ring: #7aa7ff;
+  --shadow-1: 0 1px 2px rgba(0,0,0,.35);
+  --shadow-2: 0 8px 24px rgba(0,0,0,.45);
+  --ring-soft: color-mix(in srgb, var(--ring) 28%, transparent);
+}
+
+:is(:root[data-theme="light"][data-design="midnight"], :root[data-theme="light"] [data-design-preview="midnight"]) {
+  --bg: #f3f4f7;
+  --panel: #ffffff;
+  --panel-2: #f6f7fb;
+  --border: #e1e4ea;
+  --border-strong: #c9cfda;
+  --input-bg: #ffffff;
+  --text: #171a22;
+  --muted: #5b6475;
+  --accent: #2f6fed;
+  --accent-strong: #2f6fed;
+  --on-accent: #ffffff;
+  --accent-text: #2459d6;
+  --accent-dim: #e3ebff;
+  --ok: #2f9e52;
+  --ok-strong: #1f7a3d;
+  --ok-text: #1b7a3a;
+  --danger: #d33f3f;
+  --danger-strong: #c23535;
+  --danger-text: #c42f2f;
+  --hover: rgba(15,23,42,.05);
+  --press: rgba(15,23,42,.09);
+  --ring: #2459d6;
+  --shadow-1: 0 1px 2px rgba(15,23,42,.08);
+  --shadow-2: 0 8px 24px rgba(15,23,42,.14);
+  --ring-soft: color-mix(in srgb, var(--ring) 28%, transparent);
+}
+
+:is(:root[data-design="midnight"], [data-design-preview="midnight"]) {
+  --font: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --r-sm: 6px; --r-btn: 8px; --r-card: 10px; --r-lg: 14px; --r-nav: 8px; --r-pill: 999px;
+  --h-weight: 650; --h-track: -0.015em; --th-case: uppercase;
+  --cell-pad: 10px 12px; --grid-gap: 18px; --sidebar-w: 236px;
+}
+
+/* Signature: clean blue, soft depth. No extra rules beyond the shared modern layer. */

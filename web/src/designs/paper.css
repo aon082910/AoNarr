@@ -1,0 +1,82 @@
+/* Design: Paper — tokens for dark (default) and light, plus signature rules.
+   [data-design-preview] lets the picker's mini-previews inherit the same tokens. */
+
+:is(:root[data-design="paper"], [data-design-preview="paper"]) {
+  --bg: #141414;
+  --panel: #1b1b1b;
+  --panel-2: #232323;
+  --border: #303030;
+  --border-strong: #4a4a4a;
+  --input-bg: #101010;
+  --text: #f0f0ee;
+  --muted: #a8a8a2;
+  --accent: #f0f0ee;
+  --accent-strong: #f0f0ee;
+  --on-accent: #111111;
+  --accent-text: #ffffff;
+  --accent-dim: #2c2c2c;
+  --ok: #6fbf86;
+  --ok-strong: #1f7a3d;
+  --ok-text: #7fd096;
+  --danger: #e5605f;
+  --danger-strong: #c23535;
+  --danger-text: #ff7b7b;
+  --hover: rgba(255,255,255,.06);
+  --press: rgba(255,255,255,.11);
+  --ring: #ffffff;
+  --shadow-1: none;
+  --shadow-2: 0 8px 24px rgba(0,0,0,.5);
+  --ring-soft: color-mix(in srgb, var(--ring) 28%, transparent);
+}
+
+:is(:root[data-theme="light"][data-design="paper"], :root[data-theme="light"] [data-design-preview="paper"]) {
+  --bg: #fbfbfa;
+  --panel: #ffffff;
+  --panel-2: #f4f4f2;
+  --border: #dcdcd8;
+  --border-strong: #9a9a94;
+  --input-bg: #ffffff;
+  --text: #111111;
+  --muted: #5a5a55;
+  --accent: #111111;
+  --accent-strong: #111111;
+  --on-accent: #ffffff;
+  --accent-text: #111111;
+  --accent-dim: #ececea;
+  --ok: #2f9e52;
+  --ok-strong: #1f7a3d;
+  --ok-text: #1b7a3a;
+  --danger: #d33f3f;
+  --danger-strong: #c23535;
+  --danger-text: #c42f2f;
+  --hover: rgba(0,0,0,.05);
+  --press: rgba(0,0,0,.09);
+  --ring: #111111;
+  --shadow-1: none;
+  --shadow-2: 0 8px 24px rgba(0,0,0,.14);
+  --ring-soft: color-mix(in srgb, var(--ring) 28%, transparent);
+}
+
+:is(:root[data-design="paper"], [data-design-preview="paper"]) {
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --r-sm: 2px; --r-btn: 2px; --r-card: 2px; --r-lg: 3px; --r-nav: 2px; --r-pill: 2px;
+  --h-weight: 700; --h-track: -0.01em; --th-case: uppercase;
+  --cell-pad: 10px 12px; --grid-gap: 16px; --sidebar-w: 228px;
+  --font-heading: Georgia, "Times New Roman", serif;
+}
+
+:root[data-design="paper"] {
+  & h1 { border-bottom: 2px solid var(--text); padding-bottom: 10px; }
+  & .brand { color: var(--text); font-family: var(--font-heading); }
+  & .card { box-shadow: none; border-color: var(--border-strong); }
+  & .card:hover { transform: none; border-color: var(--text); box-shadow: 4px 4px 0 var(--border-strong); }
+  & .page-toolbar { border-color: var(--border-strong); }
+  & th { background: transparent; border-bottom: 2px solid var(--text); }
+  & .sidebar a.active, & .topbar > a.active { background: var(--text); color: var(--bg); }
+  & .sidebar a.active svg { color: inherit; }
+  & .sidebar a.active::before { display: none; }
+  & .badge { border: 1px solid var(--border-strong); background: transparent; color: var(--text); }
+  & .badge.ok, & .badge.danger { border-color: currentColor; }
+  & .pill { background: transparent; border-color: var(--border-strong); }
+  & .form-panel { border-color: var(--border-strong); }
+}

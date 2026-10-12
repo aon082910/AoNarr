@@ -7,6 +7,7 @@ import { useAuth } from "./context/AuthContext.js";
 import NotificationsToggle from "./components/NotificationsToggle.js";
 import ThemeToggle from "./components/ThemeToggle.js";
 import LayoutWidthToggle from "./components/LayoutWidthToggle.js";
+import DesignToggle from "./components/DesignToggle.js";
 import ScrollButtons from "./components/ScrollButtons.js";
 import BackgroundJobsWidget from "./components/BackgroundJobsWidget.js";
 import CommandPalette from "./components/CommandPalette.js";
@@ -480,6 +481,7 @@ export default function App() {
 
             <div className="sidebar-footer" style={{ marginTop: "auto", display: "flex", flexDirection: "column" }}>
               <ThemeToggle />
+              <DesignToggle />
               <LayoutWidthToggle />
               <NotificationsToggle />
               <button type="button" className="link-button" onClick={logout} title="Log out" aria-label="Log out">
@@ -516,6 +518,7 @@ export default function App() {
               </button>
             )}
             <ThemeToggle className="topbar-action icon-only" />
+            <DesignToggle className="topbar-action icon-only" />
             <LayoutWidthToggle className="topbar-action icon-only" />
             <NotificationsToggle className="topbar-action" />
             <button type="button" className="topbar-action icon-only" onClick={logout} title="Log out" aria-label="Log out">

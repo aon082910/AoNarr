@@ -1,0 +1,82 @@
+/* Design system entry — imported once from main.tsx, AFTER styles.css so equal-specificity ties
+   resolve in favor of the designs. Classic (the original look) is styles.css alone: it has no
+   data-design attribute, so nothing in modern.css or the per-design files matches it. */
+@import "./modern.css";
+@import "./midnight.css";
+@import "./aurora.css";
+@import "./ember.css";
+@import "./noir.css";
+@import "./paper.css";
+@import "./terminal.css";
+
+/* ---------- picker (components/DesignPicker.tsx) — applies under every design incl. Classic ---------- */
+
+/* Classic's tokens for its own preview swatch (the real app tokens live on :root in styles.css). */
+[data-design-preview="classic"] {
+  --bg: #14161c; --panel: #1c1f28; --panel-2: #2b2f3a; --border: #2b2f3a; --border-strong: #3a4050;
+  --text: #e6e8ec; --accent: #4f8cff; --accent-strong: #4f8cff; --ok-strong: #4fbf6a; --danger-strong: #e05c5c;
+}
+:root[data-theme="light"] [data-design-preview="classic"] {
+  --bg: #f4f5f7; --panel: #ffffff; --panel-2: #dcdfe4; --border: #dcdfe4; --border-strong: #c3c8d0;
+  --text: #1b1e24; --accent: #2f6fed; --accent-strong: #2f6fed; --ok-strong: #2f9e52; --danger-strong: #d33f3f;
+}
+
+.design-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; margin-top: 12px; }
+.design-option {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 10px;
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.14s ease;
+}
+.design-option:hover { border-color: var(--muted); }
+.design-option.selected { border-color: var(--accent); }
+.design-option:has(.design-radio:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.design-radio { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; padding: 0; pointer-events: none; }
+.design-name { font-weight: 600; font-size: 0.92rem; margin-top: 2px; }
+.design-active { color: var(--accent-text, var(--accent)); font-weight: 500; }
+.design-tagline { color: var(--muted); font-size: 0.8rem; line-height: 1.35; }
+.design-note { color: var(--muted); font-size: 0.82rem; margin: 14px 0 0; }
+
+.design-swatch {
+  display: flex;
+  height: 92px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  font-family: var(--font, inherit);
+}
+.design-swatch-side {
+  width: 26%;
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+}
+.design-swatch-side i { display: block; height: 5px; border-radius: 3px; background: var(--border-strong); }
+.design-swatch-side i.on { background: var(--accent); }
+.design-swatch-main { position: relative; flex: 1; padding: 8px; display: flex; flex-direction: column; gap: 7px; }
+.design-swatch-title { display: block; width: 38%; height: 7px; border-radius: 3px; background: var(--text); }
+.design-swatch-posters { display: flex; gap: 5px; flex: 1; }
+.design-swatch-posters span {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  border-radius: var(--r-sm, 3px);
+  background: linear-gradient(160deg, var(--accent), var(--panel-2));
+}
+.design-swatch-posters .p2 { background: linear-gradient(200deg, var(--panel-2), var(--accent)); }
+.design-swatch-posters .p3 { background: linear-gradient(120deg, var(--accent), var(--bg)); }
+.design-swatch-posters em { position: absolute; left: 0; right: 0; bottom: 0; height: 5px; background: var(--ok-strong); }
+.design-swatch-posters em.bad { background: var(--danger-strong); }
+.design-swatch-btn { position: absolute; right: 8px; top: 7px; width: 24px; height: 8px; border-radius: var(--r-sm, 3px); background: var(--accent-strong); }

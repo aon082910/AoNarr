@@ -1,0 +1,221 @@
+/* Shared structural layer for every non-Classic design ("Midnight", "Aurora", "Ember", "Noir",
+   "Paper", "Terminal"). Everything here is scoped under `:root[data-design]` — the attribute is
+   absent for Classic (the original look), so none of this applies to it. Colors, radii, fonts and
+   density all come from tokens each design file (designs/<id>.css) defines, so this file never
+   hardcodes a color.
+
+   Uses native CSS nesting (`&`); Vite/esbuild lowers it for the build target, so the shipped
+   bundle contains plain selectors. Specificity: `:root[data-design] .x` (0,3,0+) beats styles.css's
+   `.x` rules without needing !important (the one exception — NavGroup's inline padding-left — is
+   noted below). */
+
+:root[data-design] {
+  font-family: var(--font);
+  color-scheme: dark;
+  --t-fast: 140ms cubic-bezier(0.2, 0, 0, 1);
+
+  /* ---------- base ---------- */
+  & body { line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  & h1 { font-family: var(--font-heading, var(--font)); font-size: 1.5rem; font-weight: var(--h-weight); letter-spacing: var(--h-track); margin-bottom: 18px; }
+  & h2 { font-family: var(--font-heading, var(--font)); font-size: 1.05rem; font-weight: var(--h-weight); letter-spacing: var(--h-track); }
+
+  /* ---------- focus (the original has none) ---------- */
+  & :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  & input:focus-visible, & select:focus-visible, & textarea:focus-visible { outline: none; }
+  & input:focus, & select:focus, & textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--ring-soft);
+  }
+  & ::placeholder { color: var(--muted); opacity: 0.8; }
+
+  /* ---------- sidebar ---------- */
+  & .sidebar { width: var(--sidebar-w); padding: 14px 0 10px; background: var(--sidebar-bg, var(--panel)); }
+  & .sidebar .brand { padding: 2px 20px 14px; font-size: 1.3rem; letter-spacing: -0.02em; }
+  & .sidebar a {
+    margin: 1px 10px;
+    padding: 8px 12px;
+    border-radius: var(--r-nav);
+    font-size: 0.92rem;
+    font-weight: 500;
+    position: relative;
+    transition: background var(--t-fast), color var(--t-fast);
+  }
+  & .sidebar a:hover { background: var(--hover); color: var(--text); }
+  & .sidebar a.active { background: var(--accent-dim); color: var(--text); border-right: none; }
+  & .sidebar a.active::before {
+    content: "";
+    position: absolute;
+    left: -10px;
+    top: 8px;
+    bottom: 8px;
+    width: 3px;
+    border-radius: 0 3px 3px 0;
+    background: var(--accent);
+  }
+  & .sidebar a.active svg { color: var(--accent-text); }
+  /* NavGroup indents its children with an inline padding-left — !important is the only way to
+     replace that with a guide line instead of a bare indent. */
+  & .sidebar > div > div { margin-left: 22px; padding-left: 0 !important; border-left: 1px solid var(--border); }
+  & .sidebar > div > div a { margin-left: 6px; }
+  & .sidebar > div > div a.active::before { left: -7px; }
+
+  & .sidebar--collapsed { width: 64px; }
+  & .sidebar--collapsed a { margin: 2px 8px; padding: 10px 0; }
+  & .sidebar--collapsed a.active::before { left: -8px; }
+  & .sidebar--collapsed > div > div { margin-left: 0; border-left: none; }
+  & .sidebar--collapsed > div > div a { margin-left: 8px; }
+
+  & .sidebar-footer { border-top: 1px solid var(--border); padding-top: 6px; }
+  & .sidebar-footer .link-button { border-radius: var(--r-nav); margin: 1px 10px; width: calc(100% - 20px); padding: 8px 12px; }
+  & .sidebar-footer .link-button:hover { background: var(--hover); }
+
+  /* ---------- topbar ---------- */
+  & .topbar { padding: 8px 20px; background: var(--sidebar-bg, var(--panel)); }
+  & .topbar > a, & .topbar-trigger { border-radius: var(--r-nav); transition: background var(--t-fast), color var(--t-fast); }
+  & .topbar > a:hover, & .topbar-trigger:hover { background: var(--hover); }
+  & .topbar > a.active { background: var(--accent-dim); }
+  & .topbar-trigger { background: transparent; color: var(--muted); }
+  & .topbar-trigger:hover { background: var(--hover); color: var(--text); filter: none; }
+
+  /* ---------- buttons ---------- */
+  & button {
+    background: var(--accent-strong);
+    color: var(--on-accent);
+    border-radius: var(--r-btn);
+    font-weight: 500;
+    transition: background var(--t-fast), filter var(--t-fast), border-color var(--t-fast);
+  }
+  & button:hover { opacity: 1; filter: brightness(1.12); }
+  & button:active { filter: brightness(0.95); }
+  & button:disabled { opacity: 0.5; cursor: not-allowed; filter: none; }
+  & button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border-strong); }
+  & button.secondary:hover { background: var(--press); filter: none; }
+  & button.danger { background: var(--danger-strong); color: #fff; }
+
+  & button.link-button { background: none; color: inherit; }
+  & button.link-button:hover { filter: none; }
+  & button.topbar-action { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); }
+  & button.topbar-action:hover { background: var(--press); filter: none; }
+  & button.select-like { background: var(--input-bg); color: var(--text); }
+  & button.select-like:hover { background: var(--hover); filter: none; }
+
+  & button.icon-button { background: transparent; color: var(--text); border-radius: var(--r-btn); }
+  & button.icon-button:hover { background: var(--hover); filter: none; }
+  & button.icon-button:active { background: var(--press); }
+  & button.icon-button.danger { color: var(--danger-text); background: transparent; }
+  & button.icon-button.danger:hover { background: color-mix(in srgb, var(--danger) 16%, transparent); }
+
+  /* ---------- page toolbar ---------- */
+  & .page-toolbar { padding: 6px 36px; }
+  & .toolbar-button { background: transparent; color: var(--text); font-size: 0.75rem; min-width: 64px; border-radius: var(--r-btn); gap: 3px; transition: background var(--t-fast); }
+  & .toolbar-button:hover { background: var(--hover); filter: none; }
+  & .toolbar-button:active { background: var(--press); }
+  & .toolbar-button.danger { background: transparent; color: var(--danger-text); }
+  & .toolbar-button.danger:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+  & .toolbar-separator { height: 28px; margin: 0 6px; }
+
+  /* ---------- cards / posters ---------- */
+  & .grid { gap: var(--grid-gap); }
+  & .card {
+    border-radius: var(--r-card);
+    box-shadow: var(--shadow-1);
+    transition: transform var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast);
+  }
+  & .card:hover { border-color: var(--accent); transform: translateY(-3px); box-shadow: var(--shadow-2); }
+  & .card.static:hover { border-color: var(--border); transform: none; box-shadow: var(--shadow-1); }
+  & .card .poster { font-size: 0.85rem; }
+  & .card .meta { padding: 10px 12px 12px; }
+  & .card .meta .title {
+    font-weight: 600;
+    font-size: 0.9rem;
+    line-height: 1.3;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  & .card .meta .sub { font-size: 0.8rem; margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+  /* Status strip: solid strong fills so white text clears 4.5:1 (the original is 2.3:1 on green). */
+  & .poster-banner { font-size: 0.75rem; padding: 4px 8px; letter-spacing: 0.01em; text-shadow: none; background: #596070; color: #fff; }
+  & .poster-banner.downloaded { background: var(--ok-strong); }
+  & .poster-banner.missing { background: var(--danger-strong); }
+  & .poster-banner.unmonitored { background: rgba(0, 0, 0, 0.82); }
+  & .poster-banner.unreleased { background: var(--accent-strong); color: var(--on-accent); }
+  & .poster-banner.partial { background: #596070; }
+
+  & .overview-row { transition: background var(--t-fast); }
+  & .overview-row:hover { background: var(--hover); }
+  & .overview-row .poster-thumb { border-radius: var(--r-sm); box-shadow: var(--shadow-1); }
+  & .overview-row .overview-title { font-size: 0.95rem; }
+  & .overview-row .overview-fields { font-size: 0.82rem; }
+
+  /* ---------- tables ---------- */
+  & table { font-variant-numeric: tabular-nums; }
+  & th, & td { padding: var(--cell-pad); border-bottom-color: var(--border); }
+  & th {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: var(--th-case);
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    background: var(--panel-2);
+    border-bottom-color: var(--border-strong);
+  }
+  & tbody tr { transition: background var(--t-fast); }
+  & tbody tr:hover td { background: var(--hover); }
+
+  /* ---------- badges / pills ---------- */
+  & .badge { font-size: 0.75rem; font-weight: 500; padding: 2px 10px; background: var(--accent-dim); color: var(--accent-text); }
+  & .badge.ok { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok-text); }
+  & .badge.danger { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger-text); }
+  & .pill { border-radius: var(--r-pill); background: var(--panel-2); border: 1px solid var(--border); padding: 4px 12px; font-size: 0.82rem; }
+  & .pill.danger { color: var(--danger-text); }
+
+  /* ---------- inputs ---------- */
+  & input, & select, & textarea { border-radius: var(--r-btn); border-color: var(--border-strong); font-size: 0.92rem; transition: border-color var(--t-fast), box-shadow var(--t-fast); }
+  & label { font-size: 0.85rem; font-weight: 500; }
+
+  /* ---------- panels, menus, toasts, floating widgets ---------- */
+  & .form-panel { border-radius: var(--r-lg); box-shadow: var(--shadow-1); }
+  & .dropdown-menu { border-radius: var(--r-card); box-shadow: var(--shadow-2); padding: 6px; border-color: var(--border-strong); }
+  & .dropdown-menu button, & .dropdown-menu a { border-radius: var(--r-sm); }
+  & .dropdown-menu button { background: transparent; color: var(--text); }
+  & .dropdown-menu button:hover, & .dropdown-menu a:hover { background: var(--hover); filter: none; }
+  & .dropdown-menu a.active { background: var(--accent-dim); }
+  & .toast { border-radius: var(--r-card); box-shadow: var(--shadow-2); }
+  & .scroll-buttons button { background: var(--panel); color: var(--text); box-shadow: var(--shadow-2); }
+  & .scroll-buttons button:hover { background: var(--panel-2); filter: none; }
+  & .background-jobs-pill { background: var(--panel); color: var(--text); border-radius: var(--r-lg); box-shadow: var(--shadow-2); }
+  & .background-jobs-pill:hover { background: var(--panel-2); filter: none; }
+  & .background-jobs-panel { border-radius: var(--r-card); box-shadow: var(--shadow-2); }
+  & .background-jobs-row:hover { background: var(--hover); }
+  & .progress-bar { height: 6px; background: var(--border-strong); }
+  & .progress-bar > div { background: var(--progress, var(--accent)); }
+  & .empty { text-align: center; padding: 40px 0; }
+
+  /* ---------- design picker (components/DesignPicker.tsx) ---------- */
+  & .design-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+  & .design-option { border-radius: var(--r-card); }
+}
+
+:root[data-design][data-theme="light"] { color-scheme: light; }
+
+/* Touch targets + reduced motion — outside the nesting block so the media query wraps cleanly. */
+@media (pointer: coarse) {
+  :root[data-design] button.icon-button,
+  :root[data-design] button.topbar-action.icon-only { width: 44px; height: 44px; }
+  :root[data-design] button.topbar-action { height: 44px; }
+  :root[data-design] .toolbar-button { min-height: 48px; min-width: 56px; }
+  :root[data-design] .sidebar a { padding-top: 12px; padding-bottom: 12px; }
+  :root[data-design] .dropdown-menu a,
+  :root[data-design] .dropdown-menu button { padding: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-design] .card,
+  :root[data-design] .card:hover { transition: none; transform: none; }
+  :root[data-design] .toast { animation: none; }
+  :root[data-design] .skip-link { transition: none; }
+  :root[data-design] .progress-bar.indeterminate > div { animation: none; margin-left: 0; width: 100% !important; opacity: 0.5; }
+}

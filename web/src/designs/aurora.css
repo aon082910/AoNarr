@@ -1,0 +1,83 @@
+/* Design: Aurora — tokens for dark (default) and light, plus signature rules.
+   [data-design-preview] lets the picker's mini-previews inherit the same tokens. */
+
+:is(:root[data-design="aurora"], [data-design-preview="aurora"]) {
+  --bg: #0c0a1c;
+  --panel: #15122c;
+  --panel-2: #1e1a3f;
+  --border: #2d2858;
+  --border-strong: #3b3470;
+  --input-bg: #0a0818;
+  --text: #ece9ff;
+  --muted: #a49fcf;
+  --accent: #8b7cff;
+  --accent-strong: #6d5ce8;
+  --on-accent: #ffffff;
+  --accent-text: #b5abff;
+  --accent-dim: #2a2260;
+  --ok: #34d399;
+  --ok-strong: #1f7a3d;
+  --ok-text: #4ade9f;
+  --danger: #f0647f;
+  --danger-strong: #c23550;
+  --danger-text: #ff8aa0;
+  --hover: rgba(181,171,255,.09);
+  --press: rgba(181,171,255,.16);
+  --ring: #b5abff;
+  --shadow-1: 0 1px 2px rgba(5,3,20,.5);
+  --shadow-2: 0 12px 36px rgba(5,3,30,.6);
+  --ring-soft: color-mix(in srgb, var(--ring) 28%, transparent);
+}
+
+:is(:root[data-theme="light"][data-design="aurora"], :root[data-theme="light"] [data-design-preview="aurora"]) {
+  --bg: #f4f2ff;
+  --panel: #ffffff;
+  --panel-2: #f8f6ff;
+  --border: #e3dffa;
+  --border-strong: #cdc6f0;
+  --input-bg: #ffffff;
+  --text: #1a1638;
+  --muted: #5d5886;
+  --accent: #6d5ce8;
+  --accent-strong: #5b46d6;
+  --on-accent: #ffffff;
+  --accent-text: #4b36c4;
+  --accent-dim: #e9e5ff;
+  --ok: #1f9d6a;
+  --ok-strong: #1f7a3d;
+  --ok-text: #17754f;
+  --danger: #d6355a;
+  --danger-strong: #c23550;
+  --danger-text: #bf2a4d;
+  --hover: rgba(91,70,214,.07);
+  --press: rgba(91,70,214,.13);
+  --ring: #4b36c4;
+  --shadow-1: 0 1px 2px rgba(60,40,140,.1);
+  --shadow-2: 0 12px 32px rgba(60,40,140,.18);
+  --ring-soft: color-mix(in srgb, var(--ring) 28%, transparent);
+}
+
+:is(:root[data-design="aurora"], [data-design-preview="aurora"]) {
+  --font: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --r-sm: 8px; --r-btn: 10px; --r-card: 16px; --r-lg: 20px; --r-nav: 12px; --r-pill: 999px;
+  --h-weight: 700; --h-track: -0.02em; --th-case: uppercase;
+  --cell-pad: 11px 14px; --grid-gap: 20px; --sidebar-w: 244px;
+}
+
+:root[data-design="aurora"] {
+  --progress: linear-gradient(90deg, var(--accent-strong), #2dd4bf);
+  --sidebar-bg: linear-gradient(180deg, var(--panel), color-mix(in srgb, var(--panel) 70%, var(--bg)));
+
+  & body {
+    background:
+      radial-gradient(900px 520px at 85% -8%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 70%),
+      radial-gradient(700px 420px at -5% 105%, color-mix(in srgb, #2dd4bf 11%, transparent), transparent 70%),
+      var(--bg);
+    background-attachment: fixed;
+  }
+  & .card { background: color-mix(in srgb, var(--panel) 88%, transparent); }
+  & .card:hover { box-shadow: 0 0 0 1px var(--accent), 0 14px 40px color-mix(in srgb, var(--accent) 28%, transparent); }
+  & .page-toolbar { background: color-mix(in srgb, var(--panel) 80%, transparent); }
+  /* dark only — teal on a white panel would fall well under 4.5:1 */
+  &:not([data-theme="light"]) .brand .nav-label { background: linear-gradient(90deg, var(--accent-text), #2dd4bf); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+}
