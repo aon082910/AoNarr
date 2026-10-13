@@ -1,0 +1,43 @@
+{
+  "platform": "win32",
+  "osRelease": "10.0.26300",
+  "playwright": "1.63.0",
+  "browser": {
+    "name": "chromium",
+    "version": "153.0.8010.12",
+    "headless": true,
+    "mode": "chromium-headless-shell (playwright default for headless:true)",
+    "headlessShell": "D:\\AI Tools\\_cache\\playwright\\chromium_headless_shell-1243\\chrome-headless-shell-win64\\chrome-headless-shell.exe"
+  },
+  "context": {
+    "locale": "en-US",
+    "timezone": "UTC",
+    "deviceScaleFactor": 1,
+    "reducedMotion": "reduce",
+    "serviceWorkers": "block",
+    "clock": "2026-10-13T12:00:00Z",
+    "viewports": {
+      "desktop": {
+        "width": 1440,
+        "height": 900,
+        "isMobile": false,
+        "hasTouch": false
+      },
+      "mobile": {
+        "width": 390,
+        "height": 844,
+        "isMobile": true,
+        "hasTouch": true
+      }
+    }
+  },
+  "webBuild": {
+    "sourceHash": "51c54684d493575262477779071745bde45490127cc21b6f4d5558d722d5ddda",
+    "fileCount": 118,
+    "viteVersion": "5.4.21",
+    "gitCommit": "c57aa2e",
+    "gitDirty": false,
+    "builtAtMs": 4095
+  },
+  "writtenAt": "2026-10-13T19:32:17.448Z"
+}
