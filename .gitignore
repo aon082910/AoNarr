@@ -6,3 +6,16 @@ data/
 *.tsbuildinfo
 .mcp.json
 AoNarr.md
+
+# Redesign work (Phase 0+): research output, concept mocks, auth state, test artefacts.
+# The repo is public and these contain the LAN address / tokens / private screenshots.
+reports/
+research_notes/
+redesign-concepts/
+.auth/
+live_shots/
+web-e2e/node_modules/
+web-e2e/test-results/
+web-e2e/playwright-report/
+web-e2e/.tmp/
+.claude/settings.local.json

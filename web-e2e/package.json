@@ -1,0 +1,29 @@
+{
+  "name": "aonarr-web-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Throwaway Playwright sweep package for the AoNarr redesign (smoke, screenshots, axe ratchet, Tab-walk, judge self-test). Never imported by web/ or server/.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "seed:start": "bash seed/start.sh",
+    "seed:stop": "bash seed/stop.sh",
+    "build": "node scripts/build-web.mjs",
+    "serve": "node scripts/serve-web.mjs",
+    "test:drift": "playwright test --config=playwright.drift.config.ts",
+    "test:selftest": "playwright test --config=playwright.meta.config.ts",
+    "test:classic": "npm run test:drift && playwright test --project=classic-*",
+    "test:matrix": "npm run test:drift && playwright test",
+    "list": "playwright test --list",
+    "update:baselines": "node scripts/update-baselines.mjs",
+    "report": "playwright show-report .tmp/report"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.63.0",
+    "axe-core": "4.13.0",
+    "playwright-core": "1.63.0"
+  }
+}

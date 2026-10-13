@@ -1,0 +1,887 @@
+{
+  "schema": 1,
+  "kind": "axe",
+  "description": "axe-core violation fingerprint per project and route: { ruleId: failing node count }. Ratchet: a run may match or improve these numbers, never get worse. NOT POPULATED YET: until the owner approves a first baseline (npm run update:baselines), Classic projects fail with 'no axe baseline'.",
+  "meta": {
+    "updatedAt": "2026-10-13T19:42:41.120Z",
+    "platform": "win32",
+    "playwright": "1.63.0",
+    "chromium": "153.0.8010.12",
+    "axeCore": "4.13.0",
+    "webCommit": "c57aa2e",
+    "webSourceHash": "51c54684d493",
+    "approvedBy": null
+  },
+  "entries": {
+    "classic-dark-desktop": {
+      "account": {
+        "color-contrast": 1,
+        "target-size": 1
+      },
+      "activity": {
+        "color-contrast": 11,
+        "empty-table-header": 1,
+        "label-title-only": 2,
+        "select-name": 3
+      },
+      "add-media": {
+        "color-contrast": 2,
+        "target-size": 1
+      },
+      "add-preview": {
+        "color-contrast": 2,
+        "target-size": 1
+      },
+      "ai-providers": {
+        "target-size": 1
+      },
+      "api-docs": {
+        "color-contrast": 41,
+        "heading-order": 1,
+        "landmark-main-is-top-level": 1,
+        "landmark-no-duplicate-main": 1,
+        "landmark-unique": 1,
+        "select-name": 1
+      },
+      "blocklist": {
+        "color-contrast": 10,
+        "empty-table-header": 1,
+        "label-title-only": 1,
+        "target-size": 1
+      },
+      "calendar": {
+        "color-contrast": 27,
+        "select-name": 1,
+        "target-size": 1
+      },
+      "calendar-day": {
+        "color-contrast": 2,
+        "target-size": 1
+      },
+      "catch-all": {
+        "empty-table-header": 1
+      },
+      "changelog": {},
+      "collection-detail": {
+        "select-name": 1,
+        "target-size": 1
+      },
+      "collections": {
+        "target-size": 1
+      },
+      "custom-columns": {
+        "target-size": 1
+      },
+      "cutoff-unmet": {
+        "empty-table-header": 2,
+        "label": 22,
+        "label-title-only": 1
+      },
+      "dashboard": {
+        "empty-table-header": 1
+      },
+      "discover": {
+        "target-size": 1
+      },
+      "download-clients": {
+        "color-contrast": 1,
+        "empty-table-header": 1,
+        "target-size": 1
+      },
+      "duplicates": {
+        "color-contrast": 3,
+        "empty-table-header": 2,
+        "label": 2,
+        "select-name": 1,
+        "target-size": 1
+      },
+      "episode-detail": {
+        "color-contrast": 1,
+        "target-size": 1
+      },
+      "friend-libraries": {
+        "target-size": 1
+      },
+      "history": {
+        "color-contrast": 108,
+        "label-title-only": 2,
+        "select-name": 2
+      },
+      "import-lists": {
+        "empty-table-header": 1,
+        "label": 9,
+        "label-title-only": 12,
+        "target-size": 1
+      },
+      "import-review": {
+        "empty-table-header": 1,
+        "label-title-only": 1,
+        "target-size": 1
+      },
+      "indexers": {
+        "color-contrast": 1,
+        "empty-table-header": 1,
+        "target-size": 1
+      },
+      "invite-used": {
+        "landmark-one-main": 1,
+        "region": 1
+      },
+      "invite-valid": {
+        "color-contrast": 1,
+        "landmark-one-main": 1,
+        "region": 8
+      },
+      "iptv-playlists": {
+        "color-contrast": 1,
+        "target-size": 1
+      },
+      "irc-feeds": {
+        "target-size": 1
+      },
+      "jobs": {
+        "empty-table-header": 1
+      },
+      "library-all": {
+        "color-contrast": 23,
+        "label-title-only": 2,
+        "select-name": 2
+      },
+      "library-group": {
+        "color-contrast": 2,
+        "label-title-only": 1,
+        "select-name": 2,
+        "target-size": 1
+      },
+      "library-home": {},
+      "library-type": {
+        "color-contrast": 22,
+        "label-title-only": 2,
+        "select-name": 2
+      },
+      "library-ungrouped": {
+        "color-contrast": 2,
+        "label-title-only": 1,
+        "select-name": 2,
+        "target-size": 1
+      },
+      "media-analyzer": {
+        "color-contrast": 60,
+        "empty-table-header": 1,
+        "heading-order": 1,
+        "label": 60,
+        "label-title-only": 1,
+        "select-name": 2
+      },
+      "media-detail": {
+        "select-name": 3,
+        "target-size": 1
+      },
+      "missing": {
+        "empty-table-header": 20,
+        "label": 27
+      },
+      "network-stats": {
+        "target-size": 1
+      },
+      "person": {
+        "page-has-heading-one": 1,
+        "target-size": 1
+      },
+      "recommendations": {
+        "target-size": 1
+      },
+      "recycle-bin": {
+        "empty-table-header": 1,
+        "target-size": 1
+      },
+      "remote-library": {
+        "select-name": 1,
+        "target-size": 1
+      },
+      "requests": {
+        "color-contrast": 1,
+        "empty-table-header": 1,
+        "label-title-only": 1,
+        "target-size": 1
+      },
+      "search": {
+        "color-contrast": 1,
+        "target-size": 1
+      },
+      "settings": {
+        "color-contrast": 4
+      },
+      "share-expired": {
+        "landmark-one-main": 1,
+        "region": 1
+      },
+      "share-valid": {
+        "landmark-one-main": 1,
+        "region": 1
+      },
+      "sub-item-detail": {
+        "color-contrast": 1,
+        "target-size": 1
+      },
+      "system": {
+        "color-contrast": 1,
+        "target-size": 1
+      },
+      "track-detail": {
+        "color-contrast": 2,
+        "target-size": 1
+      },
+      "watchlist-import": {
+        "target-size": 1
+      }
+    },
+    "classic-dark-mobile": {
+      "account": {
+        "color-contrast": 1
+      },
+      "activity": {
+        "color-contrast": 9,
+        "empty-table-header": 1,
+        "label-title-only": 2,
+        "select-name": 3
+      },
+      "add-media": {
+        "color-contrast": 2
+      },
+      "add-preview": {
+        "color-contrast": 2
+      },
+      "ai-providers": {},
+      "api-docs": {
+        "color-contrast": 41,
+        "heading-order": 1,
+        "landmark-main-is-top-level": 1,
+        "landmark-no-duplicate-main": 1,
+        "landmark-unique": 1,
+        "select-name": 1
+      },
+      "blocklist": {
+        "color-contrast": 10,
+        "empty-table-header": 1,
+        "label-title-only": 1
+      },
+      "calendar": {
+        "color-contrast": 5,
+        "select-name": 1
+      },
+      "calendar-day": {
+        "color-contrast": 2
+      },
+      "catch-all": {
+        "empty-table-header": 1
+      },
+      "changelog": {
+        "scrollable-region-focusable": 1
+      },
+      "collection-detail": {
+        "select-name": 1
+      },
+      "collections": {},
+      "custom-columns": {},
+      "cutoff-unmet": {
+        "empty-table-header": 2,
+        "label": 22,
+        "label-title-only": 1
+      },
+      "dashboard": {
+        "empty-table-header": 1
+      },
+      "discover": {},
+      "download-clients": {
+        "color-contrast": 1,
+        "empty-table-header": 1
+      },
+      "duplicates": {
+        "color-contrast": 3,
+        "empty-table-header": 2,
+        "label": 2,
+        "select-name": 1
+      },
+      "episode-detail": {
+        "color-contrast": 1
+      },
+      "friend-libraries": {},
+      "history": {
+        "color-contrast": 108,
+        "label-title-only": 2,
+        "select-name": 2
+      },
+      "import-lists": {
+        "empty-table-header": 1,
+        "label": 9,
+        "label-title-only": 12
+      },
+      "import-review": {
+        "empty-table-header": 1,
+        "label-title-only": 1
+      },
+      "indexers": {
+        "empty-table-header": 1
+      },
+      "invite-used": {
+        "landmark-one-main": 1,
+        "region": 1
+      },
+      "invite-valid": {
+        "color-contrast": 1,
+        "landmark-one-main": 1,
+        "region": 8
+      },
+      "iptv-playlists": {
+        "color-contrast": 1
+      },
+      "irc-feeds": {},
+      "jobs": {
+        "empty-table-header": 1
+      },
+      "library-all": {
+        "color-contrast": 23,
+        "label-title-only": 2,
+        "select-name": 2
+      },
+      "library-group": {
+        "color-contrast": 2,
+        "label-title-only": 1,
+        "select-name": 2
+      },
+      "library-home": {},
+      "library-type": {
+        "color-contrast": 22,
+        "label-title-only": 2,
+        "select-name": 2
+      },
+      "library-ungrouped": {
+        "color-contrast": 2,
+        "label-title-only": 1,
+        "select-name": 2
+      },
+      "media-analyzer": {
+        "color-contrast": 60,
+        "empty-table-header": 1,
+        "heading-order": 1,
+        "label": 60,
+        "label-title-only": 1,
+        "select-name": 2
+      },
+      "media-detail": {
+        "select-name": 3
+      },
+      "missing": {
+        "empty-table-header": 20,
+        "label": 27
+      },
+      "network-stats": {},
+      "person": {
+        "page-has-heading-one": 1
+      },
+      "recommendations": {},
+      "recycle-bin": {
+        "empty-table-header": 1
+      },
+      "remote-library": {
+        "select-name": 1
+      },
+      "requests": {
+        "color-contrast": 1,
+        "empty-table-header": 1,
+        "label-title-only": 1
+      },
+      "search": {
+        "color-contrast": 1
+      },
+      "settings": {
+        "color-contrast": 4
+      },
+      "share-expired": {
+        "landmark-one-main": 1,
+        "region": 1
+      },
+      "share-valid": {
+        "landmark-one-main": 1,
+        "region": 1
+      },
+      "sub-item-detail": {
+        "color-contrast": 1
+      },
+      "system": {
+        "color-contrast": 1
+      },
+      "track-detail": {
+        "color-contrast": 2
+      },
+      "watchlist-import": {}
+    },
+    "classic-light-desktop": {
+      "account": {
+        "color-contrast": 4,
+        "target-size": 1
+      },
+      "activity": {
+        "color-contrast": 50,
+        "empty-table-header": 1,
+        "label-title-only": 2,
+        "select-name": 3
+      },
+      "add-media": {
+        "color-contrast": 2,
+        "target-size": 1
+      },
+      "add-preview": {
+        "color-contrast": 2,
+        "target-size": 1
+      },
+      "ai-providers": {
+        "color-contrast": 3,
+        "target-size": 1
+      },
+      "api-docs": {
+        "color-contrast": 43,
+        "heading-order": 1,
+        "landmark-main-is-top-level": 1,
+        "landmark-no-duplicate-main": 1,
+        "landmark-unique": 1,
+        "select-name": 1
+      },
+      "blocklist": {
+        "color-contrast": 5,
+        "empty-table-header": 1,
+        "label-title-only": 1,
+        "target-size": 1
+      },
+      "calendar": {
+        "color-contrast": 67,
+        "select-name": 1,
+        "target-size": 1
+      },
+      "calendar-day": {
+        "color-contrast": 2,
+        "target-size": 1
+      },
+      "catch-all": {
+        "color-contrast": 14,
+        "empty-table-header": 1
+      },
+      "changelog": {},
+      "collection-detail": {
+        "color-contrast": 2,
+        "select-name": 1,
+        "target-size": 1
+      },
+      "collections": {
+        "color-contrast": 1,
+        "target-size": 1
+      },
+      "custom-columns": {
+        "color-contrast": 2,
+        "target-size": 1
+      },
+      "cutoff-unmet": {
+        "color-contrast": 6,
+        "empty-table-header": 2,
+        "label": 22,
+        "label-title-only": 1
+      },
+      "dashboard": {
+        "color-contrast": 14,
+        "empty-table-header": 1
+      },
+      "discover": {
+        "color-contrast": 2,
+        "target-size": 1
+      },
+      "download-clients": {
+        "color-contrast": 4,
+        "empty-table-header": 1,
+        "target-size": 1
+      },
+      "duplicates": {
+        "color-contrast": 3,
+        "empty-table-header": 2,
+        "label": 2,
+        "select-name": 1,
+        "target-size": 1
+      },
+      "episode-detail": {
+        "color-contrast": 2,
+        "target-size": 1
+      },
+      "friend-libraries": {
+        "color-contrast": 3,
+        "target-size": 1
+      },
+      "history": {
+        "color-contrast": 57,
+        "label-title-only": 2,
+        "select-name": 2
+      },
+      "import-lists": {
+        "color-contrast": 11,
+        "empty-table-header": 1,
+        "label": 9,
+        "label-title-only": 12,
+        "target-size": 1
+      },
+      "import-review": {
+        "color-contrast": 6,
+        "empty-table-header": 1,
+        "label-title-only": 1,
+        "target-size": 1
+      },
+      "indexers": {
+        "color-contrast": 15,
+        "empty-table-header": 1,
+        "target-size": 1
+      },
+      "invite-used": {
+        "color-contrast": 2,
+        "landmark-one-main": 1,
+        "region": 1
+      },
+      "invite-valid": {
+        "color-contrast": 4,
+        "landmark-one-main": 1,
+        "region": 8
+      },
+      "iptv-playlists": {
+        "color-contrast": 6,
+        "target-size": 1
+      },
+      "irc-feeds": {
+        "color-contrast": 5,
+        "target-size": 1
+      },
+      "jobs": {
+        "color-contrast": 7,
+        "empty-table-header": 1
+      },
+      "library-all": {
+        "color-contrast": 19,
+        "label-title-only": 2,
+        "select-name": 2
+      },
+      "library-group": {
+        "color-contrast": 4,
+        "label-title-only": 1,
+        "select-name": 2,
+        "target-size": 1
+      },
+      "library-home": {
+        "color-contrast": 1
+      },
+      "library-type": {
+        "color-contrast": 19,
+        "label-title-only": 2,
+        "select-name": 2
+      },
+      "library-ungrouped": {
+        "color-contrast": 3,
+        "label-title-only": 1,
+        "select-name": 2,
+        "target-size": 1
+      },
+      "media-analyzer": {
+        "color-contrast": 129,
+        "empty-table-header": 1,
+        "heading-order": 1,
+        "label": 60,
+        "label-title-only": 1,
+        "select-name": 2
+      },
+      "media-detail": {
+        "color-contrast": 8,
+        "select-name": 3,
+        "target-size": 1
+      },
+      "missing": {
+        "color-contrast": 30,
+        "empty-table-header": 20,
+        "label": 27
+      },
+      "network-stats": {
+        "color-contrast": 15,
+        "target-size": 1
+      },
+      "person": {
+        "color-contrast": 1,
+        "page-has-heading-one": 1,
+        "target-size": 1
+      },
+      "recommendations": {
+        "color-contrast": 2,
+        "target-size": 1
+      },
+      "recycle-bin": {
+        "color-contrast": 6,
+        "empty-table-header": 1,
+        "target-size": 1
+      },
+      "remote-library": {
+        "color-contrast": 1,
+        "select-name": 1,
+        "target-size": 1
+      },
+      "requests": {
+        "color-contrast": 8,
+        "empty-table-header": 1,
+        "label-title-only": 1,
+        "target-size": 1
+      },
+      "search": {
+        "color-contrast": 1,
+        "target-size": 1
+      },
+      "settings": {
+        "color-contrast": 9
+      },
+      "share-expired": {
+        "color-contrast": 2,
+        "landmark-one-main": 1,
+        "region": 1
+      },
+      "share-valid": {
+        "color-contrast": 2,
+        "landmark-one-main": 1,
+        "region": 1
+      },
+      "sub-item-detail": {
+        "color-contrast": 16,
+        "target-size": 1
+      },
+      "system": {
+        "color-contrast": 19,
+        "target-size": 1
+      },
+      "track-detail": {
+        "color-contrast": 1,
+        "target-size": 1
+      },
+      "watchlist-import": {
+        "color-contrast": 2,
+        "target-size": 1
+      }
+    },
+    "classic-light-mobile": {
+      "account": {
+        "color-contrast": 4
+      },
+      "activity": {
+        "color-contrast": 39,
+        "empty-table-header": 1,
+        "label-title-only": 2,
+        "select-name": 3
+      },
+      "add-media": {
+        "color-contrast": 2
+      },
+      "add-preview": {
+        "color-contrast": 2
+      },
+      "ai-providers": {
+        "color-contrast": 3
+      },
+      "api-docs": {
+        "color-contrast": 43,
+        "heading-order": 1,
+        "landmark-main-is-top-level": 1,
+        "landmark-no-duplicate-main": 1,
+        "landmark-unique": 1,
+        "select-name": 1
+      },
+      "blocklist": {
+        "color-contrast": 5,
+        "empty-table-header": 1,
+        "label-title-only": 1
+      },
+      "calendar": {
+        "color-contrast": 21,
+        "select-name": 1
+      },
+      "calendar-day": {
+        "color-contrast": 2
+      },
+      "catch-all": {
+        "color-contrast": 8,
+        "empty-table-header": 1
+      },
+      "changelog": {
+        "scrollable-region-focusable": 1
+      },
+      "collection-detail": {
+        "color-contrast": 2,
+        "select-name": 1
+      },
+      "collections": {
+        "color-contrast": 1
+      },
+      "custom-columns": {
+        "color-contrast": 2
+      },
+      "cutoff-unmet": {
+        "color-contrast": 5,
+        "empty-table-header": 2,
+        "label": 22,
+        "label-title-only": 1
+      },
+      "dashboard": {
+        "color-contrast": 8,
+        "empty-table-header": 1
+      },
+      "discover": {
+        "color-contrast": 2
+      },
+      "download-clients": {
+        "color-contrast": 4,
+        "empty-table-header": 1
+      },
+      "duplicates": {
+        "color-contrast": 3,
+        "empty-table-header": 2,
+        "label": 2,
+        "select-name": 1
+      },
+      "episode-detail": {
+        "color-contrast": 2
+      },
+      "friend-libraries": {
+        "color-contrast": 3
+      },
+      "history": {
+        "color-contrast": 56,
+        "label-title-only": 2,
+        "select-name": 2
+      },
+      "import-lists": {
+        "color-contrast": 4,
+        "empty-table-header": 1,
+        "label": 9,
+        "label-title-only": 12
+      },
+      "import-review": {
+        "color-contrast": 6,
+        "empty-table-header": 1,
+        "label-title-only": 1
+      },
+      "indexers": {
+        "color-contrast": 5,
+        "empty-table-header": 1
+      },
+      "invite-used": {
+        "color-contrast": 2,
+        "landmark-one-main": 1,
+        "region": 1
+      },
+      "invite-valid": {
+        "color-contrast": 4,
+        "landmark-one-main": 1,
+        "region": 8
+      },
+      "iptv-playlists": {
+        "color-contrast": 6
+      },
+      "irc-feeds": {
+        "color-contrast": 5
+      },
+      "jobs": {
+        "color-contrast": 5,
+        "empty-table-header": 1
+      },
+      "library-all": {
+        "color-contrast": 19,
+        "label-title-only": 2,
+        "select-name": 2
+      },
+      "library-group": {
+        "color-contrast": 4,
+        "label-title-only": 1,
+        "select-name": 2
+      },
+      "library-home": {
+        "color-contrast": 1
+      },
+      "library-type": {
+        "color-contrast": 19,
+        "label-title-only": 2,
+        "select-name": 2
+      },
+      "library-ungrouped": {
+        "color-contrast": 3,
+        "label-title-only": 1,
+        "select-name": 2
+      },
+      "media-analyzer": {
+        "color-contrast": 7,
+        "empty-table-header": 1,
+        "heading-order": 1,
+        "label": 60,
+        "label-title-only": 1,
+        "select-name": 2
+      },
+      "media-detail": {
+        "color-contrast": 6,
+        "select-name": 3
+      },
+      "missing": {
+        "color-contrast": 30,
+        "empty-table-header": 20,
+        "label": 27
+      },
+      "network-stats": {
+        "color-contrast": 15
+      },
+      "person": {
+        "color-contrast": 1,
+        "page-has-heading-one": 1
+      },
+      "recommendations": {
+        "color-contrast": 2
+      },
+      "recycle-bin": {
+        "color-contrast": 5,
+        "empty-table-header": 1
+      },
+      "remote-library": {
+        "color-contrast": 1,
+        "select-name": 1
+      },
+      "requests": {
+        "color-contrast": 8,
+        "empty-table-header": 1,
+        "label-title-only": 1
+      },
+      "search": {
+        "color-contrast": 1
+      },
+      "settings": {
+        "color-contrast": 9
+      },
+      "share-expired": {
+        "color-contrast": 2,
+        "landmark-one-main": 1,
+        "region": 1
+      },
+      "share-valid": {
+        "color-contrast": 2,
+        "landmark-one-main": 1,
+        "region": 1
+      },
+      "sub-item-detail": {
+        "color-contrast": 16
+      },
+      "system": {
+        "color-contrast": 19
+      },
+      "track-detail": {
+        "color-contrast": 1
+      },
+      "watchlist-import": {
+        "color-contrast": 2
+      }
+    }
+  }
+}

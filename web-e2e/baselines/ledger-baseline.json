@@ -1,0 +1,355 @@
+{
+  "schema": 1,
+  "description": "Inline-style ratchet baseline. `--check` fails if staticInlineStyles or rawColourSites increase.",
+  "commit": "c57aa2e",
+  "generatedAt": "2026-10-13T16:29:54.524Z",
+  "metrics": {
+    "totalStyleAttributes": 1110,
+    "staticInlineStyles": 1022,
+    "dynamicInlineStyles": 88,
+    "rawColourSites": 24,
+    "rawColourLiterals": 25
+  },
+  "perFile": {
+    "web/src/pages/Settings.tsx": {
+      "total": 181,
+      "static": 173,
+      "rawColourSites": 0
+    },
+    "web/src/pages/MediaDetail.tsx": {
+      "total": 145,
+      "static": 129,
+      "rawColourSites": 7
+    },
+    "web/src/pages/System.tsx": {
+      "total": 71,
+      "static": 63,
+      "rawColourSites": 2
+    },
+    "web/src/pages/LibraryType.tsx": {
+      "total": 64,
+      "static": 56,
+      "rawColourSites": 2
+    },
+    "web/src/pages/Account.tsx": {
+      "total": 32,
+      "static": 29,
+      "rawColourSites": 1
+    },
+    "web/src/pages/DownloadClients.tsx": {
+      "total": 31,
+      "static": 31,
+      "rawColourSites": 0
+    },
+    "web/src/pages/Users.tsx": {
+      "total": 28,
+      "static": 28,
+      "rawColourSites": 0
+    },
+    "web/src/pages/SubItemDetail.tsx": {
+      "total": 25,
+      "static": 20,
+      "rawColourSites": 1
+    },
+    "web/src/pages/IptvPlaylists.tsx": {
+      "total": 24,
+      "static": 24,
+      "rawColourSites": 0
+    },
+    "web/src/pages/MediaAnalyzer.tsx": {
+      "total": 24,
+      "static": 22,
+      "rawColourSites": 1
+    },
+    "web/src/App.tsx": {
+      "total": 22,
+      "static": 18,
+      "rawColourSites": 0
+    },
+    "web/src/components/ApiKeyGate.tsx": {
+      "total": 21,
+      "static": 21,
+      "rawColourSites": 0
+    },
+    "web/src/pages/Activity.tsx": {
+      "total": 19,
+      "static": 18,
+      "rawColourSites": 0
+    },
+    "web/src/pages/Calendar.tsx": {
+      "total": 19,
+      "static": 15,
+      "rawColourSites": 0
+    },
+    "web/src/pages/Dashboard.tsx": {
+      "total": 19,
+      "static": 16,
+      "rawColourSites": 0
+    },
+    "web/src/pages/ImportLists.tsx": {
+      "total": 18,
+      "static": 17,
+      "rawColourSites": 1
+    },
+    "web/src/pages/AddMedia.tsx": {
+      "total": 17,
+      "static": 15,
+      "rawColourSites": 0
+    },
+    "web/src/components/SearchMatchModal.tsx": {
+      "total": 15,
+      "static": 14,
+      "rawColourSites": 0
+    },
+    "web/src/pages/Collections.tsx": {
+      "total": 13,
+      "static": 12,
+      "rawColourSites": 0
+    },
+    "web/src/pages/GlobalSearch.tsx": {
+      "total": 13,
+      "static": 11,
+      "rawColourSites": 0
+    },
+    "web/src/pages/Indexers.tsx": {
+      "total": 13,
+      "static": 13,
+      "rawColourSites": 0
+    },
+    "web/src/components/NamingSetupModal.tsx": {
+      "total": 12,
+      "static": 12,
+      "rawColourSites": 0
+    },
+    "web/src/components/SettingsProviderTiles.tsx": {
+      "total": 12,
+      "static": 11,
+      "rawColourSites": 0
+    },
+    "web/src/pages/CollectionDetail.tsx": {
+      "total": 12,
+      "static": 11,
+      "rawColourSites": 0
+    },
+    "web/src/pages/IrcFeeds.tsx": {
+      "total": 12,
+      "static": 12,
+      "rawColourSites": 0
+    },
+    "web/src/pages/Missing.tsx": {
+      "total": 12,
+      "static": 12,
+      "rawColourSites": 0
+    },
+    "web/src/pages/RecycleBin.tsx": {
+      "total": 12,
+      "static": 12,
+      "rawColourSites": 0
+    },
+    "web/src/pages/AiProviders.tsx": {
+      "total": 11,
+      "static": 10,
+      "rawColourSites": 0
+    },
+    "web/src/pages/RemoteLibrary.tsx": {
+      "total": 11,
+      "static": 10,
+      "rawColourSites": 0
+    },
+    "web/src/components/RenamePreviewModal.tsx": {
+      "total": 10,
+      "static": 10,
+      "rawColourSites": 0
+    },
+    "web/src/pages/Duplicates.tsx": {
+      "total": 10,
+      "static": 10,
+      "rawColourSites": 0
+    },
+    "web/src/pages/EpisodeDetail.tsx": {
+      "total": 10,
+      "static": 10,
+      "rawColourSites": 0
+    },
+    "web/src/components/FolderPicker.tsx": {
+      "total": 9,
+      "static": 9,
+      "rawColourSites": 0
+    },
+    "web/src/pages/AddPreview.tsx": {
+      "total": 9,
+      "static": 8,
+      "rawColourSites": 0
+    },
+    "web/src/pages/FriendLibraries.tsx": {
+      "total": 9,
+      "static": 9,
+      "rawColourSites": 0
+    },
+    "web/src/pages/LibraryHome.tsx": {
+      "total": 9,
+      "static": 8,
+      "rawColourSites": 0
+    },
+    "web/src/pages/WatchlistImport.tsx": {
+      "total": 9,
+      "static": 9,
+      "rawColourSites": 0
+    },
+    "web/src/pages/CustomColumns.tsx": {
+      "total": 8,
+      "static": 8,
+      "rawColourSites": 0
+    },
+    "web/src/pages/Discover.tsx": {
+      "total": 8,
+      "static": 6,
+      "rawColourSites": 0
+    },
+    "web/src/pages/Onboarding.tsx": {
+      "total": 8,
+      "static": 8,
+      "rawColourSites": 0
+    },
+    "web/src/pages/Person.tsx": {
+      "total": 8,
+      "static": 5,
+      "rawColourSites": 0
+    },
+    "web/src/pages/Jobs.tsx": {
+      "total": 7,
+      "static": 7,
+      "rawColourSites": 0
+    },
+    "web/src/pages/SharePage.tsx": {
+      "total": 7,
+      "static": 7,
+      "rawColourSites": 3
+    },
+    "web/src/components/CommandPalette.tsx": {
+      "total": 6,
+      "static": 5,
+      "rawColourSites": 1
+    },
+    "web/src/components/SettingsSectionTiles.tsx": {
+      "total": 5,
+      "static": 5,
+      "rawColourSites": 0
+    },
+    "web/src/context/AuthContext.tsx": {
+      "total": 5,
+      "static": 5,
+      "rawColourSites": 0
+    },
+    "web/src/pages/CalendarDay.tsx": {
+      "total": 5,
+      "static": 5,
+      "rawColourSites": 0
+    },
+    "web/src/pages/CutoffUnmet.tsx": {
+      "total": 5,
+      "static": 5,
+      "rawColourSites": 0
+    },
+    "web/src/pages/InviteAcceptPage.tsx": {
+      "total": 5,
+      "static": 5,
+      "rawColourSites": 2
+    },
+    "web/src/components/ConfirmModal.tsx": {
+      "total": 4,
+      "static": 4,
+      "rawColourSites": 0
+    },
+    "web/src/components/ErrorBoundary.tsx": {
+      "total": 4,
+      "static": 4,
+      "rawColourSites": 1
+    },
+    "web/src/components/Modal.tsx": {
+      "total": 4,
+      "static": 2,
+      "rawColourSites": 1
+    },
+    "web/src/pages/NetworkStats.tsx": {
+      "total": 4,
+      "static": 4,
+      "rawColourSites": 0
+    },
+    "web/src/pages/Recommendations.tsx": {
+      "total": 4,
+      "static": 3,
+      "rawColourSites": 0
+    },
+    "web/src/components/BackgroundJobsWidget.tsx": {
+      "total": 3,
+      "static": 1,
+      "rawColourSites": 0
+    },
+    "web/src/pages/AuditLog.tsx": {
+      "total": 3,
+      "static": 3,
+      "rawColourSites": 0
+    },
+    "web/src/pages/Blocklist.tsx": {
+      "total": 3,
+      "static": 3,
+      "rawColourSites": 0
+    },
+    "web/src/pages/HistoryPage.tsx": {
+      "total": 3,
+      "static": 3,
+      "rawColourSites": 0
+    },
+    "web/src/components/MonitorToggle.tsx": {
+      "total": 2,
+      "static": 0,
+      "rawColourSites": 0
+    },
+    "web/src/components/Pagination.tsx": {
+      "total": 2,
+      "static": 2,
+      "rawColourSites": 0
+    },
+    "web/src/components/PromptModal.tsx": {
+      "total": 2,
+      "static": 2,
+      "rawColourSites": 0
+    },
+    "web/src/hooks/useSortableTable.tsx": {
+      "total": 2,
+      "static": 2,
+      "rawColourSites": 0
+    },
+    "web/src/pages/ApiDocs.tsx": {
+      "total": 2,
+      "static": 2,
+      "rawColourSites": 1
+    },
+    "web/src/pages/ImportReview.tsx": {
+      "total": 2,
+      "static": 2,
+      "rawColourSites": 0
+    },
+    "web/src/pages/Requests.tsx": {
+      "total": 2,
+      "static": 2,
+      "rawColourSites": 0
+    },
+    "web/src/pages/TrackDetail.tsx": {
+      "total": 2,
+      "static": 2,
+      "rawColourSites": 0
+    },
+    "web/src/components/NavIcons.tsx": {
+      "total": 1,
+      "static": 1,
+      "rawColourSites": 0
+    },
+    "web/src/components/ProviderIcons.tsx": {
+      "total": 1,
+      "static": 1,
+      "rawColourSites": 0
+    }
+  }
+}

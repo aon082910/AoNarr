@@ -1,0 +1,5 @@
+{
+  "schema": 1,
+  "description": "Smoke findings that are allowed, each with a reason. Fail closed: anything not listed here (or excused by a route's own expectedApi / knownGap in tests/routes.ts) fails the smoke spec. kind = console | pageerror | http | requestfailed | overflow | external. routes/projects accept ids / globs or \"*\". pattern is a regex matched against the request path (or the finding text). verified=false means written from documentation and not yet seen in a run: the first full Classic run must confirm or delete it.",
+  "entries": []
+}

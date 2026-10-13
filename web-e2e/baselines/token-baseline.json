@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "description": "Token ratchet baseline. `--check` fails if a new undefined token appears, a token loses its definition in Classic, or hard-coded colour declarations in CSS increase.",
+  "commit": "c57aa2e",
+  "generatedAt": "2026-10-13T16:29:09.208Z",
+  "undefinedTokens": [
+    "--bg-alt",
+    "--link"
+  ],
+  "classicGapTokens": [
+    "--panel-2"
+  ],
+  "classicGapTokensWithoutFallback": [],
+  "hardcodedColourDeclarationsInCss": 35,
+  "hardcodedColourByFile": {
+    "web/src/styles.css": 28,
+    "web/src/designs/modern.css": 5,
+    "web/src/designs/aurora.css": 2
+  },
+  "distinctTokensDefinedAtRoot": 42
+}
