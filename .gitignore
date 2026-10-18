@@ -19,3 +19,6 @@ web-e2e/test-results/
 web-e2e/playwright-report/
 web-e2e/.tmp/
 .claude/settings.local.json
+
+# Local Claude pointer (names local paths; repo is public)
+CLAUDE.md
