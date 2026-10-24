@@ -13,6 +13,7 @@ import { writeAudioTags } from "./audioTagWriter.js";
 import { notifyQueueChanged } from "./realtime.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import { identityKey, identityModeFor, releaseIdentifiesTarget, type IdentityTarget } from "./releaseIdentity.js";
+import type { ParsedRelease } from "./releaseParser.js";
 import {
   downloadSubtitleContent,
   downloadSubtitleFromUrl,
@@ -22,7 +23,7 @@ import {
   searchSubtitles,
   type CustomSubtitleProviderConfig,
 } from "./subtitleClient.js";
-import { unpackDownloadedArchives } from "./archiveExtract.js";
+import { archiveDestinationFor, isArchiveFile, unpackDownloadedArchives } from "./archiveExtract.js";
 import { removeQueueItemDownload } from "./downloadClient.js";
 import { syncSubtitleToVideo } from "./subtitleSync.js";
 import { DEFAULT_SHAPE_TEMPLATES, DEFAULT_TRACK_TEMPLATE, providerIdVars, renderTemplate } from "./naming.js";
@@ -257,9 +258,9 @@ function normalizeTokens(text: string): string[] {
  * Channel layouts and codecs ("DDP5.1", "H.264") are left out: a file needn't repeat those. */
 function numberTokens(text: string): Set<string> {
   const numbers = new Set<string>();
-  // A decimal is a channel layout or version ("5.1", "7.1", "v2.0"), one or two digits after the
-  // point; "2024.1080p" in a dotted release name is a year and a resolution, not a fraction.
-  const cleaned = text.replace(/\d+[.,]\d{1,2}(?!\d)/g, " ").replace(/[hx][.\s]?26[45]/gi, " ");
+  // A decimal is a channel layout or version ("5.1", "7.1", "v2.0"): one or two digits either side
+  // of the point. "2024.1080p" and "2024.10bit" in a dotted release name are a year and a tag.
+  const cleaned = text.replace(/(?<!\d)\d{1,2}[.,]\d{1,2}(?!\d)/g, " ").replace(/[hx][.\s]?26[45]/gi, " ");
   // Four digits too: a year tells "Dune.2021" from "Dune.Part.Two.2024" when the words alone can't.
   for (const m of cleaned.matchAll(/(?<![a-z0-9])\d{1,4}(?![a-z0-9])/gi)) numbers.add(String(Number(m[0])));
   return numbers;
@@ -349,12 +350,19 @@ function withoutSamples(files: string[], baseDir: string, releaseTitle: string |
 
 // A disc's or release's bonus material, by folder ("Extras", "Featurettes") or by file name.
 const EXTRAS_FOLDER = /^(?:extras?|featurettes?|bonus(?:[\s._-]?(?:material|content|features?))?|behind[\s._-]the[\s._-]scenes|deleted[\s._-]scenes|trailers?|interviews?)$/i;
-const EXTRAS_NAME = /(?:^|[\s._-])(?:making[\s._-]of|featurette|trailer|deleted[\s._-]scenes?|behind[\s._-]the[\s._-]scenes|bloopers?|outtakes?)(?:$|[\s._-])/i;
+const EXTRAS_NAME = /(?:^|[\s._-])(making[\s._-]of|featurette|trailer|deleted[\s._-]scenes?|behind[\s._-]the[\s._-]scenes|bloopers?|outtakes?)(?:$|[\s._-])/i;
 
-function isExtrasPath(file: string, baseDir: string): boolean {
+/** How a file looks like bonus material: by an Extras-style folder in its path, by an extras word in
+ * its name, or not at all. A word that is part of the release's own title ("Trailer Park Boys",
+ * "Bloopers" the show) names no extra. */
+function extrasKind(file: string, baseDir: string, releaseTitle: string | undefined): "folder" | "name" | null {
   const parts = path.relative(baseDir, file).split(path.sep);
-  if (parts.slice(0, -1).some((part) => EXTRAS_FOLDER.test(part))) return true;
-  return EXTRAS_NAME.test(path.basename(file, path.extname(file)));
+  if (parts.slice(0, -1).some((part) => EXTRAS_FOLDER.test(part))) return "folder";
+  const m = EXTRAS_NAME.exec(path.basename(file, path.extname(file)));
+  if (!m) return null;
+  const titleTokens = new Set(normalizeTokens(releaseTitle ?? ""));
+  const markerTokens = normalizeTokens(m[1]);
+  return markerTokens.length > 0 && markerTokens.every((t) => titleTokens.has(t)) ? null : "name";
 }
 
 /** Recursively walks the downloads directory (bounded depth) collecting files with a matching extension. */
@@ -505,9 +513,13 @@ export function findDownloadedFile(
 }
 
 /** Why locateDownloadedFile found nothing where the client said the download is. A reported file
- * of another type (a disc image) is left for a manual import; a reported folder with nothing
- * importable fails the release like any other, without a downloads-wide search standing in. */
+ * of another type (a disc image), or a folder holding only one, is left for a manual import; a
+ * reported folder with nothing importable fails the release like any other, without a
+ * downloads-wide search standing in. */
 export type LocateReason = "unsupported-extension" | "nothing-in-reported-folder";
+
+// Media the library can't import as files but a download may legitimately consist of.
+const DISC_IMAGE_EXTENSIONS = [".iso", ".img"];
 
 /**
  * findDownloadedFile, with the reason when a client-reported location yields nothing. Sonarr/Radarr
@@ -529,29 +541,50 @@ export function locateDownloadedFile(
   const ctx: DownloadContext = { releaseTitle, downloadPath: searchRoot, category: options.category };
 
   if (searchRoot) {
-    try {
-      const stat = fs.statSync(searchRoot);
+    // Only the existence check may fail over to the downloads-wide search: a mapped path that doesn't
+    // exist (stale mapping, or the client hasn't written there yet) is treated as no path given.
+    const statOf = (p: string): fs.Stats | null => {
+      try {
+        return fs.statSync(p);
+      } catch {
+        return null;
+      }
+    };
+    let root = searchRoot;
+    let stat = statOf(root);
+    if (stat?.isFile() && !extensions.includes(path.extname(root).toLowerCase()) && isArchiveFile(root)) {
+      // The client reported the archive itself (a single-file .rar torrent): its contents, once
+      // unpacked, are in the sibling folder named after it.
+      const unpacked = archiveDestinationFor(root);
+      if (isDirectory(unpacked)) {
+        root = unpacked;
+        stat = statOf(root);
+      }
+    }
+    if (stat) {
       if (stat.isFile()) {
-        if (extensions.includes(path.extname(searchRoot).toLowerCase())) return { file: searchRoot };
+        if (extensions.includes(path.extname(root).toLowerCase())) return { file: root };
         // The client reported THE file (a disc image, an archive the unpacker left alone): it is the
         // download, and nothing elsewhere in the downloads directory is.
-        log.info(`[importer] "${path.basename(searchRoot)}" is not a ${mediaType} file type; left for a manual import`);
+        log.info(`[importer] "${path.basename(root)}" is not a ${mediaType} file type; left for a manual import`);
         return { file: null, reason: "unsupported-extension" };
       } else if (stat.isDirectory()) {
-        const scoped = findDownloadedFileIn(searchRoot, path.dirname(searchRoot), releaseTitle, extensions, target, ctx, options.childTitle);
+        const scoped = findDownloadedFileIn(root, path.dirname(root), releaseTitle, extensions, target, ctx, options.childTitle);
         if (scoped.file) return { file: scoped.file };
+        // A folder whose only media is a disc image is the same case as a reported disc image.
+        if (walk(root, DISC_IMAGE_EXTENSIONS, 4).length > 0 && walk(root, extensions, 4).length === 0) {
+          log.info(`[importer] "${releaseTitle}" holds only a disc image, not a ${mediaType} file type; left for a manual import`);
+          return { file: null, reason: "unsupported-extension" };
+        }
         // The downloads-wide search could only turn up some other download of the same episode
         // number (another show's, or an older grab of this one still seeding) — not this one. Nor,
         // when the release's own folder holds only its sample, anything but another grab of the
         // same title, whose files would be moved out from under its seeding.
-        if (target || (scoped.droppedSamples && isOwnReleaseFolder(searchRoot, ctx)) || getSetting("importDownloadsWideSearch") !== "1") {
-          log.info(`[importer] nothing importable for "${releaseTitle}" in its reported folder "${searchRoot}"; not searching the rest of the downloads directory`);
+        if (target || (scoped.droppedSamples && isOwnReleaseFolder(root, ctx)) || getSetting("importDownloadsWideSearch") !== "1") {
+          log.info(`[importer] nothing importable for "${releaseTitle}" in its reported folder "${root}"; not searching the rest of the downloads directory`);
           return { file: null, reason: "nothing-in-reported-folder" };
         }
       }
-    } catch {
-      // Mapped path doesn't exist (stale mapping, or the client hasn't actually written there) —
-      // fall through to the full downloadsDir search below exactly as if no path had been given.
     }
   }
 
@@ -588,30 +621,48 @@ function pickDownloadedFile(
   childTitle: string | null | undefined
 ): string | null {
   // A release's extras (featurettes, trailers, deleted scenes) are never the feature or an episode.
-  // They are only passed over while something else is there to take, so a download that is nothing
-  // but a folder named "Extras" still imports.
-  const notExtras = candidates.filter((filePath) => !isExtrasPath(filePath, baseDir));
-  if (notExtras.length > 0) candidates = notExtras;
+  // Files in an Extras-style folder are passed over while anything else is there to take, so a
+  // download that is nothing but a folder named "Extras" still imports. A file merely NAMED with an
+  // extras word is passed over only when another candidate plausibly is the release — named for the
+  // target episode, or with the release's own title — or "Show.S01E05.The.Trailer.mkv" would lose to
+  // the "RARBG.mp4" promo beside it.
+  const releaseKey = identityKey(parseReleaseTitle(releaseTitle).title);
+  const ownTitleKey = (filePath: string) => identityKey(parseReleaseTitle(withoutVersionTag(path.basename(filePath, path.extname(filePath)))).title);
+  const plausiblyRelease = (filePath: string) => {
+    if (target && parsedMatchesTarget(parseReleaseTitle(withoutVersionTag(path.basename(filePath, path.extname(filePath)))), target)) return true;
+    const own = ownTitleKey(filePath);
+    return !!releaseKey && !!own && (own === releaseKey || ` ${own} `.includes(` ${releaseKey} `));
+  };
+  const kinds = new Map(candidates.map((f) => [f, extrasKind(f, baseDir, releaseTitle)] as const));
+  const outsideExtrasFolders = candidates.filter((f) => kinds.get(f) !== "folder");
+  if (outsideExtrasFolders.length > 0) candidates = outsideExtrasFolders;
+  const unnamedAsExtras = candidates.filter((f) => kinds.get(f) !== "name");
+  if (unnamedAsExtras.length > 0 && unnamedAsExtras.length < candidates.length && unnamedAsExtras.some(plausiblyRelease)) candidates = unnamedAsExtras;
 
-  if (target) {
+  if (target && !isOwnReleaseFolder(baseDir, ctx)) {
     const seriesTokens = releaseTitleTokens(releaseTitle);
     if (seriesTokens.length > 0) {
       // An SxxEyy or air date alone doesn't identify a show, and a folder shared with other downloads
       // routinely holds other shows' files carrying the same numbers, so the series' own title must be
       // in the path too. A release's own folder holds only its own files and needs no such check.
-      if (!isOwnReleaseFolder(baseDir, ctx)) {
-        candidates = candidates.filter((filePath) => {
-          const pathTokens = new Set(normalizeTokens(path.relative(labelBase, filePath)));
-          return seriesTokens.every((t) => pathTokens.has(t));
-        });
-      }
-    } else {
-      // A title too short to have tokens ("24", "ER", "Up") can't be required in the path, and its
-      // folder can't be told from a shared one; a file plainly named for another show is still not it.
-      const releaseKey = identityKey(parseReleaseTitle(releaseTitle).title);
       candidates = candidates.filter((filePath) => {
-        const ownKey = identityKey(parseReleaseTitle(withoutVersionTag(path.basename(filePath, path.extname(filePath)))).title);
-        return ownKey.split(" ").filter(Boolean).length < 2 || !releaseKey || ownKey === releaseKey;
+        const pathTokens = new Set(normalizeTokens(path.relative(labelBase, filePath)));
+        return seriesTokens.every((t) => pathTokens.has(t));
+      });
+    } else if (releaseKey) {
+      // A title too short to have tokens ("24", "ER", "Up") can't be required in the path; a file in
+      // the shared folder plainly named AND numbered for another show is still not it. A name without
+      // its own numbering ("Day 1 - 2.00 AM") is left to the episode/folder matching below, and a file
+      // whose own folder names this release is this release's.
+      const squash = (s: string) => s.replace(/ /g, "");
+      candidates = candidates.filter((filePath) => {
+        const own = parseReleaseTitle(withoutGroupPrefix(withoutVersionTag(path.basename(filePath, path.extname(filePath))), releaseTitle));
+        const numbered = own.seasonNumber != null || !!own.episodeNumbers?.length || own.absoluteEpisode != null || !!own.airDate;
+        const ownKey = identityKey(own.title);
+        if (!numbered || ownKey.split(" ").filter(Boolean).length < 2) return true;
+        if (ownKey === releaseKey || squash(ownKey) === squash(releaseKey) || ` ${ownKey} `.includes(` ${releaseKey} `)) return true;
+        const folderKey = identityKey(parseReleaseTitle(path.basename(path.dirname(filePath))).title);
+        return !!folderKey && (folderKey === releaseKey || squash(folderKey) === squash(releaseKey));
       });
     }
   }
@@ -1108,32 +1159,43 @@ export function fileContradictsTarget(sourceFile: string, ctx: DownloadContext, 
   const mode = identityModeFor(item.type);
   if (mode === "off") return null;
 
-  const base = withoutVersionTag(path.basename(sourceFile, path.extname(sourceFile)));
+  const base = withoutGroupPrefix(withoutVersionTag(path.basename(sourceFile, path.extname(sourceFile))), ctx.releaseTitle);
+  // Only a name shaped like a release (numbering or a year) says which title it is; "Episode 2 -
+  // Cat's in the Bag" or "Pilot" says nothing, and is judged by its folder instead.
+  const releaseShaped = (parsed: ParsedRelease) =>
+    parsed.seasonNumber != null || !!parsed.episodeNumbers?.length || parsed.absoluteEpisode != null || !!parsed.airDate || parsed.titleYear != null;
+  let matched = false;
   const judge = (name: string, what: string): string | null => {
     const parsed = parseReleaseTitle(name);
     const words = identityKey(parsed.title).split(" ").filter(Boolean).length;
     const verdict = releaseIdentifiesTarget({ title: name }, parsed, item);
-    if (verdict.ok) return null;
+    if (verdict.ok) {
+      matched = true;
+      return null;
+    }
     // A short or unreadable title is no evidence; a wrong year on a matching title is.
     if (verdict.reason === "title" && words < 2) return null;
     return `${what} "${name}" ${verdict.detail}`;
   };
-  let reason = judge(base, "file");
-  if (reason === null && identityKey(parseReleaseTitle(base).title).split(" ").filter(Boolean).length < 2) {
-    // The file name says little ("a8f7d6c1", "E05"); the folder it came in may say more — the
-    // client-reported folder when the file is inside it, else the file's own. Only a folder named
-    // like a release (numbering, a year) is read: a save or category folder ("tv", "UHD HDR",
-    // "Complete 1080p") names no title.
+  const fileParsed = parseReleaseTitle(base);
+  const fileSaysSomething = releaseShaped(fileParsed);
+  let reason = fileSaysSomething ? judge(base, "file") : null;
+  if (reason === null && !matched && (!fileSaysSomething || identityKey(fileParsed.title).split(" ").filter(Boolean).length < 2)) {
+    // The file name says little ("a8f7d6c1", "E05", an episode title alone); the folder it came in
+    // may say more — the client-reported folder when the file is inside it, else the file's own.
+    // Only a folder named like a release is read: a save or category folder ("tv", "UHD HDR",
+    // "Complete 1080p") names no title, and a "Season 1" folder is looked past to its parent.
     const src = path.resolve(sourceFile);
     const reported = ctx.downloadPath ? path.resolve(ctx.downloadPath) : null;
-    const folder = reported && src.startsWith(reported + path.sep) && isDirectory(reported) ? reported : path.dirname(src);
+    let folder = reported && src.startsWith(reported + path.sep) && isDirectory(reported) ? reported : path.dirname(src);
     const category = ctx.category?.trim().toLowerCase().split(/[\\/]/).filter(Boolean).pop() || null;
-    if (folder !== path.resolve(config.downloadsDir) && path.basename(folder).toLowerCase() !== category) {
-      const folderParsed = parseReleaseTitle(path.basename(folder));
-      const releaseShaped =
-        folderParsed.seasonNumber != null || !!folderParsed.episodeNumbers?.length || folderParsed.absoluteEpisode != null || !!folderParsed.airDate || folderParsed.titleYear != null;
-      if (releaseShaped) reason = judge(path.basename(folder), "folder");
-    }
+    const stop = (dir: string) => dir === path.resolve(config.downloadsDir) || path.basename(dir).toLowerCase() === category || path.dirname(dir) === dir;
+    const seasonOnly = (dir: string) => {
+      const parsed = parseReleaseTitle(path.basename(dir));
+      return parsed.isFullSeason && identityKey(parsed.title).split(" ").filter((t) => t && !/^(?:season|seasons|s|complete|\d+)$/.test(t)).length === 0;
+    };
+    if (!stop(folder) && seasonOnly(folder) && !stop(path.dirname(folder))) folder = path.dirname(folder);
+    if (!stop(folder) && releaseShaped(parseReleaseTitle(path.basename(folder)))) reason = judge(path.basename(folder), "folder");
   }
   if (reason === null) return null;
   if (mode === "log") {
@@ -1192,6 +1254,14 @@ const VERSION_TAG = /(^|[\s._\-e])(\d{1,4})v\d(?=$|[\s._\-()[\]])/i;
 
 function withoutVersionTag(name: string): string {
   return name.replace(VERSION_TAG, "$1$2");
+}
+
+/** A scene file is often named "<group>-<title>" ("sparks-heat.1080p", "grp-24.s01e03"): with the
+ * release's own group in front, the rest is the file's real name. */
+function withoutGroupPrefix(name: string, releaseTitle: string | undefined): string {
+  const group = releaseTitle ? parseReleaseTitle(releaseTitle).releaseGroup?.toLowerCase() : null;
+  const m = /^([a-z0-9]+)-(.+)$/i.exec(name);
+  return group && m && m[1].toLowerCase() === group ? m[2] : name;
 }
 
 /**
@@ -2169,29 +2239,31 @@ export async function placeSeasonPackFiles(params: {
   const ctx: DownloadContext = { releaseTitle, downloadPath, category };
   const { files: siblings, leftInPlace, packDir } = collectSeasonPackFiles(anchorFile, seasonNumber, typeConfig.extensions, ctx);
 
-  const episodes = (await db
-    .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND season_number = ?")
-    .all(itemId, seasonNumber)) as any[];
-  const planned = await planSeasonPackFiles(siblings, episodes, itemId, seasonNumber, item.title);
-  let unmatchedCount = planned.unmatchedCount;
-
   // A file evidently of another show (a shared folder's, a mislabeled pack's) stays in the download.
+  // Judged before the files are mapped to episodes, so a foreign file never claims an episode the
+  // show's own file of it would have taken.
   let identityRejected = 0;
   const identityTarget = identityTargetOf(item);
-  const ownFiles = planned.plans.filter(({ src }) => {
+  const ownFiles = siblings.filter((src) => {
     const mismatch = verify ? fileContradictsTarget(src, ctx, identityTarget) : null;
     if (!mismatch) return true;
     log.warn(`[importer] left "${path.basename(src)}" in the download: ${mismatch}`);
     identityRejected++;
-    unmatchedCount++;
     return false;
   });
   if (ownFiles.length === 0 && identityRejected > 0) {
     throw new ImportIdentityMismatchError(`Not importing: every file of this download names another title than "${item.title}" — left for a manual import`);
   }
 
+  const episodes = (await db
+    .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND season_number = ?")
+    .all(itemId, seasonNumber)) as any[];
+  const planned = await planSeasonPackFiles(ownFiles, episodes, itemId, seasonNumber, item.title);
+  // An identity-rejected file is an episode file the download still holds.
+  let unmatchedCount = planned.unmatchedCount + identityRejected;
+
   let notUpgradedCount = 0;
-  const toPlace = ownFiles.filter(({ src, episodes: targets }) => {
+  const toPlace = planned.plans.filter(({ src, episodes: targets }) => {
     const better = targets.find((e) => Number(e.has_file) && !isQualityUpgrade(item.type, quality, e.quality));
     if (!better) return true;
     log.info(
@@ -2467,11 +2539,11 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
         category: ctx.category,
         verify: !!verify,
       });
+      // unmatchedCount already counts every episode file the planner left in the download: another
+      // season's, another show's, a duplicate. (A post-placement walk would make a bundled special's
+      // fate depend on which file was the anchor.)
       leftFilesBehind = pack.unmatchedCount > 0 || pack.leftInPlace > 0 || pack.notUpgradedCount > 0;
       releaseDir = pack.packDir;
-      // What the pack holds beyond the episodes placed (another season's, files the planner passed
-      // over) is checked like any other partial import before the download's data may go.
-      mayHoldMore = true;
     } catch (err) {
       // A pack grabbed for one episode whose files can't be mapped to episodes may still hold that
       // episode's own file — but only one whose own name says so: findDownloadedFile falls back on
@@ -2544,8 +2616,11 @@ function isUnpackedMediaCandidate(sourceFile: string, downloadPath: string | nul
   let base = path.dirname(src);
   if (downloadPath && fs.existsSync(downloadPath)) {
     const reported = path.resolve(downloadPath);
-    if (src !== reported && !src.startsWith(reported + path.sep)) return false;
-    if (src !== reported) base = reported;
+    // A reported archive's contents live in the sibling folder named after it.
+    const unpacked = !isDirectory(reported) && isArchiveFile(reported) ? path.resolve(archiveDestinationFor(reported)) : null;
+    if (unpacked && src.startsWith(unpacked + path.sep)) base = unpacked;
+    else if (src !== reported && !src.startsWith(reported + path.sep)) return false;
+    else if (src !== reported) base = reported;
   }
   return !isSamplePath(src, base, releaseTitle);
 }

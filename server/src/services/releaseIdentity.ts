@@ -229,9 +229,16 @@ function matchTitle(candidates: string[], target: IdentityTarget, parsed: Parsed
  * CONTAINMENT_TYPES the item title only has to appear inside the release title.
  */
 export function releaseIdentifiesTarget(release: IdentityRelease, parsed: ParsedRelease, target: IdentityTarget): IdentityVerdict {
+  // An id that matches settles a release whose title doesn't; a release whose title does is a title
+  // match (so `id` means "by id ONLY", which the import side holds for review).
   const byId = idMatch(release, parsed, target);
-  if (byId) return { ok: true, matchType: "id", reason: null, detail: `indexer id matches the item's (${byId})` };
+  const verdict = titleVerdict(release, parsed, target);
+  if (verdict.ok) return byId ? { ...verdict, detail: `${verdict.detail}; indexer id matches too (${byId})` } : verdict;
+  if (byId) return { ok: true, matchType: "id", reason: null, detail: `indexer id matches the item's (${byId}) though the title doesn't: ${verdict.detail}` };
+  return verdict;
+}
 
+function titleVerdict(release: IdentityRelease, parsed: ParsedRelease, target: IdentityTarget): IdentityVerdict {
   const releaseTitle = parsed.title;
   if (!releaseTitle) {
     return { ok: false, matchType: "none", reason: "title", detail: `no title could be read from "${release.title}"` };

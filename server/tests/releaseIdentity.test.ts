@@ -178,3 +178,13 @@ describe("releaseIdentifiesTarget — review follow-ups", () => {
     expect(verdict("[Batch] Show - 01-12 [1080p]", item({ type: "anime", title: "Show", year: 2020 }))).toMatchObject({ ok: true });
   });
 });
+
+describe("releaseIdentifiesTarget — id means id only", () => {
+  it("reports a title match when both the title and the indexer id match, and 'id' only when the title doesn't", () => {
+    const matrix = item({ title: "The Matrix", year: 1999, externalIds: { imdb: "tt0133093" } });
+    expect(verdict("The.Matrix.1999.1080p.BluRay-GRP", matrix, { imdbId: "tt0133093" })).toMatchObject({ ok: true, matchType: "title" });
+    expect(verdict("Some.Other.Name.1999.1080p.BluRay-GRP", matrix, { imdbId: "tt0133093" })).toMatchObject({ ok: true, matchType: "id" });
+    // The id settles a year contradiction too: the indexer knows better than a mis-scraped year.
+    expect(verdict("The.Matrix.2010.1080p.BluRay-GRP", matrix, { imdbId: "tt0133093" })).toMatchObject({ ok: true, matchType: "id" });
+  });
+});

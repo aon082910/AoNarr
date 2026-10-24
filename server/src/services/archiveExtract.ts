@@ -141,6 +141,17 @@ function destinationFor(archivePath: string): string {
   return path.join(path.dirname(archivePath), base);
 }
 
+/** Where unpackDownloadedArchives puts an archive's contents: a sibling folder named after it. The
+ * importer looks there when a download client reports the archive itself as the download. */
+export function archiveDestinationFor(archivePath: string): string {
+  return destinationFor(archivePath);
+}
+
+/** Whether a file is an archive this module unpacks (.zip/.7z/.rar, any volume). */
+export function isArchiveFile(fileName: string): boolean {
+  return ARCHIVE_EXTS.has(path.extname(fileName).toLowerCase());
+}
+
 async function exists(p: string): Promise<boolean> {
   return fsp.access(p).then(
     () => true,
