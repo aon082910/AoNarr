@@ -757,11 +757,11 @@ describe("searchMetadata: comics/manga/roms/video/podcast/adult", () => {
 
   it("ThePornDB adult search maps performers, falling back to parent.name and dropping nameless entries", async () => {
     setSetting("thePornDbApiKey", "k");
-    stub([{ test: (u) => u.includes("api.metadataapi.net/scenes?"), response: ok({ data: [{ title: "Scene1", date: "2020-01-01", description: "d", image: "http://img", id: 1, site: { name: "Studio1" }, performers: [{ name: "P1" }, { parent: { name: "P2" } }, {}] }] }) }]);
+    stub([{ test: (u) => u.includes("api.theporndb.net/scenes?"), response: ok({ data: [{ title: "Scene1", date: "2020-01-01", description: "d", image: "http://img", id: 1, site: { name: "Studio1" }, performers: [{ name: "P1" }, { parent: { name: "P2" } }, {}] }] }) }]);
     const results = await metadata.searchMetadata("adult", "x", "theporndb");
     expect(results[0]).toEqual({ title: "Scene1", year: 2020, overview: "d", posterUrl: "http://img", externalIds: { theporndb: "1" }, studio: "Studio1", performers: ["P1", "P2"] });
 
-    stub([{ test: (u) => u.includes("api.metadataapi.net/scenes?"), response: ok({ data: [{ title: "No Studio Or Date", id: 2 }] }) }]);
+    stub([{ test: (u) => u.includes("api.theporndb.net/scenes?"), response: ok({ data: [{ title: "No Studio Or Date", id: 2 }] }) }]);
     const bare = await metadata.searchMetadata("adult", "x", "theporndb");
     expect(bare[0].year).toBeNull();
     expect(bare[0].studio).toBeNull();
@@ -2289,10 +2289,10 @@ describe("fetchArtworkFor", () => {
 
   it("adult: uses the posters array, falling back to the single image, plus a dual-field background", async () => {
     setSetting("thePornDbApiKey", "k");
-    stub([{ test: (u) => u.includes("api.metadataapi.net/scenes/1"), response: ok({ data: { posters: [{ url: "http://p1" }], background: { large: "http://bg1", url: "http://bg2" } } }) }]);
+    stub([{ test: (u) => u.includes("api.theporndb.net/scenes/1"), response: ok({ data: { posters: [{ url: "http://p1" }], background: { large: "http://bg1", url: "http://bg2" } } }) }]);
     expect(await metadata.fetchArtworkFor("adult", { theporndb: "1" })).toEqual({ posters: ["http://p1"], backgrounds: ["http://bg1", "http://bg2"], logos: [] });
 
-    stub([{ test: (u) => u.includes("api.metadataapi.net/scenes/2"), response: ok({ image: "http://fallback", background: {} }) }]);
+    stub([{ test: (u) => u.includes("api.theporndb.net/scenes/2"), response: ok({ image: "http://fallback", background: {} }) }]);
     expect((await metadata.fetchArtworkFor("adult", { theporndb: "2" })).posters).toEqual(["http://fallback"]);
   });
 

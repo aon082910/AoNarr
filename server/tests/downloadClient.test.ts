@@ -708,12 +708,55 @@ describe("QBittorrentAdapter", () => {
 describe("SabnzbdAdapter", () => {
   const adapter = () => getDownloadClientAdapter("sabnzbd");
 
-  it("addDownload posts the URL and returns the nzo id", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ok({ nzo_ids: ["SABnzbd_nzo_123"] })));
+  it("addDownload fetches the NZB itself, uploads it as mode=addfile named after the release, and returns the nzo id", async () => {
+    // The client never fetches the indexer URL: one that refuses private addresses (NzbWebDAV)
+    // could not reach a loopback indexer, which `mode=addurl` needs it to.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, arrayBuffer: async () => Buffer.from("<nzb>release</nzb>") })
+      .mockResolvedValueOnce(ok({ nzo_ids: ["SABnzbd_nzo_123"] }));
+    vi.stubGlobal("fetch", fetchMock);
 
-    const result = await adapter().addDownload(await insertClient({ type: "sabnzbd" }), "http://indexer/nzb", null);
+    const result = await adapter().addDownload(await insertClient({ type: "sabnzbd", api_key: "sab-key" }), "http://127.0.0.1:9696/1/download?id=7", "tv", "Show.S01E01.720p-GRP");
 
     expect(result.downloadId).toBe("SABnzbd_nzo_123");
+    expect(fetchMock.mock.calls[0][0]).toBe("http://127.0.0.1:9696/1/download?id=7");
+    const [apiUrl, init] = fetchMock.mock.calls[1];
+    const url = new URL(apiUrl as string);
+    expect(url.pathname).toBe("/api");
+    expect(url.searchParams.get("apikey")).toBe("sab-key");
+    expect(url.searchParams.has("mode")).toBe(false);
+    expect((init as RequestInit).method).toBe("POST");
+    const form = (init as RequestInit).body as FormData;
+    expect(form.get("mode")).toBe("addfile");
+    expect(form.get("cat")).toBe("tv");
+    const file = form.get("name") as File;
+    expect(file.name).toBe("Show.S01E01.720p-GRP.nzb");
+    expect(await file.text()).toBe("<nzb>release</nzb>");
+  });
+
+  it("addDownload names an upload with no release title \"release.nzb\", sends no category when there is none, and refuses a magnet link", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, arrayBuffer: async () => Buffer.from("<nzb/>") })
+      .mockResolvedValueOnce(ok({ nzo_ids: ["SABnzbd_nzo_9"] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = await insertClient({ type: "sabnzbd" });
+
+    await adapter().addDownload(client, "http://indexer/nzb", null);
+    const form = (fetchMock.mock.calls[1][1] as RequestInit).body as FormData;
+    expect((form.get("name") as File).name).toBe("release.nzb");
+    expect(form.has("cat")).toBe(false);
+
+    await expect(adapter().addDownload(client, "magnet:?xt=urn:btih:abc", null)).rejects.toThrow("SABnzbd cannot accept a magnet link");
+  });
+
+  it("addDownload fails with the indexer's status when the NZB can't be fetched, without calling SABnzbd", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 404 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(adapter().addDownload(await insertClient({ type: "sabnzbd" }), "http://indexer/gone", null)).rejects.toThrow("HTTP 404");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("addDownload throws on SABnzbd's HTTP-200 key rejection instead of recording a job that doesn't exist", async () => {
