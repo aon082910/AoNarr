@@ -2442,7 +2442,7 @@ describe("placeSeasonPackFiles", () => {
     expect(fs.existsSync(second)).toBe(false);
   });
 
-  it("counts only this season's unknown episodes as unmatched, not extras, specials or other seasons", async () => {
+  it("counts this season's unknown episodes and other seasons' files as unmatched, not extras or specials", async () => {
     const folder = await insertRootFolder("series");
     const { showId } = await insertShowWithEpisodes(folder.id, [1, 2, 3]);
     const pack = "Show.S01.1080p.BluRay-GRP";
@@ -2455,7 +2455,8 @@ describe("placeSeasonPackFiles", () => {
 
     const clean = await placeSeasonPackFiles({ itemId: showId, seasonNumber: 1, anchorFile: anchor, quality: null, releaseTitle: pack });
 
-    expect(clean).toMatchObject({ episodeCount: 2, unmatchedCount: 0, leftInPlace: 0 });
+    // S02E01 is another season's episode: left in place and counted, so the download's data is kept.
+    expect(clean).toMatchObject({ episodeCount: 2, unmatchedCount: 1, leftInPlace: 0 });
     expect(fs.existsSync(extra)).toBe(true);
 
     const nextAnchor = writeDownloadFile(path.join("Show.S01.REPACK", "Show.S01E03.mkv"));
@@ -3622,5 +3623,299 @@ describe("renameLibraryFiles / renameOneMediaItem", () => {
     } finally {
       setSetting("namingEnabledSeries", "1");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Import-side identity verification (MATCHING_ACCURACY_PLAN.md, Round 2)
+// ---------------------------------------------------------------------------
+
+describe("import verification (Round 2)", () => {
+  let locateDownloadedFile: (typeof import("../src/services/importer.js"))["locateDownloadedFile"];
+  let fileContradictsTarget: (typeof import("../src/services/importer.js"))["fileContradictsTarget"];
+  let ImportIdentityMismatchError: (typeof import("../src/services/importer.js"))["ImportIdentityMismatchError"];
+
+  beforeAll(async () => {
+    ({ locateDownloadedFile, fileContradictsTarget, ImportIdentityMismatchError } = await import("../src/services/importer.js"));
+  });
+
+  beforeEach(() => {
+    setSetting("strictReleaseIdentity", "");
+    setSetting("strictReleaseIdentity.movie", "");
+    setSetting("strictReleaseIdentity.series", "");
+    setSetting("importDownloadsWideSearch", "");
+  });
+
+  async function insertSeries(title: string, year: number | null, rootFolderId: number | null): Promise<number> {
+    const result = await db
+      .prepare(`INSERT INTO media_items (type, title, sort_title, year, root_folder_id, monitored, has_file, status) VALUES ('series', ?, ?, ?, ?, 1, 0, 'missing')`)
+      .run(title, title.toLowerCase(), year, rootFolderId);
+    return Number(result.lastInsertRowid);
+  }
+
+  async function insertEpisode(showId: number, season: number, episode: number): Promise<number> {
+    const result = await db
+      .prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?, ?, ?, ?, 1, 0)`)
+      .run(showId, season, episode, `S${season}E${episode}`);
+    return Number(result.lastInsertRowid);
+  }
+
+  async function insertQueueRow(mediaItemId: number, overrides: Record<string, unknown> = {}): Promise<number> {
+    const row = {
+      episode_id: null,
+      sub_item_id: null,
+      season_number: null,
+      title: "Some.Release.2020",
+      quality: null,
+      download_path: null,
+      match_type: null,
+      grab_source: null,
+      ...overrides,
+    };
+    const result = await db
+      .prepare(
+        `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, quality, download_path, match_type, grab_source, status) VALUES (?,?,?,?,?,?,?,?,?, 'downloaded')`
+      )
+      .run(mediaItemId, row.episode_id, row.sub_item_id, row.season_number, row.title, row.quality, row.download_path, row.match_type, row.grab_source);
+    return Number(result.lastInsertRowid);
+  }
+
+  describe("locateDownloadedFile", () => {
+    it("treats a reported single file of another type as the download itself, not a reason to look elsewhere", () => {
+      writeDownloadFile("The.Matrix.1999.1080p.BluRay-OLD.mkv"); // an older grab still seeding
+      const iso = writeDownloadFile("The.Matrix.1999.BluRay-GRP.iso");
+
+      expect(locateDownloadedFile("The.Matrix.1999.BluRay-GRP", "movie", undefined, iso)).toEqual({ file: null, reason: "unsupported-extension" });
+    });
+
+    it("does not search the rest of the downloads directory when the reported folder holds nothing importable", () => {
+      const releaseDir = path.join(downloadsDir, "The.Matrix.1999.1080p.WEB-GRP");
+      writeDownloadFile(path.join("The.Matrix.1999.1080p.WEB-GRP", "readme.nfo"));
+      const elsewhere = writeDownloadFile("The.Matrix.1999.720p.HDTV-OLD.mkv");
+
+      expect(locateDownloadedFile("The.Matrix.1999.1080p.WEB-GRP", "movie", undefined, releaseDir)).toEqual({ file: null, reason: "nothing-in-reported-folder" });
+
+      // The legacy widening stays available behind a setting.
+      setSetting("importDownloadsWideSearch", "1");
+      expect(locateDownloadedFile("The.Matrix.1999.1080p.WEB-GRP", "movie", undefined, releaseDir)).toEqual({ file: elsewhere });
+    });
+
+    it("still searches the downloads directory when the reported path does not exist", () => {
+      const wanted = writeDownloadFile("The.Matrix.1999.1080p.mkv");
+      expect(locateDownloadedFile("The.Matrix.1999.1080p", "movie", undefined, path.join(downloadsDir, "gone"))).toEqual({ file: wanted });
+    });
+
+    it("never takes a file of the same title from another year when a wide search is all it has", () => {
+      writeDownloadFile("Dune.2021.1080p.WEB.H264-GRP.mkv");
+      expect(findDownloadedFile("Dune.Part.Two.2024.1080p.WEB.H264-GRP", "movie")).toBeNull();
+    });
+
+    it("never takes another show's episode for a title too short to have words of its own", () => {
+      const categoryFolder = path.join(downloadsDir, "tv");
+      writeDownloadFile(path.join("tv", "Breaking.Bad.S01E03.720p.HDTV-GRP.mkv"));
+
+      expect(findDownloadedFile("24.S01E03.720p.HDTV-GRP", "series", { season: 1, episode: 3 }, categoryFolder)).toBeNull();
+
+      const wanted = writeDownloadFile(path.join("tv", "24.S01E03.720p.HDTV-GRP.mkv"));
+      expect(findDownloadedFile("24.S01E03.720p.HDTV-GRP", "series", { season: 1, episode: 3 }, categoryFolder)).toBe(wanted);
+    });
+
+    it("passes over a release's extras for its own obfuscated file and the feature over its featurette", () => {
+      const release = "Show.S01E05.1080p.WEB-GRP";
+      const wanted = writeDownloadFile(path.join(release, "x7k2q.mkv"), "the episode");
+      writeDownloadFile(path.join(release, "Extras", "Making.Of.Show.mkv"), "a long making-of, the larger file");
+      expect(findDownloadedFile(release, "series", { season: 1, episode: 5 }, path.join(downloadsDir, release))).toBe(wanted);
+
+      const movie = "Heat.1995.1080p.BluRay-GRP";
+      const feature = writeDownloadFile(path.join(movie, "Heat.1995.1080p.BluRay-GRP.mkv"), "the feature");
+      writeDownloadFile(path.join(movie, "Heat.1995.Featurette.1080p.BluRay-GRP.mkv"), "a featurette, the larger file here");
+      expect(findDownloadedFile(movie, "movie", undefined, path.join(downloadsDir, movie))).toBe(feature);
+    });
+  });
+
+  describe("fileContradictsTarget", () => {
+    const breakingBad = { type: "series", title: "Breaking Bad", year: 2008, externalIds: {} };
+    const ctx = { releaseTitle: "Breaking.Bad.S01E01.1080p.WEB-GRP" };
+
+    it("names another show's file, and lets the show's own, an obfuscated or a numbers-only name through", () => {
+      setSetting("strictReleaseIdentity.series", "enforce");
+      const other = writeDownloadFile(path.join("Breaking.Bad.S01E01.1080p.WEB-GRP", "Better.Call.Saul.S01E01.1080p.WEB-GRP.mkv"));
+      expect(fileContradictsTarget(other, ctx, breakingBad)).toMatch(/Better Call Saul.*doesn't name "Breaking Bad"/);
+      expect(fileContradictsTarget(writeDownloadFile("Breaking.Bad.S01E01.1080p.WEB-GRP.mkv"), ctx, breakingBad)).toBeNull();
+      expect(fileContradictsTarget(writeDownloadFile(path.join("Breaking.Bad.S01E01.1080p.WEB-GRP", "a8f7d6c1.mkv")), ctx, breakingBad)).toBeNull();
+      expect(fileContradictsTarget(writeDownloadFile(path.join("Breaking.Bad.S01E01.1080p.WEB-GRP", "S01E01.mkv")), ctx, breakingBad)).toBeNull();
+    });
+
+    it("reads the release folder's name when the file's says nothing", () => {
+      setSetting("strictReleaseIdentity.series", "enforce");
+      const obfuscated = writeDownloadFile(path.join("Better.Call.Saul.S01E01.1080p.WEB-GRP", "a8f7d6c1.mkv"));
+      expect(fileContradictsTarget(obfuscated, { ...ctx, downloadPath: path.dirname(obfuscated) }, breakingBad)).toMatch(/folder "Better\.Call\.Saul/);
+    });
+
+    it("rejects the same title from another year", () => {
+      setSetting("strictReleaseIdentity.movie", "enforce");
+      const dune = { type: "movie", title: "Dune: Part Two", year: 2024, externalIds: {} };
+      expect(fileContradictsTarget(writeDownloadFile("Dune.2021.1080p.WEB.H264-GRP.mkv"), { releaseTitle: "Dune.Part.Two.2024.1080p.WEB-GRP" }, dune)).toMatch(/2021/);
+      expect(fileContradictsTarget(writeDownloadFile("Dune.Part.Two.2024.1080p.WEB.H264-GRP.mkv"), { releaseTitle: "Dune.Part.Two.2024.1080p.WEB-GRP" }, dune)).toBeNull();
+    });
+
+    it("only logs in log mode and judges nothing when off, or for a type without quality tiers", () => {
+      const other = writeDownloadFile("Better.Call.Saul.S01E01.1080p.WEB-GRP.mkv");
+      setSetting("strictReleaseIdentity.series", "log");
+      expect(fileContradictsTarget(other, ctx, breakingBad)).toBeNull();
+      setSetting("strictReleaseIdentity.series", "off");
+      expect(fileContradictsTarget(other, ctx, breakingBad)).toBeNull();
+      setSetting("strictReleaseIdentity", "enforce");
+      expect(fileContradictsTarget(writeDownloadFile("Other Artist - Other Album.flac"), { releaseTitle: "Artist - Album" }, { type: "artist", title: "Artist", year: null, externalIds: {} })).toBeNull();
+    });
+  });
+
+  describe("placeFile and importQueueItem under the gate", () => {
+    it("refuses to place another show's file when enforcing, and places it in log mode", async () => {
+      const folder = await insertRootFolder("series");
+      const showId = await insertSeries("Breaking Bad", 2008, folder.id);
+      const epId = await insertEpisode(showId, 1, 1);
+      const verify = { releaseTitle: "Breaking.Bad.S01E01.1080p.WEB-GRP" };
+
+      setSetting("strictReleaseIdentity.series", "enforce");
+      const wrong = writeDownloadFile("Better.Call.Saul.S01E01.1080p.WEB-GRP.mkv");
+      const err = await placeFile({ itemId: showId, episodeId: epId, subItemId: null, sourceFile: wrong, quality: null, verify }).catch((e) => e);
+      expect(err).toBeInstanceOf(ImportIdentityMismatchError);
+      expect(err).toBeInstanceOf(ImportSkippedError);
+      expect(fs.existsSync(wrong)).toBe(true);
+      expect((await db.prepare("SELECT has_file FROM episodes WHERE id = ?").get(epId) as any).has_file).toBe(0);
+
+      setSetting("strictReleaseIdentity.series", "log");
+      await placeFile({ itemId: showId, episodeId: epId, subItemId: null, sourceFile: wrong, quality: null, verify });
+      expect((await db.prepare("SELECT has_file FROM episodes WHERE id = ?").get(epId) as any).has_file).toBe(1);
+    });
+
+    it("holds a release whose own folder holds another show's episode for a manual import, data kept", async () => {
+      setSetting("strictReleaseIdentity.series", "enforce");
+      setSetting("removeCompletedDownloads", "1");
+      const folder = await insertRootFolder("series");
+      const showId = await insertSeries("Breaking Bad", 2008, folder.id);
+      const epId = await insertEpisode(showId, 1, 1);
+      const releaseDir = path.join(downloadsDir, "Breaking.Bad.S01E01.1080p.WEB-GRP");
+      const wrong = writeDownloadFile(path.join("Breaking.Bad.S01E01.1080p.WEB-GRP", "Better.Call.Saul.S01E01.1080p.WEB-GRP.mkv"));
+      const queueId = await insertQueueRow(showId, { episode_id: epId, title: "Breaking.Bad.S01E01.1080p.WEB-GRP", download_path: releaseDir, grab_source: "auto", match_type: "title" });
+
+      const err = await importQueueItem(queueId).catch((e) => e);
+
+      // The folder is this release's, the file inside names another show: a review case, not a retry.
+      expect(err).toBeInstanceOf(ImportIdentityMismatchError);
+      expect(err.message).toMatch(/Better Call Saul.*doesn't name "Breaking Bad"/);
+      expect(fs.existsSync(wrong)).toBe(true);
+      expect(removeQueueItemDownload).not.toHaveBeenCalled();
+      expect(await db.prepare("SELECT id FROM queue WHERE id = ?").get(queueId)).toBeDefined();
+    });
+
+    it("lets a manual import place whatever file the admin chose", async () => {
+      setSetting("strictReleaseIdentity.series", "enforce");
+      const folder = await insertRootFolder("series");
+      const showId = await insertSeries("Breaking Bad", 2008, folder.id);
+      const epId = await insertEpisode(showId, 1, 1);
+      const chosen = writeDownloadFile("Better.Call.Saul.S01E01.1080p.WEB-GRP.mkv");
+      const queueId = await insertQueueRow(showId, { episode_id: epId, title: "Breaking.Bad.S01E01.1080p.WEB-GRP" });
+
+      await importQueueItem(queueId, chosen);
+
+      expect((await db.prepare("SELECT has_file FROM episodes WHERE id = ?").get(epId) as any).has_file).toBe(1);
+    });
+
+    it("holds an automatic grab matched by indexer id only for a manual import while enforcing", async () => {
+      const folder = await insertRootFolder("movie");
+      const movie = await insertMovie({ root_folder_id: folder.id });
+      writeDownloadFile("Some.Other.Name.1999.1080p.WEB-GRP.mkv");
+
+      setSetting("strictReleaseIdentity.movie", "enforce");
+      const auto = await insertQueueRow(movie.id, { title: "Some.Other.Name.1999.1080p.WEB-GRP", match_type: "id", grab_source: "auto" });
+      const err = await importQueueItem(auto).catch((e) => e);
+      expect(err).toBeInstanceOf(ImportSkippedError);
+      expect(err.message).toMatch(/indexer's id only/);
+      expect(await db.prepare("SELECT id FROM queue WHERE id = ?").get(auto)).toBeDefined();
+
+      // The admin's own interactive grab imports as before: neither the id-only hold nor the file gate applies to it.
+      const interactive = await insertQueueRow(movie.id, { title: "Some.Other.Name.1999.1080p.WEB-GRP", match_type: "id", grab_source: "interactive" });
+      await importQueueItem(interactive);
+      expect((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(movie.id) as any).has_file).toBe(1);
+    });
+
+    it("in log mode imports an id-only automatic grab, logging only", async () => {
+      const folder = await insertRootFolder("movie");
+      const movie = await insertMovie({ root_folder_id: folder.id });
+      writeDownloadFile("Some.Other.Name.1999.1080p.WEB-GRP.mkv");
+      setSetting("strictReleaseIdentity.movie", "log");
+      const auto = await insertQueueRow(movie.id, { title: "Some.Other.Name.1999.1080p.WEB-GRP", match_type: "id", grab_source: "auto" });
+      await importQueueItem(auto);
+      expect((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(movie.id) as any).has_file).toBe(1);
+    });
+
+    it("leaves a reported disc image for a manual import instead of failing the download", async () => {
+      const folder = await insertRootFolder("movie");
+      const movie = await insertMovie({ root_folder_id: folder.id });
+      writeDownloadFile("The.Matrix.1999.720p.HDTV-OLD.mkv");
+      const iso = writeDownloadFile("The.Matrix.1999.BluRay-GRP.iso");
+      const queueId = await insertQueueRow(movie.id, { title: "The.Matrix.1999.BluRay-GRP", download_path: iso });
+
+      const err = await importQueueItem(queueId).catch((e) => e);
+
+      expect(err).toBeInstanceOf(ImportSkippedError);
+      expect(err.message).toMatch(/not a file type this library imports/);
+      expect((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(movie.id) as any).has_file).toBe(0);
+    });
+  });
+
+  describe("season packs", () => {
+    it("keeps a multi-season pack's other season on disk instead of deleting it with the download", async () => {
+      setSetting("removeCompletedDownloads", "1");
+      const folder = await insertRootFolder("series");
+      const showId = await insertSeries("Show", 2015, folder.id);
+      await insertEpisode(showId, 1, 1);
+      await insertEpisode(showId, 2, 1);
+      const pack = "Show.S01-S02.COMPLETE.1080p.WEB-GRP";
+      writeDownloadFile(path.join(pack, "Show.S01E01.1080p.WEB-GRP.mkv"), "s1e1");
+      const s2 = writeDownloadFile(path.join(pack, "Show.S02E01.1080p.WEB-GRP.mkv"), "s2e1");
+      const queueId = await insertQueueRow(showId, { title: pack, season_number: 1, download_path: path.join(downloadsDir, pack) });
+
+      await importQueueItem(queueId);
+
+      expect((await db.prepare("SELECT has_file FROM episodes WHERE media_item_id = ? AND season_number = 1").get(showId) as any).has_file).toBe(1);
+      expect((await db.prepare("SELECT has_file FROM episodes WHERE media_item_id = ? AND season_number = 2").get(showId) as any).has_file).toBe(0);
+      expect(fs.existsSync(s2)).toBe(true);
+      expect(removeQueueItemDownload).toHaveBeenCalledTimes(1);
+      expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false); // data kept
+    });
+
+    it("places the show's own files of a pack and leaves another show's in the download when enforcing", async () => {
+      setSetting("strictReleaseIdentity.series", "enforce");
+      const folder = await insertRootFolder("series");
+      const showId = await insertSeries("Show", 2015, folder.id);
+      await insertEpisode(showId, 1, 1);
+      await insertEpisode(showId, 1, 2);
+      const pack = "Show.S01.1080p.WEB-GRP";
+      writeDownloadFile(path.join(pack, "Show.S01E01.1080p.WEB-GRP.mkv"), "e1");
+      const other = writeDownloadFile(path.join(pack, "Other.Show.S01E02.1080p.WEB-GRP.mkv"), "another show's e2");
+
+      const result = await placeSeasonPackFiles({ itemId: showId, seasonNumber: 1, anchorFile: path.join(downloadsDir, pack, "Show.S01E01.1080p.WEB-GRP.mkv"), quality: null, releaseTitle: pack, downloadPath: path.join(downloadsDir, pack), verify: true });
+
+      expect(result.episodeCount).toBe(1);
+      expect(result.unmatchedCount).toBe(1);
+      expect(fs.existsSync(other)).toBe(true);
+    });
+
+    it("refuses a pack every file of which names another show", async () => {
+      setSetting("strictReleaseIdentity.series", "enforce");
+      const folder = await insertRootFolder("series");
+      const showId = await insertSeries("Show", 2015, folder.id);
+      await insertEpisode(showId, 1, 1);
+      const pack = "Show.S01.1080p.WEB-GRP";
+      const anchor = writeDownloadFile(path.join(pack, "Other.Show.S01E01.1080p.WEB-GRP.mkv"));
+
+      const err = await placeSeasonPackFiles({ itemId: showId, seasonNumber: 1, anchorFile: anchor, quality: null, releaseTitle: pack, downloadPath: path.join(downloadsDir, pack), verify: true }).catch((e) => e);
+
+      expect(err).toBeInstanceOf(ImportIdentityMismatchError);
+      expect(fs.existsSync(anchor)).toBe(true);
+    });
   });
 });

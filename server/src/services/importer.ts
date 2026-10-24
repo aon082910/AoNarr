@@ -12,6 +12,7 @@ import { writeNfoSidecar } from "./metadataExport.js";
 import { writeAudioTags } from "./audioTagWriter.js";
 import { notifyQueueChanged } from "./realtime.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
+import { identityKey, identityModeFor, releaseIdentifiesTarget, type IdentityTarget } from "./releaseIdentity.js";
 import {
   downloadSubtitleContent,
   downloadSubtitleFromUrl,
@@ -256,8 +257,11 @@ function normalizeTokens(text: string): string[] {
  * Channel layouts and codecs ("DDP5.1", "H.264") are left out: a file needn't repeat those. */
 function numberTokens(text: string): Set<string> {
   const numbers = new Set<string>();
-  const cleaned = text.replace(/\d+[.,]\d+/g, " ").replace(/[hx][.\s]?26[45]/gi, " ");
-  for (const m of cleaned.matchAll(/(?<![a-z0-9])\d{1,3}(?![a-z0-9])/gi)) numbers.add(String(Number(m[0])));
+  // A decimal is a channel layout or version ("5.1", "7.1", "v2.0"), one or two digits after the
+  // point; "2024.1080p" in a dotted release name is a year and a resolution, not a fraction.
+  const cleaned = text.replace(/\d+[.,]\d{1,2}(?!\d)/g, " ").replace(/[hx][.\s]?26[45]/gi, " ");
+  // Four digits too: a year tells "Dune.2021" from "Dune.Part.Two.2024" when the words alone can't.
+  for (const m of cleaned.matchAll(/(?<![a-z0-9])\d{1,4}(?![a-z0-9])/gi)) numbers.add(String(Number(m[0])));
   return numbers;
 }
 
@@ -343,6 +347,16 @@ function withoutSamples(files: string[], baseDir: string, releaseTitle: string |
   return files.filter((f) => !isSamplePath(f, baseDir, releaseTitle));
 }
 
+// A disc's or release's bonus material, by folder ("Extras", "Featurettes") or by file name.
+const EXTRAS_FOLDER = /^(?:extras?|featurettes?|bonus(?:[\s._-]?(?:material|content|features?))?|behind[\s._-]the[\s._-]scenes|deleted[\s._-]scenes|trailers?|interviews?)$/i;
+const EXTRAS_NAME = /(?:^|[\s._-])(?:making[\s._-]of|featurette|trailer|deleted[\s._-]scenes?|behind[\s._-]the[\s._-]scenes|bloopers?|outtakes?)(?:$|[\s._-])/i;
+
+function isExtrasPath(file: string, baseDir: string): boolean {
+  const parts = path.relative(baseDir, file).split(path.sep);
+  if (parts.slice(0, -1).some((part) => EXTRAS_FOLDER.test(part))) return true;
+  return EXTRAS_NAME.test(path.basename(file, path.extname(file)));
+}
+
 /** Recursively walks the downloads directory (bounded depth) collecting files with a matching extension. */
 function walk(dir: string, extensions: string[], maxDepth: number, depth = 0): string[] {
   if (depth > maxDepth) return [];
@@ -422,6 +436,12 @@ function isSharedDownloadFolder(dir: string, releaseTitle: string | undefined): 
 function scoreByTokenOverlap(filePaths: string[], releaseTitle: string, baseDir: string): FileCandidate[] {
   const wantedTokens = new Set(normalizeTokens(releaseTitle));
   const wantedNumbers = numberTokens(releaseTitle);
+  // Quality words ("1080p", "x264", "flac") are shared by every other download of that quality, so
+  // they weigh a quarter of a title word or a year. Without this an unrelated file sharing most of a
+  // release's quality tags outscored the threshold.
+  const weightOf = (t: string) => (QUALITY_WORDS.has(t) ? 0.25 : 1);
+  let wantedWeight = 0;
+  for (const t of wantedTokens) wantedWeight += weightOf(t);
   return filePaths.flatMap((filePath) => {
     let size: number;
     try {
@@ -433,8 +453,8 @@ function scoreByTokenOverlap(filePaths: string[], releaseTitle: string, baseDir:
     const fileTokens = new Set(normalizeTokens(relative));
     const fileNumbers = numberTokens(relative);
     let overlap = 0;
-    for (const t of wantedTokens) if (fileTokens.has(t)) overlap++;
-    let score = wantedTokens.size > 0 ? overlap / wantedTokens.size : 0;
+    for (const t of wantedTokens) if (fileTokens.has(t)) overlap += weightOf(t);
+    let score = wantedWeight > 0 ? overlap / wantedWeight : 0;
     // A title of nothing but short words ("Ep 5", "#12") is matched on its numbers instead.
     if (wantedTokens.size === 0 && wantedNumbers.size > 0) score = [...wantedNumbers].filter((n) => fileNumbers.has(n)).length / wantedNumbers.size;
     const otherNumber = wantedNumbers.size > 0 && fileNumbers.size > 0 && ![...wantedNumbers].some((n) => fileNumbers.has(n));
@@ -481,6 +501,30 @@ export function findDownloadedFile(
   searchRoot?: string | null,
   options: { childTitle?: string | null; category?: string | null } = {}
 ): string | null {
+  return locateDownloadedFile(releaseTitle, mediaType, target, searchRoot, options).file;
+}
+
+/** Why locateDownloadedFile found nothing where the client said the download is. A reported file
+ * of another type (a disc image) is left for a manual import; a reported folder with nothing
+ * importable fails the release like any other, without a downloads-wide search standing in. */
+export type LocateReason = "unsupported-extension" | "nothing-in-reported-folder";
+
+/**
+ * findDownloadedFile, with the reason when a client-reported location yields nothing. Sonarr/Radarr
+ * never search beyond what the download client reported: a download whose folder holds no media is
+ * waiting for manual import, not one whose file is somewhere else in the downloads directory. The
+ * downloads-wide search is kept for a download the client reported no path for, and for a reported
+ * path that does not exist (a remote-path mapping that is stale or not yet written). The legacy
+ * widening after an existing-but-empty reported folder is behind the `importDownloadsWideSearch`
+ * setting ("1" restores it).
+ */
+export function locateDownloadedFile(
+  releaseTitle: string,
+  mediaType: MediaType,
+  target?: EpisodeTarget,
+  searchRoot?: string | null,
+  options: { childTitle?: string | null; category?: string | null } = {}
+): { file: string | null; reason?: LocateReason } {
   const extensions = getMediaTypeConfig(mediaType).extensions;
   const ctx: DownloadContext = { releaseTitle, downloadPath: searchRoot, category: options.category };
 
@@ -488,14 +532,22 @@ export function findDownloadedFile(
     try {
       const stat = fs.statSync(searchRoot);
       if (stat.isFile()) {
-        if (extensions.includes(path.extname(searchRoot).toLowerCase())) return searchRoot;
+        if (extensions.includes(path.extname(searchRoot).toLowerCase())) return { file: searchRoot };
+        // The client reported THE file (a disc image, an archive the unpacker left alone): it is the
+        // download, and nothing elsewhere in the downloads directory is.
+        log.info(`[importer] "${path.basename(searchRoot)}" is not a ${mediaType} file type; left for a manual import`);
+        return { file: null, reason: "unsupported-extension" };
       } else if (stat.isDirectory()) {
         const scoped = findDownloadedFileIn(searchRoot, path.dirname(searchRoot), releaseTitle, extensions, target, ctx, options.childTitle);
+        if (scoped.file) return { file: scoped.file };
         // The downloads-wide search could only turn up some other download of the same episode
         // number (another show's, or an older grab of this one still seeding) — not this one. Nor,
         // when the release's own folder holds only its sample, anything but another grab of the
         // same title, whose files would be moved out from under its seeding.
-        if (scoped.file || target || (scoped.droppedSamples && isOwnReleaseFolder(searchRoot, ctx))) return scoped.file;
+        if (target || (scoped.droppedSamples && isOwnReleaseFolder(searchRoot, ctx)) || getSetting("importDownloadsWideSearch") !== "1") {
+          log.info(`[importer] nothing importable for "${releaseTitle}" in its reported folder "${searchRoot}"; not searching the rest of the downloads directory`);
+          return { file: null, reason: "nothing-in-reported-folder" };
+        }
       }
     } catch {
       // Mapped path doesn't exist (stale mapping, or the client hasn't actually written there) —
@@ -503,7 +555,7 @@ export function findDownloadedFile(
     }
   }
 
-  return findDownloadedFileIn(config.downloadsDir, config.downloadsDir, releaseTitle, extensions, target, ctx, options.childTitle).file;
+  return { file: findDownloadedFileIn(config.downloadsDir, config.downloadsDir, releaseTitle, extensions, target, ctx, options.childTitle).file };
 }
 
 /** `labelBase` is what candidate paths are made relative to before parsing/scoring — baseDir
@@ -535,16 +587,31 @@ function pickDownloadedFile(
   ctx: DownloadContext,
   childTitle: string | null | undefined
 ): string | null {
+  // A release's extras (featurettes, trailers, deleted scenes) are never the feature or an episode.
+  // They are only passed over while something else is there to take, so a download that is nothing
+  // but a folder named "Extras" still imports.
+  const notExtras = candidates.filter((filePath) => !isExtrasPath(filePath, baseDir));
+  if (notExtras.length > 0) candidates = notExtras;
 
-  if (target && !isOwnReleaseFolder(baseDir, ctx)) {
-    // An SxxEyy or air date alone doesn't identify a show, and a folder shared with other downloads
-    // routinely holds other shows' files carrying the same numbers, so the series' own title must be
-    // in the path too. A release's own folder holds only its own files and needs no such check.
+  if (target) {
     const seriesTokens = releaseTitleTokens(releaseTitle);
     if (seriesTokens.length > 0) {
+      // An SxxEyy or air date alone doesn't identify a show, and a folder shared with other downloads
+      // routinely holds other shows' files carrying the same numbers, so the series' own title must be
+      // in the path too. A release's own folder holds only its own files and needs no such check.
+      if (!isOwnReleaseFolder(baseDir, ctx)) {
+        candidates = candidates.filter((filePath) => {
+          const pathTokens = new Set(normalizeTokens(path.relative(labelBase, filePath)));
+          return seriesTokens.every((t) => pathTokens.has(t));
+        });
+      }
+    } else {
+      // A title too short to have tokens ("24", "ER", "Up") can't be required in the path, and its
+      // folder can't be told from a shared one; a file plainly named for another show is still not it.
+      const releaseKey = identityKey(parseReleaseTitle(releaseTitle).title);
       candidates = candidates.filter((filePath) => {
-        const pathTokens = new Set(normalizeTokens(path.relative(labelBase, filePath)));
-        return seriesTokens.every((t) => pathTokens.has(t));
+        const ownKey = identityKey(parseReleaseTitle(withoutVersionTag(path.basename(filePath, path.extname(filePath)))).title);
+        return ownKey.split(" ").filter(Boolean).length < 2 || !releaseKey || ownKey === releaseKey;
       });
     }
   }
@@ -1012,6 +1079,70 @@ function isQualityUpgrade(type: MediaType, quality: string | null, existingQuali
 
 export class ImportSkippedError extends Error {}
 
+/** The file found for a download plainly belongs to another title (or another year of this one):
+ * left in the download for a manual import, never placed under the item. A subclass of
+ * ImportSkippedError so every caller's "left for manual import" handling applies unchanged. */
+export class ImportIdentityMismatchError extends ImportSkippedError {}
+
+function identityTargetOf(item: { type: string; title: string; year: number | null; externalIds: string | null }): IdentityTarget {
+  let externalIds: Record<string, string> = {};
+  try {
+    externalIds = item.externalIds ? JSON.parse(item.externalIds) : {};
+  } catch {
+    externalIds = {};
+  }
+  return { type: item.type, title: item.title, year: item.year, externalIds };
+}
+
+/**
+ * Whether a file about to be placed under `item` is evidently another title's (MATCHING_ACCURACY_
+ * PLAN.md, Round 2): the file's own name, or its release folder's when the name says nothing, is
+ * parsed like a release and put through the identity gate. Only positive evidence counts — a title of
+ * two or more words that doesn't name the item, or a title that does with a year more than one off —
+ * so an obfuscated name ("a8f7d6c1.mkv") or a bare "Show.S01E05" passes. Respects the type's
+ * `strictReleaseIdentity` mode: null for `off`, logged but null for `log`, the reason for `enforce`.
+ * Quality-tiered (video) types only, like the grab-time gate.
+ */
+export function fileContradictsTarget(sourceFile: string, ctx: DownloadContext, item: IdentityTarget): string | null {
+  if (!usesQualityTiers(item.type)) return null;
+  const mode = identityModeFor(item.type);
+  if (mode === "off") return null;
+
+  const base = withoutVersionTag(path.basename(sourceFile, path.extname(sourceFile)));
+  const judge = (name: string, what: string): string | null => {
+    const parsed = parseReleaseTitle(name);
+    const words = identityKey(parsed.title).split(" ").filter(Boolean).length;
+    const verdict = releaseIdentifiesTarget({ title: name }, parsed, item);
+    if (verdict.ok) return null;
+    // A short or unreadable title is no evidence; a wrong year on a matching title is.
+    if (verdict.reason === "title" && words < 2) return null;
+    return `${what} "${name}" ${verdict.detail}`;
+  };
+  let reason = judge(base, "file");
+  if (reason === null && identityKey(parseReleaseTitle(base).title).split(" ").filter(Boolean).length < 2) {
+    // The file name says little ("a8f7d6c1", "E05"); the folder it came in may say more — the
+    // client-reported folder when the file is inside it, else the file's own. Only a folder named
+    // like a release (numbering, a year) is read: a save or category folder ("tv", "UHD HDR",
+    // "Complete 1080p") names no title.
+    const src = path.resolve(sourceFile);
+    const reported = ctx.downloadPath ? path.resolve(ctx.downloadPath) : null;
+    const folder = reported && src.startsWith(reported + path.sep) && isDirectory(reported) ? reported : path.dirname(src);
+    const category = ctx.category?.trim().toLowerCase().split(/[\\/]/).filter(Boolean).pop() || null;
+    if (folder !== path.resolve(config.downloadsDir) && path.basename(folder).toLowerCase() !== category) {
+      const folderParsed = parseReleaseTitle(path.basename(folder));
+      const releaseShaped =
+        folderParsed.seasonNumber != null || !!folderParsed.episodeNumbers?.length || folderParsed.absoluteEpisode != null || !!folderParsed.airDate || folderParsed.titleYear != null;
+      if (releaseShaped) reason = judge(path.basename(folder), "folder");
+    }
+  }
+  if (reason === null) return null;
+  if (mode === "log") {
+    log.info(`[importer] identity gate (log-only) would refuse ${reason} for "${item.title}"`);
+    return null;
+  }
+  return reason;
+}
+
 /** Radarr's "Create empty series folders" — opt-in, creates just the item's own top-level library
  * folder (not any season/episode subfolders, which only make sense once real files start arriving)
  * as soon as it's added, instead of the folder only coming into existence on first import. Never
@@ -1083,8 +1214,12 @@ export async function placeFile(params: {
    * own, so nothing else stops a same-episode "*.sample.mkv" checked alongside the real file from
    * replacing it moments after it landed. */
   batchClaims?: Set<string>;
+  /** The download this file came from, when the import is automatic: the file is checked against
+   * the item's identity before it is placed (fileContradictsTarget). A manual import, where the
+   * admin chose the file, passes nothing and is never refused on identity. */
+  verify?: DownloadContext;
 }): Promise<{ destPath: string; fileLabel: string }> {
-  const { itemId, episodeId, subItemId, sourceFile, quality, batchClaims } = params;
+  const { itemId, episodeId, subItemId, sourceFile, quality, batchClaims, verify } = params;
 
   const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
   if (!mediaRow) throw new Error(`Media item ${itemId} not found`);
@@ -1251,6 +1386,10 @@ export async function placeFile(params: {
   const ownEpisodeIds = episodeId ? (episodicRows ?? [{ id: episodeId }]).map((r) => r.id) : [];
   if (!destChecked && (await isFileOfAnotherRow(destPath, item.id, ownEpisodeIds, subItemId))) {
     throw new ImportSkippedError(anotherEntrysFileMessage(destPath));
+  }
+  if (verify) {
+    const mismatch = fileContradictsTarget(sourceFile, verify, identityTargetOf(item));
+    if (mismatch) throw new ImportIdentityMismatchError(`Not importing: ${mismatch} — left in the download for a manual import`);
   }
   const claimKeys =
     shape === "single" ? [`item:${item.id}`] : episodeId ? ownEpisodeIds.map((id) => `episode:${id}`) : [`sub:${subItemId}`];
@@ -1912,13 +2051,18 @@ async function planSeasonPackFiles(
     [...episodes].sort((a, b) => Number(a.episode_number) - Number(b.episode_number)).forEach((e, i) => byAbsolute.set(before + i + 1, e));
   }
 
-  type ParsedFile = { src: string; rank: number; numbers?: number[]; airDate?: string; absolute?: number; bare?: number };
+  type ParsedFile = { src: string; rank: number; numbers?: number[]; otherSeason?: boolean; airDate?: string; absolute?: number; bare?: number };
   const parsedFiles: ParsedFile[] = files.map((src) => {
     const base = withoutVersionTag(path.basename(src, path.extname(src)));
     const folder = path.basename(path.dirname(src));
     const detected = detectSeasonEpisode(folder, base);
-    // Another season's file (a bonus episode, the next season's opener) is neither placed nor counted.
-    if (detected.episodes.length > 0) return { src, rank: 1, numbers: detected.season === null || detected.season === seasonNumber ? detected.episodes : [] };
+    // Another season's file (the next season's opener in a multi-season pack) is not placed, but it
+    // is an episode file the download still holds, so it counts as unmatched and keeps the data.
+    if (detected.episodes.length > 0) {
+      const foreignSeason = detected.season !== null && detected.season !== seasonNumber;
+      // Specials (S00) bundled into a pack are left in place without keeping the data, as before.
+      return { src, rank: 1, numbers: foreignSeason ? [] : detected.episodes, otherSeason: foreignSeason && detected.season! > 0 };
+    }
     const own = parseReleaseTitle(base);
     if (own.airDate) return { src, rank: 2, airDate: own.airDate };
     if (own.absoluteEpisode != null) return { src, rank: 2, absolute: own.absoluteEpisode };
@@ -1938,7 +2082,7 @@ async function planSeasonPackFiles(
     let isEpisodeFile = true;
     if (p.numbers) {
       targets = p.numbers.map((n) => byNumber.get(n)).filter((e) => !!e);
-      isEpisodeFile = p.numbers.length > 0;
+      isEpisodeFile = p.numbers.length > 0 || !!p.otherSeason;
     } else if (p.airDate) {
       const sameDay = episodes.filter((e) => String(e.air_date ?? "").slice(0, 10) === p.airDate);
       targets = sameDay.length === 1 ? sameDay : [];
@@ -1953,8 +2097,8 @@ async function planSeasonPackFiles(
     }
     if (targets.length === 0) {
       log.warn(`[importer] couldn't match "${path.basename(p.src)}" to a known episode of season ${seasonNumber} for "${itemTitle}" — left in place`);
-      // Only a missing episode of this season keeps the download's data; counting extras, NCOP/NCED,
-      // menus and other seasons' files too kept nearly every pack's data, with no queue row left to clean it.
+      // An episode file (of this season or another) keeps the download's data; extras, NCOP/NCED and
+      // menus don't, or nearly every pack's data would have stayed with no queue row left to clean it.
       if (isEpisodeFile) unmatchedCount++;
       continue;
     }
@@ -1999,6 +2143,9 @@ export async function placeSeasonPackFiles(params: {
   releaseTitle?: string;
   downloadPath?: string | null;
   category?: string | null;
+  /** Automatic import: each file is checked against the series' identity before it is placed
+   * (fileContradictsTarget); a file that fails stays in the download and counts as unmatched. */
+  verify?: boolean;
 }): Promise<{
   destFolder: string;
   episodeCount: number;
@@ -2007,7 +2154,7 @@ export async function placeSeasonPackFiles(params: {
   notUpgradedCount: number;
   packDir: string | null;
 }> {
-  const { itemId, seasonNumber, anchorFile, quality, releaseTitle, downloadPath, category } = params;
+  const { itemId, seasonNumber, anchorFile, quality, releaseTitle, downloadPath, category, verify } = params;
 
   const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
   if (!mediaRow) throw new Error(`Media item ${itemId} not found`);
@@ -2019,11 +2166,8 @@ export async function placeSeasonPackFiles(params: {
   if (!folderRow) throw new ImportSkippedError(`Root folder for "${item.title}" no longer exists`);
   const rootFolder = rootFolderFromRow(folderRow);
 
-  const { files: siblings, leftInPlace, packDir } = collectSeasonPackFiles(anchorFile, seasonNumber, typeConfig.extensions, {
-    releaseTitle,
-    downloadPath,
-    category,
-  });
+  const ctx: DownloadContext = { releaseTitle, downloadPath, category };
+  const { files: siblings, leftInPlace, packDir } = collectSeasonPackFiles(anchorFile, seasonNumber, typeConfig.extensions, ctx);
 
   const episodes = (await db
     .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND season_number = ?")
@@ -2031,8 +2175,23 @@ export async function placeSeasonPackFiles(params: {
   const planned = await planSeasonPackFiles(siblings, episodes, itemId, seasonNumber, item.title);
   let unmatchedCount = planned.unmatchedCount;
 
+  // A file evidently of another show (a shared folder's, a mislabeled pack's) stays in the download.
+  let identityRejected = 0;
+  const identityTarget = identityTargetOf(item);
+  const ownFiles = planned.plans.filter(({ src }) => {
+    const mismatch = verify ? fileContradictsTarget(src, ctx, identityTarget) : null;
+    if (!mismatch) return true;
+    log.warn(`[importer] left "${path.basename(src)}" in the download: ${mismatch}`);
+    identityRejected++;
+    unmatchedCount++;
+    return false;
+  });
+  if (ownFiles.length === 0 && identityRejected > 0) {
+    throw new ImportIdentityMismatchError(`Not importing: every file of this download names another title than "${item.title}" — left for a manual import`);
+  }
+
   let notUpgradedCount = 0;
-  const toPlace = planned.plans.filter(({ src, episodes: targets }) => {
+  const toPlace = ownFiles.filter(({ src, episodes: targets }) => {
     const better = targets.find((e) => Number(e.has_file) && !isQualityUpgrade(item.type, quality, e.quality));
     if (!better) return true;
     log.info(
@@ -2192,8 +2351,26 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
     : undefined;
   const ctx: DownloadContext = { releaseTitle: queueItem.title, downloadPath: queueItem.downloadPath, category: clientRow?.category ?? null };
 
+  // Sonarr/Radarr's "matched by indexer id only" rule: an automatic grab confirmed by the indexer's
+  // id while its title named something else is held for the admin, who sees both titles. A manual
+  // grab (the admin already chose it), a row from before match_type existed, and a type whose gate
+  // isn't enforcing all import as before.
+  if (
+    !manualSourceFile &&
+    queueItem.matchType === "id" &&
+    queueItem.grabSource != null &&
+    queueItem.grabSource !== "interactive" &&
+    usesQualityTiers(item.type) &&
+    identityModeFor(item.type) === "enforce"
+  ) {
+    throw new ImportSkippedError(
+      `"${queueItem.title}" was matched to "${item.title}" by the indexer's id only, not by its title — left for a manual import`
+    );
+  }
+
   let sourceFile: string | null;
   let unpackFailures: { archive: string; reason: string }[] = [];
+  let locateReason: LocateReason | undefined;
   if (manualSourceFile) {
     const resolvedDownloadsDir = path.resolve(config.downloadsDir);
     const resolved = path.resolve(manualSourceFile);
@@ -2211,10 +2388,12 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
       shape === "collection" && !typeConfig.multiFilePerChild && queueItem.subItemId
         ? ((await db.prepare("SELECT title FROM sub_items WHERE id = ?").get(queueItem.subItemId)) as { title: string } | undefined)
         : undefined;
-    sourceFile = findDownloadedFile(queueItem.title, item.type, episodeTarget, queueItem.downloadPath, {
+    const located = locateDownloadedFile(queueItem.title, item.type, episodeTarget, queueItem.downloadPath, {
       childTitle: childRow?.title ?? null,
       category: ctx.category,
     });
+    sourceFile = located.file;
+    locateReason = located.reason;
     if (sourceFile && unpackFailures.length > 0 && !isUnpackedMediaCandidate(sourceFile, queueItem.downloadPath, queueItem.title)) sourceFile = null;
   }
   if (!sourceFile) {
@@ -2227,6 +2406,16 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
           .join("; ")}`
       );
     }
+    // The client said where the download is and nothing there is importable: a disc image, a
+    // folder of archives or extras. The release isn't at fault, so the row waits for a manual import.
+    if (locateReason === "unsupported-extension") {
+      throw new ImportSkippedError(`"${path.basename(queueItem.downloadPath ?? queueItem.title)}" is not a file type this library imports — left for a manual import`);
+    }
+    // A reported folder with no importable file in it (another show's episode, a sample alone, no
+    // media at all) is the release's fault: it fails like any other bad release and is retried.
+    if (locateReason === "nothing-in-reported-folder") {
+      throw new Error(`No matching file found in the download's folder for "${queueItem.title}" (the rest of the downloads directory is not searched)`);
+    }
     throw new Error(`No matching file found in downloads directory for "${queueItem.title}"`);
   }
 
@@ -2235,6 +2424,10 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
   // title at grab time) guessed wrong — only ever applies to a manual import, an automatic one
   // always uses the parsed value as before.
   const quality = overrideQuality ?? queueItem.quality;
+
+  // The file is checked against the item's identity before it is placed, except when the admin chose
+  // it: a manual import's file, or any file of a release the admin grabbed from the interactive search.
+  const verify = manualSourceFile || queueItem.grabSource === "interactive" ? undefined : ctx;
 
   // Files left in place that may belong to this download — their data must outlive the download's removal.
   let leftFilesBehind = false;
@@ -2272,9 +2465,13 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
         releaseTitle: queueItem.title,
         downloadPath: queueItem.downloadPath,
         category: ctx.category,
+        verify: !!verify,
       });
       leftFilesBehind = pack.unmatchedCount > 0 || pack.leftInPlace > 0 || pack.notUpgradedCount > 0;
       releaseDir = pack.packDir;
+      // What the pack holds beyond the episodes placed (another season's, files the planner passed
+      // over) is checked like any other partial import before the download's data may go.
+      mayHoldMore = true;
     } catch (err) {
       // A pack grabbed for one episode whose files can't be mapped to episodes may still hold that
       // episode's own file — but only one whose own name says so: findDownloadedFile falls back on
@@ -2295,7 +2492,7 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
           `Not an upgrade: episode ${epRow.episode_number} already has a "${epRow.quality ?? "unknown"}" file, and this download is "${quality ?? "unknown"}"`
         );
       }
-      await placeFile({ itemId: item.id, episodeId: queueItem.episodeId, subItemId: null, sourceFile, quality });
+      await placeFile({ itemId: item.id, episodeId: queueItem.episodeId, subItemId: null, sourceFile, quality, verify });
       releaseDir = ownReleaseFolderOf(sourceFile, ctx);
       mayHoldMore = true;
     }
@@ -2306,6 +2503,7 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
       subItemId: queueItem.subItemId,
       sourceFile,
       quality,
+      verify,
     });
     releaseDir = ownReleaseFolderOf(sourceFile, ctx);
     mayHoldMore = shape !== "single";
