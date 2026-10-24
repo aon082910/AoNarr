@@ -2,8 +2,9 @@ FROM node:20-bookworm-slim AS build
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
-COPY package.json ./
-RUN npm install
+# The lockfile pins what CI tested; a lockless `npm install` re-resolves the whole tree and, since October 2026, crashes npm 10 ("Cannot read properties of null (reading 'edgesOut')").
+COPY package.json package-lock.json ./
+RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
@@ -53,8 +54,8 @@ ENV AONARR_BUILD_TIME=$BUILD_TIME
 ENV AONARR_IMAGE_TAG=server
 ENV PUID=99
 ENV PGID=100
-COPY package.json ./
-RUN npm install --omit=dev
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY CHANGELOG.md ./
 COPY entrypoint.sh /entrypoint.sh
