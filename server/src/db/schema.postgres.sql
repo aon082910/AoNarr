@@ -54,6 +54,21 @@ CREATE INDEX IF NOT EXISTS idx_media_items_has_file ON media_items(has_file);
 CREATE INDEX IF NOT EXISTS idx_media_items_root_folder_id ON media_items(root_folder_id);
 CREATE INDEX IF NOT EXISTS idx_media_items_sort_title ON media_items(sort_title);
 
+-- See schema.sql.
+CREATE TABLE IF NOT EXISTS media_item_titles (
+  id SERIAL PRIMARY KEY,
+  media_item_id INTEGER NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  clean_title TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('primary', 'original', 'tmdb_alt', 'anilist_synonym', 'xem_alias', 'user')),
+  year INTEGER,
+  season_number INTEGER,
+  episode_offset INTEGER,
+  created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
+  UNIQUE (media_item_id, clean_title)
+);
+CREATE INDEX IF NOT EXISTS idx_media_item_titles_clean_title ON media_item_titles(clean_title);
+
 -- Season-level artwork (TV/anime only) — episodes don't carry a poster of their own, and a show's
 -- own poster_url is the SHOW's poster, not any one season's. Not every provider exposes season
 -- artwork (see fetchSeriesSeasonsFor in metadata.ts), so a season simply has no row here until one

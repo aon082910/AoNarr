@@ -3791,6 +3791,24 @@ describe("import verification (Round 2)", () => {
       expect((await db.prepare("SELECT has_file FROM episodes WHERE id = ?").get(epId) as any).has_file).toBe(1);
     });
 
+    it("accepts a file named by one of the item's stored alternate titles (Round 3)", async () => {
+      setSetting("strictReleaseIdentity.series", "enforce");
+      const folder = await insertRootFolder("series");
+      const showId = await insertSeries("Attack on Titan", 2013, folder.id);
+      const epId = await insertEpisode(showId, 4, 1);
+      const verify = { releaseTitle: "Shingeki.no.Kyojin.S04E01.1080p.WEB-GRP" };
+      const file = writeDownloadFile("Shingeki.no.Kyojin.S04E01.1080p.WEB-GRP.mkv");
+
+      // Without the alias the release and the file name another show.
+      const err = await placeFile({ itemId: showId, episodeId: epId, subItemId: null, sourceFile: file, quality: null, verify }).catch((e) => e);
+      expect(err).toBeInstanceOf(ImportIdentityMismatchError);
+
+      const { storeAliases } = await import("../src/services/releaseAliases.js");
+      await storeAliases(showId, ["Shingeki no Kyojin"], "anilist_synonym");
+      await placeFile({ itemId: showId, episodeId: epId, subItemId: null, sourceFile: file, quality: null, verify });
+      expect((await db.prepare("SELECT has_file FROM episodes WHERE id = ?").get(epId) as any).has_file).toBe(1);
+    });
+
     it("holds a release whose own folder holds another show's episode for a manual import, data kept", async () => {
       setSetting("strictReleaseIdentity.series", "enforce");
       setSetting("removeCompletedDownloads", "1");

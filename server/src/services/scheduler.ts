@@ -15,6 +15,8 @@ import {
 import type { QueueStatusUpdate } from "./downloadClient.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import { identityModeFor, releaseIdentifiesTarget, type IdentityMode, type IdentityVerdict } from "./releaseIdentity.js";
+import { aliasTitlesFor } from "./releaseAliases.js";
+import { backfillProviderAliases } from "./aliasBackfill.js";
 import {
   knownReleaseSize,
   pickBestAllowedQuality,
@@ -417,6 +419,9 @@ function namesLaterVolume(releaseTokens: string[], wanted: string[]): boolean {
     const next = releaseTokens[i + wanted.length];
     const after = releaseTokens[i + wanted.length + 1] ?? "";
     if (SEQUEL_NUMERALS.has(next)) return true;
+    // "Super Mario Bros 3" when wanting "Super Mario Bros": a bare sequel number right after the
+    // title is the next entry (a wanted title that itself ends in a number keeps its own).
+    if (/^\d{1,2}$/.test(next) && next !== "1" && !/^\d+$/.test(wanted[wanted.length - 1] ?? "")) return true;
     if (VOLUME_WORDS.has(next) && (SEQUEL_NUMERALS.has(after) || (/^\d{1,2}$/.test(after) && after !== "1"))) return true;
   }
   return false;
@@ -450,6 +455,18 @@ const SUBTITLE_OPTIONAL_TYPES = new Set(["author", "audiobook"]);
  * trilogy — would otherwise be grabbed and imported as this one.
  */
 function releaseNameMatch(releaseTitle: string, name: TargetName, mediaType: string): "whole" | "main" | null {
+  // "ABBA - Greatest Hits" names another artist's album of the same name: a music release that
+  // leads with an artist-like segment before " - " has to name this artist (or the album itself)
+  // there. Books and ROMs are left alone: their releases lead with authors, series or nothing.
+  if ((mediaType === "artist" || mediaType === "audiobook") && name.parentTitle && / - /.test(releaseTitle)) {
+    const lead = releaseTitle.replace(/^\s*(?:\[[^\]]*\]\s*)+/, "").split(/\s+-\s+/)[0] ?? "";
+    const leadTokens = significantTitleTokens(lead);
+    const parentTokens = significantTitleTokens(name.parentTitle);
+    const titleTokens = significantTitleTokens(name.title);
+    const namesParent = parentTokens.length > 0 && parentTokens.every((t) => leadTokens.includes(t));
+    const namesTitle = titleTokens.length > 0 && titleTokens.every((t) => leadTokens.includes(t));
+    if (leadTokens.length > 0 && !namesParent && !namesTitle) return null;
+  }
   return releaseNamesTarget(releaseTitle, name)
     ? "whole"
     : SUBTITLE_OPTIONAL_TYPES.has(mediaType) &&
@@ -684,7 +701,18 @@ export async function chooseBestResult(
   // series/movie before any quality decision). `log` computes and logs the verdict without
   // rejecting, so a type can run that way for a while and the log shows what `enforce` would drop.
   const identityMode: IdentityMode = tiered && name ? options.identityMode ?? identityModeFor(mediaType) : "off";
-  const identityTarget = name ? { type: mediaType, title: name.title, year: identity?.year ?? null, externalIds: identity?.externalIds ?? {} } : null;
+  const identityTarget =
+    name && identityMode !== "off"
+      ? {
+          type: mediaType,
+          title: name.title,
+          year: identity?.year ?? null,
+          externalIds: identity?.externalIds ?? {},
+          // The item's alternate titles (releaseAliases.ts): a release named "Shingeki.no.Kyojin"
+          // names "Attack on Titan".
+          aliases: mediaItemId != null ? await aliasTitlesFor(mediaItemId) : [],
+        }
+      : null;
   const verdicts = new Map<SearchResult, IdentityVerdict>();
   if (tiered && withParsed.length > 0) {
     // How often indexers report an id with their results decides how much an id-based match can
@@ -2867,6 +2895,21 @@ export function startScheduler() {
     defaultSchedule: autoSearchSchedule,
     run: (signal) => runAutoSearch(signal),
   });
+
+  // Alternate titles for the identity gate (releaseAliases.ts): asks the provider once per item,
+  // rate-limited; nightly for items added since, and once shortly after startup for the backlog.
+  registerJob({
+    key: "aliasBackfill",
+    name: "Alternate Titles",
+    scheduleType: "cron",
+    defaultSchedule: "20 4 * * *",
+    run: async (signal) => {
+      await backfillProviderAliases(signal);
+    },
+  });
+  setTimeout(() => {
+    backfillProviderAliases().catch((err) => log.warn("[aliases] startup backfill failed:", (err as Error).message));
+  }, 2 * 60_000).unref();
 
   // Awaited by every poll (a manual "run now" included), so none starts before it's done.
   const interruptedImportsHandedBack = resumeInterruptedImports().catch((err) =>

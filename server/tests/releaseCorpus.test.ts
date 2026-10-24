@@ -122,14 +122,14 @@ describe("release-name corpus", () => {
     }
   });
 
-  describe("identity gate (releaseIdentifiesTarget, per-item, no alias rows yet)", () => {
+  describe("identity gate (releaseIdentifiesTarget, per-item, with the library's alias rows)", () => {
     for (const row of rows) {
       for (const check of row.identity ?? []) {
         const want = check.expect.ok ? `ok as ${check.expect.matchType}` : `rejected (${check.expect.reason ?? "no reason"})`;
         const name = `[${check.round}] "${row.title}" vs ${check.item}${check.indexer ? " (indexer ids)" : ""} → ${want}`;
-        // Rounds 3 and 4 add alias rows and fansub season/part conventions; until then those
-        // checks describe the target behaviour and stay pending.
-        if (check.round !== "R1") {
+        // Round 4 adds fansub season/part conventions; until then those checks describe the target
+        // behaviour and stay pending.
+        if (check.round !== "R1" && check.round !== "R3") {
           it.todo(name);
           continue;
         }
@@ -138,7 +138,7 @@ describe("release-name corpus", () => {
           const verdict = releaseIdentifiesTarget(
             { title: row.title, imdbId: check.indexer?.imdbId ?? null, tmdbId: check.indexer?.tmdbId ?? null, tvdbId: check.indexer?.tvdbId ?? null },
             parseReleaseTitle(row.title),
-            { type: lib.type, title: lib.title, year: lib.year, externalIds: lib.externalIds }
+            { type: lib.type, title: lib.title, year: lib.year, externalIds: lib.externalIds, aliases: lib.aliases.map((a) => a.title) }
           );
           expect({ ok: verdict.ok, matchType: verdict.matchType, ...(check.expect.reason ? { reason: verdict.reason } : {}) }, verdict.detail).toEqual(check.expect);
         });

@@ -202,3 +202,72 @@ describe("manual grab with indexer ids", () => {
     expect(res.body).toMatchObject({ matchType: "id", grabSource: "interactive" });
   });
 });
+
+describe("manual grab under an enforcing identity gate (Round 3)", () => {
+  let setSetting: (typeof import("../src/services/settingsStore.js"))["setSetting"];
+  beforeAll(async () => {
+    ({ setSetting } = await import("../src/services/settingsStore.js"));
+  });
+
+  it("refuses a release the gate rejects with 409 once, grabs it with force, and records the forced grab as interactive", async () => {
+    setSetting("strictReleaseIdentity.movie", "enforce");
+    try {
+      await insertTorrentClient();
+      const movieId = await insertItem("movie", "Dune");
+      await db.prepare("UPDATE media_items SET year = 2021 WHERE id = ?").run(movieId);
+      const body = { title: "Dune.Part.Two.2024.1080p.WEB-DL.x265-GRP", downloadUrl: "magnet:?xt=urn:btih:part2", protocol: "torrent" };
+
+      const refused = await request(app).post(`/api/search/${movieId}/grab`).set("X-Api-Key", apiKey).send(body);
+      expect(refused.status).toBe(409);
+      expect(refused.body.error).toMatch(/doesn't name "Dune".*Grab it anyway, or add the release's title as an alias/);
+      expect(await db.prepare("SELECT id FROM queue WHERE media_item_id = ?").get(movieId)).toBeUndefined();
+
+      const forced = await request(app).post(`/api/search/${movieId}/grab`).set("X-Api-Key", apiKey).send({ ...body, force: true });
+      expect(forced.status).toBe(201);
+      expect(forced.body).toMatchObject({ matchType: "none", grabSource: "interactive" });
+    } finally {
+      setSetting("strictReleaseIdentity.movie", "");
+    }
+  });
+
+  it("accepts a release named by one of the item's alternate titles on both surfaces", async () => {
+    setSetting("strictReleaseIdentity.movie", "enforce");
+    try {
+      await insertTorrentClient();
+      const movieId = await insertItem("movie", "The Fall Guy");
+      await db.prepare("UPDATE media_items SET year = 2024 WHERE id = ?").run(movieId);
+      const { storeAliases } = await import("../src/services/releaseAliases.js");
+      await storeAliases(movieId, ["Kaskader"], "tmdb_alt");
+      searchAllIndexers.mockResolvedValue([release({ title: "Kaskader.2024.1080p.WEB-DL-GRP" })]);
+
+      const listed = await request(app).get(`/api/search/${movieId}`).set("X-Api-Key", apiKey);
+      expect(listed.status).toBe(200);
+      expect(listed.body[0]).toMatchObject({ identityOk: true, identityMatch: "alias", parsedTitle: "Kaskader" });
+
+      const grabbed = await request(app)
+        .post(`/api/search/${movieId}/grab`)
+        .set("X-Api-Key", apiKey)
+        .send({ title: "Kaskader.2024.1080p.WEB-DL-GRP", downloadUrl: "magnet:?xt=urn:btih:kaskader", protocol: "torrent" });
+      expect(grabbed.status).toBe(201);
+      expect(grabbed.body).toMatchObject({ matchType: "alias", grabSource: "interactive" });
+    } finally {
+      setSetting("strictReleaseIdentity.movie", "");
+    }
+  });
+
+  it("never refuses in log mode, and reports the parsed title the UI offers as an alias", async () => {
+    await insertTorrentClient();
+    const movieId = await insertItem("movie", "Dune");
+    await db.prepare("UPDATE media_items SET year = 2021 WHERE id = ?").run(movieId);
+    searchAllIndexers.mockResolvedValue([release({ title: "Dune.Part.Two.2024.1080p.WEB-DL.x265-GRP" })]);
+
+    const listed = await request(app).get(`/api/search/${movieId}`).set("X-Api-Key", apiKey);
+    expect(listed.body[0]).toMatchObject({ identityOk: false, parsedTitle: "Dune Part Two" });
+
+    const res = await request(app)
+      .post(`/api/search/${movieId}/grab`)
+      .set("X-Api-Key", apiKey)
+      .send({ title: "Dune.Part.Two.2024.1080p.WEB-DL.x265-GRP", downloadUrl: "magnet:?xt=urn:btih:logmode", protocol: "torrent" });
+    expect(res.status).toBe(201);
+  });
+});

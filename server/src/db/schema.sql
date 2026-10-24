@@ -58,6 +58,26 @@ CREATE INDEX IF NOT EXISTS idx_media_items_has_file ON media_items(has_file);
 CREATE INDEX IF NOT EXISTS idx_media_items_root_folder_id ON media_items(root_folder_id);
 CREATE INDEX IF NOT EXISTS idx_media_items_sort_title ON media_items(sort_title);
 
+-- The titles a release may name an item by (services/releaseAliases.ts): the item's own title
+-- ('primary'), a provider's alternate titles ('tmdb_alt'), AniList synonyms ('anilist_synonym'),
+-- scene aliases ('xem_alias'), the title an item was scanned in under before a rematch and titles
+-- the admin adds ('user'). clean_title is the lookup key (services/releaseAliases.ts cleanTitle:
+-- lowercase, accents folded, common words and punctuation dropped). season_number/episode_offset
+-- are for Round 4's "Part 2"/"Final Season" anime mappings and are unused until then.
+CREATE TABLE IF NOT EXISTS media_item_titles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  media_item_id INTEGER NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  clean_title TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('primary', 'original', 'tmdb_alt', 'anilist_synonym', 'xem_alias', 'user')),
+  year INTEGER,
+  season_number INTEGER,
+  episode_offset INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (media_item_id, clean_title)
+);
+CREATE INDEX IF NOT EXISTS idx_media_item_titles_clean_title ON media_item_titles(clean_title);
+
 -- Season-level artwork (TV/anime only) — episodes don't carry a poster of their own, and a show's
 -- own poster_url is the SHOW's poster, not any one season's. Not every provider exposes season
 -- artwork (see fetchSeriesSeasonsFor in metadata.ts), so a season simply has no row here until one

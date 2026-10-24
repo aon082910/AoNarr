@@ -418,3 +418,59 @@ describe("handleAnnounce — root folder quota", () => {
     expect((grab.mock.calls[0][1] as any).rootFolderId).toBe(rootId);
   });
 });
+
+describe("handleAnnounce — alternate titles and library-wide resolution (Round 3)", () => {
+  async function addAlias(itemId: number, title: string, source = "user"): Promise<void> {
+    const { storeAliases } = await import("../src/services/releaseAliases.js");
+    await storeAliases(itemId, [title], source as any);
+  }
+
+  it("grabs an episode announced under one of the show's alternate titles", async () => {
+    const profileId = await insertProfile();
+    const showId = await insertShow("Attack on Titan", profileId, 2013);
+    const episodeId = await insertEpisode(showId, 4, 1);
+    await addAlias(showId, "Shingeki no Kyojin", "anilist_synonym");
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Shingeki.no.Kyojin.S04E01.1080p.WEBDL-GRP"));
+
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect((grab.mock.calls[0][1] as any).id).toBe(showId);
+    expect(grab.mock.calls[0][2]).toBe(episodeId);
+  });
+
+  it("grabs a movie announced under its alternate title, and not without the alias", async () => {
+    const profileId = await insertProfile();
+    const id = await insertMovie("The Fall Guy", profileId, 2024);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Kaskader.2024.1080p.WEBDL-GRP"));
+    expect(grab).not.toHaveBeenCalled();
+
+    await addAlias(id, "Kaskader", "tmdb_alt");
+    await handleAnnounce(FEED, announceText("Kaskader.2024.1080p.WEBDL-GRP"));
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect((grab.mock.calls[0][1] as any).id).toBe(id);
+  });
+
+  it("grabs nothing when two monitored items both claim the announce", async () => {
+    const profileId = await insertProfile();
+    await insertMovie("Ambiguous Twin", profileId, 2019);
+    await insertMovie("Ambiguous Twin", profileId, 2021);
+    grab.mockClear();
+
+    // 2020 is within a year of both: neither is singled out.
+    await handleAnnounce(FEED, announceText("Ambiguous.Twin.2020.1080p.WEBDL-GRP"));
+    expect(grab).not.toHaveBeenCalled();
+
+    // Two shows with the same alias are just as ambiguous.
+    const showA = await insertShow("Alias Clash A", profileId, 2010);
+    const showB = await insertShow("Alias Clash B", profileId, 2012);
+    await insertEpisode(showA, 1, 1);
+    await insertEpisode(showB, 1, 1);
+    await addAlias(showA, "Clashing Name");
+    await addAlias(showB, "Clashing Name");
+    await handleAnnounce(FEED, announceText("Clashing.Name.S01E01.1080p.WEBDL-GRP"));
+    expect(grab).not.toHaveBeenCalled();
+  });
+});

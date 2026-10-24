@@ -5,6 +5,7 @@ import { db, initDb } from "./db/index.js";
 import { loadSettingsCache, getSetting } from "./services/settingsStore.js";
 import { loadQualityCaches } from "./services/quality.js";
 import { backfillEpisodicAndCollectionHasFile, backfillMissingAlbumTracks } from "./services/libraryScan.js";
+import { backfillCleanTitles } from "./services/releaseAliases.js";
 import { errorHandler, asyncHandler } from "./middleware/errorHandler.js";
 import { requireAdmin, requireAuth } from "./middleware/auth.js";
 import { bootstrapAdminFromEnv } from "./services/bootstrapAdmin.js";
@@ -290,6 +291,7 @@ export async function createApp(): Promise<Express> {
   applySocksProxySetting();
   await backfillEpisodicAndCollectionHasFile();
   await backfillMissingAlbumTracks();
+  await backfillCleanTitles();
 
   const app = express();
   // CSP and Cross-Origin-Resource-Policy are left off: this is an SPA that pulls poster/backdrop

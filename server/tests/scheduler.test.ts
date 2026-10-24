@@ -2049,6 +2049,16 @@ describe("chooseBestResult — rejections, tiers and protocols", () => {
     expect((await choose([hits, hitsII], "artist", { title: "Greatest Hits II", parentTitle: "Queen" }))?.result).toBe(hitsII);
     const hitsVol1 = fakeResult({ title: "Queen - Greatest Hits Vol. 1 [FLAC]", seeders: 5 });
     expect((await choose([hitsVol2, hitsVol1], "artist", { title: "Greatest Hits", parentTitle: "Queen" }))?.result).toBe(hitsVol1);
+    // Another artist's album of the same name leads with that artist (Round 3).
+    const abbaHits = fakeResult({ title: "ABBA - Greatest Hits (1975) [FLAC]", seeders: 950 });
+    expect(await choose([abbaHits], "artist", { title: "Greatest Hits", parentTitle: "Queen" })).toBeNull();
+    expect((await choose([abbaHits, hits], "artist", { title: "Greatest Hits", parentTitle: "Queen" }))?.result).toBe(hits);
+    // A bare sequel number right after the wanted title is the next entry (Round 3).
+    const smb3 = fakeResult({ title: "Super Mario Bros. 3 (USA)", seeders: 900 });
+    const smb = fakeResult({ title: "Super Mario Bros. (World)", seeders: 5 });
+    expect(await choose([smb3], "rom", { title: "Super Mario Bros.", parentTitle: "NES" })).toBeNull();
+    expect((await choose([smb3, smb], "rom", { title: "Super Mario Bros.", parentTitle: "NES" }))?.result).toBe(smb);
+    expect((await choose([smb3, smb], "rom", { title: "Super Mario Bros. 3", parentTitle: "NES" }))?.result).toBe(smb3);
     const zeppelinII = fakeResult({ title: "Led Zeppelin - Led Zeppelin II (1969) [FLAC]", seeders: 900 });
     const zeppelin = fakeResult({ title: "Led Zeppelin - Led Zeppelin (1969) [FLAC]", seeders: 5 });
     expect((await choose([zeppelinII, zeppelin], "artist", { title: "Led Zeppelin", parentTitle: "Led Zeppelin" }))?.result).toBe(zeppelin);
@@ -3480,16 +3490,39 @@ describe("chooseBestResult — identity gate for tiered types", () => {
     setSetting("strictReleaseIdentity", "");
   });
 
-  it("caps the bare enforce setting at log for anime and the containment types until their rounds land", async () => {
-    const wrong = fakeResult({ title: "Some.Other.Anime.S01E05.1080p.WEB-GRP" });
-    const anime = (results: any[]) =>
-      chooseBestResult(results, [], "", null, 0, { season: 1, episode: 5 }, new Set(), "anime", null, { year: 2020, externalIds: {} }, null, { name: { title: "Show" } });
+  it("caps the bare enforce setting at log for the containment types until their round lands, but not for anime", async () => {
+    const wrong = fakeResult({ title: "Some.Other.Event.2024.1080p.WEB-GRP" });
+    const ppv = (results: any[]) =>
+      chooseBestResult(results, [], "", null, 0, null, new Set(), "ppv", null, { year: 2024, externalIds: {} }, null, { name: { title: "UFC 300" } });
     setSetting("strictReleaseIdentity", "enforce");
-    expect((await anime([wrong]))?.identity).toMatchObject({ ok: false }); // kept, log-only
-    setSetting("strictReleaseIdentity.anime", "enforce");
-    expect(await anime([wrong])).toBeNull();
-    setSetting("strictReleaseIdentity.anime", "");
+    expect((await ppv([wrong]))?.identity).toMatchObject({ ok: false }); // kept, log-only
+    setSetting("strictReleaseIdentity.ppv", "enforce");
+    expect(await ppv([wrong])).toBeNull();
+    setSetting("strictReleaseIdentity.ppv", "");
+    // Anime enforces under the bare setting now that alternate titles (AniList synonyms) exist.
+    const wrongAnime = fakeResult({ title: "Some.Other.Anime.S01E05.1080p.WEB-GRP" });
+    const anime = chooseBestResult([wrongAnime], [], "", null, 0, { season: 1, episode: 5 }, new Set(), "anime", null, { year: 2020, externalIds: {} }, null, { name: { title: "Show" } });
+    expect(await anime).toBeNull();
     setSetting("strictReleaseIdentity", "");
+  });
+
+  it("accepts a release named by one of the item's stored alternate titles", async () => {
+    const profileId = Number((await db.prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff) VALUES ('alias-gate', '[]', '')").run()).lastInsertRowid);
+    const itemId = Number(
+      (
+        await db
+          .prepare("INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status, quality_profile_id) VALUES ('anime', 'Attack on Titan', 'attack on titan', 2013, 1, 0, 'unknown', ?)")
+          .run(profileId)
+      ).lastInsertRowid
+    );
+    await db.prepare("INSERT INTO media_item_titles (media_item_id, title, clean_title, source) VALUES (?, 'Shingeki no Kyojin', 'shingekinokyojin', 'anilist_synonym')").run(itemId);
+    const release = fakeResult({ title: "Shingeki.no.Kyojin.S04E01.1080p.WEB-GRP" });
+    const ep = { season: 4, episode: 1 };
+    const target = { year: 2013, externalIds: {} };
+    const withAlias = await chooseBestResult([release], [], "", null, 0, ep, new Set(), "anime", null, target, itemId, { name: { title: "Attack on Titan" }, identityMode: "enforce" });
+    expect(withAlias?.identity).toMatchObject({ ok: true, matchType: "alias" });
+    // Without the item id (no alias lookup) the same release is rejected.
+    expect(await chooseBestResult([release], [], "", null, 0, ep, new Set(), "anime", null, target, null, { name: { title: "Attack on Titan" }, identityMode: "enforce" })).toBeNull();
   });
 
   it("only needs the item title to appear inside a sports/PPV release", async () => {

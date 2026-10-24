@@ -13,6 +13,7 @@ import { writeAudioTags } from "./audioTagWriter.js";
 import { notifyQueueChanged } from "./realtime.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import { identityKey, identityModeFor, releaseIdentifiesTarget, type IdentityTarget } from "./releaseIdentity.js";
+import { identityTargetFor } from "./releaseAliases.js";
 import type { ParsedRelease } from "./releaseParser.js";
 import {
   downloadSubtitleContent,
@@ -1458,7 +1459,7 @@ export async function placeFile(params: {
     throw new ImportSkippedError(anotherEntrysFileMessage(destPath));
   }
   if (verify) {
-    const mismatch = fileContradictsTarget(sourceFile, verify, identityTargetOf(item));
+    const mismatch = fileContradictsTarget(sourceFile, verify, await identityTargetFor(item));
     if (mismatch) throw new ImportIdentityMismatchError(`Not importing: ${mismatch} — left in the download for a manual import`);
   }
   const claimKeys =
@@ -2243,7 +2244,7 @@ export async function placeSeasonPackFiles(params: {
   // Judged before the files are mapped to episodes, so a foreign file never claims an episode the
   // show's own file of it would have taken.
   let identityRejected = 0;
-  const identityTarget = identityTargetOf(item);
+  const identityTarget = verify ? await identityTargetFor(item) : identityTargetOf(item);
   const ownFiles = siblings.filter((src) => {
     const mismatch = verify ? fileContradictsTarget(src, ctx, identityTarget) : null;
     if (!mismatch) return true;

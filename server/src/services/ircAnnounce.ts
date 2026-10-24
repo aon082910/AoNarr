@@ -9,6 +9,7 @@ import { downloadClientFromRow, mediaItemFromRow, qualityProfileFromRow } from "
 import { grab, isAlreadyQueued, pickClientForProtocol, type ChosenResult } from "./scheduler.js";
 import { computeAbsoluteEpisodeNumber } from "./importer.js";
 import { usesQualityTiers } from "./quality.js";
+import { aliasTitlesByItem, resolveReleaseItem } from "./releaseAliases.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
 import type { DownloadClient, SearchResult } from "../types/index.js";
 
@@ -62,58 +63,77 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
   const downloadUrl = match.groups.url;
   const parsed = parseReleaseTitle(releaseTitle);
   const baseTitle = guessTitleFromText(releaseTitle);
-  if (!baseTitle) return;
+  if (!parsed.title && !baseTitle) return;
 
   const clients = await rowsToDownloadClients();
   if (clients.length === 0) return;
   const targetClient = pickClientForProtocol(clients, feed.protocol);
   if (!targetClient) return;
 
-  const singleItems = (await db.prepare("SELECT * FROM media_items WHERE monitored = 1 AND has_file = 0").all()) as any[];
-  for (const row of singleItems) {
-    const item = mediaItemFromRow(row);
-    if (getMediaTypeConfig(item.type).shape !== "single") continue;
-    if (!titlesMatch(baseTitle, item.title)) continue;
-    // baseTitle has the year stripped, so without this a same-title remake (or the original) from
-    // another year would be grabbed for this item. One year of slack, as libraryScan's matching allows.
+  // An announce is unsolicited: which item it names is decided library-wide, with aliases, and two
+  // items both claiming it is a reason to grab nothing (Sonarr's MultipleSeriesFoundException).
+  const aliases = await aliasTitlesByItem();
+  const singleItems = ((await db.prepare("SELECT * FROM media_items WHERE monitored = 1 AND has_file = 0").all()) as any[])
+    .map(mediaItemFromRow)
+    .filter((item) => getMediaTypeConfig(item.type).shape === "single");
+  const resolvedSingle = resolveReleaseItem({ title: releaseTitle }, parsed, singleItems.filter((item) => usesQualityTiers(item.type)), aliases);
+  if (resolvedSingle.kind === "ambiguous") {
+    log.info(`[irc:${feed.name}] "${releaseTitle}" names ${resolvedSingle.items.length} items (${resolvedSingle.items.map((i) => `"${i.title}"`).join(", ")}); not grabbing`);
+    return;
+  }
+  const singleCandidates = resolvedSingle.kind === "one" ? [resolvedSingle.item] : [];
+  // Types with no quality tiers (ROMs...) have no release-title grammar to parse; they keep the
+  // scan-style title and year comparison.
+  for (const item of singleItems) {
+    if (usesQualityTiers(item.type) || !baseTitle || !titlesMatch(baseTitle, item.title)) continue;
     if (parsed.year != null && item.year != null && Math.abs(parsed.year - item.year) > 1) continue;
-    const attempted = await serializeForTarget(`item:${item.id}`, async () => {
+    singleCandidates.push(item);
+  }
+  for (const item of singleCandidates) {
+    const grabbed = await serializeForTarget(`item:${item.id}`, async () => {
       if (await isAlreadyQueued(item.id, null, null)) return false;
-      await tryGrabMatch(item, null, null, releaseTitle, downloadUrl, parsed.quality, feed, targetClient);
-      return true;
+      return tryGrabMatch(item, null, null, releaseTitle, downloadUrl, parsed.quality, feed, targetClient);
     });
-    if (attempted) return; // one announce maps to at most one grab
+    if (grabbed) return; // one announce maps to at most one grab
   }
 
+  if (parsed.seasonNumber === null || !parsed.episodeNumbers?.length) return;
   const episodes = (await db
     .prepare(
-      `SELECT e.*, m.id AS parent_id, m.type AS parent_type, m.title AS parent_title, m.year AS parent_year,
+      `SELECT e.*, m.id AS parent_id, m.type AS parent_type, m.title AS parent_title, m.year AS parent_year, m.external_ids AS parent_external_ids,
               m.quality_profile_id AS parent_quality_profile_id, m.root_folder_id AS parent_root_folder_id
        FROM episodes e JOIN media_items m ON m.id = e.media_item_id
        WHERE e.monitored = 1 AND e.has_file = 0 AND m.monitored = 1`
     )
     .all()) as any[];
-  for (const ep of episodes) {
-    if (!titlesMatch(baseTitle, ep.parent_title)) continue;
-    // Same year guard as above: "Charmed.2018.S01E01" is the reboot, not an episode of the 1998 show.
-    if (parsed.year != null && ep.parent_year != null && Math.abs(parsed.year - ep.parent_year) > 1) continue;
-    if (parsed.seasonNumber === null || !parsed.episodeNumbers?.length) continue;
-    const absoluteEpisode = ep.parent_type === "anime" ? await computeAbsoluteEpisodeNumber(ep.parent_id, ep.season_number, ep.episode_number) : null;
-    if (!releaseMatchesEpisode(parsed, ep.season_number, ep.episode_number, ep.scene_season_number, ep.scene_episode_number, absoluteEpisode)) continue;
-    const item = mediaItemFromRow({
+  const parentOf = (ep: any) =>
+    mediaItemFromRow({
       id: ep.parent_id,
       type: ep.parent_type,
       title: ep.parent_title,
       year: ep.parent_year,
+      external_ids: ep.parent_external_ids,
       quality_profile_id: ep.parent_quality_profile_id,
       root_folder_id: ep.parent_root_folder_id,
     });
-    const attempted = await serializeForTarget(`episode:${ep.id}`, async () => {
-      if (await isAlreadyQueued(ep.parent_id, ep.id, null)) return false;
-      await tryGrabMatch(item, ep.id, null, releaseTitle, downloadUrl, parsed.quality, feed, targetClient);
-      return true;
+  const shows = new Map<number, ReturnType<typeof mediaItemFromRow>>();
+  for (const ep of episodes) if (!shows.has(ep.parent_id)) shows.set(ep.parent_id, parentOf(ep));
+  const resolvedShow = resolveReleaseItem({ title: releaseTitle }, parsed, Array.from(shows.values()), aliases);
+  if (resolvedShow.kind === "ambiguous") {
+    log.info(`[irc:${feed.name}] "${releaseTitle}" names ${resolvedShow.items.length} shows (${resolvedShow.items.map((i) => `"${i.title}"`).join(", ")}); not grabbing`);
+    return;
+  }
+  if (resolvedShow.kind !== "one") return;
+  const show = resolvedShow.item;
+  for (const ep of episodes) {
+    if (ep.parent_id !== show.id) continue;
+    const absoluteEpisode = show.type === "anime" ? await computeAbsoluteEpisodeNumber(show.id, ep.season_number, ep.episode_number) : null;
+    if (!releaseMatchesEpisode(parsed, ep.season_number, ep.episode_number, ep.scene_season_number, ep.scene_episode_number, absoluteEpisode)) continue;
+    const grabbed = await serializeForTarget(`episode:${ep.id}`, async () => {
+      if (await isAlreadyQueued(show.id, ep.id, null)) return false;
+      return tryGrabMatch(show, ep.id, null, releaseTitle, downloadUrl, parsed.quality, feed, targetClient);
     });
-    if (attempted) return;
+    if (grabbed) return;
   }
 }
 
@@ -160,30 +180,30 @@ async function tryGrabMatch(
   quality: string,
   feed: IrcFeedRow,
   targetClient: DownloadClient
-): Promise<void> {
+): Promise<boolean> {
   const profileRow = item.qualityProfileId ? await db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(item.qualityProfileId) : null;
   const profile = profileRow ? qualityProfileFromRow(profileRow) : null;
   // Types without quality tiers (books, ROMs...) still carry a video-tier profile that no announce
   // for them could match; the scheduled search ignores it for them too.
   const tiered = usesQualityTiers(item.type);
   const allowedQualities = tiered ? profile?.allowedQualities ?? [] : [];
-  if (allowedQualities.length > 0 && !allowedQualities.includes(quality)) return;
+  if (allowedQualities.length > 0 && !allowedQualities.includes(quality)) return false;
 
   const blocklisted = await getBlocklistedTitles(item.id);
-  if (blocklisted.has(releaseTitle)) return;
+  if (blocklisted.has(releaseTitle)) return false;
 
   if (await isRootFolderOverQuota(item.rootFolderId)) {
     log.info(`[irc:${feed.name}] not grabbing "${releaseTitle}" for "${item.title}": its root folder is at/over its configured quota`);
-    return;
+    return false;
   }
 
   if (await delayProfileHoldsBack(item.id, feed.protocol, quality, tiered ? profile?.cutoff ?? null : null)) {
     log.info(`[irc:${feed.name}] not grabbing "${releaseTitle}" for "${item.title}": held back by its delay profile`);
-    return;
+    return false;
   }
 
   const { totalScore, rejected } = await scoreRelease(releaseTitle, null, item.qualityProfileId, item.type, null, item.id);
-  if (rejected || totalScore < (profile?.minFormatScore ?? 0)) return;
+  if (rejected || totalScore < (profile?.minFormatScore ?? 0)) return false;
 
   const result: SearchResult = {
     indexerId: null,
@@ -198,7 +218,7 @@ async function tryGrabMatch(
     category: null,
   };
   const chosen: ChosenResult = { result, quality };
-  if (await grab(targetClient, item, episodeId, subItemId, chosen, 0, null, "irc")) {
-    log.info(`[irc:${feed.name}] instant-grabbed "${releaseTitle}" for "${item.title}"`);
-  }
+  const grabbed = await grab(targetClient, item, episodeId, subItemId, chosen, 0, null, "irc");
+  if (grabbed) log.info(`[irc:${feed.name}] instant-grabbed "${releaseTitle}" for "${item.title}"`);
+  return grabbed;
 }

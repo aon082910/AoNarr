@@ -125,6 +125,7 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE queue ADD COLUMN IF NOT EXISTS import_resume_state INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE queue ADD COLUMN IF NOT EXISTS match_type TEXT`,
   `ALTER TABLE queue ADD COLUMN IF NOT EXISTS grab_source TEXT`,
+  `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS clean_title TEXT`,
   `ALTER TABLE import_lists ADD COLUMN IF NOT EXISTS root_folder_id INTEGER REFERENCES root_folders(id) ON DELETE SET NULL`,
   // When runAutoSearch last actually searched this target, NULL if never — see scheduler.ts's
   // per-cycle cap (config.ts's autoSearchMaxPerCycle) and its oldest-searched-first fair ordering.

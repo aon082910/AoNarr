@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { api, downloadFile } from "../api/client.js";
+import { api, ApiError, downloadFile } from "../api/client.js";
 import GroupPicker from "../components/GroupPicker.js";
 import Modal from "../components/Modal.js";
 import MonitorToggle from "../components/MonitorToggle.js";
@@ -1131,7 +1131,7 @@ export default function MediaDetail() {
     }
   }
 
-  async function grab(result: SearchResult) {
+  async function grab(result: SearchResult, options: { force?: boolean } = {}) {
     // The server picks an enabled client matching the release's protocol (usenet → SABnzbd,
     // torrent → qBittorrent/debrid) — the first client in the list isn't necessarily either.
     try {
@@ -1146,12 +1146,31 @@ export default function MediaDetail() {
         episodeId: target?.episodeId ?? null,
         subItemId: target?.subItemId ?? null,
         seasonNumber: target?.episodeId ? null : target?.seasonNumber ?? null,
+        force: options.force ?? false,
       });
       notify.success(`Sent "${result.title}" to download client.`);
       load();
     } catch (e) {
+      // The identity gate (enforcing) refused the release once; the admin decides.
+      if (e instanceof ApiError && e.status === 409 && !options.force) {
+        if (window.confirm(`${e.message}\n\nGrab it anyway?`)) await grab(result, { force: true });
+        return;
+      }
       notify.error(`Grab failed: ${(e as Error).message}`);
     }
+  }
+
+  /** Teach the item the release's title (so future releases named that way match), then grab it. */
+  async function aliasAndGrab(result: SearchResult) {
+    if (!result.parsedTitle) return grab(result);
+    try {
+      await api.post(`/media/${id}/aliases`, { title: result.parsedTitle });
+      notify.success(`Added "${result.parsedTitle}" as an alternate title.`);
+    } catch (e) {
+      notify.error(`Couldn't add the alternate title: ${(e as Error).message}`);
+      return;
+    }
+    await grab(result, { force: true });
   }
 
   async function downloadVideo(sub: SubItem) {
@@ -2702,6 +2721,17 @@ export default function MediaDetail() {
                       <button type="button" className="icon-button" onClick={() => grab(r)} disabled={r.blocklisted} title="Grab" aria-label="Grab">
                         <DownloadIcon />
                       </button>
+                      {r.identityOk === false && r.parsedTitle && !r.blocklisted && (
+                        <button
+                          type="button"
+                          className="icon-button"
+                          onClick={() => aliasAndGrab(r)}
+                          title={`Add "${r.parsedTitle}" as an alias of this item (releases named that way will match from now on), then grab`}
+                          aria-label="Add as alias and grab"
+                        >
+                          <PencilIcon />
+                        </button>
+                      )}
                       {!r.blocklisted && (
                         <button type="button" className="icon-button danger" onClick={() => blocklistResult(r)} title="Blocklist" aria-label="Blocklist">
                           <SlashIcon />

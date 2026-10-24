@@ -19,7 +19,8 @@ import { log } from "../services/logger.js";
 import { knownReleaseSize, sizeWithinQualityBounds, usesQualityTiers } from "../services/quality.js";
 import { getBlocklistedTitles, isBlocklisted } from "../services/blocklist.js";
 import { matchTierFor, targetIdentityOf, type TargetIdentity } from "../services/scheduler.js";
-import { releaseIdentifiesTarget } from "../services/releaseIdentity.js";
+import { identityModeFor, releaseIdentifiesTarget } from "../services/releaseIdentity.js";
+import { aliasTitlesFor, identityTargetFor } from "../services/releaseAliases.js";
 import { searchSlskd } from "../services/soulseek.js";
 import { pickClientForProtocol, searchAndGrabTargets, type BulkSearchTarget } from "../services/scheduler.js";
 import { computeAbsoluteEpisodeNumber } from "../services/importer.js";
@@ -60,6 +61,8 @@ export interface AnnotatedSearchResult extends SearchResult {
   identityOk: boolean;
   identityMatch: string | null;
   identityReason: string | null;
+  /** The title the parser read from the release name — what "add as an alias" would store. */
+  parsedTitle: string;
   blocklisted: boolean;
   rejected: boolean;
   rejectReason?: string;
@@ -197,7 +200,7 @@ searchRouter.get(
     // prefers an id/year-confirmed release among the viable ones. A sub-item (album/book) search
     // confirms identity by the sub-item's own title instead, so identity stays null there.
     const identity: TargetIdentity | null = !subItemId ? targetIdentityOf(item) : null;
-    const identityTarget = tiered && identity ? { type: item.type, title: item.title, year: identity.year, externalIds: identity.externalIds } : null;
+    const identityTarget = tiered && identity ? { type: item.type, title: item.title, year: identity.year, externalIds: identity.externalIds, aliases: await aliasTitlesFor(item.id) } : null;
     const annotated: AnnotatedSearchResult[] = await Promise.all(rawResults.map(async (r) => {
       const parsed = parseReleaseTitle(r.title);
       const matchesTarget =
@@ -229,6 +232,7 @@ searchRouter.get(
         identityOk: verdict ? verdict.ok : true,
         identityMatch: verdict?.matchType ?? null,
         identityReason: verdict && !verdict.ok ? verdict.detail : null,
+        parsedTitle: parsed.title,
         blocklisted: blocklisted.has(r.title),
         rejected,
         rejectReason,
@@ -303,16 +307,20 @@ searchRouter.post(
       if (ep && (parsedTitle.seasonNumber == null || parsedTitle.seasonNumber === ep.season_number)) seasonNumber = ep.season_number;
     }
 
-    // A manual grab is never blocked by the identity gate (the admin chose the release), but how
-    // it matched is recorded like an automatic grab's, and grab_source tells the two apart.
+    // A manual grab records how the release matched like an automatic grab's (grab_source tells
+    // the two apart). While the type's gate enforces, a release the gate would reject is refused
+    // once with the reason (409) so the admin can confirm; `force: true` grabs it anyway.
     const verdict =
       b.title && usesQualityTiers(item.type) && !b.subItemId
-        ? releaseIdentifiesTarget({ title: b.title, imdbId: b.imdbId ?? null, tmdbId: b.tmdbId ?? null, tvdbId: b.tvdbId ?? null }, parsedTitle, {
-            type: item.type,
-            title: item.title,
-            ...targetIdentityOf(item),
-          })
+        ? releaseIdentifiesTarget(
+            { title: b.title, imdbId: b.imdbId ?? null, tmdbId: b.tmdbId ?? null, tvdbId: b.tvdbId ?? null },
+            parsedTitle,
+            await identityTargetFor(item)
+          )
         : null;
+    if (verdict && !verdict.ok && !b.force && identityModeFor(item.type) === "enforce") {
+      throw new HttpError(409, `${verdict.detail}. Grab it anyway, or add the release's title as an alias of this item.`);
+    }
 
     const result = await db
       .prepare(

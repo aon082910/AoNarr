@@ -53,10 +53,11 @@ export interface IdentityRelease {
  * appear, as whole words, inside the release's title. Every other type needs the title itself. */
 const CONTAINMENT_TYPES = new Set(["sports", "ppv", "course", "adult", "video"]);
 
-/** Types the bare `strictReleaseIdentity` setting never takes past `log`: anime releases are named
- * by fansub synonyms the alias rows of Round 3 will carry, and the containment types' corpus is
- * still being gathered. An explicit `strictReleaseIdentity.<type>` still enforces. */
-const LOG_CAPPED_TYPES = new Set(["anime", ...CONTAINMENT_TYPES]);
+/** Types the bare `strictReleaseIdentity` setting never takes past `log`: the containment types'
+ * corpus is still being gathered. (Anime left this list with Round 3's alias rows, which carry the
+ * fansub synonyms its releases are named by.) An explicit `strictReleaseIdentity.<type>` still
+ * enforces. */
+const LOG_CAPPED_TYPES = new Set([...CONTAINMENT_TYPES]);
 
 const DEFAULT_MODE: IdentityMode = "log";
 const MODES = new Set<string>(["off", "log", "enforce"]);

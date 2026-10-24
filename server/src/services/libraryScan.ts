@@ -40,6 +40,8 @@ import {
 // scheduler can share it without this module's metadata/ffprobe imports; re-exported so existing
 // importers of libraryScan keep working.
 import { looseTitlesMatch, normalizeForMatch, sameTitleIgnoringQualifier, titlesMatch } from "./titleMatch.js";
+import { syncPrimaryTitle } from "./releaseAliases.js";
+import { refreshProviderAliases } from "./aliasBackfill.js";
 export { normalizeForMatch, sameTitleIgnoringQualifier, titlesMatch };
 
 /** An existing item whose title exactly matches — and, only when SEVERAL do (a remake or reboot
@@ -2219,6 +2221,12 @@ export async function refreshOneMediaItem(
   if (!item) return { ok: false, childrenAdded: 0 };
   const typeConfig = getMediaTypeConfig(item.type);
   const result = await refreshOneItem(item, item.type, typeConfig, onlySeasonNumber, opts);
+  if (result.ok) {
+    // The refreshed title keys the alias index, and the provider's alternate titles come along
+    // (best effort: no TMDB key or no id just means none are stored).
+    await syncPrimaryTitle(mediaItemId);
+    await refreshProviderAliases(mediaItemId).catch(() => undefined);
+  }
   return result.ok ? { ok: true, childrenAdded: result.childrenAdded } : { ok: false, childrenAdded: 0 };
 }
 

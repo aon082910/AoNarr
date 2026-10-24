@@ -23,6 +23,8 @@ import { attachChildCounts } from "../services/childCounts.js";
 import { notifyQueueChanged } from "../services/realtime.js";
 import { buildMediaQuery, clampLimit, clampOffset, MEDIA_SORT_COLUMNS, getTmdbLibraryIndex } from "../services/mediaQuery.js";
 import { syncSceneNumbering } from "../services/sceneNumbering.js";
+import { aliasRowsFor, deleteAlias, storeAliases, syncPrimaryTitle } from "../services/releaseAliases.js";
+import { refreshProviderAliases } from "../services/aliasBackfill.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { isBackgroundJobRunning } from "../services/backgroundJobs.js";
@@ -1103,6 +1105,45 @@ mediaRouter.get(
   })
 );
 
+/** The titles the identity gate accepts for this item besides its own (services/releaseAliases.ts):
+ * provider alternate titles, the title it was scanned in under before a rematch, and the admin's. */
+mediaRouter.get(
+  "/:id/aliases",
+  asyncHandler(async (req, res) => {
+    const row = await db.prepare("SELECT id FROM media_items WHERE id = ?").get(req.params.id);
+    if (!row) throw new HttpError(404, "Media item not found");
+    res.json(await aliasRowsFor(Number(req.params.id)));
+  })
+);
+
+/** Adds a title the admin knows releases use for this item (Sonarr's scene mapping / Radarr's
+ * alternative title). Body: { title }. Returns the item's alias rows. */
+mediaRouter.post(
+  "/:id/aliases",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const row = (await db.prepare("SELECT id, title FROM media_items WHERE id = ?").get(req.params.id)) as { id: number; title: string } | undefined;
+    if (!row) throw new HttpError(404, "Media item not found");
+    const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+    if (!title) throw new HttpError(400, "title is required");
+    const added = await storeAliases(row.id, [title], "user");
+    if (added > 0) {
+      const actor = auditActor(req);
+      logAuditEvent(actor.userId, actor.username, "media_alias_added", `"${row.title}" ← "${title}"`);
+    }
+    res.status(201).json(await aliasRowsFor(row.id));
+  })
+);
+
+mediaRouter.delete(
+  "/:id/aliases/:aliasId",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    if (!(await deleteAlias(Number(req.params.id), Number(req.params.aliasId)))) throw new HttpError(404, "Alias not found");
+    res.status(204).send();
+  })
+);
+
 /** IMDb/Rotten Tomatoes/Metacritic scores via OMDb (needs an IMDb id and an OMDb API key
  * configured) — alongside the item's own TMDB vote average, Radarr-style. */
 mediaRouter.get(
@@ -1509,6 +1550,9 @@ mediaRouter.post(
       });
 
     const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(result.lastInsertRowid);
+    await syncPrimaryTitle(Number(result.lastInsertRowid));
+    // Provider alternate titles, best effort in the background (no TMDB key or id: none stored).
+    refreshProviderAliases(Number(result.lastInsertRowid)).catch(() => undefined);
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "media_added", `${b.title} (${b.type})`);
     log.info(`[media] added "${b.title}"${b.year ? ` (${b.year})` : ""} to the library (${b.type})`);
@@ -1771,6 +1815,10 @@ mediaRouter.post(
 
     const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id)) as any;
     if (row.path) refreshNfoSidecar(row, b.externalIds ?? {});
+    // The title the item was known by until now (often the folder's or the scene's) keeps naming
+    // it for the identity gate as an 'original' alias; the new title keys the alias index.
+    await storeAliases(row.id, [(existing as any).title], "original");
+    await syncPrimaryTitle(row.id);
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "media_rematched", `"${(existing as any).title}" → "${b.title}"`);
     refreshOneMediaItem(row.id, undefined, { firstMatch: true }).catch((err) =>

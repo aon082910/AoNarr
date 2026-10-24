@@ -136,6 +136,9 @@ ensureColumn("queue", "import_resume_state", "import_resume_state INTEGER NOT NU
 // grabbed it ('auto' | 'interactive' | 'irc' | 'retry'); NULL on rows older than the identity gate.
 ensureColumn("queue", "match_type", "match_type TEXT");
 ensureColumn("queue", "grab_source", "grab_source TEXT");
+// The item's own title as services/releaseAliases.ts's cleanTitle keys it (see media_item_titles);
+// backfilled at startup by backfillCleanTitles.
+ensureColumn("media_items", "clean_title", "clean_title TEXT");
 // A list's own root folder for the items of its media type (see services/importLists.ts's RootFolderPicker).
 ensureColumn("import_lists", "root_folder_id", "root_folder_id INTEGER REFERENCES root_folders(id) ON DELETE SET NULL");
 // When runAutoSearch last actually searched this target, NULL if never — see scheduler.ts's

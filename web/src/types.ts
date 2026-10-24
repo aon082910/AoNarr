@@ -439,6 +439,8 @@ export interface SearchResult {
   identityOk?: boolean;
   identityMatch?: string | null;
   identityReason?: string | null;
+  /** The title the server's parser read from the release name; what "alias & grab" stores. */
+  parsedTitle?: string;
   downloadVolumeFactor?: number | null;
   alsoOnIndexers?: string[];
 }
