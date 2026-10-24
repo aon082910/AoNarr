@@ -221,10 +221,15 @@ describe("manual grab under an enforcing identity gate (Round 3)", () => {
       expect(refused.status).toBe(409);
       expect(refused.body.error).toMatch(/doesn't name "Dune".*Grab it anyway, or add the release's title as an alias/);
       expect(await db.prepare("SELECT id FROM queue WHERE media_item_id = ?").get(movieId)).toBeUndefined();
+      // The refusal comes before the download client is touched, or the release would sit in the
+      // client with no queue row and the confirmed retry would add it a second time.
+      const adapter = getDownloadClientAdapter() as { addDownload: ReturnType<typeof vi.fn> };
+      expect(adapter.addDownload).not.toHaveBeenCalled();
 
       const forced = await request(app).post(`/api/search/${movieId}/grab`).set("X-Api-Key", apiKey).send({ ...body, force: true });
       expect(forced.status).toBe(201);
       expect(forced.body).toMatchObject({ matchType: "none", grabSource: "interactive" });
+      expect(adapter.addDownload).toHaveBeenCalledTimes(1);
     } finally {
       setSetting("strictReleaseIdentity.movie", "");
     }

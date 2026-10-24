@@ -2095,6 +2095,9 @@ async function refreshOneItem(
             : [JSON.stringify(best.externalIds ?? {})]),
           item.id
         );
+      // Every refresh path, the library-wide ones included, renames an item here: the title it was
+      // scanned in under becomes an alias, the new one keys the alias index.
+      if (!alreadyMatched && newTitle) await syncPrimaryTitle(item.id);
 
       // TMDB's title-search endpoint doesn't include production_companies — only the by-id detail
       // endpoint does (fetchByExternalId's tmdb branch above already calls it for an already-matched

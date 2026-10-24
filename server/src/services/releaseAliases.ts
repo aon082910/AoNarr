@@ -1,6 +1,6 @@
 import { db } from "../db/index.js";
 import { log } from "./logger.js";
-import { identityKey, releaseIdentifiesTarget, type IdentityTarget, type IdentityVerdict } from "./releaseIdentity.js";
+import { identityKey, identityModeFor, releaseIdentifiesTarget, type IdentityTarget, type IdentityVerdict } from "./releaseIdentity.js";
 import type { ParsedRelease } from "./releaseParser.js";
 
 /**
@@ -85,21 +85,33 @@ export async function storeAliases(mediaItemId: number, titles: string[], source
   return added;
 }
 
+/** Drops the titles a metadata provider supplied for the item's previous match. A rematch moves the
+ * item to another work, whose own alternate titles the follow-up refresh fetches. */
+export async function clearProviderAliases(mediaItemId: number): Promise<void> {
+  await db.prepare("DELETE FROM media_item_titles WHERE media_item_id = ? AND source IN ('tmdb_alt', 'anilist_synonym', 'xem_alias')").run(mediaItemId);
+}
+
 export async function deleteAlias(mediaItemId: number, aliasId: number): Promise<boolean> {
   const result = await db.prepare("DELETE FROM media_item_titles WHERE id = ? AND media_item_id = ? AND source <> 'primary'").run(aliasId, mediaItemId);
   return result.changes > 0;
 }
 
-/** Records the item's own title as its clean_title and 'primary' alias row. When the title changed
- * (a rematch, a provider refresh), the old primary row becomes an 'original' alias: releases named
- * the way the item used to be keep matching it. A row already holding the new title under another
- * source becomes the primary one. */
-export async function syncPrimaryTitle(mediaItemId: number): Promise<void> {
+/** Records the item's own title as its clean_title and 'primary' alias row. When the title changed,
+ * the old primary row becomes an 'original' alias by default (a provider refresh replacing the
+ * scan's guess: releases named the way the item used to be keep matching it). Pass
+ * `keepOldTitle: false` when the old title may not be a name of this item at all (a rematch away
+ * from a wrong match, the startup backfill): the old primary row is then dropped. A row already
+ * holding the new title under another source becomes the primary one. */
+export async function syncPrimaryTitle(mediaItemId: number, opts: { keepOldTitle?: boolean } = {}): Promise<void> {
   const item = (await db.prepare("SELECT title, year FROM media_items WHERE id = ?").get(mediaItemId)) as { title: string; year: number | null } | undefined;
   if (!item) return;
   const clean = cleanTitle(item.title);
   await db.prepare("UPDATE media_items SET clean_title = ? WHERE id = ?").run(clean, mediaItemId);
-  await db.prepare("UPDATE media_item_titles SET source = 'original' WHERE media_item_id = ? AND source = 'primary' AND clean_title <> ?").run(mediaItemId, clean);
+  if (opts.keepOldTitle === false) {
+    await db.prepare("DELETE FROM media_item_titles WHERE media_item_id = ? AND source = 'primary' AND clean_title <> ?").run(mediaItemId, clean);
+  } else {
+    await db.prepare("UPDATE media_item_titles SET source = 'original' WHERE media_item_id = ? AND source = 'primary' AND clean_title <> ?").run(mediaItemId, clean);
+  }
   if (!clean) return;
   await db
     .prepare(
@@ -109,16 +121,22 @@ export async function syncPrimaryTitle(mediaItemId: number): Promise<void> {
     .run(mediaItemId, item.title, clean, item.year);
 }
 
+const BACKFILL_CHUNK = 500;
+
 /** Fills media_items.clean_title (and the primary alias row) for items that lack it or whose title
  * changed — once per startup, cheap, no provider calls. */
 export async function backfillCleanTitles(): Promise<number> {
   const rows = (await db.prepare("SELECT id, title, clean_title FROM media_items").all()) as { id: number; title: string; clean_title: string | null }[];
-  let updated = 0;
-  for (const row of rows) {
-    if (row.clean_title === cleanTitle(row.title)) continue;
-    await syncPrimaryTitle(row.id);
-    updated++;
+  const stale = rows.filter((row) => row.clean_title !== cleanTitle(row.title));
+  // The first start after the upgrade keys every item, and this runs before the server listens:
+  // three autocommitted writes per item would be a commit (an fsync) each. A transaction per chunk
+  // makes it a handful.
+  for (let i = 0; i < stale.length; i += BACKFILL_CHUNK) {
+    await db.transaction(async () => {
+      for (const row of stale.slice(i, i + BACKFILL_CHUNK)) await syncPrimaryTitle(row.id, { keepOldTitle: false });
+    });
   }
+  const updated = stale.length;
   if (updated > 0) log.info(`[aliases] keyed ${updated} item title(s) for release matching`);
   return updated;
 }
@@ -156,7 +174,11 @@ export function resolveReleaseItem<T extends { id: number; type: string; title: 
     } catch {
       externalIds = {};
     }
-    const verdict = releaseIdentifiesTarget(release, parsed, { type: item.type, title: item.title, year: item.year, externalIds, aliases: aliases.get(item.id) ?? [] });
+    // The containment types (ppv, sports...) are looser per item than their old equality match
+    // ("UFC.300.Prelims" contains "UFC 300"); an unsolicited release only gets that looseness once
+    // the type's gate enforces.
+    const strictTitle = identityModeFor(item.type) !== "enforce";
+    const verdict = releaseIdentifiesTarget(release, parsed, { type: item.type, title: item.title, year: item.year, externalIds, aliases: aliases.get(item.id) ?? [], strictTitle });
     if (verdict.ok) matches.push({ item, verdict });
   }
   if (matches.length === 0) return { kind: "none" };

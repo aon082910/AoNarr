@@ -26,7 +26,7 @@ import {
   usesQualityTiers,
 } from "./quality.js";
 import { scoreRelease } from "./customFormatScoring.js";
-import { getMediaTypeConfig } from "./mediaTypes.js";
+import { getMediaTypeConfig, MEDIA_TYPES } from "./mediaTypes.js";
 import {
   downloadClientFromRow,
   indexerFromRow,
@@ -88,7 +88,7 @@ import { scanAndImportAllLibraries, refreshAllLibraries, childListProviderIds } 
 import { getSetting } from "./settingsStore.js";
 import { getMediaServerConfig, triggerFullMediaServerScan } from "./mediaServer.js";
 import { syncWatchStatusFromMediaServer } from "./mediaServerWebhook.js";
-import { registerJob, startAllJobs } from "./jobRegistry.js";
+import { registerJob, runJobNow, startAllJobs } from "./jobRegistry.js";
 import type { DownloadClient, Indexer, MediaItem, QueueItem, SearchResult } from "../types/index.js";
 
 /** Runs `fn` over `items` with at most `concurrency` in flight at once — plain `Promise.all` would
@@ -411,9 +411,15 @@ const NUMBERED_CHILD = /^\s*(?:#|issue\s*#?\s*|chapter\s*|ch\.?\s*)(\d+(?:\.\d+)
 const SEQUEL_NUMERALS = new Set(["ii", "iii", "iv", "vi", "vii", "viii", "ix"]);
 const VOLUME_WORDS = new Set(["vol", "volume", "pt", "part"]);
 
+// What a number right after a title counts: discs, bit depths, sample and bit rates, track counts,
+// ordinals ("2CD", "24bit", "96kHz", "64kbps", "2LP", "(10 Tracks)", "20th Anniversary", "2nd Edition").
+const MEDIUM_UNITS = new Set(["cd", "cds", "bit", "khz", "kbps", "lp", "lps", "tracks", "disc", "discs", "st", "nd", "rd", "th"]);
+
 /** Whether the wanted title is directly followed by a later volume's marker ("Greatest Hits II",
- * "Greatest Hits Vol. 2"): that's the next volume, not the one wanted. */
-function namesLaterVolume(releaseTokens: string[], wanted: string[]): boolean {
+ * "Greatest Hits Vol. 2"): that's the next volume, not the one wanted. `bareNumberIsSequel` is for
+ * the types whose sequels are numbered with nothing but the digit ("Super Mario Bros. 3"); an
+ * album or book has a bare number after its title for its disc count, bit depth or edition. */
+function namesLaterVolume(releaseTokens: string[], wanted: string[], bareNumberIsSequel: boolean): boolean {
   for (let i = 0; i + wanted.length < releaseTokens.length; i++) {
     if (!wanted.every((t, j) => releaseTokens[i + j] === t)) continue;
     const next = releaseTokens[i + wanted.length];
@@ -421,7 +427,7 @@ function namesLaterVolume(releaseTokens: string[], wanted: string[]): boolean {
     if (SEQUEL_NUMERALS.has(next)) return true;
     // "Super Mario Bros 3" when wanting "Super Mario Bros": a bare sequel number right after the
     // title is the next entry (a wanted title that itself ends in a number keeps its own).
-    if (/^\d{1,2}$/.test(next) && next !== "1" && !/^\d+$/.test(wanted[wanted.length - 1] ?? "")) return true;
+    if (bareNumberIsSequel && /^\d{1,2}$/.test(next) && next !== "1" && !MEDIUM_UNITS.has(after) && !/^\d+$/.test(wanted[wanted.length - 1] ?? "")) return true;
     if (VOLUME_WORDS.has(next) && (SEQUEL_NUMERALS.has(after) || (/^\d{1,2}$/.test(after) && after !== "1"))) return true;
   }
   return false;
@@ -447,6 +453,44 @@ function titleTokens(text: string): string[] {
  * the one release apart from the rest of its series, so those always need the whole title. */
 const SUBTITLE_OPTIONAL_TYPES = new Set(["author", "audiobook"]);
 
+/** A name written the way release names spell a symbol inside a word: "P!nk" -> "Pink", "Ke$ha" -> "Kesha". */
+function spelledOut(text: string): string {
+  return text.replace(/(?<=\p{L})!(?=\p{L})/gu, "i").replace(/(?<=\p{L})\$(?=\p{L})/gu, "s");
+}
+
+/** A name's tokens run together, stopwords kept: "R.E.M." and "REM" are both "rem", "N.W.A" and
+ * "NWA" both "nwa". */
+function runTogether(text: string): string {
+  return titleTokens(spelledOut(text.replace(/\([^)]*\)|\[[^\]]*\]/g, " "))).join("");
+}
+
+/** Whether `lead` (the part of a release name before its first " - ") is the artist: it carries all
+ * of the artist's words, or is the artist's name written with different punctuation ("REM" for
+ * "R.E.M.", "Pink" for "P!nk"), or its initials ("VA" for "Various Artists"). */
+function leadNamesParent(lead: string, parent: string): boolean {
+  const leadTokens = significantTitleTokens(lead);
+  const parentTokens = significantTitleTokens(parent);
+  if (leadTokens.length === 0 || parentTokens.length === 0) return false;
+  if (parentTokens.every((t) => leadTokens.includes(t))) return true;
+  const leadKey = runTogether(lead);
+  if (leadKey === runTogether(parent)) return true;
+  if (leadKey.length < 2 || parentTokens.length < 2) return false;
+  return leadKey === parentTokens.map((t) => t[0]).join("") || leadKey === titleTokens(parent).map((t) => t[0]).join("");
+}
+
+/** The segment of a " - " separated release name that stands where the artist or author goes: the
+ * first with a word in it. "1981 - Queen - Greatest Hits" leads with a year and "FLAC - Queen -
+ * Greatest Hits" with a format tag, neither of which is another artist. A segment that names the
+ * parent is always the lead, whatever it looks like ("311"). */
+function releaseLead(releaseTitle: string, parent: string): string {
+  const segments = releaseTitle.replace(/^\s*(?:\[[^\]]*\]\s*)+/, "").split(/\s+-\s+/);
+  const isWord = (segment: string) => {
+    const tokens = titleTokens(segment);
+    return tokens.some((t) => !/^\d+$/.test(t)) && !RELEASE_FORMAT_NAMES.includes(tokens.join(""));
+  };
+  return segments.find((s) => isWord(s) || leadNamesParent(s, parent)) ?? "";
+}
+
 /**
  * How a release names this target rather than another release of the same artist, author or
  * series: by its whole title, only by the part before a book's subtitle, or not at all (null). A
@@ -458,16 +502,20 @@ function releaseNameMatch(releaseTitle: string, name: TargetName, mediaType: str
   // "ABBA - Greatest Hits" names another artist's album of the same name: a music release that
   // leads with an artist-like segment before " - " has to name this artist (or the album itself)
   // there. Books and ROMs are left alone: their releases lead with authors, series or nothing.
-  if ((mediaType === "artist" || mediaType === "audiobook") && name.parentTitle && / - /.test(releaseTitle)) {
-    const lead = releaseTitle.replace(/^\s*(?:\[[^\]]*\]\s*)+/, "").split(/\s+-\s+/)[0] ?? "";
+  // Underscores and en/em dashes stand for the spaces and hyphen of "ABBA - Greatest Hits" too.
+  const separated = releaseTitle.replace(/_/g, " ").replace(/[–—]/g, "-");
+  if ((mediaType === "artist" || mediaType === "audiobook") && name.parentTitle && / - /.test(separated)) {
+    const lead = releaseLead(separated, name.parentTitle);
     const leadTokens = significantTitleTokens(lead);
-    const parentTokens = significantTitleTokens(name.parentTitle);
-    const titleTokens = significantTitleTokens(name.title);
-    const namesParent = parentTokens.length > 0 && parentTokens.every((t) => leadTokens.includes(t));
-    const namesTitle = titleTokens.length > 0 && titleTokens.every((t) => leadTokens.includes(t));
-    if (leadTokens.length > 0 && !namesParent && !namesTitle) return null;
+    const wantedTokens = significantTitleTokens(name.title);
+    const namesTitle =
+      wantedTokens.length > 0 &&
+      (wantedTokens.every((t) => leadTokens.includes(t)) ||
+        // An audiobook's title carries a subtitle its releases leave off: "Sapiens - Yuval Noah Harari [M4B]".
+        (SUBTITLE_OPTIONAL_TYPES.has(mediaType) && leadTokens.every((t) => wantedTokens.includes(t))));
+    if (leadTokens.length > 0 && !leadNamesParent(lead, name.parentTitle) && !namesTitle) return null;
   }
-  return releaseNamesTarget(releaseTitle, name)
+  return releaseNamesTarget(releaseTitle, name, mediaType)
     ? "whole"
     : SUBTITLE_OPTIONAL_TYPES.has(mediaType) &&
       !NUMBERED_CHILD.test(name.title) &&
@@ -477,7 +525,7 @@ function releaseNameMatch(releaseTitle: string, name: TargetName, mediaType: str
     : null;
 }
 
-function releaseNamesTarget(releaseTitle: string, name: TargetName): boolean {
+function releaseNamesTarget(releaseTitle: string, name: TargetName, mediaType: string): boolean {
   if (MULTI_RELEASE_PACK.test(releaseTitle) && !MULTI_RELEASE_PACK.test(`${name.parentTitle ?? ""} ${name.title}`)) return false;
   const releaseTokens = titleTokens(releaseTitle);
   const counts = new Map<string, number>();
@@ -494,7 +542,7 @@ function releaseNamesTarget(releaseTitle: string, name: TargetName): boolean {
   const needed = new Map<string, number>();
   for (const t of selfTitled ? [...wanted, ...parent] : wanted) needed.set(t, (needed.get(t) ?? 0) + 1);
   if (!Array.from(needed).every(([t, n]) => (counts.get(t) ?? 0) >= n)) return false;
-  return !!numbered || !namesLaterVolume(releaseTokens.filter((t) => !TITLE_STOPWORDS.has(t)), wanted);
+  return !!numbered || !namesLaterVolume(releaseTokens.filter((t) => !TITLE_STOPWORDS.has(t)), wanted, MEDIA_TYPES[mediaType]?.shape === "single");
 }
 
 /**
@@ -539,9 +587,8 @@ function significantTitleTokens(text: string): string[] {
 
 const RELEASE_BRACKET = "(";
 const RELEASE_YEAR = /^(?:1[89]|20)\d\d$/;
-const RELEASE_FORMAT_TAGS = ["epub", "mobi", "azw3", "azw", "pdf", "cbz", "cbr", "flac", "alac", "mp3", "m4b", "m4a", "aac", "ogg", "opus"].map((tag) =>
-  titleTokens(tag).filter((t) => !TITLE_STOPWORDS.has(t))
-);
+const RELEASE_FORMAT_NAMES = ["epub", "mobi", "azw3", "azw", "pdf", "cbz", "cbr", "flac", "alac", "mp3", "m4b", "m4a", "aac", "ogg", "opus"];
+const RELEASE_FORMAT_TAGS = RELEASE_FORMAT_NAMES.map((tag) => titleTokens(tag).filter((t) => !TITLE_STOPWORDS.has(t)));
 
 /** A name's initials run together, the way release names often write them: "jrr" of "J.R.R.
  * Tolkien", "rf" of "R.F. Kuang". */
@@ -2907,8 +2954,10 @@ export function startScheduler() {
       await backfillProviderAliases(signal);
     },
   });
+  // Through the registry like the nightly run, so the two share one running flag, "Cancel" and a
+  // shutdown reach this one too, and its outcome is recorded.
   setTimeout(() => {
-    backfillProviderAliases().catch((err) => log.warn("[aliases] startup backfill failed:", (err as Error).message));
+    runJobNow("aliasBackfill");
   }, 2 * 60_000).unref();
 
   // Awaited by every poll (a manual "run now" included), so none starts before it's done.

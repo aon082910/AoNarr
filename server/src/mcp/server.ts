@@ -256,6 +256,7 @@ export function createAoNarrMcpServer(): McpServer {
         subItemId: z.number().optional(),
         size: z.number().optional(),
         indexerId: z.number().optional().describe("From the search_releases result this release came from — lets a later blocklist action scope to that specific indexer"),
+        force: z.boolean().optional().describe("Grab a release the identity check refused (the error says why) — only after confirming it really is this item's"),
       },
     },
     async ({ mediaItemId, ...rest }) => {

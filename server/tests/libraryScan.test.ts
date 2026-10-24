@@ -1346,6 +1346,21 @@ describe("refreshLibraryMetadata / refreshOneMediaItem", () => {
     expect(result).toEqual({ updated: 1, failed: 1, childrenAdded: 0 });
   });
 
+  it("keys the alias index for an item the library-wide refresh matched and retitled, as the per-item refresh does", async () => {
+    const id = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('movie','Library Wide Retitle','library wide retitle',1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    searchMetadata.mockImplementation(async (_type: string, title: string) => [{ title, year: 2020, overview: "O", posterUrl: null, externalIds: { tmdb: "77" } }]);
+
+    await refreshLibraryMetadata("movie", undefined, [id]);
+
+    const row = (await db.prepare("SELECT clean_title FROM media_items WHERE id = ?").get(id)) as { clean_title: string | null };
+    expect(row.clean_title).toBe("librarywideretitle");
+    const titles = (await db.prepare("SELECT source FROM media_item_titles WHERE media_item_id = ?").all(id)) as { source: string }[];
+    expect(titles.map((t) => t.source)).toEqual(["primary"]);
+  });
+
   it("scopes to mediaItemIds when given — for the Library page's bulk-selection action", async () => {
     const willMatchId = Number(
       (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('movie','Will Match','will match',1,0,'missing')`).run())

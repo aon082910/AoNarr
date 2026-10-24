@@ -83,6 +83,36 @@ describe("refreshProviderAliases", () => {
     await expect(backfill.refreshProviderAliases(noKey)).rejects.toThrow(/API key/);
     expect(await checkedAt(noKey)).toBeUndefined();
   });
+
+  it("leaves an item unchecked when the provider failed for a reason that says nothing about the item", async () => {
+    for (const message of ["TMDB alternative titles lookup failed: HTTP 429", "TMDB alternative titles lookup failed: HTTP 503", "fetch failed", "TMDB alternative titles lookup failed: HTTP 401"]) {
+      const id = await insertItem("movie", `Transient ${message}`, { tmdb: "5" });
+      fetchAlternateTitlesFor.mockRejectedValueOnce(new Error(message));
+      await expect(backfill.refreshProviderAliases(id)).rejects.toThrow(message);
+      expect(await checkedAt(id), message).toBeUndefined();
+    }
+    for (const message of ["AniList has no record for this id", "Alternate titles lookup needs a TMDB id — this item doesn't have one", `Alternate titles aren't available for "series"`]) {
+      const id = await insertItem("movie", `Definitive ${message}`, { tmdb: "6" });
+      fetchAlternateTitlesFor.mockRejectedValueOnce(new Error(message));
+      await expect(backfill.refreshProviderAliases(id)).rejects.toThrow();
+      expect(await checkedAt(id), message).toBeTypeOf("string");
+    }
+  });
+
+  it("keeps what another writer stored in extra_metadata while the provider was being asked", async () => {
+    const id = await insertItem("movie", "Racing Film", { tmdb: "7" }, { posterColor: "#fff" });
+    fetchAlternateTitlesFor.mockImplementation(async () => {
+      // A provider match finishing while the lookup is in flight stages its result on the same row.
+      await db.prepare("UPDATE media_items SET extra_metadata = ? WHERE id = ?").run(JSON.stringify({ posterColor: "#fff", tvdb: { id: "9" } }), id);
+      return ["Rennfilm"];
+    });
+
+    await backfill.refreshProviderAliases(id);
+
+    const row = (await db.prepare("SELECT extra_metadata FROM media_items WHERE id = ?").get(id)) as { extra_metadata: string };
+    expect(JSON.parse(row.extra_metadata)).toMatchObject({ posterColor: "#fff", tvdb: { id: "9" } });
+    expect(await checkedAt(id)).toBeTypeOf("string");
+  });
 });
 
 describe("backfillProviderAliases", () => {
@@ -121,5 +151,66 @@ describe("backfillProviderAliases", () => {
     expect(await backfill.backfillProviderAliases()).toEqual({ checked: 2, added: 1 });
     expect(await checkedAt(first)).toBeTypeOf("string");
     expect(await aliases.aliasTitlesFor(second)).toEqual(["Zweiter Film"]);
+  });
+
+  it("goes on to the AniList items when TMDB can't be asked", async () => {
+    const movie = await insertItem("movie", "Keyless Movie", { tmdb: "20" });
+    const secondMovie = await insertItem("movie", "Keyless Second Movie", { tmdb: "21" });
+    const anime = await insertItem("anime", "Keyless Anime", { anilist: "16498", tmdb: "1429" });
+    fetchAlternateTitlesFor.mockImplementation(async (_type, ids) => {
+      if (ids.anilist) return ["Shingeki no Kyojin"];
+      throw new Error("TMDB API key is not configured");
+    });
+
+    expect(await backfill.backfillProviderAliases()).toEqual({ checked: 1, added: 1 });
+
+    // TMDB was asked once, then left alone for the run; AniList needs no key.
+    expect(fetchAlternateTitlesFor).toHaveBeenCalledTimes(2);
+    expect(await aliases.aliasTitlesFor(anime)).toEqual(["Shingeki no Kyojin"]);
+    expect(await checkedAt(movie)).toBeUndefined();
+    expect(await checkedAt(secondMovie)).toBeUndefined();
+  });
+
+  it("stops asking a provider that is rate limiting, and leaves its items for a later run", async () => {
+    const first = await insertItem("movie", "Limited First", { tmdb: "30" });
+    const second = await insertItem("movie", "Limited Second", { tmdb: "31" });
+    fetchAlternateTitlesFor.mockRejectedValue(new Error("TMDB alternative titles lookup failed: HTTP 429"));
+
+    expect(await backfill.backfillProviderAliases()).toEqual({ checked: 0, added: 0 });
+
+    expect(fetchAlternateTitlesFor).toHaveBeenCalledTimes(1);
+    expect(await checkedAt(first)).toBeUndefined();
+    expect(await checkedAt(second)).toBeUndefined();
+
+    // The next run asks again and finishes them.
+    fetchAlternateTitlesFor.mockReset().mockResolvedValue([]);
+    expect(await backfill.backfillProviderAliases()).toEqual({ checked: 2, added: 0 });
+    expect(await checkedAt(first)).toBeTypeOf("string");
+  });
+
+  it("gives up on a provider after a few failures in a row, but not on one odd item", async () => {
+    const ids: number[] = [];
+    for (let i = 0; i < 5; i++) ids.push(await insertItem("movie", `Flaky ${i}`, { tmdb: String(40 + i) }));
+    // One item fails, the next succeeds: carries on.
+    fetchAlternateTitlesFor.mockRejectedValueOnce(new Error("fetch failed")).mockResolvedValue([]);
+    expect(await backfill.backfillProviderAliases()).toEqual({ checked: 4, added: 0 });
+    expect(await checkedAt(ids[0])).toBeUndefined();
+
+    // Three in a row: the rest wait.
+    for (let i = 0; i < 4; i++) ids.push(await insertItem("movie", `Flaky again ${i}`, { tmdb: String(60 + i) }));
+    fetchAlternateTitlesFor.mockReset().mockRejectedValue(new Error("fetch failed"));
+    expect(await backfill.backfillProviderAliases()).toEqual({ checked: 0, added: 0 });
+    expect(fetchAlternateTitlesFor).toHaveBeenCalledTimes(3);
+  });
+
+  it("lets only one run proceed when two start together", async () => {
+    await insertItem("movie", "Twice Asked", { tmdb: "50" });
+    fetchAlternateTitlesFor.mockResolvedValue(["Doppelt"]);
+
+    const [a, b] = await Promise.all([backfill.backfillProviderAliases(), backfill.backfillProviderAliases()]);
+
+    expect([a, b]).toContainEqual({ checked: 0, added: 0 });
+    expect([a, b]).toContainEqual({ checked: 1, added: 1 });
+    expect(fetchAlternateTitlesFor).toHaveBeenCalledTimes(1);
   });
 });

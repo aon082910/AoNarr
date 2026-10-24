@@ -110,6 +110,26 @@ describe("syncPrimaryTitle / backfillCleanTitles", () => {
     expect(await aliases.aliasTitlesFor(id)).toEqual(["Wrong Family Film"]);
   });
 
+  it("drops the old primary row instead of demoting it when told the old title is not the item's", async () => {
+    const id = await insertItem("movie", "Extraction 2", 2023);
+    await aliases.syncPrimaryTitle(id);
+    await db.prepare("UPDATE media_items SET title = 'Extraction' WHERE id = ?").run(id);
+    await aliases.syncPrimaryTitle(id, { keepOldTitle: false });
+    expect((await aliases.aliasRowsFor(id)).map((r) => [r.title, r.source])).toEqual([["Extraction", "primary"]]);
+    expect(await aliases.aliasTitlesFor(id)).toEqual([]);
+  });
+
+  it("clears only the titles a provider supplied", async () => {
+    const id = await insertItem("movie", "Provider Clear Film", 2020);
+    await aliases.syncPrimaryTitle(id);
+    await aliases.storeAliases(id, ["Alt From Tmdb"], "tmdb_alt");
+    await aliases.storeAliases(id, ["Alt From AniList"], "anilist_synonym");
+    await aliases.storeAliases(id, ["Folder Name"], "original");
+    await aliases.storeAliases(id, ["Typed By Admin"], "user");
+    await aliases.clearProviderAliases(id);
+    expect((await aliases.aliasRowsFor(id)).map((r) => r.source).sort()).toEqual(["original", "primary", "user"]);
+  });
+
   it("promotes an existing alias row to primary when the item takes that title", async () => {
     const id = await insertItem("movie", "Promoted Before", 2010);
     await aliases.syncPrimaryTitle(id);
@@ -142,6 +162,29 @@ describe("syncPrimaryTitle / backfillCleanTitles", () => {
     expect((await db.prepare("SELECT clean_title FROM media_items WHERE id = ?").get(missing) as any).clean_title).toBe("backfillmissing");
     expect((await db.prepare("SELECT clean_title FROM media_items WHERE id = ?").get(stale) as any).clean_title).toBe("backfillstale");
     expect(await aliases.backfillCleanTitles()).toBe(0);
+  });
+
+  it("keys a library bigger than one transaction chunk", async () => {
+    await db.transaction(async () => {
+      for (let i = 0; i < 1100; i++) await insertItem("movie", `Bulk Backfill ${i}`, 2020);
+    });
+
+    expect(await aliases.backfillCleanTitles()).toBeGreaterThanOrEqual(1100);
+
+    const unkeyed = (await db.prepare("SELECT COUNT(*) AS n FROM media_items WHERE clean_title IS NULL").get()) as { n: number };
+    expect(Number(unkeyed.n)).toBe(0);
+    const primaries = (await db.prepare("SELECT COUNT(*) AS n FROM media_item_titles WHERE source = 'primary' AND title LIKE 'Bulk Backfill %'").get()) as { n: number };
+    expect(Number(primaries.n)).toBe(1100);
+  });
+
+  it("drops the old title from an item whose stored key no longer matches its title", async () => {
+    const id = await insertItem("movie", "Stale Key After", 2020);
+    await db.prepare("INSERT INTO media_item_titles (media_item_id, title, clean_title, source) VALUES (?, 'Stale Key Before', 'stalekeybefore', 'primary')").run(id);
+    await db.prepare("UPDATE media_items SET clean_title = 'stalekeybefore' WHERE id = ?").run(id);
+
+    await aliases.backfillCleanTitles();
+
+    expect((await aliases.aliasRowsFor(id)).map((r) => [r.title, r.source])).toEqual([["Stale Key After", "primary"]]);
   });
 });
 
@@ -192,6 +235,20 @@ describe("resolveReleaseItem (library-wide, with aliases)", () => {
     const a = itemRow(1, "movie", "Twin Film", 2019);
     const b = itemRow(2, "movie", "Twin Film", 2021);
     expect(aliases.resolveReleaseItem(...release("Twin.Film.2020.1080p.WEB-GRP"), [a, b], new Map())).toMatchObject({ kind: "ambiguous" });
+  });
+
+  it("picks the item whose year the release names when both are within the gate's slack of it", () => {
+    const a = itemRow(1, "movie", "Slack Film", 2019);
+    const b = itemRow(2, "movie", "Slack Film", 2020);
+    // 2020 is within a year of both items; the year only the second has is what singles it out.
+    expect(aliases.resolveReleaseItem(...release("Slack.Film.2020.1080p.WEB-GRP"), [a, b], new Map())).toMatchObject({ kind: "one", item: { id: 2 } });
+    expect(aliases.resolveReleaseItem(...release("Slack.Film.2019.1080p.WEB-GRP"), [a, b], new Map())).toMatchObject({ kind: "one", item: { id: 1 } });
+  });
+
+  it("matches a containment type by its whole title unless the type's gate enforces", () => {
+    const ufc = itemRow(1, "ppv", "UFC 300", null);
+    expect(aliases.resolveReleaseItem(...release("UFC.300.Prelims.720p.WEB-GRP"), [ufc], new Map())).toEqual({ kind: "none" });
+    expect(aliases.resolveReleaseItem(...release("UFC.300.720p.WEB-GRP"), [ufc], new Map())).toMatchObject({ kind: "one", item: { id: 1 } });
   });
 
   it("lets an indexer id claim an item whose title differs, and survives bad external ids", () => {

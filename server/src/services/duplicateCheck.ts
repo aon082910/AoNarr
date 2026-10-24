@@ -5,6 +5,7 @@ import { effectiveShape, getMediaTypeConfig, isPlaceholderParent, MEDIA_TYPE_KEY
 import { recycleFile } from "./recycleBin.js";
 import { notifyDuplicatesFound } from "./notifications.js";
 import { attachChildCounts } from "./childCounts.js";
+import { storeAliases, type AliasSource } from "./releaseAliases.js";
 
 function normalizeTitle(title: string): string {
   return title
@@ -538,6 +539,15 @@ export async function mergeMediaItems(
       for (const table of REASSIGN_TABLES) {
         await db.prepare(`UPDATE ${table} SET media_item_id = ? WHERE media_item_id = ?`).run(keeperId, loserId);
       }
+
+      // The loser's alias rows go with it (ON DELETE CASCADE). Its title and the other names it was
+      // known by (a provider's alternate titles, the admin's) are names of the same work, so the
+      // keeper takes them: releases named the way the loser was scanned in keep matching.
+      const loserTitles = (await db
+        .prepare("SELECT title, source, year FROM media_item_titles WHERE media_item_id = ? AND source <> 'primary'")
+        .all(loserId)) as { title: string; source: AliasSource; year: number | null }[];
+      await storeAliases(keeperId, [loser.title], "original");
+      for (const t of loserTitles) await storeAliases(keeperId, [t.title], t.source, t.year);
 
       await db.prepare("DELETE FROM media_items WHERE id = ?").run(loserId);
       merged++;

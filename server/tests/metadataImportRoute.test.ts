@@ -97,6 +97,34 @@ describe("POST /api/metadata/import — artwork", () => {
   });
 });
 
+describe("POST /api/metadata/import — alternate titles", () => {
+  it("keys the new item's title and fetches the provider's alternate titles for the identity gate", async () => {
+    setSetting("tmdbApiKey", "test-tmdb-key");
+    try {
+      stubFetch([{ test: (url) => url.includes("/movie/746036/alternative_titles"), respond: () => json({ titles: [{ title: "Kaskader" }, { title: "Le Cascadeur" }] }) }]);
+
+      const res = await importMedia({ type: "movie", title: "The Fall Guy", year: 2024, externalIds: { tmdb: "746036" } });
+      expect(res.status).toBe(201);
+
+      const row = (await db.prepare("SELECT clean_title FROM media_items WHERE id = ?").get(res.body.id)) as { clean_title: string | null };
+      expect(row.clean_title).toBe("fallguy");
+      const { aliasRowsFor } = await import("../src/services/releaseAliases.js");
+      // The alternate titles are fetched in the background after the response.
+      await vi.waitFor(async () => {
+        expect((await aliasRowsFor(res.body.id)).map((r) => [r.title, r.source])).toEqual(
+          expect.arrayContaining([
+            ["The Fall Guy", "primary"],
+            ["Kaskader", "tmdb_alt"],
+            ["Le Cascadeur", "tmdb_alt"],
+          ])
+        );
+      });
+    } finally {
+      setSetting("tmdbApiKey", "");
+    }
+  });
+});
+
 describe("POST /api/metadata/import — episode monitoring", () => {
   it("adds Season 0 specials unmonitored and every regular episode monitored", async () => {
     setSetting("tvdbApiKey", "tvdb-key");

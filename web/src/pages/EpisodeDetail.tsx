@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api } from "../api/client.js";
+import { api, ApiError } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import MonitorToggle from "../components/MonitorToggle.js";
 import { useAuth } from "../context/AuthContext.js";
@@ -233,7 +233,7 @@ export default function EpisodeDetail() {
     }
   }
 
-  async function grab(result: SearchResult) {
+  async function grab(result: SearchResult, options: { force?: boolean } = {}) {
     try {
       await api.post(`/search/${mediaId}/grab`, {
         downloadUrl: result.downloadUrl,
@@ -244,10 +244,16 @@ export default function EpisodeDetail() {
         imdbId: result.imdbId ?? null,
         tmdbId: result.tmdbId ?? null,
         episodeId: Number(episodeId),
+        force: options.force ?? false,
       });
       notify.success(`Sent "${result.title}" to download client.`);
       load();
     } catch (e) {
+      // The identity gate (enforcing) refused the release once; the admin decides.
+      if (e instanceof ApiError && e.status === 409 && !options.force) {
+        if (window.confirm(`${e.message}\n\nGrab it anyway?`)) await grab(result, { force: true });
+        return;
+      }
       notify.error(`Grab failed: ${(e as Error).message}`);
     }
   }

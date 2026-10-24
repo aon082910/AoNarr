@@ -1164,8 +1164,10 @@ export default function MediaDetail() {
   async function aliasAndGrab(result: SearchResult) {
     if (!result.parsedTitle) return grab(result);
     try {
-      await api.post(`/media/${id}/aliases`, { title: result.parsedTitle });
-      notify.success(`Added "${result.parsedTitle}" as an alternate title.`);
+      const rows = await api.post<{ title: string; source: string }[]>(`/media/${id}/aliases`, { title: result.parsedTitle });
+      // The server stores nothing for a title the item already answers to; say so rather than claim an add.
+      const stored = rows.some((row) => row.source === "user" && row.title === result.parsedTitle!.trim());
+      notify.success(stored ? `Added "${result.parsedTitle}" as an alternate title.` : `"${result.parsedTitle}" is already a title of this item.`);
     } catch (e) {
       notify.error(`Couldn't add the alternate title: ${(e as Error).message}`);
       return;
@@ -2721,7 +2723,7 @@ export default function MediaDetail() {
                       <button type="button" className="icon-button" onClick={() => grab(r)} disabled={r.blocklisted} title="Grab" aria-label="Grab">
                         <DownloadIcon />
                       </button>
-                      {r.identityOk === false && r.parsedTitle && !r.blocklisted && (
+                      {r.identityOk === false && r.identityRejection === "title" && r.parsedTitle && !r.blocklisted && (
                         <button
                           type="button"
                           className="icon-button"

@@ -57,10 +57,13 @@ export interface AnnotatedSearchResult extends SearchResult {
   /** The identity gate's verdict (services/releaseIdentity.ts) for a quality-tiered type: whether
    * the release names this item at all, how it matched, and why not. Always true/null for a type
    * the gate doesn't judge (music, books, ...). Automatic search rejects a false verdict when the
-   * type's `strictReleaseIdentity` mode is `enforce`; a manual grab is never blocked by it. */
+   * type's `strictReleaseIdentity` mode is `enforce`; a manual grab is refused once with the reason
+   * (409) and goes through when repeated with `force: true`. */
   identityOk: boolean;
   identityMatch: string | null;
   identityReason: string | null;
+  /** Which check a rejected release failed: only a title rejection is something an alias can fix. */
+  identityRejection: "title" | "year" | null;
   /** The title the parser read from the release name — what "add as an alias" would store. */
   parsedTitle: string;
   blocklisted: boolean;
@@ -232,6 +235,7 @@ searchRouter.get(
         identityOk: verdict ? verdict.ok : true,
         identityMatch: verdict?.matchType ?? null,
         identityReason: verdict && !verdict.ok ? verdict.detail : null,
+        identityRejection: verdict && !verdict.ok ? verdict.reason : null,
         parsedTitle: parsed.title,
         blocklisted: blocklisted.has(r.title),
         rejected,
@@ -276,6 +280,24 @@ searchRouter.post(
       throw new HttpError(400, "This release is blocklisted for this media item");
     }
 
+    // A manual grab records how the release matched like an automatic grab's (grab_source tells
+    // the two apart). While the type's gate enforces, a release the gate would reject is refused
+    // once with the reason (409) so the admin can confirm; `force: true` grabs it anyway. The
+    // verdict is settled before the download client is touched, so a refused grab leaves nothing
+    // in the client and the confirmed retry adds the release exactly once.
+    const parsedTitle = parseReleaseTitle(b.title ?? "");
+    const verdict =
+      b.title && usesQualityTiers(item.type) && !b.subItemId
+        ? releaseIdentifiesTarget(
+            { title: b.title, imdbId: b.imdbId ?? null, tmdbId: b.tmdbId ?? null, tvdbId: b.tvdbId ?? null },
+            parsedTitle,
+            await identityTargetFor(item)
+          )
+        : null;
+    if (verdict && !verdict.ok && !b.force && identityModeFor(item.type) === "enforce") {
+      throw new HttpError(409, `${verdict.detail}. Grab it anyway, or add the release's title as an alias of this item.`);
+    }
+
     // Either an explicit client id, or (the UI's normal path) the release's protocol — an NZB
     // handed to qBittorrent, or a torrent to a disabled client, just fails at the client.
     const protocol =
@@ -295,7 +317,6 @@ searchRouter.post(
 
     const adapter = getDownloadClientAdapter(client.type);
     const grab = await adapter.addDownload(client, b.downloadUrl, client.category, b.title, protocol);
-    const parsedTitle = parseReleaseTitle(b.title ?? "");
     // queue.size is BIGINT: Postgres rejects a fractional size after the client already took the download.
     const size = b.size == null || !Number.isFinite(Number(b.size)) ? null : Math.round(Number(b.size));
     const quality = parsedTitle.quality;
@@ -305,21 +326,6 @@ searchRouter.post(
     if (b.episodeId && parsedTitle.isFullSeason) {
       const ep = (await db.prepare("SELECT season_number FROM episodes WHERE id = ?").get(b.episodeId)) as { season_number: number } | undefined;
       if (ep && (parsedTitle.seasonNumber == null || parsedTitle.seasonNumber === ep.season_number)) seasonNumber = ep.season_number;
-    }
-
-    // A manual grab records how the release matched like an automatic grab's (grab_source tells
-    // the two apart). While the type's gate enforces, a release the gate would reject is refused
-    // once with the reason (409) so the admin can confirm; `force: true` grabs it anyway.
-    const verdict =
-      b.title && usesQualityTiers(item.type) && !b.subItemId
-        ? releaseIdentifiesTarget(
-            { title: b.title, imdbId: b.imdbId ?? null, tmdbId: b.tmdbId ?? null, tvdbId: b.tvdbId ?? null },
-            parsedTitle,
-            await identityTargetFor(item)
-          )
-        : null;
-    if (verdict && !verdict.ok && !b.force && identityModeFor(item.type) === "enforce") {
-      throw new HttpError(409, `${verdict.detail}. Grab it anyway, or add the release's title as an alias of this item.`);
     }
 
     const result = await db

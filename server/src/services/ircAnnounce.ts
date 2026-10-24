@@ -76,7 +76,16 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
   const singleItems = ((await db.prepare("SELECT * FROM media_items WHERE monitored = 1 AND has_file = 0").all()) as any[])
     .map(mediaItemFromRow)
     .filter((item) => getMediaTypeConfig(item.type).shape === "single");
-  const resolvedSingle = resolveReleaseItem({ title: releaseTitle }, parsed, singleItems.filter((item) => usesQualityTiers(item.type)), aliases);
+  // The gate only checks a year written before the quality words ("Dune.2021.1080p"). A year after
+  // them ("Dune.1080p.BluRay.x264.2021-GRP") is not seen as a title year, so the old guard on the
+  // first year anywhere in the name still applies to those.
+  // A release shaped like an episode ("Dune.S01E01...", a season pack) names no movie; it goes to
+  // the episodic path below however much its title looks like a wanted film's.
+  const episodeShaped = parsed.seasonNumber != null || (parsed.episodeNumbers?.length ?? 0) > 0 || parsed.isFullSeason;
+  const tieredSingles = singleItems
+    .filter((item) => !episodeShaped && usesQualityTiers(item.type))
+    .filter((item) => parsed.titleYear != null || parsed.year == null || item.year == null || Math.abs(parsed.year - item.year) <= 1);
+  const resolvedSingle = resolveReleaseItem({ title: releaseTitle }, parsed, tieredSingles, aliases);
   if (resolvedSingle.kind === "ambiguous") {
     log.info(`[irc:${feed.name}] "${releaseTitle}" names ${resolvedSingle.items.length} items (${resolvedSingle.items.map((i) => `"${i.title}"`).join(", ")}); not grabbing`);
     return;

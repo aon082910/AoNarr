@@ -83,6 +83,32 @@ describe("duplicateCheck", () => {
     expect(loserRow).toBeUndefined();
   });
 
+  it("mergeMediaItems hands the loser's title and alternate titles to the keeper instead of cascading them away", async () => {
+    const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
+    const { syncPrimaryTitle, storeAliases, aliasRowsFor } = await import("../src/services/releaseAliases.js");
+
+    const keeperId = await insertMovie("Attack on Titan Movie", 2020, 1);
+    const loserId = await insertMovie("Shingeki no Kyojin Movie", 2020, 0);
+    await syncPrimaryTitle(keeperId);
+    await syncPrimaryTitle(loserId);
+    await storeAliases(loserId, ["AoT Film"], "tmdb_alt");
+    await storeAliases(loserId, ["Titan Attack Film"], "user");
+    await storeAliases(keeperId, ["Attack on Titan Movie"], "user"); // the keeper's own title is never doubled
+
+    await mergeMediaItems(keeperId, [loserId], false);
+
+    const rows = await aliasRowsFor(keeperId);
+    expect(rows.map((r) => [r.title, r.source]).sort()).toEqual(
+      [
+        ["Attack on Titan Movie", "primary"],
+        ["Shingeki no Kyojin Movie", "original"],
+        ["AoT Film", "tmdb_alt"],
+        ["Titan Attack Film", "user"],
+      ].sort()
+    );
+    expect(await aliasRowsFor(loserId)).toEqual([]);
+  });
+
   it("mergeMediaItems reassigns history rows from loser to keeper instead of losing them", async () => {
     const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
 

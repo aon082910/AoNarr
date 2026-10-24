@@ -66,6 +66,7 @@ vi.mock("../src/services/jobRegistry.js", () => ({
     return registerJob(...args);
   },
   startAllJobs: (...args: unknown[]) => startAllJobs(...args),
+  runJobNow: () => "started",
 }));
 
 const runTraktSync = vi.fn();
@@ -2137,6 +2138,78 @@ describe("chooseBestResult — rejections, tiers and protocols", () => {
     const wholeTitle = fakeResult({ title: "Brandon Sanderson - Mistborn - The Final Empire (2006) [EPUB]", seeders: 5 });
     expect((await choose([mistborn, wholeTitle], finalEmpire))?.result).toBe(wholeTitle);
     expect((await choose([mistborn], finalEmpire))?.result).toBe(mistborn);
+  });
+
+  it("reads the artist out of a music release however it spells the name or orders the segments, and still refuses another artist's album", async () => {
+    const choose = (results: any[], mediaType: string, name: { title: string; parentTitle?: string }) =>
+      chooseBestResult(results, [], "", null, 0, null, new Set(), mediaType, null, null, null, { name });
+    const accepted = async (title: string, mediaType: string, name: { title: string; parentTitle?: string }) => {
+      const release = fakeResult({ title });
+      expect((await choose([release], mediaType, name))?.result, title).toBe(release);
+    };
+    const hits = { title: "Greatest Hits", parentTitle: "Queen" };
+
+    // The artist's name spelled with different punctuation, or by its initials.
+    await accepted("REM - Automatic for the People (1992) [FLAC]", "artist", { title: "Automatic for the People", parentTitle: "R.E.M." });
+    await accepted("Pink - Funhouse (2008) [FLAC]", "artist", { title: "Funhouse", parentTitle: "P!nk" });
+    await accepted("NWA - Straight Outta Compton (1988) [FLAC]", "artist", { title: "Straight Outta Compton", parentTitle: "N.W.A" });
+    await accepted("VA - Now That's What I Call Music (2020) [FLAC]", "artist", { title: "Now That's What I Call Music", parentTitle: "Various Artists" });
+    // A segment ahead of the artist that is no artist: a year or a format tag.
+    await accepted("1981 - Queen - Greatest Hits [FLAC]", "artist", hits);
+    await accepted("FLAC - Queen - Greatest Hits", "artist", hits);
+    await accepted("1981 - Greatest Hits", "artist", hits);
+    await accepted("Greatest Hits - Queen [FLAC]", "artist", hits);
+    // A number-only artist is still the artist.
+    await accepted("311 - Transistor (1997) [FLAC]", "artist", { title: "Transistor", parentTitle: "311" });
+
+    // None of those licenses another artist's album of the same name.
+    await accepted("Queen – Greatest Hits (1981) [FLAC]", "artist", hits);
+    await accepted("Queen_-_Greatest_Hits_(1981)_[FLAC]", "artist", hits);
+    for (const title of [
+      "ABBA - Greatest Hits (1975) [FLAC]",
+      "VA - Greatest Hits (2010) [FLAC]",
+      "1981 - ABBA - Greatest Hits [FLAC]",
+      "ABBA – Greatest Hits (1975) [FLAC]",
+      "ABBA_-_Greatest_Hits_(1975)_[FLAC]",
+    ]) {
+      expect(await choose([fakeResult({ title })], "artist", hits), title).toBeNull();
+    }
+
+    // An audiobook's title carries a subtitle that its releases lead with the main title of.
+    const sapiens = { title: "Sapiens: A Brief History of Humankind", parentTitle: "Yuval Noah Harari" };
+    const atomicHabits = { title: "Atomic Habits: An Easy & Proven Way to Build Good Habits & Break Bad Ones", parentTitle: "James Clear" };
+    await accepted("Sapiens - Yuval Noah Harari [M4B]", "audiobook", sapiens);
+    await accepted("Atomic Habits - James Clear (2018) [M4B]", "audiobook", atomicHabits);
+    await accepted("Yuval Noah Harari - Sapiens [M4B]", "audiobook", sapiens);
+    expect(await choose([fakeResult({ title: "Brandon Sanderson - Sapiens [M4B]" })], "audiobook", sapiens)).toBeNull();
+  });
+
+  it("does not take a disc count, bit depth, bitrate or edition after a title for a later volume", async () => {
+    const choose = (results: any[], mediaType: string, name: { title: string; parentTitle?: string }) =>
+      chooseBestResult(results, [], "", null, 0, null, new Set(), mediaType, null, null, null, { name });
+    const hits = { title: "Greatest Hits", parentTitle: "Queen" };
+    for (const title of [
+      "Queen - Greatest Hits 2CD [FLAC]",
+      "Queen - Greatest Hits (2CD) [FLAC]",
+      "Queen - Greatest Hits 24bit 96kHz [FLAC]",
+      "Queen - Greatest Hits 24-96 FLAC",
+      "Queen - Greatest Hits 2LP Vinyl Rip",
+      "Queen - Greatest Hits 20th Anniversary Edition [FLAC]",
+      "Queen - Greatest Hits (10 Tracks) [FLAC]",
+    ]) {
+      const release = fakeResult({ title });
+      expect((await choose([release], "artist", hits))?.result, title).toBe(release);
+    }
+    const stand = fakeResult({ title: "Stephen King - The Stand 64kbps MP3" });
+    expect((await choose([stand], "audiobook", { title: "The Stand", parentTitle: "Stephen King" }))?.result).toBe(stand);
+    const secondEdition = fakeResult({ title: "Author Name - Some Book 2nd Edition (epub)" });
+    expect((await choose([secondEdition], "author", { title: "Some Book", parentTitle: "Author Name" }))?.result).toBe(secondEdition);
+
+    // The roman numeral and Vol./Part markers still name the next volume, and a ROM's bare
+    // sequel number still does too.
+    expect(await choose([fakeResult({ title: "Queen - Greatest Hits II (1991) [FLAC]" })], "artist", hits)).toBeNull();
+    expect(await choose([fakeResult({ title: "Queen - Greatest Hits Vol. 2 [FLAC]" })], "artist", hits)).toBeNull();
+    expect(await choose([fakeResult({ title: "Super Mario Bros. 3 (USA)" })], "rom", { title: "Super Mario Bros.", parentTitle: "NES" })).toBeNull();
   });
 
   it("needs the whole title of a game or an album, whose subtitle is what tells it from the rest of its series", async () => {

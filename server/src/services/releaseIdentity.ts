@@ -38,6 +38,10 @@ export interface IdentityTarget {
   /** Alternate titles the release may use instead (Round 3 stores them; callers may pass known
    * ones already). */
   aliases?: string[];
+  /** Compare a containment type's release title by equality like every other type. Set by callers
+   * that grab unsolicited releases while the type's gate is not enforcing: "UFC.300.Prelims" must
+   * not resolve to "UFC 300" just because it contains the title. */
+  strictTitle?: boolean;
 }
 
 export interface IdentityRelease {
@@ -183,7 +187,7 @@ function matchTitle(candidates: string[], target: IdentityTarget, parsed: Parsed
   const aliases = target.aliases ?? [];
   const some = (fn: (c: string) => boolean) => candidates.some(fn);
 
-  if (CONTAINMENT_TYPES.has(target.type)) {
+  if (CONTAINMENT_TYPES.has(target.type) && !target.strictTitle) {
     return some((c) => exact.some((t) => containsTitle(c, t))) ? "title" : "none";
   }
   if (some((c) => exact.some((t) => sameTitle(c, t)))) return "title";

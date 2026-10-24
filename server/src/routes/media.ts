@@ -23,7 +23,7 @@ import { attachChildCounts } from "../services/childCounts.js";
 import { notifyQueueChanged } from "../services/realtime.js";
 import { buildMediaQuery, clampLimit, clampOffset, MEDIA_SORT_COLUMNS, getTmdbLibraryIndex } from "../services/mediaQuery.js";
 import { syncSceneNumbering } from "../services/sceneNumbering.js";
-import { aliasRowsFor, deleteAlias, storeAliases, syncPrimaryTitle } from "../services/releaseAliases.js";
+import { aliasRowsFor, clearProviderAliases, deleteAlias, storeAliases, syncPrimaryTitle } from "../services/releaseAliases.js";
 import { refreshProviderAliases } from "../services/aliasBackfill.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
@@ -1815,10 +1815,15 @@ mediaRouter.post(
 
     const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id)) as any;
     if (row.path) refreshNfoSidecar(row, b.externalIds ?? {});
-    // The title the item was known by until now (often the folder's or the scene's) keeps naming
-    // it for the identity gate as an 'original' alias; the new title keys the alias index.
-    await storeAliases(row.id, [(existing as any).title], "original");
-    await syncPrimaryTitle(row.id);
+    // A rematch fixes an item matched to the wrong entry, so the title it carried until now is
+    // usually another work's ("Extraction 2" for "Extraction"); as an alias it would make that
+    // work's releases match this item for good. It is kept only when the admin says it was one of
+    // this item's own names (the folder's or the scene's). The alternate titles the old match
+    // brought are dropped for the same reason; the follow-up refresh fetches the new match's.
+    const keepOldTitle = b.keepOldTitleAsAlias === true;
+    if (keepOldTitle) await storeAliases(row.id, [(existing as any).title], "original");
+    await clearProviderAliases(row.id);
+    await syncPrimaryTitle(row.id, { keepOldTitle });
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "media_rematched", `"${(existing as any).title}" → "${b.title}"`);
     refreshOneMediaItem(row.id, undefined, { firstMatch: true }).catch((err) =>

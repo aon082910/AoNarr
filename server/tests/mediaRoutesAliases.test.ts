@@ -74,21 +74,60 @@ describe("/api/media/:id/aliases", () => {
 });
 
 describe("rematch and add keep the alias index current", () => {
-  it("keeps the previous title as an 'original' alias after a rematch and rekeys the primary title", async () => {
+  it("drops the previous title after a rematch, since it is usually another work's, and rekeys the primary title", async () => {
     refreshOneMediaItem.mockReset().mockResolvedValue({ ok: true, childrenAdded: 0 });
     const id = await insertMovie("Wrong Family Film", 2001);
-    const { syncPrimaryTitle } = await import("../src/services/releaseAliases.js");
+    const { syncPrimaryTitle, storeAliases } = await import("../src/services/releaseAliases.js");
     await syncPrimaryTitle(id);
+    // What the wrong match brought, and what the admin typed in, before the rematch.
+    await storeAliases(id, ["Wrong Film Foreign Title"], "tmdb_alt");
+    await storeAliases(id, ["My Own Name For It"], "user");
 
     const res = await request(app).post(`/api/media/${id}/rematch`).set("X-Api-Key", apiKey).send({ title: "Correct Film", year: 2001, externalIds: { tmdb: "2" } });
     expect(res.status).toBe(200);
 
     const rows = (await request(app).get(`/api/media/${id}/aliases`).set("X-Api-Key", apiKey)).body;
     expect(rows.map((r: any) => [r.title, r.source])).toEqual([
-      ["Wrong Family Film", "original"],
       ["Correct Film", "primary"],
+      ["My Own Name For It", "user"],
     ]);
     expect((await db.prepare("SELECT clean_title FROM media_items WHERE id = ?").get(id) as any).clean_title).toBe("correctfilm");
+  });
+
+  it("keeps the previous title as an 'original' alias when the rematch says it was one of the item's own names", async () => {
+    refreshOneMediaItem.mockReset().mockResolvedValue({ ok: true, childrenAdded: 0 });
+    const id = await insertMovie("Folder Name Film", 2001);
+    const { syncPrimaryTitle } = await import("../src/services/releaseAliases.js");
+    await syncPrimaryTitle(id);
+
+    const res = await request(app)
+      .post(`/api/media/${id}/rematch`)
+      .set("X-Api-Key", apiKey)
+      .send({ title: "Correct Film Again", year: 2001, externalIds: { tmdb: "3" }, keepOldTitleAsAlias: true });
+    expect(res.status).toBe(200);
+
+    const rows = (await request(app).get(`/api/media/${id}/aliases`).set("X-Api-Key", apiKey)).body;
+    expect(rows.map((r: any) => [r.title, r.source])).toEqual([
+      ["Folder Name Film", "original"],
+      ["Correct Film Again", "primary"],
+    ]);
+  });
+
+  it("keeps the previous title as an 'original' alias when the rematch says so for an item that was never keyed", async () => {
+    refreshOneMediaItem.mockReset().mockResolvedValue({ ok: true, childrenAdded: 0 });
+    const id = await insertMovie("Never Keyed Film", 2001);
+
+    const res = await request(app)
+      .post(`/api/media/${id}/rematch`)
+      .set("X-Api-Key", apiKey)
+      .send({ title: "Keyed Now Film", year: 2001, externalIds: { tmdb: "4" }, keepOldTitleAsAlias: true });
+    expect(res.status).toBe(200);
+
+    const rows = (await request(app).get(`/api/media/${id}/aliases`).set("X-Api-Key", apiKey)).body;
+    expect(rows.map((r: any) => [r.title, r.source])).toEqual([
+      ["Never Keyed Film", "original"],
+      ["Keyed Now Film", "primary"],
+    ]);
   });
 
   it("keys a newly added item's title and asks the providers for its alternate titles", async () => {

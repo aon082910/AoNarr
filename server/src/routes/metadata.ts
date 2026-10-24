@@ -19,6 +19,8 @@ import {
 } from "../services/metadata.js";
 import { insertTracksForAlbum } from "../services/importLists.js";
 import { matchAdditionalProviders } from "../services/libraryScan.js";
+import { syncPrimaryTitle } from "../services/releaseAliases.js";
+import { refreshProviderAliases } from "../services/aliasBackfill.js";
 import { getMediaTypeConfig } from "../services/mediaTypes.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { isExcluded } from "../services/importExclusions.js";
@@ -371,6 +373,12 @@ metadataRouter.post(
         if (results.length > 0) log.info(`[metadata] matched ${results.length} additional provider(s) for "${b.title}"`);
       })
       .catch((err) => log.warn(`[metadata] additional-provider match failed for "${b.title}":`, (err as Error).message));
+
+    // The title keys the alias index, and the provider's alternate titles are fetched (best effort,
+    // not awaited), so a release named by one of them matches right away rather than after the
+    // nightly Alternate Titles job.
+    await syncPrimaryTitle(Number(mediaItemId));
+    refreshProviderAliases(Number(mediaItemId)).catch(() => undefined);
 
     const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId);
     const actor = auditActor(req);

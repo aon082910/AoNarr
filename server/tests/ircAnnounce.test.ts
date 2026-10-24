@@ -420,6 +420,13 @@ describe("handleAnnounce — root folder quota", () => {
 });
 
 describe("handleAnnounce — alternate titles and library-wide resolution (Round 3)", () => {
+  // handleAnnounce returns before any matching when no client is enabled, so every negative
+  // assertion below would pass vacuously without one; don't lean on an earlier describe's insert.
+  beforeAll(async () => {
+    const clients = (await db.prepare("SELECT COUNT(*) AS n FROM download_clients WHERE enabled = 1").get()) as { n: number | string };
+    if (Number(clients.n) === 0) await insertTorrentClient();
+  });
+
   async function addAlias(itemId: number, title: string, source = "user"): Promise<void> {
     const { storeAliases } = await import("../src/services/releaseAliases.js");
     await storeAliases(itemId, [title], source as any);
@@ -472,5 +479,62 @@ describe("handleAnnounce — alternate titles and library-wide resolution (Round
     await addAlias(showB, "Clashing Name");
     await handleAnnounce(FEED, announceText("Clashing.Name.S01E01.1080p.WEBDL-GRP"));
     expect(grab).not.toHaveBeenCalled();
+  });
+
+  it("keeps the year guard for a year written after the quality words", async () => {
+    const profileId = await insertProfile();
+    const id = await insertMovie("Dune", profileId, 1984);
+    grab.mockClear();
+
+    // No title year before the quality words, so the gate's own year check sees nothing; the
+    // first year anywhere in the name (2021) is still more than a year off the item's 1984.
+    await handleAnnounce(FEED, announceText("Dune.1080p.WEBDL.x264.2021-GRP"));
+    expect(grab).not.toHaveBeenCalled();
+
+    // The same shape carrying the right year is the control: the guard, not something else, declined.
+    await handleAnnounce(FEED, announceText("Dune.1080p.WEBDL.x264.1984-GRP"));
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect((grab.mock.calls[0][1] as any).id).toBe(id);
+  });
+
+  it("does not take an episode-shaped announce for a movie of the same title", async () => {
+    const profileId = await insertProfile();
+    const movieId = await insertMovie("Twin Title Story", profileId, 2010);
+    grab.mockClear();
+
+    // Only the film is wanted: an S01E01 release is no film, so nothing is grabbed.
+    await handleAnnounce(FEED, announceText("Twin.Title.Story.S01E01.1080p.WEBDL-GRP"));
+    expect(grab).not.toHaveBeenCalled();
+
+    // With the series wanted too, the announce goes to the series' episode, not the film.
+    const showId = await insertShow("Twin Title Story", profileId, 2010);
+    const episodeId = await insertEpisode(showId, 1, 1);
+    await handleAnnounce(FEED, announceText("Twin.Title.Story.S01E01.1080p.WEBDL-GRP"));
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect((grab.mock.calls[0][1] as any).id).toBe(showId);
+    expect(grab.mock.calls[0][2]).toBe(episodeId);
+    expect(movieId).not.toBe(showId);
+  });
+
+  it("does not let a containment type's item title match a longer release title", async () => {
+    const profileId = await insertProfile();
+    const id = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, monitored, has_file, status, quality_profile_id) VALUES ('ppv', 'UFC 300', 'ufc 300', 1, 0, 'unknown', ?)`
+          )
+          .run(profileId)
+      ).lastInsertRowid
+    );
+    grab.mockClear();
+
+    // The type's gate is at its default (log), so the old equality match applies, not containment.
+    await handleAnnounce(FEED, announceText("UFC.300.Prelims.1080p.WEBDL-GRP"));
+    expect(grab).not.toHaveBeenCalled();
+
+    await handleAnnounce(FEED, announceText("UFC.300.1080p.WEBDL-GRP"));
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect((grab.mock.calls[0][1] as any).id).toBe(id);
   });
 });

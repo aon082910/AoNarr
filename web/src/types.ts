@@ -439,6 +439,8 @@ export interface SearchResult {
   identityOk?: boolean;
   identityMatch?: string | null;
   identityReason?: string | null;
+  /** Which check a rejected release failed. Only a title rejection is something an alias can fix. */
+  identityRejection?: "title" | "year" | null;
   /** The title the server's parser read from the release name; what "alias & grab" stores. */
   parsedTitle?: string;
   downloadVolumeFactor?: number | null;
