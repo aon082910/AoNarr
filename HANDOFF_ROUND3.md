@@ -2,6 +2,16 @@
 
 Written 2026-10-24 by the cloud session that did Rounds 0–3. This file is for the local session that picks the work up. Delete it (or move it out of the repo) before the PR merges; it is not product documentation.
 
+## Status update (local session, 2026-10-24, head `7db37d5`): everything below is done
+
+Sections 2, 3 and 6 describe the state at handoff and are historical. What happened since:
+
+- **Round 3 follow-up** (`b9e158c`): all 7 confirmed findings fixed. Of the appendix candidates, #1 (IRC sees only wanted items) was judged too costly to fix and is recorded as a known gap in the plan; #2, 4/11/16, 5/10/18, 6/20, 7, 9/13, 12/14, 15/23, 17, 19, 21, 22, 24, 25 and 28 were real or worth doing and are fixed or corrected; #3/#27 are fixed except that a lead which merely contains the artist's words ("Queen Latifah - Greatest Hits" for Queen) and an unspaced `ABBA-Greatest Hits` still pass (recorded in the plan); #8 duplicates 3.1 finding 1 and #22 finding 4; #26 duplicates 3.1 finding 5 (rematch now also drops the old match's provider titles).
+- **Round 4** (`ef55c8e`, review fixes `01f2d5c`), **Round 5** (`550c736`), **Round 6** (`8a0c0a0`; review fixes `26c484b`, `7db37d5`). Each plan section now has a "Status: shipped" paragraph, with what was deferred. Independent reviewers (fresh subagents that reproduce regressions by running old and new code) checked Rounds 4 to 6.
+- CI (typecheck, test-sqlite, test-postgres) is green on `7db37d5`. The PR title and body cover Rounds 0 to 6.
+- Running tests on the Windows PC: `server/node_modules` is Linux-built; use Docker (command in the memory note `aonarr-matching-accuracy-pr21` and in the vault note `01 Projects/Unraid Apps/AoNarr/AoNarr.md`). Postgres locally: `postgres:16-alpine` on a Docker network, `AONARR_DATABASE_DRIVER=postgres`.
+- **Left for the maintainer:** review and merge the PR (delete this file first), then decide when to move each type's `strictReleaseIdentity` from `log` to `enforce`. Nothing is deployed and no image is built.
+
 ## 1. What this work is
 
 The maintainer gets mismatched media (wrong movie/show grabbed or imported). `MATCHING_ACCURACY_PLAN.md` (repo root) is the audit of every surface that matches a release or file to a library item, compared with how Sonarr/Radarr/Lidarr/Readarr do it, with ten design decisions the maintainer answered (section "Decisions (answered 2026-10-24)") and six ordered implementation rounds. **Read the plan first**, especially the Decisions section and the "Status: shipped" paragraphs under Rounds 1, 2 and 3. Round 4–6 sections are the remaining work.
