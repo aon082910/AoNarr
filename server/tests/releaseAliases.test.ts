@@ -81,6 +81,17 @@ describe("storeAliases / aliasTitlesFor / deleteAlias", () => {
     expect((await aliases.aliasRowsFor(id)).map((r) => r.source)).toEqual(["primary"]);
   });
 
+  it("lists an item's alias titles in a fixed order: the admin's and the scanned-in names first, then the providers' in the order stored", async () => {
+    const id = await insertItem("movie", "Ordered Film", 2020);
+    await aliases.storeAliases(id, ["Zebra Provider Title"], "tmdb_alt");
+    await aliases.storeAliases(id, ["Alpha Provider Title"], "tmdb_alt");
+    await aliases.storeAliases(id, ["Anime Synonym"], "anilist_synonym");
+    await aliases.storeAliases(id, ["Old Folder Name"], "original");
+    await aliases.storeAliases(id, ["Typed By Admin"], "user");
+
+    expect(await aliases.aliasTitlesFor(id)).toEqual(["Typed By Admin", "Old Folder Name", "Anime Synonym", "Zebra Provider Title", "Alpha Provider Title"]);
+  });
+
   it("maps alias titles by item for the library-wide matcher", async () => {
     const a = await insertItem("series", "The Late Show with Stephen Colbert", 2015);
     const b = await insertItem("series", "Alias Map Show", 2020);

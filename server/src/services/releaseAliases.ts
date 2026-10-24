@@ -44,9 +44,16 @@ export async function aliasRowsFor(mediaItemId: number): Promise<AliasRow[]> {
   return rows.map(rowFrom);
 }
 
-/** The titles the identity gate accepts besides the item's own. */
+/** The titles the identity gate accepts besides the item's own. In a fixed order, the names the
+ * admin gave and the item was scanned in under first, then the providers' (search queries take the
+ * first few): the same on every database, whatever order its rows happen to be stored in. */
 export async function aliasTitlesFor(mediaItemId: number): Promise<string[]> {
-  const rows = (await db.prepare("SELECT title FROM media_item_titles WHERE media_item_id = ? AND source <> 'primary'").all(mediaItemId)) as { title: string }[];
+  const rows = (await db
+    .prepare(
+      `SELECT title FROM media_item_titles WHERE media_item_id = ? AND source <> 'primary'
+       ORDER BY CASE source WHEN 'user' THEN 0 WHEN 'original' THEN 1 WHEN 'anilist_synonym' THEN 2 WHEN 'xem_alias' THEN 3 ELSE 4 END, id`
+    )
+    .all(mediaItemId)) as { title: string }[];
   return rows.map((r) => r.title);
 }
 
