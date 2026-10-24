@@ -150,15 +150,22 @@ async function handleRequestCommand(interaction: any, appId: string): Promise<vo
 
   try {
     // "Dune 2021" / "Dune (2021)": a trailing year says which of two same-titled titles is meant.
+    // A title that ends in a year-like number ("Blade Runner 2049", "Cyberpunk 2077") is tried whole
+    // when the title-and-year reading finds nothing it can verify.
     const named = title.trim().match(/^(.*?\S)[\s(]+((?:19|20)\d{2})\)?$/);
-    const wantedTitle = named ? named[1] : title.trim();
-    const wantedYear = named ? Number(named[2]) : null;
-    const results = await searchMetadata(type, wantedTitle, undefined, wantedYear);
+    const readings = named ? [{ title: named[1], year: Number(named[2]) }, { title: title.trim(), year: null }] : [{ title: title.trim(), year: null }];
+    let results: Awaited<ReturnType<typeof searchMetadata>> = [];
+    let verdict: ReturnType<typeof verifyProviderHit<Awaited<ReturnType<typeof searchMetadata>>[number]>> = { none: true };
+    for (const reading of readings) {
+      const found = await searchMetadata(type, reading.title, undefined, reading.year);
+      if (results.length === 0) results = found;
+      verdict = verifyProviderHit(found, reading.title, reading.year, { topHitWhenYearAgrees: true });
+      if ("hit" in verdict) break;
+    }
     if (results.length === 0) {
       await respond(`No ${type === "movie" ? "movie" : "TV show"} results found for "${title}".`);
       return;
     }
-    const verdict = verifyProviderHit(results, wantedTitle, wantedYear, { topHitWhenYearAgrees: true });
     if (!("hit" in verdict)) {
       // Never adds a guess: lists what the search found and asks for the exact title and year.
       const options = ("ambiguous" in verdict ? verdict.ambiguous : results).slice(0, 4).map((r) => `${r.title}${r.year ? ` (${r.year})` : ""}`).join("; ");

@@ -124,12 +124,19 @@ async function upsertTrackFromFile(subItemId: number, filePath: string, title?: 
     .run(subItemId, trackNumber, trackTitle, filePath);
 }
 
-/** A movie file's title the way the release parser isolates it: a title that holds a year-shaped
- * number ("Blade.Runner.2049.2017") keeps it, where guessTitleFromText cuts at the first year-like
- * number and would call the film "Blade Runner". */
+/**
+ * A movie file's title. guessTitleFromText cuts at the first year-like number, which calls
+ * "Blade.Runner.2049.2017" "Blade Runner"; the release parser keeps the 2049. The parser's title
+ * is taken only where it EXTENDS the old guess (or the old guess found nothing: "1917.2019"):
+ * with no year or quality word to end the title it reads a trailing "-Man" as a release group
+ * ("Spider-Man" -> "Spider"), " - 2" as an episode number and a leading "(500)" as a tag.
+ */
 function guessMovieTitle(base: string): string {
-  const parsed = parseReleaseTitle(base).title;
-  return parsed.length >= 2 ? parsed : guessTitleFromText(base);
+  const old = guessTitleFromText(base);
+  const parsed = parseReleaseTitle(base.replace(/_/g, " ")).title;
+  if (!old) return parsed;
+  const key = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  return parsed && key(parsed).startsWith(`${key(old)} `) ? parsed : old;
 }
 
 /** Cuts a piece of text off at the first season/year/quality marker to get a plausible title —
@@ -1139,6 +1146,18 @@ async function scanAndImportLibraryInner(
               reason: seriesMatch
                 ? `couldn't place it in "${seriesMatch.title}": no single episode there has ${ownParse.airDate ? `the air date ${ownParse.airDate}` : `the absolute number ${ownParse.absoluteEpisode}`} (Refresh the show to fill its episode list in)`
                 : `no show in the library is called "${guessedTitle}", so there is no episode list to place a ${ownParse.airDate ? "date-named" : "number-only"} file in`,
+            });
+            continue;
+          }
+          // "Show/Season 02/Show - 05.mkv": a season folder that disagrees with where the number
+          // falls says the number is not the show's absolute one (or the folder is wrong).
+          const folderMatch = path.basename(parentDir).match(SEASON_FOLDER);
+          const folderSeason = folderMatch ? Number(folderMatch[1] ?? folderMatch[2] ?? 0) : null;
+          if (folderSeason != null && folderSeason !== numbered.season) {
+            result.skipped++;
+            result.skippedFiles.push({
+              path: filePath,
+              reason: `its season folder says season ${folderSeason}, but "${seriesMatch.title}" has that number in season ${numbered.season}`,
             });
             continue;
           }

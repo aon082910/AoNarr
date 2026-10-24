@@ -157,9 +157,14 @@ export async function alternateQueriesFor(item: { id: number; type: string; titl
   const titles: string[] = [];
   const qualifier = item.title.match(/\s*\(([^()]*)\)\s*$/);
   const base = qualifier ? item.title.slice(0, qualifier.index).trim() : "";
-  if (base) titles.push(base);
   const spelled = qualifier?.[1].trim();
-  if (base && spelled && !/^(?:19|20)\d{2}$/.test(spelled)) titles.push(`${base} ${spelled}`);
+  // "Charmed (2018)" is searched as "Charmed 2018", never as the bare "Charmed" that is also the
+  // other Charmed; "The Office (US)" as "The Office" and "The Office US".
+  if (base && spelled && /^(?:19|20)\d{2}$/.test(spelled)) titles.push(`${base} ${spelled}`);
+  else if (base) {
+    titles.push(base);
+    if (spelled) titles.push(`${base} ${spelled}`);
+  }
   titles.push(...(await aliasTitlesFor(item.id)).slice(0, 2));
   // Written differently is enough here (an indexer may treat "(US)" and "US" differently), unlike
   // the alias rows, which are kept apart by their clean title.

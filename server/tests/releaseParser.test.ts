@@ -776,6 +776,12 @@ describe("parseReleaseTitle — Round 4 conventions", () => {
     expect(parseReleaseTitle("Attack on Titan The Final Season Part 2 - 05 [1080p]")).toMatchObject({ seasonNumber: null, absoluteEpisode: 5 });
   });
 
+  it("reads a year after a dash as a year, not as an absolute episode number", () => {
+    expect(parseReleaseTitle("Dune - 2021")).toMatchObject({ title: "Dune", titleYear: 2021, absoluteEpisode: null });
+    expect(parseReleaseTitle("Movie Title - 2020 - 1080p")).toMatchObject({ titleYear: 2020, absoluteEpisode: null });
+    expect(parseReleaseTitle("[SubsPlease] One Piece - 1085 (1080p)")).toMatchObject({ absoluteEpisode: 1085 });
+  });
+
   it("marks a hashed release name, and only that", () => {
     for (const title of ["a1b2c3d4e5f67890abcdef1234567890", "abcdefghijklmnopqrstuvwx", "ABCDEFGHIJK123", "abcdefghijkl123", "Backup_12345S01-02"]) {
       expect(parseReleaseTitle(title).rejected, title).toBe(true);

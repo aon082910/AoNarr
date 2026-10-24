@@ -115,6 +115,9 @@ export interface SearchHints {
   /** The same search under the other titles the item goes by (alias rows, the title without its
    * "(US)" qualifier), as complete queries. At most MAX_ALTERNATE_QUERIES run, beside the main one. */
   alternateQueries?: string[];
+  /** Search by text only: an alternate-title query or a scene-name variant is about the words, and
+   * the typed search it would repeat (same ids, same season) has been made by the main query. */
+  skipTyped?: boolean;
 }
 
 function cacheKey(indexerId: number, query: string, mediaType: MediaType, externalIds?: Record<string, string>, hints?: SearchHints): string {
@@ -123,7 +126,7 @@ function cacheKey(indexerId: number, query: string, mediaType: MediaType, extern
   // query can't be wrongly reused for an id-narrowed or typed request, or vice versa.
   const idPart = externalIds?.imdb || externalIds?.tmdb || externalIds?.tvdb ? `:${externalIds.imdb ?? ""}:${externalIds.tmdb ?? ""}:${externalIds.tvdb ?? ""}` : "";
   const numberPart = hints?.season != null ? `:s${hints.season}e${hints.episode ?? ""}` : "";
-  return `${indexerId}:${mediaType}:${query.toLowerCase()}${idPart}${numberPart}`;
+  return `${indexerId}:${mediaType}:${query.toLowerCase()}${idPart}${numberPart}${hints?.skipTyped ? ":text" : ""}`;
 }
 
 /**
@@ -288,7 +291,8 @@ function getIndexerCaps(indexer: Indexer): Promise<IndexerCaps | null> {
   return entry.probe;
 }
 
-/** Indexers (id + url) that answered an id-typed search with an error: later searches skip it. */
+/** Indexers (id + url + search type) that answered an id-typed search with an error: later searches
+ * of that type skip it (a tvsearch it lacks says nothing about its movie search). */
 const typedSearchRejectedBy = new Set<string>();
 
 /**
@@ -303,9 +307,10 @@ async function typedSearchFor(
   externalIds: Record<string, string> | undefined,
   hints: SearchHints | undefined
 ): Promise<{ t: "movie" | "tvsearch"; params: [string, string][] } | null> {
-  if (!externalIds || typedSearchRejectedBy.has(`${indexer.id}:${indexer.url}`)) return null;
+  if (!externalIds || hints?.skipTyped) return null;
   const movie = mediaType === "movie" || mediaType === "ppv";
   const tv = mediaType === "series" || mediaType === "anime";
+  if (typedSearchRejectedBy.has(`${indexer.id}:${indexer.url}:${movie ? "movie" : "tvsearch"}`)) return null;
   if (movie ? !(externalIds.imdb || externalIds.tmdb) : !(tv && externalIds.tvdb && hints?.season != null)) return null;
   const caps = await getIndexerCaps(indexer);
   if (!caps) return null;
@@ -431,7 +436,7 @@ async function searchTorznabNewznab(
       for (const [name, value] of typed.params) url.searchParams.set(name, value);
       const typedFeed = await fetchTorznabFeed(indexer, url.toString());
       if (ID_PARAMS_REJECTED_CODES.has(indexerApiError(typedFeed)?.code ?? "")) {
-        typedSearchRejectedBy.add(idParamsKey);
+        typedSearchRejectedBy.add(`${idParamsKey}:${typed.t}`);
       } else {
         throwIfIndexerApiError(indexer, typedFeed);
         if (hasRoot(typedFeed, "rss")) {
@@ -440,14 +445,18 @@ async function searchTorznabNewznab(
         }
       }
     } catch (err) {
-      // A rate limit is the indexer's, not the typed search's: no text search after it.
-      if (err instanceof IndexerRateLimitError || /HTTP 429/.test((err as Error).message)) throw err;
+      // A rate limit is the indexer's, not the typed search's, and an indexer that does not answer
+      // at all will not answer a text search either (and would cost the same timeouts twice).
+      if (err instanceof IndexerRateLimitError || /HTTP 429/.test((err as Error).message) || isTransientNetworkError(err)) throw err;
       log.info(`[indexerClient] "${indexer.name}": typed ${typed.t} search failed (${(err as Error).message}); searching by text`);
     }
+    // The text search that follows is another request to the indexer, counted like the first.
+    recordQueryLimitRequest(indexer);
   }
 
   let parsed = await fetchTorznabFeed(indexer, searchUrl(sendIds));
   if (sendIds && ID_PARAMS_REJECTED_CODES.has(indexerApiError(parsed)?.code ?? "")) {
+    recordQueryLimitRequest(indexer);
     parsed = await fetchTorznabFeed(indexer, searchUrl(false));
     if (!indexerApiError(parsed) && hasRoot(parsed, "rss")) idParamsRejectedBy.add(idParamsKey);
   }
@@ -597,6 +606,15 @@ function isOverQueryLimit(indexer: Indexer): boolean {
   return timestamps.length >= limit;
 }
 
+/** How many more queries the indexer's hourly limit allows now (unlimited when it has none). */
+function queriesLeft(indexer: Indexer): number {
+  const limit = indexer.queryLimitPerHour;
+  if (!limit || limit <= 0) return Infinity;
+  const now = Date.now();
+  const used = (requestTimestamps.get(indexer.id) ?? []).filter((t) => now - t < ONE_HOUR_MS).length;
+  return Math.max(0, limit - used);
+}
+
 /** Only tracked for an indexer with a limit — isOverQueryLimit (which prunes the window) returns
  * early without one, so recording regardless grew an unlimited indexer's array forever. */
 function recordQueryLimitRequest(indexer: Indexer): void {
@@ -737,6 +755,8 @@ async function runSearch(
  * every indexer's hourly limit). */
 const MAX_ALTERNATE_QUERIES = 3;
 
+const TEXT_ONLY: SearchHints = { skipTyped: true };
+
 /** A release is the same release however many of a search's queries found it. */
 function dedupeReleases(results: SearchResult[]): SearchResult[] {
   const seen = new Set<string>();
@@ -764,8 +784,10 @@ export async function searchAllIndexers(
     (i) => i.enabled && i.mediaTypes.split(",").includes(mediaType)
   );
 
-  // The alternate titles run at the same time as the main query, over the indexers that can take
-  // another request now: one backed off or out of its hourly queries is left out, not made to fail.
+  // The alternate titles run after the main query, together, over the indexers that can take
+  // them: a Torznab/Newznab one that is not backed off (the main query may just have been rate
+  // limited) and has room in its hourly limit for them twice over, so a search's extras never use
+  // up what the next item's main query needs. A feed or API that ignores the query is not asked again.
   const seenQueries = new Set([query.toLowerCase()]);
   const alternates = (hints?.alternateQueries ?? [])
     .filter((q) => {
@@ -775,16 +797,21 @@ export async function searchAllIndexers(
       return true;
     })
     .slice(0, MAX_ALTERNATE_QUERIES);
-  const open = alternates.length > 0 ? applicable.filter((i) => !isIndexerBackedOff(i.id) && !isOverQueryLimit(i)) : [];
-  const [main, ...others] = await Promise.all([
-    runSearch(applicable, query, mediaType, bypassCache, externalIds, hints),
-    ...alternates.map((q) => runSearch(open, q, mediaType, bypassCache, externalIds)),
-  ]);
-  let results = alternates.length > 0 ? dedupeReleases([...main, ...others.flat()]) : main;
+  const main = await runSearch(applicable, query, mediaType, bypassCache, externalIds, hints);
+  let results = main;
+  if (alternates.length > 0) {
+    const open = applicable.filter(
+      (i) => (i.protocol === "torznab" || i.protocol === "newznab") && !isIndexerBackedOff(i.id) && queriesLeft(i) >= alternates.length * 2
+    );
+    if (open.length > 0) {
+      const others = await Promise.all(alternates.map((q) => runSearch(open, q, mediaType, bypassCache, externalIds, TEXT_ONLY)));
+      results = dedupeReleases([...main, ...others.flat()]);
+    }
+  }
 
   if (results.length === 0) {
     for (const variant of generateSceneVariants(query)) {
-      results = await runSearch(applicable, variant, mediaType, bypassCache, externalIds);
+      results = await runSearch(applicable, variant, mediaType, bypassCache, externalIds, TEXT_ONLY);
       if (results.length > 0) {
         log.info(`[indexerClient] scene-name fallback "${variant}" found results where "${query}" found none`);
         break;

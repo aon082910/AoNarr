@@ -1316,7 +1316,97 @@ describe("typed searches (t=caps, tvsearch, movie)", () => {
   });
 });
 
+describe("typed searches — what each request costs", () => {
+  const capsXml = `<?xml version="1.0" encoding="UTF-8"?><caps><searching><tv-search available="yes" supportedParams="q,season,ep,tvdbid"/><movie-search available="yes" supportedParams="q,imdbid,tmdbid"/></searching></caps>`;
+  const items = torznabXml(torznabItem({ title: "Result.1080p-GRP", downloadUrl: "https://idx.example.com/dl/cost" }));
+  const typeOf = (call: unknown[]) => new URL(call[0] as string).searchParams.get("t");
+
+  it("makes the alternate and scene-name queries text searches, not repeats of the typed one", async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      const t = new URL(url).searchParams.get("t");
+      return { ok: true, status: 200, text: async () => (t === "caps" ? capsXml : t === "movie" ? items : torznabXml("")) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const indexer = makeIndexer({ mediaTypes: "movie", categories: "2000" });
+
+    await searchAllIndexers([indexer], "Se7en 1995", "movie", true, { imdb: "tt0114369" }, { alternateQueries: ["Seven 1995", "Se7en"] });
+
+    expect(fetchMock.mock.calls.map(typeOf)).toEqual(["caps", "movie", "search", "search"]);
+    expect(fetchMock.mock.calls.slice(2).map((c) => new URL(c[0] as string).searchParams.get("q")).sort()).toEqual(["Se7en", "Seven 1995"]);
+  });
+
+  it("counts every request it sends against the hourly limit", async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      const t = new URL(url).searchParams.get("t");
+      return { ok: true, status: 200, text: async () => (t === "caps" ? capsXml : t === "movie" ? torznabXml("") : items) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const limited = makeIndexer({ categories: "2000", queryLimitPerHour: 2 });
+
+    // The typed search found nothing and the text search found it: two requests, two queries.
+    await expect(searchIndexer(limited, "Movie", "movie", { imdb: "tt0133093" })).resolves.toHaveLength(1);
+    await expect(searchIndexer(limited, "Movie", "movie", { imdb: "tt0133093" })).rejects.toThrow("query limit");
+  });
+
+  it("remembers an indexer's rejection of a typed search per search type", async () => {
+    const rejected = `<?xml version="1.0" encoding="UTF-8"?><error code="203" description="Function not available"/>`;
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      const t = new URL(url).searchParams.get("t");
+      return { ok: true, status: 200, text: async () => (t === "caps" ? capsXml : t === "tvsearch" ? rejected : t === "movie" ? items : torznabXml("")) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const indexer = makeIndexer({ mediaTypes: "movie,series", categories: "2000" });
+
+    await searchIndexer(indexer, "Show S01E01", "series", { tvdb: "1" }, { season: 1, episode: 1 });
+    await searchIndexer(indexer, "Movie", "movie", { imdb: "tt0133093" });
+
+    // The tvsearch is refused once; the movie search is still made as a movie search.
+    expect(fetchMock.mock.calls.map(typeOf)).toEqual(["caps", "tvsearch", "search", "movie"]);
+  });
+
+  it("doesn't try the text search after a typed search that got no answer at all", async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      const t = new URL(url).searchParams.get("t");
+      if (t === "caps") return { ok: true, status: 200, text: async () => capsXml };
+      throw new Error("fetch failed");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(searchIndexer(makeIndexer({ categories: "2000" }), "Movie", "movie", { imdb: "tt0133093" })).rejects.toThrow("fetch failed");
+
+    expect(searchCalls(fetchMock).every((c) => typeOf(c) === "movie")).toBe(true);
+  });
+});
+
 describe("searchAllIndexers — alternate title queries", () => {
+  it("asks for the other titles only after the main query, and not of an indexer that is backed off, spent or not an API", async () => {
+    const answer = (q: string | null) =>
+      torznabXml(torznabItem({ title: `R ${q}`, downloadUrl: `https://idx.example.com/dl/${encodeURIComponent(q ?? "")}` }));
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      const q = new URL(url).searchParams.get("q");
+      if (q === "Rate Limited") return { ok: false, status: 429, text: async () => "" };
+      return { ok: true, status: 200, text: async () => answer(q) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const limited = makeIndexer({ mediaTypes: "movie", categories: "2000" });
+    const tightBudget = makeIndexer({ mediaTypes: "movie", categories: "2000", queryLimitPerHour: 5 });
+    const rss = makeIndexer({ mediaTypes: "movie", protocol: "rss", url: "https://feed.example.com/rss" });
+
+    await searchAllIndexers([limited], "Rate Limited", "movie", true, undefined, { alternateQueries: ["Alt One"] });
+    // The main query was rate limited: nothing else goes to that indexer.
+    expect(fetchMock.mock.calls.map((c) => new URL(c[0] as string).searchParams.get("q"))).toEqual(["Rate Limited"]);
+    expect(isIndexerBackedOff(limited.id)).toBe(true);
+
+    fetchMock.mockClear();
+    await searchAllIndexers([tightBudget, rss], "Main", "movie", true, undefined, { alternateQueries: ["Alt One", "Alt Two", "Alt Three"] });
+    // Five queries an hour cannot spare six more; the feed is read once, whatever the extra titles.
+    const queries = fetchMock.mock.calls.map((c) => String(c[0]).includes("feed.example.com") ? "rss" : new URL(c[0] as string).searchParams.get("q"));
+    expect(queries.filter((q) => q === "rss")).toHaveLength(1);
+    expect(queries.filter((q) => q === "Main")).toHaveLength(1);
+    expect(queries.filter((q) => q?.startsWith("Alt"))).toHaveLength(0);
+  });
+
+
   const release = (title: string, url: string) => torznabItem({ title, downloadUrl: url });
   /** Answers by the q of the request. */
   function byQuery(answers: Record<string, string>) {

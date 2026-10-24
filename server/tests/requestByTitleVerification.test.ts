@@ -127,6 +127,17 @@ describe("Discord /request", () => {
     expect(JSON.parse(((await db.prepare("SELECT external_ids FROM media_items").get()) as any).external_ids)).toEqual({ tmdb: "438631" });
   });
 
+  it("tries a title that ends in a year-like number whole when the title-and-year reading finds nothing to verify", async () => {
+    searchMetadata.mockImplementation(async (_type: string, query: string) =>
+      query === "Blade Runner 2049" ? [hit("Blade Runner 2049", 2017, "335984")] : [hit("Blade Runner", 1982, "78")]
+    );
+
+    const reply = await requestCommand("movie", "Blade Runner 2049");
+
+    expect(reply).toContain("Added **Blade Runner 2049** (2017)");
+    expect(JSON.parse(((await db.prepare("SELECT external_ids FROM media_items").get()) as any).external_ids)).toEqual({ tmdb: "335984" });
+  });
+
   it("asks which one is meant instead of adding the first of two same-titled hits", async () => {
     searchMetadata.mockResolvedValue([hit("The Office", 2001, "2996"), hit("The Office", 2005, "2316")]);
 

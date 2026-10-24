@@ -635,7 +635,8 @@ export function parseReleaseTitle(title: string): ParsedRelease {
   let absoluteEpisode: number | null = null;
   if (seasonNumber === null && episodeNumbers === null && !isFullSeason) {
     const absMatch = title.match(ABSOLUTE_EPISODE);
-    if (absMatch) {
+    // "Dune - 2021" names a year, not episode 2021.
+    if (absMatch && !YEAR_SHAPED.test(absMatch[1])) {
       absoluteEpisode = Number(absMatch[1]);
       markerIndex = absMatch.index ?? null;
     }

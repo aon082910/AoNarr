@@ -204,9 +204,9 @@ describe("alternateQueriesFor", () => {
     ]);
   });
 
-  it("keeps a year qualifier out of the spelled-out title, and a title without one to its aliases", async () => {
+  it("writes a year qualifier as the year, never as the bare title that is also the other show, and a title without one to its aliases", async () => {
     const charmed = await insertItem("series", "Charmed (2018)", 2018);
-    expect(await aliases.alternateQueriesFor({ id: charmed, type: "series", title: "Charmed (2018)" }, "Charmed (2018) S01E01")).toEqual(["Charmed S01E01"]);
+    expect(await aliases.alternateQueriesFor({ id: charmed, type: "series", title: "Charmed (2018)" }, "Charmed (2018) S01E01")).toEqual(["Charmed 2018 S01E01"]);
     const plain = await insertItem("movie", "The Fall Guy", 2024);
     await aliases.storeAliases(plain, ["Kaskader", "the fall guy", "The Fall-Guy"], "tmdb_alt");
     expect(await aliases.alternateQueriesFor({ id: plain, type: "movie", title: "The Fall Guy" }, "The Fall Guy 2024")).toEqual(["Kaskader 2024"]);

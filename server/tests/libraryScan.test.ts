@@ -410,6 +410,48 @@ describe("scanAndImportLibrary — movie (single shape)", () => {
     expect(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(dune)) as any).has_file).toBe(1);
   });
 
+  it("keeps matching the file names the old title guess handled: underscores, hyphens in the title, a dash before a sequel number", async () => {
+    const folder = await insertRootFolder("movie");
+    const titles = ["The Matrix", "Spider-Man", "WALL-E", "Toy Story 2", "(500) Days of Summer", "Plan A", "The Final Cut", "Fahrenheit 9 11"];
+    const ids: number[] = [];
+    for (const title of titles) {
+      ids.push(
+        Number((await db.prepare("INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('movie', ?, ?, 1, 0, 'missing')").run(title, title.toLowerCase())).lastInsertRowid)
+      );
+    }
+    for (const name of [
+      "The_Matrix_1999_720p.mkv",
+      "Spider-Man.mkv",
+      "WALL-E.mkv",
+      "Toy Story - 2 (1999).mkv",
+      "(500) Days of Summer (2009).mkv",
+      "Plan A (2021).mkv",
+      "The Final Cut (2004).mkv",
+      "Fahrenheit.9.11.2004.mkv",
+    ]) {
+      writeFile(folder.path, name);
+    }
+
+    const result = await scanAndImportLibrary("movie");
+
+    expect(result.skippedFiles).toEqual([]);
+    expect(result).toMatchObject({ matched: 8, created: 0 });
+    for (const id of ids) expect(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(id)) as any).has_file).toBe(1);
+  });
+
+  it("reads a year after a dash as the file's year, not an episode number", async () => {
+    const folder = await insertRootFolder("movie");
+    const dune1984 = Number((await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('movie','Dune','dune',1984,1,0,'missing')`).run()).lastInsertRowid);
+    const dune2021 = Number((await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('movie','Dune','dune',2021,1,0,'missing')`).run()).lastInsertRowid);
+    const filePath = writeFile(folder.path, "Dune - 2021.mkv");
+
+    const result = await scanAndImportLibrary("movie");
+
+    expect(result).toMatchObject({ matched: 1, created: 0, skipped: 0 });
+    expect((await db.prepare("SELECT path FROM media_items WHERE id = ?").get(dune2021)) as any).toMatchObject({ path: filePath });
+    expect(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(dune1984)) as any).has_file).toBe(0);
+  });
+
   it("leaves a file alone that matches several same-titled movies and names no year", async () => {
     const folder = await insertRootFolder("movie");
     const it1990 = Number((await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('movie','It','it',1990,1,0,'missing')`).run()).lastInsertRowid);
@@ -515,6 +557,21 @@ describe("scanAndImportLibrary — series (episodic shape)", () => {
     expect((await db.prepare("SELECT * FROM episodes WHERE id = ?").get(ep1085)) as any).toMatchObject({ has_file: 1, file_path: filePath });
     expect(((await db.prepare("SELECT has_file FROM episodes WHERE id = ?").get(ep1086)) as any).has_file).toBe(0);
     expect(((await db.prepare("SELECT COUNT(*) AS n FROM media_items WHERE type = 'anime'").get()) as any).n).toBe(1);
+  });
+
+  it("won't put an absolute-numbered file in a season folder whose season is not where that number falls", async () => {
+    const folder = await insertRootFolder("anime");
+    const showId = Number((await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('anime','Some Show','some show',1,0,'missing')`).run()).lastInsertRowid);
+    await db.prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, absolute_episode_number, monitored, has_file) VALUES (?, 1, 5, 5, 1, 0)").run(showId);
+    await db.prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, absolute_episode_number, monitored, has_file) VALUES (?, 2, 5, 17, 1, 0)").run(showId);
+    writeFile(path.join(folder.path, "Some Show", "Season 02"), "Some Show - 05.mkv");
+    const rightFolder = writeFile(path.join(folder.path, "Some Show", "Season 01"), "Some Show - 05.mkv");
+
+    const result = await scanAndImportLibrary("anime");
+
+    expect(result).toMatchObject({ matched: 1, skipped: 1 });
+    expect(result.skippedFiles[0].reason).toMatch(/its season folder says season 2, but "Some Show" has that number in season 1/);
+    expect((await db.prepare("SELECT * FROM episodes WHERE media_item_id = ? AND has_file = 1").get(showId)) as any).toMatchObject({ season_number: 1, episode_number: 5, file_path: rightFolder });
   });
 
   it("finds the show of a number-only file by the title in its name when the folder says nothing", async () => {
