@@ -166,6 +166,11 @@ export interface QueueItem {
   downloadPath: string | null;
   /** Why a 'completed' row's import was skipped and is waiting for a manual import. */
   importSkippedReason?: string | null;
+  /** How the release was confirmed to be this item when grabbed (services/releaseIdentity.ts's
+   * matchType), null for rows older than the identity gate or for types it doesn't judge. */
+  matchType?: string | null;
+  /** What grabbed it: 'auto' (scheduled/bulk search), 'interactive' (manual search), 'irc', 'retry'. */
+  grabSource?: string | null;
 }
 
 export interface HistoryEvent {

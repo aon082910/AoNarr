@@ -198,7 +198,7 @@ async function tryGrabMatch(
     category: null,
   };
   const chosen: ChosenResult = { result, quality };
-  if (await grab(targetClient, item, episodeId, subItemId, chosen)) {
+  if (await grab(targetClient, item, episodeId, subItemId, chosen, 0, null, "irc")) {
     log.info(`[irc:${feed.name}] instant-grabbed "${releaseTitle}" for "${item.title}"`);
   }
 }

@@ -174,7 +174,9 @@ CREATE TABLE IF NOT EXISTS queue (
   -- See schema.sql.
   import_started_at TEXT,
   import_skipped_reason TEXT,
-  import_resume_state INTEGER NOT NULL DEFAULT 0
+  import_resume_state INTEGER NOT NULL DEFAULT 0,
+  match_type TEXT,
+  grab_source TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_queue_media_item_id ON queue(media_item_id);
 CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);

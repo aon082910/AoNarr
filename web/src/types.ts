@@ -429,6 +429,12 @@ export interface SearchResult {
   blocklisted: boolean;
   rejected: boolean;
   rejectReason?: string;
+  /** The identity gate's verdict (server releaseIdentity.ts): whether the release names this
+   * item, how it matched ('id' | 'title' | 'alias' | 'title-main' | 'title-noyear' | 'none'), and
+   * why not. Always true/null for types the gate doesn't judge. */
+  identityOk?: boolean;
+  identityMatch?: string | null;
+  identityReason?: string | null;
   downloadVolumeFactor?: number | null;
   alsoOnIndexers?: string[];
 }

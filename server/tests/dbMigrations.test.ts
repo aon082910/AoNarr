@@ -44,9 +44,10 @@ describe.skipIf(isPostgres)("SQLite: upgrading a database created by an older sc
     // Also from before queue rows recorded their imports and import lists had a root folder.
     const legacySchema = schema
       .replace(`'${NEW_DEFAULT}'`, `'${OLD_SCHEMA_DEFAULT}'`)
-      .replace(/(download_path TEXT),\r?\n[\s\S]*?import_resume_state INTEGER NOT NULL DEFAULT 0\r?\n/, "$1\n")
+      .replace(/(download_path TEXT),\r?\n[\s\S]*?grab_source TEXT\r?\n/, "$1\n")
       .replace(/(exclude_genres TEXT,)\r?\n\s*root_folder_id INTEGER REFERENCES root_folders\(id\) ON DELETE SET NULL,\r?\n/, "$1\n");
     expect(legacySchema).not.toContain("import_started_at");
+    expect(legacySchema).not.toContain("grab_source"); // match_type is also an FTS column, so it can't be the sentinel
     expect(legacySchema.match(/CREATE TABLE IF NOT EXISTS import_lists \([^;]*\);/)?.[0]).not.toContain("root_folder_id");
     legacy.exec(legacySchema);
 
@@ -133,11 +134,15 @@ describe.skipIf(isPostgres)("SQLite: upgrading a database created by an older sc
 
   it("adds the queue import columns, leaving an existing row neither started, skipped nor due a resume", () => {
     const cols = (sqlite.prepare("PRAGMA table_info(queue)").all() as { name: string }[]).map((c) => c.name);
-    expect(cols).toEqual(expect.arrayContaining(["import_started_at", "import_skipped_reason", "import_resume_state"]));
-    expect(sqlite.prepare("SELECT import_started_at, import_skipped_reason, import_resume_state FROM queue WHERE title = 'Old.Movie.1080p'").get()).toEqual({
+    expect(cols).toEqual(expect.arrayContaining(["import_started_at", "import_skipped_reason", "import_resume_state", "match_type", "grab_source"]));
+    expect(
+      sqlite.prepare("SELECT import_started_at, import_skipped_reason, import_resume_state, match_type, grab_source FROM queue WHERE title = 'Old.Movie.1080p'").get()
+    ).toEqual({
       import_started_at: null,
       import_skipped_reason: null,
       import_resume_state: 0,
+      match_type: null,
+      grab_source: null,
     });
   });
 

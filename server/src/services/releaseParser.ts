@@ -43,6 +43,22 @@ export interface ParsedRelease {
    * release is still `isFullSeason` (it imports as a pack), but only matches episodes inside the
    * range. Null or absent for every other release, including a pack of the whole season. */
   episodeRange?: [number, number] | null;
+  /** The series/movie/album title the release names, isolated the way Sonarr/Radarr's parsers do:
+   * what stands between a leading "[Group]"/"[tag]" and the first season/episode/absolute-number/
+   * air-date marker, else the title year (`titleYear`), else the first quality/source/codec token,
+   * with dots and underscores read as spaces ("Blade.Runner.2049.2017.1080p" -> "Blade Runner
+   * 2049", "[SubsPlease] Jujutsu Kaisen - 25 (1080p)" -> "Jujutsu Kaisen"). "" when nothing is left
+   * (a hashed name, a bare "S01E01"). The identity gate (releaseIdentity.ts) compares this against
+   * the target's title; nothing else should guess a title from the raw release name. */
+  title: string;
+  /** The year that belongs to the title, by Radarr's rule: the first (19|20)xx token with at least
+   * one title token before it, not immediately followed by another year token ("Blade.Runner.2049.
+   * 2017" -> 2017, "2001.A.Space.Odyssey.1968" -> 1968, "1917.2019" -> 2019), and standing before
+   * the episode marker or any quality token ("Show.S01E01.2019" -> null, the year names the
+   * encode's date or an episode, not the show). A year inside an air date ("The.Daily.Show.2024.
+   * 08.25") never counts. `year` keeps the older first-match behaviour for the custom-format "year"
+   * condition and the ranking tiebreaker; identity decisions use this field. */
+  titleYear: number | null;
 }
 
 // Group 3 (hyphenated range end, e.g. "S01E01-E03"/"S01E01-03") and group 4 (a chain of bare
@@ -98,6 +114,74 @@ const ABSOLUTE_EPISODE = /\s-\s0*(\d{1,4})(?=\s|\[|\(|$)/;
 const ABSOLUTE_RANGE =
   /\s-\s0*(\d{1,4})(?:v\d)?(?:\s*~\s*0*(\d{1,4})(?![\da-z])|-0*(\d{1,4})(?:v\d)?(?![\da-z])|\s+-\s+0*(\d{1,4})(?:v\d)?(?!\d)(?=\s*(?:end\s*)?(?:[[(+]|\d{3,4}[pi]\b|$)))/i;
 const IMDB_ID = /\btt\d{7,8}\b/i;
+
+// Title isolation (see ParsedRelease.title). A run of leading bracketed tags: the fansub group, a
+// tracker's "[www.site.org]", a leading "[1080p]"/"(FLAC)" format tag.
+const LEADING_TAGS = /^(?:\s*[[(][^\])]*[\])])+\s*/;
+// The first quality/source/codec/pack word after the title ends it. Bare "cam" and "web" are left
+// out (they are ordinary title words: "Cam", "Charlotte's Web"); "web" counts only as part of
+// WEB-DL/WEBRip or when a codec follows it, the same way SD_SOURCE reads it.
+const TITLE_END_MARKER =
+  /\b(?:\d{3,4}[pi]|4k|uhd|bluray|blu-ray|bdrip|brrip|bdremux|remux|web-?dl|webrip|web[ ._-]+(?:[hx][ .]?26[45]|hevc|avc|xvid|divx)|hdtv|pdtv|sdtv|dvdrip|dvd[59]?|hdrip|hdcam|camrip|telesync|hdts|telecine|hdtc|workprint|[hx][ .]?26[45]|hevc|avc|av1|xvid|divx|proper|repack|complete|seasons?[ ._-]?\d{1,2}|hi10p?|10bit)\b/gi;
+const YEAR_ALL = /\b(19|20)\d{2}\b/g;
+// Another year right after this one ("1984.2024"): this one is part of the title (Radarr's
+// `(?!...\W(19|20)\d{2})` lookahead).
+const YEAR_FOLLOWED_BY_YEAR = /^[.\-_ ](?:19|20)\d{2}\b/;
+// Words a cut leaves dangling at the end of a title ("Show Name The" of "Show.Name.The.Complete.Series").
+const TRAILING_ARTICLE = /\s+(?:the|a|an|and|of)$/i;
+
+function minDefined(...values: (number | null | undefined)[]): number | null {
+  let min: number | null = null;
+  for (const v of values) if (v != null && (min === null || v < min)) min = v;
+  return min;
+}
+
+/** Where the title's own words start: after any leading bracketed tags. */
+function titleStart(title: string): number {
+  return title.match(LEADING_TAGS)?.[0].length ?? 0;
+}
+
+/** Whether a title token (a letter or digit) stands between `from` and `to`. */
+function hasTitleToken(title: string, from: number, to: number): boolean {
+  return /[\p{L}\p{N}]/u.test(title.slice(from, to));
+}
+
+/** Index of the first quality/source/codec word that has a title token before it, or null. */
+function firstQualityMarker(title: string, start: number): number | null {
+  for (const m of title.matchAll(TITLE_END_MARKER)) {
+    const at = m.index ?? 0;
+    if (at >= start && hasTitleToken(title, start, at)) return at;
+  }
+  return null;
+}
+
+/** The year that belongs to the title — see ParsedRelease.titleYear. `bound` is the index the
+ * year has to stand before (the episode marker, else the first quality word); `airDate` is the
+ * air-date match the year must not be part of. */
+function detectTitleYear(title: string, start: number, bound: number | null, airDate: RegExpMatchArray | null, releaseGroup: string | null): { year: number; index: number } | null {
+  const trimmed = title.trimEnd();
+  for (const m of title.matchAll(YEAR_ALL)) {
+    const at = m.index ?? 0;
+    if (at < start || !hasTitleToken(title, start, at)) continue;
+    if (bound != null && at >= bound) continue;
+    if (airDate && airDate.index != null && at >= airDate.index && at < airDate.index + airDate[0].length) continue;
+    if (YEAR_FOLLOWED_BY_YEAR.test(title.slice(at + 4))) continue;
+    // The trailing "-2024" of "Show.Name.x264-2024" is the release group, not a year.
+    if (releaseGroup === m[0] && at + 4 === trimmed.length && title[at - 1] === "-") continue;
+    return { year: Number(m[0]), index: at };
+  }
+  return null;
+}
+
+function cleanTitleSlice(slice: string): string {
+  return slice
+    .replace(/[._]/g, " ")
+    .replace(/[\s\-–—:]*[[({]*\s*$/, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(TRAILING_ARTICLE, "")
+    .trim();
+}
 
 const RESOLUTION_2160 = /\b(2160p|4k|uhd)\b/i;
 const RESOLUTION_1080 = /\b1080p\b/i;
@@ -336,9 +420,12 @@ export function parseReleaseTitle(title: string): ParsedRelease {
   let episodeNumbers: number[] | null = null;
   let isFullSeason = false;
   let episodeRange: [number, number] | null = null;
+  // Where the numbering (season/episode/absolute/air-date/pack) marker starts: the title ends there.
+  let markerIndex: number | null = null;
 
   const rangeMatch = title.match(SEASON_EP_RANGE);
   if (rangeMatch) {
+    markerIndex = rangeMatch.index ?? null;
     seasonNumber = Number(rangeMatch[1]);
     const start = Number(rangeMatch[2]);
     if (rangeMatch[4]) {
@@ -355,6 +442,7 @@ export function parseReleaseTitle(title: string): ParsedRelease {
     const dashMatch = seasonDashEpisode(title);
     const xMatch = dashMatch ? null : title.match(SEASON_EP_X_FORMAT);
     if (dashMatch) {
+      markerIndex = dashMatch.index ?? null;
       seasonNumber = Number(dashMatch[1]);
       const start = Number(dashMatch[2]);
       const tildeEnd = dashMatch[4];
@@ -373,16 +461,19 @@ export function parseReleaseTitle(title: string): ParsedRelease {
         for (let e = start; e <= Math.max(start, end); e++) episodeNumbers.push(e);
       }
     } else if (xMatch) {
+      markerIndex = xMatch.index ?? null;
       seasonNumber = Number(xMatch[1]);
       episodeNumbers = [Number(xMatch[2])];
     } else {
       const seasonMatch = title.match(SEASON_ONLY);
       if (seasonMatch) {
+        markerIndex = seasonMatch.index ?? null;
         seasonNumber = Number(seasonMatch[1]);
         isFullSeason = true;
       } else {
         const fullSeasonMatch = title.match(FULL_SEASON_HINT);
         if (fullSeasonMatch) {
+          markerIndex = fullSeasonMatch.index ?? null;
           isFullSeason = true;
           // Only the "season <N>" alternative actually names a season ("complete"/"full season"
           // don't) — extract it so a title like "Show Name Season 3 ..." (space-separated, no
@@ -392,6 +483,7 @@ export function parseReleaseTitle(title: string): ParsedRelease {
         } else if (BATCH_TAG.test(title) || isAbsoluteBatch(title)) {
           // With no season, the pack matches no specific episode, which beats matching its first.
           isFullSeason = true;
+          markerIndex = minDefined(title.match(ABSOLUTE_RANGE)?.index, title.match(BATCH_TAG)?.index);
         }
       }
     }
@@ -413,12 +505,36 @@ export function parseReleaseTitle(title: string): ParsedRelease {
   let absoluteEpisode: number | null = null;
   if (seasonNumber === null && episodeNumbers === null && !isFullSeason) {
     const absMatch = title.match(ABSOLUTE_EPISODE);
-    if (absMatch) absoluteEpisode = Number(absMatch[1]);
+    if (absMatch) {
+      absoluteEpisode = Number(absMatch[1]);
+      markerIndex = absMatch.index ?? null;
+    }
   }
+  if (airDate && dateMatch) markerIndex = minDefined(markerIndex, dateMatch.index);
 
   const imdbMatch = title.match(IMDB_ID);
+  const releaseGroup = detectReleaseGroup(title);
+
+  // Title and title year. The numbering marker bounds both; without one, the first quality word
+  // does. A year never comes from after that bound (an encode date, an episode's year), and the
+  // title never runs past the year, a bracket, or the trailing "-GROUP".
+  const start = titleStart(title);
+  const qualityAt = firstQualityMarker(title, start);
+  const titleYearInfo = detectTitleYear(title, start, minDefined(markerIndex, qualityAt), airDate ? dateMatch : null, releaseGroup);
+  const bracketAt = (() => {
+    for (let i = start; i < title.length; i++) {
+      if ((title[i] === "[" || title[i] === "(") && hasTitleToken(title, start, i)) return i;
+    }
+    return null;
+  })();
+  const trimmedTitle = title.trimEnd();
+  const groupAt = releaseGroup && trimmedTitle.endsWith(`-${releaseGroup}`) ? trimmedTitle.length - releaseGroup.length - 1 : null;
+  const cutAt = minDefined(markerIndex, titleYearInfo?.index, qualityAt, bracketAt, groupAt);
+  const isolatedTitle = cleanTitleSlice(title.slice(start, cutAt ?? undefined));
 
   return {
+    title: isolatedTitle,
+    titleYear: titleYearInfo?.year ?? null,
     seasonNumber,
     episodeNumbers,
     isFullSeason,
@@ -428,7 +544,7 @@ export function parseReleaseTitle(title: string): ParsedRelease {
     resolution: detectResolution(title),
     flags: detectFlags(title),
     languages: detectLanguages(title),
-    releaseGroup: detectReleaseGroup(title),
+    releaseGroup,
     airDate,
     absoluteEpisode,
     imdbId: imdbMatch ? imdbMatch[0].toLowerCase() : null,

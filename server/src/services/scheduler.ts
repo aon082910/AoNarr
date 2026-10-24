@@ -14,6 +14,7 @@ import {
 } from "./downloadClient.js";
 import type { QueueStatusUpdate } from "./downloadClient.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
+import { identityModeFor, releaseIdentifiesTarget, type IdentityMode, type IdentityVerdict } from "./releaseIdentity.js";
 import {
   knownReleaseSize,
   pickBestAllowedQuality,
@@ -302,16 +303,27 @@ async function titlesBlocklistedWithinHours(mediaItemId: number, hours: number):
 export interface ChosenResult {
   result: SearchResult;
   quality: string;
+  /** The identity gate's verdict on the release (null when the gate didn't judge it: a type with
+   * no quality tiers, the gate switched off, or no target name given). Recorded on the queue row
+   * as match_type. */
+  identity?: IdentityVerdict | null;
 }
 
-/** A single-shape target's own identity (year + external provider ids) — passed to
- * chooseBestResult so it can prefer a release confirmed to actually be this item over an
- * unconfirmed one, without ever excluding the unconfirmed one outright (see matchTierFor). Not
- * meaningful for episodic/collection targets, which already confirm identity via season/episode/
- * air-date matching (releaseMatchesEpisode/releaseMatchesAirDate) — those callers pass `null`. */
+/** What grabbed a release, recorded on the queue row as grab_source. */
+export type GrabSource = "auto" | "interactive" | "irc" | "retry";
+
+/** A target's own identity (year + external provider ids). Two uses in chooseBestResult: the
+ * identity gate (releaseIdentity.ts) compares a release's title year and ids against it, and
+ * matchTierFor prefers a release confirmed to be this item over an unconfirmed one among the
+ * releases the gate let through. Episodic callers pass the series' identity too: the year tells a
+ * remake's episode from the original's ("Charmed.2018.S01E01"), which the SxxEyy match alone can't. */
 export interface TargetIdentity {
   year: number | null;
   externalIds: Record<string, string>;
+}
+
+export function targetIdentityOf(item: Pick<MediaItem, "year" | "externalIds">): TargetIdentity {
+  return { year: item.year, externalIds: item.externalIds ? JSON.parse(item.externalIds) : {} };
 }
 
 /**
@@ -372,8 +384,13 @@ export interface ChooseOptions {
   /** Rank of the file the target already has (-1 when its quality is unknown): only a strictly
    * higher quality is considered. Omitted/null = the target has no file. */
   upgradeFromRank?: number | null;
-  /** For a type with no quality tiers, only a release naming this target is considered. */
+  /** What the target is called. For a type with no quality tiers, only a release naming this
+   * target is considered (releaseNameMatch); for a quality-tiered type it is the title the
+   * identity gate (releaseIdentity.ts) compares each release against. */
   name?: TargetName | null;
+  /** Overrides the identity gate's configured mode (settings `strictReleaseIdentity[.<type>]`)
+   * for this call; tests use it to exercise `enforce` and `log` without seeding settings. */
+  identityMode?: IdentityMode;
   /** Indexer priorities (lower is preferred), a ranking key for types with no quality tiers. */
   indexers?: Pick<Indexer, "id" | "priority">[];
   /** Human-readable "media title" (plus episode/season where relevant) for this call's log lines
@@ -663,6 +680,27 @@ export async function chooseBestResult(
         return ok;
       });
 
+  // Identity gate for quality-tiered types (Sonarr/Radarr reject a release that doesn't name the
+  // series/movie before any quality decision). `log` computes and logs the verdict without
+  // rejecting, so a type can run that way for a while and the log shows what `enforce` would drop.
+  const identityMode: IdentityMode = tiered && name ? options.identityMode ?? identityModeFor(mediaType) : "off";
+  const identityTarget = name ? { type: mediaType, title: name.title, year: identity?.year ?? null, externalIds: identity?.externalIds ?? {} } : null;
+  const verdicts = new Map<SearchResult, IdentityVerdict>();
+  if (tiered && withParsed.length > 0) {
+    // How often indexers report an id with their results decides how much an id-based match can
+    // carry (see the plan's decision 8); one line per search, by indexer.
+    const perIndexer = new Map<string, { withId: number; total: number }>();
+    for (const { result } of withParsed) {
+      const tally = perIndexer.get(result.indexerName) ?? { withId: 0, total: 0 };
+      tally.total++;
+      if (result.imdbId || result.tmdbId) tally.withId++;
+      perIndexer.set(result.indexerName, tally);
+    }
+    const withId = Array.from(perIndexer.values()).reduce((n, t) => n + t.withId, 0);
+    const breakdown = Array.from(perIndexer, ([indexer, t]) => `${indexer} ${t.withId}/${t.total}`).join(", ");
+    log.info(`[scheduler] ${withId} of ${withParsed.length} result(s)${forLabel} carried an indexer-reported imdb/tmdb id (${breakdown})`);
+  }
+
   const allowed = new Set(allowedQualities);
   const namesMainTitleOnly = new Set<SearchResult>();
   const relevant = episodeFiltered.filter(({ result, parsed, size }) => {
@@ -672,6 +710,17 @@ export async function chooseBestResult(
       if (match === "main") namesMainTitleOnly.add(result);
       if (match === null) log.info(`[scheduler] rejected "${result.title}": title doesn't match "${name.title}"`);
       return match !== null;
+    }
+    if (identityMode !== "off" && identityTarget) {
+      const verdict = releaseIdentifiesTarget(result, parsed, identityTarget);
+      verdicts.set(result, verdict);
+      if (!verdict.ok) {
+        if (identityMode === "enforce") {
+          log.info(`[scheduler] rejected "${result.title}": ${verdict.detail}`);
+          return false;
+        }
+        log.info(`[scheduler] identity gate (log-only) would reject "${result.title}": ${verdict.detail}`);
+      }
     }
     if (allowed.size > 0 && !allowed.has(parsed.quality)) {
       log.info(`[scheduler] rejected "${result.title}": quality "${parsed.quality}" isn't allowed by this quality profile`);
@@ -780,7 +829,9 @@ export async function chooseBestResult(
   if (winner) {
     log.info(`[scheduler] picked "${winner.result.title}" (${winner.quality}, score ${winner.totalScore})${forLabel}`);
   }
-  return winner ? { result: winner.result, quality: winner.quality } : null;
+  if (!winner) return null;
+  const verdict = verdicts.get(winner.result);
+  return { result: winner.result, quality: winner.quality, ...(verdict ? { identity: verdict } : {}) };
 }
 
 /** The download client refused the release itself (a dead .torrent link, an offline slskd peer)
@@ -856,7 +907,8 @@ export async function grab(
   subItemId: number | null,
   chosen: ChosenResult,
   retryCount = 0,
-  seasonNumber: number | null = null
+  seasonNumber: number | null = null,
+  source: GrabSource = "auto"
 ): Promise<boolean> {
   return serializeForItem(mediaItem.id, async () => {
     const { result: best, quality } = chosen;
@@ -895,10 +947,10 @@ export async function grab(
     const size = Number.isFinite(best.size) ? Math.round(best.size) : null;
     await db
       .prepare(
-        `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, indexer_id, download_client_id, download_id, size, quality, status, retry_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`
+        `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, indexer_id, download_client_id, download_id, size, quality, status, retry_count, match_type, grab_source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`
       )
-      .run(mediaItem.id, episodeId, subItemId, packSeason, best.title, best.indexerId, client.id, downloadId, size, quality, retryCount);
+      .run(mediaItem.id, episodeId, subItemId, packSeason, best.title, best.indexerId, client.id, downloadId, size, quality, retryCount, chosen.identity?.matchType ?? null, source);
 
     await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
       mediaItem.id,
@@ -1410,7 +1462,7 @@ export async function runAutoSearch(signal?: AbortSignal) {
     }
     if (!reserveSearchSlot()) return;
     const query = item.year ? `${item.title} ${item.year}` : item.title;
-    const identity: TargetIdentity = { year: item.year, externalIds: item.externalIds ? JSON.parse(item.externalIds) : {} };
+    const identity = targetIdentityOf(item);
     const results = await searchAllIndexers(indexers, query, item.type, false, identity.externalIds);
     await stampAutoSearched("media_items", item.id);
     await grabBestFor(item, ctx, results, null, identity, null, null, { title: item.title });
@@ -1445,7 +1497,9 @@ export async function runAutoSearch(signal?: AbortSignal) {
           sceneEpisode: ep.scene_episode_number,
           absoluteEpisode: item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, ep.season_number, ep.episode_number) : null,
         };
-    await grabBestFor(item, ctx, results, target, null, ep.id, null, null);
+    // The series' own identity and title go along so the identity gate can tell another show's
+    // same-numbered episode (a remake, a similarly named show) from this one.
+    await grabBestFor(item, ctx, results, target, targetIdentityOf(item), ep.id, null, { title: item.title });
   }
 
   async function searchSubItem(item: MediaItem, ctx: AutoSearchItemContext, sub: any): Promise<void> {
@@ -1645,6 +1699,8 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
     const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(episodeId)) as any;
     if (!ep) return { grabbed: false, error: "Episode not found" };
     ({ query, target: episodeTarget } = await episodeSearchFor(item, ep));
+    identity = targetIdentityOf(item);
+    name = { title: item.title };
   } else if (subItemId) {
     sub = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId);
     if (!sub) return { grabbed: false, error: "Sub-item not found" };
@@ -1652,7 +1708,7 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
     name = { title: sub.title, parentTitle: item.title };
   } else {
     query = item.year ? `${item.title} ${item.year}` : item.title;
-    identity = { year: item.year, externalIds: item.externalIds ? JSON.parse(item.externalIds) : {} };
+    identity = targetIdentityOf(item);
     name = { title: item.title };
   }
 
@@ -2098,6 +2154,8 @@ export async function retryFailedGrab(
       const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(match.episodeId)) as any;
       if (!ep) throw new Error("episode no longer exists");
       ({ query, target: episodeTarget } = await episodeSearchFor(item, ep));
+      identity = targetIdentityOf(item);
+      name = { title: item.title };
     } else if (match.subItemId) {
       const sub = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(match.subItemId)) as any;
       if (!sub) throw new Error("sub-item no longer exists");
@@ -2114,9 +2172,13 @@ export async function retryFailedGrab(
       const failed = parseReleaseTitle(match.title);
       if (!failed.isFullSeason && failed.episodeNumbers?.length) seasonEpisodes = failed.episodeNumbers;
       query = `${item.title} S${String(seasonPack).padStart(2, "0")}${seasonEpisodes ? `E${String(seasonEpisodes[0]).padStart(2, "0")}` : ""}`;
+      // The season filter below only checks the season number: without the identity gate another
+      // show's "S02.COMPLETE" would replace the failed pack.
+      identity = targetIdentityOf(item);
+      name = { title: item.title };
     } else {
       query = item.year ? `${item.title} ${item.year}` : item.title;
-      identity = { year: item.year, externalIds: item.externalIds ? JSON.parse(item.externalIds) : {} };
+      identity = targetIdentityOf(item);
       name = { title: item.title };
     }
 
@@ -2173,7 +2235,7 @@ export async function retryFailedGrab(
           { clients, upgradeFromRank: onDisk === undefined ? null : qualityRank(onDisk), name, indexers, label: mediaTitle }
         ),
       (client, chosen) =>
-        grab(client, item, match.episodeId, match.subItemId, chosen, match.retryCount + (releaseAtFault ? 1 : 0), seasonPack)
+        grab(client, item, match.episodeId, match.subItemId, chosen, match.retryCount + (releaseAtFault ? 1 : 0), seasonPack, "retry")
     );
     if (!outcome) {
       const why = whyNothingGrabbed(results, clients, clients, onDisk);

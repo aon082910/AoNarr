@@ -2646,9 +2646,14 @@ export default function MediaDetail() {
                   if (key === "size") return a.size - b.size;
                   return (a.seeders ?? -1) - (b.seeders ?? -1);
                 }).map((r, idx) => (
-                  <tr key={idx} style={{ opacity: r.matchesTarget && !r.blocklisted && !r.rejected ? 1 : 0.55 }}>
+                  <tr key={idx} style={{ opacity: r.matchesTarget && r.identityOk !== false && !r.blocklisted && !r.rejected ? 1 : 0.55 }}>
                     <td>
                       {r.title}
+                      {r.identityOk === false && (
+                        <span className="badge danger" style={{ marginLeft: 6 }} title={r.identityReason ?? undefined}>
+                          other title
+                        </span>
+                      )}
                       {r.blocklisted && (
                         <span className="badge danger" style={{ marginLeft: 6 }}>
                           blocklisted

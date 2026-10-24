@@ -1893,12 +1893,30 @@ describe("chooseBestResult — identity as a tiebreaker (never a hard filter)", 
     expect(best?.result.title).toBe(rightYear.title);
   });
 
-  it("still returns a result when nothing matches the given identity — a mismatch never excludes a candidate", async () => {
+  it("identity alone (no target name) never excludes a candidate — matchTierFor stays a tiebreaker", async () => {
     const onlyOption = fakeResult({ title: "Totally.Unrelated.1999.1080p.WEB-DL.x264-GROUP" });
 
     const best = await chooseBestResult([onlyOption], [], "", null, 0, null, new Set(), "movie", null, { year: 2020, externalIds: { imdb: "tt9999999" } });
 
     expect(best?.result.title).toBe(onlyOption.title);
+  });
+
+  it("with the target's name, the identity gate rejects a release of another title under enforce and only logs it under log", async () => {
+    const onlyOption = fakeResult({ title: "Totally.Unrelated.1999.1080p.WEB-DL.x264-GROUP" });
+    const identity = { year: 2020, externalIds: { imdb: "tt9999999" } };
+
+    const enforced = await chooseBestResult([onlyOption], [], "", null, 0, null, new Set(), "movie", null, identity, null, {
+      name: { title: "Some Movie" },
+      identityMode: "enforce",
+    });
+    expect(enforced).toBeNull();
+
+    const logged = await chooseBestResult([onlyOption], [], "", null, 0, null, new Set(), "movie", null, identity, null, {
+      name: { title: "Some Movie" },
+      identityMode: "log",
+    });
+    expect(logged?.result.title).toBe(onlyOption.title);
+    expect(logged?.identity).toMatchObject({ ok: false, reason: "title" });
   });
 
   it("passing no identity at all (the episodic/collection call sites) doesn't change existing behavior — highest seeders wins", async () => {
@@ -3349,5 +3367,123 @@ describe("scheduled Trakt / Plex watchlist syncs", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Identity gate for quality-tiered types (MATCHING_ACCURACY_PLAN.md, Round 1)
+
+describe("chooseBestResult — identity gate for tiered types", () => {
+  const movie = (title: string, year: number | null, externalIds: Record<string, string> = {}) => ({
+    identity: { year, externalIds },
+    name: { title },
+  });
+  const choose = (results: any[], target: ReturnType<typeof movie>, mode: "enforce" | "log" | "off", mediaType = "movie", episode: { season: number; episode: number } | null = null) =>
+    chooseBestResult(results, [], "", null, 0, episode, new Set(), mediaType, null, target.identity, null, { name: target.name, identityMode: mode });
+
+  it("accepts the release that names the movie and its year", async () => {
+    const dune = fakeResult({ title: "Dune.2021.1080p.BluRay.x264-GRP" });
+    const best = await choose([dune], movie("Dune", 2021), "enforce");
+    expect(best?.result.title).toBe(dune.title);
+    expect(best?.identity).toMatchObject({ ok: true, matchType: "title" });
+  });
+
+  it("rejects a sequel, a longer title and a same-title release from another year", async () => {
+    const partTwo = fakeResult({ title: "Dune.Part.Two.2024.1080p.WEB-DL.x265-GRP", seeders: 500 });
+    const dune1984 = fakeResult({ title: "Dune.1984.1080p.BluRay.x264-GRP", seeders: 400, downloadUrl: "magnet:?xt=1984" });
+    const upInTheAir = fakeResult({ title: "Up.in.the.Air.2009.1080p.WEB.x265-GRP" });
+    expect(await choose([partTwo, dune1984], movie("Dune", 2021), "enforce")).toBeNull();
+    expect(await choose([upInTheAir], movie("Up", 2009), "enforce")).toBeNull();
+    expect(await choose([fakeResult({ title: "Dead.Heat.1988.1080p.BluRay-GRP" })], movie("Heat", 1995), "enforce")).toBeNull();
+  });
+
+  it("picks the right title over a wrong one with more seeders and a better score", async () => {
+    const wrong = fakeResult({ title: "Up.in.the.Air.2009.1080p.WEB.x265-GRP", seeders: 900, downloadUrl: "magnet:?xt=wrong" });
+    const right = fakeResult({ title: "Up.2009.1080p.BluRay.x264-GRP", seeders: 3, downloadUrl: "magnet:?xt=right" });
+    const best = await choose([wrong, right], movie("Up", 2009), "enforce");
+    expect(best?.result.title).toBe(right.title);
+  });
+
+  it("accepts a year within one of the item's, a yearless release, and an item without a year", async () => {
+    expect((await choose([fakeResult({ title: "Heat.1996.1080p.BluRay-GRP" })], movie("Heat", 1995), "enforce"))?.identity).toMatchObject({ ok: true });
+    expect((await choose([fakeResult({ title: "Heat.1080p.BluRay-GRP" })], movie("Heat", 1995), "enforce"))?.result).toBeDefined();
+    expect((await choose([fakeResult({ title: "Heat.1995.1080p.BluRay-GRP" })], movie("Heat", null), "enforce"))?.identity).toMatchObject({ matchType: "title-noyear" });
+  });
+
+  it("lets an indexer-reported id confirm a release whose title differs", async () => {
+    const byId = fakeResult({ title: "Some.Other.Name.2021.1080p.WEB-GRP", imdbId: "tt1160419" });
+    const best = await choose([byId], movie("Dune", 2021, { imdb: "tt1160419" }), "enforce");
+    expect(best?.identity).toMatchObject({ ok: true, matchType: "id" });
+  });
+
+  it("tells a remake's episode from the original's and rejects another show's same-numbered episode", async () => {
+    const reboot = fakeResult({ title: "Charmed.2018.S01E01.1080p.AMZN.WEB-DL-NTb", seeders: 900, downloadUrl: "magnet:?xt=2018" });
+    const original = fakeResult({ title: "Charmed.1998.S01E01.1080p.WEB-GRP", seeders: 5, downloadUrl: "magnet:?xt=1998" });
+    const other = fakeResult({ title: "Breaking.Bad.S01E01.1080p.WEB-GRP", seeders: 950, downloadUrl: "magnet:?xt=bb" });
+    const ep = { season: 1, episode: 1 };
+    const best = await choose([reboot, original, other], movie("Charmed", 1998), "enforce", "series", ep);
+    expect(best?.result.title).toBe(original.title);
+    expect(await choose([other], movie("Charmed", 1998), "enforce", "series", ep)).toBeNull();
+    // A yearless release of the right title is fine for a known target.
+    expect((await choose([fakeResult({ title: "Charmed.S01E01.1080p.WEB-GRP" })], movie("Charmed (2018)", 2018), "enforce", "series", ep))?.result).toBeDefined();
+  });
+
+  it("accepts a country qualifier with or without brackets, and the part of a title before its subtitle", async () => {
+    const ep = { season: 3, episode: 1 };
+    expect((await choose([fakeResult({ title: "The.Office.US.S03E01.720p.HDTV-GRP" })], movie("The Office (US)", 2005), "enforce", "series", ep))?.result).toBeDefined();
+    expect((await choose([fakeResult({ title: "The.Office.S03E01.720p.HDTV-GRP" })], movie("The Office (US)", 2005), "enforce", "series", ep))?.result).toBeDefined();
+    expect(await choose([fakeResult({ title: "The.Office.US.S03E01.720p.HDTV-GRP" })], movie("The Office", 2001), "enforce", "series", ep)).toBeNull();
+    expect((await choose([fakeResult({ title: "Leon.1994.1080p.BluRay-GRP" })], movie("Léon: The Professional", 1994), "enforce"))?.identity).toMatchObject({ matchType: "title-main" });
+  });
+
+  it("never applies the year check to an air-dated release", async () => {
+    const daily = fakeResult({ title: "The.Daily.Show.2024.08.25.1080p.WEB-GRP" });
+    const late = fakeResult({ title: "The.Late.Show.2024.08.25.1080p.WEB-GRP", downloadUrl: "magnet:?xt=late" });
+    const target = { identity: { year: 1996, externalIds: {} }, name: { title: "The Daily Show" } };
+    const best = await chooseBestResult([late, daily], [], "", null, 0, { airDate: "2024-08-25" }, new Set(), "series", null, target.identity, null, { name: target.name, identityMode: "enforce" });
+    expect(best?.result.title).toBe(daily.title);
+  });
+
+  it("in log mode keeps every release and reports the verdict on the chosen one", async () => {
+    const wrong = fakeResult({ title: "Dune.Part.Two.2024.1080p.WEB-DL.x265-GRP" });
+    const best = await choose([wrong], movie("Dune", 2021), "log");
+    expect(best?.result.title).toBe(wrong.title);
+    expect(best?.identity).toMatchObject({ ok: false, reason: "title" });
+  });
+
+  it("off mode judges nothing", async () => {
+    const wrong = fakeResult({ title: "Dune.Part.Two.2024.1080p.WEB-DL.x265-GRP" });
+    const best = await choose([wrong], movie("Dune", 2021), "off");
+    expect(best?.result.title).toBe(wrong.title);
+    expect(best?.identity).toBeUndefined();
+  });
+
+  it("reads the mode from settings: strictReleaseIdentity.<type>, then strictReleaseIdentity, default log", async () => {
+    const wrong = fakeResult({ title: "Dune.Part.Two.2024.1080p.WEB-DL.x265-GRP" });
+    const configured = (results: any[]) => chooseBestResult(results, [], "", null, 0, null, new Set(), "movie", null, { year: 2021, externalIds: {} }, null, { name: { title: "Dune" } });
+    expect((await configured([wrong]))?.result.title).toBe(wrong.title); // default: log
+    setSetting("strictReleaseIdentity", "enforce");
+    expect(await configured([wrong])).toBeNull();
+    setSetting("strictReleaseIdentity.movie", "log");
+    expect((await configured([wrong]))?.result.title).toBe(wrong.title);
+    setSetting("strictReleaseIdentity.movie", "");
+    setSetting("strictReleaseIdentity", "");
+  });
+
+  it("only needs the item title to appear inside a sports/PPV release", async () => {
+    const card = fakeResult({ title: "UFC.300.Pereira.vs.Hill.PPV.1080p.WEB-GRP" });
+    const otherCard = fakeResult({ title: "UFC.301.Pantoja.vs.Erceg.PPV.1080p.WEB-GRP", downloadUrl: "magnet:?xt=301" });
+    const best = await choose([otherCard, card], movie("UFC 300", 2024), "enforce", "ppv");
+    expect(best?.result.title).toBe(card.title);
+  });
+
+  it("leaves types without quality tiers to their own title match", async () => {
+    const album = fakeResult({ title: "Artist - Album (2020) [FLAC]" });
+    const best = await chooseBestResult([album], [], "", null, 0, null, new Set(), "artist", null, null, null, {
+      name: { title: "Album", parentTitle: "Artist" },
+      identityMode: "enforce",
+    });
+    expect(best?.result.title).toBe(album.title);
+    expect(best?.identity).toBeUndefined();
   });
 });

@@ -132,6 +132,10 @@ ensureColumn("irc_feeds", "announcers", "announcers TEXT");
 ensureColumn("queue", "import_started_at", "import_started_at TEXT");
 ensureColumn("queue", "import_skipped_reason", "import_skipped_reason TEXT");
 ensureColumn("queue", "import_resume_state", "import_resume_state INTEGER NOT NULL DEFAULT 0");
+// How the grab's release was confirmed to be its item (releaseIdentity.ts matchType) and what
+// grabbed it ('auto' | 'interactive' | 'irc' | 'retry'); NULL on rows older than the identity gate.
+ensureColumn("queue", "match_type", "match_type TEXT");
+ensureColumn("queue", "grab_source", "grab_source TEXT");
 // A list's own root folder for the items of its media type (see services/importLists.ts's RootFolderPicker).
 ensureColumn("import_lists", "root_folder_id", "root_folder_id INTEGER REFERENCES root_folders(id) ON DELETE SET NULL");
 // When runAutoSearch last actually searched this target, NULL if never — see scheduler.ts's

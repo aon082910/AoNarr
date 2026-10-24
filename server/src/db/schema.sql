@@ -187,7 +187,12 @@ CREATE TABLE IF NOT EXISTS queue (
   -- running is a Manual import, which a restart leaves for the admin to run again.
   import_started_at TEXT,
   import_skipped_reason TEXT,
-  import_resume_state INTEGER NOT NULL DEFAULT 0
+  import_resume_state INTEGER NOT NULL DEFAULT 0,
+  -- How the release was confirmed to be this item (services/releaseIdentity.ts: 'id', 'title',
+  -- 'alias', 'title-main', 'title-noyear', 'none') and what grabbed it ('auto', 'interactive',
+  -- 'irc', 'retry'). NULL on rows from before the identity gate, or for types it doesn't judge.
+  match_type TEXT,
+  grab_source TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_queue_media_item_id ON queue(media_item_id);
 CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);

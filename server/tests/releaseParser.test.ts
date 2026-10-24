@@ -586,3 +586,62 @@ describe("releaseMatchesAirDate", () => {
     expect(releaseMatchesAirDate(p, "2024-08-25")).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Title isolation and the title year (MATCHING_ACCURACY_PLAN.md, Round 1)
+
+describe("parseReleaseTitle title and titleYear", () => {
+  it("isolates the title before the episode marker, with dots read as spaces", () => {
+    expect(parseReleaseTitle("Show.Name.S02E05.1080p.WEB-DL.DDP5.1.H.264-GROUP")).toMatchObject({ title: "Show Name", titleYear: null });
+    expect(parseReleaseTitle("Show Name 2x07 Some Title 720p")).toMatchObject({ title: "Show Name", titleYear: null });
+    expect(parseReleaseTitle("Show.Name.S03.1080p.WEB-DL-GROUP")).toMatchObject({ title: "Show Name", titleYear: null });
+  });
+
+  it("takes the year before the episode marker as the title year, never one after it", () => {
+    expect(parseReleaseTitle("Charmed.2018.S01E01.1080p.AMZN.WEB-DL-NTb")).toMatchObject({ title: "Charmed", titleYear: 2018 });
+    expect(parseReleaseTitle("Show.S01E01.2019.1080p.WEB-GRP")).toMatchObject({ title: "Show", titleYear: null, year: 2019 });
+  });
+
+  it("ends a movie title at its year", () => {
+    expect(parseReleaseTitle("Dune.2021.1080p.BluRay.x264-GRP")).toMatchObject({ title: "Dune", titleYear: 2021 });
+    expect(parseReleaseTitle("Dune.Part.Two.2024.1080p.WEB-DL.x265-GRP")).toMatchObject({ title: "Dune Part Two", titleYear: 2024 });
+    expect(parseReleaseTitle("Movie Name (2019) [1080p] [GRP]")).toMatchObject({ title: "Movie Name", titleYear: 2019 });
+  });
+
+  it("applies Radarr's year rule: a year that is part of the title is not the title year", () => {
+    expect(parseReleaseTitle("Blade.Runner.2049.2017.1080p.BluRay.x264-GRP")).toMatchObject({ title: "Blade Runner 2049", titleYear: 2017, year: 2049 });
+    expect(parseReleaseTitle("2001.A.Space.Odyssey.1968.1080p.BluRay-GRP")).toMatchObject({ title: "2001 A Space Odyssey", titleYear: 1968 });
+    expect(parseReleaseTitle("1917.2019.1080p.BluRay.x264-GRP")).toMatchObject({ title: "1917", titleYear: 2019 });
+    expect(parseReleaseTitle("1917.1080p.BluRay.x264-GRP")).toMatchObject({ title: "1917", titleYear: null });
+    expect(parseReleaseTitle("Nineteen.Eighty-Four.1984.2024.Remake.1080p.WEB-GRP")).toMatchObject({ title: "Nineteen Eighty-Four 1984", titleYear: 2024 });
+  });
+
+  it("never reads an air date's year or a numeric release group as the title year", () => {
+    expect(parseReleaseTitle("The.Daily.Show.2024.08.25.1080p.WEB-GRP")).toMatchObject({ title: "The Daily Show", titleYear: null, airDate: "2024-08-25" });
+    expect(parseReleaseTitle("Show.Name.x264-2024")).toMatchObject({ title: "Show Name", titleYear: null, releaseGroup: "2024" });
+  });
+
+  it("ends the title at the first quality word when there is no year or numbering", () => {
+    expect(parseReleaseTitle("Movie.Name.1080p.BluRay.x264-GRP")).toMatchObject({ title: "Movie Name", titleYear: null });
+    expect(parseReleaseTitle("Show.Name.The.Complete.Series.1080p.WEB-GRP")).toMatchObject({ title: "Show Name" });
+    expect(parseReleaseTitle("Inception.2010.COMPLETE.BLURAY-SharpHD")).toMatchObject({ title: "Inception", titleYear: 2010 });
+  });
+
+  it("keeps title words that only look like quality words", () => {
+    expect(parseReleaseTitle("Charlottes.Web.2006.1080p.BluRay-GRP")).toMatchObject({ title: "Charlottes Web", titleYear: 2006 });
+    expect(parseReleaseTitle("Cam.2018.1080p.NF.WEB-DL-GRP")).toMatchObject({ title: "Cam", titleYear: 2018 });
+    expect(parseReleaseTitle("French.Connection.1971.1080p.BluRay-GRP")).toMatchObject({ title: "French Connection", titleYear: 1971 });
+  });
+
+  it("strips a leading fansub group or tag and ends the title at the absolute number", () => {
+    expect(parseReleaseTitle("[SubsPlease] Jujutsu Kaisen - 25 (1080p) [ABCD1234]")).toMatchObject({ title: "Jujutsu Kaisen", titleYear: null });
+    expect(parseReleaseTitle("[SubsPlease] One Piece - 1085 (1080p) [ABCD1234]")).toMatchObject({ title: "One Piece" });
+    expect(parseReleaseTitle("[Group] Show S2 - 13-24 [1080p]")).toMatchObject({ title: "Show" });
+    expect(parseReleaseTitle("[Group] Show - 01 ~ 12 [1080p]")).toMatchObject({ title: "Show" });
+    expect(parseReleaseTitle("[1080p] Movie.Name.2019-GRP")).toMatchObject({ title: "Movie Name", titleYear: 2019 });
+  });
+
+  it("returns an empty title when nothing stands before the numbering", () => {
+    expect(parseReleaseTitle("S01E01.1080p.WEB-GRP").title).toBe("");
+  });
+});

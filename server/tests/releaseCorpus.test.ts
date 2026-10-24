@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 import { parseReleaseTitle } from "../src/services/releaseParser.js";
+import { releaseIdentifiesTarget } from "../src/services/releaseIdentity.js";
 
 /**
  * Table-driven release-name corpus (MATCHING_ACCURACY_PLAN.md, Round 0).
@@ -51,8 +52,8 @@ const library = JSON.parse(fs.readFileSync(path.join(fixtures, "identity-library
 const libraryItems = Object.fromEntries(Object.entries(library).filter(([key]) => !key.startsWith("_"))) as Record<string, LibraryItem>;
 
 /** Corpus keys that are shorthand for a ParsedRelease field. Keys not listed map to themselves —
- * including fields later rounds add (title, titleYear, rejected, seasonRange), which read as
- * `undefined` until they exist. */
+ * including fields later rounds add (rejected, seasonRange), which read as `undefined` until they
+ * exist. */
 const FIELD: Record<string, string> = {
   season: "seasonNumber",
   episodes: "episodeNumbers",
@@ -61,7 +62,7 @@ const FIELD: Record<string, string> = {
   fullSeason: "isFullSeason",
 };
 
-const KNOWN_FUTURE_FIELDS = new Set(["title", "titleYear", "rejected", "seasonRange"]);
+const KNOWN_FUTURE_FIELDS = new Set(["rejected", "seasonRange"]);
 
 function assertParsed(title: string, expectation: Expectation): void {
   const parsed = parseReleaseTitle(title) as unknown as Record<string, unknown>;
@@ -121,11 +122,26 @@ describe("release-name corpus", () => {
     }
   });
 
-  describe("pending identity checks (Round 1 releaseIdentifiesTarget)", () => {
+  describe("identity gate (releaseIdentifiesTarget, per-item, no alias rows yet)", () => {
     for (const row of rows) {
       for (const check of row.identity ?? []) {
         const want = check.expect.ok ? `ok as ${check.expect.matchType}` : `rejected (${check.expect.reason ?? "no reason"})`;
-        it.todo(`[${check.round}] "${row.title}" vs ${check.item}${check.indexer ? " (indexer ids)" : ""} → ${want}`);
+        const name = `[${check.round}] "${row.title}" vs ${check.item}${check.indexer ? " (indexer ids)" : ""} → ${want}`;
+        // Rounds 3 and 4 add alias rows and fansub season/part conventions; until then those
+        // checks describe the target behaviour and stay pending.
+        if (check.round !== "R1") {
+          it.todo(name);
+          continue;
+        }
+        it(name, () => {
+          const lib = libraryItems[check.item];
+          const verdict = releaseIdentifiesTarget(
+            { title: row.title, imdbId: check.indexer?.imdbId ?? null, tmdbId: check.indexer?.tmdbId ?? null, tvdbId: check.indexer?.tvdbId ?? null },
+            parseReleaseTitle(row.title),
+            { type: lib.type, title: lib.title, year: lib.year, externalIds: lib.externalIds }
+          );
+          expect({ ok: verdict.ok, matchType: verdict.matchType, ...(check.expect.reason ? { reason: verdict.reason } : {}) }, verdict.detail).toEqual(check.expect);
+        });
       }
     }
   });

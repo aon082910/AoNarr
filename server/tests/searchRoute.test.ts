@@ -146,3 +146,43 @@ describe("POST /api/search/bulk", () => {
     expect(await db.prepare("SELECT id FROM queue WHERE media_item_id = ?").get(movieId)).toBeUndefined();
   });
 });
+
+describe("identity gate on the manual search surfaces", () => {
+  it("annotates each result with the identity verdict and sorts a release naming the item first", async () => {
+    const movieId = await insertItem("movie", "Dune");
+    await db.prepare("UPDATE media_items SET year = 2021 WHERE id = ?").run(movieId);
+    searchAllIndexers.mockResolvedValue([
+      release({ title: "Dune.Part.Two.2024.1080p.WEB-DL.x265-GRP", seeders: 900, downloadUrl: "magnet:?xt=p2" }),
+      release({ title: "Dune.2021.1080p.BluRay.x264-GRP", seeders: 3, downloadUrl: "magnet:?xt=d" }),
+    ]);
+
+    const res = await request(app).get(`/api/search/${movieId}`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((r: any) => [r.title, r.identityOk, r.identityMatch])).toEqual([
+      ["Dune.2021.1080p.BluRay.x264-GRP", true, "title"],
+      ["Dune.Part.Two.2024.1080p.WEB-DL.x265-GRP", false, "none"],
+    ]);
+    expect(res.body[1].identityReason).toMatch(/doesn't name "Dune"/);
+  });
+
+  it("records a manual grab as interactive, with how the release matched, and never blocks it", async () => {
+    await insertTorrentClient();
+    const movieId = await insertItem("movie", "Dune");
+    await db.prepare("UPDATE media_items SET year = 2021 WHERE id = ?").run(movieId);
+
+    const ok = await request(app)
+      .post(`/api/search/${movieId}/grab`)
+      .set("X-Api-Key", apiKey)
+      .send({ title: "Dune.2021.1080p.BluRay.x264-GRP", downloadUrl: "magnet:?xt=urn:btih:dune", protocol: "torrent" });
+    expect(ok.status).toBe(201);
+    expect(ok.body).toMatchObject({ matchType: "title", grabSource: "interactive" });
+
+    const forced = await request(app)
+      .post(`/api/search/${movieId}/grab`)
+      .set("X-Api-Key", apiKey)
+      .send({ title: "Dune.Part.Two.2024.1080p.WEB-DL.x265-GRP", downloadUrl: "magnet:?xt=urn:btih:part2", protocol: "torrent" });
+    expect(forced.status).toBe(201);
+    expect(forced.body).toMatchObject({ matchType: "none", grabSource: "interactive" });
+  });
+});

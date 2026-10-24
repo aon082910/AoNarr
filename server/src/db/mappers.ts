@@ -195,6 +195,8 @@ export function queueItemFromRow(row: any) {
     retryCount: row.retry_count ?? 0,
     downloadPath: row.download_path ?? null,
     importSkippedReason: row.import_skipped_reason ?? null,
+    matchType: row.match_type ?? null,
+    grabSource: row.grab_source ?? null,
   };
 }
 

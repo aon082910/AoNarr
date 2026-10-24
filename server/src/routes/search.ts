@@ -18,7 +18,8 @@ import { scoreRelease } from "../services/customFormatScoring.js";
 import { log } from "../services/logger.js";
 import { knownReleaseSize, sizeWithinQualityBounds, usesQualityTiers } from "../services/quality.js";
 import { getBlocklistedTitles, isBlocklisted } from "../services/blocklist.js";
-import { matchTierFor, type TargetIdentity } from "../services/scheduler.js";
+import { matchTierFor, targetIdentityOf, type TargetIdentity } from "../services/scheduler.js";
+import { releaseIdentifiesTarget } from "../services/releaseIdentity.js";
 import { searchSlskd } from "../services/soulseek.js";
 import { pickClientForProtocol, searchAndGrabTargets, type BulkSearchTarget } from "../services/scheduler.js";
 import { computeAbsoluteEpisodeNumber } from "../services/importer.js";
@@ -49,9 +50,16 @@ export interface AnnotatedSearchResult extends SearchResult {
   formatScore: number;
   formatMatches: string[];
   /** 2 = this release's own reported/title-embedded external id matches the target's; 1 = its
-   * parsed year matches; 0 = neither (or not applicable — an episode/sub-item search, which
-   * already confirms identity a different way). See scheduler.ts's matchTierFor. */
+   * parsed year matches; 0 = neither (or not applicable — a sub-item search, which confirms
+   * identity by the sub-item's title instead). See scheduler.ts's matchTierFor. */
   matchTier: number;
+  /** The identity gate's verdict (services/releaseIdentity.ts) for a quality-tiered type: whether
+   * the release names this item at all, how it matched, and why not. Always true/null for a type
+   * the gate doesn't judge (music, books, ...). Automatic search rejects a false verdict when the
+   * type's `strictReleaseIdentity` mode is `enforce`; a manual grab is never blocked by it. */
+  identityOk: boolean;
+  identityMatch: string | null;
+  identityReason: string | null;
   blocklisted: boolean;
   rejected: boolean;
   rejectReason?: string;
@@ -184,10 +192,12 @@ searchRouter.get(
     // Same auto-grab rules as chooseBestResult: a type with no quality tiers (music, books, ...)
     // takes any quality, and a size of 0 means the indexer didn't report one.
     const tiered = usesQualityTiers(item.type);
-    // Same "plain whole-item search" condition that populated identityExternalIds above (no
-    // episode/season/sub-item target) — an episodic/collection search already confirms identity a
-    // different way, so identity stays null for those and matchTierFor always returns 0 for them.
-    const identity: TargetIdentity | null = targetSeason === null && !subItemId ? { year: item.year, externalIds: identityExternalIds } : null;
+    // The item's identity (year + ids) for whole-item and episode/season searches alike: the
+    // identity gate below compares every release's title and year against it, and matchTierFor
+    // prefers an id/year-confirmed release among the viable ones. A sub-item (album/book) search
+    // confirms identity by the sub-item's own title instead, so identity stays null there.
+    const identity: TargetIdentity | null = !subItemId ? targetIdentityOf(item) : null;
+    const identityTarget = tiered && identity ? { type: item.type, title: item.title, year: identity.year, externalIds: identity.externalIds } : null;
     const annotated: AnnotatedSearchResult[] = await Promise.all(rawResults.map(async (r) => {
       const parsed = parseReleaseTitle(r.title);
       const matchesTarget =
@@ -196,6 +206,7 @@ searchRouter.get(
           : targetSeason !== null
             ? parsed.seasonNumber === targetSeason
             : true;
+      const verdict = identityTarget ? releaseIdentifiesTarget(r, parsed, identityTarget) : null;
       const size = knownReleaseSize(r.size);
       const { totalScore, matches, rejected, rejectReason } = await scoreRelease(
         r.title,
@@ -215,6 +226,9 @@ searchRouter.get(
         formatScore: totalScore,
         formatMatches: matches.map((m) => m.name),
         matchTier: matchTierFor(r, identity),
+        identityOk: verdict ? verdict.ok : true,
+        identityMatch: verdict?.matchType ?? null,
+        identityReason: verdict && !verdict.ok ? verdict.detail : null,
         blocklisted: blocklisted.has(r.title),
         rejected,
         rejectReason,
@@ -231,6 +245,7 @@ searchRouter.get(
     annotated.sort(
       (a, b) =>
         Number(b.matchesTarget) - Number(a.matchesTarget) ||
+        Number(b.identityOk) - Number(a.identityOk) ||
         Number(b.allowedByProfile) - Number(a.allowedByProfile) ||
         Number(a.rejected) - Number(b.rejected) ||
         Number(a.blocklisted) - Number(b.blocklisted) ||
@@ -288,10 +303,21 @@ searchRouter.post(
       if (ep && (parsedTitle.seasonNumber == null || parsedTitle.seasonNumber === ep.season_number)) seasonNumber = ep.season_number;
     }
 
+    // A manual grab is never blocked by the identity gate (the admin chose the release), but how
+    // it matched is recorded like an automatic grab's, and grab_source tells the two apart.
+    const verdict =
+      b.title && usesQualityTiers(item.type) && !b.subItemId
+        ? releaseIdentifiesTarget({ title: b.title, imdbId: b.imdbId ?? null, tmdbId: b.tmdbId ?? null }, parsedTitle, {
+            type: item.type,
+            title: item.title,
+            ...targetIdentityOf(item),
+          })
+        : null;
+
     const result = await db
       .prepare(
-        `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, indexer_id, download_client_id, download_id, size, quality, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`
+        `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, indexer_id, download_client_id, download_id, size, quality, status, match_type, grab_source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, 'interactive')`
       )
       .run(
         req.params.mediaItemId,
@@ -303,7 +329,8 @@ searchRouter.post(
         client.id,
         grab.downloadId,
         size,
-        quality
+        quality,
+        verdict?.matchType ?? null
       );
 
     await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
