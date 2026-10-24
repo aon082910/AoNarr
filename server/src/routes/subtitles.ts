@@ -27,12 +27,14 @@ subtitlesRouter.post(
     if (type === "custom" && !b.config?.searchUrlTemplate) {
       throw new HttpError(400, "config.searchUrlTemplate is required for a custom provider");
     }
+    // better-sqlite3 (like Postgres) rejects binding a raw JS boolean — coerce to 1/0, while
+    // keeping the original ?? 1 default for null/undefined intact.
     const result = await db
       .prepare(
         `INSERT INTO subtitle_providers (name, type, api_key, languages, enabled, config)
          VALUES (?, ?, ?, ?, ?, ?)`
       )
-      .run(b.name, type, b.apiKey ? encryptValue(b.apiKey) : null, b.languages ?? "eng", b.enabled ?? 1, b.config ? JSON.stringify(b.config) : null);
+      .run(b.name, type, b.apiKey ? encryptValue(b.apiKey) : null, b.languages ?? "eng", (b.enabled ?? 1) ? 1 : 0, b.config ? JSON.stringify(b.config) : null);
     const row = await db.prepare("SELECT * FROM subtitle_providers WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(subtitleProviderFromRow(row));
   })

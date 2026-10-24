@@ -32,9 +32,11 @@ aiProvidersRouter.post(
       await db.prepare("UPDATE ai_providers SET is_default = 0").run();
     }
 
+    // better-sqlite3 (like Postgres) rejects binding a raw JS boolean — coerce to 1/0, while
+    // keeping the original ?? 1 default for null/undefined intact.
     const result = await db
       .prepare(`INSERT INTO ai_providers (name, type, base_url, api_key, model, enabled, is_default) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(b.name, b.type, b.baseUrl.replace(/\/+$/, ""), b.apiKey ? encryptValue(b.apiKey) : null, b.model, b.enabled ?? 1, b.isDefault ? 1 : 0);
+      .run(b.name, b.type, b.baseUrl.replace(/\/+$/, ""), b.apiKey ? encryptValue(b.apiKey) : null, b.model, (b.enabled ?? 1) ? 1 : 0, b.isDefault ? 1 : 0);
     const row = await db.prepare("SELECT * FROM ai_providers WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(aiProviderFromRow(row));
   })
