@@ -1582,9 +1582,9 @@ export async function runAutoSearch(signal?: AbortSignal) {
     if (ep.air_date && ep.air_date.slice(0, 10) > new Date().toISOString().slice(0, 10)) return;
     if (!reserveSearchSlot()) return;
     // Scene-numbered (TheXEM) season/episode wins the search QUERY when known — that's the numbering
-    // a scene-mapped show's releases actually use — while matching still accepts either numbering
-    // (see releaseMatchesEpisode's OR), since not every release for such a show necessarily follows
-    // the scene convention.
+    // a scene-mapped show's releases actually use — and wins matching too, with the aired numbering
+    // as the fallback for a release that doesn't follow the scene convention (see
+    // releaseMatchesEpisode).
     const searchSeason = ep.scene_season_number ?? ep.season_number;
     const searchEpisode = ep.scene_episode_number ?? ep.episode_number;
     const query = ctx.isDaily

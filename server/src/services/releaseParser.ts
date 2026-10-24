@@ -76,7 +76,7 @@ export interface ParsedRelease {
 // convention or the other, never both.
 // A single "." / "_" / space may sit between the season and episode tags ("Show.S01.E05").
 const SEASON_EP_RANGE = /\bS(\d{1,2})[._ ]?E(\d{1,3})(?:-E?(\d{1,3})|-S(\d{1,2})[._ ]?E(\d{1,3})|((?:[._ ]?E\d{1,3})+))?\b/i;
-// A range this long is a typo or a different number, not a multi-episode release.
+// A "1x01-264" range this long is a different number (a codec), not a multi-episode release.
 const MAX_EPISODE_RANGE = 100;
 // "1x01" scene/P2P notation, the same convention libraryScan.ts's filename-based detector already
 // recognizes — used as a fallback only when SxxExx doesn't match, since SxxExx is unambiguous while
@@ -84,7 +84,7 @@ const MAX_EPISODE_RANGE = 100;
 // episode number joins it as "1x01-02" or "1x01x02".
 const SEASON_EP_X_FORMAT = /\b0*(\d{1,2})x0*(\d{1,3})(?:[-x]0*(\d{1,3}))?\b/i;
 // "Show.Name.Season.2.Episode.5": the spelled-out form.
-const SEASON_WORD_EPISODE = /\bSeason[ ._]?0*(\d{1,2})[ ._-]*(?:Episode|Ep)[ ._]?0*(\d{1,3})\b/i;
+const SEASON_WORD_EPISODE = /\bSeason[ ._]?0*(\d{1,2})[ ._-]*(?:Episode|Ep)[ ._]?0*(\d{1,3})\b(?![ ._]*(?:-|~|to\b)[ ._]*\d)/i;
 // A multi-season pack: "S01-S05", "Seasons 1-5", "Season 1 to 9".
 const SEASON_RANGE =
   /\b(?:S(\d{1,2})[ ._]*-[ ._]*S(\d{1,2})|Seasons?[ ._]?(\d{1,2})[ ._]*(?:-|to|thru)[ ._]*(?:Season[ ._]?)?(\d{1,2}))\b(?![ ._]*-?[ ._]*E\d)/i;
@@ -467,23 +467,36 @@ function detectQuality(title: string): QualityName | "Unknown" {
 }
 
 const MAX_SEASON_RANGE = 50;
-const TRAILING_LANGUAGES = new RegExp(`(?:[ ._\\-]+(?:${Object.keys(LANGUAGE_TAGS).join("|")}))+[ ._\\-]*$`, "i");
-const TRAILING_QUALITY_MODIFIER = /(?:[ ._-]+(?:regional|r5|screener|scr|dvdscr|bdscr|rawhd|brdisk|bdmv|bd25|bd50))+[ ._-]*$/i;
+// Words that stand at the end of a title without being its own: a language, a quality modifier, and
+// the filler that goes with them ("German.DL", "MULTi.AC3", "R5.LiNE"). A run of them is read as tags.
+const TAG_FILLER = "dl|ac3|dts|aac|dd5|ddp?|line|dubbed|subbed|internal|ws|hc|dual|audio|eng|subs?";
+const TAG_MODIFIER = "regional|r5|screener|scr|dvdscr|bdscr|rawhd|brdisk|bdmv|bd25|bd50";
+const TRAILING_TAG_RUN = new RegExp(`(?:[ -]+(?:${Object.keys(LANGUAGE_TAGS).join("|")}|${TAG_MODIFIER}|${TAG_FILLER}))+$`, "i");
+// An edition named by a phrase ("Special Edition", "30th Anniversary Edition", "Extended Version")
+// as well as the bare words TRAILING_EDITION knows.
+const TRAILING_EDITION_PHRASE = /\s+(?:[\w']+\s+){1,2}(?:edition|version|cut)$/i;
 
 /**
  * The text language, edition and quality-modifier tags are looked for in: everything but the title.
  * That is the leading tags plus what follows the cut (the year, the numbering or the first quality
- * word), plus tag words standing at the end of the title itself — "Movie.FRENCH.1080p" has no year
- * to end the title before its language. With nothing to cut at, the whole name.
+ * word), plus the tag words standing at the end of the title itself — "Movie.FRENCH.1080p" and
+ * "Movie.Name.German.DL.1080p" have no year to end the title before their language, and an edition
+ * may stand before the language ("Directors.Cut.German.DL"). With nothing to cut the title at, the
+ * whole name.
  */
 function tagScanText(title: string, start: number, cutAt: number | null): string {
   if (cutAt === null) return title;
-  const slice = title.slice(start, cutAt);
-  const tails = [
-    slice.match(TRAILING_LANGUAGES)?.[0],
-    slice.match(TRAILING_QUALITY_MODIFIER)?.[0],
-    slice.replace(/[._]/g, " ").trimEnd().match(TRAILING_EDITION)?.[0],
-  ];
+  const slice = title.slice(start, cutAt).replace(/[._]/g, " ");
+  const tails: string[] = [];
+  let end = slice.trimEnd().length;
+  // Peeled from the end, alternately: a run of tag words, then an edition, then another run...
+  for (let i = 0; i < 4; i++) {
+    const text = slice.slice(0, end);
+    const found = text.match(TRAILING_TAG_RUN) ?? text.match(TRAILING_EDITION) ?? text.match(TRAILING_EDITION_PHRASE);
+    if (!found || found.index === undefined || !hasTitleToken(text, 0, found.index)) break;
+    tails.push(found[0]);
+    end = found.index;
+  }
   return [title.slice(0, start), ...tails, title.slice(cutAt)].filter(Boolean).join(" ");
 }
 
@@ -512,7 +525,7 @@ export function parseReleaseTitle(title: string): ParsedRelease {
     } else {
       // Single episode, or a hyphenated "-E03"/"-03" range end, or a repeated season tag
       // ("S01E01-S01E02", the same season only) — inclusive.
-      const end = cappedEnd(start, rangeMatch[3] ? Number(rangeMatch[3]) : rangeMatch[5] && Number(rangeMatch[4]) === seasonNumber ? Number(rangeMatch[5]) : start);
+      const end = rangeMatch[3] ? Number(rangeMatch[3]) : rangeMatch[5] && Number(rangeMatch[4]) === seasonNumber ? Number(rangeMatch[5]) : start;
       episodeNumbers = [];
       for (let e = start; e <= end; e++) episodeNumbers.push(e);
     }
@@ -568,10 +581,11 @@ export function parseReleaseTitle(title: string): ParsedRelease {
           const before = title.slice(0, at);
           // "Inception.2010.COMPLETE.BLURAY" is a film's disc image.
           const discImage = bareComplete && DISC_TAG_AFTER.test(after) && YEAR_BEFORE.test(before);
-          const packMarker = hasTitleToken(title, titleStart(title), at) && (!bareComplete || COMPLETE_PACK_AFTER.test(after) || COMPLETE_PACK_BEFORE.test(before)) && !discImage;
+          const titleBefore = hasTitleToken(title, titleStart(title), at);
+          const packMarker = titleBefore && (!bareComplete || COMPLETE_PACK_AFTER.test(after) || COMPLETE_PACK_BEFORE.test(before)) && !discImage;
           if (packMarker) markerIndex = at;
-          // A bare "complete" that is no pack marker is a title word ("Complete.Unknown.2016").
-          if (!bareComplete || packMarker) {
+          // A bare "complete" with no title before it is a title word ("Complete.Unknown.2016").
+          if (!bareComplete || (titleBefore && !discImage)) {
             isFullSeason = true;
             // Only the "season <N>" alternative actually names a season ("complete"/"full season"
             // don't) — extract it so a title like "Show Name Season 3 ..." (space-separated, no
@@ -579,7 +593,8 @@ export function parseReleaseTitle(title: string): ParsedRelease {
             const digits = fullSeasonMatch[1].match(/(\d{1,2})/);
             if (digits) seasonNumber = Number(digits[1]);
           }
-        } else if (BATCH_TAG.test(title) || isAbsoluteBatch(title)) {
+        }
+        if (!isFullSeason && (BATCH_TAG.test(title) || isAbsoluteBatch(title))) {
           // With no season, the pack matches no specific episode, which beats matching its first.
           isFullSeason = true;
           // Only a marker after the leading tags bounds the title: a "[Batch]" among them is a tag,

@@ -67,23 +67,30 @@ export async function syncSceneNumbering(mediaItemId: number): Promise<{ updated
     return { updated: 0 };
   }
 
-  let updated = 0;
   // The mapping TheXEM returns is the whole mapping: scene numbers it no longer lists (a corrected
-  // or removed entry) must not stay behind, or an old number keeps matching releases. Cleared and
-  // rewritten together so a search never sees the show half-mapped.
+  // or removed entry) must not stay behind, or an old number keeps matching releases. Written
+  // together, and only where a row differs, so a search never sees the show half-mapped and an
+  // unchanged mapping (nearly every sync) locks nothing.
+  const wanted = new Map<string, { season: number; episode: number }>();
+  for (const entry of body.data as XemEntry[]) {
+    const scene = entry.scene ?? entry.scene_2;
+    if (scene && entry.tvdb) wanted.set(`${entry.tvdb.season}:${entry.tvdb.episode}`, scene);
+  }
+  const rows = (await db
+    .prepare("SELECT id, season_number, episode_number, scene_season_number, scene_episode_number FROM episodes WHERE media_item_id = ?")
+    .all(mediaItemId)) as { id: number; season_number: number; episode_number: number; scene_season_number: number | null; scene_episode_number: number | null }[];
+  let updated = 0;
   await db.transaction(async () => {
-    await db.prepare("UPDATE episodes SET scene_season_number = NULL, scene_episode_number = NULL WHERE media_item_id = ?").run(mediaItemId);
-    for (const entry of body.data as XemEntry[]) {
-      const scene = entry.scene ?? entry.scene_2;
-      const tvdb = entry.tvdb;
-      if (!scene || !tvdb) continue;
-      const result = await db
-        .prepare(
-          `UPDATE episodes SET scene_season_number = ?, scene_episode_number = ?
-           WHERE media_item_id = ? AND season_number = ? AND episode_number = ?`
-        )
-        .run(scene.season, scene.episode, mediaItemId, tvdb.season, tvdb.episode);
-      if (result.changes > 0) updated++;
+    for (const row of rows) {
+      const scene = wanted.get(`${row.season_number}:${row.episode_number}`);
+      if (scene) {
+        updated++;
+        if (Number(row.scene_season_number) !== scene.season || Number(row.scene_episode_number) !== scene.episode || row.scene_season_number == null) {
+          await db.prepare("UPDATE episodes SET scene_season_number = ?, scene_episode_number = ? WHERE id = ?").run(scene.season, scene.episode, row.id);
+        }
+      } else if (row.scene_season_number != null || row.scene_episode_number != null) {
+        await db.prepare("UPDATE episodes SET scene_season_number = NULL, scene_episode_number = NULL WHERE id = ?").run(row.id);
+      }
     }
   });
 

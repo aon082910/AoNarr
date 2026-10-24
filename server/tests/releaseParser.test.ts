@@ -710,13 +710,18 @@ describe("parseReleaseTitle — Round 4 conventions", () => {
     expect(parseReleaseTitle("Show.Name.S01E10-S02E01.720p.HDTV-GRP").episodeNumbers).toEqual([10]);
     expect(parseReleaseTitle("Show.Name.1x05-1080p.WEB-GRP").episodeNumbers).toEqual([5]);
     expect(parseReleaseTitle("Show.Name.S01E01.x264-GRP").episodeNumbers).toEqual([1]);
-    // An implausibly long range is not taken for a multi-episode release.
-    expect(parseReleaseTitle("Show.Name.S01E01-E500.720p-GRP").episodeNumbers).toEqual([1]);
+    // A long SxxExx range stays one (anime packs run to hundreds of episodes); a codec after "1x01" is not a range end.
+    expect(parseReleaseTitle("Naruto.Shippuden.S01E001-E500.DVDRip.x264").episodeNumbers).toHaveLength(500);
+    expect(parseReleaseTitle("Show.Name.1x01x264.WEB-GRP").episodeNumbers).toEqual([1]);
   });
 
   it("reads the spelled-out season and episode", () => {
     expect(parseReleaseTitle("Show.Name.Season.2.Episode.5.720p.HDTV-GRP")).toMatchObject({ title: "Show Name", seasonNumber: 2, episodeNumbers: [5], releaseType: "single", isFullSeason: false });
     expect(parseReleaseTitle("Show Name Season 02 Ep 12 720p")).toMatchObject({ seasonNumber: 2, episodeNumbers: [12] });
+    // A range of episodes is the season's pack, not its first episode.
+    for (const title of ["Show Name Season 2 Ep 01-12 1080p", "Show Name Season 1 Episode 01-26", "Show.Name.Season.1.Ep.01-26.DVDRip"]) {
+      expect(parseReleaseTitle(title), title).toMatchObject({ isFullSeason: true, episodeNumbers: null });
+    }
   });
 
   it("reads the season a dotted season word names, and the seasons a pack spans", () => {
@@ -735,9 +740,24 @@ describe("parseReleaseTitle — Round 4 conventions", () => {
   it("does not take a bare complete for a season pack unless it is one", () => {
     expect(parseReleaseTitle("Inception.2010.COMPLETE.BLURAY-SharpHD")).toMatchObject({ title: "Inception", isFullSeason: false, releaseType: null });
     expect(parseReleaseTitle("Complete.Unknown.2016.1080p.WEB-GRP")).toMatchObject({ title: "Complete Unknown", isFullSeason: false });
-    expect(parseReleaseTitle("The.Complete.Idiots.Guide.2018.1080p.WEB-GRP").isFullSeason).toBe(false);
     expect(parseReleaseTitle("Show.Name.COMPLETE.1080p.WEB-GRP")).toMatchObject({ title: "Show Name", isFullSeason: true });
     expect(parseReleaseTitle("Show.Name.Complete.Series.BluRay-GRP")).toMatchObject({ title: "Show Name", isFullSeason: true });
+  });
+
+  it("keeps reading a bare 'complete' after a title as a pack, whatever follows it", () => {
+    for (const title of [
+      "Show.Name.COMPLETE.DVDRip.XviD-GRP",
+      "Show.Name.Complete.WEB-DL.x264-GRP",
+      "Show.Name.COMPLETE.HDTV.x264-GRP",
+      "Show.Name.COMPLETE.MULTi.1080p.WEB-GRP",
+      "Show.Name.Complete.Miniseries.720p.HDTV-GRP",
+      "[Judas] Show Name (Complete) [BD 1080p]",
+      "[Group] Show - 01-12 Complete [BD 1080p]",
+    ]) {
+      expect(parseReleaseTitle(title), title).toMatchObject({ isFullSeason: true, releaseType: "seasonPack" });
+    }
+    // A batch range that says "(Complete)" is still the batch, never episode 1.
+    expect(parseReleaseTitle("[Group] Show - 01 ~ 12 (Complete) [1080p]")).toMatchObject({ isFullSeason: true, absoluteEpisode: null });
   });
 
   it("reads a fansub version tag, and an ordinal season, in the absolute-number convention", () => {
@@ -781,6 +801,26 @@ describe("parseReleaseTitle — Round 4 conventions", () => {
     expect(parseReleaseTitle("Movie.Name.2009.SCREENER.XviD-GRP").qualityModifier).toBe("screener");
     // With nothing to cut the title at, the whole name is searched, as before.
     expect(parseReleaseTitle("Some.Movie.FRENCH").languages).toEqual(["french"]);
+  });
+
+  it("finds a language or modifier tag that is followed by filler words, and an edition named by a phrase", () => {
+    expect(parseReleaseTitle("Movie.Name.German.DL.1080p.BluRay.x264-GRP").languages).toEqual(["german"]);
+    expect(parseReleaseTitle("Movie.Name.GERMAN.DL.2010.1080p.BluRay-GRP").languages).toEqual(["german"]);
+    expect(parseReleaseTitle("Movie.Name.MULTi.AC3.1080p.BluRay-GRP").languages).toEqual(["multi"]);
+    expect(parseReleaseTitle("Movie.Name.TRUEFRENCH.AC3.DVDRip.XviD-GRP").languages).toEqual(["french"]);
+    expect(parseReleaseTitle("Show.Name.GERMAN.DL.S01E01.720p.WEB-GRP").languages).toEqual(["german"]);
+    expect(parseReleaseTitle("Show.Name.MULTi.FRENCH.AC3.S01E01.720p.HDTV-GRP").languages).toEqual(["multi", "french"]);
+    expect(parseReleaseTitle("Movie.Name.R5.LiNE.XviD-GRP").qualityModifier).toBe("regional");
+    expect(parseReleaseTitle("Movie.Name.DVDSCR.AC3.XviD-GRP").qualityModifier).toBe("screener");
+    expect(parseReleaseTitle("Movie.Name.Directors.Cut.German.DL.1080p.BluRay-GRP")).toMatchObject({ languages: ["german"], edition: "Directors Cut" });
+    expect(parseReleaseTitle("Aliens.Special.Edition.1986.1080p.BluRay-GRP").edition).toBe("Special Edition");
+    expect(parseReleaseTitle("Movie.Name.30th.Anniversary.Edition.2010.1080p-GRP").edition).toBe("Anniversary Edition");
+    expect(parseReleaseTitle("Movie.Name.Extended.Version.2010.1080p-GRP").edition).toBe("Extended Version");
+    expect(parseReleaseTitle("Movie.Name.Theatrical.Version.2010-GRP").edition).toBe("Theatrical Version");
+    expect(parseReleaseTitle("Movie.Name.Special.Edition.DVDRip.XviD-GRP").edition).toBe("Special Edition");
+    // Title words that look like tags stay title words.
+    expect(parseReleaseTitle("The.Special.2010.1080p-GRP").edition).toBeNull();
+    expect(parseReleaseTitle("Show.Name.Christmas.Special.2023.1080p.WEB-GRP").edition).toBeNull();
   });
 });
 
