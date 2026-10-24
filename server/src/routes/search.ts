@@ -9,7 +9,7 @@ import {
   queueItemFromRow,
 } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { searchAllIndexers } from "../services/indexerClient.js";
+import { searchAllIndexers, type SearchHints } from "../services/indexerClient.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { parseReleaseTitle, releaseMatchesEpisode, type SceneIndex } from "../services/releaseParser.js";
 import { sceneIndexFor } from "../services/sceneNumbering.js";
@@ -19,9 +19,9 @@ import { scoreRelease } from "../services/customFormatScoring.js";
 import { log } from "../services/logger.js";
 import { knownReleaseSize, sizeWithinQualityBounds, usesQualityTiers } from "../services/quality.js";
 import { getBlocklistedTitles, isBlocklisted } from "../services/blocklist.js";
-import { matchTierFor, targetIdentityOf, type TargetIdentity } from "../services/scheduler.js";
+import { matchTierFor, targetIdentityOf, tvdbIdOf, type TargetIdentity } from "../services/scheduler.js";
 import { identityModeFor, releaseIdentifiesTarget } from "../services/releaseIdentity.js";
-import { aliasTitlesFor, identityTargetFor } from "../services/releaseAliases.js";
+import { alternateQueriesFor, aliasTitlesFor, identityTargetFor } from "../services/releaseAliases.js";
 import { searchSlskd } from "../services/soulseek.js";
 import { pickClientForProtocol, searchAndGrabTargets, type BulkSearchTarget } from "../services/scheduler.js";
 import { computeAbsoluteEpisodeNumber } from "../services/importer.js";
@@ -147,6 +147,7 @@ searchRouter.get(
       targetSceneEpisode = ep.scene_episode_number;
       targetAbsoluteEpisode = item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, ep.season_number, ep.episode_number) : null;
       targetSceneIndex = await sceneIndexFor(item.id);
+      identityExternalIds = tvdbIdOf(item);
       // Scene-numbered (TheXEM) query when known — see scheduler.ts's own runAutoSearch for why.
       const seasonStr = String(targetSceneSeason ?? targetSeason).padStart(2, "0");
       const episodeStr = String(targetSceneEpisode ?? targetEpisode).padStart(2, "0");
@@ -155,6 +156,7 @@ searchRouter.get(
       // Season-only (no specific episode) — surfaces full-season pack releases, which a
       // per-episode query wouldn't reliably match against.
       targetSeason = Number(seasonNumberParam);
+      identityExternalIds = tvdbIdOf(item);
       const seasonStr = String(targetSeason).padStart(2, "0");
       query = `${item.title} S${seasonStr}`;
     } else if (subItemId) {
@@ -168,7 +170,13 @@ searchRouter.get(
     const indexers = ((await db.prepare("SELECT * FROM indexers WHERE enabled = 1").all()) as any[]).map(
       indexerFromRow
     );
-    const rawResults = await searchAllIndexers(indexers as any, query, item.type as any, true, identityExternalIds);
+    // What a typed tvsearch asks for (the scene numbers the query was built from) and the item's other titles.
+    const hints: SearchHints = {
+      season: targetSeason == null ? null : targetSceneSeason ?? targetSeason,
+      episode: targetEpisode == null ? null : targetSceneEpisode ?? targetEpisode,
+      alternateQueries: await alternateQueriesFor(item, query),
+    };
+    const rawResults = await searchAllIndexers(indexers as any, query, item.type as any, true, identityExternalIds, hints);
 
     // Soulseek has no Torznab-style indexer — a configured, enabled slskd client is queried
     // directly instead and its results merged in alongside the indexer ones. Music-shaped

@@ -98,6 +98,49 @@ describe("GET /api/search/:mediaItemId", () => {
   });
 });
 
+describe("GET /api/search/:mediaItemId — what the indexers are asked", () => {
+  async function insertShow(title: string, externalIds: Record<string, string>): Promise<number> {
+    const id = await insertItem("series", title);
+    await db.prepare("UPDATE media_items SET external_ids = ? WHERE id = ?").run(JSON.stringify(externalIds), id);
+    return id;
+  }
+
+  it("asks for a show's episode by tvdb id and its scene numbers, and under the show's other titles", async () => {
+    const showId = await insertShow("The Office (US)", { tvdb: "73244", imdb: "tt0386676", tmdb: "2316" });
+    const epId = Number(
+      (
+        await db
+          .prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, scene_season_number, scene_episode_number, monitored, has_file) VALUES (?, 3, 1, 4, 2, 1, 0)")
+          .run(showId)
+      ).lastInsertRowid
+    );
+    const { storeAliases } = await import("../src/services/releaseAliases.js");
+    await storeAliases(showId, ["Das Büro"], "tmdb_alt");
+
+    const res = await request(app).get(`/api/search/${showId}?episodeId=${epId}`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(200);
+    const [, query, , bypassCache, externalIds, hints] = searchAllIndexers.mock.calls[0];
+    expect(query).toBe("The Office (US) S04E02");
+    expect(bypassCache).toBe(true);
+    expect(externalIds).toEqual({ tvdb: "73244" });
+    expect(hints).toEqual({ season: 4, episode: 2, alternateQueries: ["The Office S04E02", "The Office US S04E02", "Das Büro S04E02"] });
+  });
+
+  it("asks for a whole season by season alone, and a whole show by its ids and no numbers", async () => {
+    const showId = await insertShow("Season Show", { tvdb: "555", imdb: "tt0555555" });
+
+    await request(app).get(`/api/search/${showId}?seasonNumber=2`).set("X-Api-Key", apiKey);
+    expect(searchAllIndexers.mock.calls[0][4]).toEqual({ tvdb: "555" });
+    expect(searchAllIndexers.mock.calls[0][5]).toMatchObject({ season: 2, episode: null });
+
+    searchAllIndexers.mockClear();
+    await request(app).get(`/api/search/${showId}`).set("X-Api-Key", apiKey);
+    expect(searchAllIndexers.mock.calls[0][4]).toEqual({ tvdb: "555", imdb: "tt0555555" });
+    expect(searchAllIndexers.mock.calls[0][5]).toMatchObject({ season: null, episode: null });
+  });
+});
+
 describe("POST /api/search/:mediaItemId/grab", () => {
   it("rounds a fractional size before storing it, so the queue insert works on Postgres too", async () => {
     await insertTorrentClient();

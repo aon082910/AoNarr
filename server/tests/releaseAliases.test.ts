@@ -188,6 +188,40 @@ describe("syncPrimaryTitle / backfillCleanTitles", () => {
   });
 });
 
+describe("alternateQueriesFor", () => {
+  it("writes the query under the title less its qualifier, the qualifier spelled out, then the first aliases", async () => {
+    const id = await insertItem("series", "The Office (US)", 2005);
+    await aliases.storeAliases(id, ["Das Büro", "Le Bureau", "El Trabajo"], "tmdb_alt");
+    const queries = await aliases.alternateQueriesFor({ id, type: "series", title: "The Office (US)" }, "The Office (US) S03E01");
+    expect(queries).toEqual(["The Office S03E01", "The Office US S03E01", "Das Büro S03E01"]);
+
+    const none = await insertItem("series", "The Office (US) Twin", 2005);
+    await aliases.storeAliases(none, ["Duplicate Alias"], "tmdb_alt");
+    const withQualifier = await insertItem("series", "Shameless (UK)", 2004);
+    expect(await aliases.alternateQueriesFor({ id: withQualifier, type: "series", title: "Shameless (UK)" }, "Shameless (UK) S01E01")).toEqual([
+      "Shameless S01E01",
+      "Shameless UK S01E01",
+    ]);
+  });
+
+  it("keeps a year qualifier out of the spelled-out title, and a title without one to its aliases", async () => {
+    const charmed = await insertItem("series", "Charmed (2018)", 2018);
+    expect(await aliases.alternateQueriesFor({ id: charmed, type: "series", title: "Charmed (2018)" }, "Charmed (2018) S01E01")).toEqual(["Charmed S01E01"]);
+    const plain = await insertItem("movie", "The Fall Guy", 2024);
+    await aliases.storeAliases(plain, ["Kaskader", "the fall guy", "The Fall-Guy"], "tmdb_alt");
+    expect(await aliases.alternateQueriesFor({ id: plain, type: "movie", title: "The Fall Guy" }, "The Fall Guy 2024")).toEqual(["Kaskader 2024"]);
+  });
+
+  it("is empty for a type with no quality tiers and for a query that does not start with the title", async () => {
+    const artist = await insertItem("artist", "Queen", null);
+    await aliases.storeAliases(artist, ["Queen Band"], "user");
+    expect(await aliases.alternateQueriesFor({ id: artist, type: "artist", title: "Queen" }, "Queen Greatest Hits")).toEqual([]);
+    const movie = await insertItem("movie", "Dune Part Two", 2024);
+    await aliases.storeAliases(movie, ["Dune 2"], "tmdb_alt");
+    expect(await aliases.alternateQueriesFor({ id: movie, type: "movie", title: "Dune Part Two" }, "something else")).toEqual([]);
+  });
+});
+
 describe("identityTargetFor", () => {
   it("builds the gate's target from the row, parsing external ids and loading aliases", async () => {
     const id = await insertItem("movie", "Dune", 2021, { imdb: "tt1160419" });

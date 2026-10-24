@@ -633,6 +633,35 @@ describe("searchAndGrabTargets", () => {
     expect(searchAllIndexers.mock.calls[0][1]).toBe("Breaking Bad S01E05");
   });
 
+  it("hands the indexers the series' tvdb id, the numbers the query was built from and the show's other titles", async () => {
+    const showId = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO media_items (type, title, sort_title, monitored, has_file, status, external_ids) VALUES ('series','The Office (US)','the office (us)',1,0,'missing', ?)`
+          )
+          .run(JSON.stringify({ tvdb: "73244", imdb: "tt0386676" }))
+      ).lastInsertRowid
+    );
+    const epId = Number(
+      (await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, scene_season_number, scene_episode_number, title, monitored, has_file) VALUES (?,3,1,4,2,'Ep',1,0)`).run(showId))
+        .lastInsertRowid
+    );
+    const { storeAliases } = await import("../src/services/releaseAliases.js");
+    await storeAliases(showId, ["Das Büro"], "tmdb_alt");
+    await insertClient();
+    getDownloadClientAdapter.mockReturnValue(fakeAdapter());
+    searchAllIndexers.mockResolvedValue([]);
+
+    await searchAndGrabTargets([{ mediaItemId: showId, episodeId: epId }]);
+
+    const [, query, , , externalIds, hints] = searchAllIndexers.mock.calls[0];
+    expect(query).toBe("The Office (US) S04E02");
+    // The typed search asks by tvdb id alone; imdb and tmdb stay out of an episode search.
+    expect(externalIds).toBeDefined();
+    expect(hints).toMatchObject({ season: 4, episode: 2, alternateQueries: ["The Office S04E02", "The Office US S04E02", "Das Büro S04E02"] });
+  });
+
   it("searches a daily series' episode by air date and grabs a date-named release", async () => {
     const showId = await insertSeries("Daily Show", "daily");
     const epId = await insertEpisode(showId, 2024, 101, "2024-08-25");

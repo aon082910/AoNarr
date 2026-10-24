@@ -1,6 +1,7 @@
 import { db } from "../db/index.js";
 import { log } from "./logger.js";
 import { identityKey, identityModeFor, releaseIdentifiesTarget, type IdentityTarget, type IdentityVerdict } from "./releaseIdentity.js";
+import { usesQualityTiers } from "./quality.js";
 import type { ParsedRelease } from "./releaseParser.js";
 
 /**
@@ -139,6 +140,39 @@ export async function backfillCleanTitles(): Promise<number> {
   const updated = stale.length;
   if (updated > 0) log.info(`[aliases] keyed ${updated} item title(s) for release matching`);
   return updated;
+}
+
+/** The most other titles one search tries beside the main query (indexerClient caps the queries too). */
+const MAX_SEARCH_TITLES = 3;
+
+/**
+ * The item's search `query` written with its other titles, for an indexer that files a release
+ * under one of them: the title less its "(US)" qualifier, the qualifier written without brackets
+ * ("The Office US"), then the first two alias rows. Empty for a type with no quality tiers, which
+ * has no alias rows, and for a query that does not start with the item's title.
+ */
+export async function alternateQueriesFor(item: { id: number; type: string; title: string }, query: string): Promise<string[]> {
+  if (!usesQualityTiers(item.type) || !query.startsWith(item.title)) return [];
+  const rest = query.slice(item.title.length);
+  const titles: string[] = [];
+  const qualifier = item.title.match(/\s*\(([^()]*)\)\s*$/);
+  const base = qualifier ? item.title.slice(0, qualifier.index).trim() : "";
+  if (base) titles.push(base);
+  const spelled = qualifier?.[1].trim();
+  if (base && spelled && !/^(?:19|20)\d{2}$/.test(spelled)) titles.push(`${base} ${spelled}`);
+  titles.push(...(await aliasTitlesFor(item.id)).slice(0, 2));
+  // Written differently is enough here (an indexer may treat "(US)" and "US" differently), unlike
+  // the alias rows, which are kept apart by their clean title.
+  const seen = new Set([item.title.trim().toLowerCase()]);
+  return titles
+    .filter((title) => {
+      const key = title.trim().toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, MAX_SEARCH_TITLES)
+    .map((title) => `${title}${rest}`);
 }
 
 /** An item as the identity gate sees it, aliases included. */

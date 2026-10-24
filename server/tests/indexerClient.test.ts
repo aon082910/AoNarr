@@ -52,6 +52,11 @@ function makeIndexer(overrides: Partial<Indexer> = {}): Indexer {
   };
 }
 
+/** The search requests a fetch mock saw: the one-off t=caps probe of a typed-search candidate is not one. */
+function searchCalls(fetchMock: { mock: { calls: unknown[][] } }): unknown[][] {
+  return fetchMock.mock.calls.filter(([url]) => !String(url).includes("t=caps"));
+}
+
 function torznabXml(itemsXml: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed">
@@ -363,7 +368,7 @@ describe("searchIndexer — torznab/newznab", () => {
 
     await searchIndexer(makeIndexer({ protocol: "torznab", categories: "2000" }), "The Matrix", "movie", { imdb: "tt0133093", tmdb: "603" });
 
-    const url = new URL(fetchMock.mock.calls[0][0] as string);
+    const url = new URL(searchCalls(fetchMock)[0][0] as string);
     expect(url.searchParams.get("imdbid")).toBe("0133093");
     expect(url.searchParams.get("tmdbid")).toBe("603");
   });
@@ -813,8 +818,8 @@ describe("searchAllIndexers — caching", () => {
     await searchAllIndexers([indexer], "id-cache query", "movie", false, undefined);
     await searchAllIndexers([indexer], "id-cache query", "movie", false, { imdb: "tt0133093" });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const secondUrl = new URL(fetchMock.mock.calls[1][0] as string);
+    expect(searchCalls(fetchMock)).toHaveLength(2);
+    const secondUrl = new URL(searchCalls(fetchMock)[1][0] as string);
     expect(secondUrl.searchParams.get("imdbid")).toBe("0133093");
   });
 });
@@ -916,9 +921,9 @@ describe("imdbid/tmdbid rejected by the indexer (Jackett's 201 on an indexer wit
     const results = await searchIndexer(makeIndexer({ id, categories: "5000" }), "Show", "series", { imdb: "tt0944947", tmdb: "1399" });
 
     expect(results.map((r) => r.title)).toEqual(["Show S01E01"]);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(new URL(fetchMock.mock.calls[0][0] as string).searchParams.get("imdbid")).toBe("0944947");
-    const retryParams = new URL(fetchMock.mock.calls[1][0] as string).searchParams;
+    expect(searchCalls(fetchMock)).toHaveLength(2);
+    expect(new URL(searchCalls(fetchMock)[0][0] as string).searchParams.get("imdbid")).toBe("0944947");
+    const retryParams = new URL(searchCalls(fetchMock)[1][0] as string).searchParams;
     expect(retryParams.has("imdbid")).toBe(false);
     expect(retryParams.has("tmdbid")).toBe(false);
     expect(retryParams.get("q")).toBe("Show");
@@ -935,13 +940,13 @@ describe("imdbid/tmdbid rejected by the indexer (Jackett's 201 on an indexer wit
     vi.stubGlobal("fetch", fetchMock);
     await expect(searchIndexer(indexer, "Movie Two", "movie", { imdb: "tt0234215" })).resolves.toHaveLength(1);
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(new URL(fetchMock.mock.calls[0][0] as string).searchParams.has("imdbid")).toBe(false);
+    expect(searchCalls(fetchMock)).toHaveLength(1);
+    expect(new URL(searchCalls(fetchMock)[0][0] as string).searchParams.has("imdbid")).toBe(false);
     // A different indexer still gets the ids.
     const other = rejectIdsFetch();
     vi.stubGlobal("fetch", other);
     await searchIndexer(makeIndexer({ categories: "2000" }), "Movie", "movie", { imdb: "tt0133093" });
-    expect(new URL(other.mock.calls[0][0] as string).searchParams.get("imdbid")).toBe("0133093");
+    expect(new URL(searchCalls(other)[0][0] as string).searchParams.get("imdbid")).toBe("0133093");
   });
 
   it("a 203 'function not available' reply to the id params is retried the same way", async () => {
@@ -953,7 +958,7 @@ describe("imdbid/tmdbid rejected by the indexer (Jackett's 201 on an indexer wit
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(searchIndexer(makeIndexer({ categories: "2000" }), "Movie", "movie", { tmdb: "603" })).resolves.toHaveLength(1);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(searchCalls(fetchMock)).toHaveLength(2);
   });
 
   it("still fails when the plain query is rejected too, and keeps sending ids next time", async () => {
@@ -964,7 +969,7 @@ describe("imdbid/tmdbid rejected by the indexer (Jackett's 201 on an indexer wit
     const fetchMock = rejectIdsFetch();
     vi.stubGlobal("fetch", fetchMock);
     await searchIndexer(indexer, "Movie", "movie", { imdb: "tt0133093" });
-    expect(new URL(fetchMock.mock.calls[0][0] as string).searchParams.get("imdbid")).toBe("0133093");
+    expect(new URL(searchCalls(fetchMock)[0][0] as string).searchParams.get("imdbid")).toBe("0133093");
   });
 
   it("never retries a 201 on a request that carried no id params, or any other error code", async () => {
@@ -980,7 +985,7 @@ describe("imdbid/tmdbid rejected by the indexer (Jackett's 201 on an indexer wit
     });
     vi.stubGlobal("fetch", badKey);
     await expect(searchIndexer(makeIndexer({ categories: "2000" }), "Movie", "movie", { imdb: "tt0133093" })).rejects.toThrow("error 100");
-    expect(badKey).toHaveBeenCalledTimes(1);
+    expect(searchCalls(badKey)).toHaveLength(1);
   });
 });
 
@@ -1154,5 +1159,213 @@ describe("default indexer media types", () => {
     const results = await searchAllIndexers([indexer], "UFC 300", "sports");
 
     expect(results.map((r) => r.title)).toEqual(["UFC.300.1080p"]);
+  });
+});
+
+describe("typed searches (t=caps, tvsearch, movie)", () => {
+  const capsXml = (searching: string) => `<?xml version="1.0" encoding="UTF-8"?><caps><server title="Test"/><searching>${searching}</searching></caps>`;
+  const FULL_CAPS = capsXml(
+    `<search available="yes" supportedParams="q"/><tv-search available="yes" supportedParams="q,season,ep,tvdbid,imdbid"/><movie-search available="yes" supportedParams="q,imdbid,tmdbid"/>`
+  );
+  const typedItems = torznabXml(torznabItem({ title: "Typed.Result.1080p.WEB-GRP", downloadUrl: "https://idx.example.com/dl/typed" }));
+  const textItems = torznabXml(torznabItem({ title: "Text.Result.1080p.WEB-GRP", downloadUrl: "https://idx.example.com/dl/text" }));
+  const emptyFeed = torznabXml("");
+
+  /** Answers each kind of request (caps, the typed searches, the text search) separately. */
+  function routedFetch(answers: { caps?: string | { status: number }; typed?: string | { status: number }; text?: string }) {
+    return vi.fn().mockImplementation(async (url: string) => {
+      const t = new URL(url).searchParams.get("t");
+      const answer = t === "caps" ? answers.caps : t === "search" ? (answers.text ?? textItems) : answers.typed;
+      if (answer && typeof answer === "object") return { ok: false, status: answer.status, text: async () => "" };
+      return { ok: true, status: 200, text: async () => answer ?? emptyFeed };
+    });
+  }
+  const typeOf = (call: unknown[]) => new URL(call[0] as string).searchParams.get("t");
+
+  it("asks a movie-search indexer by imdb id instead of by text, probing its capabilities once", async () => {
+    const fetchMock = routedFetch({ caps: FULL_CAPS, typed: typedItems });
+    vi.stubGlobal("fetch", fetchMock);
+    const indexer = makeIndexer({ categories: "2000", mediaTypes: "movie" });
+
+    const results = await searchIndexer(indexer, "The Matrix 1999", "movie", { imdb: "tt0133093", tmdb: "603" });
+    await searchIndexer(indexer, "The Matrix 1999", "movie", { imdb: "tt0133093", tmdb: "603" });
+
+    expect(results.map((r) => r.title)).toEqual(["Typed.Result.1080p.WEB-GRP"]);
+    expect(fetchMock.mock.calls.map(typeOf)).toEqual(["caps", "movie", "movie"]);
+    const typed = new URL(fetchMock.mock.calls[1][0] as string).searchParams;
+    expect(typed.get("imdbid")).toBe("0133093");
+    expect(typed.has("tmdbid")).toBe(false);
+    expect(typed.has("q")).toBe(false);
+    expect(typed.get("cat")).toBe("2000");
+  });
+
+  it("falls back to tmdb for a movie-search indexer without imdbid, and to a text search without either", async () => {
+    const tmdbOnly = routedFetch({ caps: capsXml(`<movie-search available="yes" supportedParams="q,tmdbid"/>`), typed: typedItems });
+    vi.stubGlobal("fetch", tmdbOnly);
+    await searchIndexer(makeIndexer({ categories: "2000" }), "Movie", "movie", { imdb: "tt0133093", tmdb: "603" });
+    expect(new URL(tmdbOnly.mock.calls[1][0] as string).searchParams.get("tmdbid")).toBe("603");
+
+    const neither = routedFetch({ caps: capsXml(`<movie-search available="yes" supportedParams="q"/>`) });
+    vi.stubGlobal("fetch", neither);
+    const results = await searchIndexer(makeIndexer({ categories: "2000" }), "Movie", "movie", { imdb: "tt0133093" });
+    expect(neither.mock.calls.map(typeOf)).toEqual(["caps", "search"]);
+    expect(results.map((r) => r.title)).toEqual(["Text.Result.1080p.WEB-GRP"]);
+  });
+
+  it("asks a tv-search indexer for the show's tvdb id, season and episode", async () => {
+    const fetchMock = routedFetch({ caps: FULL_CAPS, typed: typedItems });
+    vi.stubGlobal("fetch", fetchMock);
+    const indexer = makeIndexer({ categories: "5000", mediaTypes: "series" });
+
+    await searchIndexer(indexer, "Show S03E01", "series", { tvdb: "81189", imdb: "tt0944947" }, { season: 3, episode: 1 });
+    await searchIndexer(indexer, "Show S03", "series", { tvdb: "81189" }, { season: 3 });
+
+    expect(fetchMock.mock.calls.map(typeOf)).toEqual(["caps", "tvsearch", "tvsearch"]);
+    const episode = new URL(fetchMock.mock.calls[1][0] as string).searchParams;
+    expect([episode.get("tvdbid"), episode.get("season"), episode.get("ep"), episode.has("q")]).toEqual(["81189", "3", "1", false]);
+    const season = new URL(fetchMock.mock.calls[2][0] as string).searchParams;
+    expect([season.get("season"), season.has("ep")]).toEqual(["3", false]);
+  });
+
+  it("searches by text when the type, the id, the season or an accepted param is missing", async () => {
+    const noEp = routedFetch({ caps: capsXml(`<tv-search available="yes" supportedParams="q,season,tvdbid"/>`), typed: typedItems });
+    vi.stubGlobal("fetch", noEp);
+    await searchIndexer(makeIndexer({ categories: "5000" }), "Show S03E01", "series", { tvdb: "81189" }, { season: 3, episode: 1 });
+    expect(noEp.mock.calls.map(typeOf)).toEqual(["caps", "search"]);
+
+    // Anime without a tvdb id, a series searched whole or by air date: no probe, no typed search.
+    const plain = routedFetch({ caps: FULL_CAPS, typed: typedItems });
+    vi.stubGlobal("fetch", plain);
+    const indexer = makeIndexer({ categories: "5070", mediaTypes: "anime,series" });
+    await searchIndexer(indexer, "Anime S01E01", "anime", { anilist: "16498" }, { season: 1, episode: 1 });
+    await searchIndexer(indexer, "Show", "series", { tvdb: "81189" });
+    await searchIndexer(indexer, "Show 2024-08-25", "series", { tvdb: "81189" }, {});
+    expect(plain.mock.calls.map(typeOf)).toEqual(["search", "search", "search"]);
+
+    // A type with no typed search at all.
+    const music = routedFetch({ caps: FULL_CAPS, typed: typedItems });
+    vi.stubGlobal("fetch", music);
+    await searchIndexer(makeIndexer({ categories: "3000", mediaTypes: "artist" }), "Artist", "artist", { imdb: "tt0133093" });
+    expect(music.mock.calls.map(typeOf)).toEqual(["search"]);
+  });
+
+  it("searches by text too when the typed search finds nothing, and when the indexer rejects it", async () => {
+    const empty = routedFetch({ caps: FULL_CAPS, typed: emptyFeed });
+    vi.stubGlobal("fetch", empty);
+    const results = await searchIndexer(makeIndexer({ categories: "2000" }), "Movie", "movie", { imdb: "tt0133093" });
+    expect(empty.mock.calls.map(typeOf)).toEqual(["caps", "movie", "search"]);
+    expect(results.map((r) => r.title)).toEqual(["Text.Result.1080p.WEB-GRP"]);
+
+    const rejected = routedFetch({
+      caps: FULL_CAPS,
+      typed: `<?xml version="1.0" encoding="UTF-8"?><error code="203" description="Function not available"/>`,
+    });
+    vi.stubGlobal("fetch", rejected);
+    const indexer = makeIndexer({ categories: "2000" });
+    await searchIndexer(indexer, "Movie", "movie", { imdb: "tt0133093" });
+    await searchIndexer(indexer, "Movie Two", "movie", { imdb: "tt0234215" });
+    // Rejected once; the second search goes straight to text.
+    expect(rejected.mock.calls.map(typeOf)).toEqual(["caps", "movie", "search", "search"]);
+  });
+
+  it("searches by text when the capabilities can't be read, and tries the probe again only after a while", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const failing = routedFetch({ caps: { status: 500 } });
+      vi.stubGlobal("fetch", failing);
+      const indexer = makeIndexer({ categories: "2000" });
+      await searchIndexer(indexer, "Movie", "movie", { imdb: "tt0133093" });
+      await searchIndexer(indexer, "Movie", "movie", { imdb: "tt0133093" });
+      expect(failing.mock.calls.map(typeOf)).toEqual(["caps", "search", "search"]);
+
+      vi.setSystemTime(Date.now() + 11 * 60 * 1000);
+      await searchIndexer(indexer, "Movie", "movie", { imdb: "tt0133093" });
+      expect(failing.mock.calls.map(typeOf)).toEqual(["caps", "search", "search", "caps", "search"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("doesn't count the capabilities probe against the hourly limit, and a rate limit on the typed search ends the search", async () => {
+    const fetchMock = routedFetch({ caps: FULL_CAPS, typed: typedItems });
+    vi.stubGlobal("fetch", fetchMock);
+    const limited = makeIndexer({ categories: "2000", queryLimitPerHour: 1 });
+    await expect(searchIndexer(limited, "Movie", "movie", { imdb: "tt0133093" })).resolves.toHaveLength(1);
+    await expect(searchIndexer(limited, "Movie", "movie", { imdb: "tt0133093" })).rejects.toThrow("query limit");
+
+    const tooMany = routedFetch({ caps: FULL_CAPS, typed: { status: 429 } });
+    vi.stubGlobal("fetch", tooMany);
+    const indexer = makeIndexer({ categories: "2000" });
+    await expect(searchIndexer(indexer, "Movie", "movie", { imdb: "tt0133093" })).rejects.toThrow("429");
+    expect(tooMany.mock.calls.map(typeOf)).toEqual(["caps", "movie"]);
+    expect(isIndexerBackedOff(indexer.id)).toBe(true);
+  });
+
+  it("keeps typed and text results, and different seasons and episodes, apart in the cache", async () => {
+    const fetchMock = routedFetch({ caps: FULL_CAPS, typed: typedItems });
+    vi.stubGlobal("fetch", fetchMock);
+    const indexer = makeIndexer({ categories: "5000", mediaTypes: "series" });
+
+    await searchAllIndexers([indexer], "Show S03E01", "series", false, { tvdb: "81189" }, { season: 3, episode: 1 });
+    await searchAllIndexers([indexer], "Show S03E01", "series", false, { tvdb: "81189" }, { season: 3, episode: 1 });
+    await searchAllIndexers([indexer], "Show S03E01", "series", false, { tvdb: "81189" }, { season: 3, episode: 2 });
+    await searchAllIndexers([indexer], "Show S03E01", "series", false, { tvdb: "81189" });
+
+    // caps once; the first two are one cached search; the third has another episode; the fourth is a text search.
+    expect(fetchMock.mock.calls.map(typeOf)).toEqual(["caps", "tvsearch", "tvsearch", "search"]);
+  });
+});
+
+describe("searchAllIndexers — alternate title queries", () => {
+  const release = (title: string, url: string) => torznabItem({ title, downloadUrl: url });
+  /** Answers by the q of the request. */
+  function byQuery(answers: Record<string, string>) {
+    return vi.fn().mockImplementation(async (url: string) => {
+      const q = new URL(url).searchParams.get("q") ?? "";
+      return { ok: true, status: 200, text: async () => answers[q] ?? torznabXml("") };
+    });
+  }
+
+  it("runs the other titles' queries beside the main one, and merges their releases without doubles", async () => {
+    const fetchMock = byQuery({
+      "The Office (US) S03E01": torznabXml(release("The.Office.US.S03E01.720p-GRP", "https://idx.example.com/dl/a")),
+      "The Office S03E01": torznabXml(release("The.Office.S03E01.720p-GRP", "https://idx.example.com/dl/b") + release("The.Office.US.S03E01.720p-GRP", "https://idx.example.com/dl/a")),
+      "The Office US S03E01": torznabXml(release("Office.US.S03E01.720p-GRP", "https://idx.example.com/dl/c")),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const results = await searchAllIndexers(
+      [makeIndexer({ mediaTypes: "series", categories: "5000" })],
+      "The Office (US) S03E01",
+      "series",
+      true,
+      undefined,
+      { alternateQueries: ["The Office S03E01", "The Office US S03E01", "the office (us) s03e01"] }
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(results.map((r) => r.downloadUrl).sort()).toEqual(["https://idx.example.com/dl/a", "https://idx.example.com/dl/b", "https://idx.example.com/dl/c"]);
+  });
+
+  it("runs at most three alternate queries, leaving out an indexer that is out of queries instead of failing it", async () => {
+    const fetchMock = byQuery({ Main: torznabXml(release("Main.Result-GRP", "https://idx.example.com/dl/main")) });
+    vi.stubGlobal("fetch", fetchMock);
+    const open = makeIndexer({ mediaTypes: "movie", categories: "2000" });
+    const spent = makeIndexer({ mediaTypes: "movie", categories: "2000", queryLimitPerHour: 1 });
+
+    const results = await searchAllIndexers([open, spent], "Main", "movie", true, undefined, { alternateQueries: ["Alt One", "Alt Two", "Alt Three", "Alt Four"] });
+
+    const queries = fetchMock.mock.calls.map((c) => new URL(c[0] as string).searchParams.get("q"));
+    // The spent indexer took the main query (its only one this hour) and none of the alternates.
+    expect(queries.filter((q) => q === "Main")).toHaveLength(2);
+    expect(queries.filter((q) => q !== "Main").sort()).toEqual(["Alt One", "Alt Three", "Alt Two"]);
+    expect(results.map((r) => r.title)).toContain("Main.Result-GRP");
+  });
+
+  it("is the plain search when there are no alternate queries", async () => {
+    const fetchMock = byQuery({ Main: torznabXml(release("Main.Result-GRP", "https://idx.example.com/dl/main")) });
+    vi.stubGlobal("fetch", fetchMock);
+    await searchAllIndexers([makeIndexer({ mediaTypes: "movie", categories: "2000" })], "Main", "movie", true, undefined, { alternateQueries: [] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

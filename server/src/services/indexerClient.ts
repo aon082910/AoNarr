@@ -106,12 +106,24 @@ export function searchCacheSize(): number {
   return searchCache.size;
 }
 
-function cacheKey(indexerId: number, query: string, mediaType: MediaType, externalIds?: Record<string, string>): string {
-  // imdb/tmdb ids (when present) change the actual request URL sent to the indexer (see
-  // searchTorznabNewznab) — folded into the key so a cached result for the plain-title query can't
-  // be wrongly reused for an id-narrowed request, or vice versa.
-  const idPart = externalIds?.imdb || externalIds?.tmdb ? `:${externalIds.imdb ?? ""}:${externalIds.tmdb ?? ""}` : "";
-  return `${indexerId}:${mediaType}:${query.toLowerCase()}${idPart}`;
+/** What a search is for besides its text. */
+export interface SearchHints {
+  /** The season and episode the query was built from (the scene numbers where the show has them),
+   * for a typed tvsearch to ask the indexer for. Unset for a whole-series or air-dated search. */
+  season?: number | null;
+  episode?: number | null;
+  /** The same search under the other titles the item goes by (alias rows, the title without its
+   * "(US)" qualifier), as complete queries. At most MAX_ALTERNATE_QUERIES run, beside the main one. */
+  alternateQueries?: string[];
+}
+
+function cacheKey(indexerId: number, query: string, mediaType: MediaType, externalIds?: Record<string, string>, hints?: SearchHints): string {
+  // imdb/tmdb/tvdb ids (when present) and the season/episode change the actual request sent to the
+  // indexer (see searchTorznabNewznab) — folded into the key so a cached result for the plain-title
+  // query can't be wrongly reused for an id-narrowed or typed request, or vice versa.
+  const idPart = externalIds?.imdb || externalIds?.tmdb || externalIds?.tvdb ? `:${externalIds.imdb ?? ""}:${externalIds.tmdb ?? ""}:${externalIds.tvdb ?? ""}` : "";
+  const numberPart = hints?.season != null ? `:s${hints.season}e${hints.episode ?? ""}` : "";
+  return `${indexerId}:${mediaType}:${query.toLowerCase()}${idPart}${numberPart}`;
 }
 
 /**
@@ -230,42 +242,92 @@ async function fetchTorznabFeed(indexer: Indexer, url: string): Promise<any> {
   return parseStringPromise(res.text, { explicitArray: true, mergeAttrs: false });
 }
 
-async function searchTorznabNewznab(
-  indexer: Indexer,
-  query: string,
-  mediaType: MediaType,
-  externalIds?: Record<string, string>
-): Promise<SearchResult[]> {
-  const cats = indexer.categories?.trim() || categoriesForMediaType(mediaType);
-  const searchUrl = (withIds: boolean): string => {
-    const url = new URL(indexer.url.replace(/\/+$/, "") + "/api");
-    url.searchParams.set("t", "search");
-    url.searchParams.set("q", query);
-    url.searchParams.set("cat", cats);
-    if (indexer.apiKey) url.searchParams.set("apikey", indexer.apiKey);
-    if (withIds) {
-      if (externalIds?.imdb) url.searchParams.set("imdbid", externalIds.imdb.replace(/^tt/i, ""));
-      if (externalIds?.tmdb) url.searchParams.set("tmdbid", externalIds.tmdb);
+/** What an indexer says it can search by (`t=caps`): the params its tv-search and movie-search
+ * accept, or null for a search type it does not offer. */
+interface IndexerCaps {
+  tv: Set<string> | null;
+  movie: Set<string> | null;
+}
+
+const CAPS_FAILURE_RETRY_MS = 10 * 60 * 1000;
+const capsProbes = new Map<string, { at: number; failed: boolean; probe: Promise<IndexerCaps | null> }>();
+
+function searchTypeParams(parsed: any, element: string): Set<string> | null {
+  const node = parsed?.caps?.searching?.[0]?.[element]?.[0]?.$;
+  if (!node || String(node.available ?? "").toLowerCase() !== "yes") return null;
+  return new Set(
+    String(node.supportedParams ?? "")
+      .split(",")
+      .map((param) => param.trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
+
+/** One `t=caps` request per indexer per process; a failed one is tried again after ten minutes. It
+ * is not a search, so it does not count against the indexer's hourly query limit. */
+function getIndexerCaps(indexer: Indexer): Promise<IndexerCaps | null> {
+  const key = `${indexer.id}:${indexer.url}`;
+  const known = capsProbes.get(key);
+  if (known && !(known.failed && Date.now() - known.at >= CAPS_FAILURE_RETRY_MS)) return known.probe;
+  const entry = { at: Date.now(), failed: false, probe: Promise.resolve<IndexerCaps | null>(null) };
+  entry.probe = (async () => {
+    try {
+      const url = new URL(indexer.url.replace(/\/+$/, "") + "/api");
+      url.searchParams.set("t", "caps");
+      if (indexer.apiKey) url.searchParams.set("apikey", indexer.apiKey);
+      const parsed = await fetchTorznabFeed(indexer, url.toString());
+      if (indexerApiError(parsed) || !hasRoot(parsed, "caps")) throw new Error("the answer is no <caps> document");
+      return { tv: searchTypeParams(parsed, "tv-search"), movie: searchTypeParams(parsed, "movie-search") };
+    } catch (err) {
+      entry.failed = true;
+      log.info(`[indexerClient] "${indexer.name}": couldn't read its capabilities (${(err as Error).message}); searching it by text only`);
+      return null;
     }
-    return url.toString();
-  };
-  // Best-effort narrowing for indexers that support Torznab's id-search params, retried without
-  // them for one that rejects them. Only meaningful for movie/TV-shaped categories; other shapes
-  // (music, books, ROMs, ...) have no such id space in Torznab's spec.
-  const idParamsKey = `${indexer.id}:${indexer.url}`;
-  const sendIds =
-    ["movie", "series", "anime", "sports", "ppv"].includes(mediaType) &&
-    !!(externalIds?.imdb || externalIds?.tmdb) &&
-    !idParamsRejectedBy.has(idParamsKey);
+  })();
+  capsProbes.set(key, entry);
+  return entry.probe;
+}
 
-  let parsed = await fetchTorznabFeed(indexer, searchUrl(sendIds));
-  if (sendIds && ID_PARAMS_REJECTED_CODES.has(indexerApiError(parsed)?.code ?? "")) {
-    parsed = await fetchTorznabFeed(indexer, searchUrl(false));
-    if (!indexerApiError(parsed) && hasRoot(parsed, "rss")) idParamsRejectedBy.add(idParamsKey);
+/** Indexers (id + url) that answered an id-typed search with an error: later searches skip it. */
+const typedSearchRejectedBy = new Set<string>();
+
+/**
+ * The typed query (Sonarr's tvsearch by tvdbid + season + ep, Radarr's movie search by imdbid or
+ * tmdbid) when the item has the id and the indexer says it takes it, else null for a text search.
+ * movie/ppv: imdb, then tmdb. series/anime: tvdb, with the season (and the episode, when one is
+ * wanted); anime without a tvdb id, daily shows and whole-series searches stay text searches.
+ */
+async function typedSearchFor(
+  indexer: Indexer,
+  mediaType: MediaType,
+  externalIds: Record<string, string> | undefined,
+  hints: SearchHints | undefined
+): Promise<{ t: "movie" | "tvsearch"; params: [string, string][] } | null> {
+  if (!externalIds || typedSearchRejectedBy.has(`${indexer.id}:${indexer.url}`)) return null;
+  const movie = mediaType === "movie" || mediaType === "ppv";
+  const tv = mediaType === "series" || mediaType === "anime";
+  if (movie ? !(externalIds.imdb || externalIds.tmdb) : !(tv && externalIds.tvdb && hints?.season != null)) return null;
+  const caps = await getIndexerCaps(indexer);
+  if (!caps) return null;
+  if (movie) {
+    if (externalIds.imdb && caps.movie?.has("imdbid")) return { t: "movie", params: [["imdbid", externalIds.imdb.replace(/^tt/i, "")]] };
+    if (externalIds.tmdb && caps.movie?.has("tmdbid")) return { t: "movie", params: [["tmdbid", externalIds.tmdb]] };
+    return null;
   }
-  throwIfIndexerApiError(indexer, parsed);
-  if (!hasRoot(parsed, "rss")) throw new Error(`Indexer "${indexer.name}" returned a response with no <rss> feed`);
+  if (!caps.tv?.has("tvdbid") || !caps.tv.has("season")) return null;
+  const params: [string, string][] = [
+    ["tvdbid", externalIds.tvdb],
+    ["season", String(hints!.season)],
+  ];
+  if (hints!.episode != null) {
+    if (!caps.tv.has("ep")) return null;
+    params.push(["ep", String(hints!.episode)]);
+  }
+  return { t: "tvsearch", params };
+}
 
+/** The releases of a Torznab/Newznab feed. */
+function torznabResults(parsed: any, indexer: Indexer, cats: string): IndexerSearchResult[] {
   const items: any[] = parsed.rss?.channel?.[0]?.item ?? [];
   const results: IndexerSearchResult[] = [];
 
@@ -326,6 +388,73 @@ async function searchTorznabNewznab(
   }
 
   return results;
+}
+
+async function searchTorznabNewznab(
+  indexer: Indexer,
+  query: string,
+  mediaType: MediaType,
+  externalIds?: Record<string, string>,
+  hints?: SearchHints
+): Promise<SearchResult[]> {
+  const cats = indexer.categories?.trim() || categoriesForMediaType(mediaType);
+  const searchUrl = (withIds: boolean): string => {
+    const url = new URL(indexer.url.replace(/\/+$/, "") + "/api");
+    url.searchParams.set("t", "search");
+    url.searchParams.set("q", query);
+    url.searchParams.set("cat", cats);
+    if (indexer.apiKey) url.searchParams.set("apikey", indexer.apiKey);
+    if (withIds) {
+      if (externalIds?.imdb) url.searchParams.set("imdbid", externalIds.imdb.replace(/^tt/i, ""));
+      if (externalIds?.tmdb) url.searchParams.set("tmdbid", externalIds.tmdb);
+    }
+    return url.toString();
+  };
+  // Best-effort narrowing for indexers that support Torznab's id-search params, retried without
+  // them for one that rejects them. Only meaningful for movie/TV-shaped categories; other shapes
+  // (music, books, ROMs, ...) have no such id space in Torznab's spec.
+  const idParamsKey = `${indexer.id}:${indexer.url}`;
+  const sendIds =
+    ["movie", "series", "anime", "sports", "ppv"].includes(mediaType) &&
+    !!(externalIds?.imdb || externalIds?.tmdb) &&
+    !idParamsRejectedBy.has(idParamsKey);
+
+  // The typed search first (tvsearch / movie by id); the text search below stands in when the
+  // indexer has no such search, rejects it, or has nothing under that id.
+  const typed = await typedSearchFor(indexer, mediaType, externalIds, hints);
+  if (typed) {
+    try {
+      const url = new URL(indexer.url.replace(/\/+$/, "") + "/api");
+      url.searchParams.set("t", typed.t);
+      url.searchParams.set("cat", cats);
+      if (indexer.apiKey) url.searchParams.set("apikey", indexer.apiKey);
+      for (const [name, value] of typed.params) url.searchParams.set(name, value);
+      const typedFeed = await fetchTorznabFeed(indexer, url.toString());
+      if (ID_PARAMS_REJECTED_CODES.has(indexerApiError(typedFeed)?.code ?? "")) {
+        typedSearchRejectedBy.add(idParamsKey);
+      } else {
+        throwIfIndexerApiError(indexer, typedFeed);
+        if (hasRoot(typedFeed, "rss")) {
+          const typedResults = torznabResults(typedFeed, indexer, cats);
+          if (typedResults.length > 0) return typedResults;
+        }
+      }
+    } catch (err) {
+      // A rate limit is the indexer's, not the typed search's: no text search after it.
+      if (err instanceof IndexerRateLimitError || /HTTP 429/.test((err as Error).message)) throw err;
+      log.info(`[indexerClient] "${indexer.name}": typed ${typed.t} search failed (${(err as Error).message}); searching by text`);
+    }
+  }
+
+  let parsed = await fetchTorznabFeed(indexer, searchUrl(sendIds));
+  if (sendIds && ID_PARAMS_REJECTED_CODES.has(indexerApiError(parsed)?.code ?? "")) {
+    parsed = await fetchTorznabFeed(indexer, searchUrl(false));
+    if (!indexerApiError(parsed) && hasRoot(parsed, "rss")) idParamsRejectedBy.add(idParamsKey);
+  }
+  throwIfIndexerApiError(indexer, parsed);
+  if (!hasRoot(parsed, "rss")) throw new Error(`Indexer "${indexer.name}" returned a response with no <rss> feed`);
+
+  return torznabResults(parsed, indexer, cats);
 }
 
 /** An RSS item can point at a .torrent, a magnet link, an NZB or a direct file — tracker feeds
@@ -496,7 +625,8 @@ export async function searchIndexer(
   indexer: Indexer,
   query: string,
   mediaType: MediaType,
-  externalIds?: Record<string, string>
+  externalIds?: Record<string, string>,
+  hints?: SearchHints
 ): Promise<SearchResult[]> {
   if (isIndexerBackedOff(indexer.id)) {
     throw new Error(`Indexer "${indexer.name}" is backed off after a recent 429 — skipping`);
@@ -509,7 +639,7 @@ export async function searchIndexer(
   try {
     let results: SearchResult[];
     if (indexer.protocol === "torznab" || indexer.protocol === "newznab") {
-      results = await searchTorznabNewznab(indexer, query, mediaType, externalIds);
+      results = await searchTorznabNewznab(indexer, query, mediaType, externalIds, hints);
     } else if (indexer.protocol === "rss") {
       results = await searchRss(indexer, query);
     } else if (indexer.protocol === "ddl") {
@@ -526,13 +656,19 @@ export async function searchIndexer(
   }
 }
 
-async function searchIndexerCached(indexer: Indexer, query: string, mediaType: MediaType, externalIds?: Record<string, string>): Promise<SearchResult[]> {
-  const key = cacheKey(indexer.id, query, mediaType, externalIds);
+async function searchIndexerCached(
+  indexer: Indexer,
+  query: string,
+  mediaType: MediaType,
+  externalIds?: Record<string, string>,
+  hints?: SearchHints
+): Promise<SearchResult[]> {
+  const key = cacheKey(indexer.id, query, mediaType, externalIds, hints);
   const cached = searchCache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.results;
   if (cached) searchCache.delete(key);
 
-  const results = await searchIndexer(indexer, query, mediaType, externalIds);
+  const results = await searchIndexer(indexer, query, mediaType, externalIds, hints);
   const now = Date.now();
   pruneSearchCache(now);
   searchCache.delete(key);
@@ -576,14 +712,15 @@ async function runSearch(
   query: string,
   mediaType: MediaType,
   bypassCache: boolean,
-  externalIds?: Record<string, string>
+  externalIds?: Record<string, string>,
+  hints?: SearchHints
 ): Promise<SearchResult[]> {
   if (applicable.length > 0) {
     log.info(`[indexerClient] searching ${applicable.length} indexer(s) for "${query}"`);
   }
   const settled = await Promise.allSettled(
     applicable.map((i) =>
-      bypassCache ? searchIndexer(i, query, mediaType, externalIds) : searchIndexerCached(i, query, mediaType, externalIds)
+      bypassCache ? searchIndexer(i, query, mediaType, externalIds, hints) : searchIndexerCached(i, query, mediaType, externalIds, hints)
     )
   );
 
@@ -596,20 +733,54 @@ async function runSearch(
   return results;
 }
 
+/** The most alternate-title queries one search runs besides its main one (each is a query against
+ * every indexer's hourly limit). */
+const MAX_ALTERNATE_QUERIES = 3;
+
+/** A release is the same release however many of a search's queries found it. */
+function dedupeReleases(results: SearchResult[]): SearchResult[] {
+  const seen = new Set<string>();
+  return results.filter((r) => {
+    const key = `${r.indexerId ?? r.indexerName}:${r.downloadUrl || `${r.title}:${r.size}`}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 /** `bypassCache: true` (used by the manual search UI) always hits indexers live; the scheduler's
- * auto-search leaves it on so repeated identical queries within the TTL window reuse results. */
+ * auto-search leaves it on so repeated identical queries within the TTL window reuse results.
+ * `hints` carry what the text does not: the season and episode for a typed search, and the item's
+ * other titles, searched beside the main query rather than only after it came back empty. */
 export async function searchAllIndexers(
   indexers: Indexer[],
   query: string,
   mediaType: MediaType,
   bypassCache = false,
-  externalIds?: Record<string, string>
+  externalIds?: Record<string, string>,
+  hints?: SearchHints
 ): Promise<SearchResult[]> {
   const applicable = indexers.filter(
     (i) => i.enabled && i.mediaTypes.split(",").includes(mediaType)
   );
 
-  let results = await runSearch(applicable, query, mediaType, bypassCache, externalIds);
+  // The alternate titles run at the same time as the main query, over the indexers that can take
+  // another request now: one backed off or out of its hourly queries is left out, not made to fail.
+  const seenQueries = new Set([query.toLowerCase()]);
+  const alternates = (hints?.alternateQueries ?? [])
+    .filter((q) => {
+      const key = q.trim().toLowerCase();
+      if (!key || seenQueries.has(key)) return false;
+      seenQueries.add(key);
+      return true;
+    })
+    .slice(0, MAX_ALTERNATE_QUERIES);
+  const open = alternates.length > 0 ? applicable.filter((i) => !isIndexerBackedOff(i.id) && !isOverQueryLimit(i)) : [];
+  const [main, ...others] = await Promise.all([
+    runSearch(applicable, query, mediaType, bypassCache, externalIds, hints),
+    ...alternates.map((q) => runSearch(open, q, mediaType, bypassCache, externalIds)),
+  ]);
+  let results = alternates.length > 0 ? dedupeReleases([...main, ...others.flat()]) : main;
 
   if (results.length === 0) {
     for (const variant of generateSceneVariants(query)) {
