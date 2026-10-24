@@ -7,6 +7,7 @@ import { db } from "../db/index.js";
 import { searchMetadata, fetchSeriesEpisodesFor, isEpisodeMonitoredByDefault } from "../services/metadata.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
+import { verifyProviderHit } from "../services/titleMatch.js";
 import { log } from "../services/logger.js";
 
 // Discord's Ed25519 public key is distributed as a raw 32-byte hex string, not a PEM/DER file —
@@ -148,12 +149,24 @@ async function handleRequestCommand(interaction: any, appId: string): Promise<vo
   }
 
   try {
-    const results = await searchMetadata(type, title);
-    const best = results[0];
-    if (!best) {
+    // "Dune 2021" / "Dune (2021)": a trailing year says which of two same-titled titles is meant.
+    const named = title.trim().match(/^(.*?\S)[\s(]+((?:19|20)\d{2})\)?$/);
+    const wantedTitle = named ? named[1] : title.trim();
+    const wantedYear = named ? Number(named[2]) : null;
+    const results = await searchMetadata(type, wantedTitle, undefined, wantedYear);
+    if (results.length === 0) {
       await respond(`No ${type === "movie" ? "movie" : "TV show"} results found for "${title}".`);
       return;
     }
+    const verdict = verifyProviderHit(results, wantedTitle, wantedYear, { topHitWhenYearAgrees: true });
+    if (!("hit" in verdict)) {
+      // Never adds a guess: lists what the search found and asks for the exact title and year.
+      const options = ("ambiguous" in verdict ? verdict.ambiguous : results).slice(0, 4).map((r) => `${r.title}${r.year ? ` (${r.year})` : ""}`).join("; ");
+      const example = `${results[0].title}${results[0].year ? ` ${results[0].year}` : ""}`;
+      await respond(`Couldn't tell which one you mean by "${title}" — found: ${options}. Ask again with the exact title and year, like "${example}".`);
+      return;
+    }
+    const best = verdict.hit;
     if ((await findPossibleDuplicates(type, best.title, best.year)).length > 0) {
       await respond(`"${best.title}"${best.year ? ` (${best.year})` : ""} is already in the library.`);
       return;

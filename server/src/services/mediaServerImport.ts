@@ -13,6 +13,7 @@ import {
   type MediaServerSeriesLibrary,
 } from "./mediaServer.js";
 import { log } from "./logger.js";
+import { normalizeForMatch } from "./titleMatch.js";
 
 /** A poster value safe to put straight into poster_url: a media server's own artwork reference is
  * never one (it needs that server's credential, see mediaServer.ts's MEDIA_SERVER_ARTWORK_PREFIX) —
@@ -27,13 +28,6 @@ async function storeMediaServerPoster(mediaItemId: number, ref: string | null): 
   await db
     .prepare("UPDATE media_items SET poster_url = ?, local_poster_path = ?, local_poster_token = ? WHERE id = ? AND poster_url IS NULL")
     .run(`/api/media/local-artwork/${token}`, ref, token, mediaItemId);
-}
-
-function normalizeForMatch(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
 }
 
 export function titlesMatch(a: string, b: string): boolean {

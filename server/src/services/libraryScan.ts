@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import { db } from "../db/index.js";
 import { getMediaTypeConfig, isPlaceholderParent, isProbeableFile, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
 import { rootFolderFromRow } from "../db/mappers.js";
-import { parseReleaseTitle } from "./releaseParser.js";
+import { parseReleaseTitle, type ParsedRelease } from "./releaseParser.js";
 import { probeAudioTags, probeMediaInfo } from "./ffprobe.js";
 import { cleanEmbeddedAuthor, cleanEmbeddedTitle, firstAuthor, readBookFileMetadata } from "./bookFileMetadata.js";
 import {
@@ -39,47 +39,52 @@ import {
 // Title normalization/comparison moved to titleMatch.ts so the release identity gate and the
 // scheduler can share it without this module's metadata/ffprobe imports; re-exported so existing
 // importers of libraryScan keep working.
-import { looseTitlesMatch, normalizeForMatch, sameTitleIgnoringQualifier, titlesMatch } from "./titleMatch.js";
+import { looseTitlesMatch, normalizeForMatch, pickVerifiedProviderHit, sameTitleIgnoringQualifier, titlesMatch } from "./titleMatch.js";
 import { syncPrimaryTitle } from "./releaseAliases.js";
 import { refreshProviderAliases } from "./aliasBackfill.js";
-export { normalizeForMatch, sameTitleIgnoringQualifier, titlesMatch };
+export { normalizeForMatch, pickVerifiedProviderHit, sameTitleIgnoringQualifier, titlesMatch };
 
-/** An existing item whose title exactly matches — and, only when SEVERAL do (a remake or reboot
- * sharing its title: "It" 1990/2017, "Charmed" 1998/2018), the one whose year matches the file's.
- * A sole match is never rejected on year alone: a daily show's air-date filename carries that
- * episode's year, not the series', and that must not spawn a duplicate show. */
-function pickTitleMatch<T extends { title: string; year?: number | null }>(items: T[], title: string, year: number | null | undefined): T | undefined {
+/** What a file's guessed title and year say about a type's existing items: the one it belongs to, the
+ * several it could belong to, or (null) none. */
+type ExistingMatch<T> = { item: T } | { ambiguous: T[] } | null;
+
+/**
+ * The existing item a file belongs to by its guessed title and year. Every title match is a
+ * candidate. With a SOLE candidate:
+ *  - an episodic file takes it whatever the years say: a daily show's air-date filename carries that
+ *    episode's year, not the series', and that must not spawn a duplicate show;
+ *  - any other file takes it unless both years are known and more than one apart: "It.2017.mkv" is
+ *    not "It" (1990), and gets a row of its own.
+ * With SEVERAL (a remake or reboot sharing its title: "It" 1990/2017, "Charmed" 1998/2018) the file's
+ * year picks one, exactly first and then within one. A file with no year, or with none that fits, is
+ * ambiguous for an episodic file and a new movie for any other (unless exactly one candidate has no
+ * year of its own): attaching it to whichever row came first is how a reboot's episodes end up in
+ * the original, and its movie file replaces nothing but the wrong film's slot.
+ */
+function matchExistingItem<T extends { title: string; year?: number | null }>(
+  items: T[],
+  title: string,
+  year: number | null | undefined,
+  episodic: boolean
+): ExistingMatch<T> {
   const matches = items.filter((m) => titlesMatch(m.title, title));
-  if (matches.length <= 1 || year == null) return matches[0];
-  return matches.find((m) => m.year === year) ?? matches.find((m) => m.year != null && Math.abs(m.year - year) <= 1) ?? matches[0];
+  if (matches.length === 0) return null;
+  if (matches.length === 1) {
+    const only = matches[0];
+    return episodic || year == null || only.year == null || Math.abs(only.year - year) <= 1 ? { item: only } : null;
+  }
+  if (year == null) return { ambiguous: matches };
+  const picked = matches.find((m) => m.year === year) ?? matches.find((m) => m.year != null && Math.abs(m.year - year) <= 1);
+  if (picked) return { item: picked };
+  if (episodic) return { ambiguous: matches };
+  const undated = matches.filter((m) => m.year == null);
+  return undated.length === 1 ? { item: undated[0] } : null;
 }
 
-/** The search hit that is verifiably the titled item: the same title and a year within one of its
- * own, an exact-year hit first — a same-titled show a year apart ("Queer as Folk" UK 1999 vs US
- * 2000) passes the ±1 check and a provider may rank it first.
- *
- * A SOLE title hit is accepted under the same year tolerance as before regardless of whether this
- * item's own year, or the hit's, is known — a daily show's air-date-derived year or a search API
- * missing a year field must not make an otherwise-unambiguous match fail.
- *
- * Two or more title hits is a different situation: a remake/reboot competing for the same title,
- * which can only be told apart by year, and only when BOTH sides' years are actually known.
- * Falling through to "accept whichever one the provider ranked first" (an unknown item year) or
- * "accept a candidate whose own year field happens to be missing" (an unknown hit year) here is
- * exactly how a 1987 show once got matched to its own 2012 reboot's provider ids instead — so an
- * unknown year anywhere in an ambiguous multi-hit set means no match, not a guess. */
-export function pickVerifiedProviderHit<T extends { title: string; year?: number | null }>(
-  results: T[],
-  title: string,
-  year: number | null
-): T | undefined {
-  const titleHits = results.filter((r) => sameTitleIgnoringQualifier(r.title, title));
-  if (titleHits.length <= 1) {
-    const hit = titleHits[0];
-    return !hit || year == null || hit.year == null || Math.abs(hit.year - year) <= 1 ? hit : undefined;
-  }
-  if (year == null) return undefined;
-  return titleHits.find((r) => r.year === year) ?? titleHits.find((r) => r.year != null && Math.abs(r.year - year) <= 1);
+/** Why a file matching several items was left alone. */
+function ambiguousReason(candidates: { title: string; year?: number | null }[]): string {
+  const names = candidates.map((c) => (c.year ? `"${c.title}" (${c.year})` : `"${c.title}"`)).join(", ");
+  return `matches ${candidates.length} items (${names}); name the year in the file name to say which`;
 }
 
 /** Upserts one `tracks` row for a file inside a multiFilePerChild (Music) album folder — parses a
@@ -117,6 +122,14 @@ async function upsertTrackFromFile(subItemId: number, filePath: string, title?: 
        ON CONFLICT (sub_item_id, track_number) DO UPDATE SET has_file = 1, file_path = excluded.file_path`
     )
     .run(subItemId, trackNumber, trackTitle, filePath);
+}
+
+/** A movie file's title the way the release parser isolates it: a title that holds a year-shaped
+ * number ("Blade.Runner.2049.2017") keeps it, where guessTitleFromText cuts at the first year-like
+ * number and would call the film "Blade Runner". */
+function guessMovieTitle(base: string): string {
+  const parsed = parseReleaseTitle(base).title;
+  return parsed.length >= 2 ? parsed : guessTitleFromText(base);
 }
 
 /** Cuts a piece of text off at the first season/year/quality marker to get a plausible title —
@@ -251,6 +264,25 @@ export function detectSeasonEpisode(parentFolderName: string, filenameBase: stri
     if (epMatch) return { season, episodes: expandEpisodeOnlyMatch(epMatch) };
   }
   return { season: null, episodes: [] };
+}
+
+/**
+ * The episode of a show that a file numbered by something other than season and episode is: a fansub
+ * absolute number ("[Group] One Piece - 1085") through the stored `episodes.absolute_episode_number`,
+ * an air date ("The.Daily.Show.2024.05.01") through `episodes.air_date`. Null unless exactly one
+ * episode answers.
+ */
+async function episodeFromList(mediaItemId: number, parsed: ParsedRelease): Promise<{ season: number; episode: number } | null> {
+  const rows = (
+    parsed.airDate
+      ? await db.prepare("SELECT season_number, episode_number FROM episodes WHERE media_item_id = ? AND air_date LIKE ?").all(mediaItemId, `${parsed.airDate}%`)
+      : parsed.absoluteEpisode != null
+      ? await db
+          .prepare("SELECT season_number, episode_number FROM episodes WHERE media_item_id = ? AND absolute_episode_number = ? AND season_number > 0")
+          .all(mediaItemId, parsed.absoluteEpisode)
+      : []
+  ) as { season_number: number; episode_number: number }[];
+  return rows.length === 1 ? { season: rows[0].season_number, episode: rows[0].episode_number } : null;
 }
 
 /** Walks up from a file's own directory to the direct child of its library root — the folder that
@@ -1008,18 +1040,22 @@ async function scanAndImportLibraryInner(
           season = episodeSidecar.season;
           parsedEpisodes = [episodeSidecar.episode];
         }
+        // A file numbered only by a fansub absolute number or an air date names its episode through
+        // the show's stored episode list: resolved below, once the show is known.
+        const numberedByList =
+          (season === null || parsedEpisodes.length === 0) && !typeConfig.sequentialEpisodeFallback && (ownParse.absoluteEpisode != null || !!ownParse.airDate);
         // Only a fallback-enabled type (course/adult — folder-as-show with no episode-listing
         // provider that could ever backfill a real episode list) tolerates a file with no
         // scene-style marker at all; everything else keeps the original "skip it" behavior
         // unchanged. Season defaults to 1 immediately (independent of which show it belongs to);
         // the episode number, when still unknown, is resolved further below once the show itself
         // is known, since numbering needs to see that show's own existing episodes.
-        if ((season === null || parsedEpisodes.length === 0) && !typeConfig.sequentialEpisodeFallback) {
+        if ((season === null || parsedEpisodes.length === 0) && !typeConfig.sequentialEpisodeFallback && !numberedByList) {
           result.skipped++;
           result.skippedFiles.push({ path: filePath, reason: "couldn't detect a season/episode number from the filename or folder" });
           continue;
         }
-        if (season === null) season = 1;
+        if (season === null && !numberedByList) season = 1;
         // Only the sequential-fallback numbering path below (course/adult, always exactly one
         // synthesized episode per file — never a real multi-episode release) still deals in a
         // single scalar; every other type moves straight to `parsedEpisodes` for the write loop.
@@ -1038,6 +1074,9 @@ async function scanAndImportLibraryInner(
             guessedTitle = guessShowTitleFromFolder(parentDir, rootPath);
           } else if (filenameHasMarker) {
             guessedTitle = guessSeriesTitle(parentDir, base);
+          } else if (numberedByList && ownParse.title) {
+            // "[SubsPlease] One Piece - 1085" names its show; the folder is the second choice below.
+            guessedTitle = ownParse.title;
           } else if (!rootPath || path.resolve(parentDir) !== path.resolve(rootPath)) {
             // Numbered only by its .nfo, so the filename is the episode's own title ("Behind the
             // Scenes.mkv"), not the show's — guessing from it created and enriched an unrelated
@@ -1055,14 +1094,28 @@ async function scanAndImportLibraryInner(
         const parsed = parseReleaseTitle(base);
         const quality = parsed.quality === "Unknown" ? null : parsed.quality;
 
-        // A year in the filename is the show's only when the filename names the show, and never an
-        // air date's (that's the episode's year, not the premiere's).
-        const fileYear = filenameHasMarker && !parsed.airDate ? parsed.year : null;
-        let seriesMatch = pickTitleMatch(seriesItems, guessedTitle, showSidecar?.year ?? fileYear);
+        // A year in the filename is the show's only when the filename names the show before its
+        // numbering (not an encode year after it), and never an air date's (that's the episode's
+        // year, not the premiere's).
+        const fileYear = filenameHasMarker && !parsed.airDate ? parsed.titleYear : null;
+        let found = matchExistingItem(seriesItems, guessedTitle, showSidecar?.year ?? fileYear, true);
+        if (!found && numberedByList && !showSidecar) {
+          const folderTitle = guessShowTitleFromFolder(parentDir);
+          if (folderTitle && folderTitle !== guessedTitle) found = matchExistingItem(seriesItems, folderTitle, fileYear, true);
+        }
+        let seriesMatch: any = found && "item" in found ? found.item : undefined;
         // A per-item scan already passed the loose onlyTitle gate above for this file — it belongs
         // to the known target, so attach it there rather than creating a "The Office" twin next to
-        // "The Office (US)" because the strict match missed.
-        if (!seriesMatch && onlyMediaItemId) seriesMatch = seriesItems.find((m) => m.id === onlyMediaItemId);
+        // "The Office (US)" because the strict match missed, or skipping it as ambiguous between
+        // two shows that share the title.
+        if (!seriesMatch && onlyMediaItemId) {
+          seriesMatch = seriesItems.find((m) => m.id === onlyMediaItemId && (!found || !("ambiguous" in found) || found.ambiguous.includes(m)));
+        }
+        if (!seriesMatch && found && "ambiguous" in found) {
+          result.skipped++;
+          result.skippedFiles.push({ path: filePath, reason: ambiguousReason(found.ambiguous) });
+          continue;
+        }
 
         if (seriesMatch && seriesMatch.legacy_shape) {
           // An existing show that predates this type's switch to "episodic" and hasn't been
@@ -1075,6 +1128,22 @@ async function scanAndImportLibraryInner(
             reason: `"${seriesMatch.title}" hasn't been converted to the new episode structure yet — run Convert to Episodic for this library first`,
           });
           continue;
+        }
+
+        if (numberedByList) {
+          const numbered = seriesMatch ? await episodeFromList(seriesMatch.id, ownParse) : null;
+          if (!numbered) {
+            result.skipped++;
+            result.skippedFiles.push({
+              path: filePath,
+              reason: seriesMatch
+                ? `couldn't place it in "${seriesMatch.title}": no single episode there has ${ownParse.airDate ? `the air date ${ownParse.airDate}` : `the absolute number ${ownParse.absoluteEpisode}`} (Refresh the show to fill its episode list in)`
+                : `no show in the library is called "${guessedTitle}", so there is no episode list to place a ${ownParse.airDate ? "date-named" : "number-only"} file in`,
+            });
+            continue;
+          }
+          season = numbered.season;
+          parsedEpisodes = [numbered.episode];
         }
 
         if (!seriesMatch) {
@@ -1108,11 +1177,11 @@ async function scanAndImportLibraryInner(
             // by a hit (see refreshOneItem), so only the year applies to them.
             const best = showSidecar
               ? await resolveSidecarEnrichment(type, showSidecar)
-              : (await searchMetadata(type as any, guessedTitle, undefined, fileYear)).find(
-                  (r) =>
-                    (typeConfig.sequentialEpisodeFallback || sameTitleIgnoringQualifier(r.title, guessedTitle)) &&
-                    (fileYear == null || r.year == null || Math.abs(r.year - fileYear) <= 1)
-                );
+              : typeConfig.sequentialEpisodeFallback
+              ? (await searchMetadata(type as any, guessedTitle, undefined, fileYear)).find((r) => fileYear == null || r.year == null || Math.abs(r.year - fileYear) <= 1)
+              : // Two same-titled hits (a remake and its original) and no year in the file: neither is
+                // verifiably this show, and the first is wrong half the time.
+                pickVerifiedProviderHit(await searchMetadata(type as any, guessedTitle, undefined, fileYear), guessedTitle, fileYear);
             if (best) {
               // A local poster/backdrop (see localArtwork.ts) always wins over whatever `best`
               // resolved to, live-fetched or not — the same "an explicit local file is the most
@@ -1499,7 +1568,7 @@ async function scanAndImportLibraryInner(
         // A sidecar (movie.nfo or <basename>.nfo, Kodi convention) only exists for movie/ppv —
         // rom has no sidecarFormat configured (no real-world sidecar convention for ROMs).
         const movieSidecar = typeConfig.sidecarFormat === "kodi-video" ? await findMovieSidecar(filePath) : null;
-        const guessedTitle = movieSidecar?.title ?? (type === "rom" ? cleanRomTitle(base) : guessTitleFromText(base));
+        const guessedTitle = movieSidecar?.title ?? (type === "rom" ? cleanRomTitle(base) : guessMovieTitle(base));
         if (!guessedTitle) {
           result.skipped++;
           result.skippedFiles.push({ path: filePath, reason: `couldn't guess a title from the filename "${base}"` });
@@ -1508,15 +1577,28 @@ async function scanAndImportLibraryInner(
         if (onlyTitle && !looseTitlesMatch(guessedTitle, onlyTitle)) continue;
         const parsed = parseReleaseTitle(base);
         const quality = parsed.quality === "Unknown" ? null : parsed.quality;
-        const year = movieSidecar?.year ?? parsed.year;
+        // The year the file gives its own title (before the quality words or in brackets), not one
+        // from an encode date after them: "Blade.Runner.2049.2017.mkv" is a 2017 film.
+        const year = movieSidecar?.year ?? parsed.titleYear;
 
         // The per-item fallback to the target only when the years don't contradict it either — a
         // per-item scan on "It" (1990) must not claim "It.2017.mkv" just because the loose title
         // gate let it through.
         const target = onlyMediaItemId ? singleShapeItems.find((m) => m.id === onlyMediaItemId) : undefined;
+        const found = matchExistingItem(singleShapeItems, guessedTitle, year, false);
+        if (found && "ambiguous" in found && !(target && found.ambiguous.includes(target))) {
+          result.skipped++;
+          result.skippedFiles.push({ path: filePath, reason: ambiguousReason(found.ambiguous) });
+          continue;
+        }
         const match =
-          pickTitleMatch(singleShapeItems, guessedTitle, year) ??
-          (target && (year == null || target.year == null || Math.abs(target.year - year) <= 1) ? target : undefined);
+          found && "item" in found
+            ? found.item
+            : found && "ambiguous" in found
+            ? target
+            : target && (year == null || target.year == null || Math.abs(target.year - year) <= 1)
+            ? target
+            : undefined;
         if (match && match.has_file && match.path !== filePath) {
           // Already has a different file — most likely an extra copy, a sample, or a re-download
           // sitting alongside the one already tracked. Matching (not creating a new row) but not
@@ -2015,7 +2097,12 @@ async function refreshOneItem(
           alreadyMatched
             ? Object.entries(r.externalIds ?? {}).some(([key, value]) => ownExternalIds[key] != null && String(ownExternalIds[key]) === String(value))
             : typeConfig.shape === "collection" || !!typeConfig.sequentialEpisodeFallback || sameTitleIgnoringQualifier(r.title, item.title);
-        best = results.find((r) => yearAgrees(r) && isThisItem(r)) ?? null;
+        // An unmatched item takes a hit only when the title (and year) verify it, with two same-titled
+        // hits and no known year left unanswered rather than answered with the first.
+        best =
+          !alreadyMatched && typeConfig.shape !== "collection" && !typeConfig.sequentialEpisodeFallback
+            ? pickVerifiedProviderHit(results, item.title, knownYear) ?? null
+            : results.find((r) => yearAgrees(r) && isThisItem(r)) ?? null;
       } catch {
         // No metadata provider configured at all (course) or the search call itself failed — for a
         // sequentialEpisodeFallback type (course/adult) there's still useful work for Refresh to do

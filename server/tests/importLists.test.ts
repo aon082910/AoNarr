@@ -523,7 +523,7 @@ describe("syncImportList — imdb", () => {
     const result = await syncImportList(await insertImportList({ type: "imdb", url: "https://www.imdb.com/list/ls000000001/" }));
 
     expect(result).toEqual({ added: 1 });
-    expect(searchMetadata).toHaveBeenCalledWith("movie", "The Matrix 1999");
+    expect(searchMetadata).toHaveBeenCalledWith("movie", "The Matrix 1999", undefined, 1999);
     const row = (await db.prepare("SELECT * FROM media_items WHERE title = 'The Matrix'").get()) as any;
     expect(row).toMatchObject({ type: "movie", overview: "A hacker discovers reality is a simulation.", poster_url: "https://img/matrix.jpg" });
   });
@@ -550,6 +550,36 @@ describe("syncImportList — imdb", () => {
 
     expect(result).toEqual({ added: 0 });
     expect((await db.prepare("SELECT * FROM import_review_items WHERE title = 'Totally Obscure Title'").get())).toBeTruthy();
+  });
+
+  it("adds the same-titled hit the row's year names, and queues a row it can't tell apart or whose only same-titled hit has another year", async () => {
+    const csv = [
+      csvHeader,
+      csvRow({ Title: "Halloween", "Title Type": "Movie", Year: "1978" }),
+      csvRow({ Title: "Twin Title", "Title Type": "Movie", Year: "" }),
+      csvRow({ Title: "Lone Title", "Title Type": "Movie", Year: "1984" }),
+    ].join("\n");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(csvResponse(csv)));
+    searchMetadata.mockImplementation(async (_type: string, query: string) =>
+      query.startsWith("Halloween")
+        ? [
+            { title: "Halloween", year: 2018, overview: null, posterUrl: null, externalIds: { tmdb: "424139" } },
+            { title: "Halloween", year: 1978, overview: null, posterUrl: null, externalIds: { tmdb: "948" } },
+          ]
+        : query.startsWith("Twin Title")
+        ? [
+            { title: "Twin Title", year: 2001, overview: null, posterUrl: null, externalIds: { tmdb: "9001" } },
+            { title: "Twin Title", year: 2011, overview: null, posterUrl: null, externalIds: { tmdb: "9002" } },
+          ]
+        : [{ title: "Lone Title", year: 2021, overview: null, posterUrl: null, externalIds: { tmdb: "9003" } }]
+    );
+
+    const result = await syncImportList(await insertImportList({ type: "imdb", url: "https://www.imdb.com/list/ls000000099/" }));
+
+    expect(result).toEqual({ added: 1 });
+    expect(JSON.parse(((await db.prepare("SELECT external_ids FROM media_items WHERE title = 'Halloween'").get()) as any).external_ids)).toEqual({ tmdb: "948" });
+    expect(await db.prepare("SELECT id FROM media_items WHERE title IN ('Twin Title', 'Lone Title')").get()).toBeUndefined();
+    for (const title of ["Twin Title", "Lone Title"]) expect(await db.prepare("SELECT id FROM import_review_items WHERE title = ?").get(title)).toBeTruthy();
   });
 
   it("wires the CSV Genres column through to exclude_genres end-to-end, filtering before ever calling searchMetadata", async () => {

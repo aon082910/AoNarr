@@ -6,13 +6,12 @@ import { recycleFile } from "./recycleBin.js";
 import { notifyDuplicatesFound } from "./notifications.js";
 import { attachChildCounts } from "./childCounts.js";
 import { storeAliases, type AliasSource } from "./releaseAliases.js";
+import { normalizeForMatch } from "./titleMatch.js";
 
-function normalizeTitle(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
+// The scan's own title normalization (titleMatch.ts): any script's letters count, accents on Latin
+// letters fold. The ASCII-only key this had read every Japanese or Cyrillic title as empty, so two
+// rows of "進撃の巨人" were never seen as duplicates.
+const normalizeTitle = normalizeForMatch;
 
 export interface PossibleDuplicate {
   id: number;

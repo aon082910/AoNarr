@@ -80,3 +80,61 @@ export function sameTitleIgnoringQualifier(a: string, b: string): boolean {
   const same = (x: string, y: string) => titlesMatch(x, y) || (!!compact(x) && compact(x) === compact(y));
   return same(a, b) || same(strip(a), strip(b));
 }
+
+/** The search hit that is verifiably the titled item: the same title and a year within one of its
+ * own, an exact-year hit first — a same-titled show a year apart ("Queer as Folk" UK 1999 vs US
+ * 2000) passes the ±1 check and a provider may rank it first.
+ *
+ * A SOLE title hit is accepted under the same year tolerance as before regardless of whether this
+ * item's own year, or the hit's, is known — a daily show's air-date-derived year or a search API
+ * missing a year field must not make an otherwise-unambiguous match fail.
+ *
+ * Two or more title hits is a different situation: a remake/reboot competing for the same title,
+ * which can only be told apart by year, and only when BOTH sides' years are actually known.
+ * Falling through to "accept whichever one the provider ranked first" (an unknown item year) or
+ * "accept a candidate whose own year field happens to be missing" (an unknown hit year) here is
+ * exactly how a 1987 show once got matched to its own 2012 reboot's provider ids instead — so an
+ * unknown year anywhere in an ambiguous multi-hit set means no match, not a guess. */
+export function pickVerifiedProviderHit<T extends { title: string; year?: number | null }>(
+  results: T[],
+  title: string,
+  year: number | null
+): T | undefined {
+  const titleHits = results.filter((r) => sameTitleIgnoringQualifier(r.title, title));
+  if (titleHits.length <= 1) {
+    const hit = titleHits[0];
+    return !hit || year == null || hit.year == null || Math.abs(hit.year - year) <= 1 ? hit : undefined;
+  }
+  if (year == null) return undefined;
+  return titleHits.find((r) => r.year === year) ?? titleHits.find((r) => r.year != null && Math.abs(r.year - year) <= 1);
+}
+
+/** What a title search verifiably found: the hit, several equally good same-titled hits (a remake
+ * and its original, and no year to say which), or nothing that can be trusted. A hit whose title only
+ * differs by a subtitle ("Dune: Part One" for TMDB's "Dune") is accepted when it is the one such hit
+ * and its year is known and agrees; with `topHitWhenYearAgrees` so is the top hit when no hit shares
+ * the title but its year agrees. */
+export type HitVerdict<T> = { hit: T } | { ambiguous: T[] } | { none: true };
+
+export function verifyProviderHit<T extends { title: string; year?: number | null }>(
+  results: T[],
+  title: string,
+  year: number | null,
+  opts: { topHitWhenYearAgrees?: boolean } = {}
+): HitVerdict<T> {
+  const hit = pickVerifiedProviderHit(results, title, year);
+  if (hit) return { hit };
+  const titleHits = results.filter((r) => sameTitleIgnoringQualifier(r.title, title));
+  if (titleHits.length > 1) return { ambiguous: titleHits };
+  if (titleHits.length === 0 && year != null) {
+    const loose = results.filter((r) => looseTitlesMatch(r.title, title) && r.year != null && Math.abs(r.year - year) <= 1);
+    if (loose.length === 1) return { hit: loose[0] };
+  }
+  // A list names a film the way its source does ("Sorcerer's Stone"), a provider the way it does
+  // ("Philosopher's Stone"): when no hit shares the title, the top hit stands for it only if its year
+  // is known and agrees.
+  if (opts.topHitWhenYearAgrees && titleHits.length === 0 && year != null && results[0]?.year != null && Math.abs(results[0].year - year) <= 1) {
+    return { hit: results[0] };
+  }
+  return { none: true };
+}

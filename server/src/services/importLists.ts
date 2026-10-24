@@ -13,6 +13,7 @@ import {
 import { isExcluded } from "./importExclusions.js";
 import { findPossibleDuplicates } from "./duplicateCheck.js";
 import { queueForReview } from "./importReview.js";
+import { verifyProviderHit } from "./titleMatch.js";
 import { autoSelectRootFolderId } from "./rootFolderSelect.js";
 
 export interface ImportListRow {
@@ -466,12 +467,16 @@ async function syncImdbList(list: ImportListRow, ctx: ListSyncContext): Promise<
       if (!passesListFilters(list, { rating, votes, genres })) continue;
 
       const query = year ? `${title} ${year}` : title;
-      const results = await searchMetadata(type as any, query).catch(() => []);
-      const best = results[0];
-      if (!best) {
+      const results = await searchMetadata(type as any, query, undefined, year).catch(() => []);
+      // Only a hit the title (and year) verify is added; the first result of a title search is
+      // often another film, and two same-titled ones with no year to tell them apart are not
+      // for this code to choose between.
+      const verdict = verifyProviderHit(results, title, year, { topHitWhenYearAgrees: true });
+      if (!("hit" in verdict)) {
         await queueForReview({ source: list.name, importListId: list.id, type, title, year });
         continue;
       }
+      const best = verdict.hit;
       // The row is stored under the provider's title/year/ids, not IMDb's, so that is what the next
       // sync has to find; checking only the CSV's spelling re-adds the title on every sync whenever
       // the two differ ("Dune: Part One" vs "Dune", or a festival-vs-release year).

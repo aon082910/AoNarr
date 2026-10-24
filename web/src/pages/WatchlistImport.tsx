@@ -18,7 +18,7 @@ interface ParsedRow {
 
 interface RowResult {
   title: string;
-  status: "added" | "skipped_duplicate" | "not_found" | "error";
+  status: "added" | "skipped_duplicate" | "not_found" | "needs_review" | "error";
   detail?: string;
 }
 
@@ -26,6 +26,7 @@ const STATUS_LABELS: Record<RowResult["status"], string> = {
   added: "Added",
   skipped_duplicate: "Already in library",
   not_found: "No metadata match found",
+  needs_review: "Several possible matches, needs review",
   error: "Error",
 };
 
@@ -240,11 +241,12 @@ export default function WatchlistImport() {
             {results.filter((r) => r.status === "added").length} added,{" "}
             {results.filter((r) => r.status === "skipped_duplicate").length} already in library,{" "}
             {results.filter((r) => r.status === "not_found").length} not found,{" "}
+            {results.filter((r) => r.status === "needs_review").length} to review,{" "}
             {results.filter((r) => r.status === "error").length} errored.
-            {results.some((r) => r.status === "not_found") && (
+            {results.some((r) => r.status === "not_found" || r.status === "needs_review") && (
               <>
                 {" "}
-                <Link to="/import-review">Manually match the ones that weren't found →</Link>
+                <Link to="/import-review">Manually match the ones that weren't found or need review →</Link>
               </>
             )}
           </p>

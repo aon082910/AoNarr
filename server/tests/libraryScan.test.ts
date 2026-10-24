@@ -360,6 +360,74 @@ describe("scanAndImportLibrary — movie (single shape)", () => {
     expect((await db.prepare("SELECT * FROM media_items WHERE id = ?").get(it1990)) as any).toMatchObject({ has_file: 0, path: null });
   });
 
+  it("gives a file its own row when its year contradicts the sole movie of that title", async () => {
+    const folder = await insertRootFolder("movie");
+    const it1990 = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('movie','It','it',1990,1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    const filePath = writeFile(folder.path, "It.2017.1080p.mkv");
+
+    const result = await scanAndImportLibrary("movie");
+
+    expect(result).toMatchObject({ matched: 0, created: 1 });
+    expect((await db.prepare("SELECT * FROM media_items WHERE id = ?").get(it1990)) as any).toMatchObject({ has_file: 0, path: null });
+    expect((await db.prepare("SELECT * FROM media_items WHERE path = ?").get(filePath)) as any).toMatchObject({ title: "It", year: 2017, has_file: 1 });
+  });
+
+  it("still attaches a file to the sole movie of its title when the years agree, are a year apart, or one is unknown", async () => {
+    const folder = await insertRootFolder("movie");
+    const exact = Number((await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('movie','Exact Year','exact year',2020,1,0,'missing')`).run()).lastInsertRowid);
+    const oneOff = Number((await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('movie','One Off','one off',2019,1,0,'missing')`).run()).lastInsertRowid);
+    const unknown = Number((await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('movie','No Year Row','no year row',1,0,'missing')`).run()).lastInsertRowid);
+    const fileless = Number((await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('movie','Yearless File','yearless file',2001,1,0,'missing')`).run()).lastInsertRowid);
+    writeFile(folder.path, "Exact.Year.2020.1080p.mkv");
+    writeFile(folder.path, "One.Off.2020.1080p.mkv");
+    writeFile(folder.path, "No.Year.Row.1999.1080p.mkv");
+    writeFile(folder.path, "Yearless.File.1080p.mkv");
+
+    const result = await scanAndImportLibrary("movie");
+
+    expect(result).toMatchObject({ matched: 4, created: 0 });
+    for (const id of [exact, oneOff, unknown, fileless]) expect(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(id)) as any).has_file).toBe(1);
+  });
+
+  it("reads the year a file gives its title, not an encode year after the quality words", async () => {
+    const folder = await insertRootFolder("movie");
+    const bladeRunner = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('movie','Blade Runner 2049','blade runner 2049',2017,1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    const dune = Number((await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('movie','Dune','dune',1984,1,0,'missing')`).run()).lastInsertRowid);
+    writeFile(folder.path, "Blade.Runner.2049.2017.1080p.mkv");
+    writeFile(folder.path, "Dune.1080p.BluRay.x264.2021-GRP.mkv");
+
+    const result = await scanAndImportLibrary("movie");
+
+    // The 2021 after the quality words is an encode date; the file names no year of its own for Dune.
+    expect(result).toMatchObject({ matched: 2, created: 0 });
+    expect(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(bladeRunner)) as any).has_file).toBe(1);
+    expect(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(dune)) as any).has_file).toBe(1);
+  });
+
+  it("leaves a file alone that matches several same-titled movies and names no year", async () => {
+    const folder = await insertRootFolder("movie");
+    const it1990 = Number((await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('movie','It','it',1990,1,0,'missing')`).run()).lastInsertRowid);
+    const it2017 = Number((await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('movie','It','it',2017,1,0,'missing')`).run()).lastInsertRowid);
+    writeFile(folder.path, "It.1080p.mkv");
+
+    const result = await scanAndImportLibrary("movie");
+
+    expect(result).toMatchObject({ matched: 0, created: 0, skipped: 1 });
+    expect(result.skippedFiles[0].reason).toMatch(/matches 2 items \("It" \(1990\), "It" \(2017\)\); name the year/);
+    for (const id of [it1990, it2017]) expect(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(id)) as any).has_file).toBe(0);
+
+    // A scan of one of them is that one's, whatever the file says.
+    const scoped = await scanAndImportOneMediaItem(it2017);
+    expect(scoped).toMatchObject({ matched: 1, skipped: 0 });
+    expect(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(it2017)) as any).has_file).toBe(1);
+  });
+
   it("stores probed media info alongside a new movie", async () => {
     const folder = await insertRootFolder("movie");
     probeMediaInfo.mockResolvedValue({ videoCodec: "h264", width: 1920, height: 1080 });
@@ -391,6 +459,105 @@ describe("scanAndImportLibrary — series (episodic shape)", () => {
     expect(show).toMatchObject({ title: "Breaking Bad", overview: "A teacher turns to crime.", year: 2008, has_file: 1 });
     const ep = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").get(show.id)) as any;
     expect(ep).toMatchObject({ season_number: 1, episode_number: 1, has_file: 1, file_path: filePath });
+  });
+
+  it("attaches an episode to the sole show of its title whatever year the file names", async () => {
+    const folder = await insertRootFolder("series");
+    const charmed = Number((await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('series','Charmed','charmed',1998,1,0,'missing')`).run()).lastInsertRowid);
+    writeFile(path.join(folder.path, "Charmed"), "Charmed.2018.S01E05.1080p.mkv");
+
+    const result = await scanAndImportLibrary("series");
+
+    expect(result).toMatchObject({ matched: 1, created: 0 });
+    expect(((await db.prepare("SELECT * FROM episodes WHERE media_item_id = ? AND episode_number = 5").get(charmed)) as any)).toMatchObject({ season_number: 1, has_file: 1 });
+  });
+
+  it("puts an episode in the reboot the file names by year, and skips one that names none or a year neither has", async () => {
+    const folder = await insertRootFolder("series");
+    const original = Number((await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('series','Charmed','charmed',1998,1,0,'missing')`).run()).lastInsertRowid);
+    const reboot = Number((await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('series','Charmed','charmed',2018,1,0,'missing')`).run()).lastInsertRowid);
+    writeFile(path.join(folder.path, "Charmed A"), "Charmed.2018.S01E05.1080p.mkv");
+    writeFile(path.join(folder.path, "Charmed B"), "Charmed.S01E06.1080p.mkv");
+    writeFile(path.join(folder.path, "Charmed C"), "Charmed.2005.S01E07.1080p.mkv");
+
+    const result = await scanAndImportLibrary("series");
+
+    expect(result).toMatchObject({ matched: 1, created: 0, skipped: 2 });
+    expect(result.skippedFiles.map((f) => f.reason).every((r) => /matches 2 items \("Charmed" \(1998\), "Charmed" \(2018\)\); name the year/.test(r))).toBe(true);
+    const placed = (await db.prepare("SELECT media_item_id, episode_number FROM episodes WHERE has_file = 1").all()) as any[];
+    expect(placed).toEqual([{ media_item_id: reboot, episode_number: 5 }]);
+    expect(original).toBeGreaterThan(0);
+  });
+
+  it("places a fansub file numbered only by its absolute number through the show's stored episode list", async () => {
+    const folder = await insertRootFolder("anime");
+    const onePiece = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('anime','One Piece','one piece',1999,1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    const insertEp = async (season: number, episode: number, absolute: number) =>
+      Number(
+        (
+          await db
+            .prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, absolute_episode_number, monitored, has_file) VALUES (?, ?, ?, ?, 1, 0)")
+            .run(onePiece, season, episode, absolute)
+        ).lastInsertRowid
+      );
+    const ep1085 = await insertEp(21, 1085 - 892, 1085);
+    const ep1086 = await insertEp(21, 1086 - 892, 1086);
+    const filePath = writeFile(path.join(folder.path, "One Piece"), "[SubsPlease] One Piece - 1085 (1080p) [ABCD1234].mkv");
+    writeFile(path.join(folder.path, "One Piece"), "[SubsPlease] One Piece - 1090 (1080p) [ABCD1235].mkv");
+
+    const result = await scanAndImportLibrary("anime");
+
+    expect(result).toMatchObject({ matched: 1, created: 0, skipped: 1 });
+    expect(result.skippedFiles[0].reason).toMatch(/no single episode there has the absolute number 1090/);
+    expect((await db.prepare("SELECT * FROM episodes WHERE id = ?").get(ep1085)) as any).toMatchObject({ has_file: 1, file_path: filePath });
+    expect(((await db.prepare("SELECT has_file FROM episodes WHERE id = ?").get(ep1086)) as any).has_file).toBe(0);
+    expect(((await db.prepare("SELECT COUNT(*) AS n FROM media_items WHERE type = 'anime'").get()) as any).n).toBe(1);
+  });
+
+  it("finds the show of a number-only file by the title in its name when the folder says nothing", async () => {
+    const folder = await insertRootFolder("anime");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('anime','Jujutsu Kaisen','jujutsu kaisen',1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    await db.prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, absolute_episode_number, monitored, has_file) VALUES (?, 1, 3, 3, 1, 0)").run(showId);
+    writeFile(folder.path, "[Erai-raws] Jujutsu Kaisen - 03 [1080p][ABCD1234].mkv");
+    writeFile(folder.path, "[Erai-raws] Unknown Show - 03 [1080p][ABCD1234].mkv");
+
+    const result = await scanAndImportLibrary("anime");
+
+    expect(result).toMatchObject({ matched: 1, created: 0, skipped: 1 });
+    expect(result.skippedFiles[0].reason).toMatch(/no show in the library is called "Unknown Show"/);
+  });
+
+  it("places a date-named file in the sole show of that title, whatever year the show started", async () => {
+    const folder = await insertRootFolder("series");
+    const dailyShow = Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, year, series_type, monitored, has_file, status) VALUES ('series','The Daily Show','the daily show',1996,'daily',1,0,'missing')`)
+          .run()
+      ).lastInsertRowid
+    );
+    const epId = Number(
+      (
+        await db
+          .prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, air_date, monitored, has_file) VALUES (?, 29, 100, '2024-05-01', 1, 0)")
+          .run(dailyShow)
+      ).lastInsertRowid
+    );
+    const filePath = writeFile(folder.path, "The.Daily.Show.2024.05.01.1080p.WEB.h264-GRP.mkv");
+    writeFile(folder.path, "The.Daily.Show.2024.05.02.1080p.WEB.h264-GRP.mkv");
+
+    const result = await scanAndImportLibrary("series");
+
+    expect(result).toMatchObject({ matched: 1, created: 0, skipped: 1 });
+    expect(result.skippedFiles[0].reason).toMatch(/no single episode there has the air date 2024-05-02/);
+    expect((await db.prepare("SELECT * FROM episodes WHERE id = ?").get(epId)) as any).toMatchObject({ has_file: 1, file_path: filePath });
+    expect(((await db.prepare("SELECT COUNT(*) AS n FROM media_items WHERE type = 'series'").get()) as any).n).toBe(1);
   });
 
   it("never searches with a daily show's air-date year, and enriches from the hit whose title agrees rather than the first", async () => {
@@ -426,6 +593,21 @@ describe("scanAndImportLibrary — series (episodic shape)", () => {
     expect(fetchSeriesEpisodesFor).not.toHaveBeenCalled();
     const ep = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").get(show.id)) as any;
     expect(ep).toMatchObject({ season_number: 1, episode_number: 1, has_file: 1 });
+  });
+
+  it("enriches a new show from neither of two same-titled hits when the file names no year", async () => {
+    const folder = await insertRootFolder("series");
+    writeFile(path.join(folder.path, "Charmed", "Season 01"), "Charmed.S01E01.1080p.mkv");
+    searchMetadata.mockResolvedValue([
+      { title: "Charmed", year: 2018, overview: "Reboot", posterUrl: null, externalIds: { tmdb: "84958" } },
+      { title: "Charmed", year: 1998, overview: "Original", posterUrl: null, externalIds: { tmdb: "1981" } },
+    ]);
+
+    await scanAndImportLibrary("series");
+
+    const show = (await db.prepare("SELECT * FROM media_items WHERE type='series'").get()) as any;
+    expect(show).toMatchObject({ title: "Charmed", overview: null, year: null });
+    expect(fetchSeriesEpisodesFor).not.toHaveBeenCalled();
   });
 
   it("enriches from a hit whose title only differs by the punctuation a scene filename drops", async () => {
@@ -1332,6 +1514,26 @@ describe("refreshLibraryMetadata / refreshOneMediaItem", () => {
     const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(showId)) as any;
     expect(row.title).toBe("Guessed Title");
     expect(row.overview).toBe("old overview");
+  });
+
+  it("matches an unmatched item to neither of two same-titled hits when it knows no year, and to the one its year names when it does", async () => {
+    const remakes = [
+      { title: "Halloween", year: 2018, overview: "Remake", posterUrl: null, externalIds: { tmdb: "424139" } },
+      { title: "Halloween", year: 1978, overview: "Original", posterUrl: null, externalIds: { tmdb: "948" } },
+    ];
+    const noYear = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('movie','Halloween','halloween',1,0,'missing')`).run()).lastInsertRowid
+    );
+    searchMetadata.mockResolvedValue(remakes);
+
+    expect((await refreshOneMediaItem(noYear)).ok).toBe(false);
+    expect(JSON.parse(((await db.prepare("SELECT external_ids FROM media_items WHERE id = ?").get(noYear)) as any).external_ids ?? "{}")).toEqual({});
+
+    const withYear = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('movie','Halloween','halloween',1978,1,0,'missing')`).run()).lastInsertRowid
+    );
+    expect((await refreshOneMediaItem(withYear)).ok).toBe(true);
+    expect(JSON.parse(((await db.prepare("SELECT external_ids FROM media_items WHERE id = ?").get(withYear)) as any).external_ids)).toEqual({ tmdb: "948" });
   });
 
   it("refreshLibraryMetadata processes every item of a type and tallies updated/failed", async () => {

@@ -83,6 +83,24 @@ describe("duplicateCheck", () => {
     expect(loserRow).toBeUndefined();
   });
 
+  it("sees two rows of a non-Latin title, or one written with and without accents, as duplicates", async () => {
+    const { findDuplicateGroups, findPossibleDuplicates } = await import("../src/services/duplicateCheck.js");
+    await insertMovie("進撃の巨人", 2013, 0);
+    await insertMovie("進撃の巨人", 2013, 1);
+    await insertMovie("Amélie", 2001, 0);
+    await insertMovie("Amelie", 2001, 1);
+    await insertMovie("かき", 2010, 0);
+    await insertMovie("がき", 2010, 0);
+
+    const groups = await findDuplicateGroups("movie");
+
+    expect(groups.some((g) => g.items.every((i) => i.title === "進撃の巨人") && g.items.length === 2)).toBe(true);
+    expect(groups.some((g) => g.items.map((i) => i.title).sort().join("|") === "Amelie|Amélie")).toBe(true);
+    // Different letters stay different titles.
+    expect(groups.some((g) => g.items.some((i) => i.title === "かき"))).toBe(false);
+    expect((await findPossibleDuplicates("movie", "進撃の巨人", 2013)).length).toBe(2);
+  });
+
   it("mergeMediaItems hands the loser's title and alternate titles to the keeper instead of cascading them away", async () => {
     const { mergeMediaItems } = await import("../src/services/duplicateCheck.js");
     const { syncPrimaryTitle, storeAliases, aliasRowsFor } = await import("../src/services/releaseAliases.js");

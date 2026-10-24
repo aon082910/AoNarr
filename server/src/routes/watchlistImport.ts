@@ -6,6 +6,7 @@ import { searchMetadata, fetchSeriesEpisodesFor, isEpisodeMonitoredByDefault } f
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { queueForReview } from "../services/importReview.js";
+import { verifyProviderHit } from "../services/titleMatch.js";
 import { log } from "../services/logger.js";
 import type { MediaType } from "../types/index.js";
 
@@ -20,7 +21,7 @@ interface WatchlistRow {
 
 interface RowResult {
   title: string;
-  status: "added" | "skipped_duplicate" | "not_found" | "error";
+  status: "added" | "skipped_duplicate" | "not_found" | "needs_review" | "error";
   detail?: string;
 }
 
@@ -58,13 +59,16 @@ watchlistImportRouter.post(
         }
 
         const query = row.year ? `${row.title} ${row.year}` : row.title;
-        const searchResults = await searchMetadata(row.type, query).catch(() => []);
-        const best = searchResults[0];
-        if (!best) {
+        const searchResults = await searchMetadata(row.type, query, undefined, row.year ?? null).catch(() => []);
+        // Only a hit the title (and year) verify is added: a watchlist's "Halloween" with no year is
+        // two films, and the top result of a search is often neither.
+        const verdict = verifyProviderHit(searchResults, row.title, row.year ?? null, { topHitWhenYearAgrees: true });
+        if (!("hit" in verdict)) {
           await queueForReview({ source: "watchlist", importListId: null, type: row.type, title: row.title, year: row.year });
-          results.push({ title: row.title, status: "not_found" });
+          results.push({ title: row.title, status: searchResults.length === 0 ? "not_found" : "needs_review" });
           continue;
         }
+        const best = verdict.hit;
 
         const rootFolderId = await autoSelectRootFolderId(row.type);
         const insertResult = await db
