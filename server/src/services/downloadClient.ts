@@ -540,15 +540,32 @@ class QBittorrentAdapter implements DownloadClientAdapter {
 
 /** SABnzbd adapter. */
 class SabnzbdAdapter implements DownloadClientAdapter {
-  async addDownload(client: DownloadClient, downloadUrl: string, category: string | null): Promise<GrabResult> {
+  async addDownload(
+    client: DownloadClient,
+    downloadUrl: string,
+    category: string | null,
+    releaseTitle?: string
+  ): Promise<GrabResult> {
+    // Fetch the NZB here and upload it (mode=addfile) instead of handing SABnzbd the URL
+    // (mode=addurl). With addurl the *client* performs the fetch, and a client that guards
+    // against SSRF refuses any target resolving to a non-public address — which includes the
+    // loopback indexer a local-only stack necessarily uses — so addurl can never work there.
+    // Uploading sidesteps the client's fetch entirely. Real SABnzbd accepts addfile too, so
+    // this is not specific to any one backend.
+    const source = await resolveDownloadSource(downloadUrl);
+    if (source.kind === "magnet") throw new Error("SABnzbd cannot accept a magnet link");
+
     const url = new URL(`${baseUrl(client)}/api`);
-    url.searchParams.set("mode", "addurl");
-    url.searchParams.set("name", downloadUrl);
     url.searchParams.set("apikey", client.apiKey ?? "");
     url.searchParams.set("output", "json");
-    if (category) url.searchParams.set("cat", category);
 
-    const res = await apiFetch(url.toString());
+    const form = new FormData();
+    form.append("mode", "addfile");
+    if (category) form.append("cat", category);
+    // The multipart filename is what the client names the job; without it the release title is lost.
+    form.append("name", new Blob([source.bytes]), `${sanitizeFilename(releaseTitle || "release")}.nzb`);
+
+    const res = await apiFetch(url.toString(), { method: "POST", body: form });
     if (!res.ok) throw new Error(`SABnzbd add failed: HTTP ${res.status}`);
     const body: any = await res.json();
     // A rejected key comes back as HTTP 200 {status: false, error}; taking that as a grab would
