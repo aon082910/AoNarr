@@ -3432,7 +3432,10 @@ describe("chooseBestResult — identity gate for tiered types", () => {
     const ep = { season: 3, episode: 1 };
     expect((await choose([fakeResult({ title: "The.Office.US.S03E01.720p.HDTV-GRP" })], movie("The Office (US)", 2005), "enforce", "series", ep))?.result).toBeDefined();
     expect((await choose([fakeResult({ title: "The.Office.S03E01.720p.HDTV-GRP" })], movie("The Office (US)", 2005), "enforce", "series", ep))?.result).toBeDefined();
-    expect(await choose([fakeResult({ title: "The.Office.US.S03E01.720p.HDTV-GRP" })], movie("The Office", 2001), "enforce", "series", ep)).toBeNull();
+    // A bare provider title can't tell the regions apart, so the scene's region tag is accepted
+    // for it (ranked lowest); a title naming another region rejects it.
+    expect((await choose([fakeResult({ title: "The.Office.US.S03E01.720p.HDTV-GRP" })], movie("The Office", 2001), "enforce", "series", ep))?.identity).toMatchObject({ matchType: "title-region" });
+    expect(await choose([fakeResult({ title: "The.Office.US.S03E01.720p.HDTV-GRP" })], movie("The Office (UK)", 2001), "enforce", "series", ep)).toBeNull();
     expect((await choose([fakeResult({ title: "Leon.1994.1080p.BluRay-GRP" })], movie("Léon: The Professional", 1994), "enforce"))?.identity).toMatchObject({ matchType: "title-main" });
   });
 
@@ -3466,7 +3469,26 @@ describe("chooseBestResult — identity gate for tiered types", () => {
     expect(await configured([wrong])).toBeNull();
     setSetting("strictReleaseIdentity.movie", "log");
     expect((await configured([wrong]))?.result.title).toBe(wrong.title);
+    // An empty or unrecognised per-type value is unset: the global mode applies again.
     setSetting("strictReleaseIdentity.movie", "");
+    expect(await configured([wrong])).toBeNull();
+    setSetting("strictReleaseIdentity.movie", "Enforce "); // casing and whitespace are tolerated
+    expect(await configured([wrong])).toBeNull();
+    setSetting("strictReleaseIdentity.movie", "sometimes");
+    expect(await configured([wrong])).toBeNull();
+    setSetting("strictReleaseIdentity.movie", "");
+    setSetting("strictReleaseIdentity", "");
+  });
+
+  it("caps the bare enforce setting at log for anime and the containment types until their rounds land", async () => {
+    const wrong = fakeResult({ title: "Some.Other.Anime.S01E05.1080p.WEB-GRP" });
+    const anime = (results: any[]) =>
+      chooseBestResult(results, [], "", null, 0, { season: 1, episode: 5 }, new Set(), "anime", null, { year: 2020, externalIds: {} }, null, { name: { title: "Show" } });
+    setSetting("strictReleaseIdentity", "enforce");
+    expect((await anime([wrong]))?.identity).toMatchObject({ ok: false }); // kept, log-only
+    setSetting("strictReleaseIdentity.anime", "enforce");
+    expect(await anime([wrong])).toBeNull();
+    setSetting("strictReleaseIdentity.anime", "");
     setSetting("strictReleaseIdentity", "");
   });
 

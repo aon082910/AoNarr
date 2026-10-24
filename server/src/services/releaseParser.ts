@@ -104,6 +104,9 @@ const YEAR = /\b(19|20)\d{2}\b/;
 // actually use; month/day are sanity-range-checked below since this alone can't tell a real date
 // apart from three coincidentally date-shaped numbers.
 const AIR_DATE = /\b((?:19|20)\d{2})[.\-\s](\d{1,2})[.\-\s](\d{1,2})\b/;
+// The same date with the year last ("08.25.2024", "25.08.2024"); see parseReleaseTitle for how the
+// first two numbers are read.
+const AIR_DATE_YEAR_LAST = /\b(\d{1,2})[.\-\s](\d{1,2})[.\-\s]((?:19|20)\d{2})\b/;
 // Anime fansub convention: "[Group] Show Title - 145 [1080p]" — a bare number after " - " with
 // no SxxExx designator anywhere in the title. Deliberately narrow (requires the space-hyphen-space
 // separator) to avoid catching an arbitrary number elsewhere in the title.
@@ -118,17 +121,28 @@ const IMDB_ID = /\btt\d{7,8}\b/i;
 // Title isolation (see ParsedRelease.title). A run of leading bracketed tags: the fansub group, a
 // tracker's "[www.site.org]", a leading "[1080p]"/"(FLAC)" format tag.
 const LEADING_TAGS = /^(?:\s*[[(][^\])]*[\])])+\s*/;
+// An unbracketed tracker prefix ("www.1TamilMV.xyz - Movie Name (2020)"). "www." is required, as in
+// Radarr's WebsitePrefixRegex, so a dotted title before " - " ("Dr.Stone - 05") is not read as a site.
+const LEADING_SITE = /^www\.[\w-]+(?:\.[a-z]{2,})+\s*[-–]?\s*/i;
 // The first quality/source/codec/pack word after the title ends it. Bare "cam" and "web" are left
 // out (they are ordinary title words: "Cam", "Charlotte's Web"); "web" counts only as part of
-// WEB-DL/WEBRip or when a codec follows it, the same way SD_SOURCE reads it.
+// WEB-DL/WEBRip or when a codec follows it, the same way SD_SOURCE reads it. "complete" alone is a
+// title word ("Complete Unknown"); it ends a title only with a pack word.
 const TITLE_END_MARKER =
-  /\b(?:\d{3,4}[pi]|4k|uhd|bluray|blu-ray|bdrip|brrip|bdremux|remux|web-?dl|webrip|web[ ._-]+(?:[hx][ .]?26[45]|hevc|avc|xvid|divx)|hdtv|pdtv|sdtv|dvdrip|dvd[59]?|hdrip|hdcam|camrip|telesync|hdts|telecine|hdtc|workprint|[hx][ .]?26[45]|hevc|avc|av1|xvid|divx|proper|repack|complete|seasons?[ ._-]?\d{1,2}|hi10p?|10bit)\b/gi;
+  /\b(?:\d{3,4}[pi]|4k|uhd|bluray|blu-ray|bdrip|brrip|bdremux|remux|web-?dl|webrip|web[ ._-]+(?:[hx][ .]?26[45]|hevc|avc|xvid|divx)|hdtv|pdtv|sdtv|dvdrip|dvd[59]?|hdrip|hdcam|camrip|telesync|hdts|telecine|hdtc|workprint|[hx][ .]?26[45]|hevc|avc|av1|xvid|divx|proper|repack|complete[ ._-]+(?:series|seasons?|collection|box[ ._-]?set|pack|edition)|seasons?[ ._-]?\d{1,2}|hi10p?|10bit)\b/gi;
 const YEAR_ALL = /\b(19|20)\d{2}\b/g;
-// Another year right after this one ("1984.2024"): this one is part of the title (Radarr's
-// `(?!...\W(19|20)\d{2})` lookahead).
-const YEAR_FOLLOWED_BY_YEAR = /^[.\-_ ](?:19|20)\d{2}\b/;
+// Another year right after this one ("1984.2024", "Blade Runner 2049 (2017)"): this one is part of
+// the title (Radarr's `(?!...\W(19|20)\d{2})` lookahead, plus the bracketed Plex/YTS form).
+const YEAR_FOLLOWED_BY_YEAR = /^[.\-_ ]+[[(]?(?:19|20)\d{2}\b/;
 // Words a cut leaves dangling at the end of a title ("Show Name The" of "Show.Name.The.Complete.Series").
 const TRAILING_ARTICLE = /\s+(?:the|a|an|and|of)$/i;
+// An edition phrase written before the year ("Alien.Directors.Cut.1979") is not part of the title.
+const TRAILING_EDITION =
+  /\s+(?:directors?'?\s?cut|extended(?:\s(?:cut|edition))?|unrated|remastered|imax|theatrical(?:\scut)?|final\scut|ultimate\s(?:cut|edition)|criterion(?:\s(?:collection|edition))?|uncut|redux|collectors?\sedition)$/i;
+// A pack word after a bare "complete" ("Show.Name.COMPLETE.1080p", "Complete.Season"), or a year/
+// season token before it: then "complete" is the pack marker, not a title word.
+const COMPLETE_PACK_AFTER = /^[ ._-]+(?:series|seasons?|collection|box[ ._-]?set|pack|edition|bluray|blu-ray|bd|remux|\d{3,4}[pi])\b/i;
+const COMPLETE_PACK_BEFORE = /(?:(?:19|20)\d{2}|\bS\d{1,2}|seasons?[ ._-]?\d{1,2})[ ._-]+$/i;
 
 function minDefined(...values: (number | null | undefined)[]): number | null {
   let min: number | null = null;
@@ -136,9 +150,15 @@ function minDefined(...values: (number | null | undefined)[]): number | null {
   return min;
 }
 
-/** Where the title's own words start: after any leading bracketed tags. */
+/** Where the title's own words start: after any leading bracketed tags and tracker prefixes. */
 function titleStart(title: string): number {
-  return title.match(LEADING_TAGS)?.[0].length ?? 0;
+  let start = 0;
+  for (;;) {
+    const rest = title.slice(start);
+    const skip = rest.match(LEADING_TAGS)?.[0].length || rest.match(LEADING_SITE)?.[0].length || 0;
+    if (!skip) return start;
+    start += skip;
+  }
 }
 
 /** Whether a title token (a letter or digit) stands between `from` and `to`. */
@@ -165,7 +185,10 @@ function detectTitleYear(title: string, start: number, bound: number | null, air
     if (at < start || !hasTitleToken(title, start, at)) continue;
     if (bound != null && at >= bound) continue;
     if (airDate && airDate.index != null && at >= airDate.index && at < airDate.index + airDate[0].length) continue;
-    if (YEAR_FOLLOWED_BY_YEAR.test(title.slice(at + 4))) continue;
+    // Another year follows: this one is the title's. Unless what follows is the air date
+    // ("Show.Name.2018.2024.08.25"), whose year is no title year either way.
+    const follow = title.slice(at + 4).match(YEAR_FOLLOWED_BY_YEAR);
+    if (follow && !(airDate && airDate.index === at + follow[0].length)) continue;
     // The trailing "-2024" of "Show.Name.x264-2024" is the release group, not a year.
     if (releaseGroup === m[0] && at + 4 === trimmed.length && title[at - 1] === "-") continue;
     return { year: Number(m[0]), index: at };
@@ -179,6 +202,7 @@ function cleanTitleSlice(slice: string): string {
     .replace(/[\s\-–—:]*[[({]*\s*$/, "")
     .replace(/\s+/g, " ")
     .trim()
+    .replace(TRAILING_EDITION, "")
     .replace(TRAILING_ARTICLE, "")
     .trim();
 }
@@ -473,7 +497,17 @@ export function parseReleaseTitle(title: string): ParsedRelease {
       } else {
         const fullSeasonMatch = title.match(FULL_SEASON_HINT);
         if (fullSeasonMatch) {
-          markerIndex = fullSeasonMatch.index ?? null;
+          // The title ends at the pack word only when a title stands before it and, for a bare
+          // "complete", a pack/quality word follows or a year/season precedes it: "Complete.Unknown.
+          // 2016" is a movie title (isFullSeason stays as it was, see the corpus).
+          const at = fullSeasonMatch.index ?? 0;
+          const bareComplete = /^complete$/i.test(fullSeasonMatch[1]);
+          if (
+            hasTitleToken(title, titleStart(title), at) &&
+            (!bareComplete || COMPLETE_PACK_AFTER.test(title.slice(at + fullSeasonMatch[0].length)) || COMPLETE_PACK_BEFORE.test(title.slice(0, at)))
+          ) {
+            markerIndex = at;
+          }
           isFullSeason = true;
           // Only the "season <N>" alternative actually names a season ("complete"/"full season"
           // don't) — extract it so a title like "Show Name Season 3 ..." (space-separated, no
@@ -483,7 +517,10 @@ export function parseReleaseTitle(title: string): ParsedRelease {
         } else if (BATCH_TAG.test(title) || isAbsoluteBatch(title)) {
           // With no season, the pack matches no specific episode, which beats matching its first.
           isFullSeason = true;
-          markerIndex = minDefined(title.match(ABSOLUTE_RANGE)?.index, title.match(BATCH_TAG)?.index);
+          // Only a marker after the leading tags bounds the title: a "[Batch]" among them is a tag,
+          // not where the title ends.
+          const afterStart = (i: number | undefined) => (i != null && i >= titleStart(title) ? i : null);
+          markerIndex = minDefined(afterStart(title.match(ABSOLUTE_RANGE)?.index), afterStart(title.match(BATCH_TAG)?.index));
         }
       }
     }
@@ -493,12 +530,25 @@ export function parseReleaseTitle(title: string): ParsedRelease {
   const year = yearMatch ? Number(yearMatch[0]) : null;
 
   let airDate: string | null = null;
-  const dateMatch = title.match(AIR_DATE);
+  let dateMatch = title.match(AIR_DATE);
   if (dateMatch) {
     const month = Number(dateMatch[2]);
     const day = Number(dateMatch[3]);
     if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
       airDate = `${dateMatch[1]}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  } else {
+    // Year-last dates: "08.25.2024" (MM.DD, the US convention Sonarr assumes when both numbers
+    // could be a month) or "25.08.2024" (DD.MM, when only that reading is a valid date).
+    const yearLast = title.match(AIR_DATE_YEAR_LAST);
+    if (yearLast) {
+      const first = Number(yearLast[1]);
+      const second = Number(yearLast[2]);
+      const monthDay = first >= 1 && first <= 12 && second >= 1 && second <= 31 ? [first, second] : second >= 1 && second <= 12 && first >= 1 && first <= 31 ? [second, first] : null;
+      if (monthDay) {
+        airDate = `${yearLast[3]}-${String(monthDay[0]).padStart(2, "0")}-${String(monthDay[1]).padStart(2, "0")}`;
+        dateMatch = yearLast;
+      }
     }
   }
 
@@ -521,9 +571,15 @@ export function parseReleaseTitle(title: string): ParsedRelease {
   const start = titleStart(title);
   const qualityAt = firstQualityMarker(title, start);
   const titleYearInfo = detectTitleYear(title, start, minDefined(markerIndex, qualityAt), airDate ? dateMatch : null, releaseGroup);
+  // A bracket ends the title, except a short qualifier that IS part of it: "Shameless (US)" must
+  // stay distinct from "Shameless", and "(2017)" is handled by the title year.
   const bracketAt = (() => {
     for (let i = start; i < title.length; i++) {
-      if ((title[i] === "[" || title[i] === "(") && hasTitleToken(title, start, i)) return i;
+      if ((title[i] === "[" || title[i] === "(") && hasTitleToken(title, start, i)) {
+        const close = title.indexOf(title[i] === "(" ? ")" : "]", i + 1);
+        if (close !== -1 && /^(?:[A-Z]{2,3}|(?:19|20)\d{2})$/.test(title.slice(i + 1, close))) continue;
+        return i;
+      }
     }
     return null;
   })();

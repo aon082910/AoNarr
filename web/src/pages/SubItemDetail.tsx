@@ -219,6 +219,8 @@ export default function SubItemDetail() {
         title: result.title,
         size: result.size,
         protocol: result.protocol,
+        imdbId: result.imdbId ?? null,
+        tmdbId: result.tmdbId ?? null,
         subItemId: Number(subItemId),
       });
       notify.success(`Sent "${result.title}" to download client.`);

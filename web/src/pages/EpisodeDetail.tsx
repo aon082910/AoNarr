@@ -241,6 +241,8 @@ export default function EpisodeDetail() {
         title: result.title,
         size: result.size,
         protocol: result.protocol,
+        imdbId: result.imdbId ?? null,
+        tmdbId: result.tmdbId ?? null,
         episodeId: Number(episodeId),
       });
       notify.success(`Sent "${result.title}" to download client.`);

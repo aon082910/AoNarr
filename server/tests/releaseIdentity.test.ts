@@ -72,8 +72,11 @@ describe("releaseIdentifiesTarget", () => {
     const officeUS = item({ type: "series", title: "The Office (US)", year: 2005 });
     expect(verdict("The.Office.US.S03E01.720p.HDTV-GRP", officeUS)).toMatchObject({ ok: true, matchType: "title" });
     expect(verdict("The.Office.S03E01.720p.HDTV-GRP", officeUS)).toMatchObject({ ok: true, matchType: "title" });
-    // The UK show is a different item; a release that says US is not it.
-    expect(verdict("The.Office.US.S03E01.720p.HDTV-GRP", item({ type: "series", title: "The Office", year: 2001 }))).toMatchObject({ ok: false, reason: "title" });
+    // A provider that stores the US show as a bare "The Office" (TMDB does) leaves the scene's
+    // region tag as the only hint, so it is accepted for a bare title, ranked below a plain title
+    // match. A title that names another region is not.
+    expect(verdict("The.Office.US.S03E01.720p.HDTV-GRP", item({ type: "series", title: "The Office", year: 2001 }))).toMatchObject({ ok: true, matchType: "title-region" });
+    expect(verdict("The.Office.US.S03E01.720p.HDTV-GRP", item({ type: "series", title: "The Office (UK)", year: 2001 }))).toMatchObject({ ok: false, reason: "title" });
   });
 
   it("skips the year check for an air-dated release", () => {
@@ -128,5 +131,50 @@ describe("releaseIdentifiesTarget", () => {
     // Whole words: "UFC 30" is not inside "UFC 300".
     expect(verdict("UFC.300.Pereira.vs.Hill.PPV.1080p.WEB-GRP", item({ type: "ppv", title: "UFC 30", year: 2001 }))).toMatchObject({ ok: false, reason: "title" });
     expect(verdict("Formula.1.2024.Round.05.Chinese.Grand.Prix.Race.1080p.WEB-GRP", item({ type: "sports", title: "Formula 1", year: 2024 }))).toMatchObject({ ok: true });
+  });
+});
+
+describe("releaseIdentifiesTarget — review follow-ups", () => {
+  it("reads a title's own year-shaped number back when the release carries no production year", () => {
+    expect(verdict("Blade.Runner.2049.1080p.BluRay.x264-GRP", item({ title: "Blade Runner 2049", year: 2017 }))).toMatchObject({ ok: true, matchType: "title" });
+    expect(verdict("Blade.Runner.2049.1080p.BluRay.x264-GRP", item({ title: "Blade Runner", year: 1982 }))).toMatchObject({ ok: false, reason: "year" });
+    expect(verdict("Death.Race.2000.1080p.BluRay-GRP", item({ title: "Death Race 2000", year: 1975 }))).toMatchObject({ ok: true, matchType: "title" });
+    expect(verdict("Class.of.1984.1080p.BluRay-GRP", item({ title: "Class of 1984", year: 1982 }))).toMatchObject({ ok: true, matchType: "title" });
+    expect(verdict("Blade Runner 2049 (2017) [1080p] [BluRay] [5.1] [YTS.MX]", item({ title: "Blade Runner 2049", year: 2017 }))).toMatchObject({ ok: true, matchType: "title" });
+  });
+
+  it("accepts a scene region tag for a title the provider stores bare, but not for another region", () => {
+    expect(verdict("Shameless.US.S01E01.720p.HDTV-GRP", item({ type: "series", title: "Shameless", year: 2011 }))).toMatchObject({ ok: true, matchType: "title-region" });
+    expect(verdict("Shameless.US.S01E01.720p.HDTV-GRP", item({ type: "series", title: "Shameless (UK)", year: 2004 }))).toMatchObject({ ok: false, reason: "title" });
+    expect(verdict("Shameless (US) S01E01 720p HDTV x264-GRP", item({ type: "series", title: "Shameless", year: 2004 }))).toMatchObject({ ok: false, reason: "title" });
+    expect(verdict("Shameless (US) S01E01 720p HDTV x264-GRP", item({ type: "series", title: "Shameless (US)", year: 2011 }))).toMatchObject({ ok: true, matchType: "title" });
+  });
+
+  it("matches either half of an AKA dual title", () => {
+    expect(verdict("The.Fall.Guy.AKA.Kaskader.2024.1080p.WEB-GRP", item({ title: "The Fall Guy", year: 2024 }))).toMatchObject({ ok: true, matchType: "title" });
+    expect(verdict("The.Fall.Guy.AKA.Kaskader.2024.1080p.WEB-GRP", item({ title: "Kaskader", year: 2024 }))).toMatchObject({ ok: true, matchType: "title" });
+  });
+
+  it("tolerates a dropped leading article, except when a bare number would be left", () => {
+    expect(verdict("Flash.S01E01.1080p.WEB-GRP", item({ type: "series", title: "The Flash", year: 2014 }))).toMatchObject({ ok: true, matchType: "title-main" });
+    expect(verdict("The.Office.S03E01.720p.HDTV-GRP", item({ type: "series", title: "Office", year: 2005 }))).toMatchObject({ ok: true, matchType: "title-main" });
+    expect(verdict("100.S01E01.1080p.WEB-GRP", item({ type: "series", title: "The 100", year: 2014 }))).toMatchObject({ ok: false, reason: "title" });
+  });
+
+  it("matches anime whose provider title names the season differently from the release", () => {
+    const s2 = item({ type: "anime", title: "JUJUTSU KAISEN Season 2", year: 2023 });
+    expect(verdict("[SubsPlease] Jujutsu Kaisen S2 - 05 (1080p) [ABCD1234]", s2)).toMatchObject({ ok: true, matchType: "title-main" });
+    expect(verdict("Jujutsu.Kaisen.S02E05.1080p.WEB-GRP", s2)).toMatchObject({ ok: true, matchType: "title-main" });
+    expect(verdict("[SubsPlease] Mushoku Tensei 2nd Season - 05 (1080p)", item({ type: "anime", title: "Mushoku Tensei: Jobless Reincarnation Season 2", year: 2023 }))).toMatchObject({ ok: true });
+    // Movies keep their sequel numbers.
+    expect(verdict("Scream.2.1997.1080p.BluRay-GRP", item({ title: "Scream", year: 1996 }))).toMatchObject({ ok: false, reason: "title" });
+  });
+
+  it("accepts a title that contains quality-like words, an edition before the year, and a site prefix", () => {
+    expect(verdict("Complete.Unknown.2016.1080p.WEB-GRP", item({ title: "Complete Unknown", year: 2016 }))).toMatchObject({ ok: true });
+    expect(verdict("Alien.Directors.Cut.1979.1080p.BluRay-GRP", item({ title: "Alien", year: 1979 }))).toMatchObject({ ok: true, matchType: "title" });
+    expect(verdict("www.Site.org - Movie.Name.2019.1080p.BluRay.x264-GRP", item({ title: "Movie Name", year: 2019 }))).toMatchObject({ ok: true });
+    expect(verdict("Show.Name.25.08.2024.1080p.WEB-GRP", item({ type: "series", title: "Show Name", year: 2010 }))).toMatchObject({ ok: true, matchType: "title" });
+    expect(verdict("[Batch] Show - 01-12 [1080p]", item({ type: "anime", title: "Show", year: 2020 }))).toMatchObject({ ok: true });
   });
 });

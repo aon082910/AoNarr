@@ -645,3 +645,48 @@ describe("parseReleaseTitle title and titleYear", () => {
     expect(parseReleaseTitle("S01E01.1080p.WEB-GRP").title).toBe("");
   });
 });
+
+describe("parseReleaseTitle title isolation — review follow-ups", () => {
+  it("keeps a title's own year-shaped number when the release year follows in brackets", () => {
+    expect(parseReleaseTitle("Blade Runner 2049 (2017) [1080p] [BluRay] [5.1] [YTS.MX]")).toMatchObject({ title: "Blade Runner 2049", titleYear: 2017 });
+    expect(parseReleaseTitle("Death Race 2000 (1975) 1080p BluRay-GRP")).toMatchObject({ title: "Death Race 2000", titleYear: 1975 });
+  });
+
+  it("drops an edition phrase written before the year", () => {
+    expect(parseReleaseTitle("Alien.Directors.Cut.1979.1080p.BluRay-GRP")).toMatchObject({ title: "Alien", titleYear: 1979 });
+    expect(parseReleaseTitle("Movie.Name.Extended.Edition.2010.1080p.BluRay-GRP")).toMatchObject({ title: "Movie Name", titleYear: 2010 });
+  });
+
+  it("treats 'complete' as a title word unless a pack word, year or season stands beside it", () => {
+    expect(parseReleaseTitle("Complete.Unknown.2016.1080p.WEB-GRP")).toMatchObject({ title: "Complete Unknown", titleYear: 2016 });
+    expect(parseReleaseTitle("The.Complete.Guide.S01E01.1080p.WEB-GRP")).toMatchObject({ title: "The Complete Guide", seasonNumber: 1 });
+    expect(parseReleaseTitle("Movie.Name.COMPLETE.1080p.BluRay-GRP")).toMatchObject({ title: "Movie Name", isFullSeason: true });
+    expect(parseReleaseTitle("Show.Name.Complete.Season.1080p-GROUP")).toMatchObject({ title: "Show Name", isFullSeason: true });
+    expect(parseReleaseTitle("Season.of.the.Witch.2011.1080p.BluRay-GRP")).toMatchObject({ title: "Season of the Witch", titleYear: 2011 });
+  });
+
+  it("strips an unbracketed tracker prefix, but only one that starts with www.", () => {
+    expect(parseReleaseTitle("www.Site.org - Movie.Name.2019.1080p.BluRay.x264-GRP")).toMatchObject({ title: "Movie Name", titleYear: 2019 });
+    expect(parseReleaseTitle("www.1TamilMV.xyz - Movie Name (2020) 1080p WEB-DL")).toMatchObject({ title: "Movie Name", titleYear: 2020 });
+    expect(parseReleaseTitle("Dr.Stone - 05 [1080p]")).toMatchObject({ title: "Dr Stone", absoluteEpisode: 5 });
+  });
+
+  it("keeps a short bracketed qualifier as part of the title", () => {
+    expect(parseReleaseTitle("Shameless (US) S01E01 720p HDTV x264-GRP")).toMatchObject({ title: "Shameless (US)", seasonNumber: 1 });
+    expect(parseReleaseTitle("Movie Name (2019) [1080p] [GRP]")).toMatchObject({ title: "Movie Name", titleYear: 2019 });
+  });
+
+  it("reads year-last air dates, month first when both readings are possible", () => {
+    expect(parseReleaseTitle("The.Daily.Show.08.25.2024.1080p.WEB-GRP")).toMatchObject({ title: "The Daily Show", airDate: "2024-08-25", titleYear: null });
+    expect(parseReleaseTitle("Show.Name.25.08.2024.1080p.WEB-GRP")).toMatchObject({ title: "Show Name", airDate: "2024-08-25", titleYear: null });
+    expect(parseReleaseTitle("Show.Name.03.04.2024.1080p.WEB-GRP")).toMatchObject({ airDate: "2024-03-04" });
+  });
+
+  it("keeps the title year of a show whose air date follows it", () => {
+    expect(parseReleaseTitle("Show.Name.2018.2024.08.25.1080p.WEB-GRP")).toMatchObject({ title: "Show Name", titleYear: 2018, airDate: "2024-08-25" });
+  });
+
+  it("ignores a [Batch] tag among the leading tags when cutting the title", () => {
+    expect(parseReleaseTitle("[Batch] Show - 01-12 [1080p]")).toMatchObject({ title: "Show", isFullSeason: true });
+  });
+});

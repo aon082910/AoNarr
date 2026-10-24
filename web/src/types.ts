@@ -420,6 +420,10 @@ export interface SearchResult {
   publishDate: string | null;
   downloadUrl: string;
   protocol: "torrent" | "usenet";
+  /** Ids the indexer itself reported for the release (Torznab attrs); sent back with a grab so the
+   * queue row records an id-confirmed match. */
+  imdbId?: string | null;
+  tmdbId?: string | null;
   parsedQuality: string;
   matchesTarget: boolean;
   allowedByProfile: boolean;

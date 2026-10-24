@@ -1141,6 +1141,8 @@ export default function MediaDetail() {
         title: result.title,
         size: result.size,
         protocol: result.protocol,
+        imdbId: result.imdbId ?? null,
+        tmdbId: result.tmdbId ?? null,
         episodeId: target?.episodeId ?? null,
         subItemId: target?.subItemId ?? null,
         seasonNumber: target?.episodeId ? null : target?.seasonNumber ?? null,

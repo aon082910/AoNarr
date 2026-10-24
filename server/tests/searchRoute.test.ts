@@ -186,3 +186,19 @@ describe("identity gate on the manual search surfaces", () => {
     expect(forced.body).toMatchObject({ matchType: "none", grabSource: "interactive" });
   });
 });
+
+describe("manual grab with indexer ids", () => {
+  it("records an id-confirmed match when the UI forwards the indexer's imdb id", async () => {
+    await insertTorrentClient();
+    const movieId = await insertItem("movie", "Dune");
+    await db.prepare("UPDATE media_items SET year = 2021, external_ids = ? WHERE id = ?").run(JSON.stringify({ imdb: "tt1160419" }), movieId);
+
+    const res = await request(app)
+      .post(`/api/search/${movieId}/grab`)
+      .set("X-Api-Key", apiKey)
+      .send({ title: "Dune.Part.One.2021.1080p.WEB-GRP", imdbId: "tt1160419", downloadUrl: "magnet:?xt=urn:btih:part1", protocol: "torrent" });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ matchType: "id", grabSource: "interactive" });
+  });
+});

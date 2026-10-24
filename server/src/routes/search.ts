@@ -307,7 +307,7 @@ searchRouter.post(
     // it matched is recorded like an automatic grab's, and grab_source tells the two apart.
     const verdict =
       b.title && usesQualityTiers(item.type) && !b.subItemId
-        ? releaseIdentifiesTarget({ title: b.title, imdbId: b.imdbId ?? null, tmdbId: b.tmdbId ?? null }, parsedTitle, {
+        ? releaseIdentifiesTarget({ title: b.title, imdbId: b.imdbId ?? null, tmdbId: b.tmdbId ?? null, tvdbId: b.tvdbId ?? null }, parsedTitle, {
             type: item.type,
             title: item.title,
             ...targetIdentityOf(item),
