@@ -2581,7 +2581,9 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
       verify,
     });
     releaseDir = ownReleaseFolderOf(sourceFile, ctx);
-    mayHoldMore = shape !== "single";
+    // A ROM is a single item but a multi-disc game is several files (Disc 1, Disc 2, a .cue and its
+    // .bin tracks): importing one must not have the client delete the rest with the download.
+    mayHoldMore = shape !== "single" || item.type === "rom";
   }
   // A manual import of one episode of a pack, or one book of a trilogy, otherwise had the client
   // delete the rest of the download with it. A download with no folder of its own (a multi-file

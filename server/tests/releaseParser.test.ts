@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseReleaseTitle, releaseMatchesEpisode, releaseMatchesAirDate } from "../src/services/releaseParser.js";
+import { parseReleaseTitle, releaseMatchesEpisode, releaseMatchesAirDate, FILE_NAME } from "../src/services/releaseParser.js";
 
 describe("parseReleaseTitle", () => {
   it("parses a standard SxxExx episode release", () => {
@@ -681,10 +681,32 @@ describe("parseReleaseTitle title isolation — review follow-ups", () => {
     expect(parseReleaseTitle("Movie Name (2019) [1080p] [GRP]")).toMatchObject({ title: "Movie Name", titleYear: 2019 });
   });
 
-  it("reads year-last air dates, month first when both readings are possible", () => {
+  it("reads a year-last air date only when one reading is a valid date", () => {
     expect(parseReleaseTitle("The.Daily.Show.08.25.2024.1080p.WEB-GRP")).toMatchObject({ title: "The Daily Show", airDate: "2024-08-25", titleYear: null });
     expect(parseReleaseTitle("Show.Name.25.08.2024.1080p.WEB-GRP")).toMatchObject({ title: "Show Name", airDate: "2024-08-25", titleYear: null });
-    expect(parseReleaseTitle("Show.Name.03.04.2024.1080p.WEB-GRP")).toMatchObject({ airDate: "2024-03-04" });
+    // 3 April or 4 March: Sonarr reads neither, and a guess grabs the wrong day's episode.
+    expect(parseReleaseTitle("Show.Name.03.04.2024.1080p.WEB-GRP")).toMatchObject({ airDate: null });
+    // Both readings are the same date.
+    expect(parseReleaseTitle("Show.Name.05.05.2024.1080p.WEB-GRP")).toMatchObject({ airDate: "2024-05-05" });
+  });
+
+  it("ends the title at an ambiguous date it does not read", () => {
+    expect(parseReleaseTitle("Series.Title.12.02.2025.1080i.HDTV")).toMatchObject({ title: "Series Title", airDate: null, titleYear: null });
+  });
+
+  it("never calls a file a disc image, whatever its name says", () => {
+    const name = "Movie.2020.1080p.BluRay.AVC.DTS-HD.MA.5.1-GRP";
+    expect(parseReleaseTitle(name)).toMatchObject({ rawDisc: true, quality: "Unknown" });
+    expect(parseReleaseTitle(name, FILE_NAME)).toMatchObject({ rawDisc: false, quality: "Bluray-1080p" });
+  });
+
+  it("reads no air date from a date-shaped run that is not one", () => {
+    // A single-digit month or day is an audio layout after the year, not a date.
+    expect(parseReleaseTitle("Movie.Name.2019.5.1.1080p.BluRay.x264-GRP")).toMatchObject({ airDate: null, titleYear: 2019 });
+    expect(parseReleaseTitle("Movie.Name.2019.7.1.1080p.BluRay.x264-GRP").airDate).toBeNull();
+    // Not a calendar day, and a date more than a fortnight ahead.
+    expect(parseReleaseTitle("Show.Name.2024.02.30.1080p.WEB-GRP").airDate).toBeNull();
+    expect(parseReleaseTitle("Show.Name.2099.01.01.1080p.WEB-GRP").airDate).toBeNull();
   });
 
   it("keeps the title year of a show whose air date follows it", () => {

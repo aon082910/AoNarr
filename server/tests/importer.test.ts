@@ -2885,6 +2885,26 @@ describe("importQueueItem", () => {
     expect(removeQueueItemDownload.mock.calls[0][1]).toBe(true);
   });
 
+  it("keeps the download's data when a multi-disc ROM imports one disc", async () => {
+    const folder = await insertRootFolder("rom");
+    const romId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('rom','Big Game','big game',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    const disc1 = writeDownloadFile(path.join("Big Game (USA)", "Big Game (USA) (Disc 1).iso"));
+    const disc2 = writeDownloadFile(path.join("Big Game (USA)", "Big Game (USA) (Disc 2).iso"));
+    const queueId = await insertQueueRow(romId, { title: "Big Game (USA) (Disc 1 + 2)", download_path: path.dirname(disc1) });
+    setSetting("removeCompletedDownloads", "1");
+
+    await importQueueItem(queueId);
+
+    // One disc was placed; the other is still in the download, and the client must not delete it.
+    expect(fs.existsSync(disc1) !== fs.existsSync(disc2)).toBe(true);
+    expect(removeQueueItemDownload).toHaveBeenCalledTimes(1);
+    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false);
+    expect(fs.existsSync(path.join(downloadsDir, "Big Game (USA)"))).toBe(true);
+  });
+
   it("keeps the download's data when an album's track sat loose in a shared category folder", async () => {
     const folder = await insertRootFolder("artist");
     const artistId = Number(

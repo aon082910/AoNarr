@@ -80,12 +80,12 @@ describe("release-name corpus", () => {
       expect(seen.has(key), `duplicate row "${key}"`).toBe(false);
       seen.add(key);
       if (row.todo) {
-        expect(row.todo.round, `todo round of "${row.title}"`).toMatch(/^R[1-6]$/);
+        expect(row.todo.round, `todo round of "${row.title}"`).toMatch(/^R(?:[1-9]|1[0-4])$/);
         expect(Object.keys(row.todo.expect).length, `empty todo on "${row.title}"`).toBeGreaterThan(0);
       }
       for (const check of row.identity ?? []) {
         expect(libraryItems[check.item], `"${row.title}" references unknown library item "${check.item}"`).toBeDefined();
-        expect(check.round).toMatch(/^R[1-6]$/);
+        expect(check.round).toMatch(/^R(?:[1-9]|1[0-4])$/);
         expect(typeof check.expect.ok).toBe("boolean");
         if (!check.expect.ok) expect(check.expect.matchType).toBe("none");
       }

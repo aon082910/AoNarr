@@ -1,6 +1,7 @@
 import { db } from "../db/index.js";
 import { log } from "./logger.js";
 import { MEDIA_TYPES } from "./mediaTypes.js";
+import { getSetting, setSetting } from "./settingsStore.js";
 
 /** Seed order used to populate the `qualities` table on first boot. Editable afterward via Settings. */
 export const DEFAULT_QUALITY_ORDER = [
@@ -9,6 +10,7 @@ export const DEFAULT_QUALITY_ORDER = [
   "HDTV-720p",
   "WEBRip-720p",
   "WEBDL-720p",
+  "Bluray-720p",
   "HDTV-1080p",
   "WEBRip-1080p",
   "WEBDL-1080p",
@@ -22,6 +24,65 @@ export const DEFAULT_QUALITY_ORDER = [
 ] as const;
 
 export type QualityName = string;
+
+/**
+ * One-time upgrade for installs seeded before "Bluray-720p" was on the ladder. The release parser
+ * grades every 720p Blu-ray rip that way, and a quality missing from the table can't be allowed by
+ * any profile — so those releases were refused, and a 720p Blu-ray file was never rated at all.
+ *
+ * The tier goes right after WEBDL-720p (before HDTV-1080p when that one is gone), the ranks above
+ * it move up by one, and a profile that already allows both WEBDL-720p and Bluray-1080p gains it
+ * too (it takes a 720p web release and a 1080p disc rip, so a 720p disc rip is no surprise). A
+ * profile's cutoff is never touched. A settings flag makes it run once, so an admin who deletes
+ * the tier afterwards keeps it deleted.
+ */
+export async function ensureBluray720pQuality(): Promise<void> {
+  if (getSetting("bluray720pTierAdded") === "1") return;
+  try {
+    await addBluray720pTier();
+  } catch (err) {
+    // Not worth stopping the app over; the flag stays unset, so the next start tries again.
+    log.error("[quality] could not add the Bluray-720p tier:", (err as Error).message);
+  }
+}
+
+async function addBluray720pTier(): Promise<void> {
+  const rows = (await db.prepare("SELECT id, name, rank FROM qualities ORDER BY rank").all()) as { id: number; name: string; rank: number }[];
+  if (rows.length > 0 && !rows.some((r) => r.name === "Bluray-720p")) {
+    let at = rows.findIndex((r) => r.name === "WEBDL-720p") + 1;
+    if (at === 0) at = rows.findIndex((r) => r.name === "HDTV-1080p");
+    if (at >= 0) {
+      const newRank = at > 0 ? Number(rows[at - 1].rank) + 1 : Number(rows[0].rank);
+      const moving = rows.slice(at);
+      await db.transaction(async () => {
+        // rank is UNIQUE: park the rows that move on negative ranks, then put them one higher.
+        for (let i = 0; i < moving.length; i++) {
+          await db.prepare("UPDATE qualities SET rank = ? WHERE id = ?").run(-(i + 1), moving[i].id);
+        }
+        for (const row of moving) {
+          await db.prepare("UPDATE qualities SET rank = ? WHERE id = ?").run(Number(row.rank) + 1, row.id);
+        }
+        await db.prepare("INSERT INTO qualities (name, rank) VALUES (?, ?)").run("Bluray-720p", newRank);
+
+        const profiles = (await db.prepare("SELECT id, allowed_qualities FROM quality_profiles").all()) as { id: number; allowed_qualities: string }[];
+        for (const profile of profiles) {
+          let allowed: unknown;
+          try {
+            allowed = JSON.parse(profile.allowed_qualities);
+          } catch {
+            continue;
+          }
+          if (!Array.isArray(allowed) || allowed.includes("Bluray-720p") || !allowed.includes("WEBDL-720p") || !allowed.includes("Bluray-1080p")) continue;
+          const next = [...allowed];
+          next.splice(next.indexOf("WEBDL-720p") + 1, 0, "Bluray-720p");
+          await db.prepare("UPDATE quality_profiles SET allowed_qualities = ? WHERE id = ?").run(JSON.stringify(next), profile.id);
+        }
+      });
+      log.info("[quality] added the Bluray-720p tier to the quality ladder");
+    }
+  }
+  setSetting("bluray720pTierAdded", "1");
+}
 
 interface SizeBounds {
   minSizeMb: number | null;

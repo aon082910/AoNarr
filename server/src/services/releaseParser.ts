@@ -68,6 +68,21 @@ export interface ParsedRelease {
    * with no title to compare. For release and queue titles; a file inside a folder that names its
    * release is often called exactly this, so file names are not to be judged by it. */
   rejected: boolean;
+  /** One part of a season released in pieces ("S02.Part.1", "S07.Vol.1", "S06.P1"). It is no full
+   * season pack (`isFullSeason` stays false), so it satisfies no episode on its own — Sonarr's
+   * IsPartialSeason. */
+  seasonPart: boolean;
+  /** A season's extras or subtitle pack ("S01.EXTRAS", "S11.SUBPACK", "S01.Special"): no episode of
+   * the season, and no full pack either — Sonarr's IsSeasonExtra. */
+  seasonExtra: boolean;
+  /** Subtitles burned into the picture ("HC", "HCSub", "KORSUB", "Hardsub"): Radarr's
+   * HardcodedSubsRegex. Read from the tags, never from the title's own words. */
+  hardcodedSubs: boolean;
+  /** An untouched disc image rather than an encode: a Blu-ray disc structure ("Blu-ray AVC
+   * DTS-HD", "BD-50", "UNTOUCHED", "COMPLETE.UHD.BLURAY") or a DVD image ("DVD9", "DVD-R"). The
+   * importer cannot place a BDMV/VIDEO_TS tree, so such a release grades "Unknown" and the grab
+   * path rejects it (Radarr's BR-DISK, Sonarr's RawDiskSpecification). */
+  rawDisc: boolean;
 }
 
 // Group 3 (hyphenated range end, e.g. "S01E01-E03"/"S01E01-03"), groups 4-5 (a repeated season tag,
@@ -75,19 +90,36 @@ export interface ParsedRelease {
 // "S01E01.E02") are mutually exclusive alternatives — a title only ever uses one multi-episode
 // convention or the other, never both.
 // A single "." / "_" / space may sit between the season and episode tags ("Show.S01.E05").
-const SEASON_EP_RANGE = /\bS(\d{1,2})[._ ]?E(\d{1,3})(?:-E?(\d{1,3})|-S(\d{1,2})[._ ]?E(\d{1,3})|((?:[._ ]?E\d{1,3})+))?\b/i;
+// The tag between season and episode may be a hyphen ("S03 - EP14", "S2 - Episode 4") and the
+// episode tag "E", "Ep" or "Episode", with a dot or space before its number ("S01.Ep06", "S01.E.01").
+// A "v2" after the last number is a fansub re-release ("S02E01v2").
+const SEASON_EP_RANGE =
+  /\bS(\d{1,2})(?:[._ ]*-[._ ]*|[._ ]?)E(?:p(?:isode)?)?[._ ]?(\d{1,3})(?:-E?(\d{1,3})|-S(\d{1,2})[._ ]?E(\d{1,3})|((?:[._ ]?E\d{1,3})+))?(?:v\d)?\b/i;
 // A "1x01-264" range this long is a different number (a codec), not a multi-episode release.
 const MAX_EPISODE_RANGE = 100;
 // "1x01" scene/P2P notation, the same convention libraryScan.ts's filename-based detector already
 // recognizes — used as a fallback only when SxxExx doesn't match, since SxxExx is unambiguous while
 // this format risks colliding with e.g. a bare resolution/codec tag if not scoped narrowly. A second
 // episode number joins it as "1x01-02" or "1x01x02".
-const SEASON_EP_X_FORMAT = /\b0*(\d{1,2})x0*(\d{1,3})(?:[-x]0*(\d{1,3}))?\b/i;
+const SEASON_EP_X_FORMAT = /\b0*(\d{1,2})x0*(\d{1,3})(?:[-x]0*(\d{1,3}))?(?:v\d)?\b/i;
 // "Show.Name.Season.2.Episode.5": the spelled-out form.
 const SEASON_WORD_EPISODE = /\bSeason[ ._]?0*(\d{1,2})[ ._-]*(?:Episode|Ep)[ ._]?0*(\d{1,3})\b(?![ ._]*(?:-|~|to\b)[ ._]*\d)/i;
-// A multi-season pack: "S01-S05", "Seasons 1-5", "Season 1 to 9".
+// The same with a range, "Season 01 Episode 05-06": a short one is a multi-episode release, a long
+// one (DASH_RANGE_BATCH_SIZE or more) is left to the season-pack rules, as "Season 2 Ep 01-12" is.
+const SEASON_WORD_EPISODE_RANGE = /\bSeason[ ._]?0*(\d{1,2})[ ._-]*(?:Episode|Ep)[ ._]?0*(\d{1,3})[ ._]*(?:-|~|to)[ ._]*0*(\d{1,3})\b/i;
+// "[XKsub] Series Title S2 [05][HEVC-10bit 1080p]": the episode in brackets right after the season.
+const SEASON_BRACKET_EPISODE = /\bS(?:eason)?[ ._]?0*(\d{1,2})[ ._]+\[0*(\d{1,3})\]/i;
+// A multi-season pack: "S01-S05", "S01-05", "S01 S02 S03", "Seasons 1-5", "Season 1 to 9". Groups 1-2
+// are the "S01-S05" ends, 3-4 the "Seasons 1-5" ends, 5-6 the unspaced "S01-05" ends and 7-8 the
+// first and last of a list of season tags. The bare "S01-05" needs two digits on both sides so a
+// fansub "S2-05" (episode 5) stays an episode.
 const SEASON_RANGE =
-  /\b(?:S(\d{1,2})[ ._]*-[ ._]*S(\d{1,2})|Seasons?[ ._]?(\d{1,2})[ ._]*(?:-|to|thru)[ ._]*(?:Season[ ._]?)?(\d{1,2}))\b(?![ ._]*-?[ ._]*E\d)/i;
+  /\b(?:S(\d{1,2})[ ._]*-[ ._]*S(\d{1,2})|Seasons?[ ._]?(\d{1,2})[ ._]*(?:-|to|thru)[ ._]*(?:Season[ ._]?)?(\d{1,2})|S(\d{2})-(\d{2})|S(\d{1,2})(?:[ ._]+S\d{1,2})*[ ._]+S(\d{1,2}))\b(?![ ._]*-?[ ._]*E\d)/i;
+// What follows a bare season tag and makes it something other than the whole season: one part of a
+// split season ("S02.Part.1", "S07.Vol.1", "S06.P1"), or its extras ("S01.EXTRAS", "S11.SUBPACK",
+// "S01.Special"). Neither covers an episode, and neither is a pack the importer can place.
+const SEASON_PART_TAIL = /^[ ._-]*(?:part|vol(?:ume)?|p)[ ._]?\d{1,2}\b/i;
+const SEASON_EXTRA_TAIL = /^[ ._-]*(?:extras?|subpack|specials?(?![ ._]+(?:edition|features?|presentation)))\b/i;
 // "2nd Season - 05" is "Season 2 - 05": same shape, written the way AniList titles it.
 const ORDINAL_SEASON = /\b(\d{1,2})(?:st|nd|rd|th)\s+Season\b/gi;
 // Sonarr's list of hashed release names, which carry nothing to compare against a title.
@@ -101,7 +133,7 @@ const HASHED_NAMES = [/^[0-9a-zA-Z]{32}/, /^[a-z0-9]{24}$/, /^[A-Z]{11}\d{3}$/, 
 // resolution or the end of the title follows (optionally after "END"). A decimal ("S2 - 12.5") is
 // a recap or special between two regular episodes.
 const SEASON_DASH_EPISODE =
-  /\bS(?:eason\s*)?(\d{1,2})\s+-\s+0*(\d{1,3})(\.\d)?(?:v\d)?(?=[\s[(~-]|$)(?:\s*~\s*0*(\d{1,3})(?:v\d)?(?![\da-z])|-0*(\d{1,3})(?:v\d)?(?![\da-z])|\s*-\s*0*(\d{1,3})(?:v\d)?(?!\d)(?=\s*(?:end\s*)?(?:[[(+]|\d{3,4}[pi]\b|$)))?/i;
+  /\bS(?:eason\s*)?(\d{1,2})\)?\s+-\s+0*(\d{1,3})(\.\d)?(?:v\d)?(?=[\s[(~-]|$)(?:\s*~\s*0*(\d{1,3})(?:v\d)?(?![\da-z])|-0*(\d{1,3})(?:v\d)?(?![\da-z])|\s*-\s*0*(\d{1,3})(?:v\d)?(?!\d)(?=\s*(?:end\s*)?(?:[[(+]|\d{3,4}[pi]\b|$)))?/i;
 // "The Office Season 1 - 9 Complete" and "Friends Season 1 - 10 Complete" are multi-season
 // collections, not episode 9 or 10: a spelled-out season followed by an unpadded single digit, or
 // any match followed by a collection word, is left to the season-pack rules below.
@@ -130,10 +162,12 @@ const YEAR = /\b(19|20)\d{2}\b/;
 // Matches "2024.08.25", "2024-08-25", or "2024 08 25" — the three separators scene releases
 // actually use; month/day are sanity-range-checked below since this alone can't tell a real date
 // apart from three coincidentally date-shaped numbers.
-const AIR_DATE = /\b((?:19|20)\d{2})[.\-\s](\d{1,2})[.\-\s](\d{1,2})\b/;
+// Month and day take two digits, as in Sonarr's own patterns: "Movie.2019.5.1" is a year and an audio
+// layout, not May 1st.
+const AIR_DATE = /\b((?:19|20)\d{2})[.\-\s](\d{2})[.\-\s](\d{2})\b/;
 // The same date with the year last ("08.25.2024", "25.08.2024"); see parseReleaseTitle for how the
 // first two numbers are read.
-const AIR_DATE_YEAR_LAST = /\b(\d{1,2})[.\-\s](\d{1,2})[.\-\s]((?:19|20)\d{2})\b/;
+const AIR_DATE_YEAR_LAST = /\b(\d{2})[.\-\s](\d{2})[.\-\s]((?:19|20)\d{2})\b/;
 // Anime fansub convention: "[Group] Show Title - 145 [1080p]" — a bare number after " - " with
 // no SxxExx designator anywhere in the title. Deliberately narrow (requires the space-hyphen-space
 // separator) to avoid catching an arbitrary number elsewhere in the title.
@@ -156,7 +190,7 @@ const LEADING_SITE = /^www\.[\w-]+(?:\.[a-z]{2,})+\s*[-–]?\s*/i;
 // WEB-DL/WEBRip or when a codec follows it, the same way SD_SOURCE reads it. "complete" alone is a
 // title word ("Complete Unknown"); it ends a title only with a pack word.
 const TITLE_END_MARKER =
-  /\b(?:\d{3,4}[pi]|4k|uhd|bluray|blu-ray|bdrip|brrip|bdremux|remux|web-?dl|webrip|web[ ._-]+(?:[hx][ .]?26[45]|hevc|avc|xvid|divx)|hdtv|pdtv|sdtv|dvdrip|dvd[59]?|hdrip|hdcam|camrip|telesync|hdts|telecine|hdtc|workprint|[hx][ .]?26[45]|hevc|avc|av1|xvid|divx|proper|repack|complete[ ._-]+(?:series|seasons?|collection|box[ ._-]?set|pack|edition)|seasons?[ ._-]?\d{1,2}|hi10p?|10bit)\b/gi;
+  /\b(?:\d{3,4}[pi]|4k|uhd|bluray|blu-ray|bdrip|brrip|bdremux|remux|web-?dl|webrip|web[ ._-]+(?:[hx][ .]?26[45]|hevc|avc|xvid|divx)|hdtv|pdtv|sdtv|dvdrip|dvd[59]?|hdrip|hq-?cam|new-?cam|hd-?cam(?:rip)?|cam-?rip|telesynch?|ts-?rip|hd-?ts(?:rip)?|telecine|hd-?tc|workprint|pdvd|screener|dvd-?scr|brrip|bdmux|mbluray|uhd2?bd|fhd|[hx][ .]?26[45]|hevc|avc|av1|xvid|divx|proper|repack|complete[ ._-]+(?:series|seasons?|collection|box[ ._-]?set|pack|edition)|seasons?[ ._-]?\d{1,2}|hi10p?|10bit)\b/gi;
 const YEAR_ALL = /\b(19|20)\d{2}\b/g;
 // Another year right after this one ("1984.2024", "Blade Runner 2049 (2017)"): this one is part of
 // the title (Radarr's `(?!...\W(19|20)\d{2})` lookahead, plus the bracketed Plex/YTS form).
@@ -234,33 +268,69 @@ function cleanTitleSlice(slice: string): string {
     .trim();
 }
 
-const RESOLUTION_2160 = /\b(2160p|4k|uhd)\b/i;
-const RESOLUTION_1080 = /\b1080p\b/i;
-const RESOLUTION_720 = /\b720p\b/i;
-const RESOLUTION_576 = /\b576[pi]\b/i;
-const RESOLUTION_480 = /\b480[pi]\b/i;
+// Explicit resolutions come first, in the order Sonarr and Radarr read them, so "1080p UHD BluRay" is
+// a 1080p encode of a UHD source and "1080i" is 1080p. A "p" may follow a source tag directly
+// ("[BD1080p]"), so only a digit before the number is ruled out. A bare "UHD"/"4K" names 2160p only
+// when no resolution is written at all (Sonarr's AlternativeResolutionRegex).
+const RESOLUTION_2160 = /(?<!\d)(?:2160p|3840x2160)\b/i;
+const RESOLUTION_1080 = /(?<!\d)(?:1080[pi]|1440p)\b|\b1920x1080\b|(?<!-)\bfhd\b/i; // "-FHD" is a release group
+const RESOLUTION_720 = /(?<!\d)(?:720p|960p)\b|\b1280x720\b/i;
+const RESOLUTION_576 = /(?<!\d)576[pi]\b/i;
+const RESOLUTION_480 = /(?<!\d)480[pi]\b|\b(?:848|640)x480\b/i;
+const RESOLUTION_UHD_FALLBACK = /\b(?:4k|uhd)\b/i;
 
-const SOURCE_REMUX = /\bremux\b/i;
-const SOURCE_BLURAY = /\b(bluray|blu-ray|bdrip)\b/i;
+// "BDRemux", "UHD Remux" and a plain "Remux".
+const SOURCE_REMUX = /\b(?:bd|uhd)?remux\b/i;
+// Blu-ray in every spelling the Starr apps read: the rips and muxes of it, and HD DVD, which sits on
+// the same tiers.
+const SOURCE_BLURAY = /\b(?:m?blu-?ray|bdrip|brrip|bdmux|bdlight|uhd2?bd(?:rip)?|hd-?dvd(?:rip)?)\b/i;
+// "BD" as a tag of its own ("[BD][1080p]", "BD1080p"). Weaker than a named source ("Movie.BD.Love.
+// 2020.1080p.WEB-DL" is a WEB-DL), and not a group ("x264-BD").
+const SOURCE_BD_TAG = /(?<!-)\bbd(?:\d{3,4}p)?\b(?!$)/i;
 const SOURCE_WEBDL = /\b(web-?dl|webdl)\b/i;
-const SOURCE_WEBRIP = /\bwebrip\b/i;
+const SOURCE_WEBRIP = /\bweb-?(?:rip|mux)\b/i;
 const SOURCE_HDTV = /\bhdtv\b/i;
 const SOURCE_DVD = /\bdvd(rip)?\b/i;
 // Sources that are SD when no resolution is given: TV/satellite captures and BD/BR rips. Bare "WEB"
 // only counts followed by a codec ("Show.S01E01.WEB.h264-GRP"), since it's also a title word.
 const SD_SOURCE = /\b(sdtv|pdtv|tvrip|dsr|dsrip|satrip|dvb|dvbrip|bdrip|brrip)\b|\bweb[ ._-]+(?:[hx][ .]?26[45]|hevc|avc|xvid|divx)\b/i;
-// Movie-only, lowest-quality theatrical-capture sources (Radarr/Whisparr's own Source vocabulary,
-// AoNarr had no equivalent for any of these) — kept narrow ("ts"/"tc" alone are too short/ambiguous
-// to safely match as bare words against an arbitrary title.
-const SOURCE_CAM = /\b(cam|hdcam|camrip)\b/i;
-const SOURCE_TELESYNC = /\b(telesync|hdts)\b/i;
-const SOURCE_TELECINE = /\b(telecine|hdtc)\b/i;
+// Movie-only, lowest-quality theatrical-capture sources, in Radarr's own Source vocabulary. The
+// strong spellings name a capture whatever else the title says, so they are read before any real
+// source; a bare "cam", "TS" or "TC" is also an ordinary word or tag, so those count only when no
+// real source is named, and "TS"/"TC" only as a separate token ("Movie.2024.1080p.TS.x264", never
+// the ".ts" extension or the "ts" inside a word).
+const SOURCE_CAM_STRONG = /\b(?:hq-?cam|new-?cam|hd-?cam(?:rip)?|cam-?rip)\b/i;
+const SOURCE_TELESYNC_STRONG = /\b(?:telesynch?|hd-?ts(?:rip)?|ts-?rip|pdvd)\b/i;
+const SOURCE_TELECINE_STRONG = /\b(?:telecine|hd-?tc)\b/i;
+const SOURCE_CAM = /\bcam\b/i;
+const SOURCE_TELESYNC = /(?<=[ ._])ts(?=[ ._-])/i;
+const SOURCE_TELECINE = /(?<=[ ._])tc(?=[ ._-])/i;
 const SOURCE_WORKPRINT = /\bworkprint\b/i;
+// A screener or DVD screener: a pre-release copy no profile should take as DVD or WEB-DL.
+const SOURCE_SCREENER = /\b(?:screener|(?:dvd|bd)-?scr(?:eener)?|scr)\b/i;
+
+// A disc image: the Blu-ray structure of a film or show, or a DVD image. Ported from Radarr's
+// BRDISKRegex and Sonarr's RawDiskSpecification. Words that mark an encode or a remux rule it out.
+const DISC_ENCODE_WORDS = /\b(?:(?<!HD[._ -]|HD)DVD|BDRip|720p|MKV|XviD|WMV|d3g|(?:BD)?REMUX|[xh][-_. ]?26[45])\b/i;
+const DISC_BLURAY_WORD = /\b(?:Blu[-_. ]?ray|BD|HD[-_. ]?DVD)\b/i;
+const DISC_STRUCTURE_WORD = /\b(?:AVC|HEVC|VC[-_. ]?1|MVC|MPEG[-_. ]?2|BDMV|ISO)\b/i;
+const DISC_NAMED = /\b(?:3D[-_. ]?BD|BR[-_. ]?DISK|Full[-_. ]?Blu[-_. ]?ray|(?:BD|UHD)[-_. ]?(?:25|50|66|100|ISO)|UNTOUCHED)\b|\bDis[ck][-_. ]?\d+[-_. ].*Blu[-_. ]?ray/i;
+const DISC_COMPLETE = /\b(?:COMPLETE|Dis[ck])\b/i;
+// A language written in the name: German, French and other scene groups write "AVC" for an x264
+// re-encode ("German.DL.1080p.BluRay.AVC", "MULTi.1080p.BluRay.AVC"), which Radarr grades as a
+// remux at most — never a disc.
+const DISC_LANGUAGE_ENCODE = /\b(?:German|MULTi|(?:TRUE)?FRENCH|VFF|VFQ|VF2|VOSTFR|iTALiAN|SPANiSH|DUTCH)\b/i;
+const DISC_DVD_IMAGE = /(?:\d?x?M?DVD-?[R59])(?:[ ._]|$)/i;
 
 const QUALITY_MODIFIER_REGIONAL = /\b(regional|r5)\b/i;
 const QUALITY_MODIFIER_SCREENER = /\b(screener|scr|dvdscr|bdscr)\b/i;
 const QUALITY_MODIFIER_RAWHD = /\brawhd\b/i;
 const QUALITY_MODIFIER_BRDISK = /\b(brdisk|bdmv|bd25|bd50)\b/i;
+// Subtitles burned into the picture. Radarr's HardcodedSubsRegex: any "...SUB(S)" word but the soft
+// ones (softsubs, multisubs, horriblesubs), "HC" and "SUBBED".
+// Also not "ESubs"/"NLSubs"/"EngSubs"/"DualSubs"/"Fansubs", which name a language or a subtitle file,
+// not a burned-in track (the check runs on the tags, with a leading "[Group]" left out).
+const HARDCODED_SUBS = /\b(?:\w+(?<!SOFT|MULTI|HORRIBLE|DUAL|FAN|ANIME|NL|ENG|EN|E)SUBS?|HC|SUBBED)\b/i;
 
 // Radarr's own edition vocabulary, trimmed to the common cases — deliberately broader than (and
 // overlapping with) the fixed directorscut/extended/unrated/imax flags above, since this is meant
@@ -393,6 +463,8 @@ function detectResolution(title: string): string | null {
   if (RESOLUTION_720.test(title)) return "720p";
   if (RESOLUTION_576.test(title)) return "576p";
   if (RESOLUTION_480.test(title)) return "480p";
+  // "UHD" or "4K" with no resolution written anywhere: take it for 2160p.
+  if (RESOLUTION_UHD_FALLBACK.test(title)) return "2160p";
   return null;
 }
 
@@ -404,17 +476,40 @@ function detectReleaseType(isFullSeason: boolean, episodeNumbers: number[] | nul
 }
 
 function detectSource(title: string): string | null {
+  if (SOURCE_CAM_STRONG.test(title)) return "Cam";
+  if (SOURCE_TELESYNC_STRONG.test(title)) return "Telesync";
+  if (SOURCE_TELECINE_STRONG.test(title)) return "Telecine";
   if (SOURCE_REMUX.test(title)) return "Remux";
   if (SOURCE_BLURAY.test(title)) return "Bluray";
   if (SOURCE_WEBDL.test(title)) return "WEBDL";
   if (SOURCE_WEBRIP.test(title)) return "WEBRip";
   if (SOURCE_HDTV.test(title)) return "HDTV";
+  if (SOURCE_BD_TAG.test(title)) return "Bluray";
   if (SOURCE_DVD.test(title)) return "DVD";
   if (SOURCE_CAM.test(title)) return "Cam";
   if (SOURCE_TELESYNC.test(title)) return "Telesync";
   if (SOURCE_TELECINE.test(title)) return "Telecine";
   if (SOURCE_WORKPRINT.test(title)) return "Workprint";
   return null;
+}
+
+/**
+ * Whether the title names a disc image rather than an encode: Radarr's BR-DISK heuristic (a Blu-ray
+ * with a disc video codec or structure and no encode or remux word), the named disc layouts
+ * (BD-25/50/66/100, UNTOUCHED, "Full Blu-ray", "Disc 1 Blu-ray"), Sonarr's DVD image layouts
+ * (DVD5, DVD9, DVD-R), and a film's "COMPLETE.BLURAY". A season's "COMPLETE" stays a pack of
+ * encodes unless a structure word names the disc.
+ */
+function detectRawDisc(title: string, episodic: boolean): boolean {
+  if (DISC_DVD_IMAGE.test(title)) return true;
+  if (DISC_ENCODE_WORDS.test(title) || (/1080p/i.test(title) && /HEVC/i.test(title))) return false;
+  if (DISC_NAMED.test(title)) return true;
+  // The rest is Radarr's film heuristic. It would read a TV encode written "BluRay.AVC" and a
+  // fansub's "[Group] Show (BD 1080p AVC FLAC)" as a disc, and Sonarr has nothing like it: for
+  // an episode, a pack or a bracket-led fansub name only the named layouts above count.
+  if (episodic || LEADING_BRACKET_GROUP.test(title.trim())) return false;
+  if (DISC_BLURAY_WORD.test(title) && DISC_STRUCTURE_WORD.test(title) && !DISC_LANGUAGE_ENCODE.test(title)) return true;
+  return DISC_COMPLETE.test(title) && /\b(?:Blu[-_. ]?ray|HD[-_. ]?DVD)\b/i.test(title);
 }
 
 function detectQualityModifier(title: string): ParsedRelease["qualityModifier"] {
@@ -434,7 +529,9 @@ function detectFlags(title: string): ReleaseFlag[] {
   return FLAG_PATTERNS.filter(([, pattern]) => pattern.test(title)).map(([flag]) => flag);
 }
 
-function detectQuality(title: string): QualityName | "Unknown" {
+function detectQuality(title: string, rawDisc: boolean): QualityName | "Unknown" {
+  // A disc image is no encode of any tier, whatever resolution or source it names.
+  if (rawDisc) return "Unknown";
   // Only the resolutions the quality ladder actually has tiers for — 480p/576p are exposed on
   // `resolution` for custom-format conditions, but "WEBDL-480p" isn't a quality: a 576i DVD rip
   // grades as plain "DVD", and any other sub-720p video release as the "SD" tier.
@@ -443,8 +540,9 @@ function detectQuality(title: string): QualityName | "Unknown" {
   const source = detectSource(title);
   // A theatrical capture is never a real WEB/Bluray tier, whatever resolution it claims — falling
   // through to the WEBDL default below graded "Movie.1080p.HDCAM" as WEBDL-1080p, which any
-  // profile allowing that tier would happily auto-grab.
+  // profile allowing that tier would happily auto-grab. A screener is the same: a pre-release copy.
   if (source === "Cam" || source === "Telesync" || source === "Telecine" || source === "Workprint") return "Unknown";
+  if (SOURCE_SCREENER.test(title) && (source === null || source === "DVD")) return "Unknown";
   if (!suffix) {
     if (source === "DVD") return "DVD";
     // Only a sub-HD encode is the ladder's "SD" tier: resolution-less scene naming
@@ -456,11 +554,14 @@ function detectQuality(title: string): QualityName | "Unknown" {
     return "Unknown";
   }
 
-  if (source === "Remux") return `Remux-${suffix}` as QualityName;
+  // The ladder has no 720p remux tier; Radarr grades one as Bluray-720p, and so does this.
+  if (source === "Remux") return (suffix === "720p" ? "Bluray-720p" : `Remux-${suffix}`) as QualityName;
   if (source === "Bluray") return `Bluray-${suffix}` as QualityName;
   if (source === "WEBDL") return `WEBDL-${suffix}` as QualityName;
   if (source === "WEBRip") return `WEBRip-${suffix}` as QualityName;
   if (source === "HDTV") return `HDTV-${suffix}` as QualityName;
+  // A DVD source is a DVD whatever size the resolution tag claims ("Movie.1080p.DVDRip").
+  if (source === "DVD") return "DVD";
 
   // Resolution present but no recognizable source tag: assume WEB-DL, the most common case.
   return `WEBDL-${suffix}` as QualityName;
@@ -505,10 +606,38 @@ function cappedEnd(start: number, end: number): number {
   return end - start >= MAX_EPISODE_RANGE ? start : end;
 }
 
-export function parseReleaseTitle(title: string): ParsedRelease {
+/** What follows a bare season tag, if it makes the release something other than the whole season. */
+function seasonTail(rest: string, seasonNumber: number): "part" | "extra" | null {
+  if (SEASON_PART_TAIL.test(rest)) return "part";
+  // Season 0 is the specials themselves, so "S00 Specials" is the whole of it.
+  if (seasonNumber !== 0 && SEASON_EXTRA_TAIL.test(rest)) return "extra";
+  return null;
+}
+
+/** "YYYY-MM-DD" for a real calendar date no more than a fortnight ahead (Sonarr's guard against a
+ * date-shaped run of numbers), else null. */
+function validAirDate(year: number, month: number, day: number): string | null {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  if (date.getTime() > Date.now() + 14 * 24 * 3600 * 1000) return null;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/** Options for parseReleaseTitle when the name is that of a file already in the library, not a
+ * release on offer: a file is never a disc image, whatever its name says ("Movie.1080p.BluRay.AVC.
+ * DTS-HD.mkv" is a remux). */
+export const FILE_NAME = { file: true } as const;
+
+export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }): ParsedRelease {
+  // Underscores stand for spaces in older fansub batches, AniLibria and some Usenet posts
+  // ("Series_Title_S01E05_720p_HDTV_x264-GRP"); every \b-anchored pattern below reads "_" as a
+  // letter. Only the hashed-name check below looks at the name as it was written.
+  const title = rawTitle.replace(/_/g, " ");
   let seasonNumber: number | null = null;
   let episodeNumbers: number[] | null = null;
   let isFullSeason = false;
+  let seasonPart = false;
+  let seasonExtra = false;
   let episodeRange: [number, number] | null = null;
   // Where the numbering (season/episode/absolute/air-date/pack) marker starts: the title ends there.
   let markerIndex: number | null = null;
@@ -525,7 +654,8 @@ export function parseReleaseTitle(title: string): ParsedRelease {
     } else {
       // Single episode, or a hyphenated "-E03"/"-03" range end, or a repeated season tag
       // ("S01E01-S01E02", the same season only) — inclusive.
-      const end = rangeMatch[3] ? Number(rangeMatch[3]) : rangeMatch[5] && Number(rangeMatch[4]) === seasonNumber ? Number(rangeMatch[5]) : start;
+      // A range that ends before it starts is no range ("S12E13-3 Acts of God": a title's own number).
+      const end = Math.max(start, rangeMatch[3] ? Number(rangeMatch[3]) : rangeMatch[5] && Number(rangeMatch[4]) === seasonNumber ? Number(rangeMatch[5]) : start);
       episodeNumbers = [];
       for (let e = start; e <= end; e++) episodeNumbers.push(e);
     }
@@ -533,6 +663,18 @@ export function parseReleaseTitle(title: string): ParsedRelease {
     const dashMatch = seasonDashEpisode(title);
     const xMatch = dashMatch ? null : title.match(SEASON_EP_X_FORMAT);
     const wordMatch = dashMatch || xMatch ? null : title.match(SEASON_WORD_EPISODE);
+    // "Season 01 Episode 05-06": two or three episodes, not the whole season.
+    const wordRangeMatch = (() => {
+      if (dashMatch || xMatch || wordMatch) return null;
+      const m = title.match(SEASON_WORD_EPISODE_RANGE);
+      return m && Number(m[3]) > Number(m[2]) && Number(m[3]) - Number(m[2]) + 1 < DASH_RANGE_BATCH_SIZE ? m : null;
+    })();
+    // "Title S2 [05][1080p]": the bracket holds the episode, unless it is a resolution.
+    const bracketMatch = (() => {
+      if (dashMatch || xMatch || wordMatch || wordRangeMatch) return null;
+      const m = title.match(SEASON_BRACKET_EPISODE);
+      return m && ![480, 576, 720].includes(Number(m[2])) ? m : null;
+    })();
     if (dashMatch) {
       markerIndex = dashMatch.index ?? null;
       seasonNumber = Number(dashMatch[1]);
@@ -563,12 +705,24 @@ export function parseReleaseTitle(title: string): ParsedRelease {
       markerIndex = wordMatch.index ?? null;
       seasonNumber = Number(wordMatch[1]);
       episodeNumbers = [Number(wordMatch[2])];
+    } else if (wordRangeMatch) {
+      markerIndex = wordRangeMatch.index ?? null;
+      seasonNumber = Number(wordRangeMatch[1]);
+      episodeNumbers = [];
+      for (let e = Number(wordRangeMatch[2]); e <= Number(wordRangeMatch[3]); e++) episodeNumbers.push(e);
+    } else if (bracketMatch) {
+      markerIndex = bracketMatch.index ?? null;
+      seasonNumber = Number(bracketMatch[1]);
+      episodeNumbers = [Number(bracketMatch[2])];
     } else {
       const seasonMatch = title.match(SEASON_ONLY);
       if (seasonMatch) {
         markerIndex = seasonMatch.index ?? null;
         seasonNumber = Number(seasonMatch[1]);
-        isFullSeason = true;
+        const tail = seasonTail(title.slice(markerIndex! + seasonMatch[0].length), seasonNumber);
+        seasonPart = tail === "part";
+        seasonExtra = tail === "extra";
+        isFullSeason = tail === null;
       } else {
         const fullSeasonMatch = title.match(FULL_SEASON_HINT);
         if (fullSeasonMatch) {
@@ -591,10 +745,17 @@ export function parseReleaseTitle(title: string): ParsedRelease {
             // don't) — extract it so a title like "Show Name Season 3 ..." (space-separated, no
             // "S03" abbreviation) can still match a request for that specific season.
             const digits = fullSeasonMatch[1].match(/(\d{1,2})/);
-            if (digits) seasonNumber = Number(digits[1]);
+            if (digits) {
+              seasonNumber = Number(digits[1]);
+              // "Season 2 Part 1", "Season 3 Extras": one part of the season, or its extras.
+              const tail = seasonTail(after, seasonNumber);
+              seasonPart = tail === "part";
+              seasonExtra = tail === "extra";
+              if (tail) isFullSeason = false;
+            }
           }
         }
-        if (!isFullSeason && (BATCH_TAG.test(title) || isAbsoluteBatch(title))) {
+        if (!isFullSeason && !seasonPart && !seasonExtra && (BATCH_TAG.test(title) || isAbsoluteBatch(title))) {
           // With no season, the pack matches no specific episode, which beats matching its first.
           isFullSeason = true;
           // Only a marker after the leading tags bounds the title: a "[Batch]" among them is a tag,
@@ -610,23 +771,27 @@ export function parseReleaseTitle(title: string): ParsedRelease {
   const year = yearMatch ? Number(yearMatch[0]) : null;
 
   let airDate: string | null = null;
+  // A year-last date read two ways: no air date, but still where the title ends.
+  let ambiguousDate = false;
   let dateMatch = title.match(AIR_DATE);
   if (dateMatch) {
-    const month = Number(dateMatch[2]);
-    const day = Number(dateMatch[3]);
-    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-      airDate = `${dateMatch[1]}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    }
+    airDate = validAirDate(Number(dateMatch[1]), Number(dateMatch[2]), Number(dateMatch[3]));
   } else {
-    // Year-last dates: "08.25.2024" (MM.DD, the US convention Sonarr assumes when both numbers
-    // could be a month) or "25.08.2024" (DD.MM, when only that reading is a valid date).
+    // Year-last dates: "08.25.2024" (MM.DD) or "25.08.2024" (DD.MM), whichever is the only valid
+    // reading. When both are ("05.06.2024": 6 May or 5 June) the date is ambiguous and, as in
+    // Sonarr, not read at all — a guess would grab or import the wrong day's episode.
     const yearLast = title.match(AIR_DATE_YEAR_LAST);
     if (yearLast) {
       const first = Number(yearLast[1]);
       const second = Number(yearLast[2]);
-      const monthDay = first >= 1 && first <= 12 && second >= 1 && second <= 31 ? [first, second] : second >= 1 && second <= 12 && first >= 1 && first <= 31 ? [second, first] : null;
+      const monthFirst = first >= 1 && first <= 12 && second >= 1 && second <= 31;
+      const dayFirst = second >= 1 && second <= 12 && first >= 1 && first <= 31;
+      const monthDay = monthFirst && dayFirst ? (first === second ? [first, second] : null) : monthFirst ? [first, second] : dayFirst ? [second, first] : null;
       if (monthDay) {
-        airDate = `${yearLast[3]}-${String(monthDay[0]).padStart(2, "0")}-${String(monthDay[1]).padStart(2, "0")}`;
+        airDate = validAirDate(Number(yearLast[3]), monthDay[0], monthDay[1]);
+        dateMatch = yearLast;
+      } else if (monthFirst && dayFirst) {
+        ambiguousDate = true;
         dateMatch = yearLast;
       }
     }
@@ -641,7 +806,7 @@ export function parseReleaseTitle(title: string): ParsedRelease {
       markerIndex = absMatch.index ?? null;
     }
   }
-  if (airDate && dateMatch) markerIndex = minDefined(markerIndex, dateMatch.index);
+  if ((airDate || ambiguousDate) && dateMatch) markerIndex = minDefined(markerIndex, dateMatch.index);
 
   const imdbMatch = title.match(IMDB_ID);
   const releaseGroup = detectReleaseGroup(title);
@@ -651,7 +816,7 @@ export function parseReleaseTitle(title: string): ParsedRelease {
   // title never runs past the year, a bracket, or the trailing "-GROUP".
   const start = titleStart(title);
   const qualityAt = firstQualityMarker(title, start);
-  const titleYearInfo = detectTitleYear(title, start, minDefined(markerIndex, qualityAt), airDate ? dateMatch : null, releaseGroup);
+  const titleYearInfo = detectTitleYear(title, start, minDefined(markerIndex, qualityAt), airDate || ambiguousDate ? dateMatch : null, releaseGroup);
   // A bracket ends the title, except a short qualifier that IS part of it: "Shameless (US)" must
   // stay distinct from "Shameless", and "(2017)" is handled by the title year.
   const bracketAt = (() => {
@@ -676,11 +841,15 @@ export function parseReleaseTitle(title: string): ParsedRelease {
   if (isFullSeason && episodeNumbers === null) {
     const rangeSeasons = title.match(SEASON_RANGE);
     if (rangeSeasons) {
-      const first = Number(rangeSeasons[1] ?? rangeSeasons[3]);
-      const last = Number(rangeSeasons[2] ?? rangeSeasons[4]);
+      const first = Number(rangeSeasons[1] ?? rangeSeasons[3] ?? rangeSeasons[5] ?? rangeSeasons[7]);
+      const last = Number(rangeSeasons[2] ?? rangeSeasons[4] ?? rangeSeasons[6] ?? rangeSeasons[8]);
       if (first === seasonNumber && last > first && last - first < MAX_SEASON_RANGE) seasonRange = [first, last];
     }
   }
+
+  const episodic = seasonNumber !== null || episodeNumbers !== null || isFullSeason || seasonPart || seasonExtra || absoluteEpisode !== null || airDate !== null;
+  const rawDisc = !options?.file && detectRawDisc(title, episodic);
+  const qualityModifier = detectQualityModifier(tags) ?? (rawDisc && !DISC_DVD_IMAGE.test(title) ? "brdisk" : null);
 
   return {
     title: isolatedTitle,
@@ -689,7 +858,7 @@ export function parseReleaseTitle(title: string): ParsedRelease {
     episodeNumbers,
     isFullSeason,
     year,
-    quality: detectQuality(title),
+    quality: detectQuality(title, rawDisc),
     source: detectSource(title),
     resolution: detectResolution(title),
     flags: detectFlags(title),
@@ -699,11 +868,15 @@ export function parseReleaseTitle(title: string): ParsedRelease {
     absoluteEpisode,
     imdbId: imdbMatch ? imdbMatch[0].toLowerCase() : null,
     edition: detectEdition(tags),
-    qualityModifier: detectQualityModifier(tags),
+    qualityModifier,
     releaseType: detectReleaseType(isFullSeason, episodeNumbers),
     episodeRange,
     seasonRange,
-    rejected: HASHED_NAMES.some((pattern) => pattern.test(title.trim())),
+    rejected: HASHED_NAMES.some((pattern) => pattern.test(rawTitle.trim())),
+    seasonPart,
+    seasonExtra,
+    hardcodedSubs: HARDCODED_SUBS.test(tags.replace(LEADING_BRACKET_GROUP, " ")),
+    rawDisc,
   };
 }
 

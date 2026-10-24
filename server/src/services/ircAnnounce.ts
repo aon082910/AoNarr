@@ -2,6 +2,7 @@ import { db } from "../db/index.js";
 import { log } from "./logger.js";
 import { getMediaTypeConfig } from "./mediaTypes.js";
 import { parseReleaseTitle, releaseMatchesEpisode } from "./releaseParser.js";
+import { releaseRejection } from "./releaseRejections.js";
 import { sceneIndexFor } from "./sceneNumbering.js";
 import { guessTitleFromText, titlesMatch } from "./libraryScan.js";
 import { scoreRelease } from "./customFormatScoring.js";
@@ -99,7 +100,15 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
     if (parsed.year != null && item.year != null && Math.abs(parsed.year - item.year) > 1) continue;
     singleCandidates.push(item);
   }
+  // An announce carries no size, so the sample rule has nothing to judge here; the others apply as
+  // they do to a search result (multi-season and partial packs, disc images, hard-coded subtitles).
+  const refusal = (type: string) => {
+    const rejection = releaseRejection(parsed, { title: releaseTitle }, type);
+    if (rejection) log.info(`[irc:${feed.name}] not grabbing "${releaseTitle}": ${rejection.reason}`);
+    return rejection;
+  };
   for (const item of singleCandidates) {
+    if (refusal(item.type)) continue;
     const grabbed = await serializeForTarget(`item:${item.id}`, async () => {
       if (await isAlreadyQueued(item.id, null, null)) return false;
       return tryGrabMatch(item, null, null, releaseTitle, downloadUrl, parsed.quality, feed, targetClient);
@@ -135,6 +144,7 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
   }
   if (resolvedShow.kind !== "one") return;
   const show = resolvedShow.item;
+  if (refusal(show.type)) return;
   const sceneIndex = await sceneIndexFor(show.id);
   for (const ep of episodes) {
     if (ep.parent_id !== show.id) continue;

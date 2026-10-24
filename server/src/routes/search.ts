@@ -21,6 +21,7 @@ import { knownReleaseSize, sizeWithinQualityBounds, usesQualityTiers } from "../
 import { getBlocklistedTitles, isBlocklisted } from "../services/blocklist.js";
 import { matchTierFor, targetIdentityOf, tvdbIdOf, type TargetIdentity } from "../services/scheduler.js";
 import { identityModeFor, releaseIdentifiesTarget } from "../services/releaseIdentity.js";
+import { releaseRejection } from "../services/releaseRejections.js";
 import { alternateQueriesFor, aliasTitlesFor, identityTargetFor } from "../services/releaseAliases.js";
 import { searchSlskd } from "../services/soulseek.js";
 import { pickClientForProtocol, searchAndGrabTargets, type BulkSearchTarget } from "../services/scheduler.js";
@@ -225,6 +226,9 @@ searchRouter.get(
             : true;
       const verdict = identityTarget ? releaseIdentifiesTarget(r, parsed, identityTarget) : null;
       const size = knownReleaseSize(r.size);
+      // The same refusals an automatic grab applies (multi-season packs, split seasons, disc images,
+      // samples, burned-in subtitles); the user may still pick the release by hand.
+      const refusal = releaseRejection(parsed, { title: r.title, size }, item.type);
       const { totalScore, matches, rejected, rejectReason } = await scoreRelease(
         r.title,
         size,
@@ -249,8 +253,8 @@ searchRouter.get(
         identityRejection: verdict && !verdict.ok ? verdict.reason : null,
         parsedTitle: parsed.title,
         blocklisted: blocklisted.has(r.title),
-        rejected: rejected || parsed.rejected,
-        rejectReason: parsed.rejected ? "The release name is a hash, so there is no title to check it against" : rejectReason,
+        rejected: rejected || parsed.rejected || !!refusal,
+        rejectReason: parsed.rejected ? "The release name is a hash, so there is no title to check it against" : refusal ? refusal.reason : rejectReason,
       };
     }));
 

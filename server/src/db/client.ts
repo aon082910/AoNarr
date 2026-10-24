@@ -509,6 +509,7 @@ const DEFAULT_QUALITY_SEED = [
   "HDTV-720p",
   "WEBRip-720p",
   "WEBDL-720p",
+  "Bluray-720p",
   "HDTV-1080p",
   "WEBRip-1080p",
   "WEBDL-1080p",
@@ -537,7 +538,7 @@ if (profileCount === 0) {
     "INSERT INTO quality_profiles (name, allowed_qualities, cutoff) VALUES (?, ?, ?)"
   ).run(
     "Any",
-    JSON.stringify(["SD", "HDTV-720p", "WEBDL-720p", "HDTV-1080p", "WEBDL-1080p", "Bluray-1080p", "Remux-2160p"]),
+    JSON.stringify(["SD", "HDTV-720p", "WEBDL-720p", "Bluray-720p", "HDTV-1080p", "WEBDL-1080p", "Bluray-1080p", "Remux-2160p"]),
     "WEBDL-1080p"
   );
 }

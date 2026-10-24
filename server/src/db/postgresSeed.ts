@@ -28,7 +28,7 @@ export async function seedPostgresDefaults(db: AsyncDb): Promise<void> {
       .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff) VALUES (?, ?, ?)")
       .run(
         "Any",
-        JSON.stringify(["SD", "HDTV-720p", "WEBDL-720p", "HDTV-1080p", "WEBDL-1080p", "Bluray-1080p", "Remux-2160p"]),
+        JSON.stringify(["SD", "HDTV-720p", "WEBDL-720p", "Bluray-720p", "HDTV-1080p", "WEBDL-1080p", "Bluray-1080p", "Remux-2160p"]),
         "WEBDL-1080p"
       );
   }

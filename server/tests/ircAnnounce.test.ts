@@ -547,3 +547,49 @@ describe("handleAnnounce — alternate titles and library-wide resolution (Round
     expect((grab.mock.calls[0][1] as any).id).toBe(id);
   });
 });
+
+describe("handleAnnounce — releases that can never import (matching Round 7)", () => {
+  it("does not grab a cam copy as a WEB-DL, nor a raw disc image as a Blu-ray encode", async () => {
+    const profileId = await insertProfile({ allowedQualities: ["WEBDL-1080p", "Bluray-1080p"] });
+    await insertMovie("Round Seven Movie", profileId, 2024);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Round.Seven.Movie.2024.1080p.HQCAM.x264-GRP"));
+    await handleAnnounce(FEED, announceText("Round.Seven.Movie.2024.1080p.Blu-ray.AVC.DTS-HD.MA.5.1-GRP"));
+    await handleAnnounce(FEED, announceText("Round.Seven.Movie.2024.1080p.BD-50"));
+    expect(grab).not.toHaveBeenCalled();
+
+    await handleAnnounce(FEED, announceText("Round.Seven.Movie.2024.1080p.BluRay.x264-GRP"));
+    expect(grab).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not grab a film with burned-in subtitles, unless the rule is switched off", async () => {
+    const profileId = await insertProfile();
+    await insertMovie("Subbed Movie", profileId, 2021);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Subbed.Movie.2021.1080p.WEB-DL.HC.x264-GRP"));
+    expect(grab).not.toHaveBeenCalled();
+
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    setSetting("rejectHardcodedSubs", "0");
+    try {
+      await handleAnnounce(FEED, announceText("Subbed.Movie.2021.1080p.WEB-DL.HC.x264-GRP", "https://example.com/dl/2"));
+      expect(grab).toHaveBeenCalledTimes(1);
+    } finally {
+      setSetting("rejectHardcodedSubs", "");
+    }
+  });
+
+  it("takes an episode written S01.Ep06 for that episode only", async () => {
+    const profileId = await insertProfile();
+    const showId = await insertShow("Ep Form Show", profileId);
+    const six = await insertEpisode(showId, 1, 6);
+    await insertEpisode(showId, 1, 7);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Ep.Form.Show.S01.Ep06.1080p.WEBDL-GRP"));
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect(grab.mock.calls[0][2]).toBe(six);
+  });
+});
