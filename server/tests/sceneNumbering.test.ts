@@ -191,3 +191,76 @@ describe("syncAllSceneNumbering", () => {
     expect(requestedUrls.some((u) => u.includes("id=202"))).toBe(false);
   });
 });
+
+describe("sceneIndexFor", () => {
+  it("maps each scene number that differs from the aired one to the episode that carries it", async () => {
+    const { sceneIndexFor } = await import("../src/services/sceneNumbering.js");
+    const showId = await insertSeries("series", "Index Show", { tvdb: "900" });
+    await insertEpisode(showId, 1, 5);
+    await insertEpisode(showId, 5, 1);
+    await insertEpisode(showId, 2, 2);
+    await db.prepare("UPDATE episodes SET scene_season_number = 5, scene_episode_number = 1 WHERE media_item_id = ? AND season_number = 1 AND episode_number = 5").run(showId);
+    await db.prepare("UPDATE episodes SET scene_season_number = 2, scene_episode_number = 2 WHERE media_item_id = ? AND season_number = 2 AND episode_number = 2").run(showId);
+
+    const index = await sceneIndexFor(showId);
+
+    // S02E02 maps to itself and says nothing.
+    expect(Array.from(index!.entries())).toEqual([["5:1", "1:5"]]);
+  });
+
+  it("is undefined for a show with no scene numbering, and when the mode setting asks for the older rule", async () => {
+    const { sceneIndexFor } = await import("../src/services/sceneNumbering.js");
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    const plain = await insertSeries("series", "Unmapped Index Show", { tvdb: "901" });
+    await insertEpisode(plain, 1, 1);
+    expect(await sceneIndexFor(plain)).toBeUndefined();
+
+    const mapped = await insertSeries("series", "Mode Index Show", { tvdb: "902" });
+    await insertEpisode(mapped, 1, 2);
+    await db.prepare("UPDATE episodes SET scene_season_number = 3, scene_episode_number = 4 WHERE media_item_id = ?").run(mapped);
+    expect(await sceneIndexFor(mapped)).toBeDefined();
+    setSetting("sceneNumberingMode", "or");
+    try {
+      expect(await sceneIndexFor(mapped)).toBeUndefined();
+    } finally {
+      setSetting("sceneNumberingMode", "");
+    }
+  });
+});
+
+describe("syncSceneNumbering — a corrected mapping", () => {
+  it("clears the scene numbers TheXEM no longer lists before writing the new ones", async () => {
+    const { syncSceneNumbering } = await import("../src/services/sceneNumbering.js");
+    const showId = await insertSeries("series", "Remapped Show", { tvdb: "903" });
+    await insertEpisode(showId, 1, 1);
+    await insertEpisode(showId, 1, 2);
+    mockXemResponse({ result: "success", data: [{ tvdb: { season: 1, episode: 1 }, scene: { season: 2, episode: 1 } }, { tvdb: { season: 1, episode: 2 }, scene: { season: 2, episode: 2 } }] });
+    expect(await syncSceneNumbering(showId)).toEqual({ updated: 2 });
+
+    // The corrected mapping drops episode 2.
+    mockXemResponse({ result: "success", data: [{ tvdb: { season: 1, episode: 1 }, scene: { season: 2, episode: 1 } }] });
+    expect(await syncSceneNumbering(showId)).toEqual({ updated: 1 });
+
+    expect(await sceneNumbers(showId, 1, 1)).toEqual({ scene_season_number: 2, scene_episode_number: 1 });
+    expect(await sceneNumbers(showId, 1, 2)).toEqual({ scene_season_number: null, scene_episode_number: null });
+
+    // A show TheXEM stops mapping at all is cleared too.
+    mockXemResponse({ result: "success", data: [] });
+    expect(await syncSceneNumbering(showId)).toEqual({ updated: 0 });
+    expect(await sceneNumbers(showId, 1, 1)).toEqual({ scene_season_number: null, scene_episode_number: null });
+  });
+
+  it("leaves the existing scene numbers alone when TheXEM answers without a mapping or fails", async () => {
+    const { syncSceneNumbering } = await import("../src/services/sceneNumbering.js");
+    const showId = await insertSeries("series", "Kept Mapping Show", { tvdb: "904" });
+    await insertEpisode(showId, 1, 1);
+    await db.prepare("UPDATE episodes SET scene_season_number = 2, scene_episode_number = 1 WHERE media_item_id = ?").run(showId);
+
+    mockXemResponse({ result: "failure", message: "no show" });
+    expect(await syncSceneNumbering(showId)).toEqual({ updated: 0 });
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 503 }) as any));
+    expect(await syncSceneNumbering(showId)).toEqual({ error: expect.stringContaining("HTTP 503") });
+
+    expect(await sceneNumbers(showId, 1, 1)).toEqual({ scene_season_number: 2, scene_episode_number: 1 });
+  });
+});

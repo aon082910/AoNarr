@@ -14,7 +14,8 @@ import { notifyQueueChanged } from "./realtime.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import { identityKey, identityModeFor, releaseIdentifiesTarget, type IdentityTarget } from "./releaseIdentity.js";
 import { identityTargetFor } from "./releaseAliases.js";
-import type { ParsedRelease } from "./releaseParser.js";
+import type { ParsedRelease, SceneIndex } from "./releaseParser.js";
+import { sceneIndexFor } from "./sceneNumbering.js";
 import {
   downloadSubtitleContent,
   downloadSubtitleFromUrl,
@@ -1234,13 +1235,13 @@ export function createLibraryFolderSkeleton(
 }
 
 type EpisodeTarget =
-  | { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null; absoluteEpisode?: number | null }
+  | { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null; absoluteEpisode?: number | null; sceneIndex?: SceneIndex }
   | { airDate: string };
 
 function parsedMatchesTarget(parsed: ReturnType<typeof parseReleaseTitle>, target: EpisodeTarget): boolean {
   return "airDate" in target
     ? releaseMatchesAirDate(parsed, target.airDate)
-    : releaseMatchesEpisode(parsed, target.season, target.episode, target.sceneSeason, target.sceneEpisode, target.absoluteEpisode);
+    : releaseMatchesEpisode(parsed, target.season, target.episode, target.sceneSeason, target.sceneEpisode, target.absoluteEpisode, target.sceneIndex);
 }
 
 /** Whether a file's own name (no folder, no extension) names this episode — not merely its season,
@@ -2416,6 +2417,7 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
           sceneSeason: epRow.scene_season_number,
           sceneEpisode: epRow.scene_episode_number,
           absoluteEpisode: item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, epRow.season_number, epRow.episode_number) : null,
+          sceneIndex: await sceneIndexFor(item.id),
         };
   }
 

@@ -59,17 +59,39 @@ export interface ParsedRelease {
    * 08.25") never counts. `year` keeps the older first-match behaviour for the custom-format "year"
    * condition and the ranking tiebreaker; identity decisions use this field. */
   titleYear: number | null;
+  /** The seasons a multi-season pack spans, inclusive ("S01-S05", "Seasons 1-5"); `seasonNumber`
+   * is the first. Null or absent for every other release. Recognised only: a pack is still taken
+   * for its first season alone, because grabbing and importing one pack for several seasons is
+   * bookkeeping the queue does not do yet. */
+  seasonRange?: [number, number] | null;
+  /** The whole name is an obfuscated token (a 32-character hash, Sonarr's other hashed shapes)
+   * with no title to compare. For release and queue titles; a file inside a folder that names its
+   * release is often called exactly this, so file names are not to be judged by it. */
+  rejected: boolean;
 }
 
-// Group 3 (hyphenated range end, e.g. "S01E01-E03"/"S01E01-03") and group 4 (a chain of bare
-// "E\d+" tags with no hyphen, e.g. "S01E01E02E03") are mutually exclusive alternatives — a title
-// only ever uses one multi-episode convention or the other, never both.
+// Group 3 (hyphenated range end, e.g. "S01E01-E03"/"S01E01-03"), groups 4-5 (a repeated season tag,
+// "S01E01-S01E02") and group 6 (a chain of "E\d+" tags with no hyphen, e.g. "S01E01E02E03" or
+// "S01E01.E02") are mutually exclusive alternatives — a title only ever uses one multi-episode
+// convention or the other, never both.
 // A single "." / "_" / space may sit between the season and episode tags ("Show.S01.E05").
-const SEASON_EP_RANGE = /\bS(\d{1,2})[._ ]?E(\d{1,3})(?:-E?(\d{1,3})|((?:E\d{1,3})+))?\b/i;
+const SEASON_EP_RANGE = /\bS(\d{1,2})[._ ]?E(\d{1,3})(?:-E?(\d{1,3})|-S(\d{1,2})[._ ]?E(\d{1,3})|((?:[._ ]?E\d{1,3})+))?\b/i;
+// A range this long is a typo or a different number, not a multi-episode release.
+const MAX_EPISODE_RANGE = 100;
 // "1x01" scene/P2P notation, the same convention libraryScan.ts's filename-based detector already
 // recognizes — used as a fallback only when SxxExx doesn't match, since SxxExx is unambiguous while
-// this format risks colliding with e.g. a bare resolution/codec tag if not scoped narrowly.
-const SEASON_EP_X_FORMAT = /\b0*(\d{1,2})x0*(\d{1,3})\b/i;
+// this format risks colliding with e.g. a bare resolution/codec tag if not scoped narrowly. A second
+// episode number joins it as "1x01-02" or "1x01x02".
+const SEASON_EP_X_FORMAT = /\b0*(\d{1,2})x0*(\d{1,3})(?:[-x]0*(\d{1,3}))?\b/i;
+// "Show.Name.Season.2.Episode.5": the spelled-out form.
+const SEASON_WORD_EPISODE = /\bSeason[ ._]?0*(\d{1,2})[ ._-]*(?:Episode|Ep)[ ._]?0*(\d{1,3})\b/i;
+// A multi-season pack: "S01-S05", "Seasons 1-5", "Season 1 to 9".
+const SEASON_RANGE =
+  /\b(?:S(\d{1,2})[ ._]*-[ ._]*S(\d{1,2})|Seasons?[ ._]?(\d{1,2})[ ._]*(?:-|to|thru)[ ._]*(?:Season[ ._]?)?(\d{1,2}))\b(?![ ._]*-?[ ._]*E\d)/i;
+// "2nd Season - 05" is "Season 2 - 05": same shape, written the way AniList titles it.
+const ORDINAL_SEASON = /\b(\d{1,2})(?:st|nd|rd|th)\s+Season\b/gi;
+// Sonarr's list of hashed release names, which carry nothing to compare against a title.
+const HASHED_NAMES = [/^[0-9a-zA-Z]{32}/, /^[a-z0-9]{24}$/, /^[A-Z]{11}\d{3}$/, /^[a-z]{12}\d{3}$/, /^Backup_\d{5,}S\d{2}-\d{2}$/];
 // Fansub season numbering: "[SubsPlease] Show S2 - 05 (1080p)", "Show Season 2 - 05 [1080p]". Without
 // this the bare "S2"/"Season 2" reads as a season pack, so episode 5 would satisfy every episode of
 // the season.
@@ -85,7 +107,9 @@ const SEASON_DASH_EPISODE =
 // any match followed by a collection word, is left to the season-pack rules below.
 const MULTI_SEASON_TAIL = /^[\s._\-[(]*(?:complete|collection|box\s*set|series|seasons?)\b/i;
 function seasonDashEpisode(title: string): RegExpMatchArray | null {
-  const m = title.match(SEASON_DASH_EPISODE);
+  // "2nd Season" reads as "Season 2", padded so every index stays where it was.
+  const read = title.replace(ORDINAL_SEASON, (whole, n: string) => `Season ${Number(n)}`.padEnd(whole.length));
+  const m = read.match(SEASON_DASH_EPISODE);
   if (!m || m.index === undefined) return null;
   if (MULTI_SEASON_TAIL.test(title.slice(m.index + m[0].length))) return null;
   const spelledOut = /^season/i.test(m[0]);
@@ -96,7 +120,10 @@ function seasonDashEpisode(title: string): RegExpMatchArray | null {
 // A dash range of this many episodes or more ("S2 - 01-12") is a batch, not a multi-episode release.
 const DASH_RANGE_BATCH_SIZE = 4;
 const SEASON_ONLY = /\bS(\d{1,2})\b(?![\s._-]*E\d)/i;
-const FULL_SEASON_HINT = /\b(complete|season\s?\d{1,2}|full season)\b/i;
+const FULL_SEASON_HINT = /\b(complete|seasons?[\s._]?\d{1,2}|full season)\b/i;
+// "Movie.2010.COMPLETE.BLURAY": a disc image of a film, not a season pack.
+const DISC_TAG_AFTER = /^[ ._-]+(?:blu-?ray|bd|bdrip|remux|dvd[59r]?|uhd)\b/i;
+const YEAR_BEFORE = /(?:19|20)\d{2}[ ._-]+$/;
 // Fansub batch tag; bracketed only, since "Batch" is also an ordinary title word.
 const BATCH_TAG = /[[(]\s*batch\s*[\])]/i;
 const YEAR = /\b(19|20)\d{2}\b/;
@@ -111,7 +138,7 @@ const AIR_DATE_YEAR_LAST = /\b(\d{1,2})[.\-\s](\d{1,2})[.\-\s]((?:19|20)\d{2})\b
 // no SxxExx designator anywhere in the title. Deliberately narrow (requires the space-hyphen-space
 // separator) to avoid catching an arbitrary number elsewhere in the title.
 // The lookahead alone keeps a "1080p" token out, so a genuine episode 480/720/1080 still parses.
-const ABSOLUTE_EPISODE = /\s-\s0*(\d{1,4})(?=\s|\[|\(|$)/;
+const ABSOLUTE_EPISODE = /\s-\s0*(\d{1,4})(?:v\d)?(?=\s|\[|\(|$)/;
 // A season-less fansub batch ("[Group] Show - 01 ~ 12 [1080p]"): the same range conventions as
 // SEASON_DASH_EPISODE, with an absolute number's four digits.
 const ABSOLUTE_RANGE =
@@ -439,6 +466,32 @@ function detectQuality(title: string): QualityName | "Unknown" {
   return `WEBDL-${suffix}` as QualityName;
 }
 
+const MAX_SEASON_RANGE = 50;
+const TRAILING_LANGUAGES = new RegExp(`(?:[ ._\\-]+(?:${Object.keys(LANGUAGE_TAGS).join("|")}))+[ ._\\-]*$`, "i");
+const TRAILING_QUALITY_MODIFIER = /(?:[ ._-]+(?:regional|r5|screener|scr|dvdscr|bdscr|rawhd|brdisk|bdmv|bd25|bd50))+[ ._-]*$/i;
+
+/**
+ * The text language, edition and quality-modifier tags are looked for in: everything but the title.
+ * That is the leading tags plus what follows the cut (the year, the numbering or the first quality
+ * word), plus tag words standing at the end of the title itself — "Movie.FRENCH.1080p" has no year
+ * to end the title before its language. With nothing to cut at, the whole name.
+ */
+function tagScanText(title: string, start: number, cutAt: number | null): string {
+  if (cutAt === null) return title;
+  const slice = title.slice(start, cutAt);
+  const tails = [
+    slice.match(TRAILING_LANGUAGES)?.[0],
+    slice.match(TRAILING_QUALITY_MODIFIER)?.[0],
+    slice.replace(/[._]/g, " ").trimEnd().match(TRAILING_EDITION)?.[0],
+  ];
+  return [title.slice(0, start), ...tails, title.slice(cutAt)].filter(Boolean).join(" ");
+}
+
+/** A range's end, or its start when the "end" is no plausible range end. */
+function cappedEnd(start: number, end: number): number {
+  return end - start >= MAX_EPISODE_RANGE ? start : end;
+}
+
 export function parseReleaseTitle(title: string): ParsedRelease {
   let seasonNumber: number | null = null;
   let episodeNumbers: number[] | null = null;
@@ -452,19 +505,21 @@ export function parseReleaseTitle(title: string): ParsedRelease {
     markerIndex = rangeMatch.index ?? null;
     seasonNumber = Number(rangeMatch[1]);
     const start = Number(rangeMatch[2]);
-    if (rangeMatch[4]) {
-      // Chained "E01E02E03" tags — an explicit list, not necessarily contiguous.
+    if (rangeMatch[6]) {
+      // Chained "E01E02E03" / "E01.E02" tags — an explicit list, not necessarily contiguous.
       episodeNumbers = [start];
-      for (const m of rangeMatch[4].matchAll(/E(\d{1,3})/gi)) episodeNumbers.push(Number(m[1]));
+      for (const m of rangeMatch[6].matchAll(/E(\d{1,3})/gi)) episodeNumbers.push(Number(m[1]));
     } else {
-      // Single episode, or a hyphenated "-E03"/"-03" range end — inclusive.
-      const end = rangeMatch[3] ? Number(rangeMatch[3]) : start;
+      // Single episode, or a hyphenated "-E03"/"-03" range end, or a repeated season tag
+      // ("S01E01-S01E02", the same season only) — inclusive.
+      const end = cappedEnd(start, rangeMatch[3] ? Number(rangeMatch[3]) : rangeMatch[5] && Number(rangeMatch[4]) === seasonNumber ? Number(rangeMatch[5]) : start);
       episodeNumbers = [];
       for (let e = start; e <= end; e++) episodeNumbers.push(e);
     }
   } else {
     const dashMatch = seasonDashEpisode(title);
     const xMatch = dashMatch ? null : title.match(SEASON_EP_X_FORMAT);
+    const wordMatch = dashMatch || xMatch ? null : title.match(SEASON_WORD_EPISODE);
     if (dashMatch) {
       markerIndex = dashMatch.index ?? null;
       seasonNumber = Number(dashMatch[1]);
@@ -487,7 +542,14 @@ export function parseReleaseTitle(title: string): ParsedRelease {
     } else if (xMatch) {
       markerIndex = xMatch.index ?? null;
       seasonNumber = Number(xMatch[1]);
-      episodeNumbers = [Number(xMatch[2])];
+      const start = Number(xMatch[2]);
+      const end = xMatch[3] ? cappedEnd(start, Number(xMatch[3])) : start;
+      episodeNumbers = [];
+      for (let e = start; e <= Math.max(start, end); e++) episodeNumbers.push(e);
+    } else if (wordMatch) {
+      markerIndex = wordMatch.index ?? null;
+      seasonNumber = Number(wordMatch[1]);
+      episodeNumbers = [Number(wordMatch[2])];
     } else {
       const seasonMatch = title.match(SEASON_ONLY);
       if (seasonMatch) {
@@ -502,18 +564,21 @@ export function parseReleaseTitle(title: string): ParsedRelease {
           // 2016" is a movie title (isFullSeason stays as it was, see the corpus).
           const at = fullSeasonMatch.index ?? 0;
           const bareComplete = /^complete$/i.test(fullSeasonMatch[1]);
-          if (
-            hasTitleToken(title, titleStart(title), at) &&
-            (!bareComplete || COMPLETE_PACK_AFTER.test(title.slice(at + fullSeasonMatch[0].length)) || COMPLETE_PACK_BEFORE.test(title.slice(0, at)))
-          ) {
-            markerIndex = at;
+          const after = title.slice(at + fullSeasonMatch[0].length);
+          const before = title.slice(0, at);
+          // "Inception.2010.COMPLETE.BLURAY" is a film's disc image.
+          const discImage = bareComplete && DISC_TAG_AFTER.test(after) && YEAR_BEFORE.test(before);
+          const packMarker = hasTitleToken(title, titleStart(title), at) && (!bareComplete || COMPLETE_PACK_AFTER.test(after) || COMPLETE_PACK_BEFORE.test(before)) && !discImage;
+          if (packMarker) markerIndex = at;
+          // A bare "complete" that is no pack marker is a title word ("Complete.Unknown.2016").
+          if (!bareComplete || packMarker) {
+            isFullSeason = true;
+            // Only the "season <N>" alternative actually names a season ("complete"/"full season"
+            // don't) — extract it so a title like "Show Name Season 3 ..." (space-separated, no
+            // "S03" abbreviation) can still match a request for that specific season.
+            const digits = fullSeasonMatch[1].match(/(\d{1,2})/);
+            if (digits) seasonNumber = Number(digits[1]);
           }
-          isFullSeason = true;
-          // Only the "season <N>" alternative actually names a season ("complete"/"full season"
-          // don't) — extract it so a title like "Show Name Season 3 ..." (space-separated, no
-          // "S03" abbreviation) can still match a request for that specific season.
-          const digits = fullSeasonMatch[1].match(/(\d{1,2})/);
-          if (digits) seasonNumber = Number(digits[1]);
         } else if (BATCH_TAG.test(title) || isAbsoluteBatch(title)) {
           // With no season, the pack matches no specific episode, which beats matching its first.
           isFullSeason = true;
@@ -587,6 +652,19 @@ export function parseReleaseTitle(title: string): ParsedRelease {
   const groupAt = releaseGroup && trimmedTitle.endsWith(`-${releaseGroup}`) ? trimmedTitle.length - releaseGroup.length - 1 : null;
   const cutAt = minDefined(markerIndex, titleYearInfo?.index, qualityAt, bracketAt, groupAt);
   const isolatedTitle = cleanTitleSlice(title.slice(start, cutAt ?? undefined));
+  // Language, edition and quality-modifier tags are read from outside the title: "French
+  // Connection" is no French release and "Final Destination" no Final edition.
+  const tags = tagScanText(title, start, cutAt);
+
+  let seasonRange: [number, number] | null = null;
+  if (isFullSeason && episodeNumbers === null) {
+    const rangeSeasons = title.match(SEASON_RANGE);
+    if (rangeSeasons) {
+      const first = Number(rangeSeasons[1] ?? rangeSeasons[3]);
+      const last = Number(rangeSeasons[2] ?? rangeSeasons[4]);
+      if (first === seasonNumber && last > first && last - first < MAX_SEASON_RANGE) seasonRange = [first, last];
+    }
+  }
 
   return {
     title: isolatedTitle,
@@ -599,15 +677,17 @@ export function parseReleaseTitle(title: string): ParsedRelease {
     source: detectSource(title),
     resolution: detectResolution(title),
     flags: detectFlags(title),
-    languages: detectLanguages(title),
+    languages: detectLanguages(tags),
     releaseGroup,
     airDate,
     absoluteEpisode,
     imdbId: imdbMatch ? imdbMatch[0].toLowerCase() : null,
-    edition: detectEdition(title),
-    qualityModifier: detectQualityModifier(title),
+    edition: detectEdition(tags),
+    qualityModifier: detectQualityModifier(tags),
     releaseType: detectReleaseType(isFullSeason, episodeNumbers),
     episodeRange,
+    seasonRange,
+    rejected: HASHED_NAMES.some((pattern) => pattern.test(title.trim())),
   };
 }
 
@@ -623,11 +703,18 @@ function matchesSeasonEpisode(parsed: ParsedRelease, seasonNumber: number, episo
   return false;
 }
 
+/** A series' scene numbering by number: each scene "season:episode" that differs from the aired
+ * one, mapped to the aired "season:episode" of the episode that carries it (see
+ * sceneNumbering.ts sceneIndexFor). */
+export type SceneIndex = ReadonlyMap<string, string>;
+
 /**
  * `sceneSeasonNumber`/`sceneEpisodeNumber` (from TheXEM, see services/sceneNumbering.ts) are an
- * OR alternative, not a replacement — a release matches if it fits either the metadata provider's
- * own numbering or the scene group's numbering, since not every release for a scene-mapped show
- * necessarily uses the scene numbering (some groups number correctly anyway).
+ * alternative to the metadata provider's own numbering — not every release for a scene-mapped show
+ * uses the scene numbering (some groups number correctly anyway), so a release fitting either
+ * matches. With `sceneIndex` the two are no longer equals: scene numbering comes first, and the
+ * aired numbers count only while they are no other episode's scene numbers. "Show.S05E01" is TVDB
+ * S01E05 of a show whose aired S05E01 is a different episode, and must not match both.
  */
 export function releaseMatchesEpisode(
   parsed: ParsedRelease,
@@ -635,11 +722,17 @@ export function releaseMatchesEpisode(
   episodeNumber: number,
   sceneSeasonNumber?: number | null,
   sceneEpisodeNumber?: number | null,
-  absoluteEpisodeNumber?: number | null
+  absoluteEpisodeNumber?: number | null,
+  sceneIndex?: SceneIndex | null
 ): boolean {
-  if (matchesSeasonEpisode(parsed, seasonNumber, episodeNumber)) return true;
   if (sceneSeasonNumber != null && sceneEpisodeNumber != null) {
     if (matchesSeasonEpisode(parsed, sceneSeasonNumber, sceneEpisodeNumber)) return true;
+  }
+  if (matchesSeasonEpisode(parsed, seasonNumber, episodeNumber)) {
+    const aired = `${seasonNumber}:${episodeNumber}`;
+    const owner = sceneIndex?.get(aired);
+    if (owner === undefined || owner === aired) return true;
+    // These aired numbers are another episode's scene numbers: the release is that episode's.
   }
   // Only ever consulted as a last resort — a release that already parsed a real SxxExx (even a
   // wrong one) never falls through to this, since a bare-number match is far weaker evidence.

@@ -11,7 +11,8 @@ import {
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { searchAllIndexers } from "../services/indexerClient.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
-import { parseReleaseTitle, releaseMatchesEpisode } from "../services/releaseParser.js";
+import { parseReleaseTitle, releaseMatchesEpisode, type SceneIndex } from "../services/releaseParser.js";
+import { sceneIndexFor } from "../services/sceneNumbering.js";
 import { notifyGrabbed } from "../services/notifications.js";
 import { notifyQueueChanged } from "../services/realtime.js";
 import { scoreRelease } from "../services/customFormatScoring.js";
@@ -125,6 +126,7 @@ searchRouter.get(
     let targetSceneSeason: number | null = null;
     let targetSceneEpisode: number | null = null;
     let targetAbsoluteEpisode: number | null = null;
+    let targetSceneIndex: SceneIndex | undefined;
 
     const episodeId = req.query.episodeId as string | undefined;
     const subItemId = req.query.subItemId as string | undefined;
@@ -144,6 +146,7 @@ searchRouter.get(
       targetSceneSeason = ep.scene_season_number;
       targetSceneEpisode = ep.scene_episode_number;
       targetAbsoluteEpisode = item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, ep.season_number, ep.episode_number) : null;
+      targetSceneIndex = await sceneIndexFor(item.id);
       // Scene-numbered (TheXEM) query when known — see scheduler.ts's own runAutoSearch for why.
       const seasonStr = String(targetSceneSeason ?? targetSeason).padStart(2, "0");
       const episodeStr = String(targetSceneEpisode ?? targetEpisode).padStart(2, "0");
@@ -208,7 +211,7 @@ searchRouter.get(
       const parsed = parseReleaseTitle(r.title);
       const matchesTarget =
         targetSeason !== null && targetEpisode !== null
-          ? releaseMatchesEpisode(parsed, targetSeason, targetEpisode, targetSceneSeason, targetSceneEpisode, targetAbsoluteEpisode)
+          ? releaseMatchesEpisode(parsed, targetSeason, targetEpisode, targetSceneSeason, targetSceneEpisode, targetAbsoluteEpisode, targetSceneIndex)
           : targetSeason !== null
             ? parsed.seasonNumber === targetSeason
             : true;
@@ -238,8 +241,8 @@ searchRouter.get(
         identityRejection: verdict && !verdict.ok ? verdict.reason : null,
         parsedTitle: parsed.title,
         blocklisted: blocklisted.has(r.title),
-        rejected,
-        rejectReason,
+        rejected: rejected || parsed.rejected,
+        rejectReason: parsed.rejected ? "The release name is a hash, so there is no title to check it against" : rejectReason,
       };
     }));
 

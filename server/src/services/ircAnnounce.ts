@@ -2,6 +2,7 @@ import { db } from "../db/index.js";
 import { log } from "./logger.js";
 import { getMediaTypeConfig } from "./mediaTypes.js";
 import { parseReleaseTitle, releaseMatchesEpisode } from "./releaseParser.js";
+import { sceneIndexFor } from "./sceneNumbering.js";
 import { guessTitleFromText, titlesMatch } from "./libraryScan.js";
 import { scoreRelease } from "./customFormatScoring.js";
 import { getBlocklistedTitles } from "./blocklist.js";
@@ -63,7 +64,7 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
   const downloadUrl = match.groups.url;
   const parsed = parseReleaseTitle(releaseTitle);
   const baseTitle = guessTitleFromText(releaseTitle);
-  if (!parsed.title && !baseTitle) return;
+  if (parsed.rejected || (!parsed.title && !baseTitle)) return;
 
   const clients = await rowsToDownloadClients();
   if (clients.length === 0) return;
@@ -134,10 +135,11 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
   }
   if (resolvedShow.kind !== "one") return;
   const show = resolvedShow.item;
+  const sceneIndex = await sceneIndexFor(show.id);
   for (const ep of episodes) {
     if (ep.parent_id !== show.id) continue;
     const absoluteEpisode = show.type === "anime" ? await computeAbsoluteEpisodeNumber(show.id, ep.season_number, ep.episode_number) : null;
-    if (!releaseMatchesEpisode(parsed, ep.season_number, ep.episode_number, ep.scene_season_number, ep.scene_episode_number, absoluteEpisode)) continue;
+    if (!releaseMatchesEpisode(parsed, ep.season_number, ep.episode_number, ep.scene_season_number, ep.scene_episode_number, absoluteEpisode, sceneIndex)) continue;
     const grabbed = await serializeForTarget(`episode:${ep.id}`, async () => {
       if (await isAlreadyQueued(show.id, ep.id, null)) return false;
       return tryGrabMatch(show, ep.id, null, releaseTitle, downloadUrl, parsed.quality, feed, targetClient);

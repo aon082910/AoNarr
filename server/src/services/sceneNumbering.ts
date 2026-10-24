@@ -1,11 +1,32 @@
 import { db } from "../db/index.js";
 import { log } from "./logger.js";
 import { typeKeysByShape } from "./mediaTypes.js";
+import { getSetting } from "./settingsStore.js";
+import type { SceneIndex } from "./releaseParser.js";
 
 interface XemEntry {
   scene?: { season: number; episode: number };
   scene_2?: { season: number; episode: number }; // xem's alternate scene numbering, when a show has one
   tvdb?: { season: number; episode: number };
+}
+
+/**
+ * The series' scene numbers that differ from the aired ones, by number, for releaseMatchesEpisode's
+ * precedence rule (scene numbering first, aired numbering only while it is no other episode's scene
+ * number). Undefined when there is nothing to arbitrate or the `sceneNumberingMode` setting is `or`,
+ * which restores the older rule that a release fitting either numbering matches.
+ */
+export async function sceneIndexFor(mediaItemId: number): Promise<SceneIndex | undefined> {
+  if ((getSetting("sceneNumberingMode") ?? "").trim().toLowerCase() === "or") return undefined;
+  const rows = (await db
+    .prepare(
+      `SELECT season_number, episode_number, scene_season_number, scene_episode_number FROM episodes
+       WHERE media_item_id = ? AND scene_season_number IS NOT NULL AND scene_episode_number IS NOT NULL
+         AND (scene_season_number <> season_number OR scene_episode_number <> episode_number)`
+    )
+    .all(mediaItemId)) as { season_number: number; episode_number: number; scene_season_number: number; scene_episode_number: number }[];
+  if (rows.length === 0) return undefined;
+  return new Map(rows.map((r) => [`${r.scene_season_number}:${r.scene_episode_number}`, `${r.season_number}:${r.episode_number}`]));
 }
 
 /**
@@ -47,18 +68,24 @@ export async function syncSceneNumbering(mediaItemId: number): Promise<{ updated
   }
 
   let updated = 0;
-  for (const entry of body.data as XemEntry[]) {
-    const scene = entry.scene ?? entry.scene_2;
-    const tvdb = entry.tvdb;
-    if (!scene || !tvdb) continue;
-    const result = await db
-      .prepare(
-        `UPDATE episodes SET scene_season_number = ?, scene_episode_number = ?
-         WHERE media_item_id = ? AND season_number = ? AND episode_number = ?`
-      )
-      .run(scene.season, scene.episode, mediaItemId, tvdb.season, tvdb.episode);
-    if (result.changes > 0) updated++;
-  }
+  // The mapping TheXEM returns is the whole mapping: scene numbers it no longer lists (a corrected
+  // or removed entry) must not stay behind, or an old number keeps matching releases. Cleared and
+  // rewritten together so a search never sees the show half-mapped.
+  await db.transaction(async () => {
+    await db.prepare("UPDATE episodes SET scene_season_number = NULL, scene_episode_number = NULL WHERE media_item_id = ?").run(mediaItemId);
+    for (const entry of body.data as XemEntry[]) {
+      const scene = entry.scene ?? entry.scene_2;
+      const tvdb = entry.tvdb;
+      if (!scene || !tvdb) continue;
+      const result = await db
+        .prepare(
+          `UPDATE episodes SET scene_season_number = ?, scene_episode_number = ?
+           WHERE media_item_id = ? AND season_number = ? AND episode_number = ?`
+        )
+        .run(scene.season, scene.episode, mediaItemId, tvdb.season, tvdb.episode);
+      if (result.changes > 0) updated++;
+    }
+  });
 
   if (updated > 0) log.info(`[sceneNumbering] "${mediaRow.title}": mapped scene numbering for ${updated} episode(s)`);
   return { updated };

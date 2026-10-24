@@ -51,9 +51,7 @@ const rows: CorpusRow[] = fs
 const library = JSON.parse(fs.readFileSync(path.join(fixtures, "identity-library.json"), "utf8")) as Record<string, LibraryItem | string>;
 const libraryItems = Object.fromEntries(Object.entries(library).filter(([key]) => !key.startsWith("_"))) as Record<string, LibraryItem>;
 
-/** Corpus keys that are shorthand for a ParsedRelease field. Keys not listed map to themselves —
- * including fields later rounds add (rejected, seasonRange), which read as `undefined` until they
- * exist. */
+/** Corpus keys that are shorthand for a ParsedRelease field. Keys not listed map to themselves. */
 const FIELD: Record<string, string> = {
   season: "seasonNumber",
   episodes: "episodeNumbers",
@@ -61,8 +59,6 @@ const FIELD: Record<string, string> = {
   group: "releaseGroup",
   fullSeason: "isFullSeason",
 };
-
-const KNOWN_FUTURE_FIELDS = new Set(["rejected", "seasonRange"]);
 
 function assertParsed(title: string, expectation: Expectation): void {
   const parsed = parseReleaseTitle(title) as unknown as Record<string, unknown>;
@@ -83,9 +79,6 @@ describe("release-name corpus", () => {
       const key = `${row.kind}:${row.title}`;
       expect(seen.has(key), `duplicate row "${key}"`).toBe(false);
       seen.add(key);
-      for (const key of Object.keys(row.expect)) {
-        expect(KNOWN_FUTURE_FIELDS.has(key), `"${row.title}" asserts future field "${key}" outside a todo`).toBe(false);
-      }
       if (row.todo) {
         expect(row.todo.round, `todo round of "${row.title}"`).toMatch(/^R[1-6]$/);
         expect(Object.keys(row.todo.expect).length, `empty todo on "${row.title}"`).toBeGreaterThan(0);
@@ -115,12 +108,15 @@ describe("release-name corpus", () => {
     }
   });
 
-  describe("pending parser fixes (it.fails: green while the bug stands)", () => {
-    for (const row of rows) {
-      if (!row.todo) continue;
-      it.fails(`[${row.todo.round}] ${row.kind}: ${row.title}`, () => assertParsed(row.title, { ...row.expect, ...row.todo!.expect }));
-    }
-  });
+  // Empty once every pending fix has landed; a suite with no tests fails, so it is registered only while rows wait.
+  if (rows.some((row) => row.todo)) {
+    describe("pending parser fixes (it.fails: green while the bug stands)", () => {
+      for (const row of rows) {
+        if (!row.todo) continue;
+        it.fails(`[${row.todo.round}] ${row.kind}: ${row.title}`, () => assertParsed(row.title, { ...row.expect, ...row.todo!.expect }));
+      }
+    });
+  }
 
   describe("identity gate (releaseIdentifiesTarget, per-item, with the library's alias rows)", () => {
     for (const row of rows) {

@@ -187,8 +187,13 @@ describe("parseReleaseTitle", () => {
   });
 
   it("reads an untagged season-less batch range as a pack, never as absolute episode 1", () => {
+    // An ordinal season is a season: this batch is season 2's pack, whole or by its range.
+    const ordinalBatch = parseReleaseTitle("[Erai-raws] Show 2nd Season - 01 ~ 12 [1080p][Multiple Subtitle]");
+    expect(ordinalBatch).toMatchObject({ seasonNumber: 2, episodeNumbers: null, isFullSeason: true, episodeRange: [1, 12], absoluteEpisode: null });
+    expect(releaseMatchesEpisode(ordinalBatch, 2, 5)).toBe(true);
+    expect(releaseMatchesEpisode(ordinalBatch, 1, 5, null, null, 5)).toBe(false);
+    expect(releaseMatchesEpisode(ordinalBatch, 2, 13)).toBe(false);
     for (const title of [
-      "[Erai-raws] Show 2nd Season - 01 ~ 12 [1080p][Multiple Subtitle]",
       "[Group] Show - 01 ~ 12 [1080p]",
       "[Group] Show - 01 - 12 [1080p]",
       "[Group] Show - 01-12 WEB 1080p",
@@ -688,5 +693,130 @@ describe("parseReleaseTitle title isolation — review follow-ups", () => {
 
   it("ignores a [Batch] tag among the leading tags when cutting the title", () => {
     expect(parseReleaseTitle("[Batch] Show - 01-12 [1080p]")).toMatchObject({ title: "Show", isFullSeason: true });
+  });
+});
+
+describe("parseReleaseTitle — Round 4 conventions", () => {
+  it("reads every way of writing a multi-episode release", () => {
+    for (const title of [
+      "Show.Name.S01E01.E02.720p.HDTV-GRP",
+      "Show.Name.S01E01-S01E02.720p.HDTV-GRP",
+      "Show.Name.1x01-02.720p.HDTV-GRP",
+      "Show.Name.1x01x02.720p.HDTV-GRP",
+    ]) {
+      expect(parseReleaseTitle(title), title).toMatchObject({ seasonNumber: 1, episodeNumbers: [1, 2], releaseType: "multi", title: "Show Name" });
+    }
+    // A repeated season tag of another season is no range; a resolution or codec after the number is not an end.
+    expect(parseReleaseTitle("Show.Name.S01E10-S02E01.720p.HDTV-GRP").episodeNumbers).toEqual([10]);
+    expect(parseReleaseTitle("Show.Name.1x05-1080p.WEB-GRP").episodeNumbers).toEqual([5]);
+    expect(parseReleaseTitle("Show.Name.S01E01.x264-GRP").episodeNumbers).toEqual([1]);
+    // An implausibly long range is not taken for a multi-episode release.
+    expect(parseReleaseTitle("Show.Name.S01E01-E500.720p-GRP").episodeNumbers).toEqual([1]);
+  });
+
+  it("reads the spelled-out season and episode", () => {
+    expect(parseReleaseTitle("Show.Name.Season.2.Episode.5.720p.HDTV-GRP")).toMatchObject({ title: "Show Name", seasonNumber: 2, episodeNumbers: [5], releaseType: "single", isFullSeason: false });
+    expect(parseReleaseTitle("Show Name Season 02 Ep 12 720p")).toMatchObject({ seasonNumber: 2, episodeNumbers: [12] });
+  });
+
+  it("reads the season a dotted season word names, and the seasons a pack spans", () => {
+    expect(parseReleaseTitle("Show.Name.Season.3.Complete.1080p.WEB-GRP")).toMatchObject({ title: "Show Name", seasonNumber: 3, isFullSeason: true, seasonRange: null });
+    expect(parseReleaseTitle("Show.Name.S01-S05.COMPLETE.1080p.WEB-GRP")).toMatchObject({ title: "Show Name", seasonNumber: 1, isFullSeason: true, seasonRange: [1, 5] });
+    expect(parseReleaseTitle("Show.Name.Seasons.1-5.1080p.WEB-GRP")).toMatchObject({ seasonNumber: 1, isFullSeason: true, seasonRange: [1, 5] });
+    expect(parseReleaseTitle("The Office Season 1 - 9 Complete 1080p")).toMatchObject({ seasonNumber: 1, isFullSeason: true, seasonRange: [1, 9] });
+    expect(parseReleaseTitle("Show.Name.S03.1080p.WEB-GRP").seasonRange).toBeNull();
+    expect(parseReleaseTitle("Show.Name.S01E05.1080p.WEB-GRP").seasonRange).toBeNull();
+    // Recognised, not yet taken for the seasons after its first.
+    const pack = parseReleaseTitle("Show.Name.S01-S05.COMPLETE.1080p.WEB-GRP");
+    expect(releaseMatchesEpisode(pack, 1, 3)).toBe(true);
+    expect(releaseMatchesEpisode(pack, 3, 3)).toBe(false);
+  });
+
+  it("does not take a bare complete for a season pack unless it is one", () => {
+    expect(parseReleaseTitle("Inception.2010.COMPLETE.BLURAY-SharpHD")).toMatchObject({ title: "Inception", isFullSeason: false, releaseType: null });
+    expect(parseReleaseTitle("Complete.Unknown.2016.1080p.WEB-GRP")).toMatchObject({ title: "Complete Unknown", isFullSeason: false });
+    expect(parseReleaseTitle("The.Complete.Idiots.Guide.2018.1080p.WEB-GRP").isFullSeason).toBe(false);
+    expect(parseReleaseTitle("Show.Name.COMPLETE.1080p.WEB-GRP")).toMatchObject({ title: "Show Name", isFullSeason: true });
+    expect(parseReleaseTitle("Show.Name.Complete.Series.BluRay-GRP")).toMatchObject({ title: "Show Name", isFullSeason: true });
+  });
+
+  it("reads a fansub version tag, and an ordinal season, in the absolute-number convention", () => {
+    expect(parseReleaseTitle("[Group] Show - 05v2 [1080p]")).toMatchObject({ title: "Show", absoluteEpisode: 5, releaseGroup: "Group" });
+    expect(parseReleaseTitle("[SubsPlease] One Piece - 1085v3 (1080p) [ABCD1234]")).toMatchObject({ absoluteEpisode: 1085 });
+    expect(parseReleaseTitle("[SubsPlease] Mushoku Tensei 2nd Season - 05 (1080p) [ABCD1234]")).toMatchObject({
+      title: "Mushoku Tensei",
+      seasonNumber: 2,
+      episodeNumbers: [5],
+      absoluteEpisode: null,
+      releaseGroup: "SubsPlease",
+    });
+    expect(parseReleaseTitle("[Group] Show 3rd Season - 12 [1080p]")).toMatchObject({ seasonNumber: 3, episodeNumbers: [12] });
+    // A part or cour after the season is not a season number: it stays an absolute number for the alias rows to place.
+    expect(parseReleaseTitle("[Group] Mushoku Tensei 2nd Season Part 2 - 05 [1080p]")).toMatchObject({ seasonNumber: null, episodeNumbers: null, absoluteEpisode: 5 });
+    expect(parseReleaseTitle("Attack on Titan The Final Season Part 2 - 05 [1080p]")).toMatchObject({ seasonNumber: null, absoluteEpisode: 5 });
+  });
+
+  it("marks a hashed release name, and only that", () => {
+    for (const title of ["a1b2c3d4e5f67890abcdef1234567890", "abcdefghijklmnopqrstuvwx", "ABCDEFGHIJK123", "abcdefghijkl123", "Backup_12345S01-02"]) {
+      expect(parseReleaseTitle(title).rejected, title).toBe(true);
+    }
+    for (const title of ["Breaking.Bad.S01E01.720p.HDTV-GRP", "Movie.Name.2020.1080p.BluRay-GRP", "[Group] Show - 05 [1080p]", "Dune"]) {
+      expect(parseReleaseTitle(title).rejected, title).toBe(false);
+    }
+  });
+
+  it("reads language, edition and quality-modifier tags from outside the title", () => {
+    expect(parseReleaseTitle("French.Connection.1971.1080p.BluRay-GRP").languages).toEqual([]);
+    expect(parseReleaseTitle("Final.Destination.2000.1080p.BluRay-GRP").edition).toBeNull();
+    expect(parseReleaseTitle("Attack on Titan The Final Season Part 2 - 05 [1080p]").edition).toBeNull();
+    expect(parseReleaseTitle("Show.Name.Christmas.Special.2023.1080p.WEB-GRP").edition).toBeNull();
+    // The tags of a release are still found: after the year or the numbering, before the quality words, in leading brackets.
+    expect(parseReleaseTitle("French.Connection.1971.FRENCH.1080p.BluRay-GRP").languages).toEqual(["french"]);
+    expect(parseReleaseTitle("Show.Name.S01E01.FRENCH.720p.HDTV-GRP").languages).toEqual(["french"]);
+    expect(parseReleaseTitle("Movie.Name.MULTi.1080p.BluRay-GRP").languages).toEqual(["multi"]);
+    expect(parseReleaseTitle("[VOSTFR] Show - 05 [1080p]").languages).toEqual(["vostfr"]);
+    expect(parseReleaseTitle("Alien.Directors.Cut.1979.1080p.BluRay-GRP").edition).toBe("Directors Cut");
+    expect(parseReleaseTitle("Alien.1979.Directors.Cut.1080p.BluRay-GRP").edition).toBe("Directors Cut");
+    expect(parseReleaseTitle("Movie.Name.R5.XviD-GRP").qualityModifier).toBe("regional");
+    expect(parseReleaseTitle("Movie.Name.2009.SCREENER.XviD-GRP").qualityModifier).toBe("screener");
+    // With nothing to cut the title at, the whole name is searched, as before.
+    expect(parseReleaseTitle("Some.Movie.FRENCH").languages).toEqual(["french"]);
+  });
+});
+
+describe("releaseMatchesEpisode — scene numbering first", () => {
+  // A show whose aired S01E05 is released by scene groups as S05E01, and whose aired S05E01 is
+  // released as S01E05 (a swap), plus an unmapped episode.
+  const index = new Map([
+    ["5:1", "1:5"],
+    ["1:5", "5:1"],
+  ]);
+  const release = (name: string) => parseReleaseTitle(name);
+
+  it("matches a release by the scene numbers of the episode, and only that episode", () => {
+    const sceneNumbered = release("Show.S05E01.720p.HDTV-GRP");
+    // aired S01E05, scene S05E01
+    expect(releaseMatchesEpisode(sceneNumbered, 1, 5, 5, 1, null, index)).toBe(true);
+    // aired S05E01, scene S01E05: S05E01 is the other episode's scene number, so it is not this one's
+    expect(releaseMatchesEpisode(sceneNumbered, 5, 1, 1, 5, null, index)).toBe(false);
+    // Without the index the older rule holds: either numbering matches, so it matches both.
+    expect(releaseMatchesEpisode(sceneNumbered, 5, 1, 1, 5)).toBe(true);
+  });
+
+  it("falls back to the aired numbers while they are nobody else's scene numbers", () => {
+    const mapped = new Map([["5:1", "1:5"]]);
+    // aired S01E05 (scene S05E01), but the release uses the aired numbers
+    expect(releaseMatchesEpisode(release("Show.S01E05.720p.WEB-GRP"), 1, 5, 5, 1, null, mapped)).toBe(true);
+    // an episode with no scene numbers of its own, whose aired numbers nobody else claims
+    expect(releaseMatchesEpisode(release("Show.S02E03.720p.WEB-GRP"), 2, 3, null, null, null, mapped)).toBe(true);
+    // an episode with no scene numbers whose aired numbers are another episode's scene numbers
+    expect(releaseMatchesEpisode(release("Show.S05E01.720p.WEB-GRP"), 5, 1, null, null, null, mapped)).toBe(false);
+  });
+
+  it("keeps the absolute number as the last resort, and multi-episode releases working", () => {
+    const multi = release("Show.S05E01E02.720p.HDTV-GRP");
+    expect(releaseMatchesEpisode(multi, 1, 5, 5, 1, null, index)).toBe(true);
+    expect(releaseMatchesEpisode(multi, 1, 6, 5, 2, null, index)).toBe(true);
+    expect(releaseMatchesEpisode(release("[Group] Show - 145 [1080p]"), 1, 5, 5, 1, 145, index)).toBe(true);
   });
 });

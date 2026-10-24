@@ -497,6 +497,15 @@ describe("handleAnnounce — alternate titles and library-wide resolution (Round
     expect((grab.mock.calls[0][1] as any).id).toBe(id);
   });
 
+  it("ignores an announce whose name is only a hash", async () => {
+    const profileId = await insertProfile();
+    await insertMovie("a1b2c3d4e5f67890abcdef1234567890", profileId, 2020);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("a1b2c3d4e5f67890abcdef1234567890"));
+    expect(grab).not.toHaveBeenCalled();
+  });
+
   it("does not take an episode-shaped announce for a movie of the same title", async () => {
     const profileId = await insertProfile();
     const movieId = await insertMovie("Twin Title Story", profileId, 2010);

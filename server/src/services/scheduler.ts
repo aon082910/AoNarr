@@ -13,7 +13,7 @@ import {
   withQueueImportLock,
 } from "./downloadClient.js";
 import type { QueueStatusUpdate } from "./downloadClient.js";
-import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
+import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode, type SceneIndex } from "./releaseParser.js";
 import { identityModeFor, releaseIdentifiesTarget, type IdentityMode, type IdentityVerdict } from "./releaseIdentity.js";
 import { aliasTitlesFor } from "./releaseAliases.js";
 import { backfillProviderAliases } from "./aliasBackfill.js";
@@ -38,7 +38,7 @@ import { importQueueItem, ImportSkippedError, computeAbsoluteEpisodeNumber } fro
 import { notifyFailed, notifyGrabbed, notifyHealthIssue, notifyManualInteractionRequired, notifyUpdateAvailable } from "./notifications.js";
 import { checkForUpdate } from "./updateCheck.js";
 import { checkIndexerHealth } from "./indexerClient.js";
-import { syncAllSceneNumbering } from "./sceneNumbering.js";
+import { sceneIndexFor, syncAllSceneNumbering } from "./sceneNumbering.js";
 import { checkForDeletedFiles } from "./deletedFileCheck.js";
 
 /** Radarr/Sonarr-style seed-goal cleanup — removes a torrent from every enabled download client
@@ -266,12 +266,13 @@ export async function isAlreadyQueued(mediaItemId: number, episodeId: number | n
     const sameSeason = (await db
       .prepare("SELECT title FROM queue WHERE media_item_id = ? AND season_number = ? AND status NOT IN ('failed')")
       .all(ep.media_item_id, ep.season_number)) as { title: string }[];
+    const sceneIndex = await sceneIndexFor(ep.media_item_id);
     return sameSeason.some(({ title }) => {
       const parsed = parseReleaseTitle(title);
       // A ranged batch ("S2 - 13-24") covers only its own episodes; releaseMatchesEpisode enforces the range.
       if (parsed.isFullSeason && !parsed.episodeRange) return parsed.seasonNumber == null || parsed.seasonNumber === ep.season_number;
       return (
-        releaseMatchesEpisode(parsed, ep.season_number, ep.episode_number, ep.scene_season_number, ep.scene_episode_number) ||
+        releaseMatchesEpisode(parsed, ep.season_number, ep.episode_number, ep.scene_season_number, ep.scene_episode_number, null, sceneIndex) ||
         (!!ep.air_date && releaseMatchesAirDate(parsed, ep.air_date))
       );
     });
@@ -348,7 +349,7 @@ export function matchTierFor(result: SearchResult, identity: TargetIdentity | nu
 }
 
 type ReleaseTarget =
-  | { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null; absoluteEpisode?: number | null }
+  | { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null; absoluteEpisode?: number | null; sceneIndex?: SceneIndex }
   | { airDate: string };
 
 /** The indexer query and release-match target for one episode row. A daily series' releases are
@@ -368,6 +369,7 @@ async function episodeSearchFor(item: MediaItem, ep: any): Promise<{ query: stri
       sceneSeason: ep.scene_season_number,
       sceneEpisode: ep.scene_episode_number,
       absoluteEpisode: item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, ep.season_number, ep.episode_number) : null,
+      sceneIndex: await sceneIndexFor(item.id),
     },
   };
 }
@@ -719,6 +721,13 @@ export async function chooseBestResult(
     })
     .map((r) => ({ result: r, parsed: parseReleaseTitle(r.title), size: knownReleaseSize(r.size) }))
     .filter(({ result, parsed }) => {
+      if (parsed.rejected) {
+        log.info(`[scheduler] rejected "${result.title}": its name is a hash, so there is no title to check it against`);
+        return false;
+      }
+      return true;
+    })
+    .filter(({ result, parsed }) => {
       if (!isEligibleForDelay(parsed.quality, cutoff, result, delayProfile)) {
         log.info(`[scheduler] rejected "${result.title}": not yet eligible under the configured delay profile`);
         return false;
@@ -735,7 +744,7 @@ export async function chooseBestResult(
         return ok;
       })
     : withParsed.filter(({ result, parsed }) => {
-        const ok = releaseMatchesEpisode(parsed, target.season, target.episode, target.sceneSeason, target.sceneEpisode, target.absoluteEpisode);
+        const ok = releaseMatchesEpisode(parsed, target.season, target.episode, target.sceneSeason, target.sceneEpisode, target.absoluteEpisode, target.sceneIndex);
         if (!ok) {
           log.info(
             `[scheduler] rejected "${result.title}": doesn't match the target episode (S${String(target.season).padStart(2, "0")}E${String(target.episode).padStart(2, "0")})`
@@ -1571,6 +1580,7 @@ export async function runAutoSearch(signal?: AbortSignal) {
           sceneSeason: ep.scene_season_number,
           sceneEpisode: ep.scene_episode_number,
           absoluteEpisode: item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, ep.season_number, ep.episode_number) : null,
+          sceneIndex: await sceneIndexFor(item.id),
         };
     // The series' own identity and title go along so the identity gate can tell another show's
     // same-numbered episode (a remake, a similarly named show) from this one.

@@ -3,12 +3,12 @@
 {"title": "Show.Name.S01E01E02.720p.HDTV.x264-GROUP", "kind": "release", "expect": {"season": 1, "episodes": [1, 2], "releaseType": "multi"}}
 {"title": "Show Name 2x07 Some Title 720p", "kind": "release", "expect": {"season": 2, "episodes": [7], "releaseType": "single"}}
 {"title": "Show.Name.S03.1080p.WEB-DL-GROUP", "kind": "release", "expect": {"season": 3, "episodes": null, "fullSeason": true, "releaseType": "seasonPack", "group": "GROUP"}}
-{"title": "Show.Name.Season.3.Complete.1080p.WEB-GRP", "kind": "release", "expect": {"season": null, "fullSeason": true, "releaseType": "seasonPack", "title": "Show Name"}, "todo": {"round": "R4", "expect": {"season": 3}}}
+{"title": "Show.Name.Season.3.Complete.1080p.WEB-GRP", "kind": "release", "expect": {"season": 3, "fullSeason": true, "releaseType": "seasonPack", "title": "Show Name"}}
 {"title": "Show.S01E01.2019.1080p.WEB-GRP", "kind": "release", "expect": {"season": 1, "episodes": [1], "year": 2019, "title": "Show", "titleYear": null}}
 {"title": "The.Daily.Show.2024.08.25.1080p.WEB-GRP", "kind": "release", "expect": {"airDate": "2024-08-25", "season": null, "episodes": null, "year": 2024, "title": "The Daily Show", "titleYear": null}, "identity": [{"item": "dailyShow1996", "round": "R1", "expect": {"ok": true, "matchType": "title"}}]}
 {"title": "The.Daily.Show.08.25.2024.1080p.WEB-GRP", "kind": "release", "expect": {"airDate": "2024-08-25", "season": null, "episodes": null, "title": "The Daily Show", "titleYear": null}, "identity": [{"item": "dailyShow1996", "round": "R1", "expect": {"ok": true, "matchType": "title"}}]}
 {"title": "The.Late.Show.2024.08.25.1080p.WEB-GRP", "kind": "release", "expect": {"airDate": "2024-08-25"}, "identity": [{"item": "dailyShow1996", "round": "R1", "expect": {"ok": false, "matchType": "none", "reason": "title"}}, {"item": "lateShow2015", "round": "R3", "expect": {"ok": true, "matchType": "alias"}}]}
-{"title": "Inception.2010.COMPLETE.BLURAY-SharpHD", "kind": "release", "expect": {"year": 2010, "quality": "Unknown", "source": "Bluray", "group": "SharpHD", "fullSeason": true, "releaseType": "seasonPack"}, "todo": {"round": "R4", "expect": {"fullSeason": false, "releaseType": null, "title": "Inception"}}}
+{"title": "Inception.2010.COMPLETE.BLURAY-SharpHD", "kind": "release", "expect": {"year": 2010, "quality": "Unknown", "source": "Bluray", "group": "SharpHD", "fullSeason": false, "releaseType": null, "title": "Inception"}}
 {"title": "Blade.Runner.2049.2017.1080p.BluRay.x264-GRP", "kind": "release", "expect": {"year": 2049, "quality": "Bluray-1080p", "title": "Blade Runner 2049", "titleYear": 2017}, "identity": [{"item": "bladeRunner2049", "round": "R1", "expect": {"ok": true, "matchType": "title"}}, {"item": "bladeRunner1982", "round": "R1", "expect": {"ok": false, "matchType": "none", "reason": "title"}}]}
 {"title": "2001.A.Space.Odyssey.1968.1080p.BluRay-GRP", "kind": "release", "expect": {"year": 2001, "title": "2001 A Space Odyssey", "titleYear": 1968}}
 {"title": "1917.2019.1080p.BluRay.x264-GRP", "kind": "release", "expect": {"year": 1917, "title": "1917", "titleYear": 2019}}
@@ -29,34 +29,34 @@
 {"title": "Up.in.the.Air.2009.1080p.WEB.x265-GRP", "kind": "release", "expect": {"year": 2009, "title": "Up in the Air"}, "identity": [{"item": "up2009", "round": "R1", "expect": {"ok": false, "matchType": "none", "reason": "title"}}]}
 {"title": "Rocky.2.1979.1080p.BluRay-GRP", "kind": "release", "expect": {"year": 1979, "title": "Rocky 2"}, "identity": [{"item": "rockyII", "round": "R1", "expect": {"ok": true, "matchType": "title"}}]}
 {"title": "Star.Wars.Episode.4.1977.1080p.BluRay-GRP", "kind": "release", "expect": {"year": 1977}, "identity": [{"item": "starWarsIV", "round": "R1", "expect": {"ok": true, "matchType": "title-main"}}]}
-{"title": "French.Connection.1971.1080p.BluRay-GRP", "kind": "release", "expect": {"year": 1971, "languages": ["french"]}, "todo": {"round": "R4", "expect": {"languages": []}}}
-{"title": "Final.Destination.2000.1080p.BluRay-GRP", "kind": "release", "expect": {"year": 2000, "edition": "Final"}, "todo": {"round": "R4", "expect": {"edition": null}}}
+{"title": "French.Connection.1971.1080p.BluRay-GRP", "kind": "release", "expect": {"year": 1971, "languages": []}}
+{"title": "Final.Destination.2000.1080p.BluRay-GRP", "kind": "release", "expect": {"year": 2000, "edition": null}}
 {"title": "Extraction.2.2023.1080p.NF.WEB-DL-GRP", "kind": "release", "expect": {"year": 2023, "title": "Extraction 2", "titleYear": 2023}, "identity": [{"item": "extraction2", "round": "R1", "expect": {"ok": true, "matchType": "title"}}, {"item": "extraction2020", "round": "R1", "expect": {"ok": false, "matchType": "none", "reason": "title"}}]}
 {"title": "Extraction.2020.1080p.NF.WEB-DL-GRP", "kind": "release", "expect": {"year": 2020}, "identity": [{"item": "extraction2020", "round": "R1", "expect": {"ok": true, "matchType": "title"}}, {"item": "extraction2", "round": "R1", "expect": {"ok": false, "matchType": "none", "reason": "title"}}]}
 {"title": "Leon.1994.1080p.BluRay-GRP", "kind": "release", "expect": {"year": 1994}, "identity": [{"item": "leon1994", "round": "R1", "expect": {"ok": true, "matchType": "title-main"}}]}
 {"title": "Aliens.1986.1080p.BluRay-GRP", "kind": "release", "expect": {"year": 1986}, "identity": [{"item": "alien1979", "round": "R1", "expect": {"ok": false, "matchType": "none", "reason": "title"}}]}
 {"title": "[SubsPlease] Jujutsu Kaisen - 25 (1080p) [ABCD1234]", "kind": "release", "expect": {"absolute": 25, "season": null, "episodes": null, "group": "SubsPlease", "quality": "WEBDL-1080p", "title": "Jujutsu Kaisen", "titleYear": null}, "identity": [{"item": "jujutsuKaisen", "round": "R1", "expect": {"ok": true, "matchType": "title"}}]}
-{"title": "[SubsPlease] Mushoku Tensei 2nd Season - 05 (1080p) [ABCD1234]", "kind": "release", "expect": {"absolute": 5, "season": null, "episodes": null, "group": "SubsPlease"}, "todo": {"round": "R4", "expect": {"season": 2, "episodes": [5], "absolute": null}}}
-{"title": "[Group] Show - 05v2 [1080p]", "kind": "release", "expect": {"absolute": null, "group": null}, "todo": {"round": "R4", "expect": {"absolute": 5, "group": "Group", "title": "Show"}}}
+{"title": "[SubsPlease] Mushoku Tensei 2nd Season - 05 (1080p) [ABCD1234]", "kind": "release", "expect": {"absolute": null, "season": 2, "episodes": [5], "group": "SubsPlease"}}
+{"title": "[Group] Show - 05v2 [1080p]", "kind": "release", "expect": {"absolute": 5, "group": "Group", "title": "Show"}}
 {"title": "[SubsPlease] One Piece - 1085 (1080p) [ABCD1234]", "kind": "release", "expect": {"absolute": 1085, "group": "SubsPlease"}, "identity": [{"item": "onePiece", "round": "R1", "expect": {"ok": true, "matchType": "title"}}]}
 {"title": "[Group] Show - 01 ~ 12 [1080p]", "kind": "release", "expect": {"fullSeason": true, "season": null, "group": "Group", "releaseType": "seasonPack"}}
 {"title": "[Group] Show S2 - 05 (1080p)", "kind": "release", "expect": {"season": 2, "episodes": [5], "group": "Group", "releaseType": "single"}}
 {"title": "[Group] Show S2 - 13-24 [1080p]", "kind": "release", "expect": {"season": 2, "fullSeason": true, "episodeRange": [13, 24], "releaseType": "seasonPack"}}
 {"title": "Shingeki.no.Kyojin.S04E01.1080p.WEB-GRP", "kind": "release", "expect": {"season": 4, "episodes": [1]}, "identity": [{"item": "attackOnTitan", "round": "R3", "expect": {"ok": true, "matchType": "alias"}}]}
-{"title": "Attack on Titan The Final Season Part 2 - 05 [1080p]", "kind": "release", "expect": {"absolute": 5, "season": null, "edition": "Final"}, "todo": {"round": "R4", "expect": {"edition": null}}, "identity": [{"item": "attackOnTitan", "round": "R4", "expect": {"ok": false, "matchType": "none", "reason": "needs-alias"}}]}
+{"title": "Attack on Titan The Final Season Part 2 - 05 [1080p]", "kind": "release", "expect": {"absolute": 5, "season": null, "edition": null}, "identity": [{"item": "attackOnTitan", "round": "R4", "expect": {"ok": false, "matchType": "none", "reason": "needs-alias"}}]}
 {"title": "Show.Name.The.Complete.Series.1080p.WEB-GRP", "kind": "release", "expect": {"fullSeason": true, "season": null, "releaseType": "seasonPack"}}
-{"title": "a1b2c3d4e5f67890abcdef1234567890", "kind": "release", "expect": {"season": null, "episodes": null, "year": null, "quality": "Unknown", "title": "a1b2c3d4e5f67890abcdef1234567890"}, "todo": {"round": "R4", "expect": {"rejected": true}}}
-{"title": "Show.Name.S01E01.E02.720p.HDTV-GRP", "kind": "release", "expect": {"season": 1, "episodes": [1]}, "todo": {"round": "R4", "expect": {"episodes": [1, 2], "releaseType": "multi"}}}
-{"title": "Show.Name.S01E01-S01E02.720p.HDTV-GRP", "kind": "release", "expect": {"season": 1, "episodes": [1]}, "todo": {"round": "R4", "expect": {"episodes": [1, 2], "releaseType": "multi"}}}
-{"title": "Show.Name.1x01-02.720p.HDTV-GRP", "kind": "release", "expect": {"season": 1, "episodes": [1]}, "todo": {"round": "R4", "expect": {"episodes": [1, 2], "releaseType": "multi"}}}
-{"title": "Show.Name.Season.2.Episode.5.720p.HDTV-GRP", "kind": "release", "expect": {"season": null, "episodes": null, "title": "Show Name"}, "todo": {"round": "R4", "expect": {"season": 2, "episodes": [5], "releaseType": "single"}}}
-{"title": "Show.Name.S01-S05.COMPLETE.1080p.WEB-GRP", "kind": "release", "expect": {"season": 1, "fullSeason": true}, "todo": {"round": "R4", "expect": {"seasonRange": [1, 5]}}}
+{"title": "a1b2c3d4e5f67890abcdef1234567890", "kind": "release", "expect": {"season": null, "episodes": null, "year": null, "quality": "Unknown", "title": "a1b2c3d4e5f67890abcdef1234567890", "rejected": true}}
+{"title": "Show.Name.S01E01.E02.720p.HDTV-GRP", "kind": "release", "expect": {"season": 1, "episodes": [1, 2], "releaseType": "multi"}}
+{"title": "Show.Name.S01E01-S01E02.720p.HDTV-GRP", "kind": "release", "expect": {"season": 1, "episodes": [1, 2], "releaseType": "multi"}}
+{"title": "Show.Name.1x01-02.720p.HDTV-GRP", "kind": "release", "expect": {"season": 1, "episodes": [1, 2], "releaseType": "multi"}}
+{"title": "Show.Name.Season.2.Episode.5.720p.HDTV-GRP", "kind": "release", "expect": {"season": 2, "episodes": [5], "title": "Show Name", "releaseType": "single"}}
+{"title": "Show.Name.S01-S05.COMPLETE.1080p.WEB-GRP", "kind": "release", "expect": {"season": 1, "fullSeason": true, "seasonRange": [1, 5]}}
 {"title": "Movie.Name.2020.1080p.WEBRip.x264-GROUP[tt1234567]", "kind": "release", "expect": {"year": 2020, "imdbId": "tt1234567", "quality": "WEBRip-1080p"}}
 {"title": "Movie.Name.2020.1080p.HDCAM-GRP", "kind": "release", "expect": {"year": 2020, "quality": "Unknown", "source": "Cam"}}
 {"title": "Show.S01E01.HDTV.x264-LOL", "kind": "release", "expect": {"season": 1, "episodes": [1], "quality": "SD", "source": "HDTV", "group": "LOL"}}
 {"title": "Show.Name.S02E05.PROPER.1080p.WEB-DL-GRP", "kind": "release", "expect": {"flags": ["proper"], "quality": "WEBDL-1080p"}}
 {"title": "Movie.Name.2019.MULTi.1080p.BluRay.x264-GRP", "kind": "release", "expect": {"languages": ["multi"], "year": 2019}}
-{"title": "Show.Name.Christmas.Special.2023.1080p.WEB-GRP", "kind": "release", "expect": {"season": null, "episodes": null, "year": 2023, "edition": "Special"}}
+{"title": "Show.Name.Christmas.Special.2023.1080p.WEB-GRP", "kind": "release", "expect": {"season": null, "episodes": null, "year": 2023, "edition": null}}
 {"title": "24.S01E03.720p.HDTV-GRP", "kind": "file", "expect": {"season": 1, "episodes": [3], "title": "24", "titleYear": null}, "identity": [{"item": "twentyFour", "round": "R1", "expect": {"ok": true, "matchType": "title"}}]}
 {"title": "Breaking.Bad.S01E03.720p.HDTV-GRP", "kind": "file", "expect": {"season": 1, "episodes": [3]}, "identity": [{"item": "twentyFour", "round": "R1", "expect": {"ok": false, "matchType": "none", "reason": "title"}}, {"item": "breakingBad", "round": "R1", "expect": {"ok": true, "matchType": "title"}}]}
 {"title": "Better.Call.Saul.S01E01.1080p.WEB-GRP", "kind": "file", "expect": {"season": 1, "episodes": [1]}, "identity": [{"item": "breakingBad", "round": "R1", "expect": {"ok": false, "matchType": "none", "reason": "title"}}]}
@@ -66,7 +66,7 @@
 {"title": "Death Race 2000 (1975) 1080p BluRay-GRP", "kind": "release", "expect": {"title": "Death Race 2000", "titleYear": 1975}, "identity": [{"item": "deathRace2000", "round": "R1", "expect": {"ok": true, "matchType": "title"}}]}
 {"title": "Class.of.1984.1080p.BluRay-GRP", "kind": "release", "expect": {"title": "Class", "titleYear": 1984}, "identity": [{"item": "classOf1984", "round": "R1", "expect": {"ok": true, "matchType": "title"}}]}
 {"title": "Alien.Directors.Cut.1979.1080p.BluRay-GRP", "kind": "release", "expect": {"title": "Alien", "titleYear": 1979, "flags": ["directorscut"]}, "identity": [{"item": "alien1979", "round": "R1", "expect": {"ok": true, "matchType": "title"}}]}
-{"title": "Complete.Unknown.2016.1080p.WEB-GRP", "kind": "release", "expect": {"title": "Complete Unknown", "titleYear": 2016, "fullSeason": true}, "todo": {"round": "R4", "expect": {"fullSeason": false, "releaseType": null}}, "identity": [{"item": "completeUnknown", "round": "R1", "expect": {"ok": true, "matchType": "title"}}]}
+{"title": "Complete.Unknown.2016.1080p.WEB-GRP", "kind": "release", "expect": {"title": "Complete Unknown", "titleYear": 2016, "fullSeason": false, "releaseType": null}, "identity": [{"item": "completeUnknown", "round": "R1", "expect": {"ok": true, "matchType": "title"}}]}
 {"title": "The.Complete.Guide.S01E01.1080p.WEB-GRP", "kind": "release", "expect": {"title": "The Complete Guide", "season": 1, "episodes": [1]}}
 {"title": "Movie.Name.COMPLETE.1080p.BluRay-GRP", "kind": "release", "expect": {"title": "Movie Name", "titleYear": null, "fullSeason": true}}
 {"title": "www.Site.org - Movie.Name.2019.1080p.BluRay.x264-GRP", "kind": "release", "expect": {"title": "Movie Name", "titleYear": 2019}}

@@ -1894,6 +1894,14 @@ describe("chooseBestResult — identity as a tiebreaker (never a hard filter)", 
     expect(best?.result.title).toBe(rightYear.title);
   });
 
+  it("never picks a release whose name is only a hash, however well seeded", async () => {
+    const hashed = fakeResult({ title: "a1b2c3d4e5f67890abcdef1234567890", seeders: 5000 });
+    const real = fakeResult({ title: "Some.Movie.2020.1080p.WEB-DL.x264-GROUP", seeders: 2 });
+
+    expect((await chooseBestResult([hashed, real], [], "", null, 0, null, new Set(), "movie"))?.result.title).toBe(real.title);
+    expect(await chooseBestResult([hashed], [], "", null, 0, null, new Set(), "movie")).toBeNull();
+  });
+
   it("identity alone (no target name) never excludes a candidate — matchTierFor stays a tiebreaker", async () => {
     const onlyOption = fakeResult({ title: "Totally.Unrelated.1999.1080p.WEB-DL.x264-GROUP" });
 
