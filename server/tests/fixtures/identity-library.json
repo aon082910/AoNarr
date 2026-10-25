@@ -313,5 +313,246 @@
         "source": "tmdb_alt"
       }
     ]
+  },
+  "dexterNewBlood": {
+    "type": "series",
+    "title": "Dexter: New Blood",
+    "year": 2021,
+    "externalIds": {},
+    "aliases": []
+  },
+  "fbiMostWanted": {
+    "type": "series",
+    "title": "FBI: Most Wanted",
+    "year": 2020,
+    "externalIds": {},
+    "aliases": []
+  },
+  "planA": {
+    "type": "movie",
+    "title": "Plan A",
+    "year": 2021,
+    "externalIds": {},
+    "aliases": []
+  },
+  "theFinalCut": {
+    "type": "movie",
+    "title": "The Final Cut",
+    "year": 2004,
+    "externalIds": {},
+    "aliases": []
+  },
+  "fiveHundredDays": {
+    "type": "movie",
+    "title": "(500) Days of Summer",
+    "year": 2009,
+    "externalIds": {},
+    "aliases": []
+  },
+  "rec": {
+    "type": "movie",
+    "title": "[REC]",
+    "year": 2007,
+    "externalIds": {},
+    "aliases": []
+  },
+  "toLiveAndDieInLA": {
+    "type": "movie",
+    "title": "To Live and Die in L.A.",
+    "year": 1985,
+    "externalIds": {},
+    "aliases": []
+  },
+  "cars2": {
+    "type": "movie",
+    "title": "Cars 2",
+    "year": 2011,
+    "externalIds": {},
+    "aliases": []
+  },
+  "dieBruecke": {
+    "type": "movie",
+    "title": "Die Brücke",
+    "year": 2008,
+    "externalIds": {},
+    "aliases": []
+  },
+  "fackJuGoehte": {
+    "type": "movie",
+    "title": "Fack ju Göhte",
+    "year": 2013,
+    "externalIds": {},
+    "aliases": []
+  },
+  "dieStrasse": {
+    "type": "movie",
+    "title": "Die Straße",
+    "year": 2020,
+    "externalIds": {},
+    "aliases": []
+  },
+  "rockyV": {
+    "type": "movie",
+    "title": "Rocky V",
+    "year": 1990,
+    "externalIds": {},
+    "aliases": []
+  },
+  "empireStrikesBack": {
+    "type": "movie",
+    "title": "Star Wars: Episode V - The Empire Strikes Back",
+    "year": 1980,
+    "externalIds": {},
+    "aliases": []
+  },
+  "malcolmX": {
+    "type": "movie",
+    "title": "Malcolm X",
+    "year": 1992,
+    "externalIds": {},
+    "aliases": []
+  },
+  "threePercent": {
+    "type": "series",
+    "title": "3%",
+    "year": 2016,
+    "externalIds": {},
+    "aliases": []
+  },
+  "animeSeries": {
+    "type": "anime",
+    "title": "Anime Series",
+    "year": 2019,
+    "externalIds": {},
+    "aliases": []
+  },
+  "officeBareUK": {
+    "type": "series",
+    "title": "The Office",
+    "year": 2001,
+    "externalIds": {},
+    "aliases": [],
+    "context": {
+      "originCountry": [
+        "GB"
+      ],
+      "hasSameBaseSibling": true
+    }
+  },
+  "officeBareUS": {
+    "type": "series",
+    "title": "The Office",
+    "year": 2005,
+    "externalIds": {},
+    "aliases": [],
+    "context": {
+      "originCountry": [
+        "US"
+      ],
+      "hasSameBaseSibling": true
+    }
+  },
+  "officeBareNoEvidence": {
+    "type": "series",
+    "title": "Ghosts",
+    "year": 2021,
+    "externalIds": {},
+    "aliases": []
+  },
+  "ghostsWithSibling": {
+    "type": "series",
+    "title": "Ghosts",
+    "year": 2021,
+    "externalIds": {},
+    "aliases": [],
+    "context": {
+      "hasSameBaseSibling": true
+    }
+  },
+  "charmed2018Remake": {
+    "type": "series",
+    "title": "Charmed",
+    "year": 2018,
+    "externalIds": {},
+    "aliases": [],
+    "context": {
+      "hasSameBaseSibling": true,
+      "hasEarlierSameTitle": true
+    }
+  },
+  "qafUK": {
+    "type": "series",
+    "title": "Queer as Folk",
+    "year": 1999,
+    "externalIds": {},
+    "aliases": [],
+    "context": {
+      "hasSameBaseSibling": true
+    }
+  },
+  "mushokuS2": {
+    "type": "anime",
+    "title": "Mushoku Tensei: Jobless Reincarnation Season 2",
+    "year": 2023,
+    "externalIds": {},
+    "aliases": []
+  },
+  "friereS2": {
+    "type": "anime",
+    "title": "Frieren: Beyond Journey's End Season 2",
+    "year": 2026,
+    "externalIds": {},
+    "aliases": [
+      {
+        "title": "Sousou no Frieren 2nd Season",
+        "source": "anilist_synonym"
+      }
+    ]
+  },
+  "theMatrix": {
+    "type": "movie",
+    "title": "The Matrix",
+    "year": 1999,
+    "externalIds": {},
+    "aliases": []
+  },
+  "kingdomOfHeaven": {
+    "type": "movie",
+    "title": "Kingdom of Heaven",
+    "year": 2005,
+    "externalIds": {},
+    "aliases": []
+  },
+  "bigBangTheory": {
+    "type": "series",
+    "title": "The Big Bang Theory",
+    "year": 2007,
+    "externalIds": {},
+    "aliases": []
+  },
+  "officeUSQualified": {
+    "type": "series",
+    "title": "The Office (US)",
+    "year": 2005,
+    "externalIds": {},
+    "aliases": [],
+    "context": {
+      "hasSameBaseSibling": true,
+      "hasEarlierSameTitle": true
+    }
+  },
+  "whoAmI": {
+    "type": "movie",
+    "title": "Who Am I: Kein System ist sicher",
+    "year": 2014,
+    "externalIds": {},
+    "aliases": []
+  },
+  "movieName2020": {
+    "type": "movie",
+    "title": "Movie Name",
+    "year": 2020,
+    "externalIds": {},
+    "aliases": []
   }
 }

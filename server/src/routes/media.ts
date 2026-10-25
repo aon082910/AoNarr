@@ -23,8 +23,8 @@ import { attachChildCounts } from "../services/childCounts.js";
 import { notifyQueueChanged } from "../services/realtime.js";
 import { buildMediaQuery, clampLimit, clampOffset, MEDIA_SORT_COLUMNS, getTmdbLibraryIndex } from "../services/mediaQuery.js";
 import { syncSceneNumbering } from "../services/sceneNumbering.js";
-import { aliasRowsFor, clearProviderAliases, deleteAlias, storeAliases, syncPrimaryTitle } from "../services/releaseAliases.js";
-import { refreshProviderAliases } from "../services/aliasBackfill.js";
+import { aliasRowsFor, clearAliasesOnRematch, deleteAlias, storeAliases, syncPrimaryTitle } from "../services/releaseAliases.js";
+import { ALIAS_STATE_KEYS, refreshProviderAliases } from "../services/aliasBackfill.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { isBackgroundJobRunning } from "../services/backgroundJobs.js";
@@ -1728,6 +1728,10 @@ mediaRouter.patch(
       values.push(req.params.id);
       await db.prepare(`UPDATE media_items SET ${sets.join(", ")} WHERE id = ?`).run(...values);
     }
+    // The item's names live in media_item_titles too: a renamed item keeps its old title as an
+    // alias (releases named the way it used to be keep matching) and gets the new one as its
+    // primary row, so an alias added next is checked against the right title.
+    if (typeof b.title === "string" && b.title !== (existing as any).title) await syncPrimaryTitle(Number(req.params.id));
 
     const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id)) as any;
     // Keeps a synced .nfo sidecar current when the actual metadata (not just monitored/protected/
@@ -1780,6 +1784,9 @@ mediaRouter.post(
     // provider results, which stay behind. (An older PATCH could store extra_metadata as null.)
     const extraMetadata: Record<string, any> = { ...(mediaItemFromRow(existing).extraMetadata ?? {}) };
     extraMetadata[ADDITIONAL_PROVIDER_IDS_KEY] = {};
+    // What the old match told the alias lookup (when it last asked, where the work was made) is no
+    // statement about the new one.
+    for (const key of ALIAS_STATE_KEYS) delete extraMetadata[key];
     const poster = proxiedProviderArtwork(b.posterUrl);
     const backdrop = proxiedProviderArtwork(b.backdropUrl);
 
@@ -1821,8 +1828,11 @@ mediaRouter.post(
     // this item's own names (the folder's or the scene's). The alternate titles the old match
     // brought are dropped for the same reason; the follow-up refresh fetches the new match's.
     const keepOldTitle = b.keepOldTitleAsAlias === true;
+    // Names the old match left behind go too: "original" rows (the title an earlier refresh or a
+    // duplicate merge replaced) are another work's names as often as this one's. Only the admin's own
+    // aliases survive a rematch.
+    await clearAliasesOnRematch(row.id);
     if (keepOldTitle) await storeAliases(row.id, [(existing as any).title], "original");
-    await clearProviderAliases(row.id);
     await syncPrimaryTitle(row.id, { keepOldTitle });
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "media_rematched", `"${(existing as any).title}" → "${b.title}"`);

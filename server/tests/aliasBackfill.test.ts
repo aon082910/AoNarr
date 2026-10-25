@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from "vitest";
 import { setupTestDb } from "./helpers/testDb.js";
 
+// The titles the lookup returns come from this mock; the origin country it reports is set per test.
 const fetchAlternateTitlesFor = vi.fn<(type: string, ids: Record<string, string>) => Promise<string[]>>();
+let originCountry: string[] | null = null;
 vi.mock("../src/services/metadata.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/services/metadata.js")>()),
-  fetchAlternateTitlesFor: (...args: [string, Record<string, string>]) => fetchAlternateTitlesFor(...args),
+  fetchAliasDataFor: async (...args: [string, Record<string, string>]) => ({ titles: await fetchAlternateTitlesFor(...args), originCountry }),
 }));
 
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
@@ -21,6 +23,7 @@ beforeEach(async () => {
   await db.prepare("DELETE FROM media_item_titles").run();
   await db.prepare("DELETE FROM media_items").run();
   fetchAlternateTitlesFor.mockReset();
+  originCountry = null;
 });
 
 async function insertItem(type: string, title: string, externalIds: Record<string, string> | null, extra: Record<string, unknown> | null = null): Promise<number> {
@@ -62,6 +65,31 @@ describe("refreshProviderAliases", () => {
 
     expect(await backfill.refreshProviderAliases(id)).toBe(2);
     expect((await aliases.aliasRowsFor(id)).map((r) => r.source)).toEqual(["anilist_synonym", "anilist_synonym"]);
+  });
+
+  it("replaces the provider's titles instead of adding to them, keeping the admin's own", async () => {
+    const id = await insertItem("movie", "Replaced Film", { tmdb: "5" });
+    await aliases.storeAliases(id, ["Mein Eigener Titel"], "user");
+    fetchAlternateTitlesFor.mockResolvedValueOnce(["Old Name", "Kept Name"]);
+    await backfill.refreshProviderAliases(id);
+    fetchAlternateTitlesFor.mockResolvedValueOnce(["Kept Name", "New Name"]);
+    await backfill.refreshProviderAliases(id);
+    expect((await aliases.aliasRowsFor(id)).map((r) => [r.title, r.source]).sort()).toEqual([
+      ["Kept Name", "tmdb_alt"],
+      ["Mein Eigener Titel", "user"],
+      ["New Name", "tmdb_alt"],
+    ]);
+  });
+
+  it("records where the work was made, and the version of the lookup, next to the checked marker", async () => {
+    const id = await insertItem("series", "The Office", { tmdb: "2316" });
+    originCountry = ["US"];
+    fetchAlternateTitlesFor.mockResolvedValue([]);
+    await backfill.refreshProviderAliases(id);
+    const row = (await db.prepare("SELECT extra_metadata FROM media_items WHERE id = ?").get(id)) as { extra_metadata: string };
+    expect(JSON.parse(row.extra_metadata)).toMatchObject({ originCountry: ["US"], aliasesVersion: 2 });
+    expect(JSON.parse(row.extra_metadata).aliasesCheckedAt).toBeTypeOf("string");
+    expect((await aliases.identityContextFor(id)).originCountry).toEqual(["US"]);
   });
 
   it("does nothing for a type without quality tiers or an unknown item", async () => {
@@ -115,10 +143,25 @@ describe("refreshProviderAliases", () => {
   });
 });
 
+describe("backfillProviderAliases — items checked by an earlier version of the lookup", () => {
+  it("asks a TMDB item checked before the original title and translations were fetched again, but not an AniList one", async () => {
+    const old = await insertItem("movie", "Old Check", { tmdb: "10" }, { aliasesCheckedAt: "2026-10-01T00:00:00.000Z" });
+    const current = await insertItem("movie", "Current Check", { tmdb: "11" }, { aliasesCheckedAt: "2026-10-01T00:00:00.000Z", aliasesVersion: 2 });
+    const anime = await insertItem("anime", "Anime Check", { anilist: "12" }, { aliasesCheckedAt: "2026-10-01T00:00:00.000Z" });
+    fetchAlternateTitlesFor.mockResolvedValue(["Altes Alias"]);
+    expect(await backfill.backfillProviderAliases()).toEqual({ checked: 1, added: 1 });
+    expect(fetchAlternateTitlesFor).toHaveBeenCalledTimes(1);
+    expect(fetchAlternateTitlesFor).toHaveBeenCalledWith("movie", { tmdb: "10" });
+    expect((await aliases.aliasRowsFor(old)).map((r) => r.title)).toEqual(["Altes Alias"]);
+    expect(await aliases.aliasRowsFor(current)).toEqual([]);
+    expect(await aliases.aliasRowsFor(anime)).toEqual([]);
+  });
+});
+
 describe("backfillProviderAliases", () => {
   it("visits only unchecked quality-tiered items with a provider id, once", async () => {
     const movie = await insertItem("movie", "Dune", { tmdb: "438631" });
-    const already = await insertItem("movie", "Checked Film", { tmdb: "3" }, { aliasesCheckedAt: "2026-01-01T00:00:00.000Z" });
+    const already = await insertItem("movie", "Checked Film", { tmdb: "3" }, { aliasesCheckedAt: "2026-01-01T00:00:00.000Z", aliasesVersion: 2 });
     const noIds = await insertItem("movie", "No Ids Film", { imdb: "tt1" });
     const book = await insertItem("author", "An Author", { goodreads: "9" });
     fetchAlternateTitlesFor.mockResolvedValue(["Dune: Part One"]);

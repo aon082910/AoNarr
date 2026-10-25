@@ -22,7 +22,7 @@ import { getBlocklistedTitles, isBlocklisted } from "../services/blocklist.js";
 import { matchTierFor, targetIdentityOf, tvdbIdOf, type TargetIdentity } from "../services/scheduler.js";
 import { identityModeFor, releaseIdentifiesTarget } from "../services/releaseIdentity.js";
 import { releaseRejection } from "../services/releaseRejections.js";
-import { alternateQueriesFor, aliasTitlesFor, identityTargetFor } from "../services/releaseAliases.js";
+import { alternateQueriesFor, aliasTitlesFor, identityContextFor, identityTargetFor } from "../services/releaseAliases.js";
 import { searchSlskd } from "../services/soulseek.js";
 import { pickClientForProtocol, searchAndGrabTargets, type BulkSearchTarget } from "../services/scheduler.js";
 import { computeAbsoluteEpisodeNumber } from "../services/importer.js";
@@ -215,7 +215,7 @@ searchRouter.get(
     // prefers an id/year-confirmed release among the viable ones. A sub-item (album/book) search
     // confirms identity by the sub-item's own title instead, so identity stays null there.
     const identity: TargetIdentity | null = !subItemId ? targetIdentityOf(item) : null;
-    const identityTarget = tiered && identity ? { type: item.type, title: item.title, year: identity.year, externalIds: identity.externalIds, aliases: await aliasTitlesFor(item.id) } : null;
+    const identityTarget = tiered && identity ? { type: item.type, title: item.title, year: identity.year, externalIds: identity.externalIds, aliases: await aliasTitlesFor(item.id), ...(await identityContextFor(item.id)) } : null;
     const annotated: AnnotatedSearchResult[] = await Promise.all(rawResults.map(async (r) => {
       const parsed = parseReleaseTitle(r.title);
       const matchesTarget =

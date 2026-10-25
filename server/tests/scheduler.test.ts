@@ -3600,7 +3600,7 @@ describe("chooseBestResult — identity gate for tiered types", () => {
     setSetting("strictReleaseIdentity", "");
   });
 
-  it("caps the bare enforce setting at log for the containment types until their round lands, but not for anime", async () => {
+  it("caps the bare enforce setting at log for the containment types and anime until their rounds land", async () => {
     const wrong = fakeResult({ title: "Some.Other.Event.2024.1080p.WEB-GRP" });
     const ppv = (results: any[]) =>
       chooseBestResult(results, [], "", null, 0, null, new Set(), "ppv", null, { year: 2024, externalIds: {} }, null, { name: { title: "UFC 300" } });
@@ -3609,10 +3609,14 @@ describe("chooseBestResult — identity gate for tiered types", () => {
     setSetting("strictReleaseIdentity.ppv", "enforce");
     expect(await ppv([wrong])).toBeNull();
     setSetting("strictReleaseIdentity.ppv", "");
-    // Anime enforces under the bare setting now that alternate titles (AniList synonyms) exist.
+    // Anime is capped too (its episode numbering is not modelled yet); only its own setting enforces.
     const wrongAnime = fakeResult({ title: "Some.Other.Anime.S01E05.1080p.WEB-GRP" });
-    const anime = chooseBestResult([wrongAnime], [], "", null, 0, { season: 1, episode: 5 }, new Set(), "anime", null, { year: 2020, externalIds: {} }, null, { name: { title: "Show" } });
-    expect(await anime).toBeNull();
+    const anime = () =>
+      chooseBestResult([wrongAnime], [], "", null, 0, { season: 1, episode: 5 }, new Set(), "anime", null, { year: 2020, externalIds: {} }, null, { name: { title: "Show" } });
+    expect((await anime())?.identity).toMatchObject({ ok: false }); // kept, log-only
+    setSetting("strictReleaseIdentity.anime", "enforce");
+    expect(await anime()).toBeNull();
+    setSetting("strictReleaseIdentity.anime", "");
     setSetting("strictReleaseIdentity", "");
   });
 

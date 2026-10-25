@@ -593,3 +593,84 @@ describe("handleAnnounce — releases that can never import (matching Round 7)",
     expect(grab.mock.calls[0][2]).toBe(six);
   });
 });
+
+describe("handleAnnounce — which show an announce names (matching Round 8)", () => {
+  async function setOrigin(itemId: number, country: string[]): Promise<void> {
+    await db.prepare("UPDATE media_items SET extra_metadata = ? WHERE id = ?").run(JSON.stringify({ originCountry: country }), itemId);
+  }
+
+  it("does not take a spin-off for the show the announce names: FBI.S06E05 is not FBI: Most Wanted", async () => {
+    const profileId = await insertProfile();
+    const showId = await insertShow("FBI: Most Wanted", profileId, 2020);
+    await insertEpisode(showId, 6, 5);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("FBI.S06E05.1080p.WEBDL-GRP"));
+    expect(grab).not.toHaveBeenCalled();
+
+    // The show's full name, or an alias for the short one, does.
+    await handleAnnounce(FEED, announceText("FBI.Most.Wanted.S06E05.1080p.WEBDL-GRP"));
+    expect(grab).toHaveBeenCalledTimes(1);
+  });
+
+  it("grabs for NCIS when its spin-offs are wanted too, instead of calling the announce ambiguous", async () => {
+    const profileId = await insertProfile();
+    const ncis = await insertShow("NCIS", profileId, 2003);
+    const la = await insertShow("NCIS: Los Angeles", profileId, 2009);
+    const ep = await insertEpisode(ncis, 20, 5);
+    await insertEpisode(la, 20, 5);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("NCIS.S20E05.1080p.WEBDL-GRP"));
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect((grab.mock.calls[0][1] as any).id).toBe(ncis);
+    expect(grab.mock.calls[0][2]).toBe(ep);
+  });
+
+  it("gives a bare title to the older of two shows that share it, and a year to the one that has it", async () => {
+    const profileId = await insertProfile();
+    const original = await insertShow("Round Eight Charmed", profileId, 1998);
+    const reboot = await insertShow("Round Eight Charmed", profileId, 2018);
+    const originalEpisode = await insertEpisode(original, 1, 1);
+    const rebootEpisode = await insertEpisode(reboot, 1, 1);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Round.Eight.Charmed.S01E01.1080p.WEBDL-GRP"));
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect(grab.mock.calls[0][2]).toBe(originalEpisode);
+
+    grab.mockClear();
+    await db.prepare("UPDATE episodes SET has_file = 1 WHERE id = ?").run(originalEpisode);
+    await handleAnnounce(FEED, announceText("Round.Eight.Charmed.2018.S01E01.1080p.WEBDL-GRP", "https://example.com/dl/2"));
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect(grab.mock.calls[0][2]).toBe(rebootEpisode);
+  });
+
+  it("takes a region tag for the show made there, not for the other country's show of the same title", async () => {
+    const profileId = await insertProfile();
+    const uk = await insertShow("Round Eight Offices", profileId, 2001);
+    const us = await insertShow("Round Eight Offices", profileId, 2005);
+    await insertEpisode(uk, 1, 1);
+    const usEpisode = await insertEpisode(us, 1, 1);
+    await setOrigin(uk, ["GB"]);
+    await setOrigin(us, ["US"]);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Round.Eight.Offices.US.S01E01.1080p.WEBDL-GRP"));
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect(grab.mock.calls[0][2]).toBe(usEpisode);
+  });
+
+  it("does not take the other country's tag when only that country's show of the title is wanted", async () => {
+    const profileId = await insertProfile();
+    const uk = await insertShow("Round Eight Ghosts", profileId, 2019);
+    await insertEpisode(uk, 1, 1);
+    await setOrigin(uk, ["GB"]);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Round.Eight.Ghosts.US.S01E01.1080p.WEBDL-GRP"));
+    expect(grab).not.toHaveBeenCalled();
+    await handleAnnounce(FEED, announceText("Round.Eight.Ghosts.UK.S01E01.1080p.WEBDL-GRP", "https://example.com/dl/3"));
+    expect(grab).toHaveBeenCalledTimes(1);
+  });
+});

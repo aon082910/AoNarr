@@ -94,6 +94,29 @@ describe("rematch and add keep the alias index current", () => {
     expect((await db.prepare("SELECT clean_title FROM media_items WHERE id = ?").get(id) as any).clean_title).toBe("correctfilm");
   });
 
+  it("drops the 'original' rows an earlier refresh or merge left, and the lookup's markers, on a rematch (I19)", async () => {
+    refreshOneMediaItem.mockReset().mockResolvedValue({ ok: true, childrenAdded: 0 });
+    const id = await insertMovie("Extraction 2", 2023);
+    const { syncPrimaryTitle, storeAliases } = await import("../src/services/releaseAliases.js");
+    await syncPrimaryTitle(id);
+    // Another film's name, added when a duplicate was merged into this row, and what the old match told us.
+    await storeAliases(id, ["Extraction"], "original");
+    await db
+      .prepare("UPDATE media_items SET extra_metadata = ? WHERE id = ?")
+      .run(JSON.stringify({ aliasesCheckedAt: "2026-10-01T00:00:00.000Z", aliasesVersion: 2, originCountry: ["US"], keep: "me" }), id);
+
+    const res = await request(app).post(`/api/media/${id}/rematch`).set("X-Api-Key", apiKey).send({ title: "Extraction", year: 2020, externalIds: { tmdb: "5" } });
+    expect(res.status).toBe(200);
+
+    const rows = (await request(app).get(`/api/media/${id}/aliases`).set("X-Api-Key", apiKey)).body;
+    expect(rows.map((r: any) => [r.title, r.source])).toEqual([["Extraction", "primary"]]);
+    const extra = JSON.parse(((await db.prepare("SELECT extra_metadata FROM media_items WHERE id = ?").get(id)) as { extra_metadata: string }).extra_metadata);
+    expect(extra).toMatchObject({ keep: "me" });
+    expect(extra.aliasesCheckedAt).toBeUndefined();
+    expect(extra.aliasesVersion).toBeUndefined();
+    expect(extra.originCountry).toBeUndefined();
+  });
+
   it("keeps the previous title as an 'original' alias when the rematch says it was one of the item's own names", async () => {
     refreshOneMediaItem.mockReset().mockResolvedValue({ ok: true, childrenAdded: 0 });
     const id = await insertMovie("Folder Name Film", 2001);
@@ -142,5 +165,38 @@ describe("rematch and add keep the alias index current", () => {
     expect(refreshProviderAliases).toHaveBeenCalledWith(id);
     const rows = (await request(app).get(`/api/media/${id}/aliases`).set("X-Api-Key", apiKey)).body;
     expect(rows).toMatchObject([{ title: "Freshly Added Film", source: "primary" }]);
+  });
+});
+
+describe("renaming an item re-keys its aliases (I18)", () => {
+  it("keeps the old title as an alias, makes the new one primary, and keys the new title at once", async () => {
+    const id = await insertMovie("The Rename Show", 2005);
+    const { syncPrimaryTitle } = await import("../src/services/releaseAliases.js");
+    await syncPrimaryTitle(id);
+
+    const patched = await request(app).patch(`/api/media/${id}`).set("X-Api-Key", apiKey).send({ title: "The Rename Show (US)" });
+    expect(patched.status).toBe(200);
+    expect(((await db.prepare("SELECT clean_title FROM media_items WHERE id = ?").get(id)) as { clean_title: string }).clean_title).toBe("renameshowus");
+
+    // Before the fix the old title stayed the primary row until the next start, which dropped it.
+    const rows = (await request(app).get(`/api/media/${id}/aliases`).set("X-Api-Key", apiKey)).body;
+    expect(rows.map((r: any) => [r.title, r.source])).toEqual([
+      ["The Rename Show", "original"],
+      ["The Rename Show (US)", "primary"],
+    ]);
+  });
+
+  it("leaves the aliases alone when the edit does not change the title", async () => {
+    const id = await insertMovie("Same Title Film", 2005);
+    const { syncPrimaryTitle, storeAliases } = await import("../src/services/releaseAliases.js");
+    await syncPrimaryTitle(id);
+    await storeAliases(id, ["Other Name"], "user");
+    const res = await request(app).patch(`/api/media/${id}`).set("X-Api-Key", apiKey).send({ title: "Same Title Film", monitored: 0 });
+    expect(res.status).toBe(200);
+    const rows = (await request(app).get(`/api/media/${id}/aliases`).set("X-Api-Key", apiKey)).body;
+    expect(rows.map((r: any) => [r.title, r.source])).toEqual([
+      ["Same Title Film", "primary"],
+      ["Other Name", "user"],
+    ]);
   });
 });

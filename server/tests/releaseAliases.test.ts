@@ -237,12 +237,15 @@ describe("identityTargetFor", () => {
   it("builds the gate's target from the row, parsing external ids and loading aliases", async () => {
     const id = await insertItem("movie", "Dune", 2021, { imdb: "tt1160419" });
     await aliases.storeAliases(id, ["Dune: Part One"], "tmdb_alt");
-    expect(await aliases.identityTargetFor(itemRow(id, "movie", "Dune", 2021, { imdb: "tt1160419" }))).toEqual({
+    // (Other tests of this file have added films of the same title, so what the library knows about
+    // siblings is checked on its own below.)
+    expect(await aliases.identityTargetFor(itemRow(id, "movie", "Dune", 2021, { imdb: "tt1160419" }))).toMatchObject({
       type: "movie",
       title: "Dune",
       year: 2021,
       externalIds: { imdb: "tt1160419" },
       aliases: ["Dune: Part One"],
+      originCountry: null,
     });
   });
 
@@ -271,7 +274,14 @@ describe("resolveReleaseItem (library-wide, with aliases)", () => {
     const original = itemRow(1, "series", "Charmed", 1998);
     const reboot = itemRow(2, "series", "Charmed", 2018);
     const map = new Map<number, string[]>();
-    expect(aliases.resolveReleaseItem(...release("Charmed.S01E01.1080p.WEB-GRP"), [original, reboot], map)).toMatchObject({ kind: "ambiguous", items: [{ id: 1 }, { id: 2 }] });
+    // A release that names no year belongs to the older of two shows of one title, as scene names have it.
+    expect(aliases.resolveReleaseItem(...release("Charmed.S01E01.1080p.WEB-GRP"), [original, reboot], map)).toMatchObject({ kind: "one", item: { id: 1 } });
+    // Two films of one title stay ambiguous: the older is no more the bare name's than the newer.
+    expect(aliases.resolveReleaseItem(...release("Twin.Title.1080p.WEB-GRP"), [itemRow(5, "movie", "Twin Title", 1990), itemRow(6, "movie", "Twin Title", 2010)], map)).toMatchObject({ kind: "ambiguous" });
+    // Shows that merely share an alias are no remake of one another.
+    const a = itemRow(7, "series", "Alias Clash A", 2010);
+    const b = itemRow(8, "series", "Alias Clash B", 2012);
+    expect(aliases.resolveReleaseItem(...release("Clashing.Name.S01E01.1080p.WEB-GRP"), [a, b], new Map([[7, ["Clashing Name"]], [8, ["Clashing Name"]]]))).toMatchObject({ kind: "ambiguous" });
     expect(aliases.resolveReleaseItem(...release("Charmed.2018.S01E01.1080p.WEB-GRP"), [original, reboot], map)).toMatchObject({ kind: "one", item: { id: 2 } });
     expect(aliases.resolveReleaseItem(...release("Charmed.1998.S01E01.1080p.WEB-GRP"), [original, reboot], map)).toMatchObject({ kind: "one", item: { id: 1 } });
   });
@@ -301,5 +311,105 @@ describe("resolveReleaseItem (library-wide, with aliases)", () => {
     const broken = { ...itemRow(2, "movie", "Other", 2000), externalIds: "{oops" };
     const outcome = aliases.resolveReleaseItem({ title: "Some.Other.Name.2021.1080p.WEB-GRP", imdbId: "tt1160419" } as any, parseReleaseTitle("Some.Other.Name.2021.1080p.WEB-GRP"), [broken, dune], new Map());
     expect(outcome).toMatchObject({ kind: "one", item: { id: 1 }, verdict: { matchType: "id" } });
+  });
+});
+
+describe("resolveReleaseItem — ranked matches (Round 8)", () => {
+  const release = (title: string) => [{ title }, parseReleaseTitle(title)] as const;
+
+  it("takes NCIS for NCIS.S20E05, not ambiguous between it and its spin-offs (I1, I2)", () => {
+    const ncis = itemRow(1, "series", "NCIS", 2003);
+    const la = itemRow(2, "series", "NCIS: Los Angeles", 2009);
+    const hawaii = itemRow(3, "series", "NCIS: Hawai'i", 2021);
+    expect(aliases.resolveReleaseItem(...release("NCIS.S20E05.1080p.WEB.h264-GRP"), [la, ncis, hawaii], new Map())).toMatchObject({ kind: "one", item: { id: 1 } });
+    // Only a spin-off is wanted: the release names the parent show, so nothing is grabbed for it.
+    expect(aliases.resolveReleaseItem(...release("NCIS.S20E05.1080p.WEB.h264-GRP"), [la, hawaii], new Map())).toEqual({ kind: "none" });
+    expect(aliases.resolveReleaseItem(...release("FBI.S06E05.1080p.WEB.h264-GRP"), [itemRow(4, "series", "FBI: Most Wanted", 2020), itemRow(5, "series", "FBI: International", 2021)], new Map())).toEqual({ kind: "none" });
+  });
+
+  it("prefers a title match to an alias match to a loose one", () => {
+    const flash = itemRow(1, "series", "The Flash", 2014);
+    const flashOld = itemRow(2, "series", "Flash", 1990);
+    // "Flash" is the 1990 show's title and The Flash's title less its article: the title wins.
+    expect(aliases.resolveReleaseItem(...release("Flash.S01E01.1080p.WEB-GRP"), [flash, flashOld], new Map())).toMatchObject({ kind: "one", item: { id: 2 }, verdict: { matchType: "title" } });
+    const byAlias = itemRow(3, "series", "Something Else", 2010);
+    expect(aliases.resolveReleaseItem(...release("Flash.S01E01.1080p.WEB-GRP"), [flash, byAlias], new Map([[3, ["Flash"]]]))).toMatchObject({ kind: "one", item: { id: 3 }, verdict: { matchType: "alias" } });
+  });
+});
+
+describe("the gate's context for an item (Round 8)", () => {
+  async function insertWithExtra(type: string, title: string, year: number | null, extra: object | null): Promise<number> {
+    const id = await insertItem(type, title, year);
+    if (extra) await db.prepare("UPDATE media_items SET extra_metadata = ? WHERE id = ?").run(JSON.stringify(extra), id);
+    await aliases.syncPrimaryTitle(id);
+    return id;
+  }
+
+  it("knows where an item was made and which items share its title, whatever their qualifier", async () => {
+    const uk = await insertWithExtra("series", "The Round Eight Office", 2001, { originCountry: ["GB"] });
+    const us = await insertWithExtra("series", "The Round Eight Office (US)", 2005, { originCountry: ["US"] });
+    const lone = await insertWithExtra("series", "Round Eight Loner", 2010, null);
+    expect(await aliases.identityContextFor(uk)).toEqual({ originCountry: ["GB"], hasSameBaseSibling: true, hasEarlierSameTitle: false });
+    expect(await aliases.identityContextFor(us)).toEqual({ originCountry: ["US"], hasSameBaseSibling: true, hasEarlierSameTitle: true });
+    expect(await aliases.identityContextFor(lone)).toEqual({ originCountry: null, hasSameBaseSibling: false, hasEarlierSameTitle: false });
+    // Another type's item of the same title is no sibling.
+    await insertWithExtra("movie", "Round Eight Loner", 1990, null);
+    expect((await aliases.identityContextFor(lone)).hasSameBaseSibling).toBe(false);
+  });
+
+  it("sees a same-titled item added since the last start, whose clean title is not stored yet", async () => {
+    const keyed = await insertWithExtra("series", "Round Eight Unkeyed", 2001, null);
+    // Inserted by an import list or a scan: nothing has keyed it (backfillCleanTitles runs at startup).
+    await insertItem("series", "Round Eight Unkeyed (2012)", 2012);
+    expect(await aliases.identityContextFor(keyed)).toMatchObject({ hasSameBaseSibling: true, hasEarlierSameTitle: false });
+  });
+
+  it("resolves an announce with the library's siblings and origin countries", async () => {
+    const uk = await insertWithExtra("series", "Round Eight Ghosts", 2019, { originCountry: ["GB"] });
+    const us = await insertWithExtra("series", "Round Eight Ghosts", 2021, { originCountry: ["US"] });
+    const items = [
+      { ...itemRow(uk, "series", "Round Eight Ghosts", 2019), extraMetadata: { originCountry: ["GB"] } },
+      { ...itemRow(us, "series", "Round Eight Ghosts", 2021), extraMetadata: { originCountry: ["US"] } },
+    ];
+    const [rel, parsed] = [{ title: "Round.Eight.Ghosts.US.S01E01.720p.HDTV-GRP" }, parseReleaseTitle("Round.Eight.Ghosts.US.S01E01.720p.HDTV-GRP")];
+    // The region tag singles out the US show; before it, the first-wanted one would have taken it.
+    expect(await aliases.resolveReleaseItemInLibrary(rel, parsed, items, new Map())).toMatchObject({ kind: "one", item: { id: us } });
+    // Only the UK show is wanted: its release is not the US show's.
+    expect(await aliases.resolveReleaseItemInLibrary(rel, parsed, [items[0]], new Map())).toEqual({ kind: "none" });
+    // A bare release is the older show's, whichever of the two is wanted... and the newer one alone is refused.
+    const bare = parseReleaseTitle("Round.Eight.Ghosts.S01E01.720p.HDTV-GRP");
+    expect(await aliases.resolveReleaseItemInLibrary({ title: "Round.Eight.Ghosts.S01E01.720p.HDTV-GRP" }, bare, items, new Map())).toMatchObject({ kind: "one", item: { id: uk } });
+    expect(await aliases.resolveReleaseItemInLibrary({ title: "Round.Eight.Ghosts.S01E01.720p.HDTV-GRP" }, bare, [items[1]], new Map())).toEqual({ kind: "none" });
+  });
+});
+
+describe("replacing and clearing aliases (Round 8)", () => {
+  it("replaces one provider's titles, keeps the admin's and the other sources', and never stores the item's own title", async () => {
+    const id = await insertItem("movie", "Replace Me", 2020);
+    await aliases.syncPrimaryTitle(id);
+    await aliases.storeAliases(id, ["My Own Name"], "user");
+    await aliases.storeAliases(id, ["Old One", "Shared Name"], "tmdb_alt");
+    await aliases.storeAliases(id, ["Synonym"], "anilist_synonym");
+    expect(await aliases.replaceProviderAliases(id, ["Shared Name", "New One", "Replace Me", "My Own Name"], "tmdb_alt")).toBe(2);
+    expect((await aliases.aliasRowsFor(id)).filter((r) => r.source !== "primary").map((r) => [r.title, r.source]).sort()).toEqual([
+      ["My Own Name", "user"],
+      ["New One", "tmdb_alt"],
+      ["Shared Name", "tmdb_alt"],
+      ["Synonym", "anilist_synonym"],
+    ]);
+  });
+
+  it("drops everything a rematch should: provider titles and 'original' rows, but not the admin's aliases or the primary row", async () => {
+    const id = await insertItem("movie", "Rematched Film", 2020);
+    await aliases.syncPrimaryTitle(id);
+    await aliases.storeAliases(id, ["Old Match Title"], "original");
+    await aliases.storeAliases(id, ["Old Provider Title"], "tmdb_alt");
+    await aliases.storeAliases(id, ["Old Synonym"], "anilist_synonym");
+    await aliases.storeAliases(id, ["Admin Alias"], "user");
+    await aliases.clearAliasesOnRematch(id);
+    expect((await aliases.aliasRowsFor(id)).map((r) => [r.title, r.source]).sort()).toEqual([
+      ["Admin Alias", "user"],
+      ["Rematched Film", "primary"],
+    ]);
   });
 });
