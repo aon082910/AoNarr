@@ -4,7 +4,7 @@ import { log } from "./logger.js";
 import { db } from "../db/index.js";
 import { nowExpr, nowOffsetHoursExpr } from "../db/asyncDb.js";
 import { config } from "../config.js";
-import { searchAllIndexers, type SearchHints } from "./indexerClient.js";
+import { searchAllIndexers } from "./indexerClient.js";
 import {
   getDownloadClientAdapter,
   removeQueueItemDownload,
@@ -13,10 +13,22 @@ import {
   withQueueImportLock,
 } from "./downloadClient.js";
 import type { QueueStatusUpdate } from "./downloadClient.js";
-import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode, type SceneIndex } from "./releaseParser.js";
+import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import { identityModeFor, releaseIdentifiesTarget, type IdentityMode, type IdentityVerdict } from "./releaseIdentity.js";
 import { releaseRejection } from "./releaseRejections.js";
-import { alternateQueriesFor, aliasTitlesFor, identityContextFor } from "./releaseAliases.js";
+import { aliasTitlesFor, identityContextFor } from "./releaseAliases.js";
+import { childNumberOf, volumeYearOf } from "./searchQueries.js";
+import {
+  airedFrontierFor,
+  episodeNotAired,
+  episodePlanFor,
+  searchHintsOf,
+  seasonPlanFor,
+  singlePlanFor,
+  subItemPlanFor,
+  type ReleaseTarget,
+  type SearchPlan,
+} from "./searchPlan.js";
 import { backfillProviderAliases } from "./aliasBackfill.js";
 import {
   knownReleaseSize,
@@ -35,7 +47,7 @@ import {
   qualityProfileFromRow,
   queueItemFromRow,
 } from "../db/mappers.js";
-import { importQueueItem, ImportSkippedError, computeAbsoluteEpisodeNumber } from "./importer.js";
+import { importQueueItem, ImportSkippedError } from "./importer.js";
 import { notifyFailed, notifyGrabbed, notifyHealthIssue, notifyManualInteractionRequired, notifyUpdateAvailable } from "./notifications.js";
 import { checkForUpdate } from "./updateCheck.js";
 import { checkIndexerHealth } from "./indexerClient.js";
@@ -330,13 +342,6 @@ export function targetIdentityOf(item: Pick<MediaItem, "year" | "externalIds">):
   return { year: item.year, externalIds: item.externalIds ? JSON.parse(item.externalIds) : {} };
 }
 
-/** The series id a typed tvsearch asks by. An episode or season search sends no other id: the text
- * search it falls back to would only be narrowed by them. */
-export function tvdbIdOf(item: Pick<MediaItem, "externalIds">): Record<string, string> {
-  const ids: Record<string, unknown> = item.externalIds ? JSON.parse(item.externalIds) : {};
-  return ids.tvdb ? { tvdb: String(ids.tvdb) } : {};
-}
-
 /**
  * 2 = the release's own reported or title-embedded external id matches the target's; 1 = the
  * release's parsed year matches the target's; 0 = neither, or no identity was given at all
@@ -352,47 +357,9 @@ export function matchTierFor(result: SearchResult, identity: TargetIdentity | nu
   const candidateImdb = (result.imdbId ?? parsed.imdbId)?.toLowerCase();
   if (candidateImdb && identity.externalIds.imdb && candidateImdb === identity.externalIds.imdb.toLowerCase()) return 2;
   if (result.tmdbId && identity.externalIds.tmdb && result.tmdbId === identity.externalIds.tmdb) return 2;
+  if (result.tvdbId && identity.externalIds.tvdb && String(result.tvdbId) === String(identity.externalIds.tvdb)) return 2;
   if (parsed.year != null && identity.year != null && parsed.year === identity.year) return 1;
   return 0;
-}
-
-type ReleaseTarget =
-  | { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null; absoluteEpisode?: number | null; sceneIndex?: SceneIndex }
-  | { airDate: string };
-
-/** The indexer query and release-match target for one episode row. A daily series' releases are
- * named by air date ("Show.2024.08.25..."), which never parse to a season/episode, so an SxxEyy
- * target would reject every one of them. */
-async function episodeSearchFor(item: MediaItem, ep: any): Promise<{ query: string; target: ReleaseTarget; numbers: SearchNumbers | null }> {
-  if (item.seriesType === "daily" && ep.air_date) {
-    return { query: `${item.title} ${ep.air_date}`, target: { airDate: ep.air_date }, numbers: null };
-  }
-  const searchSeason = ep.scene_season_number ?? ep.season_number;
-  const searchEpisode = ep.scene_episode_number ?? ep.episode_number;
-  return {
-    query: `${item.title} S${String(searchSeason).padStart(2, "0")}E${String(searchEpisode).padStart(2, "0")}`,
-    numbers: { season: searchSeason, episode: searchEpisode },
-    target: {
-      season: ep.season_number,
-      episode: ep.episode_number,
-      sceneSeason: ep.scene_season_number,
-      sceneEpisode: ep.scene_episode_number,
-      absoluteEpisode: item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, ep.season_number, ep.episode_number) : null,
-      sceneIndex: await sceneIndexFor(item.id),
-    },
-  };
-}
-
-/** The season and episode a search query was built from, for a typed tvsearch. */
-interface SearchNumbers {
-  season: number;
-  episode: number | null;
-}
-
-/** What a search is for besides its text: the numbers a typed tvsearch asks for, and the item's
- * other titles as complete queries (releaseAliases.alternateQueriesFor). */
-async function searchHintsFor(item: MediaItem, query: string, numbers?: SearchNumbers | null): Promise<SearchHints> {
-  return { season: numbers?.season ?? null, episode: numbers?.episode ?? null, alternateQueries: await alternateQueriesFor(item, query) };
 }
 
 /** What a target is called: a whole item's own title, or an album/book/issue's title under its
@@ -400,6 +367,19 @@ async function searchHintsFor(item: MediaItem, query: string, numbers?: SearchNu
 export interface TargetName {
   title: string;
   parentTitle?: string | null;
+  /** The titles of the parent's other children (a book's siblings in its author's list). A book's
+   * main title ("Dune" of "Dune: Messiah") names the book only if no sibling is called that too. */
+  siblingTitles?: string[];
+}
+
+/** The titles of the other children of a collection item, for TargetName.siblingTitles: only a book
+ * is named by the part of its title before the subtitle, so only an author's or audiobook's children
+ * are read. */
+async function siblingTitlesOf(item: Pick<MediaItem, "id" | "type">, subItemId: number): Promise<string[] | undefined> {
+  if (!SUBTITLE_OPTIONAL_TYPES.has(item.type)) return undefined;
+  const mediaItemId = item.id;
+  const rows = (await db.prepare("SELECT title FROM sub_items WHERE media_item_id = ? AND id <> ?").all(mediaItemId, subItemId)) as { title: string }[];
+  return rows.map((r) => r.title);
 }
 
 export interface ChooseOptions {
@@ -538,7 +518,7 @@ function releaseNameMatch(releaseTitle: string, name: TargetName, mediaType: str
         (SUBTITLE_OPTIONAL_TYPES.has(mediaType) && leadTokens.every((t) => wantedTokens.includes(t))));
     if (leadTokens.length > 0 && !leadNamesParent(lead, name.parentTitle) && !namesTitle) return null;
   }
-  return releaseNamesTarget(releaseTitle, name, mediaType)
+  const verdict = releaseNamesTarget(releaseTitle, name, mediaType)
     ? "whole"
     : SUBTITLE_OPTIONAL_TYPES.has(mediaType) &&
       !NUMBERED_CHILD.test(name.title) &&
@@ -546,6 +526,22 @@ function releaseNameMatch(releaseTitle: string, name: TargetName, mediaType: str
       namesMainTitle(releaseTitle, name)
     ? "main"
     : null;
+  return verdict && mediaType === "comic" && !comicVolumeAgrees(releaseTitle, name) ? null : verdict;
+}
+
+/**
+ * Whether a comic release belongs to the volume the series name gives ("Batman (2016)"). Another
+ * volume of the series has an issue of the same number: a release dated before the volume began is
+ * the former volume's, and one dated long after the issue can have come out is a later volume's. A
+ * release with no year, or a series name with none, cannot be told apart this way.
+ */
+function comicVolumeAgrees(releaseTitle: string, name: TargetName): boolean {
+  const volume = name.parentTitle ? volumeYearOf(name.parentTitle) : null;
+  if (volume == null) return true;
+  const years = Array.from(releaseTitle.matchAll(/(?<!\d)(?:19|20)\d{2}(?!\d)/g), (m) => Number(m[0]));
+  if (years.length === 0) return true;
+  const latest = volume + 2 + Math.ceil((childNumberOf(name.title) ?? 12) / 6);
+  return years.some((year) => year >= volume && year <= latest);
 }
 
 function releaseNamesTarget(releaseTitle: string, name: TargetName, mediaType: string): boolean {
@@ -641,6 +637,13 @@ function namesMainTitle(releaseTitle: string, name: TargetName): boolean {
   if (parts.length < 2) return false;
   const main = significantTitleTokens(parts[0]);
   if (main.length === 0) return false;
+  // Another book of the author that is called "Dune", or that starts "Dune: ...", is as much what a
+  // release of "Dune" names as this one is: the main title alone cannot say which.
+  const sameMain = (title: string) => {
+    const tokens = significantTitleTokens(title.replace(/\([^)]*\)|\[[^\]]*\]/g, " ").split(/\s*:\s*|\s+[-–—]\s+/)[0]);
+    return tokens.length === main.length && tokens.every((t, i) => t === main[i]);
+  };
+  if (name.siblingTitles?.some(sameMain)) return false;
   const author = name.parentTitle ? [...significantTitleTokens(name.parentTitle), ...joinedInitials(name.parentTitle)] : [];
   const tokens = releaseTitle
     .split(/[()[\]{}]/)
@@ -1362,7 +1365,6 @@ interface AutoSearchItemContext {
   delayProfile: DelayProfile | null;
   blocklisted: Set<string>;
   overQuota: boolean;
-  isDaily: boolean;
   /** Video/podcast collection sub-items only — see titlesBlocklistedWithinHours. */
   recentDirectFailures: Set<string>;
 }
@@ -1485,7 +1487,6 @@ export async function runAutoSearch(signal?: AbortSignal) {
             delayProfile: null,
             blocklisted: new Set<string>(),
             overQuota: true,
-            isDaily: false,
             recentDirectFailures: new Set<string>(),
           };
         }
@@ -1504,7 +1505,6 @@ export async function runAutoSearch(signal?: AbortSignal) {
           delayProfile,
           blocklisted,
           overQuota: false,
-          isDaily: item.seriesType === "daily",
           recentDirectFailures,
         };
       })();
@@ -1572,6 +1572,17 @@ export async function runAutoSearch(signal?: AbortSignal) {
     }
   };
 
+  /** For an item with an undated episode: which episodes of it are known to have aired (searchPlan.airedFrontierOf). */
+  const frontiers = new Map<number, Promise<Map<number, number>>>();
+  function airedFrontier(itemId: number): Promise<Map<number, number>> {
+    let frontier = frontiers.get(itemId);
+    if (!frontier) {
+      frontier = airedFrontierFor(itemId);
+      frontiers.set(itemId, frontier);
+    }
+    return frontier;
+  }
+
   async function searchSingle(item: MediaItem, ctx: AutoSearchItemContext): Promise<void> {
     if (item.hasFile || (await isAlreadyQueued(item.id, null, null))) return;
     if (!isReleaseAvailableForSearch(item)) {
@@ -1579,53 +1590,32 @@ export async function runAutoSearch(signal?: AbortSignal) {
       return;
     }
     if (!reserveSearchSlot()) return;
-    const query = item.year ? `${item.title} ${item.year}` : item.title;
+    const plan = await singlePlanFor(item);
     const identity = targetIdentityOf(item);
-    const results = await searchAllIndexers(indexers, query, item.type, false, identity.externalIds, await searchHintsFor(item, query));
+    const results = await searchAllIndexers(indexers, plan.query, item.type, false, plan.ids, searchHintsOf(plan));
     await stampAutoSearched("media_items", item.id);
     await grabBestFor(item, ctx, results, null, identity, null, null, { title: item.title });
   }
 
   async function searchEpisode(item: MediaItem, ctx: AutoSearchItemContext, ep: any): Promise<void> {
     if (await isAlreadyQueued(item.id, ep.id, null)) return;
-    if (ctx.isDaily && !ep.air_date) return; // nothing to search by yet (air date not known)
-    // A future-dated episode has no real release to find yet — searching for one anyway just
+    // An episode that has not aired has no real release to find yet — searching for one anyway just
     // returns noise (unrelated titles that happen to match the query) and risks a false-positive
-    // grab. Only compare the date portion (not time-of-day) since an air date is stored as a bare
-    // date with no timezone/time — "today" should still search.
-    if (ep.air_date && ep.air_date.slice(0, 10) > new Date().toISOString().slice(0, 10)) return;
+    // grab — and neither has one of a show or an anime with no air date at all (a TBA episode), or a
+    // daily show's with no date to search by. Only the date portion is compared (not time-of-day)
+    // since an air date is stored as a bare date with no timezone/time — "today" should still search.
+    if (episodeNotAired(item, ep, undefined, ep.air_date ? undefined : await airedFrontier(item.id))) return;
     if (!reserveSearchSlot()) return;
-    // Scene-numbered (TheXEM) season/episode wins the search QUERY when known — that's the numbering
-    // a scene-mapped show's releases actually use — and wins matching too, with the aired numbering
-    // as the fallback for a release that doesn't follow the scene convention (see
+    // The plan has the scene-numbered (TheXEM) season/episode in the QUERY when known — that's the
+    // numbering a scene-mapped show's releases actually use — and in the target too, with the aired
+    // numbering as the fallback for a release that doesn't follow the scene convention (see
     // releaseMatchesEpisode).
-    const searchSeason = ep.scene_season_number ?? ep.season_number;
-    const searchEpisode = ep.scene_episode_number ?? ep.episode_number;
-    const query = ctx.isDaily
-      ? `${item.title} ${ep.air_date}`
-      : `${item.title} S${String(searchSeason).padStart(2, "0")}E${String(searchEpisode).padStart(2, "0")}`;
-    const results = await searchAllIndexers(
-      indexers,
-      query,
-      item.type,
-      false,
-      tvdbIdOf(item),
-      await searchHintsFor(item, query, ctx.isDaily ? null : { season: searchSeason, episode: searchEpisode })
-    );
+    const plan = await episodePlanFor(item, ep);
+    const results = await searchAllIndexers(indexers, plan.query, item.type, false, plan.ids, searchHintsOf(plan));
     await stampAutoSearched("episodes", ep.id);
-    const target: ReleaseTarget = ctx.isDaily
-      ? { airDate: ep.air_date }
-      : {
-          season: ep.season_number,
-          episode: ep.episode_number,
-          sceneSeason: ep.scene_season_number,
-          sceneEpisode: ep.scene_episode_number,
-          absoluteEpisode: item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, ep.season_number, ep.episode_number) : null,
-          sceneIndex: await sceneIndexFor(item.id),
-        };
     // The series' own identity and title go along so the identity gate can tell another show's
     // same-numbered episode (a remake, a similarly named show) from this one.
-    await grabBestFor(item, ctx, results, target, targetIdentityOf(item), ep.id, null, { title: item.title });
+    await grabBestFor(item, ctx, results, plan.target, targetIdentityOf(item), ep.id, null, { title: item.title });
   }
 
   async function searchSubItem(item: MediaItem, ctx: AutoSearchItemContext, sub: any): Promise<void> {
@@ -1667,9 +1657,14 @@ export async function runAutoSearch(signal?: AbortSignal) {
     }
 
     if (!reserveSearchSlot()) return;
-    const results = await searchAllIndexers(indexers, `${item.title} ${sub.title}`, item.type);
+    const plan = subItemPlanFor(item, sub);
+    const results = await searchAllIndexers(indexers, plan.query, item.type, false, undefined, searchHintsOf(plan));
     await stampAutoSearched("sub_items", sub.id);
-    await grabBestFor(item, ctx, results, null, null, null, sub.id, { title: sub.title, parentTitle: item.title });
+    await grabBestFor(item, ctx, results, null, null, null, sub.id, {
+      title: sub.title,
+      parentTitle: item.title,
+      siblingTitles: await siblingTitlesOf(item, sub.id),
+    });
   }
 
   // The concurrency-3 burst throttle still applies, now across this cycle's whole selected
@@ -1792,10 +1787,12 @@ async function searchableChildrenOf(item: MediaItem, cutoff: string): Promise<{ 
   if (getMediaTypeConfig(item.type).shape === "episodic") {
     const today = new Date().toISOString().slice(0, 10);
     const episodes = (await db
-      .prepare("SELECT id, has_file, quality, air_date FROM episodes WHERE media_item_id = ? AND monitored = 1 ORDER BY season_number, episode_number")
-      .all(item.id)) as { id: number; has_file: number; quality: string | null; air_date: string | null }[];
+      .prepare("SELECT id, season_number, episode_number, has_file, quality, air_date FROM episodes WHERE media_item_id = ? AND monitored = 1 ORDER BY season_number, episode_number")
+      .all(item.id)) as { id: number; season_number: number; episode_number: number; has_file: number; quality: string | null; air_date: string | null }[];
+    // The item's unmonitored episodes show which of the undated ones have aired too.
+    const frontier = episodes.some((ep) => !ep.air_date) ? await airedFrontierFor(item.id, today) : undefined;
     return episodes
-      .filter((ep) => wanted(ep) && (ep.air_date ? ep.air_date.slice(0, 10) <= today : item.seriesType !== "daily"))
+      .filter((ep) => wanted(ep) && !episodeNotAired(item, ep, today, frontier))
       .sort(missingFirst)
       .map((ep) => ({ episodeId: ep.id }));
   }
@@ -1816,25 +1813,25 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
   const cutoff = profile?.cutoff ?? "";
   const minFormatScore = profile?.minFormatScore ?? 0;
 
-  let query: string;
+  let plan: SearchPlan;
   let episodeTarget: ReleaseTarget | null = null;
-  let numbers: SearchNumbers | null = null;
   let identity: TargetIdentity | null = null;
   let name: TargetName | null = null;
   let sub: any = null;
   if (episodeId) {
     const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(episodeId)) as any;
     if (!ep) return { grabbed: false, error: "Episode not found" };
-    ({ query, target: episodeTarget, numbers } = await episodeSearchFor(item, ep));
+    plan = await episodePlanFor(item, ep);
+    episodeTarget = plan.target;
     identity = targetIdentityOf(item);
     name = { title: item.title };
   } else if (subItemId) {
     sub = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId);
     if (!sub) return { grabbed: false, error: "Sub-item not found" };
-    query = `${item.title} ${sub.title}`;
-    name = { title: sub.title, parentTitle: item.title };
+    plan = subItemPlanFor(item, sub);
+    name = { title: sub.title, parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, sub.id) };
   } else {
-    query = item.year ? `${item.title} ${item.year}` : item.title;
+    plan = await singlePlanFor(item);
     identity = targetIdentityOf(item);
     name = { title: item.title };
   }
@@ -1871,7 +1868,7 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
   }
   const blocklisted = await getBlocklistedTitles(item.id);
   const delayProfile = pickDelayProfile(ctx.delayProfiles, await tagIdsForMediaItem(item.id));
-  const searchResults = await searchAllIndexers(ctx.indexers, query, item.type, false, identity?.externalIds, await searchHintsFor(item, query, numbers));
+  const searchResults = await searchAllIndexers(ctx.indexers, plan.query, item.type, false, plan.ids, searchHintsOf(plan));
   const usable = ctx.directBudget.usableClients().filter((c) => !ctx.unavailable.has(c.id));
   let outcome: Awaited<ReturnType<typeof grabBestRelease>>;
   try {
@@ -2276,12 +2273,12 @@ export async function retryFailedGrab(
     let name: TargetName | null = null;
     let seasonPack: number | null = null;
     let seasonEpisodes: number[] | null = null;
-    let numbers: SearchNumbers | null = null;
-    let query: string;
+    let plan: SearchPlan;
     if (match.episodeId) {
       const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(match.episodeId)) as any;
       if (!ep) throw new Error("episode no longer exists");
-      ({ query, target: episodeTarget, numbers } = await episodeSearchFor(item, ep));
+      plan = await episodePlanFor(item, ep);
+      episodeTarget = plan.target;
       identity = targetIdentityOf(item);
       name = { title: item.title };
     } else if (match.subItemId) {
@@ -2291,22 +2288,21 @@ export async function retryFailedGrab(
         await notifyFailed(mediaTitle, reason);
         return;
       }
-      query = `${item.title} ${sub.title}`;
-      name = { title: sub.title, parentTitle: item.title };
+      plan = subItemPlanFor(item, sub);
+      name = { title: sub.title, parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, sub.id) };
     } else if (match.seasonNumber != null && getMediaTypeConfig(item.type).shape === "episodic") {
       seasonPack = match.seasonNumber;
       // A season search can grab a single-episode release too. Its replacement only has to cover
       // the same episode(s) — a still-airing season often has no full pack to offer yet.
       const failed = parseReleaseTitle(match.title);
       if (!failed.isFullSeason && failed.episodeNumbers?.length) seasonEpisodes = failed.episodeNumbers;
-      query = `${item.title} S${String(seasonPack).padStart(2, "0")}${seasonEpisodes ? `E${String(seasonEpisodes[0]).padStart(2, "0")}` : ""}`;
-      numbers = { season: seasonPack, episode: seasonEpisodes ? seasonEpisodes[0] : null };
+      plan = await seasonPlanFor(item, seasonPack, seasonEpisodes ? seasonEpisodes[0] : null);
       // The season filter below only checks the season number: without the identity gate another
       // show's "S02.COMPLETE" would replace the failed pack.
       identity = targetIdentityOf(item);
       name = { title: item.title };
     } else {
-      query = item.year ? `${item.title} ${item.year}` : item.title;
+      plan = await singlePlanFor(item);
       identity = targetIdentityOf(item);
       name = { title: item.title };
     }
@@ -2328,7 +2324,7 @@ export async function retryFailedGrab(
     }
 
     const indexers = await rowsToIndexers();
-    const searchResults = await searchAllIndexers(indexers, query, item.type, false, identity?.externalIds, await searchHintsFor(item, query, numbers));
+    const searchResults = await searchAllIndexers(indexers, plan.query, item.type, false, plan.ids, searchHintsOf(plan));
     // A season-search grab's replacement has to be a full pack of that same season (or cover the
     // same episodes): with no target, chooseBestResult would accept any release of the show, which
     // the importer can't place.

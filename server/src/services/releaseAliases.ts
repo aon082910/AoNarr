@@ -185,18 +185,43 @@ export async function backfillCleanTitles(): Promise<number> {
   return updated;
 }
 
-/** The most other titles one search tries beside the main query (indexerClient caps the queries too). */
-const MAX_SEARCH_TITLES = 3;
+/** The most other titles a search considers (the plan and indexerClient cap the queries that run). */
+const MAX_SEARCH_TITLES = 5;
+
+/** Which alias rows are worth a query first: the admin's own, the names the item went by, then the
+ * providers' (AniList's before TMDB's). */
+const SOURCE_SEARCH_RANK: Record<string, number> = { user: 0, original: 1, anilist_synonym: 2, xem_alias: 3, tmdb_alt: 4 };
+/** A title in Latin script (with digits and punctuation): scene names are written in it, and a
+ * Japanese or Cyrillic alternate title finds nothing on an indexer that matches words. */
+const LATIN_TITLE = /^[\p{Script=Latin}\p{N}\p{P}\p{S}\s]+$/u;
 
 /**
- * The item's search `query` written with its other titles, for an indexer that files a release
- * under one of them: the title less its "(US)" qualifier, the qualifier written without brackets
- * ("The Office US"), then the first two alias rows. Empty for a type with no quality tiers, which
- * has no alias rows, and for a query that does not start with the item's title.
+ * The alias titles worth a query of their own, best first: the admin's and the item's former names,
+ * then AniList's, then TMDB's; a title in Latin script before one in another script; a title of three
+ * letters or fewer left out (an abbreviation like "AoT" matches unrelated releases). Rows of one
+ * source and script stay in the order the provider listed them.
  */
-export async function alternateQueriesFor(item: { id: number; type: string; title: string }, query: string): Promise<string[]> {
-  if (!usesQualityTiers(item.type) || !query.startsWith(item.title)) return [];
-  const rest = query.slice(item.title.length);
+export function rankedSearchTitles(rows: { title: string; source: string }[]): string[] {
+  return rows
+    .map((row, index) => ({ ...row, index }))
+    .filter((row) => row.title.replace(/[^\p{L}]/gu, "").length > 3)
+    .sort(
+      (a, b) =>
+        (SOURCE_SEARCH_RANK[a.source] ?? 9) - (SOURCE_SEARCH_RANK[b.source] ?? 9) ||
+        Number(!LATIN_TITLE.test(a.title)) - Number(!LATIN_TITLE.test(b.title)) ||
+        a.index - b.index
+    )
+    .map((row) => row.title);
+}
+
+/**
+ * The other titles an indexer may file the item's releases under, best first: the title less its
+ * "(US)" qualifier, the qualifier written without brackets ("The Office US"), then the best alias
+ * rows. Empty for a type with no quality tiers, which has no alias rows. The caller writes each one
+ * as a query (searchPlan.ts), so a title that cleans to the main query is dropped there.
+ */
+export async function alternateTitlesFor(item: { id: number; type: string; title: string }): Promise<string[]> {
+  if (!usesQualityTiers(item.type)) return [];
   const titles: string[] = [];
   const qualifier = item.title.match(/\s*\(([^()]*)\)\s*$/);
   const base = qualifier ? item.title.slice(0, qualifier.index).trim() : "";
@@ -208,7 +233,10 @@ export async function alternateQueriesFor(item: { id: number; type: string; titl
     titles.push(base);
     if (spelled) titles.push(`${base} ${spelled}`);
   }
-  titles.push(...(await aliasTitlesFor(item.id)).slice(0, 2));
+  const rows = (await db
+    .prepare("SELECT title, source FROM media_item_titles WHERE media_item_id = ? AND source <> 'primary' ORDER BY id")
+    .all(item.id)) as { title: string; source: string }[];
+  titles.push(...rankedSearchTitles(rows).slice(0, 3));
   // Written differently is enough here (an indexer may treat "(US)" and "US" differently), unlike
   // the alias rows, which are kept apart by their clean title.
   const seen = new Set([item.title.trim().toLowerCase()]);
@@ -219,8 +247,7 @@ export async function alternateQueriesFor(item: { id: number; type: string; titl
       seen.add(key);
       return true;
     })
-    .slice(0, MAX_SEARCH_TITLES)
-    .map((title) => `${title}${rest}`);
+    .slice(0, MAX_SEARCH_TITLES);
 }
 
 /** The item's title without a trailing "(US)"/"(2018)" qualifier, cleaned: what two works that share

@@ -1,6 +1,7 @@
 import net from "node:net";
 import tls from "node:tls";
 import { log } from "./logger.js";
+import { stripIrcFormatting } from "./searchQueries.js";
 
 export interface IrcFeedConfig {
   id: number;
@@ -157,7 +158,10 @@ export class IrcConnection {
 
     const privmsg = line.match(/^:(\S+) PRIVMSG (\S+) :(.*)$/);
     if (privmsg && privmsg[2].toLowerCase() === this.config.channel.toLowerCase() && this.isFromAnnouncer(privmsg[1])) {
-      this.onMessage(privmsg[3]);
+      // A colourised channel wraps the title and the URL in mIRC colour and bold codes, which are
+      // part of neither: left in, the announce's regex does not match, or the title starts with the
+      // colour number.
+      this.onMessage(stripIrcFormatting(privmsg[3]));
     }
   }
 

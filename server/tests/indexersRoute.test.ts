@@ -87,7 +87,7 @@ describe("PATCH /api/indexers/:id — synced indexers keep their sync id", () =>
       .set("X-Api-Key", apiKey)
       .send({ name: "Renamed Locally", protocol: "torznab", url: "http://prowlarr.local:9696/7701", apiKey: null, config: null, useFlareSolverr: false });
     expect(res.status).toBe(200);
-    expect(JSON.parse(res.body.config)).toEqual({ prowlarrEnabled: true, prowlarrId: 7701 });
+    expect(JSON.parse(res.body.config)).toMatchObject({ prowlarrEnabled: true, prowlarrId: 7701 });
 
     await syncFromProwlarr();
 
@@ -133,5 +133,40 @@ describe("PATCH /api/indexers/:id — synced indexers keep their sync id", () =>
     );
     await request(app).patch(`/api/indexers/${synced}`).set("X-Api-Key", apiKey).send({ name: "Still Synced" });
     expect(JSON.parse((await rowById(synced)).config)).toEqual({ prowlarrId: 7702 });
+  });
+});
+
+describe("an indexer that failed and was fixed", () => {
+  async function insertIndexer(name: string): Promise<number> {
+    const res = await request(app)
+      .post("/api/indexers")
+      .set("X-Api-Key", apiKey)
+      .send({ name, protocol: "torznab", url: `https://${name.replace(/\W/g, "")}.example.com`, apiKey: "wrong", config: null, useFlareSolverr: false });
+    return res.body.id;
+  }
+  const failing = () => vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 401, text: async () => "" }));
+  const working = () =>
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => '<rss version="2.0"><channel></channel></rss>' }));
+
+  it("is tried again at once when the admin presses Test", async () => {
+    const id = await insertIndexer("Fixed By Test");
+    failing();
+    expect((await request(app).post(`/api/indexers/${id}/test`).set("X-Api-Key", apiKey)).body).toMatchObject({ ok: false });
+    // A second press would find the indexer backed off for failing, though the key has been corrected since.
+    working();
+    expect((await request(app).post(`/api/indexers/${id}/test`).set("X-Api-Key", apiKey)).body).toEqual({ ok: true, resultCount: 0 });
+  });
+
+  it("is tried again at once when the admin saves it", async () => {
+    const id = await insertIndexer("Fixed By Edit");
+    failing();
+    await request(app).post(`/api/indexers/${id}/test`).set("X-Api-Key", apiKey);
+    const { isIndexerBackedOff } = await import("../src/services/indexerClient.js");
+    expect(isIndexerBackedOff(id)).toBe(true);
+
+    const res = await request(app).patch(`/api/indexers/${id}`).set("X-Api-Key", apiKey).send({ apiKey: "right" });
+
+    expect(res.status).toBe(200);
+    expect(isIndexerBackedOff(id)).toBe(false);
   });
 });

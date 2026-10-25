@@ -3,7 +3,7 @@ import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { indexerFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { DEFAULT_INDEXER_MEDIA_TYPES, INDEXER_MEDIA_TYPES, searchIndexer } from "../services/indexerClient.js";
+import { clearFailureBackoff, DEFAULT_INDEXER_MEDIA_TYPES, INDEXER_MEDIA_TYPES, searchIndexer } from "../services/indexerClient.js";
 import { attachIndexerHealth } from "../services/indexerHealth.js";
 import { mergeSyncedIndexerConfig, syncFromProwlarr } from "../services/prowlarrSync.js";
 import { syncFromJackett } from "../services/jackettSync.js";
@@ -128,6 +128,8 @@ indexersRouter.patch(
     }
     const row = await db.prepare("SELECT * FROM indexers WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Indexer not found");
+    // An edit (a key fixed, a URL corrected) is a reason to try the indexer again at once.
+    if (sets.length > 0) clearFailureBackoff(Number(req.params.id));
     res.json(indexerFromRow(row));
   })
 );
@@ -155,6 +157,8 @@ indexersRouter.post(
     const row = await db.prepare("SELECT * FROM indexers WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Indexer not found");
     const indexer = indexerFromRow(row) as any;
+    // The admin asked for the test: an earlier run of failures does not stand in its way.
+    clearFailureBackoff(indexer.id);
     try {
       const results = await searchIndexer(indexer, "test", "movie");
       res.json({ ok: true, resultCount: results.length });

@@ -209,7 +209,9 @@ export const MEDIA_TYPES: Record<string, MediaTypeConfig> = {
     shape: "collection",
     childLabel: "Chapter",
     extensions: COMIC_EXT,
-    indexerCategory: "7020",
+    // 7030 is Books/Comics, where Prowlarr and Jackett file manga archives; 7020 is Books/EBook,
+    // which is epub and pdf books (7000, the parent, catches an indexer that files them loosely).
+    indexerCategory: "7030,7000",
     metadataProviders: ["anilist", "mangadex"],
     // MangaDex, not AniList, is the default: AniList is a tracker/database with no per-chapter
     // listing, so a manga matched through it would sit at "0 total" chapters forever (the same

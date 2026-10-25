@@ -243,7 +243,7 @@ async function insertSeries(title = "Show", seriesType: string | null = null): P
   return Number(result.lastInsertRowid);
 }
 
-async function insertEpisode(showId: number, season: number, episode: number, airDate: string | null = null): Promise<number> {
+async function insertEpisode(showId: number, season: number, episode: number, airDate: string | null = "2020-01-01"): Promise<number> {
   const result = await db
     .prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, air_date) VALUES (?, ?, ?, 'Ep', 1, 0, ?)`)
     .run(showId, season, episode, airDate);
@@ -621,7 +621,7 @@ describe("searchAndGrabTargets", () => {
       await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('series','Breaking Bad','breaking bad',1,0,'missing')`).run()
     ).lastInsertRowid as number;
     const epId = (
-      await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,5,'Ep5',1,0)`).run(show)
+      await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, air_date) VALUES (?,1,5,'Ep5',1,0,'2020-01-01')`).run(show)
     ).lastInsertRowid as number;
     await insertClient();
     getDownloadClientAdapter.mockReturnValue(fakeAdapter());
@@ -644,7 +644,7 @@ describe("searchAndGrabTargets", () => {
       ).lastInsertRowid
     );
     const epId = Number(
-      (await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, scene_season_number, scene_episode_number, title, monitored, has_file) VALUES (?,3,1,4,2,'Ep',1,0)`).run(showId))
+      (await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, scene_season_number, scene_episode_number, title, monitored, has_file, air_date) VALUES (?,3,1,4,2,'Ep',1,0,'2020-01-01')`).run(showId))
         .lastInsertRowid
     );
     const { storeAliases } = await import("../src/services/releaseAliases.js");
@@ -656,10 +656,11 @@ describe("searchAndGrabTargets", () => {
     await searchAndGrabTargets([{ mediaItemId: showId, episodeId: epId }]);
 
     const [, query, , , externalIds, hints] = searchAllIndexers.mock.calls[0];
-    expect(query).toBe("The Office (US) S04E02");
+    // Written the way a scene names the show: no "The", no brackets, no accents.
+    expect(query).toBe("Office US S04E02");
     // The typed search asks by tvdb id alone; imdb and tmdb stay out of an episode search.
-    expect(externalIds).toBeDefined();
-    expect(hints).toMatchObject({ season: 4, episode: 2, alternateQueries: ["The Office S04E02", "The Office US S04E02", "Das Büro S04E02"] });
+    expect(externalIds).toEqual({ tvdb: "73244" });
+    expect(hints).toMatchObject({ season: 4, episode: 2, queryTitle: "Office US", alternateQueries: ["Office S04E02", "Das Buro S04E02"] });
   });
 
   it("searches a daily series' episode by air date and grabs a date-named release", async () => {
@@ -676,7 +677,7 @@ describe("searchAndGrabTargets", () => {
     const [result] = await searchAndGrabTargets([{ mediaItemId: showId, episodeId: epId }]);
 
     expect(result.grabbed).toBe(true);
-    expect(searchAllIndexers.mock.calls[0][1]).toBe("Daily Show 2024-08-25");
+    expect(searchAllIndexers.mock.calls[0][1]).toBe("Daily Show 2024 08 25");
     expect(adapter.addDownload.mock.calls[0][1]).toBe("magnet:?xt=right-day");
   });
 
@@ -785,8 +786,8 @@ describe("runAutoSearch", () => {
     const showId = (
       await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('series','Show','show',1,0,'missing')`).run()
     ).lastInsertRowid as number;
-    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,1,'Ep1',1,0)`).run(showId);
-    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,2,'Ep2',1,0)`).run(showId);
+    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, air_date) VALUES (?,1,1,'Ep1',1,0,'2020-01-01')`).run(showId);
+    await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, air_date) VALUES (?,1,2,'Ep2',1,0,'2020-01-01')`).run(showId);
     await db.prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?,1,3,'Ep3',1,1)`).run(showId); // already has file
 
     await runAutoSearch();
@@ -1755,7 +1756,7 @@ describe("retryFailedGrab", () => {
       "corrupt file"
     );
 
-    expect(searchAllIndexers.mock.calls[0][1]).toBe("Daily Show 2024-08-25");
+    expect(searchAllIndexers.mock.calls[0][1]).toBe("Daily Show 2024 08 25");
     expect(adapter.addDownload).toHaveBeenCalledTimes(1);
   });
 });
@@ -3746,5 +3747,208 @@ describe("chooseBestResult — releases that can never import (matching Round 7)
   it("leaves a type with no video tiers to its own rules", async () => {
     const album = fakeResult({ title: "Artist - Album 2020 BD-50 [FLAC]" });
     expect((await choose([album], [], "artist"))?.result.title).toBe(album.title);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// What a search asks the indexers (searchPlan.ts): the same on every path
+// ---------------------------------------------------------------------------
+
+describe("what an automatic search asks the indexers for", () => {
+  async function insertTyped(type: string, title: string, extra: { year?: number | null; ids?: Record<string, string> } = {}): Promise<number> {
+    const result = await db
+      .prepare("INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status, external_ids) VALUES (?, ?, ?, ?, 1, 0, 'missing', ?)")
+      .run(type, title, title.toLowerCase(), extra.year ?? null, extra.ids ? JSON.stringify(extra.ids) : null);
+    return Number(result.lastInsertRowid);
+  }
+
+  it("asks for an anime episode by its absolute number, with the season form and tvdb id beside it", async () => {
+    await insertClient();
+    const showId = await insertTyped("anime", "Jujutsu Kaisen", { ids: { anilist: "113415", tvdb: "377543", imdb: "tt12343534" } });
+    await insertEpisode(showId, 1, 1);
+    await insertEpisode(showId, 1, 2);
+
+    await runAutoSearch();
+
+    const calls = searchAllIndexers.mock.calls;
+    expect(calls.map((c) => c[1]).sort()).toEqual(["Jujutsu Kaisen 01", "Jujutsu Kaisen 02"]);
+    const second = calls.find((c) => c[1] === "Jujutsu Kaisen 02")!;
+    expect(second[4]).toEqual({ tvdb: "377543" });
+    expect(second[5]).toMatchObject({ season: 1, episode: 2, absolute: 2, alsoQueries: ["Jujutsu Kaisen S01E02"] });
+  });
+
+  it("does not search an episode of a show or an anime that has no air date, but does a course's lesson", async () => {
+    await insertClient();
+    const showId = await insertSeries("Brand New Show");
+    await insertEpisode(showId, 1, 1, null);
+    const animeId = await insertTyped("anime", "New Anime");
+    await insertEpisode(animeId, 1, 1, null);
+    const courseId = await insertTyped("course", "Learn Rust");
+    await insertEpisode(courseId, 1, 1, null);
+
+    await runAutoSearch();
+
+    expect(searchAllIndexers.mock.calls.map((c) => c[1])).toEqual(["Learn Rust S01E01"]);
+  });
+
+  it("searches only the aired episodes when a whole show is searched, undated ones left out", async () => {
+    await insertClient();
+    getDownloadClientAdapter.mockReturnValue(fakeAdapter());
+    const showId = await insertSeries("Bulk Show");
+    await insertEpisode(showId, 1, 1);
+    await insertEpisode(showId, 1, 2, null);
+    await insertEpisode(showId, 1, 3, new Date(Date.now() + 86_400_000).toISOString().slice(0, 10));
+
+    const [result] = await searchAndGrabTargets([{ mediaItemId: showId }]);
+
+    expect(searchAllIndexers.mock.calls.map((c) => c[1])).toEqual(["Bulk Show S01E01"]);
+    expect(result).toMatchObject({ mediaItemId: showId, childrenSearched: 1 });
+  });
+
+  it("asks for a book by its author and main title, and a comic issue by its number", async () => {
+    await insertClient();
+    const authorId = await insertTyped("author", "Brandon Sanderson");
+    await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file) VALUES (?, 'Mistborn: The Final Empire (Mistborn, #1)', 1, 0)").run(authorId);
+    const comicId = await insertTyped("comic", "Saga (2012)");
+    await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file) VALUES (?, '#12 - Chapter Twelve', 1, 0)").run(comicId);
+
+    await runAutoSearch();
+
+    const byQuery = (query: string) => searchAllIndexers.mock.calls.find((c) => c[1] === query);
+    expect(byQuery("Brandon Sanderson Mistborn")![5]).toMatchObject({ alternateQueries: ["Mistborn"] });
+    expect(byQuery("Saga 2012 012")![5]).toMatchObject({ alternateQueries: ["Saga 012", "Saga 12"] });
+  });
+
+  it("asks for a ROM by its title, without the year RAWG gave it", async () => {
+    await insertClient();
+    await insertTyped("rom", "Super Mario Bros.", { year: 1985 });
+
+    await runAutoSearch();
+
+    expect(searchAllIndexers.mock.calls.map((c) => c[1])).toEqual(["Super Mario Bros"]);
+  });
+
+  it("asks for a film by its clean title and year, by all its ids", async () => {
+    await insertClient();
+    await insertTyped("movie", "The Matrix", { year: 1999, ids: { imdb: "tt0133093", tmdb: "603" } });
+
+    await runAutoSearch();
+
+    const [, query, , , ids] = searchAllIndexers.mock.calls[0];
+    expect(query).toBe("Matrix 1999");
+    expect(ids).toEqual({ imdb: "tt0133093", tmdb: "603" });
+  });
+
+  it("hands a retry of a failed episode grab the tvdb id alone, like the first search", async () => {
+    const showId = await insertTyped("series", "Retry Show", { ids: { tvdb: "7", imdb: "tt0000007", tmdb: "70" } });
+    const epId = await insertEpisode(showId, 1, 5);
+    await insertClient();
+    getDownloadClientAdapter.mockReturnValue(fakeAdapter());
+
+    await retryFailedGrab(
+      { id: 1, mediaItemId: showId, title: "Retry.Show.S01E05.1080p.WEB-DL-BAD", episodeId: epId, subItemId: null, seasonNumber: null, retryCount: 0 } as any,
+      "corrupt file"
+    );
+
+    const [, query, , , ids, hints] = searchAllIndexers.mock.calls[0];
+    expect(query).toBe("Retry Show S01E05");
+    expect(ids).toEqual({ tvdb: "7" });
+    expect(hints).toMatchObject({ season: 1, episode: 5, queryTitle: "Retry Show" });
+  });
+});
+
+describe("episodes with no air date", () => {
+  async function insertAnime(title: string): Promise<number> {
+    const result = await db
+      .prepare("INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('anime', ?, ?, 1, 0, 'missing')")
+      .run(title, title.toLowerCase());
+    return Number(result.lastInsertRowid);
+  }
+
+  it("searches an undated episode that a later episode of its season has aired after, as an AniList long runner's back catalogue", async () => {
+    await insertClient();
+    const showId = await insertAnime("Long Runner");
+    for (let n = 1; n <= 4; n++) await insertEpisode(showId, 1, n, null);
+    await insertEpisode(showId, 1, 5, "2020-01-05");
+    await insertEpisode(showId, 1, 6, null); // after the last aired one: not aired as far as anyone knows
+
+    await runAutoSearch();
+
+    expect(searchAllIndexers.mock.calls.map((c) => c[1]).sort()).toEqual(["Long Runner 01", "Long Runner 02", "Long Runner 03", "Long Runner 04", "Long Runner 05"]);
+  });
+
+  it("searches an undated episode of an earlier season once a later season has aired", async () => {
+    await insertClient();
+    const showId = await insertSeries("Two Seasons");
+    await insertEpisode(showId, 1, 1, null);
+    await insertEpisode(showId, 2, 1, "2020-02-01");
+
+    await runAutoSearch();
+
+    expect(searchAllIndexers.mock.calls.map((c) => c[1]).sort()).toEqual(["Two Seasons S01E01", "Two Seasons S02E01"]);
+  });
+
+  it("searches the undated ones of a whole show that have aired, and no other", async () => {
+    await insertClient();
+    getDownloadClientAdapter.mockReturnValue(fakeAdapter());
+    const showId = await insertSeries("Bulk Undated");
+    await insertEpisode(showId, 1, 1, null);
+    await insertEpisode(showId, 1, 2, "2020-01-02");
+    await insertEpisode(showId, 1, 3, null);
+
+    await searchAndGrabTargets([{ mediaItemId: showId }]);
+
+    expect(searchAllIndexers.mock.calls.map((c) => c[1]).sort()).toEqual(["Bulk Undated S01E01", "Bulk Undated S01E02"]);
+  });
+});
+
+describe("a book's main title and the author's other books", () => {
+  const choose = (results: any[], name: { title: string; parentTitle?: string; siblingTitles?: string[] }) =>
+    chooseBestResult(results, [], "", null, 0, null, new Set(), "author", null, null, null, { name });
+
+  it("is not enough for a book when another book of the author is called that", async () => {
+    const dune = fakeResult({ title: "Frank Herbert - Dune (1965) [EPUB]" });
+    const messiah = { title: "Dune: Messiah", parentTitle: "Frank Herbert" };
+    // With nothing known of the author's other books the main title names the book, as it always did.
+    expect((await choose([dune], messiah))?.result).toBe(dune);
+    expect(await choose([dune], { ...messiah, siblingTitles: ["Dune", "Children of Dune"] })).toBeNull();
+    // The book's own releases are still found, and so is a book whose main title is its own.
+    const own = fakeResult({ title: "Frank Herbert - Dune Messiah (1969) [EPUB]" });
+    expect((await choose([dune, own], { ...messiah, siblingTitles: ["Dune"] }))?.result).toBe(own);
+    const sapiens = fakeResult({ title: "Yuval Noah Harari - Sapiens (2014) [EPUB]" });
+    expect(
+      (await choose([sapiens], { title: "Sapiens: A Brief History of Humankind", parentTitle: "Yuval Noah Harari", siblingTitles: ["Homo Deus: A Brief History of Tomorrow"] }))?.result
+    ).toBe(sapiens);
+  });
+
+  it("is not enough for a book of a series whose other books start with the same words", async () => {
+    const mistborn = fakeResult({ title: "Brandon Sanderson - Mistborn (2006) [EPUB]" });
+    const book = { title: "Mistborn: The Final Empire (Mistborn, #1)", parentTitle: "Brandon Sanderson" };
+    expect(await choose([mistborn], { ...book, siblingTitles: ["Mistborn: The Well of Ascension (Mistborn, #2)"] })).toBeNull();
+  });
+});
+
+describe("a comic issue and the volume of the series", () => {
+  const choose = (results: any[], name: { title: string; parentTitle?: string }) =>
+    chooseBestResult(results, [], "", null, 0, null, new Set(), "comic", null, null, null, { name });
+  const issue = { title: "#12 - The Dark Knight", parentTitle: "Batman (2016)" };
+
+  it("takes the issue of the volume the series name gives, not the same number of another volume", async () => {
+    const former = fakeResult({ title: "Batman 012 (1942) (digital)", seeders: 900 });
+    const wanted = fakeResult({ title: "Batman 012 (2017) (digital)", seeders: 5 });
+    expect(await choose([former], issue)).toBeNull();
+    expect((await choose([former, wanted], issue))?.result).toBe(wanted);
+    // A release that names no year cannot be told apart.
+    const unyeared = fakeResult({ title: "Batman 012 (digital-Empire)" });
+    expect((await choose([unyeared], issue))?.result).toBe(unyeared);
+    // A series name with no volume year takes any.
+    expect((await choose([former], { title: "#12", parentTitle: "Batman" }))?.result).toBe(former);
+  });
+});
+
+describe("matchTierFor — the tvdb id an indexer reports", () => {
+  it("is 2 when the indexer's tvdbid is the show's, and 0 when it is another show's", () => {
+    expect(matchTierFor(fakeResult({ tvdbId: "81189" }), { year: null, externalIds: { tvdb: "81189" } })).toBe(2);
+    expect(matchTierFor(fakeResult({ tvdbId: "81190" }), { year: null, externalIds: { tvdb: "81189" } })).toBe(0);
   });
 });
