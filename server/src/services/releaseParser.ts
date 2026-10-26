@@ -199,7 +199,7 @@ const ABSOLUTE_CONTEXT = /^(?:v\d)?\s*(?:[[(]|end\b|\d{3,4}[pi]\b|$)/i;
 const ABSOLUTE_SPECIAL = /^(?:v\d)?\s*(?:-\s*)?(?:specials?|ova|ovd|oad|ncop|nced)\b/i;
 // Other ways a series with no season names its episode: "E1135", "EP06", "Episode 56", "Episodio 13",
 // "5of9". Read as an absolute number, and only from a name that looks like a video release.
-const ABSOLUTE_E_FORM = /(?:^|[\s.\]])(?:E|EP|Episode|Episodio)[ .]?0*(\d{2,4})(?:v\d)?(?![\da-z])/i;
+const ABSOLUTE_E_FORM = /(?:^|[\s.\]])(?:(?:E|EP)[ .]?0*(\d{2,4})|(?:Episode|Episodio)[ .]?0*(\d{1,4}))(?:v\d)?(?![\da-z])/i;
 const ABSOLUTE_N_OF_M = /\b0*(\d{1,2})of\d{1,2}\b/i;
 // "[Shark-Raws] Series Title #957".
 const ABSOLUTE_HASH_FORM = /(?:^|\s)#0*(\d{1,4})(?![\da-z])/;
@@ -580,7 +580,10 @@ function absoluteFromOtherForms(title: string): { number: number; index: number 
     if (YEAR_SHAPED.test(m[groupIndex]) || [480, 576, 720, 1080, 2160, 264, 265].includes(number) || number === 0) return null;
     return { number, index: m.index };
   };
-  const e = byForm(title.match(ABSOLUTE_E_FORM));
+  const eMatch = title.match(ABSOLUTE_E_FORM);
+  // "Star.Wars.Episode.5.1980": a year after the word "Episode" and its number names a film's own title.
+  const filmEpisode = !!eMatch && eMatch[1] === undefined && eMatch.index !== undefined && /\b(?:19|20)\d{2}\b/.test(title.slice(eMatch.index + eMatch[0].length));
+  const e = filmEpisode ? null : byForm(eMatch, eMatch && eMatch[1] !== undefined ? 1 : 2);
   if (e) return e;
   const hash = byForm(title.match(ABSOLUTE_HASH_FORM));
   if (hash) return hash;
@@ -1117,6 +1120,10 @@ export function releaseMatchesEpisode(
 ): boolean {
   if (sceneSeasonNumber != null && sceneEpisodeNumber != null) {
     if (matchesSeasonEpisode(parsed, sceneSeasonNumber, sceneEpisodeNumber)) return true;
+    // A pack names a season, and an episode that has scene numbers is in its scene season: "Show.S01" holds
+    // the scene's S01 episodes only, not the aired S01E05 that the scene calls S02E01 (Sonarr's
+    // GetEpisodesBySceneSeason). The aired season is not tried.
+    if (parsed.isFullSeason && !parsed.episodeNumbers) return false;
   }
   if (matchesSeasonEpisode(parsed, seasonNumber, episodeNumber)) {
     const aired = `${seasonNumber}:${episodeNumber}`;

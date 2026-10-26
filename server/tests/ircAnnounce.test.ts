@@ -710,3 +710,70 @@ describe("handleAnnounce — Round 11 decisions", () => {
     expect(grab).not.toHaveBeenCalled();
   });
 });
+
+
+describe("handleAnnounce — episodes named by absolute number, air date or the whole season (Round 12, I13)", () => {
+  async function insertTyped(type: string, title: string, seriesType: string | null = null): Promise<number> {
+    const profileId = await insertProfile();
+    return Number(
+      (
+        await db
+          .prepare(
+            "INSERT INTO media_items (type, title, sort_title, monitored, has_file, status, quality_profile_id, series_type) VALUES (?, ?, ?, 1, 0, 'unknown', ?, ?)"
+          )
+          .run(type, title, title.toLowerCase(), profileId, seriesType)
+      ).lastInsertRowid
+    );
+  }
+  async function episode(showId: number, season: number, n: number, airDate: string | null = null): Promise<number> {
+    return Number(
+      (
+        await db
+          .prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, air_date, monitored, has_file) VALUES (?, ?, ?, ?, 1, 0)")
+          .run(showId, season, n, airDate)
+      ).lastInsertRowid
+    );
+  }
+
+  it("grabs the episode a fansub announce names by its absolute number", async () => {
+    await insertTorrentClient();
+    const showId = await insertTyped("anime", "Announce Anime Show");
+    const ids = [await episode(showId, 1, 1), await episode(showId, 1, 2), await episode(showId, 1, 3)];
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("[SubsPlease] Announce Anime Show - 03 (1080p)"));
+
+    expect(grab).toHaveBeenCalledTimes(1);
+    const [, , episodeId] = grab.mock.calls[0];
+    expect(episodeId).toBe(ids[2]);
+  });
+
+  it("grabs a daily show's episode by the date in the release name", async () => {
+    await insertTorrentClient();
+    const showId = await insertTyped("series", "Announce Late Show", "daily");
+    await episode(showId, 2024, 120, "2024-08-24");
+    const target = await episode(showId, 2024, 121, "2024-08-25");
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Announce Late Show 2024 08 25 1080p WEB-DL-GRP"));
+
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect(grab.mock.calls[0][2]).toBe(target);
+  });
+
+  it("grabs a pack of a finished season, and refuses one whose season has not finished airing", async () => {
+    await insertTorrentClient();
+    const done = await insertTyped("series", "Announce Pack Show");
+    for (let n = 1; n <= 4; n++) await episode(done, 1, n, "2020-01-0" + n);
+    grab.mockClear();
+    await handleAnnounce(FEED, announceText("Announce Pack Show S01 1080p WEB-DL-GRP"));
+    // (The mocked grab queues nothing, so every episode of the season is offered it.)
+    expect(grab).toHaveBeenCalled();
+
+    const airing = await insertTyped("series", "Announce Airing Show");
+    for (let n = 1; n <= 4; n++) await episode(airing, 1, n, n <= 2 ? "2020-01-0" + n : "2999-01-0" + n);
+    grab.mockClear();
+    await handleAnnounce(FEED, announceText("Announce Airing Show S01 1080p WEB-DL-GRP"));
+    expect(grab).not.toHaveBeenCalled();
+  });
+});
