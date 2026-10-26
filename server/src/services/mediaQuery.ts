@@ -1,6 +1,6 @@
 import { db } from "../db/index.js";
 import { CONTENT_RATING_ORDER, contentRatingRank } from "./contentRatings.js";
-import { qualityRank } from "./quality.js";
+import { groupedRank, parseQualityGroups } from "./quality.js";
 import { typeKeysByShape } from "./mediaTypes.js";
 
 /** Shared WHERE-clause builder for GET /api/media and GET /api/media/stats — both need the exact
@@ -123,12 +123,17 @@ async function findFilenameMismatchIds(): Promise<number[]> {
 async function findCutoffUnmetIds(): Promise<number[]> {
   const rows = (await db
     .prepare(
-      `SELECT m.id AS id, m.quality AS quality, qp.cutoff AS cutoff
+      `SELECT m.id AS id, m.quality AS quality, qp.cutoff AS cutoff, qp.quality_groups AS quality_groups
        FROM media_items m JOIN quality_profiles qp ON qp.id = m.quality_profile_id
        WHERE m.has_file = 1 AND m.quality IS NOT NULL`
     )
-    .all()) as { id: number; quality: string | null; cutoff: string }[];
-  return rows.filter((r) => qualityRank(r.quality) < qualityRank(r.cutoff)).map((r) => r.id);
+    .all()) as { id: number; quality: string | null; cutoff: string; quality_groups: string | null }[];
+  return rows
+    .filter((r) => {
+      const groups = parseQualityGroups(r.quality_groups);
+      return groupedRank(r.quality, groups) < groupedRank(r.cutoff, groups);
+    })
+    .map((r) => r.id);
 }
 
 /** For episodic (series/anime/sports/...) and collection (music/books/comics/...) shapes, a media

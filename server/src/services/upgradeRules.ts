@@ -1,4 +1,4 @@
-import { qualityRank } from "./quality.js";
+import { groupedRank, type QualityGroups } from "./quality.js";
 import { getSetting } from "./settingsStore.js";
 import { parseReleaseTitle, type ReleaseRevision } from "./releaseParser.js";
 
@@ -31,6 +31,8 @@ export function propersMode(): PropersMode {
 
 export interface UpgradeProfile {
   cutoff: string;
+  /** Qualities the profile treats as one tier (quality.ts QualityGroups). */
+  qualityGroups?: QualityGroups;
   upgradeAllowed: boolean;
   cutoffFormatScore: number;
   minUpgradeFormatScore: number;
@@ -51,9 +53,12 @@ export interface UpgradeOffer {
   score?: number;
 }
 
-export function upgradeProfileOf(profile: { cutoff?: string; upgradeAllowed?: boolean; cutoffFormatScore?: number; minUpgradeFormatScore?: number } | null | undefined): UpgradeProfile {
+export function upgradeProfileOf(
+  profile: { cutoff?: string; qualityGroups?: QualityGroups; upgradeAllowed?: boolean; cutoffFormatScore?: number; minUpgradeFormatScore?: number } | null | undefined
+): UpgradeProfile {
   return {
     cutoff: profile?.cutoff ?? "",
+    qualityGroups: profile?.qualityGroups ?? [],
     upgradeAllowed: profile?.upgradeAllowed !== false,
     cutoffFormatScore: profile?.cutoffFormatScore ?? 0,
     minUpgradeFormatScore: profile?.minUpgradeFormatScore ?? 1,
@@ -64,8 +69,8 @@ export function upgradeProfileOf(profile: { cutoff?: string; upgradeAllowed?: bo
  * deleted tier, "Unknown") never has: nothing is known about it to say it is enough. */
 export function qualityCutoffMet(profile: UpgradeProfile, file: ExistingFile): boolean {
   if (!profile.cutoff) return false;
-  const current = qualityRank(file.quality);
-  return current >= 0 && current >= qualityRank(profile.cutoff);
+  const current = groupedRank(file.quality, profile.qualityGroups);
+  return current >= 0 && current >= groupedRank(profile.cutoff, profile.qualityGroups);
 }
 
 /** The format cutoff: switched off at 0, otherwise a file scoring less (an unknown score counts as 0) is below it. */
@@ -77,8 +82,8 @@ export function formatCutoffNotMet(profile: UpgradeProfile, file: ExistingFile):
  * the format cutoff. */
 export function cutoffNotMet(profile: UpgradeProfile, file: ExistingFile): boolean {
   if (!profile.upgradeAllowed) return false;
-  const rank = qualityRank(file.quality);
-  const qualityBelow = !!profile.cutoff && rank >= 0 && rank < qualityRank(profile.cutoff);
+  const rank = groupedRank(file.quality, profile.qualityGroups);
+  const qualityBelow = !!profile.cutoff && rank >= 0 && rank < groupedRank(profile.cutoff, profile.qualityGroups);
   return qualityBelow || formatCutoffNotMet(profile, file);
 }
 
@@ -115,8 +120,8 @@ export type UpgradeVerdict = "yes" | "no" | "needs-score";
  */
 export function judgeUpgrade(profile: UpgradeProfile, mode: PropersMode, file: ExistingFile, candidate: UpgradeOffer): UpgradeVerdict {
   if (!profile.upgradeAllowed) return "no";
-  const current = qualityRank(file.quality);
-  const next = qualityRank(candidate.quality);
+  const current = groupedRank(file.quality, profile.qualityGroups);
+  const next = groupedRank(candidate.quality, profile.qualityGroups);
   if (next > current) return qualityCutoffMet(profile, file) ? "no" : "yes";
   if (next < current || current < 0) return "no";
   // The same quality.

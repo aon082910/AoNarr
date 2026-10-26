@@ -346,7 +346,7 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
     const file = await existingFileRecord(item, episode, null);
     const upgradeProfile = upgradeProfileOf(profile);
     if (!file || !upgradeProfile.upgradeAllowed) return false;
-    if (meetsCutoff(onDisk, cutoff) && !formatCutoffNotMet(upgradeProfile, file)) {
+    if (meetsCutoff(onDisk, cutoff, profile?.qualityGroups) && !formatCutoffNotMet(upgradeProfile, file)) {
       const mode = propersMode();
       if (!results.some((r) => revisionUpgrade(mode, file.releaseTitle, r.title))) return false;
     }

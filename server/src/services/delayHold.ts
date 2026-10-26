@@ -1,5 +1,5 @@
 import type { SearchResult } from "../types/index.js";
-import { qualityRank } from "./quality.js";
+import { groupedRank, type QualityGroups } from "./quality.js";
 import type { PreferredProtocol } from "./releaseRanking.js";
 
 /**
@@ -29,6 +29,8 @@ export interface DelayContext {
    * quality the profile would grab. */
   cutoff: string;
   allowedQualities: string[];
+  /** Qualities the profile treats as one tier. */
+  qualityGroups?: QualityGroups;
   /** The profile caps its pick at the cutoff (quality_profiles.prefer_cutoff_quality), so the
    * cutoff is the best quality it would grab. */
   preferCutoffQuality: boolean;
@@ -49,12 +51,13 @@ export interface DelayOutcome<T> {
 }
 
 /** The best quality the profile would grab: its cutoff when it caps there, else its highest allowed one. */
-export function bestGrabbableQuality(ctx: Pick<DelayContext, "cutoff" | "allowedQualities" | "preferCutoffQuality">): string | null {
+export function bestGrabbableQuality(ctx: Pick<DelayContext, "cutoff" | "allowedQualities" | "preferCutoffQuality" | "qualityGroups">): string | null {
   // A cutoff that is not on the quality ladder (a renamed quality) has no rank to compare with: it would
   // rank every release at or above it.
-  if (ctx.preferCutoffQuality && ctx.cutoff && qualityRank(ctx.cutoff) >= 0) return ctx.cutoff;
-  const allowed = ctx.allowedQualities.filter((q) => qualityRank(q) >= 0);
-  if (allowed.length > 0) return [...allowed].sort((a, b) => qualityRank(b) - qualityRank(a))[0];
+  const rank = (q: string | null) => groupedRank(q, ctx.qualityGroups);
+  if (ctx.preferCutoffQuality && ctx.cutoff && rank(ctx.cutoff) >= 0) return ctx.cutoff;
+  const allowed = ctx.allowedQualities.filter((q) => rank(q) >= 0);
+  if (allowed.length > 0) return [...allowed].sort((a, b) => rank(b) - rank(a))[0];
   return null;
 }
 
@@ -136,7 +139,7 @@ export async function applyDelayProfile<T extends { result: SearchResult }>(
       outcome.kept.push(item);
       continue;
     }
-    if (best && qualityRank(qualityOf(item)) >= qualityRank(best) && (profile.preferredProtocol === "none" || profile.preferredProtocol === protocol)) {
+    if (best && groupedRank(qualityOf(item), ctx.qualityGroups) >= groupedRank(best, ctx.qualityGroups) && (profile.preferredProtocol === "none" || profile.preferredProtocol === protocol)) {
       outcome.kept.push(item);
       continue;
     }

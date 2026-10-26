@@ -1,6 +1,7 @@
 /** better-sqlite3 returns raw column names (snake_case); map rows to the camelCase API types. */
 
 import { decryptValue } from "../services/encryption.js";
+import { parseQualityGroups } from "../services/qualityGroups.js";
 
 /** decryptValue() already returns a value unchanged if it isn't in the encrypted format, so this
  * is safe to call on a column that predates encryption-at-rest support for it — just needs the
@@ -164,6 +165,7 @@ export function qualityProfileFromRow(row: any) {
     upgradeAllowed: row.upgrade_allowed == null ? true : !!Number(row.upgrade_allowed),
     cutoffFormatScore: Number(row.cutoff_format_score ?? 0),
     minUpgradeFormatScore: row.min_upgrade_format_score == null ? 1 : Number(row.min_upgrade_format_score),
+    qualityGroups: parseQualityGroups(row.quality_groups),
   };
 }
 

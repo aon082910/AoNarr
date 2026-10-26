@@ -3,7 +3,7 @@ import { clientIp, requireAdmin } from "../middleware/auth.js";
 import crypto from "node:crypto";
 import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { invalidateQualityRankCache } from "../services/quality.js";
+import { invalidateQualityRankCache, parseQualityGroups } from "../services/quality.js";
 import { buildOtpauthUrl, generateBase32Secret, verifyTotp } from "../services/totp.js";
 import { getSetting, setSetting, deleteSetting, getAllSettings } from "../services/settingsStore.js";
 import { applySocksProxySetting } from "../services/socksProxy.js";
@@ -98,7 +98,9 @@ settingsRouter.get(
   asyncHandler(async (_req, res) => {
     const qualities = await db.prepare("SELECT name, rank, min_size_mb, max_size_mb, preferred_size_mb FROM qualities ORDER BY rank").all();
     const profiles = (await db
-      .prepare("SELECT name, allowed_qualities, cutoff, min_format_score, max_size_gb, prefer_cutoff_quality FROM quality_profiles")
+      .prepare(
+        "SELECT name, allowed_qualities, cutoff, min_format_score, max_size_gb, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups FROM quality_profiles"
+      )
       .all()) as any[];
     const formats = (await db.prepare("SELECT id, name, patterns, media_types FROM custom_formats").all()) as any[];
     const scores = await db
@@ -122,6 +124,10 @@ settingsRouter.get(
         minFormatScore: p.min_format_score,
         maxSizeGb: p.max_size_gb,
         preferCutoffQuality: p.prefer_cutoff_quality == null ? true : !!Number(p.prefer_cutoff_quality),
+        upgradeAllowed: p.upgrade_allowed == null ? true : !!Number(p.upgrade_allowed),
+        cutoffFormatScore: Number(p.cutoff_format_score ?? 0),
+        minUpgradeFormatScore: p.min_upgrade_format_score == null ? 1 : Number(p.min_upgrade_format_score),
+        qualityGroups: parseQualityGroups(p.quality_groups),
       })),
       customFormats: formats.map((f) => ({
         name: f.name,
@@ -196,11 +202,13 @@ settingsRouter.post(
       for (const p of b.qualityProfiles ?? []) {
         await db
           .prepare(
-            `INSERT INTO quality_profiles (name, allowed_qualities, cutoff, min_format_score, max_size_gb, prefer_cutoff_quality)
-             VALUES (@name, @allowedQualities, @cutoff, @minFormatScore, @maxSizeGb, @preferCutoffQuality)
+            `INSERT INTO quality_profiles (name, allowed_qualities, cutoff, min_format_score, max_size_gb, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups)
+             VALUES (@name, @allowedQualities, @cutoff, @minFormatScore, @maxSizeGb, @preferCutoffQuality, @upgradeAllowed, @cutoffFormatScore, @minUpgradeFormatScore, @qualityGroups)
              ON CONFLICT(name) DO UPDATE SET allowed_qualities = excluded.allowed_qualities,
                cutoff = excluded.cutoff, min_format_score = excluded.min_format_score, max_size_gb = excluded.max_size_gb,
-               prefer_cutoff_quality = excluded.prefer_cutoff_quality`
+               prefer_cutoff_quality = excluded.prefer_cutoff_quality, upgrade_allowed = excluded.upgrade_allowed,
+               cutoff_format_score = excluded.cutoff_format_score, min_upgrade_format_score = excluded.min_upgrade_format_score,
+               quality_groups = excluded.quality_groups`
           )
           .run({
             ...p,
@@ -208,6 +216,11 @@ settingsRouter.post(
             maxSizeGb: p.maxSizeGb ?? null,
             // A backup from before the flag existed keeps the cap at the cutoff.
             preferCutoffQuality: p.preferCutoffQuality === false ? 0 : 1,
+            // Backups from before the upgrade fields and quality groups keep the defaults.
+            upgradeAllowed: p.upgradeAllowed === false ? 0 : 1,
+            cutoffFormatScore: Number.isInteger(Number(p.cutoffFormatScore)) ? Number(p.cutoffFormatScore ?? 0) : 0,
+            minUpgradeFormatScore: p.minUpgradeFormatScore == null || !Number.isInteger(Number(p.minUpgradeFormatScore)) ? 1 : Number(p.minUpgradeFormatScore),
+            qualityGroups: JSON.stringify(parseQualityGroups(p.qualityGroups)),
           });
         profilesImported++;
       }

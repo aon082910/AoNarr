@@ -1,5 +1,5 @@
 import { db } from "../db/index.js";
-import { qualityRank, usesQualityTiers } from "./quality.js";
+import { groupedRank, parseQualityGroups, usesQualityTiers, type QualityGroups } from "./quality.js";
 
 export interface UpgradeCandidate {
   mediaItemId: number;
@@ -13,21 +13,23 @@ export interface UpgradeCandidate {
 
 interface ProfileInfo {
   cutoff: string;
+  qualityGroups: QualityGroups;
   name: string;
   upgradeAllowed: boolean;
   cutoffFormatScore: number;
 }
 
 async function loadProfiles(): Promise<Map<number, ProfileInfo>> {
-  const rows = (await db.prepare("SELECT id, name, cutoff, upgrade_allowed, cutoff_format_score FROM quality_profiles").all()) as {
+  const rows = (await db.prepare("SELECT id, name, cutoff, quality_groups, upgrade_allowed, cutoff_format_score FROM quality_profiles").all()) as {
     id: number;
     name: string;
     cutoff: string;
+    quality_groups: string | null;
     upgrade_allowed: number | boolean | null;
     cutoff_format_score: number | string | null;
   }[];
   return new Map(
-    rows.map((r) => [r.id, { name: r.name, cutoff: r.cutoff, upgradeAllowed: r.upgrade_allowed == null || !!Number(r.upgrade_allowed), cutoffFormatScore: Number(r.cutoff_format_score ?? 0) }])
+    rows.map((r) => [r.id, { name: r.name, cutoff: r.cutoff, qualityGroups: parseQualityGroups(r.quality_groups), upgradeAllowed: r.upgrade_allowed == null || !!Number(r.upgrade_allowed), cutoffFormatScore: Number(r.cutoff_format_score ?? 0) }])
   );
 }
 
@@ -38,9 +40,9 @@ async function loadProfiles(): Promise<Map<number, ProfileInfo>> {
  * on every run forever. */
 function belowCutoff(quality: string, profile: ProfileInfo, formatScore: number | string | null): boolean {
   if (!profile.upgradeAllowed) return false;
-  const current = qualityRank(quality);
+  const current = groupedRank(quality, profile.qualityGroups);
   if (current < 0) return false;
-  if (current < qualityRank(profile.cutoff)) return true;
+  if (current < groupedRank(profile.cutoff, profile.qualityGroups)) return true;
   // At the quality cutoff, but under the format cutoff (a custom-format score the profile wants more of).
   return profile.cutoffFormatScore > 0 && Number(formatScore ?? 0) < profile.cutoffFormatScore;
 }
