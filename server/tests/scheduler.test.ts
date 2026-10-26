@@ -4080,7 +4080,12 @@ describe("a finished season is looked for as a pack first", () => {
 
     await runAutoSearch();
 
-    expect(queryCalls()).toEqual(["Capped Show S01", "Capped Show S01E01"]);
+    // The season search takes one of the two slots, so one episode is searched, not two. Which one is not fixed:
+    // a show's episodes run three at a time, and the one that reaches the slot first takes it.
+    const calls = queryCalls();
+    expect(calls[0]).toBe("Capped Show S01");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toMatch(/^Capped Show S01E0[1-3]$/);
   });
 });
 
