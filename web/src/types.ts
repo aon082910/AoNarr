@@ -191,6 +191,8 @@ export interface QualityProfile {
   cutoffFormatScore?: number;
   /** The least a same-quality release must add to the file's score to replace it. */
   minUpgradeFormatScore?: number;
+  /** Lists of qualities the profile treats as one tier: none is an upgrade over another, the format score decides. */
+  qualityGroups?: string[][];
 }
 
 export interface RootFolder {

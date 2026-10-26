@@ -1380,6 +1380,15 @@ export default function Settings() {
     setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, ...patch } : p)));
   }
 
+  async function saveProfileGroups(profileId: number, text: string) {
+    const qualityGroups = text
+      .split("\n")
+      .map((line) => line.split(",").map((name) => name.trim()).filter(Boolean))
+      .filter((group) => group.length > 0);
+    await api.patch(`/quality-profiles/${profileId}`, { qualityGroups });
+    setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, qualityGroups } : p)));
+  }
+
   async function saveProfilePreferCutoff(profileId: number, preferCutoffQuality: boolean) {
     await api.patch(`/quality-profiles/${profileId}`, { preferCutoffQuality });
     setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, preferCutoffQuality } : p)));
@@ -3634,6 +3643,17 @@ export default function Settings() {
                   style={{ maxWidth: 140 }}
                   defaultValue={p.minUpgradeFormatScore ?? 1}
                   onBlur={(e) => saveProfileUpgrade(p.id, { minUpgradeFormatScore: Number(e.target.value) || 1 })}
+                />
+                <label htmlFor={`settings-quality-groups-${p.id}`}>
+                  Qualities treated as one tier — one group per line, names separated by commas (e.g. WEBDL-1080p, WEBRip-1080p). None of a group is an upgrade over another; the custom-format score decides.
+                </label>
+                <textarea
+                  id={`settings-quality-groups-${p.id}`}
+                  rows={2}
+                  style={{ maxWidth: 420 }}
+                  placeholder="WEBDL-1080p, WEBRip-1080p"
+                  defaultValue={(p.qualityGroups ?? []).map((group) => group.join(", ")).join("\n")}
+                  onBlur={(e) => saveProfileGroups(p.id, e.target.value)}
                 />
                 <label htmlFor="settings-maximum-size-gb-reject-any-release-over--96">Maximum size (GB) — reject any release over this, regardless of quality</label>
                 <input id="settings-maximum-size-gb-reject-any-release-over--96"

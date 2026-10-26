@@ -1,6 +1,6 @@
 import { db } from "../db/index.js";
 import { getSetting } from "./settingsStore.js";
-import { qualityRank } from "./quality.js";
+import { groupedRank, type QualityGroups } from "./quality.js";
 import { airedFrontierOf, episodeNotAired } from "./searchPlan.js";
 import type { ParsedRelease } from "./releaseParser.js";
 import type { MediaItem } from "../types/index.js";
@@ -82,10 +82,10 @@ export function episodesCoveredBy(parsed: Pick<ParsedRelease, "episodeRange">, s
 
 /** Whether a file of `quality` is one a pack of `packQuality` would be an upgrade for: below the
  * profile's cutoff (any quality is, with no cutoff set) and below the pack. */
-function upgradableBy(quality: string | null, packQuality: string, cutoff: string): boolean {
-  const rank = qualityRank(quality);
-  const cutoffRank = qualityRank(cutoff);
-  return rank >= 0 && (cutoffRank < 0 || rank < cutoffRank) && rank < qualityRank(packQuality);
+function upgradableBy(quality: string | null, packQuality: string, cutoff: string, groups?: QualityGroups): boolean {
+  const rank = groupedRank(quality, groups);
+  const cutoffRank = groupedRank(cutoff, groups);
+  return rank >= 0 && (cutoffRank < 0 || rank < cutoffRank) && rank < groupedRank(packQuality, groups);
 }
 
 export function judgeSeasonPack(args: {
@@ -96,13 +96,15 @@ export function judgeSeasonPack(args: {
   item: Pick<MediaItem, "type" | "seriesType">;
   packQuality: string;
   cutoff: string;
+  /** Qualities the profile treats as one tier. */
+  qualityGroups?: QualityGroups;
   settings?: PackSettings;
   today?: string;
 }): PackVerdict {
   const settings = args.settings ?? packSettings();
   const covered = episodesCoveredBy(args.parsed, args.season, args.episodes);
   if (covered.length === 0) return { ok: false, reason: `it covers no episode of season ${args.season} that is known` };
-  const wanted = covered.filter((e) => !e.hasFile || upgradableBy(e.quality, args.packQuality, args.cutoff)).length;
+  const wanted = covered.filter((e) => !e.hasFile || upgradableBy(e.quality, args.packQuality, args.cutoff, args.qualityGroups)).length;
   if (!settings.guards) return { ok: true, covered: covered.length, wanted };
 
   const today = args.today ?? new Date().toISOString().slice(0, 10);

@@ -143,6 +143,7 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE quality_profiles ADD COLUMN IF NOT EXISTS upgrade_allowed INTEGER NOT NULL DEFAULT 1`,
   `ALTER TABLE quality_profiles ADD COLUMN IF NOT EXISTS cutoff_format_score INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE quality_profiles ADD COLUMN IF NOT EXISTS min_upgrade_format_score INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE quality_profiles ADD COLUMN IF NOT EXISTS quality_groups TEXT NOT NULL DEFAULT '[]'`,
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS file_release_title TEXT`,
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS file_format_score INTEGER`,
   `ALTER TABLE episodes ADD COLUMN IF NOT EXISTS file_release_title TEXT`,
