@@ -26,7 +26,7 @@ import { existingFileRecord } from "./fileRelease.js";
 import { nonVideoPreference, nonVideoRejection } from "./nonVideoMatch.js";
 import { exceedsFreeSpace, freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReserveBytes } from "./freeSpace.js";
 import { compareUsenetAge, comparePeers, largerIsBetterKey, normalizePreferredProtocol, protocolGroup, protocolPreferenceKey } from "./releaseRanking.js";
-import { aliasTitlesFor, identityContextFor } from "./releaseAliases.js";
+import { aliasSeasonsFor, aliasTitlesFor, applyAliasSeason, identityContextFor } from "./releaseAliases.js";
 import { childNumberOf, volumeYearOf } from "./searchQueries.js";
 import { judgeSeasonPack, loadPackEpisodes, packSettings, type PackEpisode } from "./seasonPacks.js";
 import {
@@ -833,6 +833,8 @@ export async function chooseBestResult(
     cutoff = "";
   }
   const preferCutoffQuality = options.preferCutoffQuality ?? (await preferCutoffQualityFor(qualityProfileId));
+  // Names TheXEM gives a season of the show (a cour's own title): a release counted from 1 under one is that season's.
+  const aliasSeasons = tiered && mediaItemId != null ? await aliasSeasonsFor(mediaItemId) : new Map<string, number>();
   const qualityGroups = options.qualityGroups ?? (tiered ? await qualityGroupsFor(qualityProfileId) : []);
   // The rank of what is on disk, as the profile reads it (a group ranks as its best member).
   const upgradeFromGroupRank = upgradeFromRank === null ? null : groupRankOfRank(upgradeFromRank, qualityGroups);
@@ -860,7 +862,7 @@ export async function chooseBestResult(
       }
       return true;
     })
-    .map((r) => ({ result: r, parsed: parseReleaseTitle(r.title), size: knownReleaseSize(r.size) }))
+    .map((r) => ({ result: r, parsed: applyAliasSeason(parseReleaseTitle(r.title), aliasSeasons), size: knownReleaseSize(r.size) }))
     .filter(({ result, parsed }) => {
       if (parsed.rejected) {
         log.info(`[scheduler] rejected "${result.title}": its name is a hash, so there is no title to check it against`);
