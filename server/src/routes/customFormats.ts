@@ -7,6 +7,7 @@ import { translateTrashFormat, type TrashCustomFormat } from "../services/trashF
 import { getLastTrashSyncResult, isTrashSyncRunning, syncTrashFormats } from "../services/trashSync.js";
 import { log } from "../services/logger.js";
 import { scoreRelease } from "../services/customFormatScoring.js";
+import { resetSearchBackoff } from "../services/searchBackoff.js";
 import { parseReleaseTitle } from "../services/releaseParser.js";
 
 export const customFormatsRouter = Router();
@@ -178,6 +179,8 @@ customFormatsRouter.patch(
     if (sets.length > 0) {
       values.push(req.params.id);
       await db.prepare(`UPDATE custom_formats SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+      // What can be grabbed has changed: targets the searches kept finding nothing for are searched again.
+      await resetSearchBackoff();
     }
     const row = await db.prepare("SELECT * FROM custom_formats WHERE id = ?").get(req.params.id);
     res.json(customFormatFromRow(row));
@@ -257,6 +260,7 @@ customFormatsRouter.delete(
   asyncHandler(async (req, res) => {
     const result = await db.prepare("DELETE FROM custom_formats WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Custom format not found");
+    await resetSearchBackoff();
     res.status(204).send();
   })
 );
@@ -307,6 +311,7 @@ customFormatsRouter.put(
          ON CONFLICT(quality_profile_id, custom_format_id) DO UPDATE SET score = excluded.score`
       )
       .run(req.params.qualityProfileId, req.params.customFormatId, score);
+    await resetSearchBackoff();
     res.json({ qualityProfileId: Number(req.params.qualityProfileId), customFormatId: Number(req.params.customFormatId), score });
   })
 );

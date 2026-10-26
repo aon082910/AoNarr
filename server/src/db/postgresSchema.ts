@@ -132,6 +132,9 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS last_auto_searched_at TEXT`,
   `ALTER TABLE episodes ADD COLUMN IF NOT EXISTS last_auto_searched_at TEXT`,
   `ALTER TABLE sub_items ADD COLUMN IF NOT EXISTS last_auto_searched_at TEXT`,
+  `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS auto_search_misses INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE episodes ADD COLUMN IF NOT EXISTS auto_search_misses INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE sub_items ADD COLUMN IF NOT EXISTS auto_search_misses INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE sub_items ADD COLUMN IF NOT EXISTS overview TEXT`,
 ];
 

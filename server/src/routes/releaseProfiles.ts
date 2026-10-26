@@ -3,6 +3,7 @@ import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { releaseProfileFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
+import { resetSearchBackoff } from "../services/searchBackoff.js";
 
 export const releaseProfilesRouter = Router();
 releaseProfilesRouter.use(requireAdmin);
@@ -103,6 +104,8 @@ releaseProfilesRouter.patch(
     if (sets.length > 0) {
       values.push(req.params.id);
       await db.prepare(`UPDATE release_profiles SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+      // What can be grabbed has changed: targets the searches kept finding nothing for are searched again.
+      await resetSearchBackoff();
     }
     const row = await db.prepare("SELECT * FROM release_profiles WHERE id = ?").get(req.params.id);
     res.json(releaseProfileFromRow(row));
@@ -114,6 +117,7 @@ releaseProfilesRouter.delete(
   asyncHandler(async (req, res) => {
     const result = await db.prepare("DELETE FROM release_profiles WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Release profile not found");
+    await resetSearchBackoff();
     res.status(204).send();
   })
 );

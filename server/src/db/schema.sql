@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS media_items (
   runtime_minutes INTEGER,
   size_bytes INTEGER, -- imported file size, for the Library page's "Size on disk" column/sort (single-shape items only — episodic/collection parents don't roll this up from their children)
   studio TEXT, -- movies only; TMDB's first-listed production company, Radarr's "Studio" field
+  auto_search_misses INTEGER NOT NULL DEFAULT 0, -- automatic searches in a row that grabbed nothing — see services/searchBackoff.ts
   last_auto_searched_at TEXT -- single-shape items only (movies/ROMs/adult); when runAutoSearch last actually searched this item, NULL if never — see scheduler.ts's per-cycle cap/fair-ordering
 );
 
@@ -103,6 +104,7 @@ CREATE TABLE IF NOT EXISTS episodes (
   has_file INTEGER NOT NULL DEFAULT 0,
   quality TEXT,
   file_path TEXT,
+  auto_search_misses INTEGER NOT NULL DEFAULT 0, -- see services/searchBackoff.ts
   last_auto_searched_at TEXT, -- when runAutoSearch last actually searched this episode, NULL if never — see scheduler.ts's per-cycle cap/fair-ordering
   UNIQUE(media_item_id, season_number, episode_number)
 );
@@ -128,6 +130,7 @@ CREATE TABLE IF NOT EXISTS sub_items (
                      -- same or different parent authors that belong to one series
   series_position REAL, -- non-integer allowed (e.g. 2.5) for a novella/interstitial between two mainline books
   narrator TEXT, -- Audiobooks only; who reads this edition, distinct from the author/parent
+  auto_search_misses INTEGER NOT NULL DEFAULT 0, -- see services/searchBackoff.ts
   last_auto_searched_at TEXT -- when runAutoSearch last actually searched this sub-item, NULL if never — see scheduler.ts's per-cycle cap/fair-ordering
 );
 -- Unlike episodes, sub_items has no UNIQUE constraint touching media_item_id at all — every
@@ -858,3 +861,24 @@ CREATE TRIGGER IF NOT EXISTS trg_fts_sub_items_ad AFTER DELETE ON sub_items BEGI
   WHERE rowid = (SELECT fts_rowid FROM library_search_fts_lookup WHERE match_type = 'child' AND source_id = old.id);
   DELETE FROM library_search_fts_lookup WHERE match_type = 'child' AND source_id = old.id;
 END;
+
+-- How long ago automatic searches stopped finding anything, per target and season (services/searchBackoff.ts).
+-- A target the last few searches found nothing for is searched less often, until something may have changed.
+CREATE TABLE IF NOT EXISTS season_searches (
+  media_item_id INTEGER NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+  season_number INTEGER NOT NULL,
+  misses INTEGER NOT NULL DEFAULT 0,
+  last_searched_at TEXT,
+  PRIMARY KEY (media_item_id, season_number)
+);
+
+-- Where the RSS sync (services/rssSync.ts) left off in each indexer's recent-releases feed: the newest
+-- release it had seen, so the next run reads only what is newer.
+CREATE TABLE IF NOT EXISTS rss_sync_state (
+  indexer_id INTEGER NOT NULL REFERENCES indexers(id) ON DELETE CASCADE,
+  feed_key TEXT NOT NULL,
+  last_seen_url TEXT,
+  last_seen_at TEXT,
+  last_run_at TEXT,
+  PRIMARY KEY (indexer_id, feed_key)
+);

@@ -10,6 +10,7 @@ import { syncFromJackett } from "../services/jackettSync.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { encryptValue } from "../services/encryption.js";
 import { removeReleaseProfileScopeId } from "./tags.js";
+import { resetSearchBackoff } from "../services/searchBackoff.js";
 
 export const indexersRouter = Router();
 indexersRouter.use(requireAdmin);
@@ -76,6 +77,8 @@ indexersRouter.post(
       });
 
     const row = await db.prepare("SELECT * FROM indexers WHERE id = ?").get(result.lastInsertRowid);
+    // A new indexer may have what the others did not: targets the searches kept finding nothing for are searched again.
+    await resetSearchBackoff();
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "indexer_added", `${b.name} (${b.protocol})`);
     res.status(201).json(indexerFromRow(row));
@@ -129,7 +132,10 @@ indexersRouter.patch(
     const row = await db.prepare("SELECT * FROM indexers WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Indexer not found");
     // An edit (a key fixed, a URL corrected) is a reason to try the indexer again at once.
-    if (sets.length > 0) clearFailureBackoff(Number(req.params.id));
+    if (sets.length > 0) {
+      clearFailureBackoff(Number(req.params.id));
+      await resetSearchBackoff();
+    }
     res.json(indexerFromRow(row));
   })
 );

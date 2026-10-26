@@ -146,6 +146,10 @@ ensureColumn("import_lists", "root_folder_id", "root_folder_id INTEGER REFERENCE
 ensureColumn("media_items", "last_auto_searched_at", "last_auto_searched_at TEXT");
 ensureColumn("episodes", "last_auto_searched_at", "last_auto_searched_at TEXT");
 ensureColumn("sub_items", "last_auto_searched_at", "last_auto_searched_at TEXT");
+// How many automatic searches in a row grabbed nothing for this target — see services/searchBackoff.ts.
+ensureColumn("media_items", "auto_search_misses", "auto_search_misses INTEGER NOT NULL DEFAULT 0");
+ensureColumn("episodes", "auto_search_misses", "auto_search_misses INTEGER NOT NULL DEFAULT 0");
+ensureColumn("sub_items", "auto_search_misses", "auto_search_misses INTEGER NOT NULL DEFAULT 0");
 // A book/album's own synopsis — same idea as episodes.overview above, added so a sub-item's
 // "Different Match" (routes/media.ts) has somewhere to store what it fetches; nothing wrote to
 // this column before that feature existed, so every existing row starts NULL.

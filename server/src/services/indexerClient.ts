@@ -2,6 +2,7 @@ import { log } from "./logger.js";
 import { parseStringPromise } from "xml2js";
 import { getMediaTypeConfig, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
 import { getSetting } from "./settingsStore.js";
+import { config } from "../config.js";
 import { recordIndexerHealth } from "./indexerHealth.js";
 import { categoriesFor } from "./indexerCategories.js";
 import { parseReleaseTitle } from "./releaseParser.js";
@@ -157,6 +158,9 @@ export interface SearchHints {
   skipTyped?: boolean;
   /** Read a plain RSS feed afresh instead of from the last few minutes' copy (a manual search). */
   fresh?: boolean;
+  /** Look through the plain RSS feeds too, which an automatic search leaves to the RSS sync: for a
+   * search the admin asked for, or a retry, that the sync will not repeat. */
+  includeFeeds?: boolean;
 }
 
 function cacheKey(indexerId: number, query: string, mediaType: MediaType, externalIds?: Record<string, string>, hints?: SearchHints): string {
@@ -678,6 +682,22 @@ async function followingPages(
   return more;
 }
 
+/** A Torznab/Newznab API request: `t` and its params, the categories, the key and extended=1 (without
+ * it a Newznab indexer answers with the basic attributes only: no ids, no usenetdate, no grabs). */
+function apiUrlFor(indexer: Indexer, cats: string, t: string, params: ApiParams, offset = 0, limit = 0): string {
+  const url = new URL(indexer.url.replace(/\/+$/, "") + "/api");
+  url.searchParams.set("t", t);
+  for (const [name, value] of params) url.searchParams.set(name, value);
+  url.searchParams.set("cat", cats);
+  if (indexer.apiKey) url.searchParams.set("apikey", indexer.apiKey);
+  url.searchParams.set("extended", "1");
+  if (offset > 0) {
+    url.searchParams.set("offset", String(offset));
+    if (limit > 0) url.searchParams.set("limit", String(limit));
+  }
+  return url.toString();
+}
+
 async function searchTorznabNewznab(
   indexer: Indexer,
   query: string,
@@ -691,21 +711,7 @@ async function searchTorznabNewznab(
   const idParamsKey = `${indexer.id}:${indexer.url}`;
   const interactive = !!hints?.fresh;
 
-  const apiUrl = (t: string, params: ApiParams, offset = 0, limit = 0): string => {
-    const url = new URL(indexer.url.replace(/\/+$/, "") + "/api");
-    url.searchParams.set("t", t);
-    for (const [name, value] of params) url.searchParams.set(name, value);
-    url.searchParams.set("cat", cats);
-    if (indexer.apiKey) url.searchParams.set("apikey", indexer.apiKey);
-    // Without extended=1 a Newznab indexer answers with the basic attributes only: no ids, no
-    // usenetdate, no grabs.
-    url.searchParams.set("extended", "1");
-    if (offset > 0) {
-      url.searchParams.set("offset", String(offset));
-      if (limit > 0) url.searchParams.set("limit", String(limit));
-    }
-    return url.toString();
-  };
+  const apiUrl = (t: string, params: ApiParams, offset = 0, limit = 0): string => apiUrlFor(indexer, cats, t, params, offset, limit);
 
   // searchIndexer has counted the first request against the hourly limit; every other is counted here.
   let requests = 0;
@@ -864,24 +870,30 @@ async function searchRss(indexer: Indexer, query: string, fresh = false): Promis
   for (const item of items) {
     const title: string = item.title?.[0] ?? "unknown";
     if (!rssItemMatches(title, query)) continue;
-    const enclosure = item.enclosure?.[0]?.$;
-    const downloadUrl = enclosure?.url ?? item.link?.[0] ?? "";
-    if (!downloadUrl) continue;
-
-    results.push({
-      indexerId: indexer.id,
-      indexerName: indexer.name,
-      title,
-      ...sizeFields(enclosure?.length),
-      seeders: null,
-      leechers: null,
-      publishDate: item.pubDate?.[0] ?? null,
-      downloadUrl,
-      protocol: rssItemProtocol(downloadUrl, enclosure?.type),
-      category: null,
-    });
+    const result = rssItemResult(indexer, item);
+    if (result) results.push(result);
   }
   return results;
+}
+
+/** A plain RSS item as a release, or null for one with no download URL. */
+function rssItemResult(indexer: Indexer, item: any): IndexerSearchResult | null {
+  const title: string = item.title?.[0] ?? "unknown";
+  const enclosure = item.enclosure?.[0]?.$;
+  const downloadUrl = enclosure?.url ?? item.link?.[0] ?? "";
+  if (!downloadUrl) return null;
+  return {
+    indexerId: indexer.id,
+    indexerName: indexer.name,
+    title,
+    ...sizeFields(enclosure?.length),
+    seeders: null,
+    leechers: null,
+    publishDate: item.pubDate?.[0] ?? null,
+    downloadUrl,
+    protocol: rssItemProtocol(downloadUrl, enclosure?.type),
+    category: null,
+  };
 }
 
 function getByDotPath(obj: any, dotPath: string | null | undefined): any {
@@ -1012,6 +1024,26 @@ export function isIndexerBackedOff(indexerId: number): boolean {
   return !!until && until > Date.now();
 }
 
+/** Whether a search could ask the indexer now: it is not backed off and has room in its hourly limit. */
+export function isIndexerAvailable(indexer: Indexer): boolean {
+  return !isIndexerBackedOff(indexer.id) && !isOverQueryLimit(indexer);
+}
+
+/** What a search of the indexers reached: how many it asked, and how many of those answered (with
+ * releases or with none; one that failed, was backed off or had no room left in its hourly limit did
+ * not). An empty result says nothing about a target when none answered. */
+export interface SearchReach {
+  applicable: number;
+  answered: number;
+}
+
+const searchReaches = new WeakMap<SearchResult[], SearchReach>();
+
+/** The reach of the search that returned `results` (undefined for a list searchAllIndexers did not return). */
+export function searchReachOf(results: SearchResult[]): SearchReach | undefined {
+  return searchReaches.get(results);
+}
+
 /** Lets an indexer be searched again now, e.g. after the admin's own health check of it passed. */
 export function clearIndexerBackoff(indexerId: number): void {
   backoffUntil.delete(indexerId);
@@ -1116,6 +1148,124 @@ export async function searchIndexer(
   }
 }
 
+/** The newest release the RSS sync saw in a feed: where the next run stops reading. */
+export interface RssMarker {
+  url: string | null;
+  at: string | null;
+}
+
+export interface RecentFeed {
+  /** The releases newer than the marker, newest first. */
+  results: IndexerSearchResult[];
+  /** The newest release of the feed (the marker to keep), null for an empty one. */
+  newest: RssMarker | null;
+}
+
+/** The feeds of an indexer an RSS sync reads for some media types: one per distinct set of categories. */
+export function rssFeedGroups(indexer: Indexer, types: MediaType[]): { key: string; cats: string; types: MediaType[] }[] {
+  const groups = new Map<string, { key: string; cats: string; types: MediaType[] }>();
+  for (const type of types) {
+    if (!indexer.mediaTypes.split(",").includes(type)) continue;
+    const cats = categoriesFor(indexer.categories, categoriesForMediaType(type));
+    const group = groups.get(cats) ?? { key: cats, cats, types: [] };
+    group.types.push(type);
+    groups.set(cats, group);
+  }
+  return Array.from(groups.values());
+}
+
+const MAX_RSS_PAGES = 3;
+
+/** Whether a release is no newer than the marker: the one the marker names, or published before it. */
+function reachedMarker(result: SearchResult, since: RssMarker): boolean {
+  if (since.url && result.downloadUrl === since.url) return true;
+  const sinceAt = since.at ? Date.parse(since.at) : NaN;
+  const at = result.publishDate ? Date.parse(result.publishDate) : NaN;
+  return Number.isFinite(sinceAt) && Number.isFinite(at) && at < sinceAt;
+}
+
+function markerOf(result: SearchResult | undefined): RssMarker | null {
+  if (!result) return null;
+  // A listing dated in the future (a wrong clock on the indexer) would hide every older release from the next read.
+  const published = result.publishDate ? Date.parse(result.publishDate) : NaN;
+  const at = Number.isFinite(published) && published > Date.now() ? new Date().toISOString() : result.publishDate;
+  return { url: result.downloadUrl, at };
+}
+
+/**
+ * The newest releases of an indexer's feed, read back to `since` (the newest release of the last
+ * read; without one, the first page only). A Torznab/Newznab indexer is asked for the latest of the
+ * categories with no query (tv-search or movie-search where it has them), a plain RSS indexer is its
+ * whole feed. Counted against the indexer's hourly limit and its failure backoff like a search.
+ */
+export async function fetchRecentReleases(indexer: Indexer, group: { cats: string; types: MediaType[] }, since: RssMarker | null): Promise<RecentFeed> {
+  if (isIndexerBackedOff(indexer.id)) throw new Error(backedOffMessage(indexer));
+  if (isOverQueryLimit(indexer)) throw new Error(`Indexer "${indexer.name}" has hit its configured query limit for this hour — skipping`);
+  recordQueryLimitRequest(indexer);
+  const startedAt = Date.now();
+  try {
+    let feed: RecentFeed;
+    if (indexer.protocol === "rss") {
+      const items = await rssFeedItems(indexer, true);
+      const all = items.map((item) => rssItemResult(indexer, item)).filter((r): r is IndexerSearchResult => r !== null);
+      const results: IndexerSearchResult[] = [];
+      for (const result of all) {
+        if (since && reachedMarker(result, since)) break;
+        results.push(result);
+      }
+      feed = { results, newest: markerOf(all[0]) };
+    } else if (indexer.protocol === "torznab" || indexer.protocol === "newznab") {
+      feed = await recentFromApi(indexer, group, since);
+    } else {
+      return { results: [], newest: null };
+    }
+    consecutiveFailures.delete(indexer.id);
+    if (backoffReason.get(indexer.id) === "failures") clearIndexerBackoff(indexer.id);
+    await recordIndexerHealth(indexer.id, true, Date.now() - startedAt, null);
+    return feed;
+  } catch (err) {
+    if (err instanceof IndexerBackedOffError) throw err;
+    recordSearchFailure(indexer, err, startedAt, false);
+    await recordIndexerHealth(indexer.id, false, Date.now() - startedAt, (err as Error).message);
+    throw err;
+  }
+}
+
+async function recentFromApi(indexer: Indexer, group: { cats: string; types: MediaType[] }, since: RssMarker | null): Promise<RecentFeed> {
+  const caps = await getIndexerCaps(indexer);
+  const allTv = group.types.every((t) => t === "series" || t === "anime");
+  const allFilm = group.types.every((t) => t === "movie" || t === "ppv");
+  const t = allTv && caps?.tv ? "tvsearch" : allFilm && caps?.movie ? "movie" : "search";
+  const pageSize = caps?.pageSize ?? DEFAULT_PAGE_SIZE;
+  const results: IndexerSearchResult[] = [];
+  let newest: RssMarker | null = null;
+  let received = 0;
+  for (let page = 0; page < MAX_RSS_PAGES; page++) {
+    if (page > 0) {
+      if (queriesLeft(indexer) < 1) break;
+      recordQueryLimitRequest(indexer);
+    }
+    const feed = await fetchTorznabFeed(indexer, apiUrlFor(indexer, group.cats, t, [], received, page > 0 ? pageSize : 0));
+    throwIfIndexerApiError(indexer, feed);
+    if (!hasRoot(feed, "rss")) throw new Error(`Indexer "${indexer.name}" returned a response with no <rss> feed`);
+    const items = torznabResults(feed, indexer, group.cats);
+    if (page === 0) newest = markerOf(items[0]);
+    let reached = false;
+    for (const result of items) {
+      if (since && reachedMarker(result, since)) {
+        reached = true;
+        break;
+      }
+      results.push(result);
+    }
+    const count = rawItemCount(feed);
+    received += count;
+    // Without a marker (the first run) one page is the whole read; later the pages go on while they come back full and the marker has not been reached.
+    if (!since || reached || count < pageSize) break;
+  }
+  return { results, newest };
+}
+
 async function searchIndexerCached(
   indexer: Indexer,
   query: string,
@@ -1172,6 +1322,8 @@ function generateSceneVariants(query: string): string[] {
 interface SearchRun {
   results: SearchResult[];
   empty: Indexer[];
+  /** How many of the indexers asked answered at all. */
+  answered: number;
 }
 
 async function runSearch(
@@ -1193,8 +1345,10 @@ async function runSearch(
 
   const results: SearchResult[] = [];
   const empty: Indexer[] = [];
+  let answered = 0;
   settled.forEach((s, index) => {
     if (s.status === "fulfilled") {
+      answered++;
       results.push(...s.value);
       if (s.value.length === 0) empty.push(applicable[index]);
     } else {
@@ -1202,7 +1356,7 @@ async function runSearch(
     }
   });
   log.info(`[indexerClient] "${query}": queried ${applicable.length} indexer(s), ${results.length} result(s)`);
-  return { results, empty };
+  return { results, empty, answered };
 }
 
 /** The most alternate-title queries one search runs besides its main one (each is a query against
@@ -1237,8 +1391,12 @@ export async function searchAllIndexers(
   externalIds?: Record<string, string>,
   hints?: SearchHints
 ): Promise<SearchResult[]> {
+  // A plain RSS feed cannot be searched, only read: with the RSS sync running (rssSync.ts) it is read
+  // there, as Sonarr's TorrentRss is, and an automatic search leaves it out. A search the admin is
+  // waiting for (bypassCache), or one that asks for the feeds, still looks through it.
+  const feedsReadBySync = config.rssSyncIntervalMinutes > 0 && !bypassCache && !hints?.includeFeeds;
   const applicable = indexers.filter(
-    (i) => i.enabled && i.mediaTypes.split(",").includes(mediaType)
+    (i) => i.enabled && i.mediaTypes.split(",").includes(mediaType) && !(feedsReadBySync && i.protocol === "rss")
   );
   const mainHints: SearchHints | undefined = bypassCache ? { ...hints, fresh: true } : hints;
   const textOnly: SearchHints = { skipTyped: true, fresh: bypassCache };
@@ -1310,5 +1468,7 @@ export async function searchAllIndexers(
     pending = run.empty;
   }
 
-  return results.sort((a, b) => (b.seeders ?? 0) - (a.seeders ?? 0));
+  const sorted = results.sort((a, b) => (b.seeders ?? 0) - (a.seeders ?? 0));
+  searchReaches.set(sorted, { applicable: applicable.length, answered: main.answered });
+  return sorted;
 }

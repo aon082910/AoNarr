@@ -78,6 +78,7 @@ import { extractIsbnFromBookFile, fetchBookByIsbn } from "../services/bookIsbnSc
 import { sendEmailWithAttachment } from "../services/smtp.js";
 import { convertSubItemToM4b, M4bConversionInProgressError } from "../services/audiobookConvert.js";
 import { CONTENT_TYPES } from "../services/rangeStream.js";
+import { resetSearchBackoff, wakeLeaf } from "../services/searchBackoff.js";
 import type { MediaType } from "../types/index.js";
 
 export const mediaRouter = Router();
@@ -128,6 +129,7 @@ mediaRouter.post(
     const result = await db
       .prepare(`UPDATE media_items SET monitored = ? WHERE id IN (${mediaItemIds.map(() => "?").join(",")})`)
       .run(monitored ? 1 : 0, ...mediaItemIds);
+    await resetSearchBackoff(mediaItemIds);
     res.json({ updated: result.changes });
   })
 );
@@ -159,6 +161,7 @@ mediaRouter.post(
     const result = await db
       .prepare(`UPDATE media_items SET ${sets.join(", ")} WHERE id IN (${mediaItemIds.map(() => "?").join(",")})`)
       .run(...values, ...mediaItemIds);
+    await resetSearchBackoff(mediaItemIds);
     res.json({ updated: result.changes });
   })
 );
@@ -1128,6 +1131,8 @@ mediaRouter.post(
     if (!title) throw new HttpError(400, "title is required");
     const added = await storeAliases(row.id, [title], "user");
     if (added > 0) {
+      // A name releases use makes the item findable: its searches start over.
+      await resetSearchBackoff(row.id);
       const actor = auditActor(req);
       logAuditEvent(actor.userId, actor.username, "media_alias_added", `"${row.title}" ← "${title}"`);
     }
@@ -1140,6 +1145,7 @@ mediaRouter.delete(
   requireAdmin,
   asyncHandler(async (req, res) => {
     if (!(await deleteAlias(Number(req.params.id), Number(req.params.aliasId)))) throw new HttpError(404, "Alias not found");
+    await resetSearchBackoff(Number(req.params.id));
     res.status(204).send();
   })
 );
@@ -1732,6 +1738,8 @@ mediaRouter.patch(
     // alias (releases named the way it used to be keep matching) and gets the new one as its
     // primary row, so an alias added next is checked against the right title.
     if (typeof b.title === "string" && b.title !== (existing as any).title) await syncPrimaryTitle(Number(req.params.id));
+    // An edit may be why a search that kept finding nothing would now find something: it starts over.
+    if (sets.length > 0) await resetSearchBackoff(Number(req.params.id));
 
     const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id)) as any;
     // Keeps a synced .nfo sidecar current when the actual metadata (not just monitored/protected/
@@ -1834,6 +1842,8 @@ mediaRouter.post(
     await clearAliasesOnRematch(row.id);
     if (keepOldTitle) await storeAliases(row.id, [(existing as any).title], "original");
     await syncPrimaryTitle(row.id, { keepOldTitle });
+    // A new match is a new name to search for: what the old one found nothing for starts over.
+    await resetSearchBackoff(row.id);
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "media_rematched", `"${(existing as any).title}" → "${b.title}"`);
     refreshOneMediaItem(row.id, undefined, { firstMatch: true }).catch((err) =>
@@ -2110,6 +2120,7 @@ mediaRouter.patch(
     if (sets.length > 0) {
       values.push(req.params.episodeId, req.params.id);
       await db.prepare(`UPDATE episodes SET ${sets.join(", ")} WHERE id = ? AND media_item_id = ?`).run(...values);
+      await wakeLeaf("episodes", Number(req.params.episodeId));
     }
     if (fileCleared) await rollUpParentMissing(req.params.id);
     const row = await db.prepare("SELECT * FROM episodes WHERE id = ?").get(req.params.episodeId);
@@ -2128,6 +2139,7 @@ mediaRouter.patch(
       .prepare("UPDATE episodes SET monitored = ? WHERE media_item_id = ? AND season_number = ?")
       .run(monitored, req.params.id, req.params.seasonNumber);
     if (result.changes === 0) throw new HttpError(404, "No episodes found for that season");
+    await resetSearchBackoff(Number(req.params.id));
     const rows = await db
       .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND season_number = ? ORDER BY episode_number")
       .all(req.params.id, req.params.seasonNumber);
@@ -2397,6 +2409,7 @@ mediaRouter.patch(
     if (sets.length > 0) {
       values.push(req.params.subItemId, req.params.id);
       await db.prepare(`UPDATE sub_items SET ${sets.join(", ")} WHERE id = ? AND media_item_id = ?`).run(...values);
+      await wakeLeaf("sub_items", Number(req.params.subItemId));
     }
     if (fileCleared) await rollUpParentMissing(req.params.id);
     const row = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(req.params.subItemId);
@@ -2466,6 +2479,7 @@ mediaRouter.post(
     await db
       .prepare("UPDATE sub_items SET title = ?, overview = ?, poster_url = ?, release_date = ?, external_id = ?, external_provider = ? WHERE id = ?")
       .run(b.title, b.overview ?? null, b.posterUrl ?? null, b.releaseDate ?? null, externalId, externalProvider, req.params.subItemId);
+    await wakeLeaf("sub_items", Number(req.params.subItemId));
 
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "subitem_rematched", `"${b.title}"`);

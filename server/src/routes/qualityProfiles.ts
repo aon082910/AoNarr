@@ -3,6 +3,7 @@ import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { qualityProfileFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
+import { resetSearchBackoff } from "../services/searchBackoff.js";
 
 export const qualityProfilesRouter = Router();
 qualityProfilesRouter.use(requireAdmin);
@@ -60,6 +61,8 @@ qualityProfilesRouter.patch(
     if (sets.length > 0) {
       values.push(req.params.id);
       await db.prepare(`UPDATE quality_profiles SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+      // What can be grabbed has changed: targets the searches kept finding nothing for are searched again.
+      await resetSearchBackoff();
     }
     const row = await db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Quality profile not found");

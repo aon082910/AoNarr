@@ -7,9 +7,15 @@ import { nowExpr, nowOffsetHoursExpr } from "../src/db/asyncDb.js";
 
 const searchAllIndexers = vi.fn();
 const checkIndexerHealth = vi.fn();
+const isIndexerBackedOff = vi.fn((_id: number) => false);
+/** What a faked search reached, by the list it returned (as searchReachOf answers for the real one). */
+const searchReaches = new WeakMap<object, { applicable: number; answered: number }>();
 vi.mock("../src/services/indexerClient.js", () => ({
   searchAllIndexers: (...args: unknown[]) => searchAllIndexers(...args),
   checkIndexerHealth: (...args: unknown[]) => checkIndexerHealth(...args),
+  isIndexerBackedOff: (...args: unknown[]) => isIndexerBackedOff(...(args as [number])),
+  isIndexerAvailable: (indexer: { id: number }) => !isIndexerBackedOff(indexer.id),
+  searchReachOf: (results: object) => searchReaches.get(results),
 }));
 
 const getDownloadClientAdapter = vi.fn();
@@ -143,6 +149,7 @@ beforeEach(async () => {
   }
   searchAllIndexers.mockReset().mockResolvedValue([]);
   checkIndexerHealth.mockReset().mockResolvedValue({ ok: true });
+  isIndexerBackedOff.mockReset().mockReturnValue(false);
   getDownloadClientAdapter.mockReset();
   removeQueueItemDownload.mockReset().mockResolvedValue(undefined);
   applyRemotePathMapping.mockReset().mockImplementation(async (_id: number, p: string) => p);
@@ -1101,9 +1108,11 @@ describe("runAutoSearch", () => {
     // Show A alone has more missing episodes than one cycle's whole cap — a flat "first N in row
     // order" cap with no rotation would re-search the same two of Show A's episodes every cycle and
     // never reach Show B's at all (the exact starvation this fix exists to avoid).
+    // (In different seasons: two missing episodes of one finished season are first searched for as a
+    // pack, and that search is counted against the cap like any other.)
     const a1 = await insertEpisode(showA, 1, 1);
-    const a2 = await insertEpisode(showA, 1, 2);
-    const a3 = await insertEpisode(showA, 1, 3);
+    const a2 = await insertEpisode(showA, 2, 1);
+    const a3 = await insertEpisode(showA, 3, 1);
     const b1 = await insertEpisode(showB, 1, 1);
 
     await runAutoSearch();
@@ -1133,7 +1142,7 @@ describe("runAutoSearch", () => {
 
 describe("runAutoUpgrade", () => {
   it("does nothing when disabled (the default)", async () => {
-    findUpgradeCandidates.mockResolvedValue([{ mediaItemId: 1, currentQuality: "SDTV", cutoff: "WEBDL-1080p", profileName: "P", target: "X" }]);
+    findUpgradeCandidates.mockResolvedValue([{ mediaItemId: 1, currentQuality: "HDTV-720p", cutoff: "WEBDL-1080p", profileName: "P", target: "X" }]);
 
     await runAutoUpgrade();
 
@@ -1146,7 +1155,7 @@ describe("runAutoUpgrade", () => {
     await insertClient();
     getDownloadClientAdapter.mockReturnValue(fakeAdapter());
     searchAllIndexers.mockResolvedValue([fakeResult()]);
-    findUpgradeCandidates.mockResolvedValue([{ mediaItemId: movie.id, currentQuality: "SDTV", cutoff: "WEBDL-1080p", profileName: "P", target: movie.title }]);
+    findUpgradeCandidates.mockResolvedValue([{ mediaItemId: movie.id, currentQuality: "HDTV-720p", cutoff: "WEBDL-1080p", profileName: "P", target: movie.title }]);
 
     await runAutoUpgrade();
 
@@ -1157,7 +1166,7 @@ describe("runAutoUpgrade", () => {
     setSetting("autoUpgradeEnabled", "1");
     const movie = await insertMovie();
     await db.prepare("INSERT INTO queue (media_item_id, title, status) VALUES (?, 'x', 'downloading')").run(movie.id);
-    findUpgradeCandidates.mockResolvedValue([{ mediaItemId: movie.id, currentQuality: "SDTV", cutoff: "WEBDL-1080p", profileName: "P", target: movie.title }]);
+    findUpgradeCandidates.mockResolvedValue([{ mediaItemId: movie.id, currentQuality: "HDTV-720p", cutoff: "WEBDL-1080p", profileName: "P", target: movie.title }]);
 
     await runAutoUpgrade();
 
@@ -1672,6 +1681,8 @@ describe("retryFailedGrab", () => {
 
   it("replaces a failed season pack only with another full pack of the same season, keeping its season number", async () => {
     const showId = await insertSeries();
+    await insertEpisode(showId, 2, 1);
+    await insertEpisode(showId, 2, 2);
     await insertClient();
     const adapter = fakeAdapter();
     getDownloadClientAdapter.mockReturnValue(adapter);
@@ -2767,8 +2778,9 @@ describe("searchAndGrabTargets — upgrades and whole-item targets", () => {
 
     const [result] = await searchAndGrabTargets([{ mediaItemId: showId }]);
 
-    expect(result).toEqual({ mediaItemId: showId, grabbed: true, childrenSearched: 2, childrenGrabbed: 2 });
-    expect(searchAllIndexers.mock.calls.map((c) => c[1])).toEqual(["Show S01E01", "Show S01E02"]);
+    // The season is looked for as a pack first (nothing is found), then each missing episode alone.
+    expect(result).toEqual({ mediaItemId: showId, grabbed: true, childrenSearched: 3, childrenGrabbed: 2 });
+    expect(searchAllIndexers.mock.calls.map((c) => c[1])).toEqual(["Show S01", "Show S01E01", "Show S01E02"]);
     const rows = (await db.prepare("SELECT episode_id, download_id FROM queue WHERE media_item_id = ? ORDER BY episode_id").all(showId)) as any[];
     expect(rows).toEqual([
       { episode_id: e1, download_id: "magnet:?xt=e1" },
@@ -2809,8 +2821,9 @@ describe("searchAndGrabTargets — upgrades and whole-item targets", () => {
 
     const [result] = await searchAndGrabTargets([{ mediaItemId: showId }]);
 
+    // One search for season 1's pack (grabbed, so its three episodes are not searched alone), and season 2's one episode.
     expect(result).toEqual({ mediaItemId: showId, grabbed: true, childrenSearched: 2, childrenGrabbed: 2 });
-    expect(searchAllIndexers.mock.calls.map((c) => c[1])).toEqual(["Show S01E01", "Show S02E01"]);
+    expect(searchAllIndexers.mock.calls.map((c) => c[1])).toEqual(["Show S01", "Show S02E01"]);
     expect(adapter.addDownload).toHaveBeenCalledTimes(2);
   });
 
@@ -3771,7 +3784,8 @@ describe("what an automatic search asks the indexers for", () => {
     await runAutoSearch();
 
     const calls = searchAllIndexers.mock.calls;
-    expect(calls.map((c) => c[1]).sort()).toEqual(["Jujutsu Kaisen 01", "Jujutsu Kaisen 02"]);
+    // (and the season, which has aired in full with two episodes wanted, as a pack)
+    expect(calls.map((c) => c[1]).sort()).toEqual(["Jujutsu Kaisen 01", "Jujutsu Kaisen 02", "Jujutsu Kaisen S01"]);
     const second = calls.find((c) => c[1] === "Jujutsu Kaisen 02")!;
     expect(second[4]).toEqual({ tvdb: "377543" });
     expect(second[5]).toMatchObject({ season: 1, episode: 2, absolute: 2, alsoQueries: ["Jujutsu Kaisen S01E02"] });
@@ -3950,5 +3964,593 @@ describe("matchTierFor — the tvdb id an indexer reports", () => {
   it("is 2 when the indexer's tvdbid is the show's, and 0 when it is another show's", () => {
     expect(matchTierFor(fakeResult({ tvdbId: "81189" }), { year: null, externalIds: { tvdb: "81189" } })).toBe(2);
     expect(matchTierFor(fakeResult({ tvdbId: "81190" }), { year: null, externalIds: { tvdb: "81189" } })).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 10: season packs and search backoff
+// ---------------------------------------------------------------------------
+
+async function insertIndexerRow(): Promise<void> {
+  await db.prepare("INSERT INTO indexers (name, protocol, url, enabled, media_types) VALUES ('Idx', 'torznab', 'http://idx.example.com', 1, 'movie,series,anime')").run();
+}
+
+const queryCalls = (): string[] => searchAllIndexers.mock.calls.map((c) => c[1] as string);
+const seasonQueries = (): string[] => queryCalls().filter((q) => /^.+ S[0-9][0-9]$/.test(q));
+const futureDate = (days: number): string => new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+const storedAgo = (ms: number): string => new Date(Date.now() - ms).toISOString().slice(0, 19).replace("T", " ");
+
+describe("a finished season is looked for as a pack first", () => {
+  it("searches the season once, queues a pack against it, and leaves the episodes it covers alone", async () => {
+    await insertClient();
+    const adapter = urlKeyedAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    const showId = await insertSeries("Pack Show");
+    for (let n = 1; n <= 3; n++) await insertEpisode(showId, 1, n);
+    searchAllIndexers.mockImplementation(async (_i: unknown, query: string) =>
+      query === "Pack Show S01" ? [fakeResult({ title: "Pack.Show.S01.1080p.WEB-DL-GRP", downloadUrl: "magnet:?xt=pack" })] : []
+    );
+
+    await runAutoSearch();
+
+    expect(queryCalls()).toEqual(["Pack Show S01"]);
+    expect(adapter.addDownload).toHaveBeenCalledTimes(1);
+    const rows = (await db.prepare("SELECT season_number, episode_id, title FROM queue WHERE media_item_id = ?").all(showId)) as any[];
+    expect(rows).toEqual([{ season_number: 1, episode_id: null, title: "Pack.Show.S01.1080p.WEB-DL-GRP" }]);
+  });
+
+  it("searches the episodes one by one when the season has no pack", async () => {
+    await insertClient();
+    getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+    const showId = await insertSeries("Single Show");
+    for (let n = 1; n <= 3; n++) await insertEpisode(showId, 1, n);
+    searchAllIndexers.mockResolvedValue([]);
+
+    await runAutoSearch();
+
+    const calls = queryCalls();
+    expect(calls[0]).toBe("Single Show S01");
+    expect(calls.slice(1).sort()).toEqual(["Single Show S01E01", "Single Show S01E02", "Single Show S01E03"]);
+  });
+
+  it("does not take a two-episode release as a season pack", async () => {
+    await insertClient();
+    getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+    const showId = await insertSeries("Batch Show");
+    for (let n = 1; n <= 4; n++) await insertEpisode(showId, 1, n);
+    searchAllIndexers.mockImplementation(async (_i: unknown, query: string) =>
+      query === "Batch Show S01" ? [fakeResult({ title: "Batch.Show.S01E01-E02.1080p.WEB-DL-GRP", downloadUrl: "magnet:?xt=batch" })] : []
+    );
+
+    await runAutoSearch();
+
+    // The episodes are searched side by side, so only the season search's place (first) is fixed.
+    const calls = queryCalls();
+    expect(calls[0]).toBe("Batch Show S01");
+    expect(calls.slice(1).sort()).toEqual(["Batch Show S01E01", "Batch Show S01E02", "Batch Show S01E03", "Batch Show S01E04"]);
+  });
+
+  it("does not look for a pack of a season that is still airing, has an unmonitored episode, or wants one episode", async () => {
+    await insertClient();
+    getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+    searchAllIndexers.mockResolvedValue([]);
+    const airing = await insertSeries("Airing");
+    await insertEpisode(airing, 1, 1);
+    await insertEpisode(airing, 1, 2);
+    await insertEpisode(airing, 1, 3, futureDate(5));
+    const unmonitored = await insertSeries("Unmonitored");
+    await insertEpisode(unmonitored, 1, 1);
+    await insertEpisode(unmonitored, 1, 2);
+    await db.prepare("UPDATE episodes SET monitored = 0 WHERE id = ?").run(await insertEpisode(unmonitored, 1, 3));
+    const single = await insertSeries("One Wanted");
+    await insertEpisode(single, 1, 1);
+    await giveFile("episodes", await insertEpisode(single, 1, 2), "WEBDL-1080p");
+    await giveFile("episodes", await insertEpisode(single, 1, 3), "WEBDL-1080p");
+
+    await runAutoSearch();
+
+    expect(seasonQueries()).toEqual([]);
+    expect(queryCalls()).toContain("Airing S01E01");
+    expect(queryCalls()).not.toContain("Airing S01E03");
+    expect(queryCalls()).toContain("One Wanted S01E01");
+  });
+
+  it("looks for a season pack twice, then once a day", async () => {
+    await insertClient();
+    await insertIndexerRow();
+    getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+    searchAllIndexers.mockResolvedValue([]);
+    const showId = await insertSeries("Backoff Show");
+    for (let n = 1; n <= 2; n++) await insertEpisode(showId, 1, n);
+
+    for (let cycle = 0; cycle < 3; cycle++) await runAutoSearch();
+
+    expect(queryCalls().filter((q) => q === "Backoff Show S01")).toHaveLength(2);
+    const row = (await db.prepare("SELECT misses FROM season_searches WHERE media_item_id = ?").get(showId)) as { misses: number };
+    expect(Number(row.misses)).toBe(2);
+  });
+
+  it("counts a season search against the cycle's cap", async () => {
+    await insertClient();
+    getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+    searchAllIndexers.mockResolvedValue([]);
+    config.autoSearchMaxPerCycle = 2;
+    const showId = await insertSeries("Capped Show");
+    for (let n = 1; n <= 3; n++) await insertEpisode(showId, 1, n);
+
+    await runAutoSearch();
+
+    // The season search takes one of the two slots, so one episode is searched, not two. Which one is not fixed:
+    // a show's episodes run three at a time, and the one that reaches the slot first takes it.
+    const calls = queryCalls();
+    expect(calls[0]).toBe("Capped Show S01");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toMatch(/^Capped Show S01E0[1-3]$/);
+  });
+});
+
+describe("a season pack found by an episode search", () => {
+  const profileOf = () => insertProfile(["HDTV-720p", "WEBDL-720p", "WEBDL-1080p", "Bluray-1080p"], "Bluray-1080p");
+
+  it("is passed over for the single episode when it would fill one episode of ten", async () => {
+    await insertClient();
+    const adapter = urlKeyedAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    const showId = await insertSeries("Almost Done");
+    await db.prepare("UPDATE media_items SET quality_profile_id = ? WHERE id = ?").run(await profileOf(), showId);
+    let target = 0;
+    for (let n = 1; n <= 10; n++) {
+      const id = await insertEpisode(showId, 1, n);
+      if (n === 5) target = id;
+      else await giveFile("episodes", id, "Bluray-1080p");
+    }
+    searchAllIndexers.mockResolvedValue([
+      fakeResult({ title: "Almost.Done.S01.1080p.WEB-DL-GRP", size: 20_000_000_000, seeders: 900, downloadUrl: "magnet:?xt=pack" }),
+      fakeResult({ title: "Almost.Done.S01E05.720p.WEB-DL-GRP", size: 1_000_000_000, seeders: 5, downloadUrl: "magnet:?xt=single" }),
+    ]);
+
+    await searchAndGrabTargets([{ mediaItemId: showId, episodeId: target }]);
+
+    expect(adapter.addDownload).toHaveBeenCalledTimes(1);
+    expect(adapter.addDownload.mock.calls[0][1]).toBe("magnet:?xt=single");
+  });
+
+  it("is taken when most of the season is missing, and covers the season in the queue", async () => {
+    await insertClient();
+    const adapter = urlKeyedAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    const showId = await insertSeries("Mostly Missing");
+    await db.prepare("UPDATE media_items SET quality_profile_id = ? WHERE id = ?").run(await profileOf(), showId);
+    let target = 0;
+    for (let n = 1; n <= 10; n++) {
+      const id = await insertEpisode(showId, 1, n);
+      if (n > 6) await giveFile("episodes", id, "Bluray-1080p");
+      else if (n === 5) target = id;
+    }
+    searchAllIndexers.mockResolvedValue([
+      fakeResult({ title: "Mostly.Missing.S01.1080p.WEB-DL-GRP", size: 20_000_000_000, downloadUrl: "magnet:?xt=pack" }),
+      fakeResult({ title: "Mostly.Missing.S01E05.720p.WEB-DL-GRP", size: 1_000_000_000, downloadUrl: "magnet:?xt=single" }),
+    ]);
+
+    const [result] = await searchAndGrabTargets([{ mediaItemId: showId, episodeId: target }]);
+
+    expect(result.grabbed).toBe(true);
+    expect(adapter.addDownload.mock.calls[0][1]).toBe("magnet:?xt=pack");
+    const rows = (await db.prepare("SELECT episode_id, season_number FROM queue WHERE media_item_id = ?").all(showId)) as any[];
+    expect(rows).toEqual([{ episode_id: target, season_number: 1 }]);
+  });
+
+  it("is passed over when the season has not finished airing or has an unmonitored episode", async () => {
+    await insertClient();
+    const adapter = urlKeyedAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    const airing = await insertSeries("Still Airing");
+    const e1 = await insertEpisode(airing, 3, 1);
+    await insertEpisode(airing, 3, 2, futureDate(9));
+    const hidden = await insertSeries("Has Hidden");
+    const h1 = await insertEpisode(hidden, 1, 1);
+    await db.prepare("UPDATE episodes SET monitored = 0 WHERE id = ?").run(await insertEpisode(hidden, 1, 2));
+    searchAllIndexers.mockImplementation(async (_i: unknown, query: string) => {
+      const still = query.startsWith("Still");
+      const show = still ? "Still.Airing" : "Has.Hidden";
+      const season = still ? "S03" : "S01";
+      return [
+        fakeResult({ title: `${show}.${season}.1080p.WEB-DL-GRP`, seeders: 900, downloadUrl: `magnet:?xt=${show}-pack` }),
+        fakeResult({ title: `${show}.${season}E01.720p.WEB-DL-GRP`, seeders: 5, downloadUrl: `magnet:?xt=${show}-single` }),
+      ];
+    });
+
+    await searchAndGrabTargets([
+      { mediaItemId: airing, episodeId: e1 },
+      { mediaItemId: hidden, episodeId: h1 },
+    ]);
+
+    expect(adapter.addDownload.mock.calls.map((c) => c[1]).sort()).toEqual(["magnet:?xt=Has.Hidden-single", "magnet:?xt=Still.Airing-single"]);
+  });
+
+  it("is taken whatever it covers once the guards are switched off", async () => {
+    await insertClient();
+    const adapter = urlKeyedAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    setSetting("seasonPackGuards", "0");
+    try {
+      const showId = await insertSeries("No Guards");
+      await db.prepare("UPDATE media_items SET quality_profile_id = ? WHERE id = ?").run(await profileOf(), showId);
+      let target = 0;
+      for (let n = 1; n <= 10; n++) {
+        const id = await insertEpisode(showId, 1, n);
+        if (n === 5) target = id;
+        else await giveFile("episodes", id, "Bluray-1080p");
+      }
+      searchAllIndexers.mockResolvedValue([
+        fakeResult({ title: "No.Guards.S01.1080p.WEB-DL-GRP", size: 20_000_000_000, downloadUrl: "magnet:?xt=pack" }),
+        fakeResult({ title: "No.Guards.S01E05.720p.WEB-DL-GRP", size: 1_000_000_000, downloadUrl: "magnet:?xt=single" }),
+      ]);
+
+      await searchAndGrabTargets([{ mediaItemId: showId, episodeId: target }]);
+
+      expect(adapter.addDownload.mock.calls[0][1]).toBe("magnet:?xt=pack");
+    } finally {
+      setSetting("seasonPackGuards", "");
+    }
+  });
+});
+
+describe("explicit episode targets of one season", () => {
+  it("are looked for as a pack once, and the episodes the pack covers are not searched", async () => {
+    await insertClient();
+    const adapter = urlKeyedAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    const showId = await insertSeries("Selected");
+    const ids = [await insertEpisode(showId, 1, 1), await insertEpisode(showId, 1, 2), await insertEpisode(showId, 1, 3)];
+    searchAllIndexers.mockImplementation(async (_i: unknown, query: string) =>
+      query === "Selected S01" ? [fakeResult({ title: "Selected.S01.1080p.WEB-DL-GRP", downloadUrl: "magnet:?xt=pack" })] : []
+    );
+
+    const results = await searchAndGrabTargets(ids.map((episodeId) => ({ mediaItemId: showId, episodeId })));
+
+    expect(queryCalls()).toEqual(["Selected S01"]);
+    expect(adapter.addDownload).toHaveBeenCalledTimes(1);
+    expect(results).toHaveLength(3);
+  });
+});
+
+describe("search backoff", () => {
+  const missesOf = async (table: string, id: number): Promise<number> =>
+    Number(((await db.prepare(`SELECT auto_search_misses FROM ${table} WHERE id = ?`).get(id)) as { auto_search_misses: number }).auto_search_misses);
+
+  it("searches a target that found nothing three times, then not again for a day", async () => {
+    await insertClient();
+    await insertIndexerRow();
+    getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+    searchAllIndexers.mockResolvedValue([]);
+    const movie = await insertMovie();
+
+    for (let cycle = 0; cycle < 5; cycle++) await runAutoSearch();
+
+    expect(new Set(queryCalls()).size).toBe(1);
+    const searches = queryCalls().length;
+    expect(await missesOf("media_items", movie.id)).toBe(3);
+    expect(searches).toBeGreaterThanOrEqual(3);
+    for (let cycle = 0; cycle < 3; cycle++) await runAutoSearch();
+    expect(queryCalls()).toHaveLength(searches);
+  });
+
+  it("searches it again after its wait, and starts the count over once something is grabbed", async () => {
+    await insertClient();
+    await insertIndexerRow();
+    getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+    searchAllIndexers.mockResolvedValue([]);
+    const movie = await insertMovie();
+    await db.prepare("UPDATE media_items SET auto_search_misses = 4, last_auto_searched_at = ? WHERE id = ?").run(storedAgo(2 * 3_600_000), movie.id);
+    await runAutoSearch();
+    expect(searchAllIndexers).not.toHaveBeenCalled();
+
+    await db.prepare("UPDATE media_items SET last_auto_searched_at = ? WHERE id = ?").run(storedAgo(25 * 3_600_000), movie.id);
+    searchAllIndexers.mockResolvedValue([fakeResult()]);
+    await runAutoSearch();
+
+    expect(searchAllIndexers).toHaveBeenCalled();
+    expect(await missesOf("media_items", movie.id)).toBe(0);
+  });
+
+  it("always searches an episode that aired in the last two weeks", async () => {
+    await insertClient();
+    await insertIndexerRow();
+    getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+    searchAllIndexers.mockResolvedValue([]);
+    const showId = await insertSeries("Fresh Show");
+    const fresh = await insertEpisode(showId, 5, 1, futureDate(-2));
+    const old = await insertEpisode(showId, 1, 1, "2019-01-01");
+    await db.prepare("UPDATE episodes SET auto_search_misses = 9, last_auto_searched_at = ? WHERE id IN (?, ?)").run(storedAgo(1000), fresh, old);
+
+    await runAutoSearch();
+
+    expect(queryCalls()).toEqual(["Fresh Show S05E01"]);
+  });
+
+  const stampOf = async (table: string, id: number): Promise<string | null> =>
+    ((await db.prepare(`SELECT last_auto_searched_at FROM ${table} WHERE id = ?`).get(id)) as { last_auto_searched_at: string | null }).last_auto_searched_at;
+
+  it("leaves a target alone while every indexer for its type is backed off: not searched, not stamped, not counted", async () => {
+    await insertClient();
+    await insertIndexerRow();
+    getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+    searchAllIndexers.mockResolvedValue([]);
+    isIndexerBackedOff.mockReturnValue(true);
+    const movie = await insertMovie();
+
+    await runAutoSearch();
+
+    expect(searchAllIndexers).not.toHaveBeenCalled();
+    expect(await missesOf("media_items", movie.id)).toBe(0);
+    expect(await stampOf("media_items", movie.id)).toBeNull();
+  });
+
+  it("does not count or stamp a search no indexer answered (one that failed, or was over its hourly limit)", async () => {
+    await insertClient();
+    await insertIndexerRow();
+    getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+    const unanswered: any[] = [];
+    searchReaches.set(unanswered, { applicable: 1, answered: 0 });
+    searchAllIndexers.mockResolvedValue(unanswered);
+    const movie = await insertMovie();
+    await db.prepare("UPDATE media_items SET auto_search_misses = 4, last_auto_searched_at = ? WHERE id = ?").run(storedAgo(25 * 3_600_000), movie.id);
+    const stampBefore = await stampOf("media_items", movie.id);
+
+    await runAutoSearch();
+
+    expect(searchAllIndexers).toHaveBeenCalled();
+    expect(await missesOf("media_items", movie.id)).toBe(4);
+    expect(await stampOf("media_items", movie.id)).toBe(stampBefore);
+  });
+
+  it("counts a search an indexer answered, however few of them did", async () => {
+    await insertClient();
+    await insertIndexerRow();
+    getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+    const answered: any[] = [];
+    searchReaches.set(answered, { applicable: 3, answered: 1 });
+    searchAllIndexers.mockResolvedValue(answered);
+    const movie = await insertMovie();
+
+    await runAutoSearch();
+
+    expect(await missesOf("media_items", movie.id)).toBe(1);
+    expect(await stampOf("media_items", movie.id)).not.toBeNull();
+  });
+
+  it("does not count a release the delay profile alone is holding back, and searches for it again at the next cycle", async () => {
+    await insertClient();
+    await insertIndexerRow();
+    getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+    await db
+      .prepare(
+        "INSERT INTO delay_profiles (tag_id, enable_usenet, enable_torrent, usenet_delay_minutes, torrent_delay_minutes, bypass_if_highest_quality, order_index) VALUES (NULL, 1, 1, 0, 1440, 0, 0)"
+      )
+      .run();
+    searchAllIndexers.mockResolvedValue([fakeResult({ publishDate: new Date().toISOString() })]);
+    const movie = await insertMovie();
+    await db.prepare("UPDATE media_items SET auto_search_misses = 4, last_auto_searched_at = ? WHERE id = ?").run(storedAgo(25 * 3_600_000), movie.id);
+
+    await runAutoSearch();
+
+    expect(searchAllIndexers).toHaveBeenCalledTimes(1);
+    expect(await db.prepare("SELECT 1 AS x FROM queue").all()).toHaveLength(0);
+    expect(await missesOf("media_items", movie.id)).toBe(0);
+  });
+
+  it("still counts a search whose releases the delay profile does not explain", async () => {
+    await insertClient();
+    await insertIndexerRow();
+    getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+    await db
+      .prepare(
+        "INSERT INTO delay_profiles (tag_id, enable_usenet, enable_torrent, usenet_delay_minutes, torrent_delay_minutes, bypass_if_highest_quality, order_index) VALUES (NULL, 1, 1, 0, 1440, 0, 0)"
+      )
+      .run();
+    // A blocklisted release is refused with or without the delay, so the delay does not explain the empty-handed search.
+    searchAllIndexers.mockResolvedValue([fakeResult({ publishDate: new Date().toISOString() })]);
+    const movie = await insertMovie();
+    await db.prepare("INSERT INTO blocklist (media_item_id, release_title, reason) VALUES (?, ?, 'bad')").run(movie.id, fakeResult().title);
+
+    await runAutoSearch();
+
+    expect(await missesOf("media_items", movie.id)).toBe(1);
+  });
+
+  it("is switched off by the searchBackoff setting", async () => {
+    await insertClient();
+    await insertIndexerRow();
+    getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+    searchAllIndexers.mockResolvedValue([]);
+    setSetting("searchBackoff", "0");
+    try {
+      await insertMovie();
+      await runAutoSearch();
+      const perCycle = queryCalls().length;
+      for (let cycle = 0; cycle < 4; cycle++) await runAutoSearch();
+      expect(queryCalls()).toHaveLength(perCycle * 5);
+    } finally {
+      setSetting("searchBackoff", "");
+    }
+  });
+});
+
+describe("the auto-upgrade job's limits", () => {
+  const candidate = (mediaItemId: number, episodeId?: number) => ({
+    mediaItemId,
+    ...(episodeId ? { episodeId } : {}),
+    currentQuality: "HDTV-720p",
+    cutoff: "WEBDL-1080p",
+    profileName: "P",
+    target: "T",
+  });
+
+  it("searches no more than a cycle's cap, the longest unsearched first, and stamps what it searched", async () => {
+    setSetting("autoUpgradeEnabled", "1");
+    await insertClient();
+    getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+    searchAllIndexers.mockResolvedValue([]);
+    config.autoSearchMaxPerCycle = 2;
+    const movies = [];
+    for (let i = 0; i < 3; i++) {
+      const movie = await insertMovie({ title: `Upgrade ${i}`, sort_title: `upgrade ${i}`, year: 2000 + i });
+      await giveFile("media_items", movie.id, "HDTV-720p");
+      movies.push(movie);
+    }
+    await db.prepare("UPDATE media_items SET last_auto_searched_at = ? WHERE id = ?").run("2026-01-01 00:00:00", movies[0].id);
+    await db.prepare("UPDATE media_items SET last_auto_searched_at = ? WHERE id = ?").run("2026-02-01 00:00:00", movies[1].id);
+    findUpgradeCandidates.mockResolvedValue(movies.map((m) => candidate(m.id)));
+
+    await runAutoUpgrade();
+
+    // The never-searched one and the longest-ago searched, not the most recently searched.
+    const searched = queryCalls();
+    expect(searched).toHaveLength(2);
+    expect(searched.some((q) => q.includes("Upgrade 1"))).toBe(false);
+    const stamped = (await db.prepare("SELECT id FROM media_items WHERE last_auto_searched_at > '2026-06-01' ORDER BY id").all()) as { id: number }[];
+    expect(stamped.map((r) => r.id)).toEqual([movies[0].id, movies[2].id]);
+  });
+
+  it("looks for a pack once for several below-cutoff episodes of a finished season, and skips the ones it covers", async () => {
+    setSetting("autoUpgradeEnabled", "1");
+    await insertClient();
+    const adapter = urlKeyedAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    const showId = await insertSeries("Upgrade Season");
+    await db.prepare("UPDATE media_items SET quality_profile_id = ? WHERE id = ?").run(await insertProfile(["HDTV-720p", "WEBDL-1080p"], "WEBDL-1080p"), showId);
+    const ids = [];
+    for (let n = 1; n <= 3; n++) {
+      const id = await insertEpisode(showId, 1, n);
+      await giveFile("episodes", id, "HDTV-720p");
+      ids.push(id);
+    }
+    searchAllIndexers.mockImplementation(async (_i: unknown, query: string) =>
+      query === "Upgrade Season S01" ? [fakeResult({ title: "Upgrade.Season.S01.1080p.WEB-DL-GRP", downloadUrl: "magnet:?xt=upgrade-pack" })] : []
+    );
+    findUpgradeCandidates.mockResolvedValue(ids.map((id) => candidate(showId, id)));
+
+    await runAutoUpgrade();
+
+    expect(queryCalls()).toEqual(["Upgrade Season S01"]);
+    expect(adapter.addDownload.mock.calls.map((c) => c[1])).toEqual(["magnet:?xt=upgrade-pack"]);
+  });
+});
+
+describe("after the Round 10 review", () => {
+  const packOf = (title: string) => ({ result: fakeResult({ title, downloadUrl: `magnet:?xt=${title}` }), quality: "WEBDL-1080p" });
+
+  describe("a pack for a season is sent once", () => {
+    it("whoever finds it: a second pack of the same season is refused while one is queued, unless an admin sends it", async () => {
+      const showId = await insertSeries();
+      await insertEpisode(showId, 1, 1);
+      const client = await insertClient();
+      const adapter = urlKeyedAdapter();
+      getDownloadClientAdapter.mockReturnValue(adapter);
+      const show = { id: showId, title: "Show" } as any;
+
+      expect(await grab(client, show, null, null, packOf("Show.S01.1080p.WEB-DL-GRP"), 0, 1, "rss")).toBe(true);
+      expect(await grab(client, show, null, null, packOf("Show.S01.2160p.WEB-DL-OTHER"), 0, 1, "auto")).toBe(false);
+      expect(adapter.addDownload).toHaveBeenCalledTimes(1);
+      expect(await grab(client, show, null, null, packOf("Show.S01.720p.WEB-DL-THIRD"), 0, 1, "interactive")).toBe(true);
+      expect(adapter.addDownload).toHaveBeenCalledTimes(2);
+    });
+
+    it("but takes a pack of each part of an aired season that a scene splits in two", async () => {
+      const showId = await insertSeries();
+      await insertEpisode(showId, 1, 1);
+      const client = await insertClient();
+      const adapter = urlKeyedAdapter();
+      getDownloadClientAdapter.mockReturnValue(adapter);
+      const show = { id: showId, title: "Show" } as any;
+
+      expect(await grab(client, show, null, null, packOf("Show.S02.1080p.WEB-DL-GRP"), 0, 1, "auto")).toBe(true);
+      expect(await grab(client, show, null, null, packOf("Show.S03.1080p.WEB-DL-GRP"), 0, 1, "auto")).toBe(true);
+      expect(adapter.addDownload).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("sees an episode as covered by a queued pack that calls the season by the scene's number", async () => {
+    const showId = await insertSeries();
+    const inSceneTwo = await insertEpisode(showId, 1, 1);
+    const inSceneThree = await insertEpisode(showId, 1, 2);
+    await db.prepare("UPDATE episodes SET scene_season_number = 2, scene_episode_number = 1 WHERE id = ?").run(inSceneTwo);
+    await db.prepare("UPDATE episodes SET scene_season_number = 3, scene_episode_number = 1 WHERE id = ?").run(inSceneThree);
+    await db.prepare("INSERT INTO queue (media_item_id, season_number, title, status) VALUES (?, 1, 'Show.S02.1080p.WEB-DL-GRP', 'downloading')").run(showId);
+
+    expect(await isAlreadyQueued(showId, inSceneTwo, null)).toBe(true);
+    expect(await isAlreadyQueued(showId, inSceneThree, null)).toBe(false);
+  });
+
+  describe("a season a scene splits", () => {
+    it("is looked for by the number a release calls it, with its own backoff", async () => {
+      await insertClient();
+      await insertIndexerRow();
+      getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+      searchAllIndexers.mockResolvedValue([]);
+      const showId = await insertSeries("Scene Show");
+      for (const n of [1, 2]) {
+        const id = await insertEpisode(showId, 1, n);
+        await db.prepare("UPDATE episodes SET scene_season_number = 2, scene_episode_number = ? WHERE id = ?").run(n, id);
+      }
+
+      await runAutoSearch();
+
+      expect(seasonQueries()).toEqual(["Scene Show S02"]);
+      const rows = (await db.prepare("SELECT season_number, misses FROM season_searches WHERE media_item_id = ?").all(showId)) as any[];
+      expect(rows.map((r) => ({ season_number: Number(r.season_number), misses: Number(r.misses) }))).toEqual([{ season_number: 2, misses: 1 }]);
+    });
+  });
+
+  it("wakes a season whose pack the delay profile holds back, instead of counting a miss", async () => {
+    await insertClient();
+    await insertIndexerRow();
+    getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+    await db
+      .prepare(
+        "INSERT INTO delay_profiles (tag_id, enable_usenet, enable_torrent, usenet_delay_minutes, torrent_delay_minutes, bypass_if_highest_quality, order_index) VALUES (NULL, 1, 1, 0, 1440, 0, 0)"
+      )
+      .run();
+    const showId = await insertSeries("Held Show");
+    for (let n = 1; n <= 3; n++) await insertEpisode(showId, 1, n);
+    await db.prepare("INSERT INTO season_searches (media_item_id, season_number, misses, last_searched_at) VALUES (?, 1, 5, ?)").run(showId, storedAgo(25 * 3_600_000));
+    searchAllIndexers.mockImplementation(async (_i: unknown, query: string) =>
+      query === "Held Show S01" ? [fakeResult({ title: "Held.Show.S01.1080p.WEB-DL-GRP", downloadUrl: "magnet:?xt=held", publishDate: new Date().toISOString() })] : []
+    );
+
+    await runAutoSearch();
+
+    expect(seasonQueries()).toEqual(["Held Show S01"]);
+    expect(await db.prepare("SELECT 1 AS x FROM queue").all()).toHaveLength(0);
+    expect(await db.prepare("SELECT 1 AS x FROM season_searches WHERE media_item_id = ?").all(showId)).toHaveLength(0);
+  });
+
+  it("does not search a show for packs unless it is a series or an anime", async () => {
+    const { packsPossibleFor } = await import("../src/services/scheduler.js");
+    expect(packsPossibleFor({ type: "series", seriesType: null } as any)).toBe(true);
+    expect(packsPossibleFor({ type: "anime", seriesType: "anime" } as any)).toBe(true);
+    expect(packsPossibleFor({ type: "series", seriesType: "daily" } as any)).toBe(false);
+    for (const type of ["sports", "course", "adult", "movie", "artist"]) expect(packsPossibleFor({ type, seriesType: null } as any)).toBe(false);
+  });
+
+  describe("the plain RSS feeds", () => {
+    const hintsOfCall = (index: number) => (searchAllIndexers.mock.calls[index]?.[5] ?? {}) as { includeFeeds?: boolean };
+
+    it("are left to the RSS sync by an automatic search, and looked through by one the admin asked for", async () => {
+      await insertClient();
+      await insertIndexerRow();
+      getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+      searchAllIndexers.mockResolvedValue([]);
+      const movie = await insertMovie();
+
+      await runAutoSearch();
+      expect(searchAllIndexers).toHaveBeenCalled();
+      expect(hintsOfCall(0).includeFeeds).toBeFalsy();
+
+      searchAllIndexers.mockClear();
+      await searchAndGrabTargets([{ mediaItemId: movie.id }]);
+      expect(hintsOfCall(0).includeFeeds).toBe(true);
+    });
   });
 });

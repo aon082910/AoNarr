@@ -3,6 +3,7 @@ import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { delayProfileFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
+import { resetSearchBackoff } from "../services/searchBackoff.js";
 
 export const delayProfilesRouter = Router();
 delayProfilesRouter.use(requireAdmin);
@@ -79,6 +80,8 @@ delayProfilesRouter.patch(
     if (sets.length > 0) {
       values.push(req.params.id);
       await db.prepare(`UPDATE delay_profiles SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+      // What can be grabbed has changed: targets the searches kept finding nothing for are searched again.
+      await resetSearchBackoff();
     }
     const row = await db.prepare("SELECT * FROM delay_profiles WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Delay profile not found");
@@ -91,6 +94,7 @@ delayProfilesRouter.delete(
   asyncHandler(async (req, res) => {
     const result = await db.prepare("DELETE FROM delay_profiles WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw new HttpError(404, "Delay profile not found");
+    await resetSearchBackoff();
     res.status(204).send();
   })
 );

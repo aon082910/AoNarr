@@ -8,6 +8,10 @@ let clearIndexerBackoff: (typeof import("../src/services/indexerClient.js"))["cl
 let clearFailureBackoff: (typeof import("../src/services/indexerClient.js"))["clearFailureBackoff"];
 let searchIndexer: (typeof import("../src/services/indexerClient.js"))["searchIndexer"];
 let searchAllIndexers: (typeof import("../src/services/indexerClient.js"))["searchAllIndexers"];
+let fetchRecentReleases: (typeof import("../src/services/indexerClient.js"))["fetchRecentReleases"];
+let rssFeedGroups: (typeof import("../src/services/indexerClient.js"))["rssFeedGroups"];
+let searchReachOf: (typeof import("../src/services/indexerClient.js"))["searchReachOf"];
+let isIndexerAvailable: (typeof import("../src/services/indexerClient.js"))["isIndexerAvailable"];
 let getMediaTypeConfig: (typeof import("../src/services/mediaTypes.js"))["getMediaTypeConfig"];
 let searchCacheSize: (typeof import("../src/services/indexerClient.js"))["searchCacheSize"];
 let INDEXER_MEDIA_TYPES: string[];
@@ -23,6 +27,10 @@ beforeAll(async () => {
     clearFailureBackoff,
     searchIndexer,
     searchAllIndexers,
+    fetchRecentReleases,
+    rssFeedGroups,
+    searchReachOf,
+    isIndexerAvailable,
     searchCacheSize,
     INDEXER_MEDIA_TYPES,
     DEFAULT_INDEXER_MEDIA_TYPES,
@@ -790,7 +798,7 @@ describe("searchAllIndexers", () => {
   it("sorts combined results by seeders descending, treating a missing seeders count as 0", async () => {
     const low = makeIndexer({ protocol: "torznab", mediaTypes: "movie", categories: "2000", url: "https://low.example.com" });
     const high = makeIndexer({ protocol: "torznab", mediaTypes: "movie", categories: "2000", url: "https://high.example.com" });
-    const none = makeIndexer({ protocol: "rss", mediaTypes: "movie", url: "https://none.example.com/feed.xml" });
+    const none = makeIndexer({ protocol: "torznab", mediaTypes: "movie", categories: "2000", url: "https://none.example.com" });
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {
@@ -800,7 +808,7 @@ describe("searchAllIndexers", () => {
         if (url.startsWith("https://high.example.com")) {
           return { ok: true, status: 200, text: async () => torznabXml(torznabItem({ title: "High", downloadUrl: "https://high.example.com/dl", seeders: 500 })) };
         }
-        return { ok: true, status: 200, text: async () => rssXml(`<item><title>No Seeders q-sort-test</title><link>https://none.example.com/dl</link></item>`) };
+        return { ok: true, status: 200, text: async () => torznabXml(torznabItem({ title: "No Seeders q-sort-test", downloadUrl: "https://none.example.com/dl" })) };
       })
     );
 
@@ -1597,5 +1605,290 @@ describe("searchAllIndexers — alternate title queries", () => {
     vi.stubGlobal("fetch", fetchMock);
     await searchAllIndexers([makeIndexer({ mediaTypes: "movie", categories: "2000" })], "Main", "movie", true, undefined, { alternateQueries: [] });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 10: the newest releases of a feed (the RSS sync's reading)
+// ---------------------------------------------------------------------------
+
+describe("rssFeedGroups", () => {
+  it("makes one feed per distinct set of categories, for the types the indexer serves", () => {
+    const all = makeIndexer({ categories: "", mediaTypes: "movie,series,anime" });
+    expect(rssFeedGroups(all, ["movie", "series", "anime"])).toEqual([
+      { key: "2000", cats: "2000", types: ["movie"] },
+      { key: "5000", cats: "5000", types: ["series"] },
+      { key: "5070", cats: "5070", types: ["anime"] },
+    ]);
+    // One category list for the whole indexer: the two TV types share a feed.
+    const tvOnly = makeIndexer({ categories: "5000", mediaTypes: "movie,series,anime" });
+    expect(rssFeedGroups(tvOnly, ["series", "anime"])).toEqual([{ key: "5000", cats: "5000", types: ["series", "anime"] }]);
+    // A type the indexer is not set for is not read.
+    expect(rssFeedGroups(makeIndexer({ mediaTypes: "movie" }), ["series"])).toEqual([]);
+  });
+});
+
+describe("fetchRecentReleases", () => {
+  const RFC = (hour: number) => "Sat, 25 Oct 2026 " + String(hour).padStart(2, "0") + ":00:00 +0000";
+  const item = (name: string, hour: number) => torznabItem({ title: "Show.S01E0" + name + ".1080p.WEB-DL-GRP", downloadUrl: "https://idx.example.com/dl/" + name, pubDate: RFC(hour) });
+  const capsDoc = (limits: string, tv = true, movie = true) =>
+    '<?xml version="1.0" encoding="UTF-8"?><caps><searching><search available="yes" supportedParams="q"/>' +
+    (tv ? '<tv-search available="yes" supportedParams="q,season,ep,tvdbid"/>' : "") +
+    (movie ? '<movie-search available="yes" supportedParams="q,imdbid"/>' : "") +
+    "</searching>" +
+    limits +
+    "</caps>";
+
+  /** Answers the capabilities probe, then page n of the feed (by `offset`) with pages[n]. */
+  function pagedFeed(pages: string[], caps = capsDoc('<limits max="100" default="2"/>')) {
+    return vi.fn().mockImplementation(async (url: string) => {
+      const params = new URL(url).searchParams;
+      if (params.get("t") === "caps") return { ok: true, status: 200, text: async () => caps };
+      const page = Math.floor(Number(params.get("offset") ?? "0") / 2);
+      return { ok: true, status: 200, text: async () => pages[Math.min(page, pages.length - 1)] };
+    });
+  }
+  const feedCalls = (fetchMock: { mock: { calls: unknown[][] } }) => searchCalls(fetchMock).map((c) => new URL(c[0] as string).searchParams);
+  const group = { cats: "5000", types: ["series" as const] };
+  const titles = (feed: { results: { title: string }[] }) => feed.results.map((r) => r.title.slice(8, 11));
+
+  it("reads one page of the latest, with no query, on a first run, and keeps the newest as the marker", async () => {
+    const fetchMock = pagedFeed([torznabXml(item("1", 12) + item("2", 11)), torznabXml(item("3", 10) + item("4", 9))]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const feed = await fetchRecentReleases(makeIndexer({ categories: "5000", mediaTypes: "series" }), group, null);
+
+    expect(titles(feed)).toEqual(["E01", "E02"]);
+    expect(feed.newest).toEqual({ url: "https://idx.example.com/dl/1", at: RFC(12) });
+    const calls = feedCalls(fetchMock);
+    expect(calls).toHaveLength(1);
+    expect([calls[0].get("t"), calls[0].has("q"), calls[0].get("cat"), calls[0].has("offset")]).toEqual(["tvsearch", false, "5000", false]);
+  });
+
+  it("reads on, page by page, back to the release the last run saw, and no further", async () => {
+    const fetchMock = pagedFeed([torznabXml(item("1", 12) + item("2", 11)), torznabXml(item("3", 10) + item("4", 9)), torznabXml(item("5", 8) + item("6", 7))]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const feed = await fetchRecentReleases(makeIndexer({ categories: "5000", mediaTypes: "series" }), group, { url: "https://idx.example.com/dl/3", at: RFC(10) });
+
+    expect(titles(feed)).toEqual(["E01", "E02"]);
+    expect(feed.newest?.url).toBe("https://idx.example.com/dl/1");
+    const calls = feedCalls(fetchMock);
+    expect(calls).toHaveLength(2);
+    expect([calls[1].get("offset"), calls[1].get("limit")]).toEqual(["2", "2"]);
+  });
+
+  it("stops at the release the marker's date passes when its link is gone from the feed", async () => {
+    const fetchMock = pagedFeed([torznabXml(item("1", 12) + item("2", 11) + item("3", 9))], capsDoc(""));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const feed = await fetchRecentReleases(makeIndexer({ categories: "5000" }), group, { url: "https://idx.example.com/dl/gone", at: RFC(10) });
+
+    expect(titles(feed)).toEqual(["E01", "E02"]);
+    expect(feedCalls(fetchMock)).toHaveLength(1);
+  });
+
+  it("reads three pages at most, and returns an empty feed's marker as null", async () => {
+    const full = (n: number) => torznabXml(item(String(n), 20 - n) + item(String(n + 100), 19 - n));
+    const fetchMock = pagedFeed([full(1), full(2), full(3), full(4)]);
+    vi.stubGlobal("fetch", fetchMock);
+    const feed = await fetchRecentReleases(makeIndexer({ categories: "5000" }), group, { url: "https://idx.example.com/dl/never", at: null });
+    expect(feed.results).toHaveLength(6);
+    expect(feedCalls(fetchMock)).toHaveLength(3);
+
+    vi.stubGlobal("fetch", pagedFeed([torznabXml("")]));
+    expect(await fetchRecentReleases(makeIndexer({ categories: "5000" }), group, null)).toEqual({ results: [], newest: null });
+  });
+
+  it("asks for the movie feed of film types, the tv feed of TV types, and a plain one of a mix", async () => {
+    const fetchMock = pagedFeed([torznabXml(item("1", 12))]);
+    vi.stubGlobal("fetch", fetchMock);
+    const indexer = makeIndexer({ categories: "", mediaTypes: "movie,series,anime" });
+
+    await fetchRecentReleases(indexer, { cats: "2000", types: ["movie"] }, null);
+    await fetchRecentReleases(indexer, { cats: "5000", types: ["series", "anime"] }, null);
+    await fetchRecentReleases(indexer, { cats: "2000,5000", types: ["movie", "series"] }, null);
+
+    expect(feedCalls(fetchMock).map((p) => p.get("t"))).toEqual(["movie", "tvsearch", "search"]);
+
+    const noTyped = pagedFeed([torznabXml(item("1", 12))], capsDoc("", false, false));
+    vi.stubGlobal("fetch", noTyped);
+    await fetchRecentReleases(makeIndexer({ categories: "5000" }), group, null);
+    expect(feedCalls(noTyped).map((p) => p.get("t"))).toEqual(["search"]);
+  });
+
+  it("counts against the indexer's hourly limit, and reads nothing once it is spent", async () => {
+    const fetchMock = pagedFeed([torznabXml(item("1", 12))]);
+    vi.stubGlobal("fetch", fetchMock);
+    const indexer = makeIndexer({ categories: "5000", queryLimitPerHour: 1 });
+
+    await fetchRecentReleases(indexer, group, null);
+    await expect(fetchRecentReleases(indexer, group, null)).rejects.toThrow("query limit");
+    expect(feedCalls(fetchMock)).toHaveLength(1);
+  });
+
+  it("backs the indexer off when it fails or asks to be left alone, like a search", async () => {
+    const indexer = makeIndexer({ categories: "5000" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 429, text: async () => "" }));
+    await expect(fetchRecentReleases(indexer, group, null)).rejects.toThrow("429");
+    expect(isIndexerBackedOff(indexer.id)).toBe(true);
+
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fetchRecentReleases(indexer, group, null)).rejects.toThrow("backed off");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an <error> document instead of reading it as an empty feed", async () => {
+    const error = '<?xml version="1.0" encoding="UTF-8"?><error code="100" description="Incorrect user credentials"/>';
+    vi.stubGlobal("fetch", pagedFeed([error]));
+    await expect(fetchRecentReleases(makeIndexer({ categories: "5000" }), group, null)).rejects.toThrow("Incorrect user credentials");
+  });
+
+  it("reads a plain RSS feed whole, newest first, back to the marker, and skips items with no link", async () => {
+    const rssItem = (n: number, link: string) =>
+      "<item><title>Show.S01E0" + n + ".1080p.WEB-DL-GRP</title>" + link + "<pubDate>" + RFC(20 - n) + "</pubDate></item>";
+    const xml = rssXml(rssItem(1, "<link>https://feed.example.com/1</link>") + rssItem(2, "") + rssItem(3, "<link>https://feed.example.com/3</link>") + rssItem(4, "<link>https://feed.example.com/4</link>"));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => xml }));
+    const indexer = makeIndexer({ protocol: "rss" });
+
+    const first = await fetchRecentReleases(indexer, { cats: "", types: ["series"] }, null);
+    expect(titles(first)).toEqual(["E01", "E03", "E04"]);
+    expect(first.newest).toEqual({ url: "https://feed.example.com/1", at: RFC(19) });
+
+    const later = await fetchRecentReleases(indexer, { cats: "", types: ["series"] }, { url: "https://feed.example.com/3", at: RFC(17) });
+    expect(titles(later)).toEqual(["E01"]);
+  });
+
+  it("returns nothing for a protocol with no feed", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await fetchRecentReleases(makeIndexer({ protocol: "ddl" }), group, null)).toEqual({ results: [], newest: null });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("searchAllIndexers — plain RSS feeds", () => {
+  const xml = rssXml("<item><title>The Matrix 1999 1080p</title><link>https://feed.example.com/matrix</link></item>");
+
+  it("leaves a plain RSS indexer to the RSS sync, but a search the admin waits for still reads it", async () => {
+    const { config } = await import("../src/config.js");
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => xml });
+    vi.stubGlobal("fetch", fetchMock);
+    const indexer = makeIndexer({ protocol: "rss", mediaTypes: "movie" });
+
+    expect(await searchAllIndexers([indexer], "matrix", "movie")).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await searchAllIndexers([indexer], "matrix", "movie", true)).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const was = config.rssSyncIntervalMinutes;
+    config.rssSyncIntervalMinutes = 0;
+    try {
+      expect(await searchAllIndexers([makeIndexer({ protocol: "rss", mediaTypes: "movie" })], "matrix", "movie")).toHaveLength(1);
+    } finally {
+      config.rssSyncIntervalMinutes = was;
+    }
+  });
+});
+
+describe("what a search reached, and whether an indexer can be asked (after the Round 10 review)", () => {
+  /** Answers the capabilities probe; then each host with its XML, or with the HTTP status given. */
+  const route = (answers: Record<string, string | { status: number }>) =>
+    vi.fn().mockImplementation(async (url: string) => {
+      const u = new URL(url);
+      if (u.searchParams.get("t") === "caps") return { ok: true, status: 200, text: async () => CAPS_XML };
+      const answer = answers[u.hostname];
+      if (typeof answer === "object") return { ok: false, status: answer.status, text: async () => "" };
+      return { ok: true, status: 200, text: async () => answer ?? torznabXml("") };
+    });
+  const onHost = (host: string, overrides: Partial<Indexer> = {}) => makeIndexer({ url: `https://${host}`, mediaTypes: "movie", categories: "2000", ...overrides });
+
+  it("counts the indexers that answered, with releases or with none, and not one that failed", async () => {
+    const found = onHost("found.example.com");
+    const empty = onHost("empty.example.com");
+    const broken = onHost("broken.example.com");
+    vi.stubGlobal(
+      "fetch",
+      route({
+        "found.example.com": torznabXml(torznabItem({ title: "A.Movie.2020.1080p-GRP", downloadUrl: "https://found.example.com/dl/1" })),
+        "broken.example.com": { status: 500 },
+      })
+    );
+
+    const results = await searchAllIndexers([found, empty, broken], "A Movie", "movie", true);
+
+    expect(results).toHaveLength(1);
+    expect(searchReachOf(results)).toEqual({ applicable: 3, answered: 2 });
+  });
+
+  it("counts none for an indexer that is over its hourly limit, and says it cannot be asked", async () => {
+    const limited = onHost("limited.example.com", { queryLimitPerHour: 1 });
+    vi.stubGlobal("fetch", route({}));
+    expect(isIndexerAvailable(limited)).toBe(true);
+
+    const first = await searchAllIndexers([limited], "First", "movie", true);
+    expect(searchReachOf(first)).toEqual({ applicable: 1, answered: 1 });
+    expect(isIndexerAvailable(limited)).toBe(false);
+
+    const second = await searchAllIndexers([limited], "Second", "movie", true);
+    expect(second).toEqual([]);
+    expect(searchReachOf(second)).toEqual({ applicable: 1, answered: 0 });
+  });
+
+  it("says it cannot be asked while the indexer is backed off", async () => {
+    const failing = onHost("failing.example.com");
+    vi.stubGlobal("fetch", route({ "failing.example.com": { status: 500 } }));
+
+    const results = await searchAllIndexers([failing], "Anything", "movie", true);
+
+    expect(searchReachOf(results)).toEqual({ applicable: 1, answered: 0 });
+    expect(isIndexerBackedOff(failing.id)).toBe(true);
+    expect(isIndexerAvailable(failing)).toBe(false);
+  });
+
+  it("counts no indexer for a type none of them takes, and knows nothing of a list it did not return", async () => {
+    vi.stubGlobal("fetch", route({}));
+    const series = onHost("series.example.com", { mediaTypes: "series" });
+
+    expect(searchReachOf(await searchAllIndexers([series], "A Movie", "movie"))).toEqual({ applicable: 0, answered: 0 });
+    expect(searchReachOf([])).toBeUndefined();
+  });
+});
+
+describe("searchAllIndexers — a search that asks for the plain RSS feeds (after the Round 10 review)", () => {
+  const xml = rssXml("<item><title>The Matrix 1999 1080p</title><link>https://feed.example.com/matrix</link></item>");
+
+  it("reads one an automatic search would leave to the RSS sync", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => xml });
+    vi.stubGlobal("fetch", fetchMock);
+    const indexer = makeIndexer({ protocol: "rss", mediaTypes: "movie" });
+
+    expect(await searchAllIndexers([indexer], "matrix", "movie")).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await searchAllIndexers([indexer], "matrix", "movie", false, undefined, { includeFeeds: true })).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("fetchRecentReleases — the marker (after the Round 10 review)", () => {
+  it("is never dated later than now, so a listing with a wrong date does not hide the older releases", async () => {
+    const future = new Date(Date.now() + 3 * 86_400_000).toUTCString();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async (url: string) => ({
+        ok: true,
+        status: 200,
+        text: async () =>
+          new URL(url).searchParams.get("t") === "caps"
+            ? CAPS_XML
+            : torznabXml(torznabItem({ title: "Show.S01E01.1080p.WEB-DL-GRP", downloadUrl: "https://idx.example.com/dl/early", pubDate: future })),
+      }))
+    );
+
+    const feed = await fetchRecentReleases(makeIndexer({ categories: "5000" }), { cats: "5000", types: ["series"] }, null);
+
+    expect(feed.newest?.url).toBe("https://idx.example.com/dl/early");
+    expect(Date.parse(feed.newest!.at!)).toBeLessThanOrEqual(Date.now() + 1000);
   });
 });

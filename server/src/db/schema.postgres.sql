@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS media_items (
   runtime_minutes INTEGER,
   size_bytes BIGINT,
   studio TEXT,
+  auto_search_misses INTEGER NOT NULL DEFAULT 0,
   last_auto_searched_at TEXT
 );
 
@@ -94,6 +95,7 @@ CREATE TABLE IF NOT EXISTS episodes (
   has_file INTEGER NOT NULL DEFAULT 0,
   quality TEXT,
   file_path TEXT,
+  auto_search_misses INTEGER NOT NULL DEFAULT 0,
   last_auto_searched_at TEXT,
   UNIQUE(media_item_id, season_number, episode_number)
 );
@@ -114,6 +116,7 @@ CREATE TABLE IF NOT EXISTS sub_items (
   series_name TEXT,
   series_position REAL,
   narrator TEXT,
+  auto_search_misses INTEGER NOT NULL DEFAULT 0,
   last_auto_searched_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sub_items_media_item_has_file ON sub_items(media_item_id, has_file);
@@ -703,4 +706,23 @@ CREATE TABLE IF NOT EXISTS saved_library_views (
   config TEXT NOT NULL, -- JSON: {sortKey, statusFilter, tagFilter, contentRatingFilter, viewMode, posterSize, listColumns, posterFields}
   created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
   UNIQUE(media_type, name)
+);
+
+-- How long ago automatic searches stopped finding anything, per season (services/searchBackoff.ts).
+CREATE TABLE IF NOT EXISTS season_searches (
+  media_item_id INTEGER NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+  season_number INTEGER NOT NULL,
+  misses INTEGER NOT NULL DEFAULT 0,
+  last_searched_at TEXT,
+  PRIMARY KEY (media_item_id, season_number)
+);
+
+-- Where the RSS sync (services/rssSync.ts) left off in each indexer's recent-releases feed.
+CREATE TABLE IF NOT EXISTS rss_sync_state (
+  indexer_id INTEGER NOT NULL REFERENCES indexers(id) ON DELETE CASCADE,
+  feed_key TEXT NOT NULL,
+  last_seen_url TEXT,
+  last_seen_at TEXT,
+  last_run_at TEXT,
+  PRIMARY KEY (indexer_id, feed_key)
 );

@@ -184,6 +184,8 @@ const TABLES_WITHOUT_ID = new Set([
   "user_library_access",
   "sessions",
   "release_group_stats",
+  "season_searches",
+  "rss_sync_state",
 ]);
 
 function withReturningId(sql: string): string {
