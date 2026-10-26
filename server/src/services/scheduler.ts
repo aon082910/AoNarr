@@ -26,7 +26,7 @@ import { existingFileRecord } from "./fileRelease.js";
 import { nonVideoPreference, nonVideoRejection } from "./nonVideoMatch.js";
 import { exceedsFreeSpace, freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReserveBytes } from "./freeSpace.js";
 import { compareUsenetAge, comparePeers, largerIsBetterKey, normalizePreferredProtocol, protocolGroup, protocolPreferenceKey } from "./releaseRanking.js";
-import { aliasTitlesFor, identityContextFor } from "./releaseAliases.js";
+import { aliasSeasonsFor, aliasTitlesFor, applyAliasSeason, identityContextFor, seasonEpisodeCounts } from "./releaseAliases.js";
 import { childNumberOf, volumeYearOf } from "./searchQueries.js";
 import { judgeSeasonPack, loadPackEpisodes, packSettings, type PackEpisode } from "./seasonPacks.js";
 import {
@@ -833,6 +833,9 @@ export async function chooseBestResult(
     cutoff = "";
   }
   const preferCutoffQuality = options.preferCutoffQuality ?? (await preferCutoffQualityFor(qualityProfileId));
+  // Names TheXEM gives a season of the show (a cour's own title): a release counted from 1 under one is that season's.
+  const aliasSeasons = tiered && mediaItemId != null ? await aliasSeasonsFor(mediaItemId) : new Map<string, number>();
+  const aliasSeasonCounts = aliasSeasons.size > 0 && mediaItemId != null ? await seasonEpisodeCounts(mediaItemId) : undefined;
   const qualityGroups = options.qualityGroups ?? (tiered ? await qualityGroupsFor(qualityProfileId) : []);
   // The rank of what is on disk, as the profile reads it (a group ranks as its best member).
   const upgradeFromGroupRank = upgradeFromRank === null ? null : groupRankOfRank(upgradeFromRank, qualityGroups);
@@ -860,7 +863,7 @@ export async function chooseBestResult(
       }
       return true;
     })
-    .map((r) => ({ result: r, parsed: parseReleaseTitle(r.title), size: knownReleaseSize(r.size) }))
+    .map((r) => ({ result: r, parsed: applyAliasSeason(parseReleaseTitle(r.title), aliasSeasons, aliasSeasonCounts), size: knownReleaseSize(r.size) }))
     .filter(({ result, parsed }) => {
       if (parsed.rejected) {
         log.info(`[scheduler] rejected "${result.title}": its name is a hash, so there is no title to check it against`);
@@ -1541,13 +1544,13 @@ export async function existingFileQuality(item: MediaItem, episodeId: number | n
 /** existingFileQuality for a season-level grab: importing a pack replaces the file of every episode
  * it covers (the whole season, or just `episodeNumbers`), so the best quality among those files is
  * the one it has to beat. */
-async function seasonFileQuality(mediaItemId: number, seasonNumber: number, episodeNumbers: number[] | null): Promise<string | null | undefined> {
+async function seasonFileQuality(mediaItemId: number, seasonNumber: number, episodeNumbers: number[] | null, groups?: QualityGroups): Promise<string | null | undefined> {
   const rows = (await db
     .prepare("SELECT episode_number, quality FROM episodes WHERE media_item_id = ? AND season_number = ? AND has_file = 1")
     .all(mediaItemId, seasonNumber)) as { episode_number: number; quality: string | null }[];
   const covered = episodeNumbers ? rows.filter((r) => episodeNumbers.includes(Number(r.episode_number))) : rows;
   if (covered.length === 0) return undefined;
-  return covered.reduce<string | null>((best, r) => (qualityRank(r.quality) > qualityRank(best) ? r.quality : best), null);
+  return covered.reduce<string | null>((best, r) => (groupedRank(r.quality, groups) > groupedRank(best, groups) ? r.quality : best), null);
 }
 
 /** Parses "HH:MM" into minutes-since-midnight and checks whether the current local time falls
@@ -2332,7 +2335,9 @@ async function searchSeasonsFirst(item: MediaItem, episodeIds: number[], ctx: Bu
   const rows = (await db
     .prepare(`SELECT id, season_number, scene_season_number, has_file, quality FROM episodes WHERE media_item_id = ? AND id IN (${episodeIds.map(() => "?").join(", ")})`)
     .all(item.id, ...episodeIds)) as { id: number; season_number: number; scene_season_number: number | null; has_file: number; quality: string | null }[];
-  const cutoff = (await getQualityProfile(item.qualityProfileId))?.cutoff ?? "";
+  const seasonProfile = await getQualityProfile(item.qualityProfileId);
+  const cutoff = seasonProfile?.cutoff ?? "";
+  const groups = seasonProfile?.qualityGroups ?? [];
   let searches = 0;
   let grabbed = 0;
   for (const group of seasonGroupsOf(rows)) {
@@ -2343,7 +2348,8 @@ async function searchSeasonsFirst(item: MediaItem, episodeIds: number[], ctx: Bu
     if (ctx.automatic && noIndexerAvailable(ctx.indexers, item.type)) continue;
     // What is wanted of the season is an upgrade when every one of its episodes has a file: the pack has to beat the worst of them.
     const groupRows = rows.filter((r) => group.ids.includes(r.id));
-    const upgradeFromRank = groupRows.every((r) => Number(r.has_file)) ? Math.min(...groupRows.map((r) => qualityRank(r.quality))) : null;
+    // Each episode's quality as the profile ranks it (a group as its best member) before the worst is taken.
+    const upgradeFromRank = groupRows.every((r) => Number(r.has_file)) ? Math.min(...groupRows.map((r) => groupedRank(r.quality, groups))) : null;
     try {
       const found = await searchAndGrabSeason(item, group, upgradeFromRank, ctx);
       searches++;
@@ -2950,7 +2956,7 @@ export async function retryFailedGrab(
     const onDisk =
       seasonPack === null
         ? await existingFileQuality(item, match.episodeId, match.subItemId)
-        : await seasonFileQuality(item.id, seasonPack, seasonEpisodes);
+        : await seasonFileQuality(item.id, seasonPack, seasonEpisodes, profile?.qualityGroups);
     if (onDisk !== undefined && !usesQualityTiers(item.type)) {
       await notifyFailed(mediaTitle, `${reason} (not retried: it already has a file)`);
       return;

@@ -158,6 +158,12 @@ export interface SearchHints {
   skipTyped?: boolean;
   /** Read a plain RSS feed afresh instead of from the last few minutes' copy (a manual search). */
   fresh?: boolean;
+  /** A music search's artist and album, and a book search's author and title: an indexer that offers
+   * `t=music` or `t=book` is asked by those fields before the plain text search (Lidarr, Readarr). */
+  artist?: string;
+  album?: string;
+  author?: string;
+  bookTitle?: string;
   /** Look through the plain RSS feeds too, which an automatic search leaves to the RSS sync: for a
    * search the admin asked for, or a retry, that the sync will not repeat. */
   includeFeeds?: boolean;
@@ -172,7 +178,8 @@ function cacheKey(indexerId: number, query: string, mediaType: MediaType, extern
   const datePart = hints?.airDate ? `:d${hints.airDate}` : "";
   const absolutePart = hints?.absolute != null ? `:a${hints.absolute}` : "";
   const titlePart = hints?.queryTitle ? `:t${hints.queryTitle.toLowerCase()}` : "";
-  return `${indexerId}:${mediaType}:${query.toLowerCase()}${idPart}${numberPart}${datePart}${absolutePart}${titlePart}${hints?.skipTyped ? ":text" : ""}`;
+  const fieldsPart = hints?.artist || hints?.author ? `:f${(hints.artist ?? hints.author ?? "").toLowerCase()}|${(hints.album ?? hints.bookTitle ?? "").toLowerCase()}` : "";
+  return `${indexerId}:${mediaType}:${query.toLowerCase()}${idPart}${numberPart}${datePart}${absolutePart}${titlePart}${fieldsPart}${hints?.skipTyped ? ":text" : ""}`;
 }
 
 /**
@@ -358,6 +365,9 @@ async function fetchTorznabFeed(indexer: Indexer, url: string, interactive = fal
 interface IndexerCaps {
   tv: Set<string> | null;
   movie: Set<string> | null;
+  /** `audio-search` (t=music) and `book-search` (t=book). */
+  music: Set<string> | null;
+  book: Set<string> | null;
   pageSize: number | null;
 }
 
@@ -397,6 +407,8 @@ function getIndexerCaps(indexer: Indexer): Promise<IndexerCaps | null> {
       return {
         tv: searchTypeParams(parsed, "tv-search", DEFAULT_TV_PARAMS),
         movie: searchTypeParams(parsed, "movie-search", DEFAULT_MOVIE_PARAMS),
+        music: searchTypeParams(parsed, "audio-search", DEFAULT_MOVIE_PARAMS),
+        book: searchTypeParams(parsed, "book-search", DEFAULT_MOVIE_PARAMS),
         pageSize: capsPageSize(parsed),
       };
     } catch (err) {
@@ -436,8 +448,9 @@ type ApiParams = [string, string][];
 /** One request of a typed search: `kind` "id" asks by a provider id, "title" asks tv-search by the
  * show's title and numbers. */
 interface TypedTier {
-  kind: "id" | "title";
-  t: "movie" | "tvsearch";
+  /** "fields" asks by artist/album or author/title: an empty answer falls through to the text search. */
+  kind: "id" | "title" | "fields";
+  t: "movie" | "tvsearch" | "music" | "book";
   params: ApiParams;
   rejectKey: string;
 }
@@ -497,6 +510,16 @@ function typedTiersFor(
     const rejectKey = `${base}:movie:${params?.[0][0]}`;
     return params && !typedRejected(rejectKey) ? [{ kind: "id", t: "movie", params, rejectKey }] : [];
   }
+  if (mediaType === "artist") {
+    const fields: ApiParams | null = hints?.artist && hints?.album && caps.music?.has("artist") && caps.music.has("album") ? [["artist", hints.artist], ["album", hints.album]] : null;
+    const rejectKey = `${base}:music`;
+    return fields && !typedRejected(rejectKey) ? [{ kind: "fields", t: "music", params: fields, rejectKey }] : [];
+  }
+  if (mediaType === "author") {
+    const fields: ApiParams | null = hints?.author && hints?.bookTitle && caps.book?.has("author") && caps.book.has("title") ? [["author", hints.author], ["title", hints.bookTitle]] : null;
+    const rejectKey = `${base}:book`;
+    return fields && !typedRejected(rejectKey) ? [{ kind: "fields", t: "book", params: fields, rejectKey }] : [];
+  }
   if ((mediaType !== "series" && mediaType !== "anime") || !caps.tv) return [];
   const tiers: TypedTier[] = [];
   const absolute = mediaType === "anime" && hints?.absolute != null && !hints.airDate && caps.tv.has("q");
@@ -524,6 +547,8 @@ function typedTiersFor(
  */
 function mayBeSearchedTyped(mediaType: MediaType, externalIds: Record<string, string> | undefined, hints: SearchHints | undefined): boolean {
   if (hints?.skipTyped) return false;
+  if (mediaType === "artist") return !!(hints?.artist && hints?.album);
+  if (mediaType === "author") return !!(hints?.author && hints?.bookTitle);
   if (mediaType === "movie" || mediaType === "ppv") return !!(externalIds?.imdb || externalIds?.tmdb);
   if (mediaType !== "series" && mediaType !== "anime") return false;
   const numbered = hints?.season != null || !!hints?.airDate;

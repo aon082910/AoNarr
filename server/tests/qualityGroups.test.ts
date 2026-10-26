@@ -157,3 +157,39 @@ describe("quality groups on the profile API", () => {
     expect(p).toMatchObject({ qualityGroups: [["WEBRip-1080p", "WEBDL-1080p"]], upgradeAllowed: false, cutoffFormatScore: 50, minUpgradeFormatScore: 7 });
   });
 });
+
+describe("quality groups: the places the review found", () => {
+  it("dissolves a group when one of its qualities is deleted", async () => {
+    const quality = Number((await db.prepare("INSERT INTO qualities (name, rank) VALUES ('Group-Test-Quality', 998)").run()).lastInsertRowid);
+    const res = await request(app)
+      .post("/api/quality-profiles")
+      .set("X-Api-Key", apiKey)
+      .send({ name: "delete-group", allowedQualities: ["WEBRip-1080p", "WEBDL-1080p", "Group-Test-Quality"], cutoff: "WEBDL-1080p", qualityGroups: [["WEBRip-1080p", "Group-Test-Quality"]] });
+    expect(res.status).toBe(201);
+    expect((await request(app).delete(`/api/qualities/${quality}`).set("X-Api-Key", apiKey)).status).toBe(204);
+    const list = await request(app).get("/api/quality-profiles").set("X-Api-Key", apiKey);
+    expect(list.body.find((p: any) => p.id === res.body.id).qualityGroups).toEqual([]);
+  });
+
+  it("keeps a profile's own upgrade fields and groups when a backup from before them is imported", async () => {
+    const created = await request(app)
+      .post("/api/quality-profiles")
+      .set("X-Api-Key", apiKey)
+      .send({ name: "keep-me", allowedQualities: ["WEBRip-1080p", "WEBDL-1080p"], cutoff: "WEBDL-1080p", qualityGroups: [["WEBRip-1080p", "WEBDL-1080p"]], upgradeAllowed: false, cutoffFormatScore: 40 });
+    expect(created.status).toBe(201);
+    const imported = await request(app)
+      .post("/api/settings/template/import")
+      .set("X-Api-Key", apiKey)
+      .send({ qualityProfiles: [{ name: "keep-me", allowedQualities: ["WEBRip-1080p", "WEBDL-1080p"], cutoff: "WEBDL-1080p", minFormatScore: 0, maxSizeGb: null }] });
+    expect(imported.status).toBe(200);
+    const list = await request(app).get("/api/quality-profiles").set("X-Api-Key", apiKey);
+    expect(list.body.find((p: any) => p.name === "keep-me")).toMatchObject({ qualityGroups: [["WEBRip-1080p", "WEBDL-1080p"]], upgradeAllowed: false, cutoffFormatScore: 40 });
+    // A profile new to the instance gets the defaults.
+    await request(app)
+      .post("/api/settings/template/import")
+      .set("X-Api-Key", apiKey)
+      .send({ qualityProfiles: [{ name: "brand-new", allowedQualities: ["WEBDL-1080p"], cutoff: "WEBDL-1080p", minFormatScore: 0, maxSizeGb: null }] });
+    const after = await request(app).get("/api/quality-profiles").set("X-Api-Key", apiKey);
+    expect(after.body.find((p: any) => p.name === "brand-new")).toMatchObject({ qualityGroups: [], upgradeAllowed: true, cutoffFormatScore: 0, minUpgradeFormatScore: 1 });
+  });
+});

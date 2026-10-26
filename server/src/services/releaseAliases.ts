@@ -110,6 +110,79 @@ export async function storeAliases(mediaItemId: number, titles: string[], source
   return added;
 }
 
+export interface XemAlias {
+  title: string;
+  /** The season the name is for, or null for the whole show. */
+  season: number | null;
+}
+
+/** Replaces the item's TheXEM names with the current list, in one transaction. A name equal to the item's own
+ * title, or to one the admin or a provider already gave, is not stored again. Returns how many were stored. */
+export async function replaceXemAliases(mediaItemId: number, aliases: XemAlias[]): Promise<number> {
+  const item = (await db.prepare("SELECT title FROM media_items WHERE id = ?").get(mediaItemId)) as { title: string } | undefined;
+  if (!item) return 0;
+  const own = cleanTitle(item.title);
+  return db.transaction(async () => {
+    await db.prepare("DELETE FROM media_item_titles WHERE media_item_id = ? AND source = 'xem_alias'").run(mediaItemId);
+    // A season a provider's title took from an earlier list is read afresh from this one.
+    await db.prepare("UPDATE media_item_titles SET season_number = NULL WHERE media_item_id = ? AND source IN ('tmdb_alt', 'anilist_synonym')").run(mediaItemId);
+    let stored = 0;
+    const seen = new Set<string>();
+    // A name for a season is kept before the same name for the whole show: it says more.
+    for (const alias of [...aliases].sort((a, b) => Number(a.season === null) - Number(b.season === null))) {
+      const clean = cleanTitle(alias.title);
+      if (!alias.title || !clean || clean === own || seen.has(clean)) continue;
+      seen.add(clean);
+      const result = await db
+        .prepare(
+          `INSERT INTO media_item_titles (media_item_id, title, clean_title, source, season_number) VALUES (?, ?, ?, 'xem_alias', ?)
+           ON CONFLICT (media_item_id, clean_title) DO UPDATE SET season_number = excluded.season_number
+           WHERE media_item_titles.source IN ('tmdb_alt', 'anilist_synonym') AND media_item_titles.season_number IS NULL`
+        )
+        .run(mediaItemId, alias.title, clean, alias.season);
+      stored += result.changes;
+    }
+    return stored;
+  });
+}
+
+/** How many episodes each season of the item lists, for applyAliasSeason. */
+export async function seasonEpisodeCounts(mediaItemId: number): Promise<Map<number, number>> {
+  const rows = (await db.prepare("SELECT season_number, COUNT(*) AS c FROM episodes WHERE media_item_id = ? GROUP BY season_number").all(mediaItemId)) as {
+    season_number: number | string;
+    c: number | string;
+  }[];
+  return new Map(rows.map((r) => [Number(r.season_number), Number(r.c)]));
+}
+
+/** The seasons the item's names stand for: cleanTitle -> season, for the rows that carry one. */
+export async function aliasSeasonsFor(mediaItemId: number): Promise<Map<string, number>> {
+  const rows = (await db
+    .prepare("SELECT clean_title, season_number FROM media_item_titles WHERE media_item_id = ? AND season_number IS NOT NULL")
+    .all(mediaItemId)) as { clean_title: string; season_number: number | string }[];
+  return new Map(rows.map((r) => [r.clean_title, Number(r.season_number)]));
+}
+
+/**
+ * A release that names a cour by its own title and counts from 1 ("[Group] Shingeki no Kyojin The Final Season -
+ * 05") is that season's episode: the season the title stands for is applied to a release with no season of its own.
+ * The absolute number stays, for a show numbered that way.
+ */
+export function applyAliasSeason<T extends Pick<ParsedRelease, "title" | "seasonNumber" | "episodeNumbers" | "absoluteEpisode" | "isFullSeason">>(
+  parsed: T,
+  aliasSeasons: ReadonlyMap<string, number>,
+  episodeCounts?: ReadonlyMap<number, number>
+): T {
+  if (aliasSeasons.size === 0 || parsed.seasonNumber != null || parsed.episodeNumbers != null || parsed.isFullSeason || parsed.absoluteEpisode == null) return parsed;
+  const season = aliasSeasons.get(cleanTitle(parsed.title));
+  if (season === undefined) return parsed;
+  // A number past the season's last episode counts on from an earlier season (a group that keeps absolute
+  // numbering under the cour's title): it is no episode of this season.
+  const listed = episodeCounts?.get(season);
+  if (listed !== undefined && parsed.absoluteEpisode > listed) return parsed;
+  return { ...parsed, seasonNumber: season, episodeNumbers: [parsed.absoluteEpisode] };
+}
+
 /** Drops the titles a metadata provider supplied for the item's previous match. A rematch moves the
  * item to another work, whose own alternate titles the follow-up refresh fetches. */
 export async function clearProviderAliases(mediaItemId: number): Promise<void> {

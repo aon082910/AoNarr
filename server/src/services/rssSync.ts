@@ -4,7 +4,7 @@ import { log } from "./logger.js";
 import { config } from "../config.js";
 import { getSetting } from "./settingsStore.js";
 import { getMediaTypeConfig } from "./mediaTypes.js";
-import { usesQualityTiers, qualityRank } from "./quality.js";
+import { usesQualityTiers, qualityRank, groupedRank } from "./quality.js";
 import { mediaItemFromRow } from "../db/mappers.js";
 import { fetchRecentReleases, rssFeedGroups, type RssMarker } from "./indexerClient.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode, type ParsedRelease } from "./releaseParser.js";
@@ -373,7 +373,7 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
     for (const e of group.episodes) if (!(await isAlreadyQueued(item.id, e.id, null))) uncovered = true;
     if (!uncovered) return "skipped";
     const withFiles = group.episodes.filter((e) => Number(e.has_file));
-    if (withFiles.length === group.episodes.length) upgradeFromRank = Math.min(...withFiles.map((e) => qualityRank(e.quality ?? null)));
+    if (withFiles.length === group.episodes.length) upgradeFromRank = Math.min(...withFiles.map((e) => groupedRank(e.quality ?? null, profile?.qualityGroups)));
     pack = packContextFor(item, await seasonPlanFor(item, group.season.scene));
     results = results.filter((r) => {
       const parsed = parseReleaseTitle(r.title);

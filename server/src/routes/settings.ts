@@ -203,12 +203,13 @@ settingsRouter.post(
         await db
           .prepare(
             `INSERT INTO quality_profiles (name, allowed_qualities, cutoff, min_format_score, max_size_gb, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups)
-             VALUES (@name, @allowedQualities, @cutoff, @minFormatScore, @maxSizeGb, @preferCutoffQuality, @upgradeAllowed, @cutoffFormatScore, @minUpgradeFormatScore, @qualityGroups)
+             VALUES (@name, @allowedQualities, @cutoff, @minFormatScore, @maxSizeGb, @preferCutoffQuality, COALESCE(@upgradeAllowed, 1), COALESCE(@cutoffFormatScore, 0), COALESCE(@minUpgradeFormatScore, 1), COALESCE(@qualityGroups, '[]'))
              ON CONFLICT(name) DO UPDATE SET allowed_qualities = excluded.allowed_qualities,
                cutoff = excluded.cutoff, min_format_score = excluded.min_format_score, max_size_gb = excluded.max_size_gb,
-               prefer_cutoff_quality = excluded.prefer_cutoff_quality, upgrade_allowed = excluded.upgrade_allowed,
-               cutoff_format_score = excluded.cutoff_format_score, min_upgrade_format_score = excluded.min_upgrade_format_score,
-               quality_groups = excluded.quality_groups`
+               prefer_cutoff_quality = excluded.prefer_cutoff_quality, upgrade_allowed = COALESCE(@upgradeAllowed, quality_profiles.upgrade_allowed),
+               cutoff_format_score = COALESCE(@cutoffFormatScore, quality_profiles.cutoff_format_score),
+               min_upgrade_format_score = COALESCE(@minUpgradeFormatScore, quality_profiles.min_upgrade_format_score),
+               quality_groups = COALESCE(@qualityGroups, quality_profiles.quality_groups)`
           )
           .run({
             ...p,
@@ -216,11 +217,12 @@ settingsRouter.post(
             maxSizeGb: p.maxSizeGb ?? null,
             // A backup from before the flag existed keeps the cap at the cutoff.
             preferCutoffQuality: p.preferCutoffQuality === false ? 0 : 1,
-            // Backups from before the upgrade fields and quality groups keep the defaults.
-            upgradeAllowed: p.upgradeAllowed === false ? 0 : 1,
-            cutoffFormatScore: Number.isInteger(Number(p.cutoffFormatScore)) ? Number(p.cutoffFormatScore ?? 0) : 0,
-            minUpgradeFormatScore: p.minUpgradeFormatScore == null || !Number.isInteger(Number(p.minUpgradeFormatScore)) ? 1 : Number(p.minUpgradeFormatScore),
-            qualityGroups: JSON.stringify(parseQualityGroups(p.qualityGroups)),
+            // A backup from before the upgrade fields and quality groups leaves a profile's own values as they are
+            // (a new profile gets the defaults).
+            upgradeAllowed: p.upgradeAllowed === undefined || p.upgradeAllowed === null ? null : p.upgradeAllowed === false ? 0 : 1,
+            cutoffFormatScore: p.cutoffFormatScore === undefined || p.cutoffFormatScore === null || !Number.isInteger(Number(p.cutoffFormatScore)) ? null : Number(p.cutoffFormatScore),
+            minUpgradeFormatScore: p.minUpgradeFormatScore === undefined || p.minUpgradeFormatScore === null || !Number.isInteger(Number(p.minUpgradeFormatScore)) ? null : Number(p.minUpgradeFormatScore),
+            qualityGroups: p.qualityGroups === undefined ? null : JSON.stringify(parseQualityGroups(p.qualityGroups)),
           });
         profilesImported++;
       }

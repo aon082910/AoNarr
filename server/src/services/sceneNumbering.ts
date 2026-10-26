@@ -4,6 +4,7 @@ import { typeKeysByShape } from "./mediaTypes.js";
 import { getSetting } from "./settingsStore.js";
 import type { SceneIndex } from "./releaseParser.js";
 import { seasonContextOf } from "./anilistSeasons.js";
+import { syncXemNames } from "./xemNames.js";
 
 interface XemEntry {
   scene?: { season: number; episode: number };
@@ -111,6 +112,9 @@ export async function syncSceneNumbering(mediaItemId: number): Promise<{ updated
   }
   const tvdbId = externalIds.tvdb;
   if (!tvdbId) return { error: "This series has no TVDB id — TheXEM only maps scene numbering against TVDB-indexed shows" };
+
+  // The names scene groups call the show and its seasons, best effort and apart from the numbering below.
+  await syncXemNames(mediaItemId, tvdbId).catch(() => 0);
 
   let body: any;
   try {

@@ -44,7 +44,7 @@ export interface SearchPlan {
   alsoQueries?: string[];
   /** The ids a typed search asks by. A show is asked by its tvdb id alone; the text searches carry none. */
   ids: Record<string, string>;
-  hints: Pick<SearchHints, "season" | "episode" | "airDate" | "absolute" | "queryTitle">;
+  hints: Pick<SearchHints, "season" | "episode" | "airDate" | "absolute" | "queryTitle" | "artist" | "album" | "author" | "bookTitle">;
   target: ReleaseTarget | null;
 }
 
@@ -190,7 +190,24 @@ export async function singlePlanFor(item: MediaItem): Promise<SearchPlan> {
 export function subItemPlanFor(item: Pick<MediaItem, "type" | "title">, sub: { title: string; release_date?: string | null }): SearchPlan {
   const year = sub.release_date ? Number(String(sub.release_date).slice(0, 4)) : NaN;
   const { query, alternateQueries } = subItemQuery(item.type, item.title, sub.title, { releaseYear: Number.isFinite(year) && year > 0 ? year : null });
-  return { query, alternateQueries: alternatesFor(query, alternateQueries), ids: {}, hints: {}, target: null };
+  return { query, alternateQueries: alternatesFor(query, alternateQueries), ids: {}, hints: subItemHints(item, sub.title), target: null };
+}
+
+/** The fields of a typed music or book search: an album is asked for by artist and album, a book by author and
+ * the title before its subtitle and series bracket. Other types have no typed search. */
+function subItemHints(item: Pick<MediaItem, "type" | "title">, subTitle: string): SearchPlan["hints"] {
+  const plain = (text: string) => text.replace(/\([^)]*\)|\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim();
+  if (item.type === "artist") {
+    const album = plain(subTitle);
+    return album ? { artist: item.title, album } : {};
+  }
+  if (item.type === "author") {
+    // A title with a subtitle is searched by text: the title alone would find the author's other books of that name.
+    if (/:/.test(plain(subTitle))) return {};
+    const bookTitle = plain(subTitle);
+    return bookTitle ? { author: item.title, bookTitle } : {};
+  }
+  return {};
 }
 
 /** For each season, the highest episode number that has aired by `today` (a YYYY-MM-DD date): the
