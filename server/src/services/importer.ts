@@ -621,6 +621,16 @@ function findDownloadedFileIn(
   return { file: pickDownloadedFile(withoutSampleFiles, baseDir, labelBase, releaseTitle, target, ctx, childTitle), droppedSamples };
 }
 
+/** A book, comic or audio release often ships one work in several formats ("Dune.epub", "Dune.mobi", "Dune.pdf"):
+ * the reader's preferred one wins before size does (a PDF is the largest, and the least wanted). Video and other
+ * extensions all rank alike, leaving their order to the score and size. */
+const FORMAT_PREFERENCE = [".epub", ".azw3", ".azw", ".mobi", ".cbz", ".cbr", ".m4b", ".flac", ".m4a", ".mp3", ".pdf"];
+function formatRank(filePath: string): number {
+  // An extension not listed (video, a ROM) ranks best, so a course's lecture still beats its pdf slides.
+  const at = FORMAT_PREFERENCE.indexOf(path.extname(filePath).toLowerCase());
+  return at < 0 ? 0 : at + 1;
+}
+
 function pickDownloadedFile(
   candidates: string[],
   baseDir: string,
@@ -716,7 +726,7 @@ function pickDownloadedFile(
   }
 
   const scored = scoreByTokenOverlap(candidates, releaseTitle, labelBase).filter((c) => !c.otherNumber);
-  scored.sort((a, b) => b.score - a.score || b.size - a.size);
+  scored.sort((a, b) => b.score - a.score || formatRank(a.filePath) - formatRank(b.filePath) || b.size - a.size);
   const passing = scored.filter((c) => c.score >= 0.4);
   const childTokens = childTitle ? new Set([...normalizeTokens(childTitle), ...numberTokens(childTitle)]) : new Set<string>();
   if (childTokens.size > 0 && passing.length > 1) {
@@ -727,7 +737,7 @@ function pickDownloadedFile(
       return [...childTokens].filter((t) => ownTokens.has(t)).length / childTokens.size;
     };
     const ranked = passing.map((c) => ({ c, child: childScore(c.filePath) }));
-    ranked.sort((a, b) => b.child - a.child || b.c.score - a.c.score || b.c.size - a.c.size);
+    ranked.sort((a, b) => b.child - a.child || b.c.score - a.c.score || formatRank(a.c.filePath) - formatRank(b.c.filePath) || b.c.size - a.c.size);
     return ranked[0].c.filePath;
   }
   return passing[0]?.filePath ?? null;
@@ -1767,6 +1777,14 @@ export async function placeAlbumFiles(params: {
   }
 
   const tracks = (await db.prepare("SELECT * FROM tracks WHERE sub_item_id = ?").all(subItemId)) as any[];
+  // A folder holding far more audio files than the album has tracks (a deluxe edition or a second disc is
+  // allowed for) is several albums, a discography grabbed for one of them: moving it all in would file other
+  // albums' tracks under this one.
+  if (!onlyAnchor && tracks.length >= 3 && siblings.length > tracks.length * 3 + 5) {
+    throw new ImportSkippedError(
+      `"${path.basename(albumSourceDir)}" holds ${siblings.length} audio files for "${subRow.title}", which has ${tracks.length} tracks: it looks like several albums, so it is left for a manual import`
+    );
+  }
   const namingEnabled = getNamingEnabled(item.type);
   const trackTemplate = getSetting("namingArtistTrackTemplate") || DEFAULT_TRACK_TEMPLATE;
   const trackByNumber = new Map<number, any>(tracks.map((t) => [Number(t.track_number), t]));

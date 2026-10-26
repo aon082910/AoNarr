@@ -23,6 +23,7 @@ import { releaseRuntimeMinutes, runtimeContextFor } from "./releaseRuntime.js";
 import { recordPending } from "./pendingStore.js";
 import { compareRevisions, formatCutoffNotMet, judgeUpgrade, propersMode, upgradeProfileOf, type ExistingFile, type UpgradeProfile } from "./upgradeRules.js";
 import { existingFileRecord } from "./fileRelease.js";
+import { nonVideoPreference, nonVideoRejection } from "./nonVideoMatch.js";
 import { exceedsFreeSpace, freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReserveBytes } from "./freeSpace.js";
 import { compareUsenetAge, comparePeers, largerIsBetterKey, normalizePreferredProtocol, protocolGroup, protocolPreferenceKey } from "./releaseRanking.js";
 import { aliasTitlesFor, identityContextFor } from "./releaseAliases.js";
@@ -384,16 +385,37 @@ export interface TargetName {
   /** The titles of the parent's other children (a book's siblings in its author's list). A book's
    * main title ("Dune" of "Dune: Messiah") names the book only if no sibling is called that too. */
   siblingTitles?: string[];
+  /** An album's release year, and the years of the artist's other albums of the same title (a reissue that
+   * shares a name with a later album tells them apart only by year). */
+  releaseYear?: number | null;
+  sameTitledYears?: number[];
 }
 
 /** The titles of the other children of a collection item, for TargetName.siblingTitles: only a book
  * is named by the part of its title before the subtitle, so only an author's or audiobook's children
  * are read. */
-async function siblingTitlesOf(item: Pick<MediaItem, "id" | "type">, subItemId: number): Promise<string[] | undefined> {
+export async function siblingTitlesOf(item: Pick<MediaItem, "id" | "type">, subItemId: number): Promise<string[] | undefined> {
   if (!SUBTITLE_OPTIONAL_TYPES.has(item.type)) return undefined;
   const mediaItemId = item.id;
   const rows = (await db.prepare("SELECT title FROM sub_items WHERE media_item_id = ? AND id <> ?").all(mediaItemId, subItemId)) as { title: string }[];
   return rows.map((r) => r.title);
+}
+
+/** The year of a sub-item's "2013-01-29"-style release date, or null. */
+function yearOfDate(date: unknown): number | null {
+  const m = String(date ?? "").match(/^(\d{4})/);
+  return m ? Number(m[1]) : null;
+}
+
+/** What a sub-item's name carries beyond its title: its release year and, for an album, the years of the
+ * artist's other albums that share its title. */
+export async function yearFieldsOf(item: Pick<MediaItem, "id" | "type">, sub: { id: number; title: string; release_date?: string | null }): Promise<Pick<TargetName, "releaseYear" | "sameTitledYears">> {
+  const releaseYear = yearOfDate(sub.release_date);
+  if (item.type !== "artist") return { releaseYear };
+  const rows = (await db.prepare("SELECT title, release_date FROM sub_items WHERE media_item_id = ? AND id <> ?").all(item.id, sub.id)) as { title: string; release_date: string | null }[];
+  const key = (t: string) => t.trim().toLowerCase();
+  const years = rows.filter((r) => key(r.title) === key(sub.title)).map((r) => yearOfDate(r.release_date)).filter((y): y is number => y != null);
+  return { releaseYear, ...(years.length > 0 ? { sameTitledYears: years } : {}) };
 }
 
 /** What a season pack is judged against (seasonPacks.ts): the show, the season a release's numbering
@@ -543,7 +565,7 @@ function releaseNameMatch(releaseTitle: string, name: TargetName, mediaType: str
   // there. Books and ROMs are left alone: their releases lead with authors, series or nothing.
   // Underscores and en/em dashes stand for the spaces and hyphen of "ABBA - Greatest Hits" too.
   const separated = releaseTitle.replace(/_/g, " ").replace(/[–—]/g, "-");
-  if ((mediaType === "artist" || mediaType === "audiobook") && name.parentTitle && / - /.test(separated)) {
+  if ((mediaType === "artist" || mediaType === "audiobook" || mediaType === "author") && name.parentTitle && / - /.test(separated)) {
     const lead = releaseLead(separated, name.parentTitle);
     const leadTokens = significantTitleTokens(lead);
     const wantedTokens = significantTitleTokens(name.title);
@@ -552,7 +574,17 @@ function releaseNameMatch(releaseTitle: string, name: TargetName, mediaType: str
       (wantedTokens.every((t) => leadTokens.includes(t)) ||
         // An audiobook's title carries a subtitle its releases leave off: "Sapiens - Yuval Noah Harari [M4B]".
         (SUBTITLE_OPTIONAL_TYPES.has(mediaType) && leadTokens.every((t) => wantedTokens.includes(t))));
-    if (leadTokens.length > 0 && !leadNamesParent(lead, name.parentTitle) && !namesTitle) return null;
+    // A book's release may lead with its series ("Mistborn - The Well of Ascension - Brandon Sanderson") or its
+    // narrator ("Ray Porter - Project Hail Mary (Andy Weir)"): the author stands somewhere else in the name.
+    const leadsWithSeries = SUBTITLE_OPTIONAL_TYPES.has(mediaType) && leadTokens.length > 0 && leadTokens.every((t) => seriesTokensOf(name.title).includes(t));
+    const parentTokens = significantTitleTokens(name.parentTitle);
+    const nameTokens = titleTokens(separated);
+    // The author's initials may be run together, left off or spelled out ("Ursula Le Guin" for "Ursula K. Le
+    // Guin"): every word of the name longer than an initial has to be there.
+    const authorWords = parentTokens.filter((t) => t.length > 1);
+    const namesAuthorElsewhere =
+      SUBTITLE_OPTIONAL_TYPES.has(mediaType) && authorWords.length > 0 && authorWords.every((t) => nameTokens.includes(t));
+    if (leadTokens.length > 0 && !leadNamesParent(lead, name.parentTitle) && !namesTitle && !leadsWithSeries && !namesAuthorElsewhere) return null;
   }
   const verdict = releaseNamesTarget(releaseTitle, name, mediaType)
     ? "whole"
@@ -562,7 +594,18 @@ function releaseNameMatch(releaseTitle: string, name: TargetName, mediaType: str
       namesMainTitle(releaseTitle, name)
     ? "main"
     : null;
-  return verdict && mediaType === "comic" && !comicVolumeAgrees(releaseTitle, name) ? null : verdict;
+  if (verdict && mediaType === "comic" && !comicVolumeAgrees(releaseTitle, name)) return null;
+  // The title has to stand on its own in the name, not merely occur in it (nonVideoMatch.ts).
+  if (!verdict) return verdict;
+  const refusal = nonVideoRejection(releaseTitle, name, mediaType);
+  if (refusal) log.info(`[scheduler] rejected "${releaseTitle}": ${refusal}`);
+  return refusal ? null : verdict;
+}
+
+/** The words of the series a book's title names in its bracket ("(Mistborn, #2)" -> mistborn). */
+function seriesTokensOf(title: string): string[] {
+  const m = title.match(/\(([^)]*?)(?:,?\s*#?\d+[\d.]*)?\)/);
+  return m ? significantTitleTokens(m[1]) : [];
 }
 
 /**
@@ -1091,6 +1134,8 @@ export async function chooseBestResult(
       (revisionMode === "doNotPrefer" || !a.revision || !b.revision ? 0 : compareRevisions(b.revision, a.revision)) ||
       b.totalScore - a.totalScore ||
       b.matchTier - a.matchTier ||
+      // Types with no quality tiers: the lossless rip, the common ebook format or the right ROM region first.
+      (tiered ? 0 : nonVideoPreference(b.result.title, mediaType) - nonVideoPreference(a.result.title, mediaType)) ||
       protocolPreferenceKey(preferredProtocol, b.result.protocol) - protocolPreferenceKey(preferredProtocol, a.result.protocol) ||
       priorityOf(a) - priorityOf(b) ||
       protocolGroup(a.result.protocol) - protocolGroup(b.result.protocol) ||
@@ -1112,6 +1157,19 @@ export async function chooseBestResult(
   if (!winner) return null;
   const verdict = verdicts.get(winner.result);
   return { result: winner.result, quality: winner.quality, ...(verdict ? { identity: verdict } : {}) };
+}
+
+/**
+ * Whether a sub-item's release date ("2026-11-04", "2026-11", "2026") is still ahead of `now`. A year or a month
+ * alone is ahead only once the whole year or month is. An unreadable or missing date is not ahead.
+ */
+export function isNotYetReleased(releaseDate: string | null | undefined, now: Date = new Date()): boolean {
+  const m = String(releaseDate ?? "").trim().match(/^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?/);
+  if (!m) return false;
+  const today = now.toISOString().slice(0, 10);
+  if (m[3]) return `${m[1]}-${m[2]}-${m[3]}` > today;
+  if (m[2]) return `${m[1]}-${m[2]}` > today.slice(0, 7);
+  return m[1] > today.slice(0, 4);
 }
 
 /** The download client refused the release itself (a dead .torrent link, an offline slskd peer)
@@ -1762,6 +1820,9 @@ export async function runAutoSearch(signal?: AbortSignal) {
         .prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND monitored = 1 AND has_file = 0")
         .all(item.id)) as any[];
       for (const subItem of subItems) {
+        // An album or book not yet out has nothing to find (Lidarr and Readarr wait for the release date too).
+        // (A comic issue's date is its cover date, often a month ahead of the issue.)
+        if (["artist", "author", "audiobook"].includes(item.type) && isNotYetReleased(subItem.release_date)) continue;
         if (!leafDue(subItem, subItem.release_date)) continue;
         candidates.push({ item, shape, subItem, lastSearchedAt: subItem.last_auto_searched_at ?? null, seq: seq++ });
       }
@@ -1993,6 +2054,7 @@ export async function runAutoSearch(signal?: AbortSignal) {
       title: sub.title,
       parentTitle: item.title,
       siblingTitles: await siblingTitlesOf(item, sub.id),
+      ...(await yearFieldsOf(item, sub)),
     });
     await recordAutoSearchResult("sub_items", sub.id, result);
   }
@@ -2303,7 +2365,7 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
     sub = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId);
     if (!sub) return { grabbed: false, error: "Sub-item not found" };
     plan = subItemPlanFor(item, sub);
-    name = { title: sub.title, parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, sub.id) };
+    name = { title: sub.title, parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, sub.id), ...(await yearFieldsOf(item, sub)) };
   } else {
     plan = await singlePlanFor(item);
     identity = targetIdentityOf(item);
@@ -2844,7 +2906,7 @@ export async function retryFailedGrab(
         return;
       }
       plan = subItemPlanFor(item, sub);
-      name = { title: sub.title, parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, sub.id) };
+      name = { title: sub.title, parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, sub.id), ...(await yearFieldsOf(item, sub)) };
     } else if (match.seasonNumber != null && getMediaTypeConfig(item.type).shape === "episodic") {
       seasonPack = match.seasonNumber;
       // A season search can grab a single-episode release too. Its replacement only has to cover

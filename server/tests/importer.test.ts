@@ -275,6 +275,18 @@ describe("findDownloadedFile", () => {
     expect(findDownloadedFile("The Matrix 1999 1080p WEB-DL REMUX", "movie")).toBeNull();
   });
 
+  it("takes the epub of a book shipped in several formats, though the pdf is the larger file", () => {
+    writeDownloadFile(path.join("Frank Herbert - Dune (1965)", "Dune.pdf"), "p".repeat(5000));
+    const epub = writeDownloadFile(path.join("Frank Herbert - Dune (1965)", "Dune.epub"), "e".repeat(500));
+    writeDownloadFile(path.join("Frank Herbert - Dune (1965)", "Dune.mobi"), "m".repeat(900));
+    expect(findDownloadedFile("Frank Herbert - Dune (1965) [EPUB MOBI PDF]", "author")).toBe(epub);
+  });
+
+  it("finds a disc image, a Switch dump and a Wii Ware archive of a ROM release", () => {
+    const nsp = writeDownloadFile(path.join("Some.Game.NSW", "Some Game.nsp"));
+    expect(findDownloadedFile("Some Game NSW", "rom")).toBe(nsp);
+  });
+
   it("narrows to files that parse to the specific target episode in an episodic season pack", () => {
     const wanted = writeDownloadFile(path.join("Show.S01.PACK", "Show.S01E05.mkv"));
     writeDownloadFile(path.join("Show.S01.PACK", "Show.S01E06.mkv"));
@@ -1577,6 +1589,17 @@ describe("placeAlbumFiles", () => {
     expect(tracks.every((t) => t.has_file === 1)).toBe(true);
     const album = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(albumId)) as any;
     expect(album).toMatchObject({ has_file: 1, file_path: result.destFolder });
+  });
+
+  it("leaves a folder of several albums for a manual import instead of filing it all under one", async () => {
+    const folder = await insertRootFolder("artist");
+    const { artistId, albumId } = await insertArtistAlbum(folder.id);
+    for (const n of [1, 2, 3]) await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, ?, ?)").run(albumId, n, `Track ${n}`);
+    const anchor = writeDownloadFile(path.join("Discography", "01 - Track 1.mp3"));
+    for (let n = 2; n <= 30; n++) writeDownloadFile(path.join("Discography", `${String(n).padStart(2, "0")} - Other ${n}.mp3`));
+
+    await expect(placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: anchor, quality: null })).rejects.toThrow(/several albums/);
+    expect(fs.existsSync(anchor)).toBe(true);
   });
 
   it("keeps an unmatched file's original filename (no track list fetched yet)", async () => {
