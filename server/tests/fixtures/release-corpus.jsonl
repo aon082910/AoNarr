@@ -233,3 +233,20 @@
 {"title": "[sam] Toward the Terra (1980) [BD 1080p TrueHD].mkv", "kind": "release", "expect": {"group": "sam"}}
 {"title": "[Group] Apollo 13 (1995) [1080p]", "kind": "release", "expect": {"absolute": null}}
 {"title": "Dune - 2021 1080p WEB-DL x264-GRP", "kind": "release", "expect": {"absolute": null}}
+{"title": "Series.Title.S04E87.REPACK2.720p.HDTV.x264-GRP", "kind": "release", "expect": {"revision": {"version": 3, "real": 0, "isRepack": true}}}
+{"title": "Movie.2020.PROPER.1080p.WEB-DL.x264-GRP", "kind": "release", "expect": {"revision": {"version": 2, "real": 0, "isRepack": false}}}
+{"title": "Series.Title.S01E05.REAL.PROPER.720p.HDTV.x264-GRP", "kind": "release", "expect": {"revision": {"version": 2, "real": 1, "isRepack": false}}}
+{"title": "Series.Title.S01E02.RERIP.720p.BluRay.x264-GRP", "kind": "release", "expect": {"revision": {"version": 2, "real": 0, "isRepack": true}}}
+{"title": "[Group] Show Name - 05v2 [1080p]", "kind": "release", "expect": {"revision": {"version": 2, "real": 0, "isRepack": false}}}
+{"title": "Movie.2021.1080p.WEB-DL.x264-GRP", "kind": "release", "expect": {"revision": {"version": 1, "real": 0, "isRepack": false}}}
+{"title": "Real.Housewives.S01E01.720p.HDTV.x264-GRP", "kind": "release", "expect": {"revision": {"version": 1, "real": 0, "isRepack": false}}}
+{"title": "Movie.2019.1080p.WEBRip.x264-EVO-Obfuscated", "kind": "release", "expect": {"group": "EVO"}}
+{"title": "Movie.2019.1080p.BluRay.x264-EVO-RP", "kind": "release", "expect": {"group": "EVO"}}
+{"title": "Show.S01E01.720p.HDTV.x264-KILLERS[rartv]", "kind": "release", "expect": {"group": "KILLERS"}}
+{"title": "Movie.2019.1080p.WEBRip.x264-RARBG [TGx]", "kind": "release", "expect": {"group": "RARBG"}}
+{"title": "Movie.2019.1080p.BluRay.x264-D-Z0N3", "kind": "release", "expect": {"group": "D-Z0N3"}}
+{"title": "Show.S01E01.1080p.WEB.h264-Erai-raws", "kind": "release", "expect": {"group": "Erai-raws"}}
+{"title": "Movie.Name.2019.ITA-ENG.1080p.BluRay.x264-GRP", "kind": "release", "expect": {"languages": ["italian", "english"]}}
+{"title": "Show.S01E01.RUS.ENG.1080p.WEB-DL-GRP", "kind": "release", "expect": {"languages": ["russian", "english"]}}
+{"title": "Show.S01E01.720p.HDTV.Eng.Subs.x264-GRP", "kind": "release", "expect": {"languages": []}}
+{"title": "Movie.Name.2019.VFF.1080p.BluRay-GRP", "kind": "release", "expect": {"languages": ["vff", "french"]}}

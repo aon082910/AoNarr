@@ -1,5 +1,11 @@
 import type { QualityName } from "./quality.js";
 
+export interface ReleaseRevision {
+  version: number;
+  real: number;
+  isRepack: boolean;
+}
+
 export type ReleaseFlag = "proper" | "repack" | "extended" | "unrated" | "directorscut" | "imax";
 
 export interface ParsedRelease {
@@ -83,6 +89,11 @@ export interface ParsedRelease {
   /** Subtitles burned into the picture ("HC", "HCSub", "KORSUB", "Hardsub"): Radarr's
    * HardcodedSubsRegex. Read from the tags, never from the title's own words. */
   hardcodedSubs: boolean;
+  /** Which release of the same thing this is, after Sonarr/Radarr's QualityParser: `version` is 1 for the
+   * original, 2 for a PROPER, REPACK or RERIP or "v2", 3 for "REPACK2" or "v3"; `real` counts a capitalised
+   * "REAL" (the group's correction of a mislabelled release); `isRepack` is a REPACK or RERIP (a re-upload
+   * of the group's own release, not a correction by another group). */
+  revision?: ReleaseRevision;
   /** The episodes a season-less fansub batch covers by absolute number ("[Group] Show - 01~25",
    * "(1017-1088)"), inclusive. Matched against the episodes' absolute numbers. Null or absent for every
    * other release. */
@@ -465,6 +476,27 @@ const LANGUAGE_TAGS: Record<string, string> = {
   polish: "polish",
   portuguese: "portuguese",
   english: "english",
+  // Tracker codes and tags (Sonarr's LanguageParser): the short ones are only read where they stand as a
+  // whole word, and never when "subs" follows (a subtitle language, not the audio).
+  eng: "english",
+  ita: "italian",
+  ger: "german",
+  rus: "russian",
+  jpn: "japanese",
+  jap: "japanese",
+  kor: "korean",
+  fra: "french",
+  fre: "french",
+  vf: "french",
+  vf2: "french",
+  vfi: "french",
+  lektor: "polish",
+  hindi: "hindi",
+  chinese: "chinese",
+  nordic: "nordic",
+  spa: "spanish",
+  esp: "spanish",
+  castellano: "spanish",
 };
 const LANGUAGE_PATTERN = new RegExp(`\\b(${Object.keys(LANGUAGE_TAGS).join("|")})\\b`, "gi");
 
@@ -511,16 +543,43 @@ function hasAudioOrBookTag(text: string): boolean {
   return false;
 }
 
+// "ENG.SUBS", "Italian Subbed": a subtitle language, not the audio.
+const SUBTITLE_AFTER = /^[ ._-]*(?:subs?|subbed|subtitles?|sub)\b/i;
+// A VF tag is French audio, though it keeps its own tag too (a profile may want VFQ apart from VFF).
+const FRENCH_AUDIO_TAGS = new Set(["vff", "vfq", "truefrench"]);
+
 function detectLanguages(title: string): string[] {
   const found = new Set<string>();
   for (const match of title.matchAll(LANGUAGE_PATTERN)) {
+    if (SUBTITLE_AFTER.test(title.slice((match.index ?? 0) + match[0].length))) continue;
     found.add(LANGUAGE_TAGS[match[1].toLowerCase()]);
+    if (FRENCH_AUDIO_TAGS.has(match[1].toLowerCase())) found.add("french");
   }
   return Array.from(found);
 }
 
+// What indexers and mirrors append after the group: "-RP", "-Obfuscated", "-Scrambled", "-postbot", "-xpost",
+// "-NZBGeek" and the like (Sonarr's CleanReleaseGroupRegex), and a tracker's bracket tag ("[rartv]", "[TGx]",
+// "[www.site.tld]"). Taken off, "...x264-EVO-RP [TGx]" has the group EVO.
+const GROUP_NOISE_SUFFIX = /-(?:RP|Obfuscated|Scrambled|sample|Pre|postbot|xpost|Rakuv\w*|NZBGeek|BUYMORE|AsRequested|WhiteRev|Chrome|\[N-Z-B\])$/i;
+const TORRENT_TAG_SUFFIX = /\s*\[(?:rartv|eztv|rarbg|ettv|publichd|TGx|www\.[^\]]+)\]$/i;
+// Groups whose own name has a hyphen or a dot: a plain "last hyphenated word" would read "Z0N3" and "raws".
+const TWO_PART_GROUP = /-(D-Z0N3|Erai-raws|E\.N\.D|BEN[._ ]THE[._ ]MEN|Anime-Koi|FraMeSToR)$/i;
+
+function withoutGroupNoise(title: string): string {
+  let cleaned = title;
+  for (let i = 0; i < 4; i++) {
+    const next = cleaned.replace(TORRENT_TAG_SUFFIX, "").replace(GROUP_NOISE_SUFFIX, "").trimEnd();
+    if (next === cleaned) break;
+    cleaned = next;
+  }
+  return cleaned;
+}
+
 function detectReleaseGroup(title: string): string | null {
-  const trimmed = title.trim();
+  const trimmed = withoutGroupNoise(title.trim());
+  const twoPart = trimmed.match(TWO_PART_GROUP);
+  if (twoPart) return twoPart[1];
   const match = trimmed.match(RELEASE_GROUP);
   // A trailing resolution ("Title-1080p", "1080p-2160p") names a quality, never a group.
   if (match && !TRAILING_SOURCE_TOKEN.test(trimmed) && !TRAILING_RANGE_END.test(trimmed) && !/^(?:\d{3,4}[pi]|4k|8k)$/i.test(match[1])) return match[1];
@@ -684,6 +743,27 @@ function detectQualityModifier(title: string): ParsedRelease["qualityModifier"] 
 function detectEdition(title: string): string | null {
   const match = title.match(EDITION_PATTERN);
   return match ? match[0].replace(/\./g, " ").trim() : null;
+}
+
+const REVISION_PROPER = /\bproper\b/i;
+const REVISION_REPACK = /\b(?:repack|rerip)(\d)?\b/i;
+// "05v2", "[v2]", ".v2.", " v2 ": a version after a digit, a bracket, a dot or a space.
+const REVISION_VERSION = /(?<=[\d\s.[(_-])v([2-9])(?![a-z\d])/i;
+// Capitalised only, as in Sonarr: "real" is an ordinary word.
+const REVISION_REAL = /\bREAL\b/g;
+
+function detectRevision(title: string): ReleaseRevision {
+  let version = 1;
+  let isRepack = false;
+  if (REVISION_PROPER.test(title)) version = Math.max(version, 2);
+  const repack = title.match(REVISION_REPACK);
+  if (repack) {
+    isRepack = true;
+    version = Math.max(version, repack[1] ? Number(repack[1]) + 1 : 2);
+  }
+  const versioned = title.match(REVISION_VERSION);
+  if (versioned) version = Math.max(version, Number(versioned[1]));
+  return { version, real: (title.match(REVISION_REAL) ?? []).length, isRepack };
 }
 
 function detectFlags(title: string): ReleaseFlag[] {
@@ -1064,6 +1144,7 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
     source: detectSource(title),
     resolution: detectResolution(title),
     flags: detectFlags(title),
+    revision: detectRevision(title),
     languages: detectLanguages(tags),
     releaseGroup,
     airDate,
