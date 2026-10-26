@@ -65,7 +65,8 @@ describe("episodePlanFor", () => {
     expect(plan.query).toBe("Daily Show 2024 08 25");
     expect(plan.alternateQueries).toEqual(["Daily Show 2024-08-25", "Daily Show With Trevor 2024 08 25"]);
     expect(plan.hints).toEqual({ airDate: "2024-08-25", queryTitle: "Daily Show" });
-    expect(plan.target).toEqual({ airDate: "2024-08-25" });
+    // The season and episode ride along: a daily show's release is sometimes numbered (Round 12, I17).
+    expect(plan.target).toEqual({ airDate: "2024-08-25", season: 2024, episode: 101 });
   });
 
   it("asks for an anime episode by its absolute number, with the season form beside it", async () => {

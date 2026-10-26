@@ -4,6 +4,7 @@ import { fetchAliasDataFor, type AliasLookup } from "./metadata.js";
 import { usesQualityTiers } from "./quality.js";
 import { finishBackgroundJob, incrementBackgroundJobDone, isBackgroundJobRunning, startBackgroundJob, updateBackgroundJob } from "./backgroundJobs.js";
 import { replaceProviderAliases, type AliasSource } from "./releaseAliases.js";
+import { ANILIST_SEASON_KEY, refreshAnilistSeason } from "./anilistSeasons.js";
 import type { MediaType } from "../types/index.js";
 
 /**
@@ -18,7 +19,7 @@ const ALIASES_VERSION_KEY = "aliasesVersion";
 const ORIGIN_COUNTRY_KEY = "originCountry";
 /** What the alias lookup writes into extra_metadata: when it last asked, which version of the lookup
  * that was, and where the work was made. A rematch deletes them (they described the old match). */
-export const ALIAS_STATE_KEYS = [ALIASES_CHECKED_KEY, ALIASES_VERSION_KEY, ORIGIN_COUNTRY_KEY];
+export const ALIAS_STATE_KEYS = [ALIASES_CHECKED_KEY, ALIASES_VERSION_KEY, ORIGIN_COUNTRY_KEY, ANILIST_SEASON_KEY];
 /** Version 2 added the original-language title, the translations and the origin country for TMDB
  * items; an item checked by version 1 is asked again. */
 const ALIASES_VERSION = 2;
@@ -70,6 +71,11 @@ export async function refreshProviderAliases(mediaItemId: number): Promise<numbe
   // The provider's current list replaces the one stored: a title it has dropped does not stay.
   const added = await replaceProviderAliases(mediaItemId, lookup.titles, source);
   await markAliasesChecked(row.id, lookup.originCountry);
+  // An AniList anime's place in its show (which season, how many episodes before it) is asked of the same
+  // provider at the same moments; a failure here leaves the aliases stored and the season for the nightly job.
+  if (row.type === "anime" && externalIds.anilist) {
+    await refreshAnilistSeason(row.id).catch((err) => log.info(`[anilistSeasons] "${row.title}": ${(err as Error).message}; it will be asked again by the nightly job`));
+  }
   if (added > 0) log.info(`[aliases] "${row.title}": stored ${added} alternate title(s) from ${source === "anilist_synonym" ? "AniList" : "TMDB"}`);
   return added;
 }

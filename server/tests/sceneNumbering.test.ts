@@ -264,3 +264,60 @@ describe("syncSceneNumbering — a corrected mapping", () => {
     expect(await sceneNumbers(showId, 1, 1)).toEqual({ scene_season_number: 2, scene_episode_number: 1 });
   });
 });
+
+
+describe("TheXEM numbering fits the rows it is written to (Round 12, I7) and carries on past its last entry (I11)", () => {
+  const entry = (tvdb: [number, number], scene: [number, number]) => ({ tvdb: { season: tvdb[0], episode: tvdb[1] }, scene: { season: scene[0], episode: scene[1] } });
+
+  it("extrapolates the last shifted mapping to the episodes newer than the map", async () => {
+    const { extrapolateSceneNumbers } = await import("../src/services/sceneNumbering.js");
+    const wanted = new Map([
+      ["1:13", { season: 1, episode: 13 }],
+      ["1:14", { season: 2, episode: 1 }],
+      ["1:15", { season: 2, episode: 2 }],
+    ]);
+    const rows = [13, 14, 15, 16, 17].map((e) => ({ season_number: 1, episode_number: e, air_date: `2025-01-${String(e).padStart(2, "0")}` }));
+    // An older episode the map dropped is left alone.
+    rows.push({ season_number: 1, episode_number: 99, air_date: "2020-01-01" });
+    expect(Object.fromEntries(extrapolateSceneNumbers(rows, wanted))).toEqual({ "1:16": { season: 2, episode: 3 }, "1:17": { season: 2, episode: 4 } });
+    expect(extrapolateSceneNumbers(rows, wanted).has("1:99")).toBe(false);
+  });
+
+  it("extends nothing where the last mapping is not shifted, or the season has no mapping", async () => {
+    const { extrapolateSceneNumbers } = await import("../src/services/sceneNumbering.js");
+    const same = new Map([["1:1", { season: 1, episode: 1 }], ["1:2", { season: 1, episode: 2 }]]);
+    expect(extrapolateSceneNumbers([1, 2, 3].map((e) => ({ season_number: 1, episode_number: e })), same).size).toBe(0);
+    expect(extrapolateSceneNumbers([{ season_number: 2, episode_number: 5 }], new Map([["1:1", { season: 2, episode: 1 }]])).size).toBe(0);
+  });
+
+  it("an episode list that lacks an episode the mapping names is another numbering", async () => {
+    const { xemAlignsWithRows } = await import("../src/services/sceneNumbering.js");
+    const wanted = new Map([["11:1", { season: 11, episode: 1 }]]);
+    expect(xemAlignsWithRows([{ season_number: 11, episode_number: 1 }], wanted)).toBe(true);
+    expect(xemAlignsWithRows([{ season_number: 10, episode_number: 22 }], wanted)).toBe(false);
+  });
+
+  it("leaves the scene numbers alone for a show with a TMDB id whose seasons the mapping does not fit", async () => {
+    const { syncSceneNumbering } = await import("../src/services/sceneNumbering.js");
+    const showId = await insertSeries("series", "Split Seasons Show", { tvdb: "9001", tmdb: "9002" });
+    await insertEpisode(showId, 1, 1);
+    await insertEpisode(showId, 1, 2);
+    mockXemResponse({ result: "success", data: [entry([2, 1], [1, 1]), entry([2, 2], [1, 2])] });
+    expect(await syncSceneNumbering(showId)).toEqual({ updated: 0 });
+    expect(await sceneNumbers(showId, 1, 1)).toEqual({ scene_season_number: null, scene_episode_number: null });
+  });
+
+  it("maps and extrapolates for a TVDB-only show", async () => {
+    const { syncSceneNumbering } = await import("../src/services/sceneNumbering.js");
+    const showId = await insertSeries("series", "Tvdb Only Show", { tvdb: "9003" });
+    for (const e of [1, 2, 3]) await insertEpisode(showId, 1, e);
+    await db.prepare("UPDATE episodes SET air_date = ? WHERE media_item_id = ?").run("2025-03-01", showId);
+    await db.prepare("UPDATE episodes SET air_date = '2025-03-08' WHERE media_item_id = ? AND episode_number = 2").run(showId);
+    await db.prepare("UPDATE episodes SET air_date = '2025-03-15' WHERE media_item_id = ? AND episode_number = 3").run(showId);
+    mockXemResponse({ result: "success", data: [entry([1, 1], [2, 1]), entry([1, 2], [2, 2])] });
+    await syncSceneNumbering(showId);
+    expect(await sceneNumbers(showId, 1, 2)).toEqual({ scene_season_number: 2, scene_episode_number: 2 });
+    // Episode 3 is newer than the map: it carries the offset forward.
+    expect(await sceneNumbers(showId, 1, 3)).toEqual({ scene_season_number: 2, scene_episode_number: 3 });
+  });
+});

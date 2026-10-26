@@ -38,6 +38,7 @@ import {
   type SearchPlan,
 } from "./searchPlan.js";
 import { backfillProviderAliases } from "./aliasBackfill.js";
+import { backfillAnilistSeasons } from "./anilistSeasons.js";
 import {
   knownReleaseSize,
   pickBestAllowedQuality,
@@ -266,7 +267,7 @@ export async function isAlreadyQueued(mediaItemId: number, episodeId: number | n
       .prepare("SELECT title FROM queue WHERE media_item_id = ? AND season_number = ? AND status NOT IN ('failed')")
       .all(ep.media_item_id, ep.season_number)) as { title: string }[];
     const sceneIndex = await sceneIndexFor(ep.media_item_id);
-    return sameSeason.some(({ title }) => {
+    const coveredBySeason = sameSeason.some(({ title }) => {
       const parsed = parseReleaseTitle(title);
       // A ranged batch ("S2 - 13-24") covers only its own episodes; releaseMatchesEpisode enforces the range.
       // A pack calls its season by the scene's number where the show has one (TheXEM).
@@ -275,6 +276,17 @@ export async function isAlreadyQueued(mediaItemId: number, episodeId: number | n
         releaseMatchesEpisode(parsed, ep.season_number, ep.episode_number, ep.scene_season_number, ep.scene_episode_number, null, sceneIndex) ||
         (!!ep.air_date && releaseMatchesAirDate(parsed, ep.air_date))
       );
+    });
+    if (coveredBySeason) return true;
+    // A release of several episodes ("Show.S01E01E02") is queued against its first episode only (it has no
+    // season number on its row): it covers its siblings too.
+    const others = (await db
+      .prepare("SELECT title FROM queue WHERE media_item_id = ? AND episode_id IS NOT NULL AND episode_id <> ? AND season_number IS NULL AND status NOT IN ('failed')")
+      .all(ep.media_item_id, episodeId)) as { title: string }[];
+    return others.some(({ title }) => {
+      const parsed = parseReleaseTitle(title);
+      if ((parsed.episodeNumbers?.length ?? 0) < 2) return false;
+      return releaseMatchesEpisode(parsed, ep.season_number, ep.episode_number, ep.scene_season_number, ep.scene_episode_number, null, sceneIndex);
     });
   }
   if (subItemId) {
@@ -809,7 +821,7 @@ export async function chooseBestResult(
     ? withParsed
     : "airDate" in target
     ? withParsed.filter(({ result, parsed }) => {
-        const ok = releaseMatchesAirDate(parsed, target.airDate);
+        const ok = releaseMatchesAirDate(parsed, target.airDate) || (target.season != null && target.episode != null && releaseMatchesEpisode(parsed, target.season, target.episode));
         if (!ok) log.info(`[scheduler] rejected "${result.title}": doesn't match the target air date (${target.airDate})`);
         return ok;
       })
@@ -3545,6 +3557,21 @@ export function startScheduler() {
   setTimeout(() => {
     runJobNow("aliasBackfill");
   }, 2 * 60_000).unref();
+
+  // Which season of its show each AniList anime is (anilistSeasons.ts): read once per entry, nightly for
+  // entries added since and once shortly after startup for the backlog.
+  registerJob({
+    key: "anilistSeasons",
+    name: "Anime Seasons",
+    scheduleType: "cron",
+    defaultSchedule: "40 4 * * *",
+    run: async (signal) => {
+      await backfillAnilistSeasons(signal);
+    },
+  });
+  setTimeout(() => {
+    runJobNow("anilistSeasons");
+  }, 4 * 60_000).unref();
 
   // Awaited by every poll (a manual "run now" included), so none starts before it's done.
   const interruptedImportsHandedBack = resumeInterruptedImports().catch((err) =>

@@ -1,7 +1,8 @@
 import { db } from "../db/index.js";
 import { log } from "./logger.js";
 import { getMediaTypeConfig } from "./mediaTypes.js";
-import { parseReleaseTitle, releaseMatchesEpisode } from "./releaseParser.js";
+import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
+import { judgeSeasonPack, loadPackEpisodes, packSettings, type PackEpisode } from "./seasonPacks.js";
 import { releaseRejection } from "./releaseRejections.js";
 import { sceneIndexFor } from "./sceneNumbering.js";
 import { guessTitleFromText, titlesMatch } from "./libraryScan.js";
@@ -119,7 +120,15 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
     if (grabbed) return; // one announce maps to at most one grab
   }
 
-  if (parsed.seasonNumber === null || !parsed.episodeNumbers?.length) return;
+  // An episode announce is numbered SxxEyy, by absolute number ("[Group] Show - 25"), by air date, or is a
+  // pack of a season: all of them are mapped to the episodes they hold, as the RSS sync does.
+  const numbered =
+    (parsed.seasonNumber !== null && !!parsed.episodeNumbers?.length) ||
+    (parsed.isFullSeason && parsed.seasonNumber !== null) ||
+    parsed.absoluteEpisode != null ||
+    !!parsed.absoluteRange ||
+    !!parsed.airDate;
+  if (!numbered) return;
   const episodes = (await db
     .prepare(
       `SELECT e.*, m.id AS parent_id, m.type AS parent_type, m.title AS parent_title, m.year AS parent_year, m.external_ids AS parent_external_ids,
@@ -151,10 +160,33 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
   const show = resolvedShow.item;
   if (refusal(show.type)) return;
   const sceneIndex = await sceneIndexFor(show.id);
+  const wantsAbsolute = parsed.absoluteEpisode != null || !!parsed.absoluteRange;
+  // A season pack must pass the same guards as a pack found by a search (aired, monitored, enough wanted).
+  let packEpisodes: PackEpisode[] | null = null;
+  const packSettingsNow = packSettings();
+  const profileRow = show.qualityProfileId ? await db.prepare("SELECT cutoff FROM quality_profiles WHERE id = ?").get(show.qualityProfileId) : null;
+  const packCutoff = (profileRow as { cutoff?: string } | null)?.cutoff ?? "";
   for (const ep of episodes) {
     if (ep.parent_id !== show.id) continue;
-    const absoluteEpisode = show.type === "anime" ? await computeAbsoluteEpisodeNumber(show.id, ep.season_number, ep.episode_number) : null;
-    if (!releaseMatchesEpisode(parsed, ep.season_number, ep.episode_number, ep.scene_season_number, ep.scene_episode_number, absoluteEpisode, sceneIndex)) continue;
+    const absoluteEpisode = show.type === "anime" || wantsAbsolute ? await computeAbsoluteEpisodeNumber(show.id, ep.season_number, ep.episode_number) : null;
+    const byDate = !!parsed.airDate && !!ep.air_date && releaseMatchesAirDate(parsed, ep.air_date);
+    if (!byDate && !releaseMatchesEpisode(parsed, ep.season_number, ep.episode_number, ep.scene_season_number, ep.scene_episode_number, absoluteEpisode, sceneIndex)) continue;
+    if (parsed.isFullSeason) {
+      packEpisodes ??= await loadPackEpisodes(show.id);
+      const verdict = judgeSeasonPack({
+        parsed,
+        season: parsed.seasonNumber ?? ep.season_number,
+        episodes: packEpisodes,
+        item: show,
+        packQuality: parsed.quality,
+        cutoff: packCutoff,
+        settings: packSettingsNow,
+      });
+      if (!verdict.ok) {
+        log.info(`[irc:${feed.name}] not grabbing "${releaseTitle}": ${verdict.reason}`);
+        return;
+      }
+    }
     const grabbed = await serializeForTarget(`episode:${ep.id}`, async () => {
       if (await isAlreadyQueued(show.id, ep.id, null)) return false;
       return tryGrabMatch(show, ep.id, null, releaseTitle, downloadUrl, parsed.quality, feed, targetClient);

@@ -20,7 +20,7 @@ import {
  * aired numbering as the fallback) or, for a daily show, its air date. */
 export type ReleaseTarget =
   | { season: number; episode: number; sceneSeason?: number | null; sceneEpisode?: number | null; absoluteEpisode?: number | null; sceneIndex?: SceneIndex }
-  | { airDate: string };
+  | { airDate: string; season?: number; episode?: number };
 
 /** The season and episode a search query was built from, for a typed tvsearch. */
 export interface SearchNumbers {
@@ -114,7 +114,8 @@ export async function episodePlanFor(item: MediaItem, ep: any): Promise<SearchPl
       alternateQueries: alternatesFor(query, await otherTitleQueries(item, ` ${spaced}`), [`${clean} ${dashed}`]),
       ids,
       hints: { airDate: dashed, queryTitle: clean },
-      target: { airDate: ep.air_date },
+      // A daily show's release is sometimes numbered ("Show.S2024E123"): the season and episode are accepted too.
+      target: { airDate: ep.air_date, season: ep.season_number, episode: ep.episode_number },
     };
   }
   const season: number = ep.scene_season_number ?? ep.season_number;

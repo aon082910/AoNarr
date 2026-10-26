@@ -295,7 +295,8 @@ searchRouter.get(
       const parsed = parseReleaseTitle(r.title);
       const matchesTarget =
         targetAirDate !== null
-          ? releaseMatchesAirDate(parsed, targetAirDate)
+          ? releaseMatchesAirDate(parsed, targetAirDate) ||
+            (targetSeason !== null && targetEpisode !== null && releaseMatchesEpisode(parsed, targetSeason, targetEpisode, targetSceneSeason, targetSceneEpisode, null, targetSceneIndex))
           : targetSeason !== null && targetEpisode !== null
             ? releaseMatchesEpisode(parsed, targetSeason, targetEpisode, targetSceneSeason, targetSceneEpisode, targetAbsoluteEpisode, targetSceneIndex)
             : targetSeason !== null
