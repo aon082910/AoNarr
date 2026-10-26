@@ -9,6 +9,8 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
+    // Most suites feed the engine arbitrary release names; the product default (enforce) is tested explicitly.
+    env: { AONARR_STRICT_IDENTITY_DEFAULT: "log" },
     fileParallelism: false,
     // Gives each test file a fresh temp AONARR_CONFIG_DIR/AONARR_DOWNLOADS_DIR before any of its
     // imports run — see tests/helpers/isolateDataDirs.ts.

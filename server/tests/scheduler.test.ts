@@ -3620,22 +3620,40 @@ describe("chooseBestResult — identity gate for tiered types", () => {
     setSetting("strictReleaseIdentity", "");
   });
 
-  it("caps the bare enforce setting at log for the containment types and anime until their rounds land", async () => {
+  it("enforces by default when no setting or environment default says otherwise", async () => {
+    const wrong = fakeResult({ title: "Dune.Part.Two.2024.1080p.WEB-DL.x265-GRP" });
+    const configured = () => chooseBestResult([wrong], [], "", null, 0, null, new Set(), "movie", null, { year: 2021, externalIds: {} }, null, { name: { title: "Dune" } });
+    const saved = process.env.AONARR_STRICT_IDENTITY_DEFAULT;
+    try {
+      delete process.env.AONARR_STRICT_IDENTITY_DEFAULT;
+      expect(await configured()).toBeNull();
+      process.env.AONARR_STRICT_IDENTITY_DEFAULT = "log";
+      expect((await configured())?.result.title).toBe(wrong.title);
+      delete process.env.AONARR_STRICT_IDENTITY_DEFAULT;
+      setSetting("strictReleaseIdentity", "log");
+      expect((await configured())?.result.title).toBe(wrong.title);
+    } finally {
+      setSetting("strictReleaseIdentity", "");
+      if (saved === undefined) delete process.env.AONARR_STRICT_IDENTITY_DEFAULT;
+      else process.env.AONARR_STRICT_IDENTITY_DEFAULT = saved;
+    }
+  });
+
+  it("enforces the bare setting for the containment types and anime too", async () => {
     const wrong = fakeResult({ title: "Some.Other.Event.2024.1080p.WEB-GRP" });
     const ppv = (results: any[]) =>
       chooseBestResult(results, [], "", null, 0, null, new Set(), "ppv", null, { year: 2024, externalIds: {} }, null, { name: { title: "UFC 300" } });
     setSetting("strictReleaseIdentity", "enforce");
-    expect((await ppv([wrong]))?.identity).toMatchObject({ ok: false }); // kept, log-only
-    setSetting("strictReleaseIdentity.ppv", "enforce");
     expect(await ppv([wrong])).toBeNull();
+    setSetting("strictReleaseIdentity.ppv", "log");
+    expect((await ppv([wrong]))?.identity).toMatchObject({ ok: false }); // an explicit per-type setting still wins
     setSetting("strictReleaseIdentity.ppv", "");
-    // Anime is capped too (its episode numbering is not modelled yet); only its own setting enforces.
     const wrongAnime = fakeResult({ title: "Some.Other.Anime.S01E05.1080p.WEB-GRP" });
     const anime = () =>
       chooseBestResult([wrongAnime], [], "", null, 0, { season: 1, episode: 5 }, new Set(), "anime", null, { year: 2020, externalIds: {} }, null, { name: { title: "Show" } });
-    expect((await anime())?.identity).toMatchObject({ ok: false }); // kept, log-only
-    setSetting("strictReleaseIdentity.anime", "enforce");
     expect(await anime()).toBeNull();
+    setSetting("strictReleaseIdentity.anime", "log");
+    expect((await anime())?.identity).toMatchObject({ ok: false });
     setSetting("strictReleaseIdentity.anime", "");
     setSetting("strictReleaseIdentity", "");
   });
