@@ -3351,6 +3351,73 @@ export async function fetchAlternateTitlesFor(type: MediaType, externalIds: Reco
   return titles;
 }
 
+/** The names a work is released under, and where it was made. */
+export interface AliasLookup {
+  /** Every other title the provider knows the work by, most useful first: its alternative titles,
+   * the title in its original language, then its translations (German, French... first, since
+   * scene names transliterate those most). */
+  titles: string[];
+  /** ISO 3166 codes of the countries it comes from ("US", "GB", "JP"), when the provider says. */
+  originCountry: string[] | null;
+}
+
+/** At most this many titles are kept from TMDB's lookup: a film is translated into 40 languages and
+ * each title is a row the IRC matcher reads. */
+const MAX_ALIAS_TITLES = 40;
+const TRANSLATION_LANGUAGE_PRIORITY = ["de", "fr", "es", "it", "nl", "pt", "sv", "da", "no", "nb", "fi", "pl", "ru", "ja", "ko", "zh"];
+
+/** TMDB's alternative titles, original-language title and translations in one request, with the
+ * work's origin country; AniList's titles and synonyms for an anime that has an AniList id. */
+export async function fetchAliasDataFor(type: MediaType, externalIds: Record<string, string>): Promise<AliasLookup> {
+  if ((type === "anime" || type === "manga") && externalIds.anilist) {
+    const anilistType = type === "anime" ? "ANIME" : "MANGA";
+    const gql = `query ($id: Int) { Media(id: $id, type: ${anilistType}) { title { romaji english native } synonyms countryOfOrigin } }`;
+    const res = await fetch("https://graphql.anilist.co", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: gql, variables: { id: Number(externalIds.anilist) } }),
+    });
+    if (!res.ok) throw new Error(`AniList alternate titles lookup failed: HTTP ${res.status}`);
+    const body: any = await res.json();
+    const m = body?.data?.Media;
+    if (!m) throw new Error("AniList has no record for this id");
+    const titles = Array.from(new Set([m.title?.romaji, m.title?.english, m.title?.native, ...(m.synonyms ?? [])].filter(Boolean))) as string[];
+    titles.sort((a, b) => a.localeCompare(b));
+    return { titles, originCountry: m.countryOfOrigin ? [String(m.countryOfOrigin)] : null };
+  }
+
+  if (!externalIds.tmdb) throw new Error("Alternate titles lookup needs a TMDB id — this item doesn't have one");
+  const key = requireSetting("tmdbApiKey", "TMDB API key");
+  const kind = type === "movie" || type === "ppv" ? "movie" : type === "series" || type === "anime" ? "tv" : null;
+  if (!kind) throw new Error(`Alternate titles aren't available for "${type}"`);
+
+  const res = await fetch(`https://api.themoviedb.org/3/${kind}/${externalIds.tmdb}?api_key=${key}&append_to_response=alternative_titles,translations`);
+  if (!res.ok) throw new Error(`TMDB alternative titles lookup failed: HTTP ${res.status}`);
+  const body: any = await res.json();
+  const alternatives: { title: string }[] = kind === "movie" ? (body.alternative_titles?.titles ?? []) : (body.alternative_titles?.results ?? []);
+  const original: string | undefined = (kind === "movie" ? body.original_title : body.original_name) || undefined;
+  const translations: { iso_639_1?: string; data?: { title?: string; name?: string } }[] = body.translations?.translations ?? [];
+  const translated = translations
+    .map((t) => ({ language: t.iso_639_1 ?? "", title: (kind === "movie" ? t.data?.title : t.data?.name) ?? "" }))
+    .filter((t) => t.title.trim())
+    .sort((a, b) => {
+      const pa = TRANSLATION_LANGUAGE_PRIORITY.indexOf(a.language);
+      const pb = TRANSLATION_LANGUAGE_PRIORITY.indexOf(b.language);
+      return (pa < 0 ? 99 : pa) - (pb < 0 ? 99 : pb) || a.title.localeCompare(b.title);
+    })
+    .map((t) => t.title);
+  const alternates = Array.from(new Set(alternatives.map((t) => t.title).filter(Boolean)));
+  alternates.sort((a, b) => a.localeCompare(b));
+  // The original-language title is kept whatever else is cut: the alternative titles give way first.
+  const titles = Array.from(new Set([...alternates.slice(0, MAX_ALIAS_TITLES - 15), ...(original ? [original] : []), ...translated])).slice(0, MAX_ALIAS_TITLES);
+  const countries: string[] = Array.isArray(body.origin_country)
+    ? body.origin_country
+    : Array.isArray(body.production_countries)
+      ? body.production_countries.map((c: any) => c?.iso_3166_1).filter(Boolean)
+      : [];
+  return { titles, originCountry: countries.length > 0 ? countries.map(String) : null };
+}
+
 // ---------------------------------------------------------------------------
 // TMDB collections (movie franchises, e.g. "The Lord of the Rings Collection") — a movie's own
 // /movie/{id} details response carries its collection membership (search results don't), so this

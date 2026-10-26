@@ -11,7 +11,7 @@ import { downloadClientFromRow, mediaItemFromRow, qualityProfileFromRow } from "
 import { grab, isAlreadyQueued, pickClientForProtocol, type ChosenResult } from "./scheduler.js";
 import { computeAbsoluteEpisodeNumber } from "./importer.js";
 import { usesQualityTiers } from "./quality.js";
-import { aliasTitlesByItem, resolveReleaseItem } from "./releaseAliases.js";
+import { aliasTitlesByItem, resolveReleaseItemInLibrary } from "./releaseAliases.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
 import type { DownloadClient, SearchResult } from "../types/index.js";
 
@@ -74,7 +74,6 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
 
   // An announce is unsolicited: which item it names is decided library-wide, with aliases, and two
   // items both claiming it is a reason to grab nothing (Sonarr's MultipleSeriesFoundException).
-  const aliases = await aliasTitlesByItem();
   const singleItems = ((await db.prepare("SELECT * FROM media_items WHERE monitored = 1 AND has_file = 0").all()) as any[])
     .map(mediaItemFromRow)
     .filter((item) => getMediaTypeConfig(item.type).shape === "single");
@@ -87,7 +86,7 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
   const tieredSingles = singleItems
     .filter((item) => !episodeShaped && usesQualityTiers(item.type))
     .filter((item) => parsed.titleYear != null || parsed.year == null || item.year == null || Math.abs(parsed.year - item.year) <= 1);
-  const resolvedSingle = resolveReleaseItem({ title: releaseTitle }, parsed, tieredSingles, aliases);
+  const resolvedSingle = await resolveReleaseItemInLibrary({ title: releaseTitle }, parsed, tieredSingles, await aliasTitlesByItem(tieredSingles.map((i) => i.id)));
   if (resolvedSingle.kind === "ambiguous") {
     log.info(`[irc:${feed.name}] "${releaseTitle}" names ${resolvedSingle.items.length} items (${resolvedSingle.items.map((i) => `"${i.title}"`).join(", ")}); not grabbing`);
     return;
@@ -120,7 +119,7 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
   const episodes = (await db
     .prepare(
       `SELECT e.*, m.id AS parent_id, m.type AS parent_type, m.title AS parent_title, m.year AS parent_year, m.external_ids AS parent_external_ids,
-              m.quality_profile_id AS parent_quality_profile_id, m.root_folder_id AS parent_root_folder_id
+              m.quality_profile_id AS parent_quality_profile_id, m.root_folder_id AS parent_root_folder_id, m.extra_metadata AS parent_extra_metadata
        FROM episodes e JOIN media_items m ON m.id = e.media_item_id
        WHERE e.monitored = 1 AND e.has_file = 0 AND m.monitored = 1`
     )
@@ -134,10 +133,12 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
       external_ids: ep.parent_external_ids,
       quality_profile_id: ep.parent_quality_profile_id,
       root_folder_id: ep.parent_root_folder_id,
+      extra_metadata: ep.parent_extra_metadata,
     });
   const shows = new Map<number, ReturnType<typeof mediaItemFromRow>>();
   for (const ep of episodes) if (!shows.has(ep.parent_id)) shows.set(ep.parent_id, parentOf(ep));
-  const resolvedShow = resolveReleaseItem({ title: releaseTitle }, parsed, Array.from(shows.values()), aliases);
+  const showItems = Array.from(shows.values());
+  const resolvedShow = await resolveReleaseItemInLibrary({ title: releaseTitle }, parsed, showItems, await aliasTitlesByItem(showItems.map((i) => i.id)));
   if (resolvedShow.kind === "ambiguous") {
     log.info(`[irc:${feed.name}] "${releaseTitle}" names ${resolvedShow.items.length} shows (${resolvedShow.items.map((i) => `"${i.title}"`).join(", ")}); not grabbing`);
     return;

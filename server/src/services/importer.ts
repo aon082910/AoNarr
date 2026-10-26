@@ -1147,6 +1147,13 @@ function identityTargetOf(item: { type: string; title: string; year: number | nu
   return { type: item.type, title: item.title, year: item.year, externalIds };
 }
 
+/** The gate's target for a file downloaded for this very item. The grab already applied the rule that
+ * a name with no year belongs to the older of two shows of one title, so a yearless file name is not
+ * refused again here; a wrong year still is. */
+async function importTargetFor(item: { id: number; type: string; title: string; year: number | null; externalIds: string | null }): Promise<IdentityTarget> {
+  return { ...(await identityTargetFor(item)), hasEarlierSameTitle: false };
+}
+
 /**
  * Whether a file about to be placed under `item` is evidently another title's (MATCHING_ACCURACY_
  * PLAN.md, Round 2): the file's own name, or its release folder's when the name says nothing, is
@@ -1460,7 +1467,7 @@ export async function placeFile(params: {
     throw new ImportSkippedError(anotherEntrysFileMessage(destPath));
   }
   if (verify) {
-    const mismatch = fileContradictsTarget(sourceFile, verify, await identityTargetFor(item));
+    const mismatch = fileContradictsTarget(sourceFile, verify, await importTargetFor(item));
     if (mismatch) throw new ImportIdentityMismatchError(`Not importing: ${mismatch} — left in the download for a manual import`);
   }
   const claimKeys =
@@ -2245,7 +2252,7 @@ export async function placeSeasonPackFiles(params: {
   // Judged before the files are mapped to episodes, so a foreign file never claims an episode the
   // show's own file of it would have taken.
   let identityRejected = 0;
-  const identityTarget = verify ? await identityTargetFor(item) : identityTargetOf(item);
+  const identityTarget = verify ? await importTargetFor(item) : identityTargetOf(item);
   const ownFiles = siblings.filter((src) => {
     const mismatch = verify ? fileContradictsTarget(src, ctx, identityTarget) : null;
     if (!mismatch) return true;

@@ -352,3 +352,25 @@ describe("GET /api/search/:mediaItemId — releases that can never import (match
     expect(res.status).toBe(201);
   });
 });
+
+describe("GET /api/search/:mediaItemId — the gate knows about same-titled shows (matching Round 8)", () => {
+  it("rejects the original show's bare-titled release for the reboot, and accepts the one that names its year", async () => {
+    await insertItem("series", "Charmed");
+    const rebootId = await insertItem("series", "Charmed");
+    await db.prepare("UPDATE media_items SET year = 1998 WHERE title = 'Charmed' AND id <> ?").run(rebootId);
+    await db.prepare("UPDATE media_items SET year = 2018 WHERE id = ?").run(rebootId);
+    const { syncPrimaryTitle } = await import("../src/services/releaseAliases.js");
+    for (const row of (await db.prepare("SELECT id FROM media_items WHERE title = 'Charmed'").all()) as { id: number }[]) await syncPrimaryTitle(row.id);
+    searchAllIndexers.mockResolvedValue([
+      release({ title: "Charmed.S01E01.720p.HDTV.x264-LOL", downloadUrl: "magnet:?xt=bare" }),
+      release({ title: "Charmed.2018.S01E01.720p.HDTV.x264-LOL", downloadUrl: "magnet:?xt=year" }),
+    ]);
+
+    const res = await request(app).get(`/api/search/${rebootId}`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(200);
+    const byUrl = Object.fromEntries(res.body.map((r: any) => [r.downloadUrl, r]));
+    expect(byUrl["magnet:?xt=year"]).toMatchObject({ identityOk: true });
+    expect(byUrl["magnet:?xt=bare"]).toMatchObject({ identityOk: false, identityRejection: "year" });
+  });
+});

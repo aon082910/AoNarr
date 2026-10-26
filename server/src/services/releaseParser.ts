@@ -51,6 +51,11 @@ export interface ParsedRelease {
    * (a hashed name, a bare "S01E01"). The identity gate (releaseIdentity.ts) compares this against
    * the target's title; nothing else should guess a title from the raw release name. */
   title: string;
+  /** Other ways the same words read as a title, for the identity gate to try as well: the title with
+   * a trailing language or edition tag taken off ("Cars 2 German DL" -> "Cars 2"; "Movie Name
+   * Extended" -> "Movie Name"), and the title with the edition left in when `title` dropped it
+   * ("Apocalypse Now Redux"). Never longer than the title plus its edition; empty for most releases. */
+  titleAlternates?: string[];
   /** The year that belongs to the title, by Radarr's rule: the first (19|20)xx token with at least
    * one title token before it, not immediately followed by another year token ("Blade.Runner.2049.
    * 2017" -> 2017, "2001.A.Space.Odyssey.1968" -> 1968, "1917.2019" -> 2019), and standing before
@@ -199,7 +204,7 @@ const YEAR_FOLLOWED_BY_YEAR = /^[.\-_ ]+[[(]?(?:19|20)\d{2}\b/;
 const TRAILING_ARTICLE = /\s+(?:the|a|an|and|of)$/i;
 // An edition phrase written before the year ("Alien.Directors.Cut.1979") is not part of the title.
 const TRAILING_EDITION =
-  /\s+(?:directors?'?\s?cut|extended(?:\s(?:cut|edition))?|unrated|remastered|imax|theatrical(?:\scut)?|final\scut|ultimate\s(?:cut|edition)|criterion(?:\s(?:collection|edition))?|uncut|redux|collectors?\sedition)$/i;
+  /\s+(?:director(?:'?s)?'?\s?cut|extended(?:\s(?:cut|edition|version))?|unrated|remastered|restored|imax|theatrical(?:\scut)?|final\scut|ultimate\s(?:cut|edition)|criterion(?:\s(?:collection|edition))?|uncut|redux|despecialized|2in1|open\smatte|assembly\scut|fan\sedit|collectors?\sedition|(?:imperial|diamond|signature|special|limited|deluxe|platinum)\s(?:edition|cut|version)|\d+(?:st|nd|rd|th)\sanniversary(?:\sedition)?)$/i;
 // A pack word after a bare "complete" ("Show.Name.COMPLETE.1080p", "Complete.Season"), or a year/
 // season token before it: then "complete" is the pack marker, not a title word.
 const COMPLETE_PACK_AFTER = /^[ ._-]+(?:series|seasons?|collection|box[ ._-]?set|pack|edition|bluray|blu-ray|bd|remux|\d{3,4}[pi])\b/i;
@@ -257,15 +262,77 @@ function detectTitleYear(title: string, start: number, bound: number | null, air
   return null;
 }
 
-function cleanTitleSlice(slice: string): string {
-  return slice
-    .replace(/[._]/g, " ")
-    .replace(/[\s\-–—:]*[[({]*\s*$/, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(TRAILING_EDITION, "")
-    .replace(TRAILING_ARTICLE, "")
-    .trim();
+const ARTICLES = new Set(["the", "a", "an"]);
+
+/** Whether some word of the text is more than an article: "The" alone is what "The Final Cut" has
+ * left once its edition phrase is taken off, and is no title. */
+function hasRealWord(text: string): boolean {
+  return text.split(/\s+/).some((w) => w && !ARTICLES.has(w.toLowerCase()));
+}
+
+/**
+ * The words of a title slice with its separators and tags tidied. `trimArticle` drops an article left
+ * dangling where a pack word cut the title ("Show Name The" of "Show.Name.The.Complete.Series"); where
+ * a year cut it ("Plan.A.2021", "To.Live.and.Die.in.L.A.1985") the last word is the title's own.
+ * `episodeNumberBefore` drops the absolute number written before an SxxEyy ("Anime Series - 05 -
+ * S01E05"). An edition phrase at the end is taken off unless that leaves no title ("The Final Cut").
+ * The readings that differ are returned as `alternates`.
+ */
+function cleanTitleSlice(slice: string, opts: { trimArticle: boolean; episodeNumberBefore: boolean }): { title: string; alternates: string[] } {
+  let plain = slice.replace(/[._]/g, " ");
+  if (opts.episodeNumberBefore) plain = plain.replace(/\s+-\s+\d{1,4}\s*[-–(\[]*\s*$/, " ");
+  plain = plain.replace(/[\s\-–—:/|]*[[({]*\s*$/, "").replace(/\s+/g, " ").trim();
+  let title = plain;
+  const noEdition = title.replace(TRAILING_EDITION, "").trim();
+  if (noEdition !== title && hasRealWord(noEdition)) title = noEdition;
+  if (opts.trimArticle) title = title.replace(TRAILING_ARTICLE, "").trim();
+
+  // Shorter readings: the tags a release writes after its title (language, audio, edition) peeled
+  // off one run at a time, as tagScanText peels them to read the tags.
+  const alternates = new Set<string>();
+  if (plain !== title && plain) alternates.add(plain);
+  // Scene names put the article last ("Matrix.The.1999", "Big.Bang.Theory.The.S05E01"), and an
+  // edition phrase taken off can leave one behind ("Kingdom of Heaven The"): read it without the
+  // article, and moved to the front where a metadata title has it.
+  const trailingArticle = title.match(/^(.*\S)\s+(the|a|an)$/i);
+  if (trailingArticle && hasRealWord(trailingArticle[1])) {
+    alternates.add(trailingArticle[1]);
+    alternates.add(`${trailingArticle[2][0].toUpperCase()}${trailingArticle[2].slice(1).toLowerCase()} ${trailingArticle[1]}`);
+  }
+  let current = title;
+  for (let i = 0; i < 4; i++) {
+    const found = current.match(TRAILING_TAG_RUN) ?? current.match(TRAILING_EDITION) ?? current.match(TRAILING_EDITION_PHRASE);
+    if (!found || found.index === undefined || !hasTitleToken(current, 0, found.index)) break;
+    current = current.slice(0, found.index).trim();
+    if (!current || !hasRealWord(current)) break;
+    alternates.add(current);
+  }
+  alternates.delete(title);
+  return { title, alternates: Array.from(alternates) };
+}
+
+/** Where a leading "[tag]" or "(tag)" is the title's own first word, not a group or format tag — the
+ * start of the title to use instead of the one after the tags, or null. "(500).Days.of.Summer" and
+ * "[REC].2007" are films; "[SubsPlease] Show" is not. A parenthesised number that is no year or
+ * resolution is a title ("(500)"); a single bracketed word with nothing else before the year is too
+ * ("[REC].2007"). Never in an episode's name: there the tag is a group or a language. */
+function leadingTitleTagStart(title: string, isolatedTitle: string, hasTitleYear: boolean, episodic: boolean): number | null {
+  const m = title.match(/^\s*([[(][^\])]*[\])])/);
+  if (!m) return null;
+  const tag = m[1];
+  const at = title.indexOf(tag);
+  const inner = tag.slice(1, -1).trim();
+  if (episodic) return null;
+  if (/^\d{1,4}$/.test(inner) && tag.startsWith("(")) {
+    const n = Number(inner);
+    return YEAR_SHAPED.test(inner) || [240, 360, 480, 576, 720, 1080, 1440, 2160].includes(n) ? null : at;
+  }
+  // A single bracketed word is the title only when nothing else stands before the year: a release
+  // writes its language, source or group in brackets as often ("[ENG].Movie.Name.2020",
+  // "[RARBG].Movie.Name.2020.1080p"), and those lead a title that follows.
+  if (!/^\p{L}+$/u.test(inner)) return null;
+  // (Nothing else is a number alone: the year itself, or a sequel's number, with no title before it.)
+  return (isolatedTitle === "" || /^\d{1,4}$/.test(isolatedTitle)) && hasTitleYear ? at : null;
 }
 
 // Explicit resolutions come first, in the order Sonarr and Radarr read them, so "1080p UHD BluRay" is
@@ -639,12 +706,17 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
   let seasonPart = false;
   let seasonExtra = false;
   let episodeRange: [number, number] | null = null;
+  // The numbering marker is an SxxEyy (a number before it is the absolute one, not the title's), or a
+  // pack word (an article before it is left dangling by the cut).
+  let markerFromEpisode = false;
+  let packWordCut = false;
   // Where the numbering (season/episode/absolute/air-date/pack) marker starts: the title ends there.
   let markerIndex: number | null = null;
 
   const rangeMatch = title.match(SEASON_EP_RANGE);
   if (rangeMatch) {
     markerIndex = rangeMatch.index ?? null;
+    markerFromEpisode = true;
     seasonNumber = Number(rangeMatch[1]);
     const start = Number(rangeMatch[2]);
     if (rangeMatch[6]) {
@@ -737,7 +809,10 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
           const discImage = bareComplete && DISC_TAG_AFTER.test(after) && YEAR_BEFORE.test(before);
           const titleBefore = hasTitleToken(title, titleStart(title), at);
           const packMarker = titleBefore && (!bareComplete || COMPLETE_PACK_AFTER.test(after) || COMPLETE_PACK_BEFORE.test(before)) && !discImage;
-          if (packMarker) markerIndex = at;
+          if (packMarker) {
+            markerIndex = at;
+            packWordCut = true;
+          }
           // A bare "complete" with no title before it is a title word ("Complete.Unknown.2016").
           if (!bareComplete || (titleBefore && !discImage)) {
             isFullSeason = true;
@@ -814,25 +889,36 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
   // Title and title year. The numbering marker bounds both; without one, the first quality word
   // does. A year never comes from after that bound (an encode date, an episode's year), and the
   // title never runs past the year, a bracket, or the trailing "-GROUP".
-  const start = titleStart(title);
-  const qualityAt = firstQualityMarker(title, start);
-  const titleYearInfo = detectTitleYear(title, start, minDefined(markerIndex, qualityAt), airDate || ambiguousDate ? dateMatch : null, releaseGroup);
-  // A bracket ends the title, except a short qualifier that IS part of it: "Shameless (US)" must
-  // stay distinct from "Shameless", and "(2017)" is handled by the title year.
-  const bracketAt = (() => {
-    for (let i = start; i < title.length; i++) {
-      if ((title[i] === "[" || title[i] === "(") && hasTitleToken(title, start, i)) {
-        const close = title.indexOf(title[i] === "(" ? ")" : "]", i + 1);
-        if (close !== -1 && /^(?:[A-Z]{2,3}|(?:19|20)\d{2})$/.test(title.slice(i + 1, close))) continue;
-        return i;
-      }
-    }
-    return null;
-  })();
   const trimmedTitle = title.trimEnd();
   const groupAt = releaseGroup && trimmedTitle.endsWith(`-${releaseGroup}`) ? trimmedTitle.length - releaseGroup.length - 1 : null;
-  const cutAt = minDefined(markerIndex, titleYearInfo?.index, qualityAt, bracketAt, groupAt);
-  const isolatedTitle = cleanTitleSlice(title.slice(start, cutAt ?? undefined));
+  const isolate = (start: number) => {
+    const qualityAt = firstQualityMarker(title, start);
+    const titleYearInfo = detectTitleYear(title, start, minDefined(markerIndex, qualityAt), airDate || ambiguousDate ? dateMatch : null, releaseGroup);
+    // A bracket ends the title, except a short qualifier that IS part of it: "Shameless (US)" must
+    // stay distinct from "Shameless", and "(2017)" is handled by the title year.
+    const bracketAt = (() => {
+      for (let i = start; i < title.length; i++) {
+        if ((title[i] === "[" || title[i] === "(") && hasTitleToken(title, start, i)) {
+          const close = title.indexOf(title[i] === "(" ? ")" : "]", i + 1);
+          if (close !== -1 && /^(?:[A-Z]{2,3}|(?:19|20)\d{2})$/.test(title.slice(i + 1, close))) continue;
+          return i;
+        }
+      }
+      return null;
+    })();
+    const cutAt = minDefined(markerIndex, titleYearInfo?.index, qualityAt, bracketAt, groupAt);
+    const cleaned = cleanTitleSlice(title.slice(start, cutAt ?? undefined), {
+      trimArticle: packWordCut && cutAt === markerIndex,
+      episodeNumberBefore: markerFromEpisode && cutAt === markerIndex,
+    });
+    return { start, titleYearInfo, cutAt, isolatedTitle: cleaned.title, titleAlternates: cleaned.alternates };
+  };
+  let isolation = isolate(titleStart(title));
+  // A leading "(500)" or "[REC]" is the title's own first word when it reads like one.
+  const episodeShaped = seasonNumber !== null || episodeNumbers !== null || isFullSeason || absoluteEpisode !== null || airDate !== null;
+  const tagStart = leadingTitleTagStart(title, isolation.isolatedTitle, isolation.titleYearInfo !== null || /\b(?:19|20)\d{2}\b/.test(title), episodeShaped);
+  if (tagStart !== null) isolation = isolate(tagStart);
+  const { start, titleYearInfo, cutAt, isolatedTitle, titleAlternates } = isolation;
   // Language, edition and quality-modifier tags are read from outside the title: "French
   // Connection" is no French release and "Final Destination" no Final edition.
   const tags = tagScanText(title, start, cutAt);
@@ -853,6 +939,7 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
 
   return {
     title: isolatedTitle,
+    ...(titleAlternates.length > 0 ? { titleAlternates } : {}),
     titleYear: titleYearInfo?.year ?? null,
     seasonNumber,
     episodeNumbers,

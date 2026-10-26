@@ -22,6 +22,24 @@ describe("identityKey", () => {
     expect(identityKey("Star Wars Episode IV")).toBe("star wars episode 4");
     expect(identityKey("I Robot")).toBe("i robot");
     expect(identityKey("V for Vendetta")).toBe("v for vendetta");
+    expect(identityKey("X-Men")).toBe("x men");
+  });
+
+  it("reads a lone I, V or X as a numeral only at the end of a title or of its part before a subtitle", () => {
+    expect(identityKey("Rocky V")).toBe("rocky 5");
+    expect(identityKey("Star Wars: Episode V - The Empire Strikes Back")).toBe("star wars episode 5 the empire strikes back");
+    expect(identityKey("Star Wars Episode 5")).toBe("star wars episode 5");
+    expect(identityKey("Malcolm X")).toBe(identityKey("Malcolm.X"));
+    // A title that is only the letter stays itself.
+    expect(identityKey("X")).toBe("x");
+  });
+
+  it("folds the letters accent stripping leaves, and writes % as a word", () => {
+    expect(identityKey("Die Straße")).toBe("die strasse");
+    expect(identityKey("Ríkið Þórs Ísland")).toBe("rikid thors island");
+    expect(identityKey("3%")).toBe("3 percent");
+    expect(identityKey("3%")).not.toBe(identityKey("3"));
+    expect(identityKey("Æon Flux")).toBe("aeon flux");
   });
 });
 
@@ -163,9 +181,12 @@ describe("releaseIdentifiesTarget — review follow-ups", () => {
 
   it("matches anime whose provider title names the season differently from the release", () => {
     const s2 = item({ type: "anime", title: "JUJUTSU KAISEN Season 2", year: 2023 });
-    expect(verdict("[SubsPlease] Jujutsu Kaisen S2 - 05 (1080p) [ABCD1234]", s2)).toMatchObject({ ok: true, matchType: "title-main" });
-    expect(verdict("Jujutsu.Kaisen.S02E05.1080p.WEB-GRP", s2)).toMatchObject({ ok: true, matchType: "title-main" });
-    expect(verdict("[SubsPlease] Mushoku Tensei 2nd Season - 05 (1080p)", item({ type: "anime", title: "Mushoku Tensei: Jobless Reincarnation Season 2", year: 2023 }))).toMatchObject({ ok: true });
+    expect(verdict("[SubsPlease] Jujutsu Kaisen S2 - 05 (1080p) [ABCD1234]", s2)).toMatchObject({ ok: true, matchType: "title" });
+    expect(verdict("Jujutsu.Kaisen.S02E05.1080p.WEB-GRP", s2)).toMatchObject({ ok: true, matchType: "title" });
+    // A show's shorter name needs an alias row; the part before the subtitle is not enough.
+    const mushoku = item({ type: "anime", title: "Mushoku Tensei: Jobless Reincarnation Season 2", year: 2023 });
+    expect(verdict("[SubsPlease] Mushoku Tensei 2nd Season - 05 (1080p)", mushoku)).toMatchObject({ ok: false, reason: "title" });
+    expect(verdict("[SubsPlease] Mushoku Tensei 2nd Season - 05 (1080p)", { ...mushoku, aliases: ["Mushoku Tensei 2nd Season"] })).toMatchObject({ ok: true, matchType: "alias" });
     // Movies keep their sequel numbers.
     expect(verdict("Scream.2.1997.1080p.BluRay-GRP", item({ title: "Scream", year: 1996 }))).toMatchObject({ ok: false, reason: "title" });
   });
@@ -186,5 +207,72 @@ describe("releaseIdentifiesTarget — id means id only", () => {
     expect(verdict("Some.Other.Name.1999.1080p.BluRay-GRP", matrix, { imdbId: "tt0133093" })).toMatchObject({ ok: true, matchType: "id" });
     // The id settles a year contradiction too: the indexer knows better than a mis-scraped year.
     expect(verdict("The.Matrix.2010.1080p.BluRay-GRP", matrix, { imdbId: "tt0133093" })).toMatchObject({ ok: true, matchType: "id" });
+  });
+});
+
+describe("releaseIdentifiesTarget — Round 8", () => {
+  it("takes the part of a title before its subtitle for a film only, never for a show (I1)", () => {
+    expect(verdict("Dexter.S01E01.720p.HDTV.x264-CTU", item({ type: "series", title: "Dexter: New Blood", year: 2021 }))).toMatchObject({ ok: false, reason: "title" });
+    expect(verdict("FBI.S06E05.1080p.WEB.h264-GRP", item({ type: "series", title: "FBI: Most Wanted", year: 2020 }))).toMatchObject({ ok: false, reason: "title" });
+    expect(verdict("Law.and.Order.S24E05.1080p.WEB-GRP", item({ type: "series", title: "Law & Order: Special Victims Unit", year: 1999 }))).toMatchObject({ ok: false, reason: "title" });
+    // An alias row is how a show gets a shorter name.
+    expect(verdict("Law.and.Order.SVU.S24E05.1080p.WEB-GRP", item({ type: "series", title: "Law & Order: Special Victims Unit", year: 1999, aliases: ["Law and Order SVU"] }))).toMatchObject({ ok: true, matchType: "alias" });
+    // A film keeps it.
+    expect(verdict("Leon.1994.1080p.BluRay-GRP", item({ title: "Léon: The Professional", year: 1994 }))).toMatchObject({ ok: true, matchType: "title-main" });
+  });
+
+  it("takes a scene region tag only for the item known to come from that country, or one with nothing to confuse it with (I3)", () => {
+    const office = (originCountry: string[] | undefined, sibling: boolean) =>
+      item({ type: "series", title: "The Office", year: 2005, originCountry, hasSameBaseSibling: sibling });
+    expect(verdict("The.Office.US.S01E01.720p.HDTV-GRP", office(["US"], true))).toMatchObject({ ok: true, matchType: "title-region" });
+    expect(verdict("The.Office.US.S01E01.720p.HDTV-GRP", office(["GB"], true))).toMatchObject({ ok: false, reason: "title" });
+    expect(verdict("The.Office.UK.S01E01.720p.HDTV-GRP", office(["GB"], true))).toMatchObject({ ok: true, matchType: "title-region" });
+    // Nothing known about where it was made: fine unless another show shares the title.
+    expect(verdict("The.Office.US.S01E01.720p.HDTV-GRP", office(undefined, false))).toMatchObject({ ok: true, matchType: "title-region" });
+    expect(verdict("The.Office.US.S01E01.720p.HDTV-GRP", office(undefined, true))).toMatchObject({ ok: false, reason: "title" });
+  });
+
+  it("compares a season the same way on the release, the title and every alias (I5)", () => {
+    const frieren = item({ type: "anime", title: "Frieren: Beyond Journey's End Season 2", year: 2026, aliases: ["Sousou no Frieren 2nd Season", "Sousou no Frieren"] });
+    expect(verdict("[SubsPlease] Sousou no Frieren S2 - 05 (1080p) [ABCD1234]", { ...frieren, aliases: ["Sousou no Frieren 2nd Season"] })).toMatchObject({ ok: true, matchType: "alias" });
+    // The sequel's item, a release that names no season: the first season's episode 5.
+    expect(verdict("[SubsPlease] Mushoku Tensei - 05 (1080p) [ABCD1234]", item({ type: "anime", title: "Mushoku Tensei Season 2", year: 2023 }))).toMatchObject({ ok: false, reason: "title" });
+    // Season 3 is not season 2, however the title writes it.
+    expect(verdict("[Group] Shingeki no Kyojin S3 - 05 (1080p)", item({ type: "anime", title: "Attack on Titan Season 2", year: 2017, aliases: ["Shingeki no Kyojin Season 2"] }))).toMatchObject({ ok: false });
+    expect(verdict("[Group] Shingeki no Kyojin S3 - 05 (1080p)", item({ type: "anime", title: "Attack on Titan Season 3", year: 2018, aliases: ["Shingeki no Kyojin Season 3"] }))).toMatchObject({ ok: true, matchType: "alias" });
+    // A part named without a number is an alias row's job.
+    expect(verdict("Attack.on.Titan.The.Final.Season.Part.2.-.05", item({ type: "anime", title: "Attack on Titan: The Final Season Part 2", year: 2022 }))).toMatchObject({ ok: false });
+  });
+
+  it("holds a show with a same-titled sibling to its own year, and gives a yearless release to the older one (I6)", () => {
+    const qaf = item({ type: "series", title: "Queer as Folk", year: 1999, hasSameBaseSibling: true });
+    expect(verdict("Queer.as.Folk.2000.S01E01.720p.HDTV-GRP", qaf)).toMatchObject({ ok: false, reason: "year" });
+    expect(verdict("Queer.as.Folk.1999.S01E01.720p.HDTV-GRP", qaf)).toMatchObject({ ok: true });
+    // Without a sibling to confuse it with, a year one off still passes.
+    expect(verdict("Queer.as.Folk.2000.S01E01.720p.HDTV-GRP", item({ type: "series", title: "Queer as Folk", year: 1999 }))).toMatchObject({ ok: true });
+    const remake = item({ type: "series", title: "Charmed", year: 2018, hasSameBaseSibling: true, hasEarlierSameTitle: true });
+    expect(verdict("Charmed.S01E01.720p.HDTV.x264-LOL", remake)).toMatchObject({ ok: false, reason: "year" });
+    expect(verdict("Charmed.2018.S01E01.720p.HDTV.x264-LOL", remake)).toMatchObject({ ok: true });
+    // A film keeps its slack of a year either way.
+    expect(verdict("Heat.1996.1080p.BluRay-GRP", item({ title: "Heat", year: 1995, hasSameBaseSibling: true }))).toMatchObject({ ok: true });
+  });
+
+  it("matches the other spellings of a title: umlauts, ß, ð, %, a lone roman numeral (I14)", () => {
+    expect(verdict("Die.Bruecke.2008.German.DL.1080p.BluRay.x264-GRP", item({ title: "Die Brücke", year: 2008 }))).toMatchObject({ ok: true });
+    expect(verdict("Fack.ju.Goehte.2013.German.1080p.BluRay.x264-GRP", item({ title: "Fack ju Göhte", year: 2013 }))).toMatchObject({ ok: true });
+    expect(verdict("Die.Strasse.2020.German.1080p.WEB.h264-GRP", item({ title: "Die Straße", year: 2020 }))).toMatchObject({ ok: true });
+    expect(verdict("Die.Brucke.2008.1080p.BluRay.x264-GRP", item({ title: "Die Brücke", year: 2008 }))).toMatchObject({ ok: true });
+    expect(verdict("3.Percent.S01E01.720p.HDTV.x264-GRP", item({ type: "series", title: "3%", year: 2016 }))).toMatchObject({ ok: true });
+    expect(verdict("3.S01E01.720p.HDTV.x264-GRP", item({ type: "series", title: "3%", year: 2016 }))).toMatchObject({ ok: false, reason: "title" });
+    expect(verdict("Rocky.5.1990.1080p.BluRay.x264-GRP", item({ title: "Rocky V", year: 1990 }))).toMatchObject({ ok: true });
+    expect(verdict("Star.Wars.Episode.5.1980.1080p.BluRay.x264-GRP", item({ title: "Star Wars: Episode V - The Empire Strikes Back", year: 1980 }))).toMatchObject({ ok: true, matchType: "title-main" });
+    // Different words stay different: ü is not simply u for a title with another reading.
+    expect(verdict("Die.Mauer.2008.1080p.BluRay.x264-GRP", item({ title: "Die Brücke", year: 2008 }))).toMatchObject({ ok: false });
+  });
+
+  it("matches either side of a dual title joined by a slash or a bar (P13f)", () => {
+    expect(verdict("Bosch.Legacy./.Босх.Спадок.S02E01.1080p.WEB-DL-GRP", item({ type: "series", title: "Bosch: Legacy", year: 2022 }))).toMatchObject({ ok: true, matchType: "title" });
+    expect(verdict("Босх.Спадок./.Bosch.Legacy.S02E01.1080p.WEB-DL-GRP", item({ type: "series", title: "Bosch: Legacy", year: 2022 }))).toMatchObject({ ok: true });
+    expect(verdict("Bosch.Legacy.|.Босх.Спадок.S02E01.1080p.WEB-DL-GRP", item({ type: "series", title: "Босх: Спадок", year: 2022 }))).toMatchObject({ ok: true });
   });
 });

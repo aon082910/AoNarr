@@ -16,7 +16,7 @@ import type { QueueStatusUpdate } from "./downloadClient.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode, type SceneIndex } from "./releaseParser.js";
 import { identityModeFor, releaseIdentifiesTarget, type IdentityMode, type IdentityVerdict } from "./releaseIdentity.js";
 import { releaseRejection } from "./releaseRejections.js";
-import { alternateQueriesFor, aliasTitlesFor } from "./releaseAliases.js";
+import { alternateQueriesFor, aliasTitlesFor, identityContextFor } from "./releaseAliases.js";
 import { backfillProviderAliases } from "./aliasBackfill.js";
 import {
   knownReleaseSize,
@@ -798,6 +798,9 @@ export async function chooseBestResult(
           // The item's alternate titles (releaseAliases.ts): a release named "Shingeki.no.Kyojin"
           // names "Attack on Titan".
           aliases: mediaItemId != null ? await aliasTitlesFor(mediaItemId) : [],
+          // Where it was made and whether another item shares its title: a scene region tag or a
+          // missing year only names this item when that is not in doubt.
+          ...(mediaItemId != null ? await identityContextFor(mediaItemId) : {}),
         }
       : null;
   const verdicts = new Map<SearchResult, IdentityVerdict>();

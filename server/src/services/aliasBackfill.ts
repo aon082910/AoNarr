@@ -1,9 +1,9 @@
 import { db } from "../db/index.js";
 import { log } from "./logger.js";
-import { fetchAlternateTitlesFor } from "./metadata.js";
+import { fetchAliasDataFor, type AliasLookup } from "./metadata.js";
 import { usesQualityTiers } from "./quality.js";
 import { finishBackgroundJob, incrementBackgroundJobDone, isBackgroundJobRunning, startBackgroundJob, updateBackgroundJob } from "./backgroundJobs.js";
-import { storeAliases, type AliasSource } from "./releaseAliases.js";
+import { replaceProviderAliases, type AliasSource } from "./releaseAliases.js";
 import type { MediaType } from "../types/index.js";
 
 /**
@@ -14,6 +14,14 @@ import type { MediaType } from "../types/index.js";
  */
 
 const ALIASES_CHECKED_KEY = "aliasesCheckedAt";
+const ALIASES_VERSION_KEY = "aliasesVersion";
+const ORIGIN_COUNTRY_KEY = "originCountry";
+/** What the alias lookup writes into extra_metadata: when it last asked, which version of the lookup
+ * that was, and where the work was made. A rematch deletes them (they described the old match). */
+export const ALIAS_STATE_KEYS = [ALIASES_CHECKED_KEY, ALIASES_VERSION_KEY, ORIGIN_COUNTRY_KEY];
+/** Version 2 added the original-language title, the translations and the origin country for TMDB
+ * items; an item checked by version 1 is asked again. */
+const ALIASES_VERSION = 2;
 
 /** What a failed provider lookup says about the item and about the run. */
 export type AliasFailure =
@@ -33,7 +41,7 @@ export function classifyAliasFailure(message: string): AliasFailure {
   return "transient";
 }
 
-function aliasSourceFor(type: string, externalIds: Record<string, string>): AliasSource {
+function aliasSourceFor(type: string, externalIds: Record<string, string>): "tmdb_alt" | "anilist_synonym" {
   return (type === "anime" || type === "manga") && externalIds.anilist ? "anilist_synonym" : "tmdb_alt";
 }
 
@@ -52,15 +60,16 @@ export async function refreshProviderAliases(mediaItemId: number): Promise<numbe
     externalIds = {};
   }
   const source = aliasSourceFor(row.type, externalIds);
-  let titles: string[];
+  let lookup: AliasLookup;
   try {
-    titles = await fetchAlternateTitlesFor(row.type as MediaType, externalIds);
+    lookup = await fetchAliasDataFor(row.type as MediaType, externalIds);
   } catch (err) {
     if (classifyAliasFailure((err as Error).message) === "definitive") await markAliasesChecked(row.id);
     throw err;
   }
-  const added = await storeAliases(mediaItemId, titles, source);
-  await markAliasesChecked(row.id);
+  // The provider's current list replaces the one stored: a title it has dropped does not stay.
+  const added = await replaceProviderAliases(mediaItemId, lookup.titles, source);
+  await markAliasesChecked(row.id, lookup.originCountry);
   if (added > 0) log.info(`[aliases] "${row.title}": stored ${added} alternate title(s) from ${source === "anilist_synonym" ? "AniList" : "TMDB"}`);
   return added;
 }
@@ -69,7 +78,7 @@ export async function refreshProviderAliases(mediaItemId: number): Promise<numbe
  * from before the provider call: the item's other writers (a provider match staging its result)
  * run while that call is in flight, and writing back the earlier copy would erase their update.
  * The write only lands if the column still holds what was just read. */
-async function markAliasesChecked(mediaItemId: number): Promise<void> {
+async function markAliasesChecked(mediaItemId: number, originCountry?: string[] | null): Promise<void> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const row = (await db.prepare("SELECT extra_metadata FROM media_items WHERE id = ?").get(mediaItemId)) as { extra_metadata: string | null } | undefined;
     if (!row) return;
@@ -80,6 +89,9 @@ async function markAliasesChecked(mediaItemId: number): Promise<void> {
       extra = {};
     }
     extra[ALIASES_CHECKED_KEY] = new Date().toISOString();
+    extra[ALIASES_VERSION_KEY] = ALIASES_VERSION;
+    if (originCountry) extra[ORIGIN_COUNTRY_KEY] = originCountry;
+    else if (originCountry === null) delete extra[ORIGIN_COUNTRY_KEY];
     const result = await db
       .prepare("UPDATE media_items SET extra_metadata = ? WHERE id = ? AND COALESCE(extra_metadata, '') = ?")
       .run(JSON.stringify(extra), mediaItemId, row.extra_metadata ?? "");
@@ -96,9 +108,11 @@ async function itemsNeedingAliases(): Promise<{ id: number; title: string; sourc
     if (!usesQualityTiers(r.type)) continue;
     try {
       const extra = r.extra_metadata ? JSON.parse(r.extra_metadata) : {};
-      if (extra[ALIASES_CHECKED_KEY]) continue;
       const ids = r.external_ids ? JSON.parse(r.external_ids) : {};
-      if (ids.tmdb || ids.anilist) items.push({ id: r.id, title: r.title, source: aliasSourceFor(r.type, ids) });
+      const source = aliasSourceFor(r.type, ids);
+      // Asked before, unless the lookup has grown since: AniList's has not, TMDB's has (version 2).
+      if (extra[ALIASES_CHECKED_KEY] && (source === "anilist_synonym" || Number(extra[ALIASES_VERSION_KEY] ?? 1) >= ALIASES_VERSION)) continue;
+      if (ids.tmdb || ids.anilist) items.push({ id: r.id, title: r.title, source });
     } catch {
       // A row whose JSON can't be read has no ids to ask by.
     }

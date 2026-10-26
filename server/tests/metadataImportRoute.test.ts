@@ -101,7 +101,19 @@ describe("POST /api/metadata/import — alternate titles", () => {
   it("keys the new item's title and fetches the provider's alternate titles for the identity gate", async () => {
     setSetting("tmdbApiKey", "test-tmdb-key");
     try {
-      stubFetch([{ test: (url) => url.includes("/movie/746036/alternative_titles"), respond: () => json({ titles: [{ title: "Kaskader" }, { title: "Le Cascadeur" }] }) }]);
+      // One request carries the alternative titles, the original-language title, the translations and the origin country.
+      stubFetch([
+        {
+          test: (url) => url.includes("/movie/746036?") && url.includes("append_to_response=alternative_titles,translations"),
+          respond: () =>
+            json({
+              original_title: "The Fall Guy (Original)",
+              origin_country: ["US"],
+              alternative_titles: { titles: [{ title: "Kaskader" }, { title: "Le Cascadeur" }] },
+              translations: { translations: [{ iso_639_1: "de", data: { title: "The Fall Guy - Die Stuntmänner" } }, { iso_639_1: "fr", data: { title: "" } }] },
+            }),
+        },
+      ]);
 
       const res = await importMedia({ type: "movie", title: "The Fall Guy", year: 2024, externalIds: { tmdb: "746036" } });
       expect(res.status).toBe(201);
@@ -116,8 +128,15 @@ describe("POST /api/metadata/import — alternate titles", () => {
             ["The Fall Guy", "primary"],
             ["Kaskader", "tmdb_alt"],
             ["Le Cascadeur", "tmdb_alt"],
+            ["The Fall Guy (Original)", "tmdb_alt"],
+            ["The Fall Guy - Die Stuntmänner", "tmdb_alt"],
           ])
         );
+      });
+      // The checked marker and the origin country are written after the alias rows, so they are awaited too.
+      await vi.waitFor(async () => {
+        const stored = (await db.prepare("SELECT extra_metadata FROM media_items WHERE id = ?").get(res.body.id)) as { extra_metadata: string | null };
+        expect(JSON.parse(stored.extra_metadata ?? "{}")).toMatchObject({ originCountry: ["US"], aliasesVersion: 2 });
       });
     } finally {
       setSetting("tmdbApiKey", "");

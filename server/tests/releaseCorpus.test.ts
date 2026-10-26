@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 import { parseReleaseTitle } from "../src/services/releaseParser.js";
-import { releaseIdentifiesTarget } from "../src/services/releaseIdentity.js";
+import { couldNameItem, releaseIdentifiesTarget, releaseNameTokens } from "../src/services/releaseIdentity.js";
 
 /**
  * Table-driven release-name corpus (MATCHING_ACCURACY_PLAN.md, Round 0).
@@ -40,6 +40,9 @@ interface LibraryItem {
   year: number | null;
   externalIds: Record<string, string>;
   aliases: { title: string; source: string }[];
+  /** What the library knows about the item beyond its own fields (IdentityTarget's originCountry,
+   * hasSameBaseSibling, hasEarlierSameTitle). */
+  context?: { originCountry?: string[]; hasSameBaseSibling?: boolean; hasEarlierSameTitle?: boolean };
 }
 
 const rows: CorpusRow[] = fs
@@ -125,18 +128,24 @@ describe("release-name corpus", () => {
         const name = `[${check.round}] "${row.title}" vs ${check.item}${check.indexer ? " (indexer ids)" : ""} → ${want}`;
         // Round 4 adds fansub season/part conventions; until then those checks describe the target
         // behaviour and stay pending.
-        if (check.round !== "R1" && check.round !== "R3") {
+        if (check.round !== "R1" && check.round !== "R3" && check.round !== "R8") {
           it.todo(name);
           continue;
         }
         it(name, () => {
           const lib = libraryItems[check.item];
+          const parsed = parseReleaseTitle(row.title);
+          const aliases = lib.aliases.map((a) => a.title);
           const verdict = releaseIdentifiesTarget(
             { title: row.title, imdbId: check.indexer?.imdbId ?? null, tmdbId: check.indexer?.tmdbId ?? null, tvdbId: check.indexer?.tvdbId ?? null },
-            parseReleaseTitle(row.title),
-            { type: lib.type, title: lib.title, year: lib.year, externalIds: lib.externalIds, aliases: lib.aliases.map((a) => a.title) }
+            parsed,
+            { type: lib.type, title: lib.title, year: lib.year, externalIds: lib.externalIds, aliases, ...lib.context }
           );
           expect({ ok: verdict.ok, matchType: verdict.matchType, ...(check.expect.reason ? { reason: verdict.reason } : {}) }, verdict.detail).toEqual(check.expect);
+          // The cheap word test IRC runs before the gate must never rule out an item the gate accepts by title.
+          if (verdict.ok && verdict.matchType !== "id") {
+            expect(couldNameItem(releaseNameTokens(parsed), lib.title, aliases), `word test for "${row.title}" vs ${check.item}`).toBe(true);
+          }
         });
       }
     }
