@@ -2163,12 +2163,18 @@ describe("chooseBestResult — rejections, tiers and protocols", () => {
     for (const title of [
       "Harari, Yuval Noah - Sapiens (2014) [EPUB]",
       "[Yuval Noah Harari] Sapiens (2014)",
-      "Yuval Noah Harari - 2015 - Sapiens (Unabridged) [M4B]",
+      "Yuval Noah Harari - 2015 - Sapiens [EPUB]",
       "Sapiens - Harari, Yuval Noah [EPUB]",
     ]) {
       const release = fakeResult({ title });
       expect((await choose([release], sapiensBook))?.result, title).toBe(release);
     }
+    // The same leading year segment in an audiobook's name; an ebook search never takes the audio.
+    const sapiensAudio = fakeResult({ title: "Yuval Noah Harari - 2015 - Sapiens (Unabridged) [M4B]" });
+    expect(
+      (await chooseBestResult([sapiensAudio], [], "", null, 0, null, new Set(), "audiobook", null, null, null, { name: sapiensBook }))?.result
+    ).toBe(sapiensAudio);
+    expect(await choose([sapiensAudio], sapiensBook)).toBeNull();
     for (const title of ["JRR Tolkien - The Hobbit (1937) [EPUB]", "Tolkien, JRR - The Hobbit [EPUB]", "The Hobbit - JRR Tolkien [EPUB]"]) {
       const release = fakeResult({ title });
       expect((await choose([release], hobbit))?.result, title).toBe(release);
@@ -4552,5 +4558,49 @@ describe("after the Round 10 review", () => {
       await searchAndGrabTargets([{ mediaItemId: movie.id }]);
       expect(hintsOfCall(0).includeFeeds).toBe(true);
     });
+  });
+});
+
+describe("Round 14: choosing among releases of a music, book or ROM title", () => {
+  const choose = (results: any[], mediaType: string, name: { title: string; parentTitle?: string }) =>
+    chooseBestResult(results, [], "", null, 0, null, new Set(), mediaType, null, null, null, { name });
+
+  it("takes the lossless rip over a better-seeded lossy one of the same album", async () => {
+    const mp3 = fakeResult({ title: "Queen - Greatest Hits (1981) [MP3 320]", seeders: 900 });
+    const flac = fakeResult({ title: "Queen - Greatest Hits (1981) [FLAC]", seeders: 5 });
+    expect((await choose([mp3, flac], "artist", { title: "Greatest Hits", parentTitle: "Queen" }))?.result).toBe(flac);
+  });
+
+  it("takes the epub over a better-seeded pdf, and a USA ROM over a Japanese one", async () => {
+    const pdf = fakeResult({ title: "Frank Herbert - Dune (1965) [PDF]", seeders: 900 });
+    const epub = fakeResult({ title: "Frank Herbert - Dune (1965) [EPUB]", seeders: 5 });
+    expect((await choose([pdf, epub], "author", { title: "Dune", parentTitle: "Frank Herbert" }))?.result).toBe(epub);
+    const japan = fakeResult({ title: "Super Mario Bros. (Japan)", seeders: 900 });
+    const usa = fakeResult({ title: "Super Mario Bros. (USA)", seeders: 5 });
+    expect((await choose([japan, usa], "rom", { title: "Super Mario Bros." }))?.result).toBe(usa);
+  });
+
+  it("refuses the other year's album when the artist has two of that title", async () => {
+    const old = fakeResult({ title: "Queen - Greatest Hits (1981) [FLAC]", seeders: 900 });
+    const wanted = { title: "Greatest Hits", parentTitle: "Queen", releaseYear: 2008, sameTitledYears: [1981] };
+    expect(await choose([old], "artist", wanted)).toBeNull();
+    const reissue = fakeResult({ title: "Queen - Greatest Hits (2008) [FLAC]", seeders: 5 });
+    expect((await choose([old, reissue], "artist", wanted))?.result).toBe(reissue);
+  });
+});
+
+describe("Round 14: an album or book not yet out", () => {
+  it("is not yet released until its date has passed, a year or month alone only once the whole of it has", async () => {
+    const { isNotYetReleased } = await import("../src/services/scheduler.js");
+    const now = new Date("2026-10-26T12:00:00Z");
+    expect(isNotYetReleased("2026-11-04", now)).toBe(true);
+    expect(isNotYetReleased("2026-10-26", now)).toBe(false);
+    expect(isNotYetReleased("2025-01-01", now)).toBe(false);
+    expect(isNotYetReleased("2026-11", now)).toBe(true);
+    expect(isNotYetReleased("2026-10", now)).toBe(false);
+    expect(isNotYetReleased("2027", now)).toBe(true);
+    expect(isNotYetReleased("2026", now)).toBe(false);
+    expect(isNotYetReleased(null, now)).toBe(false);
+    expect(isNotYetReleased("sometime", now)).toBe(false);
   });
 });

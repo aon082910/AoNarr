@@ -57,11 +57,16 @@ export interface MediaTypeConfig {
 }
 
 const VIDEO_EXT = [".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v"];
-const AUDIO_EXT = [".mp3", ".flac", ".m4a", ".ogg", ".wav"];
+const AUDIO_EXT = [".mp3", ".flac", ".m4a", ".ogg", ".wav", ".opus", ".aac", ".aiff", ".ape", ".wv", ".wma", ".dsf"];
 const BOOK_EXT = [".epub", ".mobi", ".pdf", ".azw3", ".m4b"];
-const AUDIOBOOK_EXT = [".m4b", ".mp3", ".m4a"];
+const AUDIOBOOK_EXT = [".m4b", ".mp3", ".m4a", ".flac", ".ogg", ".opus", ".aac"];
 const COMIC_EXT = [".cbz", ".cbr", ".pdf"];
-const ROM_EXT = [".zip", ".7z", ".nes", ".sfc", ".smc", ".gba", ".gbc", ".gb", ".n64", ".z64", ".nds", ".3ds", ".iso", ".chd"];
+// Multi-file dumps (.bin with its .cue, .gdi with its tracks) are left for a manual import, and Mega Drive's ".md"
+// is left out: it is also Markdown.
+const ROM_EXT = [
+  ".zip", ".7z", ".nes", ".sfc", ".smc", ".gba", ".gbc", ".gb", ".n64", ".z64", ".v64", ".nds", ".3ds", ".iso", ".chd",
+  ".cso", ".pbp", ".wbfs", ".rvz", ".wad", ".gcm", ".nsp", ".xci", ".gen", ".smd", ".sms", ".gg", ".pce", ".a26", ".a78",
+];
 
 /** Extensions ffprobe can actually read (real video/audio containers) — used to skip pointlessly
  * running ffprobe against a file it was never going to understand (an ebook, comic archive, ROM,

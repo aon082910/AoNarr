@@ -21,6 +21,8 @@ import {
   tagIdsForMediaItem,
   targetIdentityOf,
   type TargetName,
+  siblingTitlesOf,
+  yearFieldsOf,
 } from "./scheduler.js";
 import type { MediaItem } from "../types/index.js";
 
@@ -75,7 +77,7 @@ async function judgeOne(row: PendingRow, ctx: { delayProfiles: Awaited<ReturnTyp
       return false;
     }
     subItemPlanFor(item, sub);
-    name = { title: sub.title, parentTitle: item.title };
+    name = { title: sub.title, parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, sub.id), ...(await yearFieldsOf(item, sub)) };
   }
   const onDisk = await existingFileQuality(item, episodeId, subItemId);
   const usable = ctx.clients.filter((c) => !ctx.unavailable.has(c.id));
