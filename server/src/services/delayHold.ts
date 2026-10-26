@@ -18,6 +18,10 @@ export interface DelayProfile {
   /** Which protocol wins between equal releases, and the only one the quality bypass applies to.
    * "none" keeps no preference: every protocol counts as preferred. */
   preferredProtocol: PreferredProtocol;
+  /** A held release whose custom-format score reaches `minimumBypassFormatScore` is not held
+   * (Sonarr's BypassIfAboveCustomFormatScore). */
+  bypassIfAboveFormatScore: boolean;
+  minimumBypassFormatScore: number;
 }
 
 export interface DelayContext {

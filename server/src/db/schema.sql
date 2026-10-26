@@ -361,8 +361,23 @@ CREATE TABLE IF NOT EXISTS delay_profiles (
   torrent_delay_minutes INTEGER NOT NULL DEFAULT 0,
   bypass_if_highest_quality INTEGER NOT NULL DEFAULT 0,
   order_index INTEGER NOT NULL DEFAULT 0,
-  preferred_protocol TEXT NOT NULL DEFAULT 'none' -- 'none' | 'usenet' | 'torrent': ranks equal releases, and the delay bypass needs it
+  preferred_protocol TEXT NOT NULL DEFAULT 'none', -- 'none' | 'usenet' | 'torrent': ranks equal releases, and the delay bypass needs it
+  bypass_if_above_format_score INTEGER NOT NULL DEFAULT 0, -- 1: a release whose custom-format score reaches minimum_bypass_format_score is not delayed
+  minimum_bypass_format_score INTEGER NOT NULL DEFAULT 0
 );
+
+-- Releases a delay profile held back, kept against their target so they are grabbed when the delay
+-- ends (services/pendingStore.ts, pendingReleases.ts). pending_key makes a release unique per target.
+CREATE TABLE IF NOT EXISTS pending_releases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  media_item_id INTEGER NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+  leaf_table TEXT NOT NULL,
+  leaf_id INTEGER NOT NULL,
+  release TEXT NOT NULL,
+  pending_key TEXT NOT NULL UNIQUE,
+  first_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_pending_releases_leaf ON pending_releases(leaf_table, leaf_id);
 
 -- User-defined release-title patterns (regex) that score releases up/down during grabbing,
 -- similar to Sonarr/Radarr custom formats (e.g. prefer REMUX, avoid a bad release group).

@@ -1375,6 +1375,11 @@ export default function Settings() {
     setFormatScores((prev) => prev.map((f) => (f.id === formatId ? { ...f, score } : f)));
   }
 
+  async function saveProfilePreferCutoff(profileId: number, preferCutoffQuality: boolean) {
+    await api.patch(`/quality-profiles/${profileId}`, { preferCutoffQuality });
+    setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, preferCutoffQuality } : p)));
+  }
+
   async function saveMinFormatScore(profileId: number, minFormatScore: number) {
     await api.patch(`/quality-profiles/${profileId}`, { minFormatScore });
     setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, minFormatScore } : p)));
@@ -2115,6 +2120,71 @@ export default function Settings() {
                 </div>
               </div>
             ),
+          },
+          {
+            key: "releaseDecisions",
+            label: "Release Decisions",
+            description: "Size limits, usenet limits, free space, season packs and rejected releases",
+            render: () => {
+              const onOff: [string, string][] = [
+                ["rejectMultiSeasonPacks", "Reject packs of several seasons"],
+                ["rejectRawDiscs", "Reject raw Blu-ray / DVD discs"],
+                ["rejectSamples", "Reject samples (under 70 MB)"],
+                ["rejectHardcodedSubs", "Reject films with burned-in subtitles"],
+                ["seasonPackGuards", "Check a season pack before grabbing it for one episode (aired, monitored, enough of the season wanted)"],
+                ["searchBackoff", "Search a target less often after searches that found nothing"],
+                ["grabFreeSpaceCheck", "Don't grab a release bigger than the free space on its root folder"],
+              ];
+              const numbers: [string, string, string, string][] = [
+                ["seasonPackShare", "Season pack: least percentage of its season to fill or upgrade", "50", "0 for none"],
+                ["minimumFreeSpaceMb", "Free space to keep (MB)", "100", ""],
+                ["usenetRetentionDays", "Usenet retention (days, 0 = no limit)", "0", ""],
+                ["usenetMinimumAgeMinutes", "Usenet minimum age (minutes, 0 = none)", "0", ""],
+              ];
+              return (
+                <div>
+                  <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                    These rules apply to automatic searches, the RSS sync and IRC announces. Your own manual grab from Interactive Search is never blocked by them.
+                  </p>
+                  <label htmlFor="settings-size-limit-mode">Quality size limits are</label>
+                  <select
+                    id="settings-size-limit-mode"
+                    key={settings.sizeLimitMode ?? "size-limit-mode-empty"}
+                    defaultValue={settings.sizeLimitMode ?? "absolute"}
+                    onChange={(e) => saveSetting("sizeLimitMode", e.target.value)}
+                  >
+                    <option value="absolute">Megabytes per release</option>
+                    <option value="perMinute">Megabytes per minute of video (scaled by runtime or episode count)</option>
+                  </select>
+                  {onOff.map(([key, label]) => (
+                    <label key={key} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <input
+                        type="checkbox"
+                        style={{ width: "auto" }}
+                        checked={settings[key] !== "0"}
+                        onChange={(e) => saveSetting(key, e.target.checked ? "1" : "0")}
+                      />
+                      {label}
+                    </label>
+                  ))}
+                  {numbers.map(([key, label, fallback, placeholder]) => (
+                    <div key={key}>
+                      <label htmlFor={`settings-${key}`}>{label}</label>
+                      <input
+                        id={`settings-${key}`}
+                        type="number"
+                        min={0}
+                        style={{ maxWidth: 140 }}
+                        placeholder={placeholder}
+                        key={settings[key] ?? `${key}-empty`}
+                        defaultValue={settings[key] ?? fallback}
+                        onBlur={(e) => saveSetting(key, e.target.value)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              );
+            },
           },
           {
             key: "minimumAvailability",
@@ -3504,6 +3574,15 @@ export default function Settings() {
                   defaultValue={p.minFormatScore}
                   onBlur={(e) => saveMinFormatScore(p.id, Number(e.target.value))}
                 />
+                <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    style={{ width: "auto" }}
+                    checked={p.preferCutoffQuality !== false}
+                    onChange={(e) => saveProfilePreferCutoff(p.id, e.target.checked)}
+                  />
+                  Stop at the cutoff quality (don't grab a higher quality while one at or below it is available)
+                </label>
                 <label htmlFor="settings-maximum-size-gb-reject-any-release-over--96">Maximum size (GB) — reject any release over this, regardless of quality</label>
                 <input id="settings-maximum-size-gb-reject-any-release-over--96"
                   key={p.maxSizeGb ?? `profile-max-size-empty-${p.id}`}
@@ -3702,6 +3781,35 @@ export default function Settings() {
                   />
                   Bypass delay if release is already the profile's cutoff quality
                 </label>
+                <label htmlFor={`settings-delay-preferred-protocol-${d.id}`}>Preferred protocol</label>
+                <select
+                  id={`settings-delay-preferred-protocol-${d.id}`}
+                  value={d.preferredProtocol ?? "none"}
+                  onChange={(e) => updateDelayProfile(d.id, { preferredProtocol: e.target.value as DelayProfile["preferredProtocol"] })}
+                >
+                  <option value="none">No preference</option>
+                  <option value="usenet">Usenet</option>
+                  <option value="torrent">Torrent</option>
+                </select>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", margin: "2px 0 8px" }}>
+                  Between releases that are otherwise equal this protocol wins, and only it can bypass the delay by quality.
+                </p>
+                <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    style={{ width: "auto" }}
+                    checked={!!d.bypassIfAboveFormatScore}
+                    onChange={(e) => updateDelayProfile(d.id, { bypassIfAboveFormatScore: e.target.checked })}
+                  />
+                  Bypass delay if the release's custom-format score is at least
+                </label>
+                <input
+                  type="number"
+                  aria-label="Minimum custom-format score to bypass the delay"
+                  style={{ maxWidth: 120 }}
+                  defaultValue={d.minimumBypassFormatScore ?? 0}
+                  onBlur={(e) => updateDelayProfile(d.id, { minimumBypassFormatScore: Number(e.target.value) || 0 })}
+                />
                 <button className="danger" onClick={() => removeDelayProfile(d.id)}>
                   Delete delay profile
                 </button>

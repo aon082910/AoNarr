@@ -241,6 +241,8 @@ export function delayProfileFromRow(row: any) {
     torrentDelayMinutes: row.torrent_delay_minutes,
     bypassIfHighestQuality: !!row.bypass_if_highest_quality,
     preferredProtocol: row.preferred_protocol === "usenet" || row.preferred_protocol === "torrent" ? row.preferred_protocol : "none",
+    bypassIfAboveFormatScore: !!Number(row.bypass_if_above_format_score ?? 0),
+    minimumBypassFormatScore: Number(row.minimum_bypass_format_score ?? 0),
     orderIndex: row.order_index,
   };
 }

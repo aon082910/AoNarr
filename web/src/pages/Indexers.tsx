@@ -172,6 +172,13 @@ export default function Indexers() {
     load();
   }
 
+  async function updateMinimumSeeders(indexer: Indexer, value: string) {
+    const parsed = value.trim() === "" ? 0 : Number(value);
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed === (indexer.minimumSeeders ?? 0)) return;
+    await api.patch(`/indexers/${indexer.id}`, { minimumSeeders: parsed });
+    load();
+  }
+
   async function syncProwlarr() {
     setSyncingProwlarr(true);
     try {
@@ -389,6 +396,7 @@ export default function Indexers() {
         onToggle={toggle}
         onToggleFlareSolverr={toggleFlareSolverr}
         onUpdateQueryLimit={updateQueryLimit}
+        onUpdateMinimumSeeders={updateMinimumSeeders}
         onTest={test}
         onEdit={openEdit}
         onRemove={remove}
@@ -405,6 +413,7 @@ function IndexersTable({
   onToggle,
   onToggleFlareSolverr,
   onUpdateQueryLimit,
+  onUpdateMinimumSeeders,
   onTest,
   onEdit,
   onRemove,
@@ -415,6 +424,7 @@ function IndexersTable({
   onToggle: (i: Indexer) => void;
   onToggleFlareSolverr: (i: Indexer) => void;
   onUpdateQueryLimit: (i: Indexer, value: string) => void;
+  onUpdateMinimumSeeders: (i: Indexer, value: string) => void;
   onTest: (id: number) => void;
   onEdit: (i: Indexer) => void;
   onRemove: (id: number) => void;
@@ -436,6 +446,7 @@ function IndexersTable({
           {sortableHeader("enabled", "Enabled")}
           <th>FlareSolverr</th>
           <th title="Proactive requests/hour cap — leave blank for no limit">Query Limit</th>
+          <th title="Torrents with fewer seeders than this are rejected — 0 for no minimum">Min Seeders</th>
           <th>Health</th>
           <th></th>
         </tr>
@@ -475,6 +486,17 @@ function IndexersTable({
                   placeholder="unlimited"
                   style={{ width: 90 }}
                   onBlur={(e) => onUpdateQueryLimit(i, e.target.value)}
+                />
+              </td>
+              <td>
+                <input
+                  type="number"
+                  min={0}
+                  key={`${i.id}-min-seeders-${i.minimumSeeders ?? 0}`}
+                  defaultValue={i.minimumSeeders ?? 0}
+                  style={{ width: 70 }}
+                  aria-label={`Minimum seeders for ${i.name}`}
+                  onBlur={(e) => onUpdateMinimumSeeders(i, e.target.value)}
                 />
               </td>
               <td title={i.health?.lastError ?? undefined}>

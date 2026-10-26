@@ -335,3 +335,52 @@ describe("delay profile and indexer routes carry the new fields", () => {
     expect(patched.body.minimumSeeders).toBe(0);
   });
 });
+
+
+describe("chooseBestResult — the delay bypass by custom-format score (D8e)", () => {
+  async function scoredProfile(): Promise<number> {
+    const profileId = Number(
+      (await db.prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff) VALUES (?, ?, 'WEBDL-1080p')").run(`Scored ${Math.random()}`, JSON.stringify(ANY)))
+        .lastInsertRowid
+    );
+    const formatId = Number(
+      (
+        await db
+          .prepare("INSERT INTO custom_formats (name, patterns) VALUES (?, ?)")
+          .run(`Tier One ${Math.random()}`, JSON.stringify([{ type: "releaseGroup", patterns: ["^TIERONE$"], negate: false }]))
+      ).lastInsertRowid
+    );
+    await db.prepare("INSERT INTO quality_profile_format_scores (quality_profile_id, custom_format_id, score) VALUES (?, ?, 500)").run(profileId, formatId);
+    return profileId;
+  }
+  const profile = (over: Record<string, unknown> = {}) =>
+    delayProfile({ torrentDelayMinutes: 120, usenetDelayMinutes: 120, bypassIfAboveFormatScore: true, minimumBypassFormatScore: 300, ...over });
+  const young = (group: string) =>
+    release({ title: `Some.Movie.2020.1080p.WEB-DL.x264-${group}`, publishDate: ago(10) });
+
+  it("lets a young release through when its score reaches the bypass score", async () => {
+    const profileId = await scoredProfile();
+    const top = young("TIERONE");
+    const best = await sched.chooseBestResult([top], ANY, "WEBDL-1080p", profileId, 0, null, new Set(), "movie", profile());
+    expect(best?.result).toBe(top);
+  });
+
+  it("holds a young release scoring under it, or any release when the bypass is off", async () => {
+    const profileId = await scoredProfile();
+    const plain = young("OTHER");
+    expect(await sched.chooseBestResult([plain], ANY, "WEBDL-1080p", profileId, 0, null, new Set(), "movie", profile())).toBeNull();
+    const top = young("TIERONE");
+    expect(await sched.chooseBestResult([top], ANY, "WEBDL-1080p", profileId, 0, null, new Set(), "movie", profile({ bypassIfAboveFormatScore: false }))).toBeNull();
+    expect(await sched.chooseBestResult([top], ANY, "WEBDL-1080p", profileId, 0, null, new Set(), "movie", profile({ minimumBypassFormatScore: 600 }))).toBeNull();
+  });
+
+  it("stores the bypass fields through the delay profile route", async () => {
+    await db.prepare("DELETE FROM delay_profiles").run();
+    const made = await request(app).post("/api/delay-profiles").set("X-Api-Key", apiKey).send({ bypassIfAboveFormatScore: true, minimumBypassFormatScore: 250 });
+    expect(made.status).toBe(201);
+    expect(made.body).toMatchObject({ bypassIfAboveFormatScore: true, minimumBypassFormatScore: 250 });
+    const patched = await request(app).patch(`/api/delay-profiles/${made.body.id}`).set("X-Api-Key", apiKey).send({ minimumBypassFormatScore: -50 });
+    expect(patched.body.minimumBypassFormatScore).toBe(-50);
+    expect((await request(app).patch(`/api/delay-profiles/${made.body.id}`).set("X-Api-Key", apiKey).send({ minimumBypassFormatScore: "abc" })).status).toBe(400);
+  });
+});

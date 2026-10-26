@@ -23,6 +23,14 @@ function preferredProtocol(value: unknown): string {
   return normalizePreferredProtocol(value);
 }
 
+/** A whole number, negative allowed (a format score); undefined when not sent. */
+function wholeScore(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const n = Number(value);
+  if (!Number.isInteger(n) || Math.abs(n) > 2147483647) throw new HttpError(400, `${field} must be a whole number`);
+  return n;
+}
+
 delayProfilesRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
@@ -47,8 +55,8 @@ delayProfilesRouter.post(
     const maxOrder = (await db.prepare("SELECT MAX(order_index) AS m FROM delay_profiles").get()) as { m: number | null };
     const result = await db
       .prepare(
-        `INSERT INTO delay_profiles (tag_id, enable_usenet, enable_torrent, usenet_delay_minutes, torrent_delay_minutes, bypass_if_highest_quality, order_index, preferred_protocol)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO delay_profiles (tag_id, enable_usenet, enable_torrent, usenet_delay_minutes, torrent_delay_minutes, bypass_if_highest_quality, order_index, preferred_protocol, bypass_if_above_format_score, minimum_bypass_format_score)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         b.tagId ?? null,
@@ -58,7 +66,9 @@ delayProfilesRouter.post(
         torrentDelay,
         b.bypassIfHighestQuality ? 1 : 0,
         (maxOrder.m ?? -1) + 1,
-        preferredProtocol(b.preferredProtocol)
+        preferredProtocol(b.preferredProtocol),
+        b.bypassIfAboveFormatScore ? 1 : 0,
+        wholeScore(b.minimumBypassFormatScore, "minimumBypassFormatScore") ?? 0
       );
     const row = await db.prepare("SELECT * FROM delay_profiles WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(delayProfileFromRow(row));
@@ -85,6 +95,14 @@ delayProfilesRouter.patch(
         sets.push(`${col} = ?`);
         values.push(booleanKeys.has(key) ? (b[key] ? 1 : 0) : nonNegativeInteger(b[key], key));
       }
+    }
+    if (b.bypassIfAboveFormatScore !== undefined) {
+      sets.push("bypass_if_above_format_score = ?");
+      values.push(b.bypassIfAboveFormatScore ? 1 : 0);
+    }
+    if (b.minimumBypassFormatScore !== undefined) {
+      sets.push("minimum_bypass_format_score = ?");
+      values.push(wholeScore(b.minimumBypassFormatScore, "minimumBypassFormatScore") ?? 0);
     }
     if (b.preferredProtocol !== undefined) {
       sets.push("preferred_protocol = ?");

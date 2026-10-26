@@ -158,6 +158,8 @@ ensureColumn("sub_items", "overview", "overview TEXT");
 // profile caps its pick at the cutoff, an indexer's minimum seeders, and what a blocklist row knows
 // about the release it blocks (protocol, size, publish date, info hash).
 ensureColumn("delay_profiles", "preferred_protocol", "preferred_protocol TEXT NOT NULL DEFAULT 'none'");
+ensureColumn("delay_profiles", "bypass_if_above_format_score", "bypass_if_above_format_score INTEGER NOT NULL DEFAULT 0");
+ensureColumn("delay_profiles", "minimum_bypass_format_score", "minimum_bypass_format_score INTEGER NOT NULL DEFAULT 0");
 ensureColumn("quality_profiles", "prefer_cutoff_quality", "prefer_cutoff_quality INTEGER NOT NULL DEFAULT 1");
 ensureColumn("indexers", "minimum_seeders", "minimum_seeders INTEGER NOT NULL DEFAULT 0");
 ensureColumn("blocklist", "protocol", "protocol TEXT");

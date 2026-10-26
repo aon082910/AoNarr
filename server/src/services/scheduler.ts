@@ -20,6 +20,7 @@ import { releaseRejection } from "./releaseRejections.js";
 import { applyDelayProfile, type DelayProfile } from "./delayHold.js";
 import { availabilityRejection } from "./releaseAvailability.js";
 import { releaseRuntimeMinutes, runtimeContextFor } from "./releaseRuntime.js";
+import { recordPending } from "./pendingStore.js";
 import { exceedsFreeSpace, freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReserveBytes } from "./freeSpace.js";
 import { compareUsenetAge, comparePeers, largerIsBetterKey, normalizePreferredProtocol, protocolPreferenceKey } from "./releaseRanking.js";
 import { aliasTitlesFor, identityContextFor } from "./releaseAliases.js";
@@ -218,6 +219,8 @@ export async function loadDelayProfiles(): Promise<{ tagId: number | null; profi
       torrentDelayMinutes: row.torrent_delay_minutes,
       bypassIfHighestQuality: !!row.bypass_if_highest_quality,
       preferredProtocol: normalizePreferredProtocol(row.preferred_protocol),
+      bypassIfAboveFormatScore: !!Number(row.bypass_if_above_format_score ?? 0),
+      minimumBypassFormatScore: Number(row.minimum_bypass_format_score ?? 0),
     },
   }));
 }
@@ -930,6 +933,24 @@ export async function chooseBestResult(
     { cutoff, allowedQualities, preferCutoffQuality, userInvoked: !!options.userInvoked },
     ({ parsed }) => parsed.quality
   );
+  // A held release scoring at or above the profile's bypass score is not held after all.
+  if (delayProfile?.bypassIfAboveFormatScore && delay.held.length > 0) {
+    for (const held of [...delay.held]) {
+      const { totalScore, rejected } = await scoreRelease(
+        held.result.title,
+        held.size,
+        qualityProfileId,
+        mediaType,
+        held.result.downloadVolumeFactor ?? null,
+        mediaItemId,
+        held.result.indexerId ?? null
+      );
+      if (!rejected && totalScore >= delayProfile.minimumBypassFormatScore) {
+        delay.held.splice(delay.held.indexOf(held), 1);
+        delay.kept.push(held);
+      }
+    }
+  }
   for (const { result } of delay.disabled) {
     log.info(`[scheduler] rejected "${result.title}": its protocol (${result.protocol}) is turned off in the delay profile`);
   }
@@ -1516,12 +1537,16 @@ export async function isHeldByDelay(
   results: SearchResult[],
   cutoff: string,
   delayProfile: DelayProfile | null,
-  choose: (remaining: SearchResult[], delay: DelayProfile | null) => Promise<ChosenResult | null>
+  choose: (remaining: SearchResult[], delay: DelayProfile | null) => Promise<ChosenResult | null>,
+  /** Told the release that would have been grabbed without the delay, to be kept until it ends. */
+  onHeld?: (release: SearchResult) => Promise<void>
 ): Promise<boolean> {
   // Called only after a search that grabbed nothing: it was the delay if the same releases would have
   // been grabbed without it.
   if (!delayProfile) return false;
-  return (await choose(results, null)) !== null;
+  const chosen = await choose(results, null);
+  if (chosen && onHeld) await onHeld(chosen.result);
+  return chosen !== null;
 }
 
 /** How a search that grabbed nothing ended, for the backoff: "skipped" when it says nothing about the
@@ -1537,10 +1562,11 @@ async function noGrabVerdict(o: {
   cutoff: string;
   delayProfile: DelayProfile | null;
   choose: (remaining: SearchResult[], delay: DelayProfile | null) => Promise<ChosenResult | null>;
+  onHeld?: (release: SearchResult) => Promise<void>;
 }): Promise<"none" | "held" | "skipped"> {
   if (reachOf(o.searched, o.indexers, o.type) !== "answered") return "skipped";
   if (o.candidates.length > 0 && o.candidates.every((r) => !pickClientForProtocol(o.usable, r.protocol))) return "skipped";
-  return (await isHeldByDelay(o.candidates, o.cutoff, o.delayProfile, o.choose)) ? "held" : "none";
+  return (await isHeldByDelay(o.candidates, o.cutoff, o.delayProfile, o.choose, o.onHeld)) ? "held" : "none";
 }
 
 /** Notes how an automatic search of a target ended, for the backoff (searchBackoff.ts). A release the
@@ -2313,6 +2339,7 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
         cutoff,
         delayProfile,
         choose,
+        onHeld: (release) => recordPending(leafTable, leafId, item.id, release),
       });
       await recordAutoSearchResult(leafTable, leafId, verdict);
     }
@@ -3477,6 +3504,18 @@ export function startScheduler() {
       },
     });
   }
+
+  // Releases a delay profile held back are judged again as their delay ends (pendingReleases.ts).
+  registerJob({
+    key: "pendingReleases",
+    name: "Delayed Releases",
+    scheduleType: "cron",
+    defaultSchedule: "*/10 * * * *",
+    run: async () => {
+      const { runPendingReleases } = await import("./pendingReleases.js");
+      await runPendingReleases();
+    },
+  });
 
   // Alternate titles for the identity gate (releaseAliases.ts): asks the provider once per item,
   // rate-limited; nightly for items added since, and once shortly after startup for the backlog.
