@@ -138,6 +138,12 @@ export interface QualityProfile {
   /** True (the default): never pick a quality above the cutoff while one at or below it is on offer.
    * False: pick the best allowed quality, the cutoff only stops upgrades (Sonarr/Radarr). */
   preferCutoffQuality?: boolean;
+  /** False: a file already on disk is never replaced by a better release. */
+  upgradeAllowed?: boolean;
+  /** Above 0: a file whose custom-format score is lower keeps being upgraded at the quality cutoff. */
+  cutoffFormatScore?: number;
+  /** The least a same-quality release must add to the file's score to replace it. */
+  minUpgradeFormatScore?: number;
 }
 
 export interface RootFolder {

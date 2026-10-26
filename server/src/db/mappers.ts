@@ -161,6 +161,9 @@ export function qualityProfileFromRow(row: any) {
     minFormatScore: row.min_format_score,
     maxSizeGb: row.max_size_gb,
     preferCutoffQuality: row.prefer_cutoff_quality == null ? true : !!Number(row.prefer_cutoff_quality),
+    upgradeAllowed: row.upgrade_allowed == null ? true : !!Number(row.upgrade_allowed),
+    cutoffFormatScore: Number(row.cutoff_format_score ?? 0),
+    minUpgradeFormatScore: row.min_upgrade_format_score == null ? 1 : Number(row.min_upgrade_format_score),
   };
 }
 

@@ -13,6 +13,8 @@ import { sceneIndexFor } from "./sceneNumbering.js";
 import { computeAbsoluteEpisodeNumber } from "./importer.js";
 import { getBlocklistedTitles } from "./blocklist.js";
 import { recordPending } from "./pendingStore.js";
+import { formatCutoffNotMet, propersMode, revisionUpgrade, upgradeProfileOf, type ExistingFile, type UpgradeProfile } from "./upgradeRules.js";
+import { existingFileRecord } from "./fileRelease.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
 import { airedFrontierFor, episodeNotAired, episodePlanFor, seasonPlanFor } from "./searchPlan.js";
 import { recordLeafOutcome, recordSeasonSearch, wakeLeaf, wakeSeason } from "./searchBackoff.js";
@@ -338,24 +340,35 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
   let target = null as Awaited<ReturnType<typeof episodePlanFor>>["target"];
   let pack: ReturnType<typeof packContextFor>;
   let upgradeFromRank: number | null = null;
+  let existing: { file: ExistingFile; profile: UpgradeProfile } | undefined;
   let results = group.releases.filter((r) => !env.grabbedUrls.has(r.downloadUrl));
   if (results.length === 0) return "skipped";
+
+  /** A file the target has: replaced only when upgrades are switched on and the profile allows them. At the
+   * cutoff (quality and format score) only a later revision of the file's own release can still replace it. */
+  const considerUpgrade = async (onDisk: string | null, episode: number | null): Promise<boolean> => {
+    if (!env.upgrades) return false;
+    const file = await existingFileRecord(item, episode, null);
+    const upgradeProfile = upgradeProfileOf(profile);
+    if (!file || !upgradeProfile.upgradeAllowed) return false;
+    if (meetsCutoff(onDisk, cutoff) && !formatCutoffNotMet(upgradeProfile, file)) {
+      const mode = propersMode();
+      if (!results.some((r) => revisionUpgrade(mode, file.releaseTitle, r.title))) return false;
+    }
+    upgradeFromRank = qualityRank(onDisk);
+    existing = { file, profile: upgradeProfile };
+    return true;
+  };
 
   if (group.kind === "single") {
     if (await isAlreadyQueued(item.id, null, null)) return "skipped";
     const onDisk = await existingFileQuality(item, null, null);
-    if (onDisk !== undefined) {
-      if (!env.upgrades || meetsCutoff(onDisk, cutoff)) return "skipped";
-      upgradeFromRank = qualityRank(onDisk);
-    }
+    if (onDisk !== undefined && !(await considerUpgrade(onDisk, null))) return "skipped";
   } else if (group.kind === "episode") {
     episodeId = group.ep.id;
     if (await isAlreadyQueued(item.id, group.ep.id, null)) return "skipped";
     const onDisk = await existingFileQuality(item, group.ep.id, null);
-    if (onDisk !== undefined) {
-      if (!env.upgrades || meetsCutoff(onDisk, cutoff)) return "skipped";
-      upgradeFromRank = qualityRank(onDisk);
-    }
+    if (onDisk !== undefined && !(await considerUpgrade(onDisk, group.ep.id))) return "skipped";
     const plan = await episodePlanFor(item, group.ep);
     target = plan.target;
     pack = packContextFor(item, plan);
@@ -389,7 +402,7 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
       delay,
       targetIdentityOf(item),
       item.id,
-      { clients: usable, upgradeFromRank, name: { title: item.title }, indexers: env.indexers, label: item.title, pack }
+      { clients: usable, upgradeFromRank, existing, name: { title: item.title }, indexers: env.indexers, label: item.title, pack }
     );
   let outcome: Awaited<ReturnType<typeof grabBestRelease>>;
   try {

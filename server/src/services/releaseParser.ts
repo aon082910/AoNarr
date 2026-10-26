@@ -762,7 +762,11 @@ function detectRevision(title: string): ReleaseRevision {
     version = Math.max(version, repack[1] ? Number(repack[1]) + 1 : 2);
   }
   const versioned = title.match(REVISION_VERSION);
-  if (versioned) version = Math.max(version, Number(versioned[1]));
+  if (versioned) {
+    version = Math.max(version, Number(versioned[1]));
+    // A fansub "v2" is the group's own re-release, as a REPACK is (Sonarr's AnimeVersionUpgradeSpecification).
+    isRepack = true;
+  }
   return { version, real: (title.match(REVISION_REAL) ?? []).length, isRepack };
 }
 

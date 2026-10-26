@@ -237,7 +237,7 @@
 {"title": "Movie.2020.PROPER.1080p.WEB-DL.x264-GRP", "kind": "release", "expect": {"revision": {"version": 2, "real": 0, "isRepack": false}}}
 {"title": "Series.Title.S01E05.REAL.PROPER.720p.HDTV.x264-GRP", "kind": "release", "expect": {"revision": {"version": 2, "real": 1, "isRepack": false}}}
 {"title": "Series.Title.S01E02.RERIP.720p.BluRay.x264-GRP", "kind": "release", "expect": {"revision": {"version": 2, "real": 0, "isRepack": true}}}
-{"title": "[Group] Show Name - 05v2 [1080p]", "kind": "release", "expect": {"revision": {"version": 2, "real": 0, "isRepack": false}}}
+{"title": "[Group] Show Name - 05v2 [1080p]", "kind": "release", "expect": {"revision": {"version": 2, "real": 0, "isRepack": true}}}
 {"title": "Movie.2021.1080p.WEB-DL.x264-GRP", "kind": "release", "expect": {"revision": {"version": 1, "real": 0, "isRepack": false}}}
 {"title": "Real.Housewives.S01E01.720p.HDTV.x264-GRP", "kind": "release", "expect": {"revision": {"version": 1, "real": 0, "isRepack": false}}}
 {"title": "Movie.2019.1080p.WEBRip.x264-EVO-Obfuscated", "kind": "release", "expect": {"group": "EVO"}}

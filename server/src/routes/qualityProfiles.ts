@@ -44,14 +44,17 @@ qualityProfilesRouter.post(
     validateProfile(b.allowedQualities, b.cutoff);
     const maxSizeGb = b.maxSizeGb === undefined || b.maxSizeGb === null || b.maxSizeGb === "" ? null : Number(b.maxSizeGb);
     const result = await db
-      .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff, max_size_gb, min_format_score, prefer_cutoff_quality) VALUES (?, ?, ?, ?, ?, ?)")
+      .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff, max_size_gb, min_format_score, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(
         b.name,
         JSON.stringify(b.allowedQualities),
         b.cutoff,
         maxSizeGb,
         b.minFormatScore === undefined || b.minFormatScore === null ? 0 : formatScore(b.minFormatScore),
-        b.preferCutoffQuality === false ? 0 : 1
+        b.preferCutoffQuality === false ? 0 : 1,
+        b.upgradeAllowed === false ? 0 : 1,
+        b.cutoffFormatScore === undefined || b.cutoffFormatScore === null ? 0 : formatScore(b.cutoffFormatScore),
+        b.minUpgradeFormatScore === undefined || b.minUpgradeFormatScore === null ? 1 : formatScore(b.minUpgradeFormatScore)
       );
     const row = await db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(qualityProfileFromRow(row));
@@ -93,6 +96,18 @@ qualityProfilesRouter.patch(
     if (b.minFormatScore !== undefined) {
       sets.push("min_format_score = ?");
       values.push(formatScore(b.minFormatScore));
+    }
+    if (b.upgradeAllowed !== undefined) {
+      sets.push("upgrade_allowed = ?");
+      values.push(b.upgradeAllowed ? 1 : 0);
+    }
+    if (b.cutoffFormatScore !== undefined) {
+      sets.push("cutoff_format_score = ?");
+      values.push(formatScore(b.cutoffFormatScore));
+    }
+    if (b.minUpgradeFormatScore !== undefined) {
+      sets.push("min_upgrade_format_score = ?");
+      values.push(formatScore(b.minUpgradeFormatScore));
     }
     if (b.preferCutoffQuality !== undefined) {
       sets.push("prefer_cutoff_quality = ?");
