@@ -13,6 +13,8 @@ import { sceneIndexFor } from "./sceneNumbering.js";
 import { computeAbsoluteEpisodeNumber } from "./importer.js";
 import { getBlocklistedTitles } from "./blocklist.js";
 import { recordPending } from "./pendingStore.js";
+import { formatCutoffNotMet, propersMode, revisionUpgrade, upgradeProfileOf, type ExistingFile, type UpgradeProfile } from "./upgradeRules.js";
+import { existingFileRecord } from "./fileRelease.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
 import { airedFrontierFor, episodeNotAired, episodePlanFor, seasonPlanFor } from "./searchPlan.js";
 import { recordLeafOutcome, recordSeasonSearch, wakeLeaf, wakeSeason } from "./searchBackoff.js";
@@ -24,7 +26,6 @@ import {
   grab,
   grabBestRelease,
   isAlreadyQueued,
-  isBelowCutoff,
   isHeldByDelay,
   isReleaseAvailableForSearch,
   loadDelayProfiles,
@@ -98,18 +99,15 @@ async function loadWanted(upgrades: boolean): Promise<Wanted> {
   const items = ((await db.prepare("SELECT * FROM media_items WHERE monitored = 1").all()) as any[])
     .map(mediaItemFromRow)
     .filter((item) => usesQualityTiers(item.type)) as MediaItem[];
-  const cutoffs = new Map<number | null, string>();
-  const cutoffOf = async (item: MediaItem) => {
-    if (!cutoffs.has(item.qualityProfileId)) cutoffs.set(item.qualityProfileId, (await getQualityProfile(item.qualityProfileId))?.cutoff ?? "");
-    return cutoffs.get(item.qualityProfileId)!;
-  };
 
   const showsById = new Map<number, MediaItem>();
   for (const item of items) {
     const shape = getMediaTypeConfig(item.type).shape;
     if (shape === "single") {
       const missing = !item.hasFile && isReleaseAvailableForSearch(item);
-      if (missing || (upgrades && item.hasFile && isBelowCutoff(item.quality ?? null, await cutoffOf(item)))) {
+      // With upgrades on a film that has its file stays wanted: a later revision of the file's own release, or a
+      // release adding custom-format score, can still replace it even at the cutoff (decide() judges that).
+      if (missing || (upgrades && item.hasFile)) {
         wanted.singles.push(item);
         wanted.types.add(item.type);
       }
@@ -129,7 +127,6 @@ async function loadWanted(upgrades: boolean): Promise<Wanted> {
     for (const row of rows) {
       const show = showsById.get(row.media_item_id);
       if (!show) continue;
-      if (Number(row.has_file) && !isBelowCutoff(row.quality ?? null, await cutoffOf(show))) continue;
       let frontier: Map<number, number> | undefined;
       if (!row.air_date) {
         if (!frontiers.has(show.id)) frontiers.set(show.id, await airedFrontierFor(show.id, today));
@@ -338,24 +335,35 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
   let target = null as Awaited<ReturnType<typeof episodePlanFor>>["target"];
   let pack: ReturnType<typeof packContextFor>;
   let upgradeFromRank: number | null = null;
+  let existing: { file: ExistingFile; profile: UpgradeProfile } | undefined;
   let results = group.releases.filter((r) => !env.grabbedUrls.has(r.downloadUrl));
   if (results.length === 0) return "skipped";
+
+  /** A file the target has: replaced only when upgrades are switched on and the profile allows them. At the
+   * cutoff (quality and format score) only a later revision of the file's own release can still replace it. */
+  const considerUpgrade = async (onDisk: string | null, episode: number | null): Promise<boolean> => {
+    if (!env.upgrades) return false;
+    const file = await existingFileRecord(item, episode, null);
+    const upgradeProfile = upgradeProfileOf(profile);
+    if (!file || !upgradeProfile.upgradeAllowed) return false;
+    if (meetsCutoff(onDisk, cutoff) && !formatCutoffNotMet(upgradeProfile, file)) {
+      const mode = propersMode();
+      if (!results.some((r) => revisionUpgrade(mode, file.releaseTitle, r.title))) return false;
+    }
+    upgradeFromRank = qualityRank(onDisk);
+    existing = { file, profile: upgradeProfile };
+    return true;
+  };
 
   if (group.kind === "single") {
     if (await isAlreadyQueued(item.id, null, null)) return "skipped";
     const onDisk = await existingFileQuality(item, null, null);
-    if (onDisk !== undefined) {
-      if (!env.upgrades || meetsCutoff(onDisk, cutoff)) return "skipped";
-      upgradeFromRank = qualityRank(onDisk);
-    }
+    if (onDisk !== undefined && !(await considerUpgrade(onDisk, null))) return "skipped";
   } else if (group.kind === "episode") {
     episodeId = group.ep.id;
     if (await isAlreadyQueued(item.id, group.ep.id, null)) return "skipped";
     const onDisk = await existingFileQuality(item, group.ep.id, null);
-    if (onDisk !== undefined) {
-      if (!env.upgrades || meetsCutoff(onDisk, cutoff)) return "skipped";
-      upgradeFromRank = qualityRank(onDisk);
-    }
+    if (onDisk !== undefined && !(await considerUpgrade(onDisk, group.ep.id))) return "skipped";
     const plan = await episodePlanFor(item, group.ep);
     target = plan.target;
     pack = packContextFor(item, plan);
@@ -389,7 +397,7 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
       delay,
       targetIdentityOf(item),
       item.id,
-      { clients: usable, upgradeFromRank, name: { title: item.title }, indexers: env.indexers, label: item.title, pack }
+      { clients: usable, upgradeFromRank, existing, name: { title: item.title }, indexers: env.indexers, label: item.title, pack }
     );
   let outcome: Awaited<ReturnType<typeof grabBestRelease>>;
   try {

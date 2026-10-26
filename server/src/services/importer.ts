@@ -31,6 +31,8 @@ import { syncSubtitleToVideo } from "./subtitleSync.js";
 import { DEFAULT_SHAPE_TEMPLATES, DEFAULT_TRACK_TEMPLATE, providerIdVars, renderTemplate } from "./naming.js";
 import { effectiveShape, getMediaTypeConfig, isProbeableFile, type MediaShape } from "./mediaTypes.js";
 import { qualityRank, usesQualityTiers } from "./quality.js";
+import { releaseRecordFor } from "./fileRelease.js";
+import { propersMode, revisionUpgrade } from "./upgradeRules.js";
 import { getSetting } from "./settingsStore.js";
 import { probeMediaInfo } from "./ffprobe.js";
 import { recordGroupSuccess } from "./releaseGroupStats.js";
@@ -1132,8 +1134,11 @@ async function markParentHasFile(itemId: number): Promise<void> {
 /** Whether a file of `quality` may replace a child's existing file of `existingQuality`: only a
  * strictly better-ranked quality, the same bar the search side holds an upgrade grab to, and never
  * for a type with no quality tiers to upgrade by. */
-function isQualityUpgrade(type: MediaType, quality: string | null, existingQuality: string | null): boolean {
-  return usesQualityTiers(type) && qualityRank(quality) > qualityRank(existingQuality);
+function isQualityUpgrade(type: MediaType, quality: string | null, existingQuality: string | null, newTitle?: string | null, existingTitle?: string | null): boolean {
+  if (!usesQualityTiers(type)) return false;
+  if (qualityRank(quality) > qualityRank(existingQuality)) return true;
+  // The same quality: a later revision of the file's own release (a REPACK of its group, a PROPER) replaces it.
+  return qualityRank(quality) === qualityRank(existingQuality) && !!newTitle && revisionUpgrade(propersMode(), existingTitle ?? null, newTitle);
 }
 
 export class ImportSkippedError extends Error {}
@@ -1303,8 +1308,10 @@ export async function placeFile(params: {
    * the item's identity before it is placed (fileContradictsTarget). A manual import, where the
    * admin chose the file, passes nothing and is never refused on identity. */
   verify?: DownloadContext;
+  /** The release the file came from, kept on the row for the upgrade rules (fileRelease.ts); absent for a manual import. */
+  releaseTitle?: string;
 }): Promise<{ destPath: string; fileLabel: string }> {
-  const { itemId, episodeId, subItemId, sourceFile, quality, batchClaims, verify } = params;
+  const { itemId, episodeId, subItemId, sourceFile, quality, batchClaims, verify, releaseTitle } = params;
 
   const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
   if (!mediaRow) throw new Error(`Media item ${itemId} not found`);
@@ -1523,33 +1530,23 @@ export async function placeFile(params: {
   const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
   const sizeBytes = await fsp.stat(destPath).then((s) => s.size).catch(() => null);
 
+  // The release and its score go on the row with the file: a later REPACK is judged against them.
+  const record = await releaseRecordFor(item, releaseTitle, sizeBytes);
   if (shape === "single") {
-    await db.prepare("UPDATE media_items SET has_file = 1, path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?").run(
-      destPath,
-      quality,
-      mediaInfoJson,
-      sizeBytes,
-      item.id
-    );
+    await db
+      .prepare("UPDATE media_items SET has_file = 1, path = ?, quality = ?, media_info = ?, size_bytes = ?, file_release_title = ?, file_format_score = ? WHERE id = ?")
+      .run(destPath, quality, mediaInfoJson, sizeBytes, record.title, record.score, item.id);
   } else if (episodeId) {
     const rows = episodicRows ?? [{ id: episodeId }];
     for (const row of rows) {
-      await db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?").run(
-        destPath,
-        quality,
-        mediaInfoJson,
-        sizeBytes,
-        row.id
-      );
+      await db
+        .prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ?, file_release_title = ?, file_format_score = ? WHERE id = ?")
+        .run(destPath, quality, mediaInfoJson, sizeBytes, record.title, record.score, row.id);
     }
   } else if (subItemId) {
-    await db.prepare("UPDATE sub_items SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?").run(
-      destPath,
-      quality,
-      mediaInfoJson,
-      sizeBytes,
-      subItemId
-    );
+    await db
+      .prepare("UPDATE sub_items SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ?, file_release_title = ?, file_format_score = ? WHERE id = ?")
+      .run(destPath, quality, mediaInfoJson, sizeBytes, record.title, record.score, subItemId);
   }
   if (shape !== "single") await markParentHasFile(item.id);
   await recycleReplacedFiles(replacedPaths, [destPath, sourceFile], item);
@@ -2294,7 +2291,7 @@ export async function placeSeasonPackFiles(params: {
 
   let notUpgradedCount = 0;
   const toPlace = planned.plans.filter(({ src, episodes: targets }) => {
-    const better = targets.find((e) => Number(e.has_file) && !isQualityUpgrade(item.type, quality, e.quality));
+    const better = targets.find((e) => Number(e.has_file) && !isQualityUpgrade(item.type, quality, e.quality, releaseTitle, e.file_release_title));
     if (!better) return true;
     log.info(
       `[importer] left "${path.basename(src)}" in the download: "${quality ?? "unknown"}" is not an upgrade over episode ${better.episode_number}'s "${better.quality ?? "unknown"}" file`
@@ -2370,19 +2367,17 @@ export async function placeSeasonPackFiles(params: {
     if (VIDEO_EXTENSIONS.has(ext.toLowerCase())) await tryDownloadSubtitle(dest, item.id);
     const mediaInfo = await probeMediaInfo(dest);
     const sizeBytes = await fsp.stat(dest).then((s) => s.size).catch(() => null);
+    // The pack's own title stands for each file's release: a later REPACK of the pack is the same group's.
+    const packRecord = await releaseRecordFor(item, releaseTitle, null);
     for (const targetEpisode of covered) {
       const upgraded = !!Number(targetEpisode.has_file);
       if (upgraded) {
         replacedPaths.push(targetEpisode.file_path);
         upgradedCount++;
       }
-      await db.prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?").run(
-        dest,
-        quality,
-        mediaInfo ? JSON.stringify(mediaInfo) : null,
-        sizeBytes,
-        targetEpisode.id
-      );
+      await db
+        .prepare("UPDATE episodes SET has_file = 1, file_path = ?, quality = ?, media_info = ?, size_bytes = ?, file_release_title = ?, file_format_score = ? WHERE id = ?")
+        .run(dest, quality, mediaInfo ? JSON.stringify(mediaInfo) : null, sizeBytes, packRecord.title, packRecord.score, targetEpisode.id);
       // One row per episode, with episodeId/quality set — the same shape placeFile's single-episode
       // path uses, and what duplicates.ts's repeated-import grouping keys on. A single season-level
       // summary row here (as this used to write) collapsed every season-pack import of this series
@@ -2587,15 +2582,15 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
       ) {
         throw err;
       }
-      const epRow = (await db.prepare("SELECT episode_number, has_file, quality FROM episodes WHERE id = ?").get(queueItem.episodeId)) as
-        | { episode_number: number; has_file: number; quality: string | null }
+      const epRow = (await db.prepare("SELECT episode_number, has_file, quality, file_release_title FROM episodes WHERE id = ?").get(queueItem.episodeId)) as
+        | { episode_number: number; has_file: number; quality: string | null; file_release_title: string | null }
         | undefined;
-      if (epRow && Number(epRow.has_file) && !isQualityUpgrade(item.type, quality, epRow.quality)) {
+      if (epRow && Number(epRow.has_file) && !isQualityUpgrade(item.type, quality, epRow.quality, queueItem.title, epRow.file_release_title)) {
         throw new ImportSkippedError(
           `Not an upgrade: episode ${epRow.episode_number} already has a "${epRow.quality ?? "unknown"}" file, and this download is "${quality ?? "unknown"}"`
         );
       }
-      await placeFile({ itemId: item.id, episodeId: queueItem.episodeId, subItemId: null, sourceFile, quality, verify });
+      await placeFile({ itemId: item.id, episodeId: queueItem.episodeId, subItemId: null, sourceFile, quality, verify, releaseTitle: queueItem.title });
       releaseDir = ownReleaseFolderOf(sourceFile, ctx);
       mayHoldMore = true;
     }
@@ -2607,6 +2602,7 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
       sourceFile,
       quality,
       verify,
+      releaseTitle: queueItem.title,
     });
     releaseDir = ownReleaseFolderOf(sourceFile, ctx);
     // A ROM is a single item but a multi-disc game is several files (Disc 1, Disc 2, a .cue and its

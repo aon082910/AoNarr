@@ -18,7 +18,10 @@ CREATE TABLE IF NOT EXISTS quality_profiles (
   cutoff TEXT NOT NULL,
   min_format_score INTEGER NOT NULL DEFAULT 0,
   max_size_gb REAL,
-  prefer_cutoff_quality INTEGER NOT NULL DEFAULT 1 -- 1: never pick a quality above the cutoff while one at or below it is on offer; 0: best allowed quality, as Sonarr/Radarr
+  prefer_cutoff_quality INTEGER NOT NULL DEFAULT 1, -- 1: never pick a quality above the cutoff while one at or below it is on offer; 0: best allowed quality, as Sonarr/Radarr
+  upgrade_allowed INTEGER NOT NULL DEFAULT 1, -- 0: a file already on disk is never replaced by a better release
+  cutoff_format_score INTEGER NOT NULL DEFAULT 0, -- above 0: a file scoring less keeps being upgraded even at the quality cutoff (custom formats)
+  min_upgrade_format_score INTEGER NOT NULL DEFAULT 1 -- the least a same-quality release must add to the file's format score to replace it
 );
 
 CREATE TABLE IF NOT EXISTS media_items (

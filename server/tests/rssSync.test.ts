@@ -267,6 +267,60 @@ describe("runRssSync", () => {
     expect((await queueRows()).map((r) => r.title)).toEqual(["The.Matrix.1999.1080p.WEB-DL-GRP"]);
   });
 
+  describe("a later revision of the file's own release (Round 13)", () => {
+    async function movieWithFile(releaseTitle: string | null): Promise<number> {
+      const profileId = await insertProfile(["HDTV-720p", "WEBDL-1080p"], "WEBDL-1080p");
+      const id = await insertMovie({ hasFile: 1, quality: "WEBDL-1080p", profileId });
+      await db.prepare("UPDATE media_items SET file_release_title = ? WHERE id = ?").run(releaseTitle, id);
+      return id;
+    }
+
+    it("replaces a file at the cutoff with a PROPER or its own group's REPACK, with upgrades switched on", async () => {
+      await insertClient();
+      const indexerId = await insertIndexer();
+      await movieWithFile("The.Matrix.1999.1080p.WEB-DL.x264-GRPA");
+      feeds({ "2000": [release("The.Matrix.1999.REPACK.1080p.WEB-DL.x264-GRPA", indexerId)] });
+
+      expect(await runRssSync()).toMatchObject({ grabbed: 0 });
+      setSetting("autoUpgradeEnabled", "1");
+      await db.prepare("DELETE FROM rss_sync_state").run();
+      expect(await runRssSync()).toMatchObject({ grabbed: 1 });
+      expect((await queueRows()).map((r) => r.title)).toEqual(["The.Matrix.1999.REPACK.1080p.WEB-DL.x264-GRPA"]);
+    });
+
+    it("leaves a file at the cutoff alone for another group's REPACK, a plain re-listing, or when revisions are not upgrades", async () => {
+      await insertClient();
+      const indexerId = await insertIndexer();
+      setSetting("autoUpgradeEnabled", "1");
+      await movieWithFile("The.Matrix.1999.1080p.WEB-DL.x264-GRPA");
+      feeds({
+        "2000": [release("The.Matrix.1999.REPACK.1080p.WEB-DL.x264-GRPB", indexerId), release("The.Matrix.1999.1080p.WEB-DL.x264-GRPC", indexerId)],
+      });
+      expect(await runRssSync()).toMatchObject({ grabbed: 0 });
+
+      setSetting("downloadPropersAndRepacks", "doNotUpgrade");
+      try {
+        feeds({ "2000": [release("The.Matrix.1999.PROPER.1080p.WEB-DL.x264-GRPA", indexerId)] });
+        await db.prepare("DELETE FROM rss_sync_state").run();
+        expect(await runRssSync()).toMatchObject({ grabbed: 0 });
+      } finally {
+        setSetting("downloadPropersAndRepacks", "preferAndUpgrade");
+      }
+      expect(await queueRows()).toEqual([]);
+    });
+
+    it("never replaces a file of a profile that allows no upgrades", async () => {
+      await insertClient();
+      const indexerId = await insertIndexer();
+      setSetting("autoUpgradeEnabled", "1");
+      const id = await movieWithFile("The.Matrix.1999.1080p.WEB-DL.x264-GRPA");
+      const row = (await db.prepare("SELECT quality_profile_id FROM media_items WHERE id = ?").get(id)) as { quality_profile_id: number };
+      await db.prepare("UPDATE quality_profiles SET upgrade_allowed = 0 WHERE id = ?").run(row.quality_profile_id);
+      feeds({ "2000": [release("The.Matrix.1999.PROPER.1080p.WEB-DL.x264-GRPB", indexerId)] });
+      expect(await runRssSync()).toMatchObject({ grabbed: 0 });
+    });
+  });
+
   it("does not grab a release that is already queued for its target", async () => {
     await insertClient();
     const indexerId = await insertIndexer();

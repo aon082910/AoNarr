@@ -1375,6 +1375,11 @@ export default function Settings() {
     setFormatScores((prev) => prev.map((f) => (f.id === formatId ? { ...f, score } : f)));
   }
 
+  async function saveProfileUpgrade(profileId: number, patch: { upgradeAllowed?: boolean; cutoffFormatScore?: number; minUpgradeFormatScore?: number }) {
+    await api.patch(`/quality-profiles/${profileId}`, patch);
+    setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, ...patch } : p)));
+  }
+
   async function saveProfilePreferCutoff(profileId: number, preferCutoffQuality: boolean) {
     await api.patch(`/quality-profiles/${profileId}`, { preferCutoffQuality });
     setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, preferCutoffQuality } : p)));
@@ -2146,6 +2151,17 @@ export default function Settings() {
                   <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
                     These rules apply to automatic searches, the RSS sync and IRC announces. Your own manual grab from Interactive Search is never blocked by them.
                   </p>
+                  <label htmlFor="settings-propers-mode">PROPER, REPACK and v2 releases</label>
+                  <select
+                    id="settings-propers-mode"
+                    key={settings.downloadPropersAndRepacks ?? "propers-mode-empty"}
+                    defaultValue={settings.downloadPropersAndRepacks ?? "preferAndUpgrade"}
+                    onChange={(e) => saveSetting("downloadPropersAndRepacks", e.target.value)}
+                  >
+                    <option value="preferAndUpgrade">Prefer them, and let them replace a file (a REPACK only from the file's own group)</option>
+                    <option value="doNotUpgrade">Prefer them for missing items, but never replace a file</option>
+                    <option value="doNotPrefer">Treat them like any other release</option>
+                  </select>
                   <label htmlFor="settings-size-limit-mode">Quality size limits are</label>
                   <select
                     id="settings-size-limit-mode"
@@ -3583,6 +3599,31 @@ export default function Settings() {
                   />
                   Stop at the cutoff quality (don't grab a higher quality while one at or below it is available)
                 </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    style={{ width: "auto" }}
+                    checked={p.upgradeAllowed !== false}
+                    onChange={(e) => saveProfileUpgrade(p.id, { upgradeAllowed: e.target.checked })}
+                  />
+                  Allow upgrades (replace a file on disk with a better release)
+                </label>
+                <label htmlFor={`settings-cutoff-format-score-${p.id}`}>Format score cutoff (0 = off): keep upgrading a file whose custom-format score is lower</label>
+                <input
+                  id={`settings-cutoff-format-score-${p.id}`}
+                  type="number"
+                  style={{ maxWidth: 140 }}
+                  defaultValue={p.cutoffFormatScore ?? 0}
+                  onBlur={(e) => saveProfileUpgrade(p.id, { cutoffFormatScore: Number(e.target.value) || 0 })}
+                />
+                <label htmlFor={`settings-min-upgrade-format-score-${p.id}`}>Least score gain that replaces a file of the same quality</label>
+                <input
+                  id={`settings-min-upgrade-format-score-${p.id}`}
+                  type="number"
+                  style={{ maxWidth: 140 }}
+                  defaultValue={p.minUpgradeFormatScore ?? 1}
+                  onBlur={(e) => saveProfileUpgrade(p.id, { minUpgradeFormatScore: Number(e.target.value) || 1 })}
+                />
                 <label htmlFor="settings-maximum-size-gb-reject-any-release-over--96">Maximum size (GB) — reject any release over this, regardless of quality</label>
                 <input id="settings-maximum-size-gb-reject-any-release-over--96"
                   key={p.maxSizeGb ?? `profile-max-size-empty-${p.id}`}

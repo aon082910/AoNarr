@@ -21,6 +21,8 @@ import { applyDelayProfile, type DelayProfile } from "./delayHold.js";
 import { availabilityRejection } from "./releaseAvailability.js";
 import { releaseRuntimeMinutes, runtimeContextFor } from "./releaseRuntime.js";
 import { recordPending } from "./pendingStore.js";
+import { compareRevisions, formatCutoffNotMet, judgeUpgrade, propersMode, upgradeProfileOf, type ExistingFile, type UpgradeProfile } from "./upgradeRules.js";
+import { existingFileRecord } from "./fileRelease.js";
 import { exceedsFreeSpace, freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReserveBytes } from "./freeSpace.js";
 import { compareUsenetAge, comparePeers, largerIsBetterKey, normalizePreferredProtocol, protocolGroup, protocolPreferenceKey } from "./releaseRanking.js";
 import { aliasTitlesFor, identityContextFor } from "./releaseAliases.js";
@@ -412,6 +414,10 @@ export interface ChooseOptions {
   /** Rank of the file the target already has (-1 when its quality is unknown): only a strictly
    * higher quality is considered. Omitted/null = the target has no file. */
   upgradeFromRank?: number | null;
+  /** The file the target already has and the profile's upgrade rules (upgradeRules.ts): a better quality
+   * below the cutoff, a later revision of the file's own release, or a same-quality release that adds enough
+   * custom-format score replaces it. Takes the place of `upgradeFromRank` when given. */
+  existing?: { file: ExistingFile; profile: UpgradeProfile };
   /** What the target is called. For a type with no quality tiers, only a release naming this
    * target is considered (releaseNameMatch); for a quality-tiered type it is the title the
    * identity gate (releaseIdentity.ts) compares each release against. */
@@ -751,7 +757,11 @@ export async function chooseBestResult(
   mediaItemId: number | null = null,
   options: ChooseOptions = {}
 ): Promise<ChosenResult | null> {
-  const { clients, upgradeFromRank = null, name = null, label = null } = options;
+  const { clients, upgradeFromRank = null, name = null, label = null, existing = null } = options;
+  const revisionMode = propersMode();
+  // Same-quality releases that could still replace the file by their custom-format score, which is only known
+  // once they are scored.
+  const needsScore = new Set<SearchResult>();
   const targetSuffix = target
     ? "airDate" in target
       ? ` (${target.airDate})`
@@ -760,7 +770,7 @@ export async function chooseBestResult(
   const forLabel = label ? ` for "${label}${targetSuffix}"` : "";
   const tiered = usesQualityTiers(mediaType);
   if (!tiered) {
-    if (upgradeFromRank !== null) return null;
+    if (upgradeFromRank !== null || existing) return null;
     allowedQualities = [];
     cutoff = "";
   }
@@ -920,7 +930,14 @@ export async function chooseBestResult(
       log.info(`[scheduler] rejected "${result.title}": quality "${parsed.quality}" isn't allowed by this quality profile`);
       return false;
     }
-    if (upgradeFromRank !== null && qualityRank(parsed.quality) <= upgradeFromRank) {
+    if (existing) {
+      const verdict = judgeUpgrade(existing.profile, revisionMode, existing.file, { quality: parsed.quality, title: result.title });
+      if (verdict === "no") {
+        log.info(`[scheduler] rejected "${result.title}": it isn't an upgrade over what's already on disk`);
+        return false;
+      }
+      if (verdict === "needs-score") needsScore.add(result);
+    } else if (upgradeFromRank !== null && qualityRank(parsed.quality) <= upgradeFromRank) {
       log.info(`[scheduler] rejected "${result.title}": quality "${parsed.quality}" isn't an upgrade over what's already on disk`);
       return false;
     }
@@ -996,6 +1013,7 @@ export async function chooseBestResult(
     result: SearchResult;
     size: number | null;
     quality: string;
+    revision: ReturnType<typeof parseReleaseTitle>["revision"];
     runtime: number | null;
     matchTier: number;
     totalScore: number;
@@ -1010,6 +1028,7 @@ export async function chooseBestResult(
             result,
             size,
             quality: parsed.quality,
+            revision: parsed.revision,
             runtime: runtimeOf(parsed),
             matchTier: matchTierFor(result, identity),
             ...(await scoreRelease(
@@ -1023,7 +1042,15 @@ export async function chooseBestResult(
             )),
           }))
         )
-      ).filter((c) => c.totalScore >= minFormatScore && !c.rejected);
+      )
+        .filter((c) => c.totalScore >= minFormatScore && !c.rejected)
+        // A same-quality release is an upgrade by its score only when it adds enough to the file's.
+        .filter(
+          (c) =>
+            !existing ||
+            !needsScore.has(c.result) ||
+            judgeUpgrade(existing.profile, revisionMode, existing.file, { quality: c.quality, title: c.result.title, score: c.totalScore }) === "yes"
+        );
       if (candidates.length > 0) break;
     }
     if (candidates.length > 0) break;
@@ -1059,6 +1086,9 @@ export async function chooseBestResult(
 
   candidates.sort(
     (a, b) =>
+      // Within one quality the later revision comes first (Sonarr: quality, revision, format score), unless
+      // the admin asked for revisions to be ignored.
+      (revisionMode === "doNotPrefer" || !a.revision || !b.revision ? 0 : compareRevisions(b.revision, a.revision)) ||
       b.totalScore - a.totalScore ||
       b.matchTier - a.matchTier ||
       protocolPreferenceKey(preferredProtocol, b.result.protocol) - protocolPreferenceKey(preferredProtocol, a.result.protocol) ||
@@ -2288,7 +2318,13 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
   if (upgradeFrom !== undefined && (direct || !usesQualityTiers(item.type))) {
     return { grabbed: false, error: "Already has a file, and this media type has no quality to upgrade by" };
   }
-  if (onDisk !== undefined && meetsCutoff(onDisk, cutoff)) {
+  // A file at the quality cutoff is still worth a search while its custom-format score is under the format cutoff.
+  const upgradeProfile = upgradeProfileOf(profile);
+  const existingFile = onDisk !== undefined ? await existingFileRecord(item, episodeId, subItemId) : undefined;
+  if (existingFile && !upgradeProfile.upgradeAllowed) {
+    return { grabbed: false, error: "This quality profile does not allow upgrades" };
+  }
+  if (onDisk !== undefined && meetsCutoff(onDisk, cutoff) && !(existingFile && formatCutoffNotMet(upgradeProfile, existingFile))) {
     return { grabbed: false, error: `Already meets the profile's cutoff (${cutoff})` };
   }
 
@@ -2332,6 +2368,7 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
       {
         clients: usable,
         upgradeFromRank: upgradeFrom === undefined ? null : qualityRank(upgradeFrom),
+        existing: existingFile ? { file: existingFile, profile: upgradeProfile } : undefined,
         name,
         indexers: ctx.indexers,
         label: item.title,

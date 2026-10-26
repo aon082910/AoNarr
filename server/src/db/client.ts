@@ -161,6 +161,15 @@ ensureColumn("delay_profiles", "preferred_protocol", "preferred_protocol TEXT NO
 ensureColumn("delay_profiles", "bypass_if_above_format_score", "bypass_if_above_format_score INTEGER NOT NULL DEFAULT 0");
 ensureColumn("delay_profiles", "minimum_bypass_format_score", "minimum_bypass_format_score INTEGER NOT NULL DEFAULT 0");
 ensureColumn("quality_profiles", "prefer_cutoff_quality", "prefer_cutoff_quality INTEGER NOT NULL DEFAULT 1");
+// Round 13 (revisions and format-aware upgrades): what a profile allows to replace a file, and what the
+// file on disk was (the release it came from and its custom-format score when it was imported).
+ensureColumn("quality_profiles", "upgrade_allowed", "upgrade_allowed INTEGER NOT NULL DEFAULT 1");
+ensureColumn("quality_profiles", "cutoff_format_score", "cutoff_format_score INTEGER NOT NULL DEFAULT 0");
+ensureColumn("quality_profiles", "min_upgrade_format_score", "min_upgrade_format_score INTEGER NOT NULL DEFAULT 1");
+for (const table of ["media_items", "episodes", "sub_items"]) {
+  ensureColumn(table, "file_release_title", "file_release_title TEXT");
+  ensureColumn(table, "file_format_score", "file_format_score INTEGER");
+}
 ensureColumn("indexers", "minimum_seeders", "minimum_seeders INTEGER NOT NULL DEFAULT 0");
 ensureColumn("blocklist", "protocol", "protocol TEXT");
 ensureColumn("blocklist", "size", "size INTEGER");

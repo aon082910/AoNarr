@@ -14,15 +14,21 @@ export interface UpgradeCandidate {
 interface ProfileInfo {
   cutoff: string;
   name: string;
+  upgradeAllowed: boolean;
+  cutoffFormatScore: number;
 }
 
 async function loadProfiles(): Promise<Map<number, ProfileInfo>> {
-  const rows = (await db.prepare("SELECT id, name, cutoff FROM quality_profiles").all()) as {
+  const rows = (await db.prepare("SELECT id, name, cutoff, upgrade_allowed, cutoff_format_score FROM quality_profiles").all()) as {
     id: number;
     name: string;
     cutoff: string;
+    upgrade_allowed: number | boolean | null;
+    cutoff_format_score: number | string | null;
   }[];
-  return new Map(rows.map((r) => [r.id, { name: r.name, cutoff: r.cutoff }]));
+  return new Map(
+    rows.map((r) => [r.id, { name: r.name, cutoff: r.cutoff, upgradeAllowed: r.upgrade_allowed == null || !!Number(r.upgrade_allowed), cutoffFormatScore: Number(r.cutoff_format_score ?? 0) }])
+  );
 }
 
 /** Only a file whose quality this instance actually ranks can be "below cutoff". An unranked one
@@ -30,9 +36,13 @@ async function loadProfiles(): Promise<Map<number, ProfileInfo>> {
  * music releases) — used to compare as -1, i.e. below every cutoff: auto-upgrade then swapped
  * files of a deleted tier for whatever the profile now allows, and re-searched every unranked file
  * on every run forever. */
-function belowCutoff(quality: string, cutoff: string): boolean {
+function belowCutoff(quality: string, profile: ProfileInfo, formatScore: number | string | null): boolean {
+  if (!profile.upgradeAllowed) return false;
   const current = qualityRank(quality);
-  return current >= 0 && current < qualityRank(cutoff);
+  if (current < 0) return false;
+  if (current < qualityRank(profile.cutoff)) return true;
+  // At the quality cutoff, but under the format cutoff (a custom-format score the profile wants more of).
+  return profile.cutoffFormatScore > 0 && Number(formatScore ?? 0) < profile.cutoffFormatScore;
 }
 
 /** A YouTube video or an RSS podcast episode is downloaded straight from its source, which offers
@@ -93,20 +103,20 @@ async function findUpgradeCandidatesUncached(): Promise<UpgradeCandidate[]> {
   const candidates: UpgradeCandidate[] = [];
 
   const movies = (await db
-    .prepare("SELECT id, type, title, quality, quality_profile_id FROM media_items WHERE has_file = 1 AND monitored = 1 AND quality IS NOT NULL")
-    .all()) as { id: number; type: string; title: string; quality: string; quality_profile_id: number | null }[];
+    .prepare("SELECT id, type, title, quality, quality_profile_id, file_format_score FROM media_items WHERE has_file = 1 AND monitored = 1 AND quality IS NOT NULL")
+    .all()) as { id: number; type: string; title: string; quality: string; quality_profile_id: number | null; file_format_score: number | string | null }[];
   for (const m of movies) {
     if (!usesQualityTiers(m.type)) continue;
     const profile = m.quality_profile_id ? profiles.get(m.quality_profile_id) : undefined;
     if (!profile) continue;
-    if (belowCutoff(m.quality, profile.cutoff)) {
+    if (belowCutoff(m.quality, profile, m.file_format_score)) {
       candidates.push({ mediaItemId: m.id, target: m.title, currentQuality: m.quality, cutoff: profile.cutoff, profileName: profile.name });
     }
   }
 
   const episodes = (await db
     .prepare(
-      `SELECT e.id, e.season_number, e.episode_number, e.quality, m.id AS "mediaItemId", m.type, m.title, m.quality_profile_id
+      `SELECT e.id, e.season_number, e.episode_number, e.quality, e.file_format_score, m.id AS "mediaItemId", m.type, m.title, m.quality_profile_id
        FROM episodes e JOIN media_items m ON m.id = e.media_item_id
        WHERE e.has_file = 1 AND e.monitored = 1 AND m.monitored = 1 AND e.quality IS NOT NULL`
     )
@@ -115,6 +125,7 @@ async function findUpgradeCandidatesUncached(): Promise<UpgradeCandidate[]> {
     season_number: number;
     episode_number: number;
     quality: string;
+    file_format_score: number | string | null;
     mediaItemId: number;
     type: string;
     title: string;
@@ -124,7 +135,7 @@ async function findUpgradeCandidatesUncached(): Promise<UpgradeCandidate[]> {
     if (!usesQualityTiers(e.type)) continue;
     const profile = e.quality_profile_id ? profiles.get(e.quality_profile_id) : undefined;
     if (!profile) continue;
-    if (belowCutoff(e.quality, profile.cutoff)) {
+    if (belowCutoff(e.quality, profile, e.file_format_score)) {
       candidates.push({
         mediaItemId: e.mediaItemId,
         episodeId: e.id,
@@ -138,7 +149,7 @@ async function findUpgradeCandidatesUncached(): Promise<UpgradeCandidate[]> {
 
   const subItems = (await db
     .prepare(
-      `SELECT s.id, s.title AS "subTitle", s.quality, s.external_provider, s.external_id, m.id AS "mediaItemId", m.type, m.title,
+      `SELECT s.id, s.title AS "subTitle", s.quality, s.file_format_score, s.external_provider, s.external_id, m.id AS "mediaItemId", m.type, m.title,
          m.quality_profile_id
        FROM sub_items s JOIN media_items m ON m.id = s.media_item_id
        WHERE s.has_file = 1 AND s.monitored = 1 AND m.monitored = 1 AND s.quality IS NOT NULL`
@@ -147,6 +158,7 @@ async function findUpgradeCandidatesUncached(): Promise<UpgradeCandidate[]> {
     id: number;
     subTitle: string;
     quality: string;
+    file_format_score: number | string | null;
     external_provider: string | null;
     external_id: string | null;
     mediaItemId: number;
@@ -158,7 +170,7 @@ async function findUpgradeCandidatesUncached(): Promise<UpgradeCandidate[]> {
     if (!usesQualityTiers(s.type) || isDirectSource(s.type, s.external_provider, s.external_id)) continue;
     const profile = s.quality_profile_id ? profiles.get(s.quality_profile_id) : undefined;
     if (!profile) continue;
-    if (belowCutoff(s.quality, profile.cutoff)) {
+    if (belowCutoff(s.quality, profile, s.file_format_score)) {
       candidates.push({
         mediaItemId: s.mediaItemId,
         subItemId: s.id,
