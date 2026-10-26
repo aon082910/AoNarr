@@ -15,6 +15,7 @@ import {
 import type { QueueStatusUpdate } from "./downloadClient.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode, type SceneIndex } from "./releaseParser.js";
 import { identityModeFor, releaseIdentifiesTarget, type IdentityMode, type IdentityVerdict } from "./releaseIdentity.js";
+import { releaseRejection } from "./releaseRejections.js";
 import { alternateQueriesFor, aliasTitlesFor } from "./releaseAliases.js";
 import { backfillProviderAliases } from "./aliasBackfill.js";
 import {
@@ -743,6 +744,16 @@ export async function chooseBestResult(
     .filter(({ result, parsed }) => {
       if (parsed.rejected) {
         log.info(`[scheduler] rejected "${result.title}": its name is a hash, so there is no title to check it against`);
+        return false;
+      }
+      return true;
+    })
+    .filter(({ result, parsed, size }) => {
+      // Packs of several seasons, parts of a season, extras, disc images, samples and (films)
+      // hard-coded subtitles: refused before any quality or title decision, as Sonarr/Radarr do.
+      const rejection = releaseRejection(parsed, { title: result.title, size }, mediaType);
+      if (rejection) {
+        log.info(`[scheduler] rejected "${result.title}": ${rejection.reason}`);
         return false;
       }
       return true;

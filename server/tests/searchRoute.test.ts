@@ -319,3 +319,36 @@ describe("manual grab under an enforcing identity gate (Round 3)", () => {
     expect(res.status).toBe(201);
   });
 });
+
+describe("GET /api/search/:mediaItemId — releases that can never import (matching Round 7)", () => {
+  it("flags a multi-season pack, a split season, a raw disc, a sample and a cam copy, and sorts them below a clean release", async () => {
+    const showId = await insertItem("series", "Show Name");
+    searchAllIndexers.mockResolvedValue([
+      release({ title: "Show.Name.S01-S05.COMPLETE.1080p.BluRay.x265-GRP", seeders: 900, downloadUrl: "magnet:?xt=pack" }),
+      release({ title: "Show.Name.S01.Part.1.1080p.WEB-DL-GRP", seeders: 800, downloadUrl: "magnet:?xt=part" }),
+      release({ title: "Show.Name.S01.1080p.Full.Blu-ray.AVC.DTS-HD.MA.5.1-GRP", seeders: 700, downloadUrl: "magnet:?xt=disc" }),
+      release({ title: "Show.Name.S01.Sample.1080p.WEB-DL-GRP", size: 40_000_000, seeders: 600, downloadUrl: "magnet:?xt=sample" }),
+      release({ title: "Show.Name.S01.1080p.WEB-DL.DDP5.1.H.264-GRP", seeders: 5, downloadUrl: "magnet:?xt=clean" }),
+    ]);
+
+    const res = await request(app).get(`/api/search/${showId}?seasonNumber=1`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(200);
+    expect(res.body[0]).toMatchObject({ downloadUrl: "magnet:?xt=clean", rejected: false });
+    const byUrl = Object.fromEntries(res.body.map((r: any) => [r.downloadUrl, r]));
+    expect(byUrl["magnet:?xt=pack"]).toMatchObject({ rejected: true, rejectReason: expect.stringMatching(/several seasons/) });
+    expect(byUrl["magnet:?xt=part"]).toMatchObject({ rejected: true, rejectReason: expect.stringMatching(/split season/) });
+    expect(byUrl["magnet:?xt=disc"]).toMatchObject({ rejected: true, rejectReason: expect.stringMatching(/disc image/) });
+    expect(byUrl["magnet:?xt=sample"]).toMatchObject({ rejected: true, rejectReason: expect.stringMatching(/sample/) });
+  });
+
+  it("still lets the user grab a rejected release by hand", async () => {
+    await insertTorrentClient();
+    const movieId = await insertItem("movie", "Disc Movie");
+    const res = await request(app)
+      .post(`/api/search/${movieId}/grab`)
+      .set("X-Api-Key", apiKey)
+      .send({ title: "Disc.Movie.2010.1080p.Blu-ray.AVC.DTS-HD.MA.5.1-GRP", downloadUrl: "magnet:?xt=urn:btih:disc", protocol: "torrent" });
+    expect(res.status).toBe(201);
+  });
+});

@@ -3652,3 +3652,95 @@ describe("chooseBestResult — identity gate for tiered types", () => {
     expect(best?.identity).toBeUndefined();
   });
 });
+
+describe("chooseBestResult — releases that can never import (matching Round 7)", () => {
+  const choose = (results: any[], allowed: string[], mediaType = "movie", target: { season: number; episode: number } | null = null) =>
+    chooseBestResult(results, allowed, allowed[allowed.length - 1] ?? "", null, 0, target, new Set(), mediaType);
+
+  it("grades a cam or telesync copy as no tier any profile allows", async () => {
+    const allowed = ["WEBDL-1080p", "Bluray-1080p"];
+    for (const title of [
+      "Movie.Name.2024.1080p.HQCAM.x264-GRP",
+      "Movie.Name.2024.NEWCAM.1080p.HEVC-GRP",
+      "Movie.Name.2024.1080p.TSRip.x264-GRP",
+      "Movie.Name.2024.1080p.TS.x264-GRP",
+      "Movie.Name.2024.1080p.SCREENER.x264-GRP",
+    ]) {
+      expect(await choose([fakeResult({ title, seeders: 900 })], allowed), title).toBeNull();
+    }
+    const real = fakeResult({ title: "Movie.Name.2024.1080p.WEB-DL.DDP5.1.H.264-GRP", seeders: 2 });
+    const best = await choose([fakeResult({ title: "Movie.Name.2024.1080p.HQCAM.x264-GRP", seeders: 900, downloadUrl: "magnet:?xt=cam" }), real], allowed);
+    expect(best?.result.title).toBe(real.title);
+  });
+
+  it("takes a 720p Blu-ray encode now that the ladder has the tier", async () => {
+    const best = await choose([fakeResult({ title: "Movie.Name.2020.720p.BluRay.x264-GRP" })], ["Bluray-720p"]);
+    expect(best?.quality).toBe("Bluray-720p");
+  });
+
+  it("refuses a pack of several seasons for one episode, however well seeded", async () => {
+    const pack = fakeResult({ title: "Show.Name.S01-S05.COMPLETE.1080p.BluRay.x265-GRP", seeders: 900, size: 100_000_000_000 });
+    const single = fakeResult({ title: "Show.Name.S01E03.1080p.WEB-DL.DDP5.1.H.264-GRP", seeders: 4, downloadUrl: "magnet:?xt=single" });
+    expect((await choose([pack, single], [], "series", { season: 1, episode: 3 }))?.result.title).toBe(single.title);
+    expect(await choose([pack], [], "series", { season: 1, episode: 3 })).toBeNull();
+    // The off switch restores the old behaviour.
+    setSetting("rejectMultiSeasonPacks", "0");
+    try {
+      expect((await choose([pack], [], "series", { season: 1, episode: 3 }))?.result.title).toBe(pack.title);
+    } finally {
+      setSetting("rejectMultiSeasonPacks", "");
+    }
+  });
+
+  it("matches no episode with one part of a split season or a season's extras", async () => {
+    for (const title of ["Show.Name.S02.Part.1.1080p.NF.WEBRip.DDP5.1.x264-NTb", "Show.Name.S02.Vol.2.1080p.WEB-DL-GRP", "Show.Name.S02.EXTRAS.1080p.WEB-GRP", "Show.Name.S02.SUBPACK.1080p.WEB-GRP"]) {
+      expect(await choose([fakeResult({ title })], [], "series", { season: 2, episode: 3 }), title).toBeNull();
+    }
+  });
+
+  it("takes a single episode written S01.Ep06 for that episode only", async () => {
+    const release = fakeResult({ title: "Super.Series.S01.Ep06.1080p.BluRay.DTS.x264-MiR" });
+    expect((await choose([release], [], "series", { season: 1, episode: 6 }))?.result.title).toBe(release.title);
+    expect(await choose([release], [], "series", { season: 1, episode: 7 })).toBeNull();
+  });
+
+  it("refuses a raw Blu-ray or DVD disc image", async () => {
+    for (const title of [
+      "Movie Title 2014 1080p Blu-ray AVC DTS-HD MA 5.1-PTP",
+      "Movie.Title.2010.COMPLETE.UHD.BLURAY-GRP",
+      "Movie.Title.1997.1080p.NL.BD-50",
+      "Movie.Title.2008.DVD9.NTSC-GRP",
+    ]) {
+      expect(await choose([fakeResult({ title })], []), title).toBeNull();
+    }
+    expect((await choose([fakeResult({ title: "Movie.Title.2010.1080p.BluRay.x264-GRP" })], []))?.quality).toBe("Bluray-1080p");
+    setSetting("rejectRawDiscs", "0");
+    try {
+      expect((await choose([fakeResult({ title: "Movie.Title.1997.1080p.NL.BD-50" })], []))?.result).toBeDefined();
+    } finally {
+      setSetting("rejectRawDiscs", "");
+    }
+  });
+
+  it("refuses a sample clip, not a full-size release with sample in its name", async () => {
+    const sample = fakeResult({ title: "Movie.Name.2020.1080p.BluRay.x264.Sample-GRP", size: 50_000_000 });
+    expect(await choose([sample], [])).toBeNull();
+    const big = fakeResult({ title: "The.Sample.2020.1080p.BluRay.x264-GRP", size: 8_000_000_000 });
+    expect((await choose([big], []))?.result.title).toBe(big.title);
+    // An unreported size is no proof of a clip.
+    expect((await choose([{ ...sample, size: 0 }], []))?.result).toBeDefined();
+  });
+
+  it("refuses burned-in subtitles for a film, not for an episode", async () => {
+    const hc = fakeResult({ title: "Movie.Name.2021.1080p.WEB-DL.HC.x264-GRP" });
+    expect(await choose([hc], [])).toBeNull();
+    expect(await choose([fakeResult({ title: "Movie.Name.2021.1080p.BluRay.KORSUB.x264-GRP" })], [])).toBeNull();
+    expect((await choose([fakeResult({ title: "Movie.Name.2021.1080p.BluRay.MultiSubs.x264-GRP" })], []))?.result).toBeDefined();
+    expect((await choose([fakeResult({ title: "Show.Name.S01E03.1080p.WEB-DL.HC.x264-GRP" })], [], "series", { season: 1, episode: 3 }))?.result).toBeDefined();
+  });
+
+  it("leaves a type with no video tiers to its own rules", async () => {
+    const album = fakeResult({ title: "Artist - Album 2020 BD-50 [FLAC]" });
+    expect((await choose([album], [], "artist"))?.result.title).toBe(album.title);
+  });
+});

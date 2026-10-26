@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import { db } from "../db/index.js";
 import { getMediaTypeConfig, isPlaceholderParent, isProbeableFile, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
 import { rootFolderFromRow } from "../db/mappers.js";
-import { parseReleaseTitle, type ParsedRelease } from "./releaseParser.js";
+import { parseReleaseTitle, FILE_NAME, type ParsedRelease } from "./releaseParser.js";
 import { probeAudioTags, probeMediaInfo } from "./ffprobe.js";
 import { cleanEmbeddedAuthor, cleanEmbeddedTitle, firstAuthor, readBookFileMetadata } from "./bookFileMetadata.js";
 import {
@@ -257,7 +257,7 @@ function expandEpisodeOnlyMatch(match: RegExpMatchArray): number[] {
  * ordinarily a one-element array — multi-episode files are the exception, not the common case.
  */
 export function detectSeasonEpisode(parentFolderName: string, filenameBase: string): { season: number | null; episodes: number[] } {
-  const parsed = parseReleaseTitle(filenameBase);
+  const parsed = parseReleaseTitle(filenameBase, FILE_NAME);
   if (parsed.seasonNumber !== null && parsed.episodeNumbers && parsed.episodeNumbers.length > 0) {
     return { season: parsed.seasonNumber, episodes: parsed.episodeNumbers };
   }
@@ -1037,7 +1037,7 @@ async function scanAndImportLibraryInner(
         // "Show.2024.05.01") and so, in front of it, the show's name. A bare "E03" only counts as
         // numbering relative to its Season/Specials folder — the words before it are the episode's
         // own title, never the show's.
-        const ownParse = parseReleaseTitle(base);
+        const ownParse = parseReleaseTitle(base, FILE_NAME);
         const filenameHasMarker =
           parsedEpisodes.length > 0 &&
           ((ownParse.seasonNumber != null && !!ownParse.episodeNumbers?.length) || EPISODE_X_FORMAT.test(base) || !!ownParse.airDate);
@@ -1098,7 +1098,7 @@ async function scanAndImportLibraryInner(
         }
         if (onlyTitle && !looseTitlesMatch(guessedTitle, onlyTitle)) continue;
         if (onlySeasonNumber != null && season !== onlySeasonNumber) continue;
-        const parsed = parseReleaseTitle(base);
+        const parsed = parseReleaseTitle(base, FILE_NAME);
         const quality = parsed.quality === "Unknown" ? null : parsed.quality;
 
         // A year in the filename is the show's only when the filename names the show before its
@@ -1554,7 +1554,7 @@ async function scanAndImportLibraryInner(
             });
             continue;
           }
-          const parsed = parseReleaseTitle(base);
+          const parsed = parseReleaseTitle(base, FILE_NAME);
           const quality = parsed.quality === "Unknown" ? null : parsed.quality;
           const mediaInfo = isProbeableFile(filePath) ? await probeMediaInfo(filePath) : null;
           const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
@@ -1594,7 +1594,7 @@ async function scanAndImportLibraryInner(
           continue;
         }
         if (onlyTitle && !looseTitlesMatch(guessedTitle, onlyTitle)) continue;
-        const parsed = parseReleaseTitle(base);
+        const parsed = parseReleaseTitle(base, FILE_NAME);
         const quality = parsed.quality === "Unknown" ? null : parsed.quality;
         // The year the file gives its own title (before the quality words or in brackets), not one
         // from an encode date after them: "Blade.Runner.2049.2017.mkv" is a 2017 film.

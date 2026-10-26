@@ -83,3 +83,93 @@
 {"title": "[SubsPlease] Jujutsu Kaisen S2 - 05 (1080p) [ABCD1234]", "kind": "release", "expect": {"title": "Jujutsu Kaisen", "season": 2, "episodes": [5]}, "identity": [{"item": "jujutsuKaisenS2", "round": "R1", "expect": {"ok": true, "matchType": "title-main"}}, {"item": "jujutsuKaisen", "round": "R1", "expect": {"ok": true, "matchType": "title"}}]}
 {"title": "Season.of.the.Witch.2011.1080p.BluRay-GRP", "kind": "release", "expect": {"title": "Season of the Witch", "titleYear": 2011}}
 {"title": "Agents.of.S.H.I.E.L.D.S01E01.1080p.WEB-DL-GRP", "kind": "release", "expect": {"title": "Agents of S H I E L D", "season": 1, "episodes": [1]}, "identity": [{"item": "agentsOfShield", "round": "R3", "expect": {"ok": true, "matchType": "alias"}}]}
+{"title": "Movie.Name.2024.1080p.HQCAM.x264-GRP", "kind": "release", "expect": {"quality": "Unknown", "source": "Cam", "group": "GRP", "title": "Movie Name", "titleYear": 2024}}
+{"title": "Movie Name (2024) New HDCAMRip 1080p", "kind": "release", "expect": {"quality": "Unknown", "source": "Cam", "title": "Movie Name", "titleYear": 2024}}
+{"title": "Movie.Name.2024.NEWCAM.1080p.HEVC-GRP", "kind": "release", "expect": {"quality": "Unknown", "source": "Cam"}}
+{"title": "Movie.Name.2024.1080p.TSRip.x264-GRP", "kind": "release", "expect": {"quality": "Unknown", "source": "Telesync"}}
+{"title": "Movie.Name.2024.HD-TS.1080p.x264-GRP", "kind": "release", "expect": {"quality": "Unknown", "source": "Telesync"}}
+{"title": "Movie.Name.2024.1080p.TS.x264-GRP", "kind": "release", "expect": {"quality": "Unknown", "source": "Telesync"}}
+{"title": "Movie.Name.2024.720p.TELESYNCH.x264-GRP", "kind": "release", "expect": {"quality": "Unknown", "source": "Telesync"}}
+{"title": "Movie.Name.2024.1080p.TC.x264-GRP", "kind": "release", "expect": {"quality": "Unknown", "source": "Telecine"}}
+{"title": "Movie.Name.2024.1080p.SCREENER.x264-GRP", "kind": "release", "expect": {"quality": "Unknown", "qualityModifier": "screener"}}
+{"title": "Movie.Name.2024.1080p.WEB-DL.DDP5.1.H.264-TS", "kind": "release", "expect": {"quality": "WEBDL-1080p", "source": "WEBDL", "group": "TS"}}
+{"title": "Cam.Girl.2018.1080p.BluRay.x264-GRP", "kind": "release", "expect": {"quality": "Bluray-1080p", "source": "Bluray", "title": "Cam Girl", "titleYear": 2018}}
+{"title": "Movie Title 2014 1080p Blu-ray AVC DTS-HD MA 5.1-PTP", "kind": "release", "expect": {"quality": "Unknown", "rawDisc": true, "qualityModifier": "brdisk"}}
+{"title": "Movie Title 1976 2160p UHD Blu-ray DTS-HD MA 5.1 DV HDR HEVC-UNTOUCHED", "kind": "release", "expect": {"quality": "Unknown", "rawDisc": true}}
+{"title": "Movie.Title.2010.COMPLETE.UHD.BLURAY-GRP", "kind": "release", "expect": {"quality": "Unknown", "rawDisc": true, "fullSeason": false}}
+{"title": "Movie.Title.1997.1080p.NL.BD-50", "kind": "release", "expect": {"quality": "Unknown", "rawDisc": true}}
+{"title": "Movie.Title.2008.DVD9.NTSC-GRP", "kind": "release", "expect": {"quality": "Unknown", "rawDisc": true}}
+{"title": "Movie.Title.2010.1080p.BluRay.x264-GRP", "kind": "release", "expect": {"quality": "Bluray-1080p", "rawDisc": false, "qualityModifier": null}}
+{"title": "Movie.2019.2160p.UHD.BluRay.REMUX.HEVC.HDR-GRP", "kind": "release", "expect": {"quality": "Remux-2160p", "rawDisc": false}}
+{"title": "Show.Name.S01.COMPLETE.1080p.BluRay.AAC.5.1-GRP", "kind": "release", "expect": {"quality": "Bluray-1080p", "rawDisc": false, "fullSeason": true, "season": 1}}
+{"title": "The.Series.2016.S02.Part.1.1080p.NF.WEBRip.DDP5.1.x264-NTb", "kind": "release", "expect": {"season": 2, "fullSeason": false, "seasonPart": true, "releaseType": null, "title": "The Series", "titleYear": 2016}}
+{"title": "The.Series.S07.Vol.1.1080p.WEB-DL-GRP", "kind": "release", "expect": {"season": 7, "fullSeason": false, "seasonPart": true}}
+{"title": "The.Series.S06.P1.720p.HDTV-GRP", "kind": "release", "expect": {"season": 6, "fullSeason": false, "seasonPart": true}}
+{"title": "[Group] Series Title S03 Part 2 [1080p]", "kind": "release", "expect": {"season": 3, "fullSeason": false, "seasonPart": true}}
+{"title": "Show.Name.Season.2.Part.1.1080p.WEB-GRP", "kind": "release", "expect": {"season": 2, "fullSeason": false, "seasonPart": true}}
+{"title": "Punky Series S01 EXTRAS DVDRip XviD RUNNER", "kind": "release", "expect": {"season": 1, "fullSeason": false, "seasonExtra": true, "releaseType": null}}
+{"title": "Series.S11.SUBPACK.DVDRip.XviD-REWARD", "kind": "release", "expect": {"season": 11, "fullSeason": false, "seasonExtra": true}}
+{"title": "Show.S01.Special.1080p.WEB-GRP", "kind": "release", "expect": {"season": 1, "fullSeason": false, "seasonExtra": true}}
+{"title": "Show.S00.Specials.1080p.WEB-GRP", "kind": "release", "expect": {"season": 0, "fullSeason": true, "seasonExtra": false}}
+{"title": "Super.Series.S01.Ep06.1080p.BluRay.DTS.x264-MiR", "kind": "release", "expect": {"season": 1, "episodes": [6], "fullSeason": false, "releaseType": "single", "title": "Super Series"}}
+{"title": "Series.Title.S01.E.01.720p.HDTV-GRP", "kind": "release", "expect": {"season": 1, "episodes": [1], "fullSeason": false}}
+{"title": "Series Title S03 - EP14 VOSTFR [1080p]", "kind": "release", "expect": {"season": 3, "episodes": [14], "fullSeason": false, "title": "Series Title"}}
+{"title": "A Series: RE S2 - Episode 4 VOSTFR", "kind": "release", "expect": {"season": 2, "episodes": [4], "fullSeason": false}}
+{"title": "[XKsub] Series Title S2 [05][HEVC-10bit 1080p]", "kind": "release", "expect": {"season": 2, "episodes": [5], "fullSeason": false, "title": "Series Title"}}
+{"title": "[DameDesuYo] Another Anime With Special Naming (Season 2) - 33 (1080p HEVC)", "kind": "release", "expect": {"season": 2, "episodes": [33], "fullSeason": false}}
+{"title": "Series Title Season 01 Episode 05-06 720p", "kind": "release", "expect": {"season": 1, "episodes": [5, 6], "fullSeason": false, "releaseType": "multi"}}
+{"title": "Series_Title_S01E05_720p_HDTV_x264-GRP", "kind": "release", "expect": {"season": 1, "episodes": [5], "quality": "HDTV-720p", "group": "GRP", "title": "Series Title"}}
+{"title": "Movie_Title_2010_1080p_BluRay_x264-GRP", "kind": "release", "expect": {"year": 2010, "quality": "Bluray-1080p", "title": "Movie Title", "titleYear": 2010}}
+{"title": "[HorribleSubs]_Some_Anime_Show_-_145_[720p]", "kind": "release", "expect": {"absolute": 145, "group": "HorribleSubs", "title": "Some Anime Show"}}
+{"title": "The_Daily_Show_2024_08_25_1080p", "kind": "release", "expect": {"airDate": "2024-08-25", "title": "The Daily Show"}}
+{"title": "Show.Name.S01E05v2.1080p.WEB-GRP", "kind": "release", "expect": {"season": 1, "episodes": [5], "title": "Show Name"}}
+{"title": "[SubsPlus+] Series no Chill - S02E01v2 (NF WEB 1080p AVC AAC)", "kind": "release", "expect": {"season": 2, "episodes": [1], "title": "Series no Chill"}}
+{"title": "Show.Name.1x05v2.720p.HDTV-GRP", "kind": "release", "expect": {"season": 1, "episodes": [5]}}
+{"title": "Movie.Name.2011.1080p.UHD.BluRay.DD5.1.HDR.x265-CtrlHD", "kind": "release", "expect": {"quality": "Bluray-1080p", "resolution": "1080p"}}
+{"title": "Movie.Name.2018.UHD.BluRay.x265-GRP", "kind": "release", "expect": {"quality": "Bluray-2160p", "resolution": "2160p"}}
+{"title": "Show.S01E01.1080i.HDTV.DD5.1.H.264-GRP", "kind": "release", "expect": {"quality": "HDTV-1080p", "resolution": "1080p"}}
+{"title": "[Group] Show - 05 (1280x720 x264 AAC)", "kind": "release", "expect": {"resolution": "720p", "absolute": 5}}
+{"title": "Show.S01E01.1440p.WEB-DL.H264-GRP", "kind": "release", "expect": {"quality": "WEBDL-1080p", "resolution": "1080p"}}
+{"title": "Show.S01E01.FHD.VOSTFR", "kind": "release", "expect": {"resolution": "1080p"}}
+{"title": "[FFF] Series no Muromi-san - 10 [BD][1080p-FLAC]", "kind": "release", "expect": {"quality": "Bluray-1080p", "source": "Bluray", "absolute": 10}}
+{"title": "[coldhell] Series v2 [BD1080p]", "kind": "release", "expect": {"quality": "Bluray-1080p", "resolution": "1080p"}}
+{"title": "Movie Title 2010 (BDRemux 1080p HEVC FLAC) [Grp]", "kind": "release", "expect": {"quality": "Remux-1080p", "source": "Remux"}}
+{"title": "Movie.Title.2010.BDREMUX.1080p.Bluray.AVC", "kind": "release", "expect": {"quality": "Remux-1080p", "rawDisc": false}}
+{"title": "Movie.Hunter.2018.720p.Blu-ray.Remux.AVC.FLAC.2.0-SiCFoI", "kind": "release", "expect": {"quality": "Bluray-720p", "rawDisc": false}}
+{"title": "Movie.2019.720p.BrRip.x264-YIFY", "kind": "release", "expect": {"quality": "Bluray-720p", "source": "Bluray", "group": "YIFY"}}
+{"title": "Movie.Name.2019.WEB-Rip.1080p", "kind": "release", "expect": {"quality": "WEBRip-1080p", "source": "WEBRip"}}
+{"title": "Movie.Name.2019.1080p.MBluRay.x264-GRP", "kind": "release", "expect": {"quality": "Bluray-1080p"}}
+{"title": "Movie.Name.2019.1080p.UHDBD.x265-GRP", "kind": "release", "expect": {"quality": "Bluray-1080p"}}
+{"title": "Movie.Name.2019.1080p.HDDVDRip.x264-GRP", "kind": "release", "expect": {"quality": "Bluray-1080p"}}
+{"title": "Movie.Name.2019.720p.BDMux.x264-GRP", "kind": "release", "expect": {"quality": "Bluray-720p"}}
+{"title": "Movie.2019.1080p.DVDRip.x264-GRP", "kind": "release", "expect": {"quality": "DVD", "source": "DVD"}}
+{"title": "Tmc - Quotidien - 05-06-2024 HDTV 1080p", "kind": "release", "expect": {"airDate": null}}
+{"title": "Series.Title.12.02.2025.1080i.HDTV", "kind": "release", "expect": {"airDate": null}}
+{"title": "Show.Name.08.25.2024.1080p.WEB-GRP", "kind": "release", "expect": {"airDate": "2024-08-25"}}
+{"title": "Show.Name.05.05.2024.1080p.WEB-GRP", "kind": "release", "expect": {"airDate": "2024-05-05"}}
+{"title": "Movie.Name.2019.5.1.1080p.BluRay.x264-GRP", "kind": "release", "expect": {"airDate": null, "titleYear": 2019, "title": "Movie Name"}}
+{"title": "20-1.2014.S02E01.720p.HDTV.x264-CROOKS", "kind": "release", "expect": {"airDate": null, "season": 2, "episodes": [1]}}
+{"title": "Show.Name.2099.01.01.1080p.WEB-GRP", "kind": "release", "expect": {"airDate": null}}
+{"title": "The Series S01-05 WS BDRip X264-REWARD", "kind": "release", "expect": {"season": 1, "fullSeason": true, "seasonRange": [1, 5]}}
+{"title": "Series Title S01 S04 (1080p BluRay x265)", "kind": "release", "expect": {"season": 1, "fullSeason": true, "seasonRange": [1, 4]}}
+{"title": "[Group] Series Title S01-04 (BD 1080p)", "kind": "release", "expect": {"season": 1, "fullSeason": true, "seasonRange": [1, 4]}}
+{"title": "Series.S01.S02.S03.720p.HDTV-GRP", "kind": "release", "expect": {"season": 1, "fullSeason": true, "seasonRange": [1, 3]}}
+{"title": "Movie.Name.2021.1080p.WEB-DL.HC.x264-GRP", "kind": "release", "expect": {"hardcodedSubs": true}}
+{"title": "Movie.Name.2021.1080p.WEBRip.KORSUB.x264-GRP", "kind": "release", "expect": {"hardcodedSubs": true}}
+{"title": "Movie.Name.2021.1080p.BluRay.HardSub.x264-GRP", "kind": "release", "expect": {"hardcodedSubs": true}}
+{"title": "Movie.Name.2021.1080p.BluRay.MultiSubs.x264-GRP", "kind": "release", "expect": {"hardcodedSubs": false}}
+{"title": "[SubsPlease] Show Name - 05 (1080p) [ABCD1234]", "kind": "release", "expect": {"hardcodedSubs": false, "absolute": 5}}
+{"title": "This.Wonderful.Movie.1991.German.ML.1080p.BluRay.AVC-GeRMaNSCeNEGRoUP", "kind": "release", "expect": {"quality": "Bluray-1080p", "rawDisc": false}}
+{"title": "Movie.2020.MULTi.1080p.BluRay.AVC-GRP", "kind": "release", "expect": {"quality": "Bluray-1080p", "rawDisc": false}}
+{"title": "Show.S01E01.1080p.BluRay.AVC.DD5.1-GRP", "kind": "release", "expect": {"quality": "Bluray-1080p", "rawDisc": false, "season": 1, "episodes": [1]}}
+{"title": "Planet.Series.S01E11.Code.Deep.1080p.HD-DVD.DD.VC1-TRB", "kind": "release", "expect": {"quality": "Bluray-1080p", "rawDisc": false}}
+{"title": "[Kametsu] Show - 01 (BD 1080p AVC FLAC) [ABCDEF01]", "kind": "release", "expect": {"quality": "Bluray-1080p", "rawDisc": false, "absolute": 1}}
+{"title": "[Group] Movie (BD 2160p HEVC Dual Audio)", "kind": "release", "expect": {"quality": "Bluray-2160p", "rawDisc": false}}
+{"title": "The.Series.S05E06.720p.HDTV.x264-FHD", "kind": "release", "expect": {"quality": "HDTV-720p", "resolution": "720p", "group": "FHD"}}
+{"title": "Movie.2020.1080p.WEB-DL.ESubs.x264-GRP", "kind": "release", "expect": {"hardcodedSubs": false, "quality": "WEBDL-1080p"}}
+{"title": "[Kaizoku Fansubs] Movie Title (BD 1080p)", "kind": "release", "expect": {"hardcodedSubs": false}}
+{"title": "TheTitle-S12E13-3_Acts_of_God.mkv", "kind": "file", "expect": {"season": 12, "episodes": [13]}}
+{"title": "Movie.BD.Love.2020.1080p.WEB-DL.x264-GRP", "kind": "release", "expect": {"quality": "WEBDL-1080p", "source": "WEBDL"}}
+{"title": "Movie.Title.2020.1080p.x264-BD", "kind": "release", "expect": {"quality": "WEBDL-1080p", "source": null}}
+{"title": "Movie.Title.2020.1080p.x264-TS", "kind": "release", "expect": {"quality": "WEBDL-1080p", "source": null}}
+{"title": "Show.S01.Special.Edition.1080p.WEB-GRP", "kind": "release", "expect": {"fullSeason": true, "seasonExtra": false}}

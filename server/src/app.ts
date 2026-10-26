@@ -3,7 +3,7 @@ import cors from "cors";
 import helmet from "helmet";
 import { db, initDb } from "./db/index.js";
 import { loadSettingsCache, getSetting } from "./services/settingsStore.js";
-import { loadQualityCaches } from "./services/quality.js";
+import { ensureBluray720pQuality, loadQualityCaches } from "./services/quality.js";
 import { backfillEpisodicAndCollectionHasFile, backfillMissingAlbumTracks } from "./services/libraryScan.js";
 import { backfillCleanTitles } from "./services/releaseAliases.js";
 import { errorHandler, asyncHandler } from "./middleware/errorHandler.js";
@@ -286,6 +286,7 @@ export async function createApp(): Promise<Express> {
   await initDb();
   await loadSettingsCache();
   await reencryptLegacyCredentials();
+  await ensureBluray720pQuality();
   await loadQualityCaches();
   await bootstrapAdminFromEnv();
   applySocksProxySetting();
