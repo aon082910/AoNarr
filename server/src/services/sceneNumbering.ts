@@ -7,8 +7,8 @@ import { seasonContextOf } from "./anilistSeasons.js";
 import { syncXemNames } from "./xemNames.js";
 
 interface XemEntry {
-  scene?: { season: number; episode: number };
-  scene_2?: { season: number; episode: number }; // xem's alternate scene numbering, when a show has one
+  scene?: { season: number; episode: number; absolute?: number };
+  scene_2?: { season: number; episode: number; absolute?: number }; // xem's alternate scene numbering, when a show has one
   tvdb?: { season: number; episode: number };
 }
 
@@ -48,6 +48,8 @@ interface EpisodeRow {
 export interface SceneNumber {
   season: number;
   episode: number;
+  /** The scene's running (absolute) number for the episode, when TheXEM gives one. */
+  absolute?: number;
 }
 
 /**
@@ -135,31 +137,65 @@ export async function syncSceneNumbering(mediaItemId: number): Promise<{ updated
   // or removed entry) must not stay behind, or an old number keeps matching releases. Written
   // together, and only where a row differs, so a search never sees the show half-mapped and an
   // unchanged mapping (nearly every sync) locks nothing.
-  const wanted = new Map<string, { season: number; episode: number }>();
+  const wanted = new Map<string, SceneNumber>();
   for (const entry of body.data as XemEntry[]) {
     const scene = entry.scene ?? entry.scene_2;
-    if (scene && entry.tvdb) wanted.set(`${entry.tvdb.season}:${entry.tvdb.episode}`, scene);
+    if (scene && entry.tvdb) {
+      const absolute = Number(scene.absolute);
+      wanted.set(`${entry.tvdb.season}:${entry.tvdb.episode}`, {
+        season: scene.season,
+        episode: scene.episode,
+        ...(Number.isInteger(absolute) && absolute > 0 ? { absolute } : {}),
+      });
+    }
   }
   const rows = (await db
-    .prepare("SELECT id, season_number, episode_number, scene_season_number, scene_episode_number, air_date FROM episodes WHERE media_item_id = ?")
-    .all(mediaItemId)) as { id: number; season_number: number; episode_number: number; scene_season_number: number | null; scene_episode_number: number | null; air_date: string | null }[];
+    .prepare("SELECT id, season_number, episode_number, scene_season_number, scene_episode_number, scene_absolute_number, scene_unverified, air_date FROM episodes WHERE media_item_id = ?")
+    .all(mediaItemId)) as {
+    id: number;
+    season_number: number;
+    episode_number: number;
+    scene_season_number: number | null;
+    scene_episode_number: number | null;
+    scene_absolute_number: number | null;
+    scene_unverified: number | null;
+    air_date: string | null;
+  }[];
   // Rows that may be TMDB's are numbered like TVDB's only if the mapping fits them.
   if (externalIds.tmdb && !xemAlignsWithRows(rows, wanted)) {
     log.info(`[sceneNumbering] "${mediaRow.title}": TheXEM's TVDB numbering does not fit this show's TMDB episode list; scene numbering left as it was`);
     return { updated: 0 };
   }
-  for (const [key, scene] of extrapolateSceneNumbers(rows, wanted)) wanted.set(key, scene);
+  // The numbers carried forward past the last mapping are a guess: the episodes keep them marked unverified, and
+  // the importer holds a download named by them for review (Sonarr's UnverifiedSceneNumbering).
+  const unverified = new Set<string>();
+  for (const [key, scene] of extrapolateSceneNumbers(rows, wanted)) {
+    wanted.set(key, scene);
+    unverified.add(key);
+  }
   let updated = 0;
   await db.transaction(async () => {
     for (const row of rows) {
       const scene = wanted.get(`${row.season_number}:${row.episode_number}`);
       if (scene) {
         updated++;
-        if (Number(row.scene_season_number) !== scene.season || Number(row.scene_episode_number) !== scene.episode || row.scene_season_number == null) {
-          await db.prepare("UPDATE episodes SET scene_season_number = ?, scene_episode_number = ? WHERE id = ?").run(scene.season, scene.episode, row.id);
+        const absolute = scene.absolute ?? null;
+        const guess = unverified.has(`${row.season_number}:${row.episode_number}`) ? 1 : 0;
+        if (
+          Number(row.scene_unverified ?? 0) !== guess ||
+          Number(row.scene_season_number) !== scene.season ||
+          Number(row.scene_episode_number) !== scene.episode ||
+          row.scene_season_number == null ||
+          (row.scene_absolute_number == null ? null : Number(row.scene_absolute_number)) !== absolute
+        ) {
+          await db
+            .prepare("UPDATE episodes SET scene_season_number = ?, scene_episode_number = ?, scene_absolute_number = ?, scene_unverified = ? WHERE id = ?")
+            .run(scene.season, scene.episode, absolute, guess, row.id);
         }
-      } else if (row.scene_season_number != null || row.scene_episode_number != null) {
-        await db.prepare("UPDATE episodes SET scene_season_number = NULL, scene_episode_number = NULL WHERE id = ?").run(row.id);
+      } else if (row.scene_season_number != null || row.scene_episode_number != null || row.scene_absolute_number != null || Number(row.scene_unverified ?? 0) !== 0) {
+        await db
+          .prepare("UPDATE episodes SET scene_season_number = NULL, scene_episode_number = NULL, scene_absolute_number = NULL, scene_unverified = 0 WHERE id = ?")
+          .run(row.id);
       }
     }
   });

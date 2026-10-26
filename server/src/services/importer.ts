@@ -53,11 +53,13 @@ const VIDEO_EXTENSIONS = new Set([".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v"
  * insert an episode row (see /metadata/import) — every other insert path (Trakt/Plex/watchlist
  * sync, import lists, library scan, a manual add, ...) leaves it NULL. */
 export async function computeAbsoluteEpisodeNumber(mediaItemId: number, seasonNumber: number, episodeNumber: number): Promise<number> {
-  // A number stored on the row wins (a sequel's rows carry the show's running number, see anilistSeasons.ts);
-  // an episode with none is counted.
+  // The scene's running number wins where TheXEM gives one (releases are named by it, as Sonarr's scene-numbered
+  // shows are); then a number stored on the row (a sequel's rows carry the show's running number, see
+  // anilistSeasons.ts); an episode with neither is counted.
   const stored = (await db
-    .prepare("SELECT absolute_episode_number FROM episodes WHERE media_item_id = ? AND season_number = ? AND episode_number = ?")
-    .get(mediaItemId, seasonNumber, episodeNumber)) as { absolute_episode_number: number | null } | undefined;
+    .prepare("SELECT absolute_episode_number, scene_absolute_number FROM episodes WHERE media_item_id = ? AND season_number = ? AND episode_number = ?")
+    .get(mediaItemId, seasonNumber, episodeNumber)) as { absolute_episode_number: number | null; scene_absolute_number: number | null } | undefined;
+  if (stored?.scene_absolute_number != null) return Number(stored.scene_absolute_number);
   if (stored?.absolute_episode_number != null) return Number(stored.absolute_episode_number);
   const row = (await db
     .prepare(
@@ -2498,6 +2500,25 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
     throw new ImportSkippedError(
       `"${queueItem.title}" was matched to "${item.title}" by the indexer's id only, not by its title — left for a manual import`
     );
+  }
+
+  // A download named by a scene number that was only carried forward from TheXEM's last mapping may be the
+  // wrong episode: held for a manual import (the same hold Sonarr puts on unverified scene numbering).
+  if (!manualSourceFile && queueItem.episodeId && usesQualityTiers(item.type)) {
+    const ep = (await db
+      .prepare("SELECT season_number, episode_number, scene_season_number, scene_episode_number, scene_unverified FROM episodes WHERE id = ?")
+      .get(queueItem.episodeId)) as
+      | { season_number: number; episode_number: number; scene_season_number: number | null; scene_episode_number: number | null; scene_unverified: number | null }
+      | undefined;
+    if (ep && Number(ep.scene_unverified ?? 0) && ep.scene_season_number != null && ep.scene_episode_number != null) {
+      const parsed = parseReleaseTitle(queueItem.title);
+      const names = (season: number, episode: number) => parsed.seasonNumber === season && !!parsed.episodeNumbers?.includes(episode);
+      if (names(Number(ep.scene_season_number), Number(ep.scene_episode_number)) && !names(Number(ep.season_number), Number(ep.episode_number))) {
+        throw new ImportSkippedError(
+          `"${queueItem.title}" is numbered S${String(ep.scene_season_number).padStart(2, "0")}E${String(ep.scene_episode_number).padStart(2, "0")}, a scene number carried forward from TheXEM's last mapping and not confirmed — left for a manual import`
+        );
+      }
+    }
   }
 
   let sourceFile: string | null;

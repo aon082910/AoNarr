@@ -12,7 +12,7 @@ import { downloadClientFromRow, mediaItemFromRow, qualityProfileFromRow } from "
 import { grab, isAlreadyQueued, isReleaseAvailableForSearch, pickClientForProtocol, type ChosenResult } from "./scheduler.js";
 import { computeAbsoluteEpisodeNumber } from "./importer.js";
 import { parseQualityGroups, sameQualityGroup, usesQualityTiers, type QualityGroups } from "./quality.js";
-import { aliasTitlesByItem, resolveReleaseItemInLibrary } from "./releaseAliases.js";
+import { aliasSeasonsFor, aliasTitlesByItem, applyAliasSeason, resolveReleaseItemInLibrary, seasonEpisodeCounts } from "./releaseAliases.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
 import { wakeLeaf } from "./searchBackoff.js";
 import type { DownloadClient, SearchResult } from "../types/index.js";
@@ -160,6 +160,8 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
   const show = resolvedShow.item;
   if (refusal(show.type)) return;
   const sceneIndex = await sceneIndexFor(show.id);
+  // A release counted from 1 under a season's own name (TheXEM) is that season's episode, as in the search.
+  const seasonParsed = applyAliasSeason(parsed, await aliasSeasonsFor(show.id), await seasonEpisodeCounts(show.id));
   const wantsAbsolute = parsed.absoluteEpisode != null || !!parsed.absoluteRange;
   // A season pack must pass the same guards as a pack found by a search (aired, monitored, enough wanted).
   let packEpisodes: PackEpisode[] | null = null;
@@ -171,7 +173,7 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
     if (ep.parent_id !== show.id) continue;
     const absoluteEpisode = show.type === "anime" || wantsAbsolute ? await computeAbsoluteEpisodeNumber(show.id, ep.season_number, ep.episode_number) : null;
     const byDate = !!parsed.airDate && !!ep.air_date && releaseMatchesAirDate(parsed, ep.air_date);
-    if (!byDate && !releaseMatchesEpisode(parsed, ep.season_number, ep.episode_number, ep.scene_season_number, ep.scene_episode_number, absoluteEpisode, sceneIndex)) continue;
+    if (!byDate && !releaseMatchesEpisode(seasonParsed, ep.season_number, ep.episode_number, ep.scene_season_number, ep.scene_episode_number, absoluteEpisode, sceneIndex)) continue;
     if (parsed.isFullSeason) {
       packEpisodes ??= await loadPackEpisodes(show.id);
       const verdict = judgeSeasonPack({

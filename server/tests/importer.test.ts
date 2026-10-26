@@ -2770,6 +2770,31 @@ describe("importQueueItem", () => {
     expect(err).not.toBeInstanceOf(ImportSkippedError);
   });
 
+  it("holds a download named by a scene number TheXEM only carried forward, but not one named by the aired number (Round 12, I11)", async () => {
+    const folder = await insertRootFolder("series");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('series','Guess Show','guess show',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    const episodeId = Number(
+      (await db
+        .prepare(`INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, scene_season_number, scene_episode_number, scene_unverified) VALUES (?,1,27,'Ep27',1,0,2,14,1)`)
+        .run(showId)).lastInsertRowid
+    );
+    writeDownloadFile(path.join("Guess.Show.S02E14.720p.HDTV-GRP", "Guess.Show.S02E14.720p.HDTV-GRP.mkv"));
+    const held = await insertQueueRow(showId, { title: "Guess.Show.S02E14.720p.HDTV-GRP", episode_id: episodeId });
+
+    const err = await importQueueItem(held).catch((e) => e);
+    expect(err).toBeInstanceOf(ImportSkippedError);
+    expect(err.message).toMatch(/carried forward from TheXEM/);
+
+    // Named by the aired numbers it is not the guess, and imports.
+    writeDownloadFile(path.join("Guess.Show.S01E27.720p.HDTV-GRP", "Guess.Show.S01E27.720p.HDTV-GRP.mkv"));
+    const aired = await insertQueueRow(showId, { title: "Guess.Show.S01E27.720p.HDTV-GRP", episode_id: episodeId });
+    await importQueueItem(aired);
+    expect(await db.prepare("SELECT * FROM queue WHERE id = ?").get(aired)).toBeUndefined();
+  });
+
   it("dispatches season-pack imports when the queue row has a season but no specific episode", async () => {
     const folder = await insertRootFolder("series");
     const showId = Number(
