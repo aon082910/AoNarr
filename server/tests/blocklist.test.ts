@@ -53,12 +53,13 @@ describe("getBlocklistedTitles", () => {
     await db.prepare("INSERT INTO blocklist (media_item_id, release_title) VALUES (?, ?)").run(itemId, "Release.Two");
 
     const titles = await getBlocklistedTitles(itemId);
-    expect(titles).toEqual(new Set(["Release.One", "Release.Two"]));
+    expect(titles).toBeInstanceOf(Set);
+    expect([...titles].sort()).toEqual(["Release.One", "Release.Two"]);
   });
 
   it("returns an empty Set for an item with nothing blocklisted", async () => {
     const { getBlocklistedTitles } = await import("../src/services/blocklist.js");
     const itemId = await insertMovie();
-    expect(await getBlocklistedTitles(itemId)).toEqual(new Set());
+    expect((await getBlocklistedTitles(itemId)).size).toBe(0);
   });
 });

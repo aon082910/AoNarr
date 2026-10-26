@@ -98,6 +98,40 @@ describe("GET /api/search/:mediaItemId", () => {
   });
 });
 
+describe("GET /api/search/:mediaItemId — the order is what an automatic search would pick (D20)", () => {
+  it("lists the release an automatic search would grab first, ahead of a better-seeded lower quality", async () => {
+    await insertTorrentClient();
+    const profileId = Number(
+      (
+        await db
+          .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff) VALUES (?, ?, ?)")
+          .run(`Pick ${Math.random()}`, JSON.stringify(["WEBDL-720p", "WEBDL-1080p"]), "WEBDL-1080p")
+      ).lastInsertRowid
+    );
+    const movieId = await insertItem("movie", "Movie", profileId);
+    const low = release({ title: "Movie.2020.720p.WEB-DL-AAA", seeders: 500, downloadUrl: "magnet:?xt=urn:btih:low" });
+    const high = release({ title: "Movie.2020.1080p.WEB-DL-BBB", seeders: 20, downloadUrl: "magnet:?xt=urn:btih:high" });
+    searchAllIndexers.mockResolvedValue([low, high]);
+
+    const res = await request(app).get(`/api/search/${movieId}`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((r: any) => r.title)).toEqual(["Movie.2020.1080p.WEB-DL-BBB", "Movie.2020.720p.WEB-DL-AAA"]);
+    expect(res.body.map((r: any) => r.wouldAutoGrab)).toEqual([true, false]);
+  });
+
+  it("marks no release when the search has no single pick (a season)", async () => {
+    await insertTorrentClient();
+    const showId = await insertItem("series", "Some Show");
+    searchAllIndexers.mockResolvedValue([release({ title: "Some.Show.S01.1080p.WEB-DL-GRP" })]);
+
+    const res = await request(app).get(`/api/search/${showId}?seasonNumber=1`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(200);
+    expect(res.body.every((r: any) => r.wouldAutoGrab === false)).toBe(true);
+  });
+});
+
 describe("GET /api/search/:mediaItemId — what the indexers are asked", () => {
   async function insertShow(title: string, externalIds: Record<string, string>): Promise<number> {
     const id = await insertItem("series", title);

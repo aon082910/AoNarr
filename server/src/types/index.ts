@@ -94,6 +94,8 @@ export interface Indexer {
   mediaTypes: string; // comma-separated MediaType this indexer applies to
   enabled: MonitorStatus;
   priority: number;
+  /** Torrents with fewer seeders than this are rejected (0 = no minimum). */
+  minimumSeeders?: number;
   config: string | null; // JSON, protocol-specific (currently only "ddl" uses this)
   useFlareSolverr: MonitorStatus;
   queryLimitPerHour: number | null; // proactive rate cap — see indexerClient.ts's isOverQueryLimit
@@ -133,6 +135,9 @@ export interface QualityProfile {
    * services/quality.ts's sizeWithinQualityBounds) — rejects a release outright if it's over this
    * regardless of which quality it parsed as. Null/undefined means no limit. */
   maxSizeGb?: number | null;
+  /** True (the default): never pick a quality above the cutoff while one at or below it is on offer.
+   * False: pick the best allowed quality, the cutoff only stops upgrades (Sonarr/Radarr). */
+  preferCutoffQuality?: boolean;
 }
 
 export interface RootFolder {
@@ -173,6 +178,10 @@ export interface QueueItem {
   matchType?: string | null;
   /** What grabbed it: 'auto' (scheduled/bulk search), 'interactive' (manual search), 'irc', 'retry'. */
   grabSource?: string | null;
+  /** The release's protocol, publish date and info hash as grabbed: what a blocklist row needs to block that release. */
+  protocol?: string | null;
+  publishDate?: string | null;
+  infoHash?: string | null;
 }
 
 export interface HistoryEvent {

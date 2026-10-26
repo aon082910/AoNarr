@@ -3,6 +3,7 @@ import { db } from "../db/index.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { clampLimit, clampOffset } from "../services/mediaQuery.js";
+import { addToBlocklist } from "../services/blocklist.js";
 
 export const blocklistRouter = Router();
 blocklistRouter.use(requireAdmin);
@@ -21,7 +22,7 @@ blocklistRouter.get(
 
     const items = await db
       .prepare(
-        `SELECT b.id, b.media_item_id AS "mediaItemId", b.release_title AS "releaseTitle", b.reason,
+        `SELECT b.id, b.media_item_id AS "mediaItemId", b.release_title AS "releaseTitle", b.reason, b.protocol, b.size, b.publish_date AS "publishDate", b.info_hash AS "infoHash",
                 b.created_at AS "createdAt", m.title AS "mediaTitle"
          FROM blocklist b JOIN media_items m ON m.id = b.media_item_id
          ORDER BY b.created_at DESC, b.id DESC LIMIT ? OFFSET ?`
@@ -38,10 +39,17 @@ blocklistRouter.post(
     if (!b.mediaItemId || !b.releaseTitle) throw new HttpError(400, "mediaItemId and releaseTitle are required");
     const mediaItem = await db.prepare("SELECT id FROM media_items WHERE id = ?").get(b.mediaItemId);
     if (!mediaItem) throw new HttpError(404, "Media item not found");
-    const result = await db
-      .prepare("INSERT INTO blocklist (media_item_id, release_title, indexer_id, reason) VALUES (?, ?, ?, ?)")
-      .run(b.mediaItemId, b.releaseTitle, b.indexerId ?? null, b.reason ?? null);
-    res.status(201).json({ id: result.lastInsertRowid });
+    const id = await addToBlocklist({
+      mediaItemId: b.mediaItemId,
+      releaseTitle: b.releaseTitle,
+      indexerId: b.indexerId ?? null,
+      reason: b.reason ?? null,
+      protocol: b.protocol,
+      size: b.size,
+      publishDate: b.publishDate,
+      infoHash: b.infoHash,
+    });
+    res.status(201).json({ id });
   })
 );
 

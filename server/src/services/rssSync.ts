@@ -12,6 +12,7 @@ import { aliasTitlesByItem, resolveReleaseItemInLibrary } from "./releaseAliases
 import { sceneIndexFor } from "./sceneNumbering.js";
 import { computeAbsoluteEpisodeNumber } from "./importer.js";
 import { getBlocklistedTitles } from "./blocklist.js";
+import { recordPending } from "./pendingStore.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
 import { airedFrontierFor, episodeNotAired, episodePlanFor, seasonPlanFor } from "./searchPlan.js";
 import { recordLeafOutcome, recordSeasonSearch, wakeLeaf, wakeSeason } from "./searchBackoff.js";
@@ -404,7 +405,8 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
   }
   if (!outcome) {
     // Held back by the delay profile alone: the same releases, with no delay, would have been grabbed.
-    return (await isHeldByDelay(results, cutoff, delayProfile, choose)) ? "held" : "none";
+    const leaf = group.kind === "episode" ? ({ table: "episodes", id: group.ep.id } as const) : group.kind === "single" ? ({ table: "media_items", id: item.id } as const) : null;
+    return (await isHeldByDelay(results, cutoff, delayProfile, choose, leaf ? (release) => recordPending(leaf.table, leaf.id, item.id, release) : undefined)) ? "held" : "none";
   }
   if (!outcome.grabbed) return "skipped";
   env.grabbedUrls.add(outcome.chosen.result.downloadUrl);

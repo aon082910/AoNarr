@@ -26,13 +26,13 @@ describe("translateTrashFormat", () => {
     expect(result.groups).toEqual([{ type: "releaseGroup", patterns: ["FLUX"], negate: false }]);
   });
 
-  it("maps a SizeSpecification, converting min/max from GB to MB", () => {
+  it("maps a SizeSpecification, converting min/max from GiB to decimal MB", () => {
     const trash: TrashCustomFormat = {
       name: "Size Test",
       specifications: [{ implementation: "SizeSpecification", fields: { min: 1, max: 10 } }],
     };
     const result = translateTrashFormat(trash);
-    expect(result.groups).toEqual([{ type: "size", minMb: 1000, maxMb: 10000, negate: false }]);
+    expect(result.groups).toEqual([{ type: "size", minMb: 1074, maxMb: 10737, negate: false }]);
   });
 
   it("maps a SizeSpecification with only a max (min omitted) to a null minMb", () => {
@@ -41,7 +41,7 @@ describe("translateTrashFormat", () => {
       specifications: [{ implementation: "SizeSpecification", fields: { max: 5 } }],
     };
     const result = translateTrashFormat(trash);
-    expect(result.groups).toEqual([{ type: "size", minMb: null, maxMb: 5000, negate: false }]);
+    expect(result.groups).toEqual([{ type: "size", minMb: null, maxMb: 5369, negate: false }]);
   });
 
   it("maps a ResolutionSpecification for a known resolution value", () => {
@@ -122,7 +122,7 @@ describe("translateTrashFormat", () => {
     expect(result).toEqual({
       groups: [
         { type: "title", patterns: ["\\bHDR10\\b"], negate: false },
-        { type: "size", minMb: 2000, maxMb: 8000, negate: false },
+        { type: "size", minMb: 2147, maxMb: 8590, negate: false },
       ],
       skipped: [],
     });
@@ -219,5 +219,68 @@ describe("translateTrashFormat", () => {
         ],
       })
     ).toEqual({ groups: [{ type: "edition", patterns: ["\\bCriterion\\b", "\\bDirector'?s\\b"], negate: false }], skipped: [] });
+  });
+});
+
+
+describe("translateTrashFormat — Source, Release Type, Quality Modifier and Indexer Flag (Round 11, D21)", () => {
+  const spec = (implementation: string, value: number, extra: object = {}) => ({ implementation, fields: { value }, ...extra });
+
+  it("reads Radarr's Source ordinals, where Bluray also covers a remux", () => {
+    const result = translateTrashFormat({ name: "WEB", specifications: [spec("SourceSpecification", 7)] }, "radarr");
+    expect(result).toEqual({ groups: [{ type: "source", sources: ["WEBDL"], negate: false }], skipped: [] });
+    expect(translateTrashFormat({ name: "BD", specifications: [spec("SourceSpecification", 9)] }, "radarr").groups[0].sources).toEqual(["Bluray", "Remux"]);
+  });
+
+  it("reads Sonarr's Source ordinals, which are not Radarr's", () => {
+    expect(translateTrashFormat({ name: "TV", specifications: [spec("SourceSpecification", 6)] }, "radarr").groups[0].sources).toEqual(["HDTV"]);
+    expect(translateTrashFormat({ name: "BD", specifications: [spec("SourceSpecification", 6)] }, "sonarr").groups[0].sources).toEqual(["Bluray"]);
+    expect(translateTrashFormat({ name: "Raw", specifications: [spec("SourceSpecification", 7)] }, "sonarr").groups[0].sources).toEqual(["Remux"]);
+  });
+
+  it("does not guess an ordinal when the app is unknown", () => {
+    expect(translateTrashFormat({ name: "Unknown app", specifications: [spec("SourceSpecification", 7)] })).toEqual({
+      groups: [],
+      skipped: ["SourceSpecification"],
+    });
+  });
+
+  it("keeps a negated source and ORs several of them into one group", () => {
+    const merged = translateTrashFormat(
+      { name: "Web", specifications: [spec("SourceSpecification", 7), spec("SourceSpecification", 8)] },
+      "radarr"
+    );
+    expect(merged.groups).toEqual([{ type: "source", sources: ["WEBDL", "WEBRip"], negate: false }]);
+    const negated = translateTrashFormat({ name: "Not cam", specifications: [spec("SourceSpecification", 1, { negate: true })] }, "radarr");
+    expect(negated.groups).toEqual([{ type: "source", sources: ["Cam"], negate: true }]);
+  });
+
+  it("reads Radarr's Quality Modifier, Sonarr's Release Type and the two shared indexer flags", () => {
+    expect(translateTrashFormat({ name: "Raw-HD", specifications: [spec("QualityModifierSpecification", 3)] }, "radarr").groups).toEqual([
+      { type: "qualityModifier", qualityModifiers: ["rawhd"], negate: false },
+    ]);
+    expect(translateTrashFormat({ name: "Remux", specifications: [spec("QualityModifierSpecification", 5)] }, "radarr").groups[0]).toMatchObject({ type: "source", sources: ["Remux"] });
+    expect(translateTrashFormat({ name: "Pack", specifications: [spec("ReleaseTypeSpecification", 3)] }, "sonarr").groups).toEqual([
+      { type: "releaseType", releaseTypes: ["seasonPack"], negate: false },
+    ]);
+    expect(translateTrashFormat({ name: "Free", specifications: [spec("IndexerFlagSpecification", 1)] }, "radarr").groups).toEqual([
+      { type: "indexerFlag", indexerFlags: ["freeleech"], negate: false },
+    ]);
+    expect(translateTrashFormat({ name: "Internal", specifications: [spec("IndexerFlagSpecification", 32)] }, "radarr")).toEqual({
+      groups: [],
+      skipped: ["IndexerFlagSpecification"],
+    });
+    // Each app has only its own: Release Type is Sonarr's, Quality Modifier Radarr's.
+    expect(translateTrashFormat({ name: "Wrong app", specifications: [spec("ReleaseTypeSpecification", 3)] }, "radarr").skipped).toEqual(["ReleaseTypeSpecification"]);
+    expect(translateTrashFormat({ name: "Wrong app", specifications: [spec("QualityModifierSpecification", 3)] }, "sonarr").skipped).toEqual(["QualityModifierSpecification"]);
+  });
+
+  it("reports a format with one translatable and one untranslatable condition as partial, for the caller to refuse", () => {
+    const result = translateTrashFormat(
+      { name: "Group on WEB", specifications: [spec("SourceSpecification", 7, { required: true }), spec("LanguageSpecification", 1, { required: true })] },
+      "radarr"
+    );
+    expect(result.groups).toHaveLength(1);
+    expect(result.skipped).toEqual(["LanguageSpecification"]);
   });
 });

@@ -8,7 +8,7 @@ import { guessTitleFromText, titlesMatch } from "./libraryScan.js";
 import { scoreRelease } from "./customFormatScoring.js";
 import { getBlocklistedTitles } from "./blocklist.js";
 import { downloadClientFromRow, mediaItemFromRow, qualityProfileFromRow } from "../db/mappers.js";
-import { grab, isAlreadyQueued, pickClientForProtocol, type ChosenResult } from "./scheduler.js";
+import { grab, isAlreadyQueued, isReleaseAvailableForSearch, pickClientForProtocol, type ChosenResult } from "./scheduler.js";
 import { computeAbsoluteEpisodeNumber } from "./importer.js";
 import { usesQualityTiers } from "./quality.js";
 import { aliasTitlesByItem, resolveReleaseItemInLibrary } from "./releaseAliases.js";
@@ -77,7 +77,10 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
   // items both claiming it is a reason to grab nothing (Sonarr's MultipleSeriesFoundException).
   const singleItems = ((await db.prepare("SELECT * FROM media_items WHERE monitored = 1 AND has_file = 0").all()) as any[])
     .map(mediaItemFromRow)
-    .filter((item) => getMediaTypeConfig(item.type).shape === "single");
+    .filter((item) => getMediaTypeConfig(item.type).shape === "single")
+    // A film not out yet by its minimum availability is not grabbed from an announce either (a leak or a
+    // fake): the scheduled search holds it back the same way.
+    .filter((item) => isReleaseAvailableForSearch(item));
   // The gate only checks a year written before the quality words ("Dune.2021.1080p"). A year after
   // them ("Dune.1080p.BluRay.x264.2021-GRP") is not seen as a title year, so the old guard on the
   // first year anywhere in the name still applies to those.
@@ -213,7 +216,8 @@ async function tryGrabMatch(
   if (allowedQualities.length > 0 && !allowedQualities.includes(quality)) return false;
 
   const blocklisted = await getBlocklistedTitles(item.id);
-  if (blocklisted.has(releaseTitle)) return false;
+  // An announce carries only a name and the feed's protocol: no hash, date or size to compare.
+  if (blocklisted.blocks({ title: releaseTitle, protocol: feed.protocol, indexerId: null, size: 0, publishDate: null, infoHash: null })) return false;
 
   if (await isRootFolderOverQuota(item.rootFolderId)) {
     log.info(`[irc:${feed.name}] not grabbing "${releaseTitle}" for "${item.title}": its root folder is at/over its configured quota`);

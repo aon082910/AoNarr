@@ -241,6 +241,8 @@ export default function EpisodeDetail() {
         title: result.title,
         size: result.size,
         protocol: result.protocol,
+        publishDate: result.publishDate ?? null,
+        infoHash: result.infoHash ?? null,
         imdbId: result.imdbId ?? null,
         tmdbId: result.tmdbId ?? null,
         episodeId: Number(episodeId),

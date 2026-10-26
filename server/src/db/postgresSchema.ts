@@ -136,6 +136,18 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE episodes ADD COLUMN IF NOT EXISTS auto_search_misses INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE sub_items ADD COLUMN IF NOT EXISTS auto_search_misses INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE sub_items ADD COLUMN IF NOT EXISTS overview TEXT`,
+  `ALTER TABLE delay_profiles ADD COLUMN IF NOT EXISTS preferred_protocol TEXT NOT NULL DEFAULT 'none'`,
+  `ALTER TABLE delay_profiles ADD COLUMN IF NOT EXISTS bypass_if_above_format_score INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE delay_profiles ADD COLUMN IF NOT EXISTS minimum_bypass_format_score INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE quality_profiles ADD COLUMN IF NOT EXISTS prefer_cutoff_quality INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE indexers ADD COLUMN IF NOT EXISTS minimum_seeders INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE blocklist ADD COLUMN IF NOT EXISTS protocol TEXT`,
+  `ALTER TABLE blocklist ADD COLUMN IF NOT EXISTS size BIGINT`,
+  `ALTER TABLE blocklist ADD COLUMN IF NOT EXISTS publish_date TEXT`,
+  `ALTER TABLE blocklist ADD COLUMN IF NOT EXISTS info_hash TEXT`,
+  `ALTER TABLE queue ADD COLUMN IF NOT EXISTS protocol TEXT`,
+  `ALTER TABLE queue ADD COLUMN IF NOT EXISTS publish_date TEXT`,
+  `ALTER TABLE queue ADD COLUMN IF NOT EXISTS info_hash TEXT`,
 ];
 
 /**

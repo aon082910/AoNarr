@@ -4,6 +4,7 @@ import { db } from "../db/index.js";
 import { delayProfileFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { resetSearchBackoff } from "../services/searchBackoff.js";
+import { normalizePreferredProtocol } from "../services/releaseRanking.js";
 
 export const delayProfilesRouter = Router();
 delayProfilesRouter.use(requireAdmin);
@@ -13,6 +14,21 @@ function nonNegativeInteger(value: unknown, field: string): number {
   const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
   if (!Number.isFinite(n) || n < 0 || n > 2147483647) throw new HttpError(400, `${field} must be a number of 0 or more`);
   return Math.round(n);
+}
+
+/** "none", "usenet" or "torrent": anything else is a mistake worth refusing, not a quiet "none". */
+function preferredProtocol(value: unknown): string {
+  if (value === undefined || value === null) return "none";
+  if (value !== "none" && value !== "usenet" && value !== "torrent") throw new HttpError(400, "preferredProtocol must be none, usenet or torrent");
+  return normalizePreferredProtocol(value);
+}
+
+/** A whole number, negative allowed (a format score); undefined when not sent. */
+function wholeScore(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const n = Number(value);
+  if (!Number.isInteger(n) || Math.abs(n) > 2147483647) throw new HttpError(400, `${field} must be a whole number`);
+  return n;
 }
 
 delayProfilesRouter.get(
@@ -39,8 +55,8 @@ delayProfilesRouter.post(
     const maxOrder = (await db.prepare("SELECT MAX(order_index) AS m FROM delay_profiles").get()) as { m: number | null };
     const result = await db
       .prepare(
-        `INSERT INTO delay_profiles (tag_id, enable_usenet, enable_torrent, usenet_delay_minutes, torrent_delay_minutes, bypass_if_highest_quality, order_index)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO delay_profiles (tag_id, enable_usenet, enable_torrent, usenet_delay_minutes, torrent_delay_minutes, bypass_if_highest_quality, order_index, preferred_protocol, bypass_if_above_format_score, minimum_bypass_format_score)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         b.tagId ?? null,
@@ -49,7 +65,10 @@ delayProfilesRouter.post(
         usenetDelay,
         torrentDelay,
         b.bypassIfHighestQuality ? 1 : 0,
-        (maxOrder.m ?? -1) + 1
+        (maxOrder.m ?? -1) + 1,
+        preferredProtocol(b.preferredProtocol),
+        b.bypassIfAboveFormatScore ? 1 : 0,
+        wholeScore(b.minimumBypassFormatScore, "minimumBypassFormatScore") ?? 0
       );
     const row = await db.prepare("SELECT * FROM delay_profiles WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(delayProfileFromRow(row));
@@ -76,6 +95,18 @@ delayProfilesRouter.patch(
         sets.push(`${col} = ?`);
         values.push(booleanKeys.has(key) ? (b[key] ? 1 : 0) : nonNegativeInteger(b[key], key));
       }
+    }
+    if (b.bypassIfAboveFormatScore !== undefined) {
+      sets.push("bypass_if_above_format_score = ?");
+      values.push(b.bypassIfAboveFormatScore ? 1 : 0);
+    }
+    if (b.minimumBypassFormatScore !== undefined) {
+      sets.push("minimum_bypass_format_score = ?");
+      values.push(wholeScore(b.minimumBypassFormatScore, "minimumBypassFormatScore") ?? 0);
+    }
+    if (b.preferredProtocol !== undefined) {
+      sets.push("preferred_protocol = ?");
+      values.push(preferredProtocol(b.preferredProtocol));
     }
     if (sets.length > 0) {
       values.push(req.params.id);

@@ -127,6 +127,7 @@ export function indexerFromRow(row: any) {
     mediaTypes: row.media_types,
     enabled: row.enabled,
     priority: row.priority,
+    minimumSeeders: row.minimum_seeders == null ? 0 : Number(row.minimum_seeders),
     config: row.config,
     useFlareSolverr: row.use_flaresolverr,
     queryLimitPerHour: row.query_limit_per_hour,
@@ -159,6 +160,7 @@ export function qualityProfileFromRow(row: any) {
     cutoff: row.cutoff,
     minFormatScore: row.min_format_score,
     maxSizeGb: row.max_size_gb,
+    preferCutoffQuality: row.prefer_cutoff_quality == null ? true : !!Number(row.prefer_cutoff_quality),
   };
 }
 
@@ -198,6 +200,9 @@ export function queueItemFromRow(row: any) {
     importSkippedReason: row.import_skipped_reason ?? null,
     matchType: row.match_type ?? null,
     grabSource: row.grab_source ?? null,
+    protocol: row.protocol ?? null,
+    publishDate: row.publish_date ?? null,
+    infoHash: row.info_hash ?? null,
   };
 }
 
@@ -235,6 +240,9 @@ export function delayProfileFromRow(row: any) {
     usenetDelayMinutes: row.usenet_delay_minutes,
     torrentDelayMinutes: row.torrent_delay_minutes,
     bypassIfHighestQuality: !!row.bypass_if_highest_quality,
+    preferredProtocol: row.preferred_protocol === "usenet" || row.preferred_protocol === "torrent" ? row.preferred_protocol : "none",
+    bypassIfAboveFormatScore: !!Number(row.bypass_if_above_format_score ?? 0),
+    minimumBypassFormatScore: Number(row.minimum_bypass_format_score ?? 0),
     orderIndex: row.order_index,
   };
 }

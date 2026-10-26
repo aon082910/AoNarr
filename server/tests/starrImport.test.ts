@@ -575,7 +575,7 @@ describe("previewStarrCustomFormats / importStarrCustomFormats", () => {
     mockStarrApi({
       "/api/v3/customformat": [
         { id: 20, name: "Already Exists", specifications: [{ implementation: "ReleaseTitleSpecification", fields: { value: "x" } }] },
-        { id: 21, name: "Nothing Translatable", specifications: [{ implementation: "IndexerFlagSpecification", fields: { value: 1 } }] },
+        { id: 21, name: "Nothing Translatable", specifications: [{ implementation: "LanguageSpecification", fields: { value: 1 } }] },
       ],
     });
 

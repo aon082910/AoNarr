@@ -142,6 +142,8 @@ export interface Indexer {
   config: string | null;
   useFlareSolverr: 0 | 1;
   queryLimitPerHour: number | null;
+  /** Torrents with fewer seeders than this are rejected (0 = no minimum). */
+  minimumSeeders?: number;
   health?: IndexerHealth;
 }
 
@@ -181,6 +183,8 @@ export interface QualityProfile {
   cutoff: string;
   minFormatScore: number;
   maxSizeGb?: number | null;
+  /** True: never pick a quality above the cutoff while one at or below it is on offer. */
+  preferCutoffQuality?: boolean;
 }
 
 export interface RootFolder {
@@ -219,6 +223,10 @@ export interface DelayProfile {
   usenetDelayMinutes: number;
   torrentDelayMinutes: number;
   bypassIfHighestQuality: boolean;
+  /** Which protocol wins between equal releases, and the only one the quality bypass applies to. */
+  preferredProtocol: "none" | "usenet" | "torrent";
+  bypassIfAboveFormatScore: boolean;
+  minimumBypassFormatScore: number;
   orderIndex: number;
 }
 
@@ -445,6 +453,9 @@ export interface SearchResult {
   parsedTitle?: string;
   downloadVolumeFactor?: number | null;
   alsoOnIndexers?: string[];
+  /** The one release an automatic search of this target would grab. */
+  wouldAutoGrab?: boolean;
+  infoHash?: string | null;
 }
 
 export interface BlocklistEntry {

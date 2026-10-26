@@ -1141,6 +1141,8 @@ export default function MediaDetail() {
         title: result.title,
         size: result.size,
         protocol: result.protocol,
+        publishDate: result.publishDate ?? null,
+        infoHash: result.infoHash ?? null,
         imdbId: result.imdbId ?? null,
         tmdbId: result.tmdbId ?? null,
         episodeId: target?.episodeId ?? null,
@@ -2704,6 +2706,11 @@ export default function MediaDetail() {
                     <td title={r.formatMatches.join(", ")}>{r.formatScore}</td>
                     <td>
                       {r.indexerName}
+                      {r.wouldAutoGrab && (
+                        <span className="badge ok" style={{ marginLeft: 6 }} title="Automatic search would grab this release">
+                          auto pick
+                        </span>
+                      )}
                       {r.alsoOnIndexers && r.alsoOnIndexers.length > 0 && (
                         <span className="badge" style={{ marginLeft: 6 }} title={`Also found on: ${r.alsoOnIndexers.join(", ")}`}>
                           +{r.alsoOnIndexers.length}

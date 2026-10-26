@@ -149,12 +149,19 @@ export function invalidateQualityRankCache(): void {
  * is treated as a neutral tie (0), not a penalty. A release whose size the indexer didn't report
  * is no evidence of being near the preferred size, so it ranks after every reported size
  * (Number.MAX_VALUE rather than Infinity, so two of them still compare as a tie). */
-export function preferredSizeDistance(qualityName: string | null, sizeBytes: number | null): number {
+export function preferredSizeDistance(qualityName: string | null, sizeBytes: number | null, runtimeMinutes?: number | null): number {
   if (!qualityName) return 0;
   const preferredMb = preferredSizeCache.get(qualityName);
   if (preferredMb == null) return 0;
   if (sizeBytes == null) return Number.MAX_VALUE;
-  return Math.abs(sizeBytes / 1_000_000 - preferredMb);
+  return Math.abs(sizeUnits(sizeBytes, runtimeMinutes) - preferredMb);
+}
+
+/** The size in the unit the limits are written in: MB, or MB per minute of video when the release's
+ * runtime is given (setting `sizeLimitMode` "perMinute", see releaseRuntime.ts). */
+function sizeUnits(sizeBytes: number, runtimeMinutes?: number | null): number {
+  const mb = sizeBytes / 1_000_000;
+  return runtimeMinutes != null && runtimeMinutes > 0 ? mb / runtimeMinutes : mb;
 }
 
 export function qualityRank(name: string | null): number {
@@ -187,12 +194,12 @@ export function knownReleaseSize(size: number | null | undefined): number | null
  * explicitly configured a size range for that quality (e.g. to catch a mislabeled/fake release
  * claiming "1080p" at 200MB). Unknown size (no bounds configured, or size not provided) passes.
  */
-export function sizeWithinQualityBounds(qualityName: string | null, sizeBytes: number | null): boolean {
+export function sizeWithinQualityBounds(qualityName: string | null, sizeBytes: number | null, runtimeMinutes?: number | null): boolean {
   if (!qualityName || sizeBytes == null) return true;
   const bounds = sizeBoundsCache.get(qualityName);
   if (!bounds) return true;
 
-  const sizeMb = sizeBytes / 1_000_000;
+  const sizeMb = sizeUnits(sizeBytes, runtimeMinutes);
   if (bounds.minSizeMb != null && sizeMb < bounds.minSizeMb) return false;
   if (bounds.maxSizeMb != null && sizeMb > bounds.maxSizeMb) return false;
   return true;
@@ -202,12 +209,14 @@ export function sizeWithinQualityBounds(qualityName: string | null, sizeBytes: n
  * Picks the best candidate quality allowed by a profile: the highest-ranked quality that is
  * both in the profile's allowed list and at or below the cutoff. If nothing meets the cutoff,
  * falls back to the best allowed quality available among the candidates (still an upgrade path,
- * just short of ideal) rather than grabbing nothing.
+ * just short of ideal) rather than grabbing nothing. With `capAtCutoff` off (the profile's
+ * prefer_cutoff_quality flag) the cutoff only stops upgrades and the best allowed quality wins.
  */
 export function pickBestAllowedQuality(
   candidateQualities: string[],
   allowedQualities: string[],
-  cutoff: string
+  cutoff: string,
+  capAtCutoff = true
 ): string | null {
   const cutoffRank = qualityRank(cutoff);
   const allowedSet = new Set(allowedQualities);
@@ -218,6 +227,8 @@ export function pickBestAllowedQuality(
 
   if (eligible.length === 0) return null;
 
+  // A profile that does not cap at the cutoff takes the best allowed quality on offer, as Sonarr/Radarr do.
+  if (!capAtCutoff) return eligible[0];
   const atOrBelowCutoff = eligible.filter((q) => qualityRank(q) <= cutoffRank);
   return atOrBelowCutoff[0] ?? eligible[0];
 }

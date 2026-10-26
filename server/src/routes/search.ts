@@ -17,14 +17,28 @@ import { notifyGrabbed } from "../services/notifications.js";
 import { notifyQueueChanged } from "../services/realtime.js";
 import { scoreRelease } from "../services/customFormatScoring.js";
 import { log } from "../services/logger.js";
-import { knownReleaseSize, sizeWithinQualityBounds, usesQualityTiers } from "../services/quality.js";
+import { knownReleaseSize, qualityRank, sizeWithinQualityBounds, usesQualityTiers } from "../services/quality.js";
+import { releaseRuntimeMinutes, runtimeContextFor } from "../services/releaseRuntime.js";
+import { compareUsenetAge, comparePeers, protocolGroup, protocolPreferenceKey } from "../services/releaseRanking.js";
 import { getBlocklistedTitles, isBlocklisted } from "../services/blocklist.js";
-import { matchTierFor, targetIdentityOf, type TargetIdentity } from "../services/scheduler.js";
+import { isBlockedRelease } from "../services/blocklistMatch.js";
+import {
+  chooseBestResult,
+  existingFileQuality,
+  loadDelayProfiles,
+  matchTierFor,
+  pickDelayProfile,
+  rowsToDownloadClients,
+  tagIdsForMediaItem,
+  targetIdentityOf,
+  type TargetIdentity,
+} from "../services/scheduler.js";
 import { episodePlanFor, searchHintsOf, seasonPlanFor, singlePlanFor, subItemPlanFor, type SearchPlan } from "../services/searchPlan.js";
 import { identityModeFor, releaseIdentifiesTarget } from "../services/releaseIdentity.js";
 import { releaseRejection } from "../services/releaseRejections.js";
 import { aliasTitlesFor, identityContextFor, identityTargetFor } from "../services/releaseAliases.js";
 import { searchSlskd } from "../services/soulseek.js";
+import { getMediaTypeConfig } from "../services/mediaTypes.js";
 import { pickClientForProtocol, searchAndGrabTargets, type BulkSearchTarget } from "../services/scheduler.js";
 import { computeAbsoluteEpisodeNumber } from "../services/importer.js";
 import type { SearchResult } from "../types/index.js";
@@ -70,6 +84,10 @@ export interface AnnotatedSearchResult extends SearchResult {
   /** The title the parser read from the release name — what "add as an alias" would store. */
   parsedTitle: string;
   blocklisted: boolean;
+  /** The one release an automatic search of this target would grab (same rejections, quality tier,
+   * format score and tie-breaks), so the list can show it first. Always false for a season-only or
+   * album/book search, which have no single automatic pick. */
+  wouldAutoGrab: boolean;
   rejected: boolean;
   rejectReason?: string;
   /** Other indexers that also carry what looks like this exact same release (same normalized
@@ -219,12 +237,14 @@ searchRouter.get(
 
     let allowedQualities: string[] = [];
     let cutoff = "";
+    let minFormatScore = 0;
     if (item.qualityProfileId) {
       const profileRow = await db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(item.qualityProfileId);
       if (profileRow) {
         const profile = qualityProfileFromRow(profileRow);
         allowedQualities = profile.allowedQualities;
         cutoff = profile.cutoff;
+        minFormatScore = profile.minFormatScore ?? 0;
       }
     }
 
@@ -238,6 +258,39 @@ searchRouter.get(
     // confirms identity by the sub-item's own title instead, so identity stays null there.
     const identity: TargetIdentity | null = !subItemId ? targetIdentityOf(item) : null;
     const identityTarget = tiered && identity ? { type: item.type, title: item.title, year: identity.year, externalIds: identity.externalIds, aliases: await aliasTitlesFor(item.id), ...(await identityContextFor(item.id)) } : null;
+    // What an automatic search of this target would grab, by the same decision code: the admin's own
+    // search is not delayed, and the file the target already has is only replaced by a real upgrade.
+    const delayProfile = pickDelayProfile(await loadDelayProfiles(), await tagIdsForMediaItem(item.id));
+    const hasAutoPick = !seasonNumberParam && !subItemId && (!!plan.target || getMediaTypeConfig(item.type).shape === "single");
+    let autoPick: SearchResult | null = null;
+    if (hasAutoPick && rawResults.length > 0) {
+      const onDisk = await existingFileQuality(item, episodeId ? Number(episodeId) : null, null);
+      autoPick =
+        (
+          await chooseBestResult(
+            rawResults,
+            allowedQualities,
+            cutoff,
+            item.qualityProfileId,
+            minFormatScore,
+            plan.target ?? null,
+            blocklisted,
+            item.type,
+            delayProfile,
+            identity,
+            item.id,
+            {
+              clients: await rowsToDownloadClients(),
+              upgradeFromRank: onDisk === undefined ? null : qualityRank(onDisk),
+              name: { title: item.title },
+              indexers,
+              userInvoked: true,
+              label: item.title,
+            }
+          )
+        )?.result ?? null;
+    }
+    const runtimeContext = await runtimeContextFor(item.id, item.type);
     const annotated: AnnotatedSearchResult[] = await Promise.all(rawResults.map(async (r) => {
       const parsed = parseReleaseTitle(r.title);
       const matchesTarget =
@@ -269,7 +322,7 @@ searchRouter.get(
         parsedQuality: parsed.quality,
         matchesTarget,
         allowedByProfile: !tiered || allowedQualities.length === 0 || allowedQualities.includes(parsed.quality),
-        sizeAllowed: !tiered || sizeWithinQualityBounds(parsed.quality, size),
+        sizeAllowed: !tiered || sizeWithinQualityBounds(parsed.quality, size, runtimeContext ? releaseRuntimeMinutes(parsed, runtimeContext) : null),
         formatScore: totalScore,
         formatMatches: matches.map((m) => m.name),
         matchTier: matchTierFor(r, identity),
@@ -278,7 +331,8 @@ searchRouter.get(
         identityReason: verdict && !verdict.ok ? verdict.detail : null,
         identityRejection: verdict && !verdict.ok ? verdict.reason : null,
         parsedTitle: parsed.title,
-        blocklisted: blocklisted.has(r.title),
+        blocklisted: isBlockedRelease(blocklisted, r),
+        wouldAutoGrab: autoPick === r,
         rejected: rejected || parsed.rejected || !!refusal,
         rejectReason: parsed.rejected ? "The release name is a hash, so there is no title to check it against" : refusal ? refusal.reason : rejectReason,
       };
@@ -291,6 +345,9 @@ searchRouter.get(
     // an automatic grab already weighs — real match first, then profile-allowed, not blocklisted,
     // format score, then seeders — so the top of the list is what auto-search would actually pick,
     // not just whatever the indexer happened to return first.
+    const priorityById = new Map(indexers.map((i: any) => [i.id, i.priority]));
+    const priorityOf = (r: SearchResult) => priorityById.get(r.indexerId ?? -1) ?? 25;
+    const preferredProtocol = delayProfile?.preferredProtocol ?? "none";
     annotated.sort(
       (a, b) =>
         Number(b.matchesTarget) - Number(a.matchesTarget) ||
@@ -298,9 +355,16 @@ searchRouter.get(
         Number(b.allowedByProfile) - Number(a.allowedByProfile) ||
         Number(a.rejected) - Number(b.rejected) ||
         Number(a.blocklisted) - Number(b.blocklisted) ||
+        Number(b.wouldAutoGrab) - Number(a.wouldAutoGrab) ||
+        (tiered ? qualityRank(b.parsedQuality) - qualityRank(a.parsedQuality) : 0) ||
         b.formatScore - a.formatScore ||
         b.matchTier - a.matchTier ||
-        (b.seeders ?? 0) - (a.seeders ?? 0)
+        protocolPreferenceKey(preferredProtocol, b.protocol) - protocolPreferenceKey(preferredProtocol, a.protocol) ||
+        priorityOf(a) - priorityOf(b) ||
+        protocolGroup(a.protocol) - protocolGroup(b.protocol) ||
+        comparePeers(a, b) ||
+        compareUsenetAge(a, b) ||
+        (a.protocol === "torrent" && b.protocol === "torrent" ? (b.seeders ?? 0) - (a.seeders ?? 0) : 0)
     );
 
     res.json(dedupeResults(annotated));
@@ -317,7 +381,17 @@ searchRouter.post(
 
     const b = req.body ?? {};
     if (!b.downloadUrl) throw new HttpError(400, "downloadUrl is required");
-    if (b.title && (await isBlocklisted(Number(req.params.mediaItemId), b.title))) {
+    if (
+      b.title &&
+      (await isBlocklisted(Number(req.params.mediaItemId), {
+        title: b.title,
+        protocol: b.protocol === "usenet" || b.protocol === "torrent" || b.protocol === "http" || b.protocol === "slskd" ? b.protocol : undefined,
+        indexerId: b.indexerId ?? null,
+        size: Number(b.size) || 0,
+        publishDate: typeof b.publishDate === "string" ? b.publishDate : null,
+        infoHash: typeof b.infoHash === "string" ? b.infoHash : null,
+      }))
+    ) {
       throw new HttpError(400, "This release is blocklisted for this media item");
     }
 
@@ -371,8 +445,8 @@ searchRouter.post(
 
     const result = await db
       .prepare(
-        `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, indexer_id, download_client_id, download_id, size, quality, status, match_type, grab_source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, 'interactive')`
+        `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, indexer_id, download_client_id, download_id, size, quality, status, match_type, grab_source, protocol, publish_date, info_hash)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, 'interactive', ?, ?, ?)`
       )
       .run(
         req.params.mediaItemId,
@@ -385,7 +459,10 @@ searchRouter.post(
         grab.downloadId,
         size,
         quality,
-        verdict?.matchType ?? null
+        verdict?.matchType ?? null,
+        protocol,
+        typeof b.publishDate === "string" ? b.publishDate : null,
+        typeof b.infoHash === "string" ? b.infoHash : null
       );
 
     await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
