@@ -83,6 +83,13 @@ export interface ParsedRelease {
   /** Subtitles burned into the picture ("HC", "HCSub", "KORSUB", "Hardsub"): Radarr's
    * HardcodedSubsRegex. Read from the tags, never from the title's own words. */
   hardcodedSubs: boolean;
+  /** The episodes a season-less fansub batch covers by absolute number ("[Group] Show - 01~25",
+   * "(1017-1088)"), inclusive. Matched against the episodes' absolute numbers. Null or absent for every
+   * other release. */
+  absoluteRange?: [number, number] | null;
+  /** An OVA, OAD, OVD, special or NCOP/NCED numbered like an episode ("Show - 01 - OVA"): not episode
+   * 1 of the series, so `absoluteEpisode` stays null. */
+  isSpecial?: boolean;
   /** An untouched disc image rather than an encode: a Blu-ray disc structure ("Blu-ray AVC
    * DTS-HD", "BD-50", "UNTOUCHED", "COMPLETE.UHD.BLURAY") or a DVD image ("DVD9", "DVD-R"). The
    * importer cannot place a BDMV/VIDEO_TS tree, so such a release grades "Unknown" and the grab
@@ -99,7 +106,7 @@ export interface ParsedRelease {
 // episode tag "E", "Ep" or "Episode", with a dot or space before its number ("S01.Ep06", "S01.E.01").
 // A "v2" after the last number is a fansub re-release ("S02E01v2").
 const SEASON_EP_RANGE =
-  /\bS(\d{1,2})(?:[._ ]*-[._ ]*|[._ ]?)E(?:p(?:isode)?)?[._ ]?(\d{1,3})(?:-E?(\d{1,3})|-S(\d{1,2})[._ ]?E(\d{1,3})|((?:[._ ]?E\d{1,3})+))?(?:v\d)?\b/i;
+  /\bS0*(\d{1,4})(?:[._ ]*-[._ ]*|[._ ]?)E(?:p(?:isode)?)?[._ ]?(\d{1,3})(?:-E?(\d{1,3})|-S(\d{1,2})[._ ]?E(\d{1,3})|((?:[._ ]?E\d{1,3})+))?(?:v\d)?\b/i;
 // A "1x01-264" range this long is a different number (a codec), not a multi-episode release.
 const MAX_EPISODE_RANGE = 100;
 // "1x01" scene/P2P notation, the same convention libraryScan.ts's filename-based detector already
@@ -156,8 +163,11 @@ function seasonDashEpisode(title: string): RegExpMatchArray | null {
 }
 // A dash range of this many episodes or more ("S2 - 01-12") is a batch, not a multi-episode release.
 const DASH_RANGE_BATCH_SIZE = 4;
-const SEASON_ONLY = /\bS(\d{1,2})\b(?![\s._-]*E\d)/i;
-const FULL_SEASON_HINT = /\b(complete|seasons?[\s._]?\d{1,2}|full season)\b/i;
+// A four-digit season is a year ("S2016E14", "S2024"): TVDB numbers some shows that way.
+const SEASON_ONLY = /\bS0*(\d{1,2}|(?:19|20)\d{2})\b(?![\s._-]*E\d)/i;
+// "Saison 3", "Stagione 3", "Temporada 2", "Sezon 2" and "Staffel 4" are the spelled-out season in
+// French, Italian, Spanish, Polish and German releases.
+const FULL_SEASON_HINT = /\b(complete|(?:seasons?|saisons?|stagione|temporada|sezon|staffel)[\s._]?\d{1,2}|full season)\b/i;
 // "Movie.2010.COMPLETE.BLURAY": a disc image of a film, not a season pack.
 const DISC_TAG_AFTER = /^[ ._-]+(?:blu-?ray|bd|bdrip|remux|dvd[59r]?|uhd)\b/i;
 const YEAR_BEFORE = /(?:19|20)\d{2}[ ._-]+$/;
@@ -182,6 +192,21 @@ const ABSOLUTE_EPISODE = /\s-\s0*(\d{1,4})(?:v\d)?(?=\s|\[|\(|$)/;
 // SEASON_DASH_EPISODE, with an absolute number's four digits.
 const ABSOLUTE_RANGE =
   /\s-\s0*(\d{1,4})(?:v\d)?(?:\s*~\s*0*(\d{1,4})(?![\da-z])|-0*(\d{1,4})(?:v\d)?(?![\da-z])|\s+-\s+0*(\d{1,4})(?:v\d)?(?!\d)(?=\s*(?:end\s*)?(?:[[(+]|\d{3,4}[pi]\b|$)))/i;
+// What follows an absolute number and shows it is the episode: a bracket, "END", a resolution or the
+// end of the name, not the first word of an episode title ("Show - 100 Years Quest - 01 (1080p)").
+const ABSOLUTE_CONTEXT = /^(?:v\d)?\s*(?:[[(]|end\b|\d{3,4}[pi]\b|$)/i;
+// "Show - 01 - Special", "- 01 OVA": a special numbered like an episode.
+const ABSOLUTE_SPECIAL = /^(?:v\d)?\s*(?:-\s*)?(?:specials?|ova|ovd|oad|ncop|nced)\b/i;
+// Other ways a series with no season names its episode: "E1135", "EP06", "Episode 56", "Episodio 13",
+// "5of9". Read as an absolute number, and only from a name that looks like a video release.
+const ABSOLUTE_E_FORM = /(?:^|[\s.\]])(?:E|EP|Episode|Episodio)[ .]?0*(\d{2,4})(?:v\d)?(?![\da-z])/i;
+const ABSOLUTE_N_OF_M = /\b0*(\d{1,2})of\d{1,2}\b/i;
+// "[Shark-Raws] Series Title #957".
+const ABSOLUTE_HASH_FORM = /(?:^|\s)#0*(\d{1,4})(?![\da-z])/;
+// "[HatSubs] Anime Title 1004": a leading group, a title, and a bare number before a bracket or the end.
+const ABSOLUTE_GROUP_NUMBER = /^\s*\[[^\]]+\]\s*[^[\]()]*?[A-Za-z!?)]\s0*(\d{2,4})(?:v\d)?\s*(?=[[(]|$)/;
+// A season-less batch written in brackets: "(01-25)", "[1017-1088]".
+const ABSOLUTE_RANGE_BRACKET = /[[(]\s*0*(\d{1,4})\s*[-~]\s*0*(\d{1,4})\s*[\])]/;
 const IMDB_ID = /\btt\d{7,8}\b/i;
 
 // Title isolation (see ParsedRelease.title). A run of leading bracketed tags: the fansub group, a
@@ -506,22 +531,88 @@ function detectReleaseGroup(title: string): string | null {
   // Music and book titles never carry a season-numbered episode or a CRC32.
   // A season-less episode range ("[Group] Show - 01-04 [1080p]") is fansub numbering too.
   const fansubOnly = !!seasonDashEpisode(trimmed) || FANSUB_HASH.test(trimmed) || isAbsoluteBatch(trimmed);
-  if (!episodeNumbered && !fansubOnly) return null;
+  // A leading bracket on a video release is the group even with no number to show it is fansub ("[sam]
+  // Toward the Terra (1980) [BD 1080p]", "[FFF] Series - S01E11 - Title").
+  const videoRelease = VIDEO_MARKER.test(trimmed) || /\bS\d{1,2}[ ._-]*E\d/i.test(trimmed);
+  if (!episodeNumbered && !fansubOnly && !videoRelease) return null;
   const leadingMatch = trimmed.match(LEADING_BRACKET_GROUP);
   if (!leadingMatch) return null;
   const leading = leadingMatch[1].trim();
   if (!leading || leading.includes(".") || isNonGroupTag(leading)) return null;
   if (!fansubOnly && hasAudioOrBookTag(trimmed.slice(leadingMatch[0].length))) return null;
+  // A tracker's site tag leads some names: not a group.
+  if (/^(?:www|http)/i.test(leading)) return null;
   return leading;
 }
 
-function isAbsoluteBatch(title: string): boolean {
+/** The first and last absolute number of a season-less batch, or null when the name is none. */
+function absoluteBatchRange(title: string): [number, number] | null {
   const match = title.match(ABSOLUTE_RANGE);
-  if (!match) return false;
-  const end = match[2] ?? match[3] ?? match[4];
-  // "Discography - 1999-2005" spans years, not episodes.
-  if (YEAR_SHAPED.test(end)) return false;
-  return !!match[2] || Number(end) - Number(match[1]) + 1 >= DASH_RANGE_BATCH_SIZE;
+  if (match) {
+    const end = match[2] ?? match[3] ?? match[4];
+    // "Discography - 1999-2005" spans years, not episodes.
+    if (YEAR_SHAPED.test(end)) return null;
+    if (!!match[2] || Number(end) - Number(match[1]) + 1 >= DASH_RANGE_BATCH_SIZE) return Number(end) >= Number(match[1]) ? [Number(match[1]), Number(end)] : null;
+    return null;
+  }
+  const bracket = title.match(ABSOLUTE_RANGE_BRACKET);
+  if (bracket && !YEAR_SHAPED.test(bracket[1]) && !YEAR_SHAPED.test(bracket[2])) {
+    const first = Number(bracket[1]);
+    const last = Number(bracket[2]);
+    // A resolution pair ("[1920-1080]") or a short span is no batch: a batch tag or a long span is.
+    if (last > first && last <= 9999 && (BATCH_TAG.test(title) || last - first + 1 >= DASH_RANGE_BATCH_SIZE) && ![480, 576, 720, 1080, 2160].includes(last)) return [first, last];
+  }
+  return null;
+}
+
+function isAbsoluteBatch(title: string): boolean {
+  return absoluteBatchRange(title) !== null;
+}
+
+/** An absolute episode number written in one of the forms that are not " - 05": the number and where it starts. */
+function absoluteFromOtherForms(title: string): { number: number; index: number } | null {
+  const videoLike = VIDEO_MARKER.test(title) || LEADING_BRACKET_GROUP.test(title.trim());
+  if (!videoLike || hasAudioOrBookTag(title)) return null;
+  const byForm = (m: RegExpMatchArray | null, groupIndex = 1): { number: number; index: number } | null => {
+    if (!m || m.index === undefined) return null;
+    const number = Number(m[groupIndex]);
+    // A year, a resolution or a codec number is no episode.
+    if (YEAR_SHAPED.test(m[groupIndex]) || [480, 576, 720, 1080, 2160, 264, 265].includes(number) || number === 0) return null;
+    return { number, index: m.index };
+  };
+  const e = byForm(title.match(ABSOLUTE_E_FORM));
+  if (e) return e;
+  const hash = byForm(title.match(ABSOLUTE_HASH_FORM));
+  if (hash) return hash;
+  const nOfM = byForm(title.match(ABSOLUTE_N_OF_M));
+  if (nOfM) return nOfM;
+  // A title ending in a number ("[Group] Apollo 13 [1080p]") is read this way only when no year names it a film.
+  const group = /\b(?:19|20)\d{2}\b/.test(title) ? null : title.match(ABSOLUTE_GROUP_NUMBER);
+  const grouped = byForm(group);
+  if (grouped && group && group.index !== undefined) return { number: grouped.number, index: group[0].lastIndexOf(group[1]) + group.index };
+  return null;
+}
+
+/** "-04-05" or ".S01E06" after the last episode of a multi-episode release: Sonarr reads the list
+ * first to last. Returns the episodes added after `last`. */
+function extendEpisodeList(title: string, from: number, season: number, last: number): number[] {
+  const added: number[] = [];
+  let at = from;
+  let current = last;
+  for (let i = 0; i < 20; i++) {
+    const rest = title.slice(at);
+    const next =
+      rest.match(/^-E?(\d{1,3})(?![\da-z])/i) ??
+      rest.match(new RegExp(`^[ ._-]*S0*${season}[ ._]?E0*(\\d{1,3})(?!\\d)`, "i")) ??
+      rest.match(new RegExp(`^[ ._-]*0*${season}x0*(\\d{1,3})(?!\\d)`, "i"));
+    if (!next) break;
+    const n = Number(next[1]);
+    if (n <= current || n - current > MAX_EPISODE_RANGE) break;
+    for (let e = current + 1; e <= n; e++) added.push(e);
+    current = n;
+    at += next[0].length;
+  }
+  return added;
 }
 
 function detectResolution(title: string): string | null {
@@ -730,6 +821,8 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
       const end = Math.max(start, rangeMatch[3] ? Number(rangeMatch[3]) : rangeMatch[5] && Number(rangeMatch[4]) === seasonNumber ? Number(rangeMatch[5]) : start);
       episodeNumbers = [];
       for (let e = start; e <= end; e++) episodeNumbers.push(e);
+      // "S02E03-04-05", "S01E05.S01E06", "S07E22 - S07E23": every episode up to the last.
+      episodeNumbers.push(...extendEpisodeList(title, (rangeMatch.index ?? 0) + rangeMatch[0].length, seasonNumber, end));
     }
   } else {
     const dashMatch = seasonDashEpisode(title);
@@ -873,14 +966,33 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
   }
 
   let absoluteEpisode: number | null = null;
+  let isSpecial = false;
+  let absoluteRange: [number, number] | null = null;
   if (seasonNumber === null && episodeNumbers === null && !isFullSeason) {
-    const absMatch = title.match(ABSOLUTE_EPISODE);
-    // "Dune - 2021" names a year, not episode 2021.
-    if (absMatch && !YEAR_SHAPED.test(absMatch[1])) {
-      absoluteEpisode = Number(absMatch[1]);
-      markerIndex = absMatch.index ?? null;
+    // Every " - NN" that is no year. The episode is the last one followed by release context
+    // ("Series Title - 100 Years Quest - 01 (1080p)": 01, the 100 is the title's), else the first.
+    const candidates = [...title.matchAll(ABSOLUTE_EPISODE_ALL)].filter((m) => !YEAR_SHAPED.test(m[1]) && m.index !== undefined);
+    const inContext = candidates.filter((m) => ABSOLUTE_CONTEXT.test(title.slice(m.index! + m[0].length)) || ABSOLUTE_SPECIAL.test(title.slice(m.index! + m[0].length)));
+    // The last number in context stands only when words come between it and the first: "- 100 Years Quest - 01"
+    // has a title in the middle, "- 05 - 06" is two numbers and the first one is the episode.
+    const lastInContext = inContext.length > 0 ? inContext[inContext.length - 1] : null;
+    const first = candidates[0] ?? null;
+    const titleBetween = !!first && !!lastInContext && lastInContext !== first && /[A-Za-z]/.test(title.slice(first.index! + first[0].length, lastInContext.index));
+    const absMatch = (lastInContext && (!first || lastInContext === first || titleBetween) ? lastInContext : first) ?? null;
+    if (absMatch && absMatch.index !== undefined) {
+      markerIndex = absMatch.index;
+      // "Show - 01 - OVA", "- 01 Special": a special, not episode 1.
+      if (ABSOLUTE_SPECIAL.test(title.slice(absMatch.index + absMatch[0].length))) isSpecial = true;
+      else absoluteEpisode = Number(absMatch[1]);
+    } else {
+      const other = absoluteFromOtherForms(title);
+      if (other) {
+        absoluteEpisode = other.number;
+        markerIndex = other.index;
+      }
     }
   }
+  if (isFullSeason && seasonNumber === null && episodeNumbers === null) absoluteRange = absoluteBatchRange(title);
   if ((airDate || ambiguousDate) && dateMatch) markerIndex = minDefined(markerIndex, dateMatch.index);
 
   const imdbMatch = title.match(IMDB_ID);
@@ -953,6 +1065,8 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
     releaseGroup,
     airDate,
     absoluteEpisode,
+    ...(absoluteRange ? { absoluteRange } : {}),
+    ...(isSpecial ? { isSpecial } : {}),
     imdbId: imdbMatch ? imdbMatch[0].toLowerCase() : null,
     edition: detectEdition(tags),
     qualityModifier,
@@ -1013,6 +1127,9 @@ export function releaseMatchesEpisode(
   // Only ever consulted as a last resort — a release that already parsed a real SxxExx (even a
   // wrong one) never falls through to this, since a bare-number match is far weaker evidence.
   if (absoluteEpisodeNumber != null && parsed.absoluteEpisode === absoluteEpisodeNumber) return true;
+  // A season-less batch covers the absolute numbers from its first to its last.
+  const batch = parsed.absoluteRange;
+  if (absoluteEpisodeNumber != null && batch && absoluteEpisodeNumber >= batch[0] && absoluteEpisodeNumber <= batch[1]) return true;
   return false;
 }
 

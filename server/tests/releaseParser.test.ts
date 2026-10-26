@@ -201,8 +201,14 @@ describe("parseReleaseTitle", () => {
     ]) {
       const p = parseReleaseTitle(title);
       expect(p, title).toMatchObject({ seasonNumber: null, episodeNumbers: null, isFullSeason: true, absoluteEpisode: null });
-      expect(releaseMatchesEpisode(p, 1, 1, null, null, 1), title).toBe(false);
-      expect(releaseMatchesEpisode(p, 1, 1, null, null, 1000), title).toBe(false);
+      // Round 12 (P17): the batch covers the absolute numbers of its range, and only those.
+      const [first, last] = p.absoluteRange!;
+      expect(releaseMatchesEpisode(p, 1, 1, null, null, first), title).toBe(true);
+      expect(releaseMatchesEpisode(p, 1, 1, null, null, last), title).toBe(true);
+      expect(releaseMatchesEpisode(p, 1, 1, null, null, last + 1), title).toBe(false);
+      expect(releaseMatchesEpisode(p, 1, 1, null, null, first - 1), title).toBe(false);
+      // No absolute number, no match: a batch is never matched on the aired numbers.
+      expect(releaseMatchesEpisode(p, 1, 1), title).toBe(false);
     }
     expect(parseReleaseTitle("[Erai-raws] Show 2nd Season - 01 ~ 12 [1080p][Multiple Subtitle]").releaseGroup).toBe("Erai-raws");
     // A short range, an episode title and a span of years are no batch.
