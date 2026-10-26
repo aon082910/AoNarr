@@ -133,8 +133,11 @@ describe("POST /api/metadata/import — alternate titles", () => {
           ])
         );
       });
-      const stored = (await db.prepare("SELECT extra_metadata FROM media_items WHERE id = ?").get(res.body.id)) as { extra_metadata: string };
-      expect(JSON.parse(stored.extra_metadata)).toMatchObject({ originCountry: ["US"], aliasesVersion: 2 });
+      // The checked marker and the origin country are written after the alias rows, so they are awaited too.
+      await vi.waitFor(async () => {
+        const stored = (await db.prepare("SELECT extra_metadata FROM media_items WHERE id = ?").get(res.body.id)) as { extra_metadata: string | null };
+        expect(JSON.parse(stored.extra_metadata ?? "{}")).toMatchObject({ originCountry: ["US"], aliasesVersion: 2 });
+      });
     } finally {
       setSetting("tmdbApiKey", "");
     }
