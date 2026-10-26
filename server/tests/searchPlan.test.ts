@@ -123,6 +123,15 @@ describe("subItemPlanFor", () => {
     expect(plan).toMatchObject({ query: "Brandon Sanderson Mistborn", alternateQueries: ["Mistborn"], ids: {}, target: null });
   });
 
+  it("carries the fields of a typed music or book search", async () => {
+    const author = await insertItem("author", "Brandon Sanderson");
+    expect(plans.subItemPlanFor(author, { title: "Mistborn: The Final Empire (Mistborn, #1)" }).hints).toEqual({ author: "Brandon Sanderson", bookTitle: "Mistborn" });
+    const artist = await insertItem("artist", "Queen");
+    expect(plans.subItemPlanFor(artist, { title: "Greatest Hits (Remastered)" }).hints).toEqual({ artist: "Queen", album: "Greatest Hits" });
+    const comic = await insertItem("comic", "Saga");
+    expect(plans.subItemPlanFor(comic, { title: "#1 - Chapter One" }).hints).toEqual({});
+  });
+
   it("gives a self-titled album its release year", async () => {
     const artist = await insertItem("artist", "Weezer");
     expect(plans.subItemPlanFor(artist, { title: "Weezer", release_date: "2001-05-15" }).query).toBe("Weezer Weezer 2001");

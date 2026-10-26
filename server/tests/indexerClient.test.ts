@@ -1347,6 +1347,37 @@ describe("typed searches (t=caps, tvsearch, movie)", () => {
     expect(results.map((r) => r.title)).toEqual(["Text.Result.1080p.WEB-GRP"]);
   });
 
+  it("asks a music-search indexer by artist and album, and a book-search indexer by author and title (Round 14, N19)", async () => {
+    const MUSIC_CAPS = capsXml(`<search available="yes" supportedParams="q"/><audio-search available="yes" supportedParams="q,artist,album"/><book-search available="yes" supportedParams="q,author,title"/>`);
+    const fetchMock = routedFetch({ caps: MUSIC_CAPS, typed: typedItems });
+    vi.stubGlobal("fetch", fetchMock);
+    const indexer = makeIndexer({ categories: "3000,7000", mediaTypes: "artist,author" });
+
+    const album = await searchIndexer(indexer, "Queen Greatest Hits", "artist", undefined, { artist: "Queen", album: "Greatest Hits" });
+    const book = await searchIndexer(indexer, "Frank Herbert Dune", "author", undefined, { author: "Frank Herbert", bookTitle: "Dune" });
+
+    expect(album.map((r) => r.title)).toEqual(["Typed.Result.1080p.WEB-GRP"]);
+    expect(book.map((r) => r.title)).toEqual(["Typed.Result.1080p.WEB-GRP"]);
+    expect(fetchMock.mock.calls.map(typeOf)).toEqual(["caps", "music", "book"]);
+    const music = new URL(fetchMock.mock.calls[1][0] as string).searchParams;
+    expect([music.get("artist"), music.get("album"), music.has("q")]).toEqual(["Queen", "Greatest Hits", false]);
+    const books = new URL(fetchMock.mock.calls[2][0] as string).searchParams;
+    expect([books.get("author"), books.get("title")]).toEqual(["Frank Herbert", "Dune"]);
+  });
+
+  it("falls back to the text search when a music search finds nothing, or the indexer takes no artist and album", async () => {
+    const empty = routedFetch({ caps: capsXml(`<audio-search available="yes" supportedParams="q,artist,album"/>`) });
+    vi.stubGlobal("fetch", empty);
+    const results = await searchIndexer(makeIndexer({ categories: "3000" }), "Queen Greatest Hits", "artist", undefined, { artist: "Queen", album: "Greatest Hits" });
+    expect(empty.mock.calls.map(typeOf)).toEqual(["caps", "music", "search"]);
+    expect(results.map((r) => r.title)).toEqual(["Text.Result.1080p.WEB-GRP"]);
+
+    const plain = routedFetch({ caps: capsXml(`<audio-search available="yes" supportedParams="q"/>`) });
+    vi.stubGlobal("fetch", plain);
+    await searchIndexer(makeIndexer({ categories: "3000" }), "Queen Greatest Hits", "artist", undefined, { artist: "Queen", album: "Greatest Hits" });
+    expect(plain.mock.calls.map(typeOf)).toEqual(["caps", "search"]);
+  });
+
   it("asks a tv-search indexer for the show's tvdb id, season and episode", async () => {
     const fetchMock = routedFetch({ caps: FULL_CAPS, typed: typedItems });
     vi.stubGlobal("fetch", fetchMock);

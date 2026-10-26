@@ -250,3 +250,11 @@
 {"title": "Show.S01E01.RUS.ENG.1080p.WEB-DL-GRP", "kind": "release", "expect": {"languages": ["russian", "english"]}}
 {"title": "Show.S01E01.720p.HDTV.Eng.Subs.x264-GRP", "kind": "release", "expect": {"languages": []}}
 {"title": "Movie.Name.2019.VFF.1080p.BluRay-GRP", "kind": "release", "expect": {"languages": ["vff", "french"]}}
+{"title": "Show.Name.Part.2.of.6.720p.HDTV.x264-GRP", "kind": "release", "expect": {"season": 1, "episodes": [2], "title": "Show Name"}}
+{"title": "Mini.Series.Pt.1.of.3.HDTV.x264-GRP", "kind": "release", "expect": {"season": 1, "episodes": [1], "title": "Mini Series"}}
+{"title": "Show.Name.5of9.720p.HDTV.x264-GRP", "kind": "release", "expect": {"season": 1, "episodes": [5], "absolute": 5, "title": "Show Name"}}
+{"title": "Show.Name.103.720p.HDTV.x264-GRP", "kind": "release", "expect": {"season": 1, "episodes": [3], "title": "Show Name"}}
+{"title": "Show.Name.Part.3.1080p.WEB-DL-GRP", "kind": "release", "expect": {"season": null, "episodes": null, "title": "Show Name Part 3"}}
+{"title": "Room.237.2012.1080p.BluRay.x264-GRP", "kind": "release", "expect": {"season": null, "episodes": null, "title": "Room 237", "year": 2012}}
+{"title": "Fahrenheit.451.1080p.BluRay.x264-GRP", "kind": "release", "expect": {"season": null, "episodes": null, "title": "Fahrenheit 451"}}
+{"title": "Show.Name.720.HDTV-GRP", "kind": "release", "expect": {"season": null, "episodes": null}}

@@ -2151,6 +2151,17 @@ export default function Settings() {
                   <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
                     These rules apply to automatic searches, the RSS sync and IRC announces. Your own manual grab from Interactive Search is never blocked by them.
                   </p>
+                  <label htmlFor="settings-release-identity">Release identity check (does a release name the movie, show, album or book wanted?)</label>
+                  <select
+                    id="settings-release-identity"
+                    key={settings.strictReleaseIdentity ?? "release-identity-empty"}
+                    defaultValue={settings.strictReleaseIdentity || "enforce"}
+                    onChange={(e) => saveSetting("strictReleaseIdentity", e.target.value)}
+                  >
+                    <option value="enforce">Enforce: refuse a release that does not name the title wanted</option>
+                    <option value="log">Log only: note what would be refused in the log, refuse nothing</option>
+                    <option value="off">Off: no check</option>
+                  </select>
                   <label htmlFor="settings-propers-mode">PROPER, REPACK and v2 releases</label>
                   <select
                     id="settings-propers-mode"

@@ -212,6 +212,13 @@ const ABSOLUTE_SPECIAL = /^(?:v\d)?\s*(?:-\s*)?(?:specials?|ova|ovd|oad|ncop|nce
 // "5of9". Read as an absolute number, and only from a name that looks like a video release.
 const ABSOLUTE_E_FORM = /(?:^|[\s.\]])(?:(?:E|EP)[ .]?0*(\d{2,4})|(?:Episode|Episodio)[ .]?0*(\d{1,4}))(?:v\d)?(?![\da-z])/i;
 const ABSOLUTE_N_OF_M = /\b0*(\d{1,2})of\d{1,2}\b/i;
+// A mini-series' "Part 2 of 6" / "Pt.3/4": the first (only) season's episode N.
+const MINI_SERIES_PART = /[ .-](?:part|pt)[ .]*0*(\d{1,2})[ .]*(?:of|\/)[ .]*0*(\d{1,2})\b/i;
+// Old scene naming that glues season and episode into three digits ("Show.Name.103.HDTV.x264-GRP" is S01E03).
+// Read only from a television source name with no year, so a film called "Room 237" or "Fahrenheit 451" is spared.
+const THREE_DIGIT_EPISODE = /[ .-]([1-9])(\d{2})(?=[ .-]|$)/;
+const TELEVISION_SOURCE = /\b(?:HDTV|PDTV|DSR|SDTV|TVRip)\b/i;
+const FILM_SOURCE = /\b(?:BluRay|BDRip|BRRip|REMUX|DVDRip|DVDSCR|CAM|HDCAM|TS|TC|WEB-?DL|WEBRip)\b/i;
 // "[Shark-Raws] Series Title #957".
 const ABSOLUTE_HASH_FORM = /(?:^|\s)#0*(\d{1,4})(?![\da-z])/;
 // "[HatSubs] Anime Title 1004": a leading group, a title, and a bare number before a bracket or the end.
@@ -1052,6 +1059,16 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
     }
   }
 
+  // "Show.Name.Part.2.of.6": a mini-series' episode, in its one season.
+  if (seasonNumber === null && episodeNumbers === null && !isFullSeason && !seasonPart && !seasonExtra && !airDate) {
+    const mini = title.match(MINI_SERIES_PART);
+    if (mini && Number(mini[1]) >= 1 && Number(mini[1]) <= Number(mini[2])) {
+      seasonNumber = 1;
+      episodeNumbers = [Number(mini[1])];
+      markerIndex = mini.index ?? null;
+    }
+  }
+
   let absoluteEpisode: number | null = null;
   let isSpecial = false;
   let absoluteRange: [number, number] | null = null;
@@ -1076,6 +1093,27 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
       if (other) {
         absoluteEpisode = other.number;
         markerIndex = other.index;
+      }
+    }
+  }
+  if (absoluteEpisode !== null && seasonNumber === null && episodeNumbers === null) {
+    // "Show.5of9": the episode of a short series too; the absolute number stays for the anime match.
+    const nOfM = title.match(ABSOLUTE_N_OF_M);
+    const total = nOfM ? Number(nOfM[0].match(/of(\d+)/i)?.[1]) : 0;
+    if (nOfM && Number(nOfM[1]) === absoluteEpisode && absoluteEpisode >= 1 && absoluteEpisode <= total) {
+      seasonNumber = 1;
+      episodeNumbers = [absoluteEpisode];
+    }
+  }
+  if (seasonNumber === null && episodeNumbers === null && absoluteEpisode === null && !isFullSeason && !isSpecial && !airDate && !ambiguousDate) {
+    const three = title.match(THREE_DIGIT_EPISODE);
+    const hasYear = /\b(?:19|20)\d{2}\b/.test(title);
+    if (three && three.index !== undefined && three.index > 0 && !hasYear && TELEVISION_SOURCE.test(title) && !FILM_SOURCE.test(title) && Number(three[2]) >= 1) {
+      // A resolution or codec is no episode: "720" before "p"/"i" is skipped by the separator the pattern needs.
+      if (![480, 576, 720].includes(Number(three[1] + three[2])) && hasTitleToken(title, titleStart(title), three.index)) {
+        seasonNumber = Number(three[1]);
+        episodeNumbers = [Number(three[2])];
+        markerIndex = three.index;
       }
     }
   }
