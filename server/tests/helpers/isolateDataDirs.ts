@@ -22,3 +22,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-test-"));
 process.env.AONARR_TEST_DATA_DIR = dir;
 process.env.AONARR_CONFIG_DIR = dir;
 process.env.AONARR_DOWNLOADS_DIR = dir;
+
+// Requests to one indexer are spaced 1.5 s apart in production (indexerClient.ts); tests make dozens
+// of them against mocked indexers, so the pause is off unless a test turns it back on.
+process.env.AONARR_INDEXER_REQUEST_SPACING_MS = "0";

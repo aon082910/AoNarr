@@ -229,6 +229,24 @@ describe("IrcConnection — PRIVMSG routing", () => {
     expect(onMessage).toHaveBeenCalledTimes(1);
     expect(onMessage).toHaveBeenCalledWith("sentinel message");
   });
+
+  it("hands over an announce without the mIRC colour and bold codes a channel wraps its fields in", async () => {
+    const server = new FakeIrcServer((socket, line) => {
+      if (line.startsWith("USER")) server.send(socket, ":ircserver 001 testbot :Welcome");
+    });
+    activeServers.push(server);
+    const port = await server.listen();
+    const onMessage = vi.fn();
+    const conn = new IrcConnection(configFor(port), onMessage);
+    activeConnections.push(conn);
+
+    conn.start();
+    const [joinedSocket] = await server.waitForLine((l) => l.startsWith("JOIN")).then(() => server.sockets);
+    server.send(joinedSocket, ":bot!u@h PRIVMSG #testchannel :\u0002New Torrent:\u0002 \u000304Show.Name.S01E05.1080p.WEB.h264-GRP\u0003 - \u000312https://tracker.example/dl/1\u000F");
+
+    await vi.waitFor(() => expect(onMessage).toHaveBeenCalled());
+    expect(onMessage).toHaveBeenCalledWith("New Torrent: Show.Name.S01E05.1080p.WEB.h264-GRP - https://tracker.example/dl/1");
+  });
 });
 
 describe("IrcConnection — reconnection", () => {

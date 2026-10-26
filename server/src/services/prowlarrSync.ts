@@ -3,12 +3,33 @@ import { getSetting } from "./settingsStore.js";
 import { log } from "./logger.js";
 import { encryptValue } from "./encryption.js";
 import { DEFAULT_INDEXER_MEDIA_TYPES } from "./indexerClient.js";
+import { mediaTypesForCategories } from "./indexerCategories.js";
 
 interface ProwlarrIndexer {
   id: number;
   name: string;
   protocol: "torrent" | "usenet";
   enable: boolean;
+  capabilities?: { categories?: { id: number; subCategories?: { id: number }[] }[] };
+}
+
+/**
+ * The media types a synced indexer is searched for: those its categories cover, so a TV-only tracker
+ * is not asked for books, albums and ROMs on every cycle. The default (every type) when it reports
+ * no category this app knows.
+ */
+export function mediaTypesFromCategoryIds(ids: number[]): string {
+  return mediaTypesForCategories(ids)?.join(",") ?? DEFAULT_INDEXER_MEDIA_TYPES;
+}
+
+/**
+ * A synced row's media types follow the indexer's categories for as long as the admin has not
+ * touched them: the row is still on the default list (never narrowed) or on what the last sync set
+ * (`lastSynced`, kept in the row's config). A list the admin edited is theirs and stays.
+ */
+export function syncedMediaTypes(current: string | null | undefined, lastSynced: unknown, ids: number[]): string {
+  const untouched = !current || current === DEFAULT_INDEXER_MEDIA_TYPES || (typeof lastSynced === "string" && current === lastSynced);
+  return untouched ? mediaTypesFromCategoryIds(ids) : current;
 }
 
 /** The keys a Prowlarr/Jackett sync stores in `indexers.config` to find its own row again. */
@@ -16,9 +37,9 @@ export const SYNC_ID_KEYS = ["prowlarrId", "jackettId"] as const;
 /** Sync bookkeeping that must survive an edit like the ids do: the Prowlarr enable flag seen on the
  * last sync, so only a change made in Prowlarr is mirrored, and the synced row a copy was once
  * disabled as a duplicate of (see disableUnsyncedDuplicates). */
-const SYNC_STATE_KEYS = ["prowlarrEnabled", "duplicateOf"] as const;
+const SYNC_STATE_KEYS = ["prowlarrEnabled", "duplicateOf", "syncedMediaTypes"] as const;
 
-function parseIndexerConfig(config: unknown): Record<string, unknown> {
+export function parseIndexerConfig(config: unknown): Record<string, unknown> {
   if (config && typeof config === "object" && !Array.isArray(config)) return { ...(config as Record<string, unknown>) };
   if (typeof config !== "string" || !config) return {};
   try {
@@ -115,11 +136,12 @@ export async function syncFromProwlarr(): Promise<{ synced: number; error?: stri
       const encryptedApiKey = encryptValue(apiKey);
 
       // Terminated with the closing brace so id 5 can't match the row for id 50/500.
-      const existing = ((await db.prepare(`SELECT id, config, enabled FROM indexers WHERE config LIKE ?`).get(`%"prowlarrId":${idx.id}}%`)) ??
-        (await db.prepare("SELECT id, config, enabled FROM indexers WHERE url = ? ORDER BY id").get(url))) as
-        | { id: number; config: string | null; enabled: number }
+      const existing = ((await db.prepare(`SELECT id, config, enabled, media_types FROM indexers WHERE config LIKE ?`).get(`%"prowlarrId":${idx.id}}%`)) ??
+        (await db.prepare("SELECT id, config, enabled, media_types FROM indexers WHERE url = ? ORDER BY id").get(url))) as
+        | { id: number; config: string | null; enabled: number; media_types: string | null }
         | undefined;
       const prowlarrEnabled = !!idx.enable;
+      const categoryIds = (idx.capabilities?.categories ?? []).flatMap((c) => [c.id, ...(c.subCategories ?? []).map((sub) => sub.id)]);
 
       if (existing) {
         // Only a change of Prowlarr's own flag is mirrored: copying it on every sync re-enabled an
@@ -128,15 +150,16 @@ export async function syncFromProwlarr(): Promise<{ synced: number; error?: stri
         // With no flag recorded yet (a row from an older sync), only a disable is mirrored.
         const lastSeen = parseIndexerConfig(existing.config).prowlarrEnabled;
         const mirrorEnabled = typeof lastSeen === "boolean" ? lastSeen !== prowlarrEnabled : !prowlarrEnabled;
-        const config = withSyncFields(existing.config, { prowlarrEnabled, prowlarrId: idx.id });
+        const mediaTypes = syncedMediaTypes(existing.media_types, parseIndexerConfig(existing.config).syncedMediaTypes, categoryIds);
+        const config = withSyncFields(existing.config, { prowlarrEnabled, prowlarrId: idx.id, syncedMediaTypes: mediaTypes });
         if (mirrorEnabled) {
           await db
-            .prepare("UPDATE indexers SET name = ?, protocol = ?, url = ?, api_key = ?, enabled = ?, config = ? WHERE id = ?")
-            .run(idx.name, protocol, url, encryptedApiKey, prowlarrEnabled ? 1 : 0, config, existing.id);
+            .prepare("UPDATE indexers SET name = ?, protocol = ?, url = ?, api_key = ?, enabled = ?, config = ?, media_types = ? WHERE id = ?")
+            .run(idx.name, protocol, url, encryptedApiKey, prowlarrEnabled ? 1 : 0, config, mediaTypes, existing.id);
         } else {
           await db
-            .prepare("UPDATE indexers SET name = ?, protocol = ?, url = ?, api_key = ?, config = ? WHERE id = ?")
-            .run(idx.name, protocol, url, encryptedApiKey, config, existing.id);
+            .prepare("UPDATE indexers SET name = ?, protocol = ?, url = ?, api_key = ?, config = ?, media_types = ? WHERE id = ?")
+            .run(idx.name, protocol, url, encryptedApiKey, config, mediaTypes, existing.id);
         }
         const enabled = mirrorEnabled ? prowlarrEnabled : !!Number(existing.enabled);
         await disableUnsyncedDuplicates({ id: existing.id, url, enabled }, "prowlarrId", "prowlarrSync");
@@ -148,9 +171,9 @@ export async function syncFromProwlarr(): Promise<{ synced: number; error?: stri
             protocol,
             url,
             encryptedApiKey,
-            DEFAULT_INDEXER_MEDIA_TYPES,
+            mediaTypesFromCategoryIds(categoryIds),
             prowlarrEnabled ? 1 : 0,
-            JSON.stringify({ prowlarrEnabled, prowlarrId: idx.id })
+            JSON.stringify({ prowlarrEnabled, syncedMediaTypes: mediaTypesFromCategoryIds(categoryIds), prowlarrId: idx.id })
           );
       }
       synced++;

@@ -202,4 +202,14 @@ export interface SearchResult {
    * together to prefer a confirmed match without ever excluding an unconfirmed one. */
   imdbId?: string | null;
   tmdbId?: string | null;
+  /** The show's tvdb id as the indexer reports it (`tvdbid`): the identity gate accepts a release
+   * whose id is the series' own, as Sonarr's FindSeries does. */
+  tvdbId?: string | null;
+  /** Torznab's `infohash` and `magneturl` attributes, when the feed carries them. */
+  infoHash?: string | null;
+  magnetUrl?: string | null;
+  /** Torznab's `uploadvolumefactor` (2 = double upload) and `tag` attributes (freeleech, internal,
+   * scene, ...), the rest of what Sonarr reads as indexer flags. */
+  uploadVolumeFactor?: number | null;
+  indexerTags?: string[];
 }

@@ -3381,8 +3381,10 @@ export async function fetchAliasDataFor(type: MediaType, externalIds: Record<str
     const body: any = await res.json();
     const m = body?.data?.Media;
     if (!m) throw new Error("AniList has no record for this id");
-    const titles = Array.from(new Set([m.title?.romaji, m.title?.english, m.title?.native, ...(m.synonyms ?? [])].filter(Boolean))) as string[];
-    titles.sort((a, b) => a.localeCompare(b));
+    // The names a fansub release is filed under come first (romaji, English, the synonyms) and the
+    // native script, which no release carries, last: releaseAliases.rankedSearchTitles picks queries
+    // from this order.
+    const titles = Array.from(new Set([m.title?.romaji, m.title?.english, ...(m.synonyms ?? []), m.title?.native].filter(Boolean))) as string[];
     return { titles, originCountry: m.countryOfOrigin ? [String(m.countryOfOrigin)] : null };
   }
 
@@ -3394,7 +3396,7 @@ export async function fetchAliasDataFor(type: MediaType, externalIds: Record<str
   const res = await fetch(`https://api.themoviedb.org/3/${kind}/${externalIds.tmdb}?api_key=${key}&append_to_response=alternative_titles,translations`);
   if (!res.ok) throw new Error(`TMDB alternative titles lookup failed: HTTP ${res.status}`);
   const body: any = await res.json();
-  const alternatives: { title: string }[] = kind === "movie" ? (body.alternative_titles?.titles ?? []) : (body.alternative_titles?.results ?? []);
+  const alternatives: { title: string; iso_3166_1?: string }[] = kind === "movie" ? (body.alternative_titles?.titles ?? []) : (body.alternative_titles?.results ?? []);
   const original: string | undefined = (kind === "movie" ? body.original_title : body.original_name) || undefined;
   const translations: { iso_639_1?: string; data?: { title?: string; name?: string } }[] = body.translations?.translations ?? [];
   const translated = translations
@@ -3406,10 +3408,20 @@ export async function fetchAliasDataFor(type: MediaType, externalIds: Record<str
       return (pa < 0 ? 99 : pa) - (pb < 0 ? 99 : pb) || a.title.localeCompare(b.title);
     })
     .map((t) => t.title);
-  const alternates = Array.from(new Set(alternatives.map((t) => t.title).filter(Boolean)));
-  alternates.sort((a, b) => a.localeCompare(b));
-  // The original-language title is kept whatever else is cut: the alternative titles give way first.
-  const titles = Array.from(new Set([...alternates.slice(0, MAX_ALIAS_TITLES - 15), ...(original ? [original] : []), ...translated])).slice(0, MAX_ALIAS_TITLES);
+  // English-speaking regions' titles first, then the rest in TMDB's own order: alphabetical order put
+  // an abbreviation like "AoT" ahead of the names releases are filed under.
+  const englishRegions = new Set(["US", "GB", "CA", "AU", "NZ", "IE"]);
+  const alternates = Array.from(
+    new Set(
+      alternatives
+        .map((t, index) => ({ title: t.title, index, english: englishRegions.has(String(t.iso_3166_1 ?? "").toUpperCase()) ? 0 : 1 }))
+        .filter((t) => t.title)
+        .sort((a, b) => a.english - b.english || a.index - b.index)
+        .map((t) => t.title)
+    )
+  );
+  // The original-language title leads and is kept whatever else is cut: the alternative titles give way first.
+  const titles = Array.from(new Set([...(original ? [original] : []), ...alternates.slice(0, MAX_ALIAS_TITLES - 15), ...translated])).slice(0, MAX_ALIAS_TITLES);
   const countries: string[] = Array.isArray(body.origin_country)
     ? body.origin_country
     : Array.isArray(body.production_countries)

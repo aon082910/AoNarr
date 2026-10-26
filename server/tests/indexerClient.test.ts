@@ -4,6 +4,8 @@ import type { Indexer } from "../src/types/index.js";
 
 let checkIndexerHealth: (typeof import("../src/services/indexerClient.js"))["checkIndexerHealth"];
 let isIndexerBackedOff: (typeof import("../src/services/indexerClient.js"))["isIndexerBackedOff"];
+let clearIndexerBackoff: (typeof import("../src/services/indexerClient.js"))["clearIndexerBackoff"];
+let clearFailureBackoff: (typeof import("../src/services/indexerClient.js"))["clearFailureBackoff"];
 let searchIndexer: (typeof import("../src/services/indexerClient.js"))["searchIndexer"];
 let searchAllIndexers: (typeof import("../src/services/indexerClient.js"))["searchAllIndexers"];
 let getMediaTypeConfig: (typeof import("../src/services/mediaTypes.js"))["getMediaTypeConfig"];
@@ -17,6 +19,8 @@ beforeAll(async () => {
   ({
     checkIndexerHealth,
     isIndexerBackedOff,
+    clearIndexerBackoff,
+    clearFailureBackoff,
     searchIndexer,
     searchAllIndexers,
     searchCacheSize,
@@ -337,8 +341,13 @@ describe("searchIndexer — torznab/newznab", () => {
         protocol: "torrent",
         category: "2000",
         downloadVolumeFactor: 0,
+        uploadVolumeFactor: null,
         imdbId: null,
         tmdbId: null,
+        tvdbId: null,
+        infoHash: null,
+        magnetUrl: null,
+        indexerTags: [],
       },
     ]);
   });
@@ -590,12 +599,127 @@ describe("searchIndexer — 429 backoff", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("does not back off on a non-429 failure", async () => {
-    const indexer = makeIndexer({ protocol: "rss" });
+  it("backs off for longer after each failed search in a row, and starts over after a search that works", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const indexer = makeIndexer({ protocol: "torznab" });
+      const failing = () => vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500, text: async () => "" }));
+      const working = () => vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => rssXml("") }));
+      const search = () => searchIndexer(indexer, "q", "movie");
+      const minutes = (n: number) => vi.setSystemTime(Date.now() + n * 60 * 1000);
+
+      failing();
+      await expect(search()).rejects.toThrow("HTTP 500");
+      expect(isIndexerBackedOff(indexer.id)).toBe(true);
+      await expect(search()).rejects.toThrow("recent failures");
+
+      // Five minutes on it is searched again, fails again, and is left alone for fifteen.
+      minutes(5.1);
+      expect(isIndexerBackedOff(indexer.id)).toBe(false);
+      await expect(search()).rejects.toThrow("HTTP 500");
+      minutes(10);
+      expect(isIndexerBackedOff(indexer.id)).toBe(true);
+      minutes(5.1);
+      expect(isIndexerBackedOff(indexer.id)).toBe(false);
+
+      // A search that works starts the count over: the next failure is five minutes again.
+      working();
+      await search();
+      failing();
+      await expect(search()).rejects.toThrow("HTTP 500");
+      minutes(5.1);
+      expect(isIndexerBackedOff(indexer.id)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("counts the searches that ran into one outage as one failure", async () => {
+    const indexer = makeIndexer({ protocol: "torznab" });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500, text: async () => "" }));
 
+    // The scheduler searches three episodes of a show at once: one dead indexer, one failure.
+    const outcomes = await Promise.allSettled([searchIndexer(indexer, "a", "movie"), searchIndexer(indexer, "b", "movie"), searchIndexer(indexer, "c", "movie")]);
+
+    expect(outcomes.every((o) => o.status === "rejected")).toBe(true);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 5.1 * 60 * 1000);
+      expect(isIndexerBackedOff(indexer.id)).toBe(false); // five minutes, not the hour three failures would have earned
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets a search the admin is waiting for try an indexer that is backed off for failing, and a success ends the backoff", async () => {
+    const indexer = makeIndexer({ protocol: "torznab" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500, text: async () => "" }));
     await expect(searchIndexer(indexer, "q", "movie")).rejects.toThrow("HTTP 500");
+    await expect(searchIndexer(indexer, "q", "movie")).rejects.toThrow("recent failures");
+
+    // Still down: the admin's search says so, and does not lengthen the wait.
+    await expect(searchIndexer(indexer, "q", "movie", undefined, { fresh: true })).rejects.toThrow("HTTP 500");
+    expect(isIndexerBackedOff(indexer.id)).toBe(true);
+
+    // Back up: it works, and the automatic searches follow.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => rssXml("") }));
+    await expect(searchIndexer(indexer, "q", "movie", undefined, { fresh: true })).resolves.toEqual([]);
     expect(isIndexerBackedOff(indexer.id)).toBe(false);
+  });
+
+  it("does not let an interactive search through an indexer that asked to be left alone", async () => {
+    const indexer = makeIndexer({ protocol: "torznab" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 429, text: async () => "" }));
+    await expect(searchIndexer(indexer, "q", "movie")).rejects.toThrow("HTTP 429");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(searchIndexer(indexer, "q", "movie", undefined, { fresh: true })).rejects.toThrow("backed off");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("ends a backoff after failures when the indexer is edited or tested, not one it asked for", async () => {
+    const failed = makeIndexer({ protocol: "torznab" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500, text: async () => "" }));
+    await expect(searchIndexer(failed, "q", "movie")).rejects.toThrow("HTTP 500");
+    clearFailureBackoff(failed.id);
+    expect(isIndexerBackedOff(failed.id)).toBe(false);
+
+    const limited = makeIndexer({ protocol: "torznab" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 429, text: async () => "" }));
+    await expect(searchIndexer(limited, "q", "movie")).rejects.toThrow("HTTP 429");
+    clearFailureBackoff(limited.id);
+    expect(isIndexerBackedOff(limited.id)).toBe(true);
+  });
+
+  it("keeps away from an indexer for as long as its Retry-After header says", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const indexer = makeIndexer({ protocol: "torznab" });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 429, headers: new Headers({ "retry-after": "3600" }), text: async () => "" }));
+      await expect(searchIndexer(indexer, "q", "movie")).rejects.toThrow("HTTP 429");
+
+      vi.setSystemTime(Date.now() + 59 * 60 * 1000);
+      expect(isIndexerBackedOff(indexer.id)).toBe(true);
+      vi.setSystemTime(Date.now() + 2 * 60 * 1000);
+      expect(isIndexerBackedOff(indexer.id)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a passing health check ends a backoff after failures, but not one the indexer asked for", async () => {
+    const failed = makeIndexer({ protocol: "torznab" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500, text: async () => "" }));
+    await expect(searchIndexer(failed, "q", "movie")).rejects.toThrow("HTTP 500");
+    expect(isIndexerBackedOff(failed.id)).toBe(true);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => CAPS_XML }));
+    await expect(checkIndexerHealth(failed)).resolves.toEqual({ ok: true });
+    expect(isIndexerBackedOff(failed.id)).toBe(false);
+
+    const limited = makeIndexer({ protocol: "torznab" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 429, text: async () => "" }));
+    await expect(searchIndexer(limited, "q", "movie")).rejects.toThrow("HTTP 429");
+    await expect(checkIndexerHealth(limited)).resolves.toEqual({ ok: false, error: "Backed off after a recent 429" });
   });
 });
 
@@ -606,7 +730,9 @@ describe("searchIndexer — per-hour query limit", () => {
     const indexer = makeIndexer({ protocol: "rss", queryLimitPerHour: 2 });
 
     await expect(searchIndexer(indexer, "q1", "movie")).rejects.toThrow("HTTP 500");
+    clearIndexerBackoff(indexer.id); // a failed search backs the indexer off; the limit is what is tested here
     await expect(searchIndexer(indexer, "q2", "movie")).rejects.toThrow("HTTP 500");
+    clearIndexerBackoff(indexer.id);
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
     await expect(searchIndexer(indexer, "q3", "movie")).rejects.toThrow("hit its configured query limit");
@@ -838,7 +964,7 @@ describe("Torznab/Newznab <error> documents", () => {
     const indexer = makeIndexer({ protocol: "torznab", categories: "2000" });
 
     await expect(searchIndexer(indexer, "q", "movie")).rejects.toThrow('Indexer "Test Indexer" error 100: Invalid API Key');
-    expect(isIndexerBackedOff(indexer.id)).toBe(false);
+    expect(isIndexerBackedOff(indexer.id)).toBe(true); // a refused key is left alone for a while, like any failing indexer
   });
 
   it("records the failure in the indexer's health history", async () => {
@@ -918,7 +1044,7 @@ describe("imdbid/tmdbid rejected by the indexer (Jackett's 201 on an indexer wit
       (await db.prepare("INSERT INTO indexers (name, protocol, url) VALUES ('Id Reject', 'torznab', 'https://idx.example.com')").run()).lastInsertRowid
     );
 
-    const results = await searchIndexer(makeIndexer({ id, categories: "5000" }), "Show", "series", { imdb: "tt0944947", tmdb: "1399" });
+    const results = await searchIndexer(makeIndexer({ id, categories: "2000" }), "Show", "movie", { imdb: "tt0944947", tmdb: "1399" });
 
     expect(results.map((r) => r.title)).toEqual(["Show S01E01"]);
     expect(searchCalls(fetchMock)).toHaveLength(2);
@@ -965,6 +1091,7 @@ describe("imdbid/tmdbid rejected by the indexer (Jackett's 201 on an indexer wit
     const indexer = makeIndexer({ categories: "2000" });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => unsupportedXml() }));
     await expect(searchIndexer(indexer, "Movie", "movie", { imdb: "tt0133093" })).rejects.toThrow("error 201");
+    clearIndexerBackoff(indexer.id); // the failed search backed the indexer off
 
     const fetchMock = rejectIdsFetch();
     vi.stubGlobal("fetch", fetchMock);
@@ -1322,17 +1449,20 @@ describe("typed searches — what each request costs", () => {
   const typeOf = (call: unknown[]) => new URL(call[0] as string).searchParams.get("t");
 
   it("makes the alternate and scene-name queries text searches, not repeats of the typed one", async () => {
+    // Nothing answers the typed search or the plain one, so the other titles and the dotted form are tried.
     const fetchMock = vi.fn().mockImplementation(async (url: string) => {
       const t = new URL(url).searchParams.get("t");
-      return { ok: true, status: 200, text: async () => (t === "caps" ? capsXml : t === "movie" ? items : torznabXml("")) };
+      return { ok: true, status: 200, text: async () => (t === "caps" ? capsXml : torznabXml("")) };
     });
     vi.stubGlobal("fetch", fetchMock);
     const indexer = makeIndexer({ mediaTypes: "movie", categories: "2000" });
 
     await searchAllIndexers([indexer], "Se7en 1995", "movie", true, { imdb: "tt0114369" }, { alternateQueries: ["Seven 1995", "Se7en"] });
 
-    expect(fetchMock.mock.calls.map(typeOf)).toEqual(["caps", "movie", "search", "search"]);
-    expect(fetchMock.mock.calls.slice(2).map((c) => new URL(c[0] as string).searchParams.get("q")).sort()).toEqual(["Se7en", "Seven 1995"]);
+    expect(fetchMock.mock.calls.map(typeOf).slice(0, 3)).toEqual(["caps", "movie", "search"]);
+    const rest = fetchMock.mock.calls.slice(3);
+    expect(rest.every((c) => typeOf(c) === "search" && !new URL(c[0] as string).searchParams.has("imdbid"))).toBe(true);
+    expect(rest.map((c) => new URL(c[0] as string).searchParams.get("q")).sort()).toEqual(["Se7en", "Se7en.1995", "Seven 1995"]);
   });
 
   it("counts every request it sends against the hourly limit", async () => {
@@ -1380,8 +1510,9 @@ describe("typed searches — what each request costs", () => {
 
 describe("searchAllIndexers — alternate title queries", () => {
   it("asks for the other titles only after the main query, and not of an indexer that is backed off, spent or not an API", async () => {
+    // "Main" finds nothing, so the other titles are asked for; the other queries find a release each.
     const answer = (q: string | null) =>
-      torznabXml(torznabItem({ title: `R ${q}`, downloadUrl: `https://idx.example.com/dl/${encodeURIComponent(q ?? "")}` }));
+      q === "Main" ? torznabXml("") : torznabXml(torznabItem({ title: `R ${q}`, downloadUrl: `https://idx.example.com/dl/${encodeURIComponent(q ?? "")}` }));
     const fetchMock = vi.fn().mockImplementation(async (url: string) => {
       const q = new URL(url).searchParams.get("q");
       if (q === "Rate Limited") return { ok: false, status: 429, text: async () => "" };
@@ -1416,9 +1547,8 @@ describe("searchAllIndexers — alternate title queries", () => {
     });
   }
 
-  it("runs the other titles' queries beside the main one, and merges their releases without doubles", async () => {
+  it("runs the other titles' queries where the main query found nothing, and merges their releases without doubles", async () => {
     const fetchMock = byQuery({
-      "The Office (US) S03E01": torznabXml(release("The.Office.US.S03E01.720p-GRP", "https://idx.example.com/dl/a")),
       "The Office S03E01": torznabXml(release("The.Office.S03E01.720p-GRP", "https://idx.example.com/dl/b") + release("The.Office.US.S03E01.720p-GRP", "https://idx.example.com/dl/a")),
       "The Office US S03E01": torznabXml(release("Office.US.S03E01.720p-GRP", "https://idx.example.com/dl/c")),
     });
@@ -1437,19 +1567,29 @@ describe("searchAllIndexers — alternate title queries", () => {
     expect(results.map((r) => r.downloadUrl).sort()).toEqual(["https://idx.example.com/dl/a", "https://idx.example.com/dl/b", "https://idx.example.com/dl/c"]);
   });
 
-  it("runs at most three alternate queries, leaving out an indexer that is out of queries instead of failing it", async () => {
-    const fetchMock = byQuery({ Main: torznabXml(release("Main.Result-GRP", "https://idx.example.com/dl/main")) });
+  it("runs at most four alternate queries, leaving out an indexer that is out of queries instead of failing it", async () => {
+    const fetchMock = byQuery({ "Alt Two": torznabXml(release("Alt.Two.Result-GRP", "https://idx.example.com/dl/alt")) });
     vi.stubGlobal("fetch", fetchMock);
     const open = makeIndexer({ mediaTypes: "movie", categories: "2000" });
     const spent = makeIndexer({ mediaTypes: "movie", categories: "2000", queryLimitPerHour: 1 });
 
-    const results = await searchAllIndexers([open, spent], "Main", "movie", true, undefined, { alternateQueries: ["Alt One", "Alt Two", "Alt Three", "Alt Four"] });
+    const results = await searchAllIndexers([open, spent], "Main", "movie", true, undefined, { alternateQueries: ["Alt One", "Alt Two", "Alt Three", "Alt Four", "Alt Five"] });
 
     const queries = fetchMock.mock.calls.map((c) => new URL(c[0] as string).searchParams.get("q"));
     // The spent indexer took the main query (its only one this hour) and none of the alternates.
     expect(queries.filter((q) => q === "Main")).toHaveLength(2);
-    expect(queries.filter((q) => q !== "Main").sort()).toEqual(["Alt One", "Alt Three", "Alt Two"]);
-    expect(results.map((r) => r.title)).toContain("Main.Result-GRP");
+    expect(queries.filter((q) => q !== "Main").sort()).toEqual(["Alt Four", "Alt One", "Alt Three", "Alt Two"]);
+    expect(results.map((r) => r.title)).toEqual(["Alt.Two.Result-GRP"]);
+  });
+
+  it("does not ask the other titles of an indexer the main query found releases at", async () => {
+    const fetchMock = byQuery({ Main: torznabXml(release("Main.Result-GRP", "https://idx.example.com/dl/main")) });
+    vi.stubGlobal("fetch", fetchMock);
+    const found = makeIndexer({ mediaTypes: "movie", categories: "2000" });
+
+    await searchAllIndexers([found], "Main", "movie", true, undefined, { alternateQueries: ["Alt One", "Alt Two"] });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("is the plain search when there are no alternate queries", async () => {

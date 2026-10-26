@@ -121,10 +121,11 @@ describe("GET /api/search/:mediaItemId — what the indexers are asked", () => {
 
     expect(res.status).toBe(200);
     const [, query, , bypassCache, externalIds, hints] = searchAllIndexers.mock.calls[0];
-    expect(query).toBe("The Office (US) S04E02");
+    // Written the way a scene names the show: no "The", no brackets, no accents.
+    expect(query).toBe("Office US S04E02");
     expect(bypassCache).toBe(true);
     expect(externalIds).toEqual({ tvdb: "73244" });
-    expect(hints).toEqual({ season: 4, episode: 2, alternateQueries: ["The Office S04E02", "The Office US S04E02", "Das Büro S04E02"] });
+    expect(hints).toEqual({ season: 4, episode: 2, queryTitle: "Office US", alternateQueries: ["Office S04E02", "Das Buro S04E02"] });
   });
 
   it("asks for a whole season by season alone, and a whole show by its ids and no numbers", async () => {
@@ -137,7 +138,52 @@ describe("GET /api/search/:mediaItemId — what the indexers are asked", () => {
     searchAllIndexers.mockClear();
     await request(app).get(`/api/search/${showId}`).set("X-Api-Key", apiKey);
     expect(searchAllIndexers.mock.calls[0][4]).toEqual({ tvdb: "555", imdb: "tt0555555" });
-    expect(searchAllIndexers.mock.calls[0][5]).toMatchObject({ season: null, episode: null });
+    expect(searchAllIndexers.mock.calls[0][5].season ?? null).toBeNull();
+    expect(searchAllIndexers.mock.calls[0][5].episode ?? null).toBeNull();
+  });
+
+  it("asks for a daily show's episode by its date, and marks the release of that day as the one asked for", async () => {
+    const showId = await insertShow("Late Night", { tvdb: "71256" });
+    await db.prepare("UPDATE media_items SET series_type = 'daily' WHERE id = ?").run(showId);
+    const epId = Number(
+      (
+        await db
+          .prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, air_date, monitored, has_file) VALUES (?, 2024, 101, '2024-08-25', 1, 0)")
+          .run(showId)
+      ).lastInsertRowid
+    );
+    searchAllIndexers.mockResolvedValue([
+      release({ title: "Late.Night.2024.08.25.1080p.WEB.h264-GRP", downloadUrl: "magnet:?xt=day" }),
+      release({ title: "Late.Night.2024.08.24.1080p.WEB.h264-GRP", downloadUrl: "magnet:?xt=other" }),
+    ]);
+
+    const res = await request(app).get(`/api/search/${showId}?episodeId=${epId}`).set("X-Api-Key", apiKey);
+
+    const [, query, , , externalIds, hints] = searchAllIndexers.mock.calls[0];
+    expect(query).toBe("Late Night 2024 08 25");
+    expect(externalIds).toEqual({ tvdb: "71256" });
+    expect(hints).toMatchObject({ airDate: "2024-08-25", alternateQueries: ["Late Night 2024-08-25"] });
+    expect(res.body.map((r: any) => [r.title, r.matchesTarget])).toEqual([
+      ["Late.Night.2024.08.25.1080p.WEB.h264-GRP", true],
+      ["Late.Night.2024.08.24.1080p.WEB.h264-GRP", false],
+    ]);
+  });
+
+  it("asks for an anime episode by its absolute number, with the season form beside it", async () => {
+    const showId = await insertShow("Jujutsu Kaisen", { anilist: "113415" });
+    await db.prepare("UPDATE media_items SET type = 'anime' WHERE id = ?").run(showId);
+    const epId = Number(
+      (await db.prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, monitored, has_file) VALUES (?, 1, 25, 1, 0)").run(showId)).lastInsertRowid
+    );
+    for (let n = 1; n < 25; n++) {
+      await db.prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, monitored, has_file) VALUES (?, 1, ?, 1, 0)").run(showId, n);
+    }
+
+    await request(app).get(`/api/search/${showId}?episodeId=${epId}`).set("X-Api-Key", apiKey);
+
+    const [, query, , , , hints] = searchAllIndexers.mock.calls[0];
+    expect(query).toBe("Jujutsu Kaisen 25");
+    expect(hints).toMatchObject({ season: 1, episode: 25, absolute: 25, alsoQueries: ["Jujutsu Kaisen S01E25"] });
   });
 });
 
@@ -162,7 +208,7 @@ describe("POST /api/search/bulk", () => {
     await insertTorrentClient();
     const showId = await insertItem("series", "Show");
     const epId = Number(
-      (await db.prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file) VALUES (?, 1, 1, 'Ep', 1, 0)").run(showId))
+      (await db.prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, monitored, has_file) VALUES (?, 1, 1, 'Ep', '2020-01-01', 1, 0)").run(showId))
         .lastInsertRowid
     );
     searchAllIndexers.mockImplementation(async (_indexers: unknown, query: string) =>

@@ -9,9 +9,9 @@ import {
   queueItemFromRow,
 } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { searchAllIndexers, type SearchHints } from "../services/indexerClient.js";
+import { searchAllIndexers } from "../services/indexerClient.js";
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
-import { parseReleaseTitle, releaseMatchesEpisode, type SceneIndex } from "../services/releaseParser.js";
+import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode, type SceneIndex } from "../services/releaseParser.js";
 import { sceneIndexFor } from "../services/sceneNumbering.js";
 import { notifyGrabbed } from "../services/notifications.js";
 import { notifyQueueChanged } from "../services/realtime.js";
@@ -19,10 +19,11 @@ import { scoreRelease } from "../services/customFormatScoring.js";
 import { log } from "../services/logger.js";
 import { knownReleaseSize, sizeWithinQualityBounds, usesQualityTiers } from "../services/quality.js";
 import { getBlocklistedTitles, isBlocklisted } from "../services/blocklist.js";
-import { matchTierFor, targetIdentityOf, tvdbIdOf, type TargetIdentity } from "../services/scheduler.js";
+import { matchTierFor, targetIdentityOf, type TargetIdentity } from "../services/scheduler.js";
+import { episodePlanFor, searchHintsOf, seasonPlanFor, singlePlanFor, subItemPlanFor, type SearchPlan } from "../services/searchPlan.js";
 import { identityModeFor, releaseIdentifiesTarget } from "../services/releaseIdentity.js";
 import { releaseRejection } from "../services/releaseRejections.js";
-import { alternateQueriesFor, aliasTitlesFor, identityContextFor, identityTargetFor } from "../services/releaseAliases.js";
+import { aliasTitlesFor, identityContextFor, identityTargetFor } from "../services/releaseAliases.js";
 import { searchSlskd } from "../services/soulseek.js";
 import { pickClientForProtocol, searchAndGrabTargets, type BulkSearchTarget } from "../services/scheduler.js";
 import { computeAbsoluteEpisodeNumber } from "../services/importer.js";
@@ -121,63 +122,60 @@ searchRouter.get(
     if (!itemRow) throw new HttpError(404, "Media item not found");
     const item = mediaItemFromRow(itemRow);
 
-    let query = item.year ? `${item.title} ${item.year}` : item.title;
+    let plan: SearchPlan;
+    // What Soulseek is asked: the metadata titles as they are, not the scene-cleaned query the indexers get.
+    let slskdQuery = item.year ? `${item.title} ${item.year}` : item.title;
     let targetSeason: number | null = null;
     let targetEpisode: number | null = null;
     let targetSceneSeason: number | null = null;
     let targetSceneEpisode: number | null = null;
     let targetAbsoluteEpisode: number | null = null;
     let targetSceneIndex: SceneIndex | undefined;
+    let targetAirDate: string | null = null;
 
     const episodeId = req.query.episodeId as string | undefined;
     const subItemId = req.query.subItemId as string | undefined;
     const seasonNumberParam = req.query.seasonNumber as string | undefined;
 
-    // Only meaningful for the plain whole-item search below (no episode/season/sub-item target) —
-    // an episodic/collection search already confirms identity via season/episode/sub-item title
-    // matching instead. See scheduler.ts's chooseBestResult/matchTierFor for how this is used: a
-    // preference among already-viable results, never a filter.
-    let identityExternalIds: Record<string, string> = {};
-
     if (episodeId) {
       const ep = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(episodeId)) as any;
       if (!ep) throw new HttpError(404, "Episode not found");
+      // The same query, typed search and target an automatic search of this episode makes: the
+      // scene-numbered (TheXEM) query where the show has one, a daily show's date, an anime's
+      // absolute number.
+      plan = await episodePlanFor(item, ep);
       targetSeason = ep.season_number;
       targetEpisode = ep.episode_number;
       targetSceneSeason = ep.scene_season_number;
       targetSceneEpisode = ep.scene_episode_number;
-      targetAbsoluteEpisode = item.type === "anime" ? await computeAbsoluteEpisodeNumber(item.id, ep.season_number, ep.episode_number) : null;
       targetSceneIndex = await sceneIndexFor(item.id);
-      identityExternalIds = tvdbIdOf(item);
-      // Scene-numbered (TheXEM) query when known — see scheduler.ts's own runAutoSearch for why.
-      const seasonStr = String(targetSceneSeason ?? targetSeason).padStart(2, "0");
-      const episodeStr = String(targetSceneEpisode ?? targetEpisode).padStart(2, "0");
-      query = `${item.title} S${seasonStr}E${episodeStr}`;
+      if (plan.target && "airDate" in plan.target) targetAirDate = plan.target.airDate;
+      else if (plan.target) targetAbsoluteEpisode = plan.target.absoluteEpisode ?? null;
+      slskdQuery = plan.query;
     } else if (seasonNumberParam) {
       // Season-only (no specific episode) — surfaces full-season pack releases, which a
       // per-episode query wouldn't reliably match against.
       targetSeason = Number(seasonNumberParam);
-      identityExternalIds = tvdbIdOf(item);
-      const seasonStr = String(targetSeason).padStart(2, "0");
-      query = `${item.title} S${seasonStr}`;
+      plan = await seasonPlanFor(item, targetSeason);
+      slskdQuery = plan.query;
     } else if (subItemId) {
       const sub = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId)) as any;
       if (!sub) throw new HttpError(404, "Sub-item not found");
-      query = `${item.title} ${sub.title}`;
+      plan = subItemPlanFor(item, sub);
+      slskdQuery = `${item.title} ${sub.title}`;
     } else {
-      identityExternalIds = item.externalIds ? JSON.parse(item.externalIds) : {};
+      // Only meaningful for the plain whole-item search (no episode/season/sub-item target) — an
+      // episodic/collection search already confirms identity via season/episode/sub-item title
+      // matching instead. See scheduler.ts's chooseBestResult/matchTierFor for how the ids are used:
+      // a preference among already-viable results, never a filter.
+      plan = await singlePlanFor(item);
     }
+    const query = plan.query;
 
     const indexers = ((await db.prepare("SELECT * FROM indexers WHERE enabled = 1").all()) as any[]).map(
       indexerFromRow
     );
-    // What a typed tvsearch asks for (the scene numbers the query was built from) and the item's other titles.
-    const hints: SearchHints = {
-      season: targetSeason == null ? null : targetSceneSeason ?? targetSeason,
-      episode: targetEpisode == null ? null : targetSceneEpisode ?? targetEpisode,
-      alternateQueries: await alternateQueriesFor(item, query),
-    };
-    const rawResults = await searchAllIndexers(indexers as any, query, item.type as any, true, identityExternalIds, hints);
+    const rawResults = await searchAllIndexers(indexers as any, query, item.type as any, true, plan.ids, searchHintsOf(plan));
 
     // Soulseek has no Torznab-style indexer — a configured, enabled slskd client is queried
     // directly instead and its results merged in alongside the indexer ones. Music-shaped
@@ -188,7 +186,7 @@ searchRouter.get(
       );
       for (const client of slskdClients) {
         try {
-          rawResults.push(...(await searchSlskd(client as any, query)));
+          rawResults.push(...(await searchSlskd(client as any, slskdQuery)));
         } catch (err) {
           log.warn(`[search] slskd client "${client.name}" search failed:`, (err as Error).message);
         }
@@ -219,11 +217,13 @@ searchRouter.get(
     const annotated: AnnotatedSearchResult[] = await Promise.all(rawResults.map(async (r) => {
       const parsed = parseReleaseTitle(r.title);
       const matchesTarget =
-        targetSeason !== null && targetEpisode !== null
-          ? releaseMatchesEpisode(parsed, targetSeason, targetEpisode, targetSceneSeason, targetSceneEpisode, targetAbsoluteEpisode, targetSceneIndex)
-          : targetSeason !== null
-            ? parsed.seasonNumber === targetSeason
-            : true;
+        targetAirDate !== null
+          ? releaseMatchesAirDate(parsed, targetAirDate)
+          : targetSeason !== null && targetEpisode !== null
+            ? releaseMatchesEpisode(parsed, targetSeason, targetEpisode, targetSceneSeason, targetSceneEpisode, targetAbsoluteEpisode, targetSceneIndex)
+            : targetSeason !== null
+              ? parsed.seasonNumber === targetSeason
+              : true;
       const verdict = identityTarget ? releaseIdentifiesTarget(r, parsed, identityTarget) : null;
       const size = knownReleaseSize(r.size);
       // The same refusals an automatic grab applies (multi-season packs, split seasons, disc images,

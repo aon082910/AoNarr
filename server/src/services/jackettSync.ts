@@ -3,12 +3,14 @@ import { db } from "../db/index.js";
 import { getSetting } from "./settingsStore.js";
 import { log } from "./logger.js";
 import { encryptValue } from "./encryption.js";
-import { DEFAULT_INDEXER_MEDIA_TYPES, indexerApiError } from "./indexerClient.js";
-import { disableUnsyncedDuplicates, withSyncFields } from "./prowlarrSync.js";
+import { indexerApiError } from "./indexerClient.js";
+import { disableUnsyncedDuplicates, mediaTypesFromCategoryIds, parseIndexerConfig, syncedMediaTypes, withSyncFields } from "./prowlarrSync.js";
 
 interface JackettIndexer {
   id: string;
   name: string | null;
+  /** The category ids (and subcategory ids) its <caps> lists. */
+  categoryIds: number[];
 }
 
 /**
@@ -34,7 +36,12 @@ async function fetchConfiguredJackettIndexers(jackettUrl: string, apiKey: string
     .filter((e) => String(e?.$?.configured ?? "true").toLowerCase() !== "false")
     .map((e) => {
       const title = e?.title?.[0];
-      return { id: String(e?.$?.id ?? ""), name: typeof title === "string" ? title : (title?._ ?? null) };
+      const categories: any[] = e?.caps?.[0]?.categories?.[0]?.category ?? [];
+      const categoryIds = categories
+        .flatMap((c) => [c?.$?.id, ...(c?.subcat ?? []).map((sub: any) => sub?.$?.id)])
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0);
+      return { id: String(e?.$?.id ?? ""), name: typeof title === "string" ? title : (title?._ ?? null), categoryIds };
     })
     .filter((e) => e.id);
 }
@@ -67,28 +74,30 @@ export async function syncFromJackett(): Promise<{ synced: number; error?: strin
       const url = `${jackettUrl}/api/v2.0/indexers/${encodeURIComponent(idx.id)}/results/torznab`;
       const encryptedApiKey = encryptValue(apiKey);
 
-      const existing = ((await db.prepare(`SELECT id, config, enabled FROM indexers WHERE config LIKE ?`).get(`%"jackettId":"${idx.id}"%`)) ??
-        (await db.prepare("SELECT id, config, enabled FROM indexers WHERE url = ? ORDER BY id").get(url))) as
-        | { id: number; config: string | null; enabled: number }
+      const existing = ((await db.prepare(`SELECT id, config, enabled, media_types FROM indexers WHERE config LIKE ?`).get(`%"jackettId":"${idx.id}"%`)) ??
+        (await db.prepare("SELECT id, config, enabled, media_types FROM indexers WHERE url = ? ORDER BY id").get(url))) as
+        | { id: number; config: string | null; enabled: number; media_types: string | null }
         | undefined;
 
       if (existing) {
+        const mediaTypes = syncedMediaTypes(existing.media_types, parseIndexerConfig(existing.config).syncedMediaTypes, idx.categoryIds);
         // Jackett's own API has no per-indexer enable/disable concept to mirror the way Prowlarr's
         // `idx.enable` does — every indexer it returns is just "configured". `enabled` here is
         // purely an AoNarr-side admin preference, so an update must never touch it, or a user who
         // disabled this indexer in AoNarr finds it silently flipped back on the next sync.
-        await db.prepare("UPDATE indexers SET name = ?, protocol = 'torznab', url = ?, api_key = ?, config = ? WHERE id = ?").run(
+        await db.prepare("UPDATE indexers SET name = ?, protocol = 'torznab', url = ?, api_key = ?, config = ?, media_types = ? WHERE id = ?").run(
           idx.name,
           url,
           encryptedApiKey,
-          withSyncFields(existing.config, { jackettId: idx.id }),
+          withSyncFields(existing.config, { jackettId: idx.id, syncedMediaTypes: mediaTypes }),
+          mediaTypes,
           existing.id
         );
         await disableUnsyncedDuplicates({ id: existing.id, url, enabled: !!Number(existing.enabled) }, "jackettId", "jackettSync");
       } else {
         await db
           .prepare("INSERT INTO indexers (name, protocol, url, api_key, media_types, enabled, config) VALUES (?, 'torznab', ?, ?, ?, 1, ?)")
-          .run(idx.name, url, encryptedApiKey, DEFAULT_INDEXER_MEDIA_TYPES, JSON.stringify({ jackettId: idx.id }));
+          .run(idx.name, url, encryptedApiKey, mediaTypesFromCategoryIds(idx.categoryIds), JSON.stringify({ syncedMediaTypes: mediaTypesFromCategoryIds(idx.categoryIds), jackettId: idx.id }));
       }
       synced++;
     } catch (err) {

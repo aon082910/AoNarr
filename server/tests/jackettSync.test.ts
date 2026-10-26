@@ -168,7 +168,7 @@ describe("syncFromJackett — success path", () => {
 
     const rows = (await db.prepare("SELECT * FROM indexers WHERE url = ?").all(url)) as any[];
     expect(rows).toHaveLength(1);
-    expect(JSON.parse(rows[0].config)).toEqual({ jackettId: "lost-config" });
+    expect(JSON.parse(rows[0].config)).toMatchObject({ jackettId: "lost-config" });
     expect(rows[0].enabled).toBe(0);
   });
 
@@ -252,5 +252,50 @@ describe("syncFromJackett — success path", () => {
     expect(await indexerRowsByJackettId("batch-good-1")).toHaveLength(1);
     expect(await indexerRowsByJackettId("batch-bad")).toHaveLength(0);
     expect(await indexerRowsByJackettId("batch-good-2")).toHaveLength(1);
+  });
+});
+
+describe("syncFromJackett — media types from the categories an indexer lists", () => {
+  /** A Jackett listing whose indexers carry the categories (and subcategories) of their caps. */
+  function withCategories(id: string, categories: { id: number; sub?: number[] }[]): string {
+    const cats = categories.map((c) => `<category id="${c.id}" name="c${c.id}">${(c.sub ?? []).map((s) => `<subcat id="${s}" name="s${s}" />`).join("")}</category>`).join("");
+    return (
+      `<?xml version="1.0" encoding="UTF-8"?>\n<indexers><indexer id="${id}" configured="true"><title>${id}</title>` +
+      `<caps><server title="Jackett" /><searching><search available="yes" supportedParams="q" /></searching><categories>${cats}</categories></caps></indexer></indexers>`
+    );
+  }
+
+  it("serves a new indexer only for the types its categories cover", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(xmlResponse(withCategories("tv-only", [{ id: 5000, sub: [5030, 5040] }, { id: 5070 }]))));
+
+    await syncFromJackett();
+
+    const [row] = await indexerRowsByJackettId("tv-only");
+    expect(row.media_types).toBe("ppv,series,anime,sports,course");
+  });
+
+  it("keeps the default list for an indexer that lists no categories", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(xmlResponse(jackettIndexersXml([{ id: "no-cats", title: "No Cats" }]))));
+
+    await syncFromJackett();
+
+    const [row] = await indexerRowsByJackettId("no-cats");
+    expect(row.media_types).toBe(DEFAULT_INDEXER_MEDIA_TYPES);
+  });
+
+  it("narrows a row still on the default list on a later sync, and leaves a list the admin edited alone", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(xmlResponse(jackettIndexersXml([{ id: "later", title: "Later" }, { id: "edited", title: "Edited" }]))));
+    await syncFromJackett();
+    await db.prepare(`UPDATE indexers SET media_types = 'movie,series' WHERE config LIKE ?`).run('%"jackettId":"edited"%');
+
+    const listing = (id: string) => withCategories(id, [{ id: 3000, sub: [3010] }]).replace("</indexers>", "").replace(/^<\?xml[^>]*>\n<indexers>/, "");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(xmlResponse(`<?xml version="1.0" encoding="UTF-8"?>\n<indexers>${listing("later")}${listing("edited")}</indexers>`))
+    );
+    await syncFromJackett();
+
+    expect((await indexerRowsByJackettId("later"))[0].media_types).toBe("artist,audiobook");
+    expect((await indexerRowsByJackettId("edited"))[0].media_types).toBe("movie,series");
   });
 });

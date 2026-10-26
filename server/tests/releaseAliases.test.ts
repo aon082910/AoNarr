@@ -199,37 +199,61 @@ describe("syncPrimaryTitle / backfillCleanTitles", () => {
   });
 });
 
-describe("alternateQueriesFor", () => {
-  it("writes the query under the title less its qualifier, the qualifier spelled out, then the first aliases", async () => {
+describe("alternateTitlesFor", () => {
+  it("gives the title less its qualifier, the qualifier spelled out, then the best aliases", async () => {
     const id = await insertItem("series", "The Office (US)", 2005);
-    await aliases.storeAliases(id, ["Das Büro", "Le Bureau", "El Trabajo"], "tmdb_alt");
-    const queries = await aliases.alternateQueriesFor({ id, type: "series", title: "The Office (US)" }, "The Office (US) S03E01");
-    expect(queries).toEqual(["The Office S03E01", "The Office US S03E01", "Das Büro S03E01"]);
-
-    const none = await insertItem("series", "The Office (US) Twin", 2005);
-    await aliases.storeAliases(none, ["Duplicate Alias"], "tmdb_alt");
-    const withQualifier = await insertItem("series", "Shameless (UK)", 2004);
-    expect(await aliases.alternateQueriesFor({ id: withQualifier, type: "series", title: "Shameless (UK)" }, "Shameless (UK) S01E01")).toEqual([
-      "Shameless S01E01",
-      "Shameless UK S01E01",
+    await aliases.storeAliases(id, ["Das Büro", "Le Bureau", "El Trabajo", "Der Dienst"], "tmdb_alt");
+    expect(await aliases.alternateTitlesFor({ id, type: "series", title: "The Office (US)" })).toEqual([
+      "The Office",
+      "The Office US",
+      "Das Büro",
+      "Le Bureau",
+      "El Trabajo",
     ]);
+
+    const withQualifier = await insertItem("series", "Shameless (UK)", 2004);
+    expect(await aliases.alternateTitlesFor({ id: withQualifier, type: "series", title: "Shameless (UK)" })).toEqual(["Shameless", "Shameless UK"]);
   });
 
-  it("writes a year qualifier as the year, never as the bare title that is also the other show, and a title without one to its aliases", async () => {
+  it("writes a year qualifier as the year, never as the bare title that is also the other show, and a title without one as its aliases", async () => {
     const charmed = await insertItem("series", "Charmed (2018)", 2018);
-    expect(await aliases.alternateQueriesFor({ id: charmed, type: "series", title: "Charmed (2018)" }, "Charmed (2018) S01E01")).toEqual(["Charmed 2018 S01E01"]);
+    expect(await aliases.alternateTitlesFor({ id: charmed, type: "series", title: "Charmed (2018)" })).toEqual(["Charmed 2018"]);
     const plain = await insertItem("movie", "The Fall Guy", 2024);
     await aliases.storeAliases(plain, ["Kaskader", "the fall guy", "The Fall-Guy"], "tmdb_alt");
-    expect(await aliases.alternateQueriesFor({ id: plain, type: "movie", title: "The Fall Guy" }, "The Fall Guy 2024")).toEqual(["Kaskader 2024"]);
+    expect(await aliases.alternateTitlesFor({ id: plain, type: "movie", title: "The Fall Guy" })).toEqual(["Kaskader"]);
   });
 
-  it("is empty for a type with no quality tiers and for a query that does not start with the title", async () => {
+  it("is empty for a type with no quality tiers", async () => {
     const artist = await insertItem("artist", "Queen", null);
     await aliases.storeAliases(artist, ["Queen Band"], "user");
-    expect(await aliases.alternateQueriesFor({ id: artist, type: "artist", title: "Queen" }, "Queen Greatest Hits")).toEqual([]);
-    const movie = await insertItem("movie", "Dune Part Two", 2024);
-    await aliases.storeAliases(movie, ["Dune 2"], "tmdb_alt");
-    expect(await aliases.alternateQueriesFor({ id: movie, type: "movie", title: "Dune Part Two" }, "something else")).toEqual([]);
+    expect(await aliases.alternateTitlesFor({ id: artist, type: "artist", title: "Queen" })).toEqual([]);
+  });
+
+  it("offers the admin's titles and the item's former names before the providers', and an abbreviation or another script after them, if at all", async () => {
+    const id = await insertItem("anime", "Attack on Titan", 2013);
+    await aliases.storeAliases(id, ["AoT", "進撃の巨人", "Shingeki no Kyojin", "Attack on Titan: Final"], "anilist_synonym");
+    await aliases.storeAliases(id, ["Titan Attack"], "user");
+    await aliases.storeAliases(id, ["L'Attaque des Titans"], "tmdb_alt");
+    expect(await aliases.alternateTitlesFor({ id, type: "anime", title: "Attack on Titan" })).toEqual([
+      "Titan Attack",
+      "Shingeki no Kyojin",
+      "Attack on Titan: Final",
+    ]);
+  });
+});
+
+describe("rankedSearchTitles", () => {
+  it("orders by source, then Latin script before other scripts, then the provider's own order; titles of three letters or fewer are left out", () => {
+    expect(
+      aliases.rankedSearchTitles([
+        { title: "ABC", source: "user" },
+        { title: "Lorem Ipsum", source: "tmdb_alt" },
+        { title: "Привет Мир", source: "tmdb_alt" },
+        { title: "Dolor Sit", source: "tmdb_alt" },
+        { title: "Former Name", source: "original" },
+        { title: "Fansub Name", source: "anilist_synonym" },
+      ])
+    ).toEqual(["Former Name", "Fansub Name", "Lorem Ipsum", "Dolor Sit", "Привет Мир"]);
   });
 });
 

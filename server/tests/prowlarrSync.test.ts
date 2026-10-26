@@ -154,7 +154,7 @@ describe("syncFromProwlarr — success path", () => {
     expect((await sync(true)).enabled).toBe(1);
     const disabled = await sync(false); // disabled in Prowlarr, which now answers every search with 410
     expect(disabled.enabled).toBe(0);
-    expect(JSON.parse(disabled.config)).toEqual({ prowlarrEnabled: false, prowlarrId: 9155 });
+    expect(JSON.parse(disabled.config)).toMatchObject({ prowlarrEnabled: false, prowlarrId: 9155 });
     expect((await sync(false)).enabled).toBe(0);
     expect((await sync(true)).enabled).toBe(1); // re-enabled in Prowlarr
 
@@ -196,7 +196,7 @@ describe("syncFromProwlarr — success path", () => {
 
     const rows = (await db.prepare("SELECT * FROM indexers WHERE url = ?").all("http://prowlarr.local:9696/9161")) as any[];
     expect(rows).toHaveLength(1);
-    expect(JSON.parse(rows[0].config)).toEqual({ prowlarrEnabled: true, prowlarrId: 9161 });
+    expect(JSON.parse(rows[0].config)).toMatchObject({ prowlarrEnabled: true, prowlarrId: 9161 });
     expect(await indexerRowsByPattern("9161")).toHaveLength(1); // findable by id again on the next sync
   });
 
@@ -324,5 +324,79 @@ describe("syncFromProwlarr — success path", () => {
     expect(await indexerRowsByPattern("9301")).toHaveLength(1);
     expect(await indexerRowsByPattern("9302")).toHaveLength(0);
     expect(await indexerRowsByPattern("9303")).toHaveLength(1);
+  });
+});
+
+describe("syncFromProwlarr — media types from the categories an indexer lists", () => {
+  const prowlarrIndexer = (id: number, categories?: { id: number; subCategories?: { id: number }[] }[]) => ({
+    id,
+    name: `Cats ${id}`,
+    protocol: "torrent",
+    enable: true,
+    ...(categories ? { capabilities: { categories } } : {}),
+  });
+
+  it("serves a new indexer only for the types its categories cover, and an indexer with none for every type", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => [
+          prowlarrIndexer(9101, [{ id: 7000, subCategories: [{ id: 7020 }, { id: 7030 }] }]),
+          prowlarrIndexer(9102, [{ id: 2000, subCategories: [{ id: 2040 }] }, { id: 5000 }]),
+          prowlarrIndexer(9103),
+        ],
+      })
+    );
+
+    await syncFromProwlarr();
+
+    expect((await indexerRowsByPattern("9101"))[0].media_types).toBe("author,comic,manga");
+    expect((await indexerRowsByPattern("9102"))[0].media_types).toBe("movie,ppv,series,anime,sports,course");
+    expect((await indexerRowsByPattern("9103"))[0].media_types).toBe(DEFAULT_INDEXER_MEDIA_TYPES);
+  });
+
+  it("narrows a row still on the default list on a later sync, and leaves a list the admin edited alone", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => [prowlarrIndexer(9201), prowlarrIndexer(9202)] }));
+    await syncFromProwlarr();
+    await db.prepare(`UPDATE indexers SET media_types = 'movie' WHERE config LIKE ?`).run('%"prowlarrId":9202}%');
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => [prowlarrIndexer(9201, [{ id: 6000 }]), prowlarrIndexer(9202, [{ id: 6000 }])] })
+    );
+    await syncFromProwlarr();
+
+    expect((await indexerRowsByPattern("9201"))[0].media_types).toBe("adult");
+    expect((await indexerRowsByPattern("9202"))[0].media_types).toBe("movie");
+  });
+});
+
+describe("syncFromProwlarr — a later change of an indexer's categories", () => {
+  const withCategories = (id: number, categories: number[]) => ({
+    id,
+    name: `Follow ${id}`,
+    protocol: "torrent",
+    enable: true,
+    capabilities: { categories: categories.map((c) => ({ id: c })) },
+  });
+
+  it("is followed while the admin has not edited the media types, and not after", async () => {
+    const sync = async (...indexers: ReturnType<typeof withCategories>[]) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => indexers }));
+      await syncFromProwlarr();
+    };
+    await sync(withCategories(9301, [5000]), withCategories(9302, [5000]));
+    expect((await indexerRowsByPattern("9301"))[0].media_types).toBe("ppv,series,anime,sports,course");
+
+    // Prowlarr now lists books too: both rows follow, though 9301 is no longer on the default list.
+    await sync(withCategories(9301, [5000, 7000]), withCategories(9302, [5000, 7000]));
+    expect((await indexerRowsByPattern("9301"))[0].media_types).toBe("ppv,series,anime,sports,course,author,comic,manga");
+
+    // The admin narrows one of them; a later change in Prowlarr leaves that one alone.
+    await db.prepare(`UPDATE indexers SET media_types = 'series' WHERE config LIKE ?`).run('%"prowlarrId":9302}%');
+    await sync(withCategories(9301, [2000]), withCategories(9302, [2000]));
+    expect((await indexerRowsByPattern("9301"))[0].media_types).toBe("movie,ppv");
+    expect((await indexerRowsByPattern("9302"))[0].media_types).toBe("series");
   });
 });
