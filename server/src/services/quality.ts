@@ -2,6 +2,9 @@ import { db } from "../db/index.js";
 import { log } from "./logger.js";
 import { MEDIA_TYPES } from "./mediaTypes.js";
 import { getSetting, setSetting } from "./settingsStore.js";
+import { parseQualityGroups, type QualityGroups } from "./qualityGroups.js";
+
+export { parseQualityGroups, type QualityGroups };
 
 /** Seed order used to populate the `qualities` table on first boot. Editable afterward via Settings. */
 export const DEFAULT_QUALITY_ORDER = [
@@ -169,6 +172,27 @@ export function qualityRank(name: string | null): number {
   return rankCache.get(name) ?? -1;
 }
 
+/** A quality's rank in a profile: that of the best quality in its group, else its own. */
+export function groupedRank(name: string | null, groups?: QualityGroups | null): number {
+  const own = qualityRank(name);
+  if (!name || own < 0 || !groups || groups.length === 0) return own;
+  const group = groups.find((g) => g.includes(name));
+  return group ? Math.max(...group.map((n) => qualityRank(n))) : own;
+}
+
+/** The profile rank of whichever quality has `rank` (callers hand over ranks, not names). */
+export function groupRankOfRank(rank: number, groups?: QualityGroups | null): number {
+  if (rank < 0 || !groups || groups.length === 0) return rank;
+  for (const [name, r] of rankCache) if (r === rank) return groupedRank(name, groups);
+  return rank;
+}
+
+/** Whether two qualities are the same tier in a profile. */
+export function sameQualityGroup(a: string | null, b: string | null, groups?: QualityGroups | null): boolean {
+  if (a === b) return true;
+  return !!a && !!b && !!groups && groups.some((g) => g.includes(a) && g.includes(b));
+}
+
 /**
  * The quality ladder is video-only (resolution + source), so an album, ebook, comic, ROM or podcast
  * release always parses as "Unknown". Judging such a type by its profile's tiers filters out every
@@ -216,19 +240,20 @@ export function pickBestAllowedQuality(
   candidateQualities: string[],
   allowedQualities: string[],
   cutoff: string,
-  capAtCutoff = true
+  capAtCutoff = true,
+  groups?: QualityGroups | null
 ): string | null {
-  const cutoffRank = qualityRank(cutoff);
+  const cutoffRank = groupedRank(cutoff, groups);
   const allowedSet = new Set(allowedQualities);
 
   const eligible = candidateQualities
     .filter((q) => allowedSet.has(q))
-    .sort((a, b) => qualityRank(b) - qualityRank(a));
+    .sort((a, b) => groupedRank(b, groups) - groupedRank(a, groups));
 
   if (eligible.length === 0) return null;
 
   // A profile that does not cap at the cutoff takes the best allowed quality on offer, as Sonarr/Radarr do.
   if (!capAtCutoff) return eligible[0];
-  const atOrBelowCutoff = eligible.filter((q) => qualityRank(q) <= cutoffRank);
+  const atOrBelowCutoff = eligible.filter((q) => groupedRank(q, groups) <= cutoffRank);
   return atOrBelowCutoff[0] ?? eligible[0];
 }

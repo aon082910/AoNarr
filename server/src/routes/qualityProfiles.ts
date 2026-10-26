@@ -4,6 +4,7 @@ import { db } from "../db/index.js";
 import { qualityProfileFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { resetSearchBackoff } from "../services/searchBackoff.js";
+import { parseQualityGroups } from "../services/qualityGroups.js";
 
 export const qualityProfilesRouter = Router();
 qualityProfilesRouter.use(requireAdmin);
@@ -18,6 +19,25 @@ function validateProfile(allowedQualities: unknown, cutoff: unknown): void {
   if (allowedQualities.length > 0 && !allowedQualities.includes(cutoff)) {
     throw new HttpError(400, `The cutoff "${cutoff}" must be one of the allowed qualities`);
   }
+}
+
+/** The groups of qualities a profile treats as one tier: each names two or more different qualities of the
+ * profile's allowed list, and no quality is in two groups. Returns what to store. */
+function validateGroups(groups: unknown, allowedQualities: string[]): string[][] {
+  if (groups === undefined || groups === null) return [];
+  if (!Array.isArray(groups) || groups.some((g) => !Array.isArray(g) || g.some((n) => typeof n !== "string" || n === ""))) {
+    throw new HttpError(400, "qualityGroups must be a list of lists of quality names");
+  }
+  const seen = new Set<string>();
+  for (const group of groups as string[][]) {
+    if (new Set(group).size < 2) throw new HttpError(400, "A quality group needs two or more different qualities");
+    for (const name of group) {
+      if (seen.has(name)) throw new HttpError(400, `The quality "${name}" is in more than one group`);
+      seen.add(name);
+      if (allowedQualities.length > 0 && !allowedQualities.includes(name)) throw new HttpError(400, `The grouped quality "${name}" must be one of the allowed qualities`);
+    }
+  }
+  return parseQualityGroups(groups);
 }
 
 function formatScore(value: unknown): number {
@@ -44,7 +64,7 @@ qualityProfilesRouter.post(
     validateProfile(b.allowedQualities, b.cutoff);
     const maxSizeGb = b.maxSizeGb === undefined || b.maxSizeGb === null || b.maxSizeGb === "" ? null : Number(b.maxSizeGb);
     const result = await db
-      .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff, max_size_gb, min_format_score, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff, max_size_gb, min_format_score, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(
         b.name,
         JSON.stringify(b.allowedQualities),
@@ -54,7 +74,8 @@ qualityProfilesRouter.post(
         b.preferCutoffQuality === false ? 0 : 1,
         b.upgradeAllowed === false ? 0 : 1,
         b.cutoffFormatScore === undefined || b.cutoffFormatScore === null ? 0 : formatScore(b.cutoffFormatScore),
-        b.minUpgradeFormatScore === undefined || b.minUpgradeFormatScore === null ? 1 : formatScore(b.minUpgradeFormatScore)
+        b.minUpgradeFormatScore === undefined || b.minUpgradeFormatScore === null ? 1 : formatScore(b.minUpgradeFormatScore),
+        JSON.stringify(validateGroups(b.qualityGroups, b.allowedQualities))
       );
     const row = await db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(qualityProfileFromRow(row));
@@ -80,6 +101,22 @@ qualityProfilesRouter.patch(
       // profile was valid until now.
       if (b.cutoff !== undefined || wasValid) validateProfile(b.allowedQualities ?? before, b.cutoff ?? existing.cutoff);
       else if (!Array.isArray(b.allowedQualities) || b.allowedQualities.some((q: unknown) => typeof q !== "string" || q === "")) throw new HttpError(400, "allowedQualities must be a list of quality names");
+    }
+    if (b.qualityGroups !== undefined || b.allowedQualities !== undefined) {
+      const current = (await db.prepare("SELECT allowed_qualities, quality_groups FROM quality_profiles WHERE id = ?").get(req.params.id)) as
+        | { allowed_qualities: string; quality_groups: string | null }
+        | undefined;
+      if (!current) throw new HttpError(404, "Quality profile not found");
+      const allowedAfter: string[] = b.allowedQualities ?? JSON.parse(current.allowed_qualities);
+      if (b.qualityGroups !== undefined) {
+        sets.push("quality_groups = ?");
+        values.push(JSON.stringify(validateGroups(b.qualityGroups, allowedAfter)));
+      } else {
+        // Qualities dropped from the list leave their group; a group left with one quality is dissolved.
+        const kept = parseQualityGroups(current.quality_groups).map((g) => g.filter((n) => allowedAfter.length === 0 || allowedAfter.includes(n)));
+        sets.push("quality_groups = ?");
+        values.push(JSON.stringify(parseQualityGroups(kept)));
+      }
     }
     if (b.name !== undefined) {
       sets.push("name = ?");

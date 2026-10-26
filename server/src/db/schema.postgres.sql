@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS quality_profiles (
   prefer_cutoff_quality INTEGER NOT NULL DEFAULT 1,
   upgrade_allowed INTEGER NOT NULL DEFAULT 1,
   cutoff_format_score INTEGER NOT NULL DEFAULT 0,
-  min_upgrade_format_score INTEGER NOT NULL DEFAULT 1
+  min_upgrade_format_score INTEGER NOT NULL DEFAULT 1,
+  quality_groups TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS media_items (

@@ -43,12 +43,17 @@ import {
 import { backfillProviderAliases } from "./aliasBackfill.js";
 import { backfillAnilistSeasons } from "./anilistSeasons.js";
 import {
+  groupedRank,
+  groupRankOfRank,
   knownReleaseSize,
+  parseQualityGroups,
   pickBestAllowedQuality,
   preferredSizeDistance,
   qualityRank,
+  sameQualityGroup,
   sizeWithinQualityBounds,
   usesQualityTiers,
+  type QualityGroups,
 } from "./quality.js";
 import { scoreRelease } from "./customFormatScoring.js";
 import { getMediaTypeConfig, MEDIA_TYPES } from "./mediaTypes.js";
@@ -456,6 +461,8 @@ export interface ChooseOptions {
   /** Overrides quality_profiles.prefer_cutoff_quality for this call (true = never pick a quality
    * above the cutoff while one at or below it is on offer). Omitted = the profile's own setting. */
   preferCutoffQuality?: boolean;
+  /** Qualities the profile treats as one tier; read from the quality profile when omitted. */
+  qualityGroups?: QualityGroups;
   /** Human-readable "media title" (plus episode/season where relevant) for this call's log lines
    * only — has no effect on matching/scoring. Omitted = log lines drop the "for ..." suffix. */
   label?: string | null;
@@ -762,19 +769,27 @@ async function preferCutoffQualityFor(qualityProfileId: number | null): Promise<
 
 /** Quality tiers in the order the profile prefers them: pickBestAllowedQuality's choice first,
  * then its choice among what's left, and so on. */
-function tierPreference(qualities: string[], allowedQualities: string[], cutoff: string, capAtCutoff: boolean): string[] {
+function tierPreference(qualities: string[], allowedQualities: string[], cutoff: string, capAtCutoff: boolean, groups: QualityGroups = []): string[] {
   const remaining = Array.from(new Set(qualities));
   const order: string[] = [];
   while (remaining.length > 0) {
     const next =
       allowedQualities.length > 0
-        ? pickBestAllowedQuality(remaining, allowedQualities, cutoff, capAtCutoff)
-        : [...remaining].sort((a, b) => qualityRank(b) - qualityRank(a))[0];
+        ? pickBestAllowedQuality(remaining, allowedQualities, cutoff, capAtCutoff, groups)
+        : [...remaining].sort((a, b) => groupedRank(b, groups) - groupedRank(a, groups))[0];
     if (!next) break;
     order.push(next);
-    remaining.splice(remaining.indexOf(next), 1);
+    // A group is one tier: its other members are not a tier of their own.
+    for (let i = remaining.length - 1; i >= 0; i--) if (sameQualityGroup(remaining[i], next, groups)) remaining.splice(i, 1);
   }
   return order;
+}
+
+/** The groups of qualities a profile treats as one tier (quality_profiles.quality_groups). */
+async function qualityGroupsFor(qualityProfileId: number | null): Promise<QualityGroups> {
+  if (!qualityProfileId) return [];
+  const row = (await db.prepare("SELECT quality_groups FROM quality_profiles WHERE id = ?").get(qualityProfileId)) as { quality_groups: string | null } | undefined;
+  return parseQualityGroups(row?.quality_groups);
 }
 
 /**
@@ -818,6 +833,9 @@ export async function chooseBestResult(
     cutoff = "";
   }
   const preferCutoffQuality = options.preferCutoffQuality ?? (await preferCutoffQualityFor(qualityProfileId));
+  const qualityGroups = options.qualityGroups ?? (tiered ? await qualityGroupsFor(qualityProfileId) : []);
+  // The rank of what is on disk, as the profile reads it (a group ranks as its best member).
+  const upgradeFromGroupRank = upgradeFromRank === null ? null : groupRankOfRank(upgradeFromRank, qualityGroups);
 
   const minimumSeedersById = new Map((options.indexers ?? []).map((i) => [i.id, i.minimumSeeders ?? 0]));
   // Free space on the item's root folder, read once per call: a release that would not fit is not worth downloading.
@@ -903,6 +921,7 @@ export async function chooseBestResult(
         item: packContext.item,
         packQuality: parsed.quality,
         cutoff,
+        qualityGroups,
         settings,
       });
       if (!verdict.ok) log.info(`[scheduler] rejected "${result.title}": ${verdict.reason}`);
@@ -980,7 +999,7 @@ export async function chooseBestResult(
         return false;
       }
       if (verdict === "needs-score") needsScore.add(result);
-    } else if (upgradeFromRank !== null && qualityRank(parsed.quality) <= upgradeFromRank) {
+    } else if (upgradeFromGroupRank !== null && groupedRank(parsed.quality, qualityGroups) <= upgradeFromGroupRank) {
       log.info(`[scheduler] rejected "${result.title}": quality "${parsed.quality}" isn't an upgrade over what's already on disk`);
       return false;
     }
@@ -1002,7 +1021,7 @@ export async function chooseBestResult(
   const delay = await applyDelayProfile(
     relevant,
     delayProfile,
-    { cutoff, allowedQualities, preferCutoffQuality, userInvoked: !!options.userInvoked },
+    { cutoff, allowedQualities, qualityGroups, preferCutoffQuality, userInvoked: !!options.userInvoked },
     ({ parsed }) => parsed.quality,
     async ({ result, size }) => {
       const scored = await scoreRelease(result.title, size, qualityProfileId, mediaType, result.downloadVolumeFactor ?? null, mediaItemId, result.indexerId ?? null);
@@ -1062,9 +1081,9 @@ export async function chooseBestResult(
     totalScore: number;
   }[] = [];
   for (const pool of pools) {
-    const tiers: (string | null)[] = tiered ? tierPreference(pool.map((c) => c.parsed.quality), allowedQualities, cutoff, preferCutoffQuality) : [null];
+    const tiers: (string | null)[] = tiered ? tierPreference(pool.map((c) => c.parsed.quality), allowedQualities, cutoff, preferCutoffQuality, qualityGroups) : [null];
     for (const tier of tiers) {
-      const inTier = tier === null ? pool : pool.filter((c) => c.parsed.quality === tier);
+      const inTier = tier === null ? pool : pool.filter((c) => sameQualityGroup(c.parsed.quality, tier, qualityGroups));
       candidates = (
         await Promise.all(
           inTier.map(async ({ result, parsed, size }) => ({
@@ -2188,26 +2207,26 @@ interface BulkSearchContext {
   automatic?: boolean;
 }
 
-export function isBelowCutoff(quality: string | null, cutoff: string): boolean {
-  const rank = qualityRank(quality);
-  return rank >= 0 && rank < qualityRank(cutoff);
+export function isBelowCutoff(quality: string | null, cutoff: string, groups?: QualityGroups): boolean {
+  const rank = groupedRank(quality, groups);
+  return rank >= 0 && rank < groupedRank(cutoff, groups);
 }
 
 /** Sonarr/Radarr's "existing file meets cutoff": with lower tiers filtered out, the profile's best
  * pick is whatever allowed tier lies above the cutoff, so an upgrade search would otherwise replace
  * a file that's already good enough with, say, a 70 GB remux. */
-export function meetsCutoff(quality: string | null, cutoff: string): boolean {
-  const cutoffRank = qualityRank(cutoff);
-  return cutoffRank >= 0 && qualityRank(quality) >= cutoffRank;
+export function meetsCutoff(quality: string | null, cutoff: string, groups?: QualityGroups): boolean {
+  const cutoffRank = groupedRank(cutoff, groups);
+  return cutoffRank >= 0 && groupedRank(quality, groups) >= cutoffRank;
 }
 
 /** A show/artist/author can't be grabbed as one item-level release: the importer only places a
  * download against an episode or sub-item, so such a grab never imports. Its monitored children
  * that are missing — or, for a type with quality tiers, below the profile's cutoff — are searched
  * one by one instead, missing ones first, the way Missing and Cutoff Unmet search them. */
-async function searchableChildrenOf(item: MediaItem, cutoff: string): Promise<{ episodeId?: number; subItemId?: number }[]> {
+async function searchableChildrenOf(item: MediaItem, cutoff: string, groups?: QualityGroups): Promise<{ episodeId?: number; subItemId?: number }[]> {
   const tiered = usesQualityTiers(item.type);
-  const wanted = (row: { has_file: number; quality: string | null }) => !Number(row.has_file) || (tiered && isBelowCutoff(row.quality, cutoff));
+  const wanted = (row: { has_file: number; quality: string | null }) => !Number(row.has_file) || (tiered && isBelowCutoff(row.quality, cutoff, groups));
   const missingFirst = (a: { has_file: number }, b: { has_file: number }) => Number(a.has_file) - Number(b.has_file);
   if (getMediaTypeConfig(item.type).shape === "episodic") {
     const today = new Date().toISOString().slice(0, 10);
@@ -2386,7 +2405,7 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
   if (existingFile && !upgradeProfile.upgradeAllowed) {
     return { grabbed: false, error: "This quality profile does not allow upgrades" };
   }
-  if (onDisk !== undefined && meetsCutoff(onDisk, cutoff) && !(existingFile && formatCutoffNotMet(upgradeProfile, existingFile))) {
+  if (onDisk !== undefined && meetsCutoff(onDisk, cutoff, profile?.qualityGroups) && !(existingFile && formatCutoffNotMet(upgradeProfile, existingFile))) {
     return { grabbed: false, error: `Already meets the profile's cutoff (${cutoff})` };
   }
 
@@ -2521,7 +2540,7 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[], opts: { 
 
       const profile = await getQualityProfile(item.qualityProfileId);
       const children: { episodeId?: number; subItemId?: number }[] = [];
-      for (const child of await searchableChildrenOf(item, profile?.cutoff ?? "")) {
+      for (const child of await searchableChildrenOf(item, profile?.cutoff ?? "", profile?.qualityGroups)) {
         if (!(await isAlreadyQueued(item.id, child.episodeId ?? null, child.subItemId ?? null))) children.push(child);
       }
       const label = typeConfig.shape === "episodic" ? "episodes" : `${(typeConfig.childLabel ?? "item").toLowerCase()}s`;
@@ -2936,7 +2955,7 @@ export async function retryFailedGrab(
       await notifyFailed(mediaTitle, `${reason} (not retried: it already has a file)`);
       return;
     }
-    if (onDisk !== undefined && meetsCutoff(onDisk, profile?.cutoff ?? "")) {
+    if (onDisk !== undefined && meetsCutoff(onDisk, profile?.cutoff ?? "", profile?.qualityGroups)) {
       log.info(`[scheduler] retry grabbed nothing for "${mediaTitle}": it already meets the profile's cutoff (${profile!.cutoff})`);
       await notifyFailed(mediaTitle, `${reason} (not retried: it already meets the profile's cutoff (${profile!.cutoff}))`);
       return;

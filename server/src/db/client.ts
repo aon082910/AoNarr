@@ -166,6 +166,7 @@ ensureColumn("quality_profiles", "prefer_cutoff_quality", "prefer_cutoff_quality
 ensureColumn("quality_profiles", "upgrade_allowed", "upgrade_allowed INTEGER NOT NULL DEFAULT 1");
 ensureColumn("quality_profiles", "cutoff_format_score", "cutoff_format_score INTEGER NOT NULL DEFAULT 0");
 ensureColumn("quality_profiles", "min_upgrade_format_score", "min_upgrade_format_score INTEGER NOT NULL DEFAULT 1");
+ensureColumn("quality_profiles", "quality_groups", "quality_groups TEXT NOT NULL DEFAULT '[]'");
 for (const table of ["media_items", "episodes", "sub_items"]) {
   ensureColumn(table, "file_release_title", "file_release_title TEXT");
   ensureColumn(table, "file_format_score", "file_format_score INTEGER");
