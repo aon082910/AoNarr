@@ -420,3 +420,68 @@ describe("GET /api/search/:mediaItemId — the gate knows about same-titled show
     expect(byUrl["magnet:?xt=bare"]).toMatchObject({ identityOk: false, identityRejection: "year" });
   });
 });
+
+describe("GET /api/search/:mediaItemId — a season a scene split (matching Round 10)", () => {
+  async function insertEpisodes(showId: number, scenes: (number | null)[]): Promise<void> {
+    for (const [index, scene] of scenes.entries()) {
+      await db
+        .prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, scene_season_number, scene_episode_number, monitored, has_file) VALUES (?, 1, ?, ?, ?, 1, 0)")
+        .run(showId, index + 1, scene, scene === null ? null : index + 1);
+    }
+  }
+  const byUrl = (body: any[]) => Object.fromEntries(body.map((r) => [r.downloadUrl, r]));
+
+  it("asks under each season number the scene calls the season by, and takes the packs of each as its own", async () => {
+    const showId = await insertItem("series", "Split Show");
+    await insertEpisodes(showId, [1, 1, 2, 2]);
+    searchAllIndexers.mockImplementation(async (_indexers: unknown, query: string) => {
+      if (query === "Split Show S01") return [release({ title: "Split.Show.S01.1080p.WEB-DL-GRP", downloadUrl: "magnet:?xt=one" }), release({ title: "Split.Show.S03.1080p.WEB-DL-GRP", downloadUrl: "magnet:?xt=three" })];
+      if (query === "Split Show S02") return [release({ title: "Split.Show.S02.1080p.WEB-DL-GRP", downloadUrl: "magnet:?xt=two" })];
+      return [];
+    });
+
+    const res = await request(app).get(`/api/search/${showId}?seasonNumber=1`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(200);
+    expect(searchAllIndexers.mock.calls.map((c) => c[1])).toEqual(["Split Show S01", "Split Show S02"]);
+    const results = byUrl(res.body);
+    expect(results["magnet:?xt=one"]).toMatchObject({ matchesTarget: true });
+    expect(results["magnet:?xt=two"]).toMatchObject({ matchesTarget: true });
+    expect(results["magnet:?xt=three"]).toMatchObject({ matchesTarget: false });
+  });
+
+  it("asks once, under the season's own number, for a show with no scene numbering", async () => {
+    const showId = await insertItem("series", "Plain Show");
+    await insertEpisodes(showId, [null, null]);
+    searchAllIndexers.mockResolvedValue([
+      release({ title: "Plain.Show.S01.1080p.WEB-DL-GRP", downloadUrl: "magnet:?xt=one" }),
+      release({ title: "Plain.Show.S02.1080p.WEB-DL-GRP", downloadUrl: "magnet:?xt=two" }),
+    ]);
+
+    const res = await request(app).get(`/api/search/${showId}?seasonNumber=1`).set("X-Api-Key", apiKey);
+
+    expect(searchAllIndexers.mock.calls.map((c) => c[1])).toEqual(["Plain Show S01"]);
+    const results = byUrl(res.body);
+    expect(results["magnet:?xt=one"]).toMatchObject({ matchesTarget: true });
+    expect(results["magnet:?xt=two"]).toMatchObject({ matchesTarget: false });
+  });
+});
+
+describe("GET /api/search/:mediaItemId — one release found by two queries of a season a scene splits", () => {
+  it("is listed once, and the lowest scene season number is the main query", async () => {
+    const showId = await insertItem("series", "Overlap Show");
+    for (const [index, scene] of [[1, 3], [2, 3], [3, 2], [4, 2]] as const) {
+      await db
+        .prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, scene_season_number, scene_episode_number, monitored, has_file) VALUES (?, 1, ?, ?, ?, 1, 0)")
+        .run(showId, index, scene, index);
+    }
+    const shared = release({ title: "Overlap.Show.S02.1080p.WEB-DL-GRP", downloadUrl: "magnet:?xt=shared" });
+    searchAllIndexers.mockResolvedValue([shared]);
+
+    const res = await request(app).get(`/api/search/${showId}?seasonNumber=1`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(200);
+    expect(searchAllIndexers.mock.calls.map((c) => c[1])).toEqual(["Overlap Show S02", "Overlap Show S03"]);
+    expect(res.body).toHaveLength(1);
+  });
+});

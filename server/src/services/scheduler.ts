@@ -4,7 +4,8 @@ import { log } from "./logger.js";
 import { db } from "../db/index.js";
 import { nowExpr, nowOffsetHoursExpr } from "../db/asyncDb.js";
 import { config } from "../config.js";
-import { searchAllIndexers } from "./indexerClient.js";
+import { isIndexerAvailable, isIndexerBackedOff, searchAllIndexers, searchReachOf } from "./indexerClient.js";
+import { leafDue, recordLeafOutcome, recordSeasonSearch, seasonSearchDue, wakeLeaf, wakeSeason, type LeafTable } from "./searchBackoff.js";
 import {
   getDownloadClientAdapter,
   removeQueueItemDownload,
@@ -18,6 +19,7 @@ import { identityModeFor, releaseIdentifiesTarget, type IdentityMode, type Ident
 import { releaseRejection } from "./releaseRejections.js";
 import { aliasTitlesFor, identityContextFor } from "./releaseAliases.js";
 import { childNumberOf, volumeYearOf } from "./searchQueries.js";
+import { judgeSeasonPack, loadPackEpisodes, packSettings, type PackEpisode } from "./seasonPacks.js";
 import {
   airedFrontierFor,
   episodeNotAired,
@@ -145,7 +147,7 @@ async function forEachCandidateAcrossItemsSequentially(
   }
 }
 
-async function rowsToIndexers(): Promise<Indexer[]> {
+export async function rowsToIndexers(): Promise<Indexer[]> {
   return ((await db.prepare("SELECT * FROM indexers").all()) as any[]).map(indexerFromRow);
 }
 
@@ -182,19 +184,19 @@ export function isReleaseAvailableForSearch(item: MediaItem): boolean {
   return threshold.getTime() <= Date.now();
 }
 
-async function rowsToDownloadClients(): Promise<DownloadClient[]> {
+export async function rowsToDownloadClients(): Promise<DownloadClient[]> {
   return ((await db.prepare("SELECT * FROM download_clients WHERE enabled = 1 ORDER BY id").all()) as any[]).map(
     downloadClientFromRow
   );
 }
 
-async function getQualityProfile(id: number | null) {
+export async function getQualityProfile(id: number | null) {
   if (!id) return null;
   const row = await db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(id);
   return row ? qualityProfileFromRow(row) : null;
 }
 
-interface DelayProfile {
+export interface DelayProfile {
   enableUsenet: boolean;
   enableTorrent: boolean;
   usenetDelayMinutes: number;
@@ -205,7 +207,7 @@ interface DelayProfile {
 /** Every configured delay profile, tag-scoped ones first in their saved order, the untagged
  * default (if any) last — so `pickDelayProfile` can just take the first match. Fetched once per
  * search cycle rather than per item; the table is tiny and rarely changes mid-cycle. */
-async function loadDelayProfiles(): Promise<{ tagId: number | null; profile: DelayProfile }[]> {
+export async function loadDelayProfiles(): Promise<{ tagId: number | null; profile: DelayProfile }[]> {
   const rows = (await db.prepare("SELECT * FROM delay_profiles ORDER BY (tag_id IS NULL), order_index, id").all()) as any[];
   return rows.map((row) => ({
     tagId: row.tag_id,
@@ -222,14 +224,14 @@ async function loadDelayProfiles(): Promise<{ tagId: number | null; profile: Del
 /** First tag-matching profile wins; falls back to the untagged default profile, then to no delay
  * at all (every release eligible immediately) if nothing's configured — same "absent means off"
  * default every other opt-in gate in this file uses (isReleaseAvailableForSearch, quiet hours, ...). */
-function pickDelayProfile(profiles: { tagId: number | null; profile: DelayProfile }[], itemTagIds: number[]): DelayProfile | null {
+export function pickDelayProfile(profiles: { tagId: number | null; profile: DelayProfile }[], itemTagIds: number[]): DelayProfile | null {
   for (const p of profiles) {
     if (p.tagId !== null && itemTagIds.includes(p.tagId)) return p.profile;
   }
   return profiles.find((p) => p.tagId === null)?.profile ?? null;
 }
 
-async function tagIdsForMediaItem(mediaItemId: number): Promise<number[]> {
+export async function tagIdsForMediaItem(mediaItemId: number): Promise<number[]> {
   const rows = (await db.prepare("SELECT tag_id FROM media_item_tags WHERE media_item_id = ?").all(mediaItemId)) as {
     tag_id: number;
   }[];
@@ -241,7 +243,7 @@ async function tagIdsForMediaItem(mediaItemId: number): Promise<number[]> {
  * that protocol is disabled outright for the profile (never eligible), or bypassIfHighestQuality
  * lets an already-cutoff-quality release through immediately. A release with no publishDate (some
  * indexers omit it) can't have its age judged, so it's let through rather than blocked forever. */
-function isEligibleForDelay(quality: string, cutoff: string, result: SearchResult, profile: DelayProfile | null): boolean {
+export function isEligibleForDelay(quality: string, cutoff: string, result: SearchResult, profile: DelayProfile | null): boolean {
   if (!profile) return true;
   const protocol = result.protocol;
   if (protocol !== "torrent" && protocol !== "usenet") return true; // http/slskd aren't protocol-gated
@@ -283,7 +285,8 @@ export async function isAlreadyQueued(mediaItemId: number, episodeId: number | n
     return sameSeason.some(({ title }) => {
       const parsed = parseReleaseTitle(title);
       // A ranged batch ("S2 - 13-24") covers only its own episodes; releaseMatchesEpisode enforces the range.
-      if (parsed.isFullSeason && !parsed.episodeRange) return parsed.seasonNumber == null || parsed.seasonNumber === ep.season_number;
+      // A pack calls its season by the scene's number where the show has one (TheXEM).
+      if (parsed.isFullSeason && !parsed.episodeRange) return parsed.seasonNumber == null || parsed.seasonNumber === (ep.scene_season_number ?? ep.season_number);
       return (
         releaseMatchesEpisode(parsed, ep.season_number, ep.episode_number, ep.scene_season_number, ep.scene_episode_number, null, sceneIndex) ||
         (!!ep.air_date && releaseMatchesAirDate(parsed, ep.air_date))
@@ -300,6 +303,19 @@ export async function isAlreadyQueued(mediaItemId: number, episodeId: number | n
       "SELECT id FROM queue WHERE media_item_id = ? AND episode_id IS NULL AND sub_item_id IS NULL AND status NOT IN ('failed')"
     )
     .get(mediaItemId));
+}
+
+/** Whether a download of a whole season (not a ranged batch of it) is queued for the show already.
+ * `packSeason` is the season number the new pack calls itself: an aired season a scene splits in two
+ * takes a pack of each part. */
+async function seasonPackQueued(mediaItemId: number, season: number, packSeason: number | null): Promise<boolean> {
+  const rows = (await db
+    .prepare("SELECT title FROM queue WHERE media_item_id = ? AND season_number = ? AND status NOT IN ('failed')")
+    .all(mediaItemId, season)) as { title: string }[];
+  return rows.some(({ title }) => {
+    const parsed = parseReleaseTitle(title);
+    return parsed.isFullSeason && !parsed.episodeRange && (packSeason == null || parsed.seasonNumber == null || parsed.seasonNumber === packSeason);
+  });
 }
 
 /** An automatic failure entry only holds a direct (yt-dlp/RSS) grab back for `hours` — the failure
@@ -326,7 +342,7 @@ export interface ChosenResult {
 }
 
 /** What grabbed a release, recorded on the queue row as grab_source. */
-export type GrabSource = "auto" | "interactive" | "irc" | "retry";
+export type GrabSource = "auto" | "interactive" | "irc" | "retry" | "rss";
 
 /** A target's own identity (year + external provider ids). Two uses in chooseBestResult: the
  * identity gate (releaseIdentity.ts) compares a release's title year and ids against it, and
@@ -382,7 +398,18 @@ async function siblingTitlesOf(item: Pick<MediaItem, "id" | "type">, subItemId: 
   return rows.map((r) => r.title);
 }
 
+/** What a season pack is judged against (seasonPacks.ts): the show, the season a release's numbering
+ * calls it when the pack names none, and the show's episodes (loaded only if a pack turns up). */
+export interface PackContext {
+  item: Pick<MediaItem, "type" | "seriesType">;
+  season: number;
+  episodes: PackEpisode[] | (() => Promise<PackEpisode[]>);
+}
+
 export interface ChooseOptions {
+  /** With it, a season pack among the results must pass the pack guards (every episode it covers has
+   * aired and is monitored, and it fills or upgrades enough of them). Omitted = no pack guards. */
+  pack?: PackContext;
   /** The enabled download clients: a release whose protocol none of them takes is never chosen, so
    * an NZB with no usenet client can't beat a grabbable torrent. Omitted = no protocol filter. */
   clients?: DownloadClient[];
@@ -787,6 +814,28 @@ export async function chooseBestResult(
         return ok;
       });
 
+  // A season pack is no good for what is wanted of its season unless it passes the pack guards.
+  let packFiltered = episodeFiltered;
+  const packContext = options.pack;
+  if (packContext && episodeFiltered.some(({ parsed }) => parsed.isFullSeason)) {
+    const episodes = typeof packContext.episodes === "function" ? await packContext.episodes() : packContext.episodes;
+    const settings = packSettings();
+    packFiltered = episodeFiltered.filter(({ result, parsed }) => {
+      if (!parsed.isFullSeason) return true;
+      const verdict = judgeSeasonPack({
+        parsed,
+        season: parsed.seasonNumber ?? packContext.season,
+        episodes,
+        item: packContext.item,
+        packQuality: parsed.quality,
+        cutoff,
+        settings,
+      });
+      if (!verdict.ok) log.info(`[scheduler] rejected "${result.title}": ${verdict.reason}`);
+      return verdict.ok;
+    });
+  }
+
   // Identity gate for quality-tiered types (Sonarr/Radarr reject a release that doesn't name the
   // series/movie before any quality decision). `log` computes and logs the verdict without
   // rejecting, so a type can run that way for a while and the log shows what `enforce` would drop.
@@ -824,7 +873,7 @@ export async function chooseBestResult(
 
   const allowed = new Set(allowedQualities);
   const namesMainTitleOnly = new Set<SearchResult>();
-  const relevant = episodeFiltered.filter(({ result, parsed, size }) => {
+  const relevant = packFiltered.filter(({ result, parsed, size }) => {
     if (!tiered) {
       if (!name) return true;
       const match = releaseNameMatch(result.title, name, mediaType);
@@ -994,7 +1043,7 @@ function isClientLevelError(client: DownloadClient, downloadUrl: string, err: un
 /** Leaves a client that failed at the client level out of the rest of a search pass, rather than
  * trying it again (each a connect timeout) for every remaining target. True when `err` was such a
  * failure. */
-function noteUnavailableClient(err: unknown, unavailable: Map<number, string>): boolean {
+export function noteUnavailableClient(err: unknown, unavailable: Map<number, string>): boolean {
   if (!(err instanceof DownloadClientUnavailableError)) return false;
   if (!unavailable.has(err.client.id)) {
     unavailable.set(err.client.id, err.message);
@@ -1035,6 +1084,11 @@ export async function grab(
     const { result: best, quality } = chosen;
     if ((episodeId || subItemId || seasonNumber == null) && (await isAlreadyQueued(mediaItem.id, episodeId, subItemId))) {
       log.info(`[scheduler] not grabbing "${best.title}" for "${mediaItem.title}": a queued download already covers it`);
+      return false;
+    }
+    // A pack for a whole season is sent once: the search and the RSS sync can reach the same one in the same minute.
+    if (!episodeId && !subItemId && seasonNumber != null && source !== "interactive" && (await seasonPackQueued(mediaItem.id, seasonNumber, parseReleaseTitle(best.title).seasonNumber ?? null))) {
+      log.info(`[scheduler] not grabbing "${best.title}" for "${mediaItem.title}": a pack for season ${seasonNumber} is already queued`);
       return false;
     }
     // A season pack grabbed for one episode covers the rest of its season too — recording the season
@@ -1123,7 +1177,7 @@ const DIRECT_CLIENT_TYPES = new Set(["ytdlp", "http"]);
  * processes / HTTP downloads in a single pass. */
 const MAX_ACTIVE_DIRECT_DOWNLOADS = 3;
 
-interface DirectDownloadBudget {
+export interface DirectDownloadBudget {
   readonly available: boolean;
   /** `clients`, minus the in-process ones once the budget is spent. */
   usableClients(): DownloadClient[];
@@ -1145,7 +1199,7 @@ interface DirectDownloadBudget {
   release(client: DownloadClient): void;
 }
 
-async function directDownloadBudget(clients: DownloadClient[]): Promise<DirectDownloadBudget> {
+export async function directDownloadBudget(clients: DownloadClient[]): Promise<DirectDownloadBudget> {
   let running = 0;
   for (const client of clients.filter((c) => DIRECT_CLIENT_TYPES.has(c.type))) {
     const ids = (
@@ -1219,7 +1273,7 @@ const MAX_RELEASES_TRIED = 3;
  * release wins, and fails, on every pass and its target is never downloaded. Resolves null when
  * nothing was chosen; rethrows the refusal when every release tried was refused.
  */
-async function grabBestRelease(
+export async function grabBestRelease(
   results: SearchResult[],
   clients: DownloadClient[],
   choose: (results: SearchResult[]) => Promise<ChosenResult | null>,
@@ -1269,7 +1323,7 @@ function whyNothingGrabbed(
 
 /** The quality of the file a target already has: undefined when it has none, null when that
  * file's quality is unknown. */
-async function existingFileQuality(item: MediaItem, episodeId: number | null, subItemId: number | null): Promise<string | null | undefined> {
+export async function existingFileQuality(item: MediaItem, episodeId: number | null, subItemId: number | null): Promise<string | null | undefined> {
   const row = (
     episodeId
       ? await db.prepare("SELECT has_file, quality FROM episodes WHERE id = ?").get(episodeId)
@@ -1369,6 +1423,126 @@ interface AutoSearchItemContext {
   recentDirectFailures: Set<string>;
 }
 
+/** How a search for one target ended: a release was grabbed, nothing was fit to grab, or the target
+ * was left alone (already covered by a download, no client to send to, an unreachable client). */
+export type GrabResult = "grabbed" | "none" | "held" | "skipped";
+
+/** What a search just made reached: "answered" when an indexer answered it, "unreached" when the
+ * indexers for the type were asked and none answered (down, rate limited, over their hourly limit),
+ * "unsearchable" when no indexer takes the type. Only an answered search says anything about the target. */
+type SearchReachState = "answered" | "unreached" | "unsearchable";
+
+function reachOf(results: SearchResult[], indexers: Indexer[], type: string): SearchReachState {
+  const reach = searchReachOf(results);
+  if (reach) return reach.applicable === 0 ? "unsearchable" : reach.answered === 0 ? "unreached" : "answered";
+  // A list searchAllIndexers did not make: the indexers' state now is all there is to go by.
+  const applicable = indexers.filter((i) => i.enabled && i.mediaTypes.split(",").includes(type));
+  if (applicable.length === 0) return "unsearchable";
+  return applicable.some((i) => !isIndexerBackedOff(i.id)) ? "answered" : "unreached";
+}
+
+/** Whether the indexers an automatic search of the type would ask are all down, rate limited or at
+ * their hourly limit: no request would leave, so the target is left alone (not searched, not stamped,
+ * no slot of the cycle's cap used). A type no indexer takes is searched as before (the search no-ops). */
+function noIndexerAvailable(indexers: Indexer[], type: string): boolean {
+  const asked = indexers.filter(
+    (i) => i.enabled && i.mediaTypes.split(",").includes(type) && !(config.rssSyncIntervalMinutes > 0 && i.protocol === "rss")
+  );
+  return asked.length > 0 && asked.every((i) => !isIndexerAvailable(i));
+}
+
+/** Whether the delay profile alone kept a search from grabbing: with no delay the same releases would
+ * have been grabbed. Such a release is grabbed once it has aged, so the target is searched again soon. */
+export async function isHeldByDelay(
+  results: SearchResult[],
+  cutoff: string,
+  delayProfile: DelayProfile | null,
+  choose: (remaining: SearchResult[], delay: DelayProfile | null) => Promise<ChosenResult | null>
+): Promise<boolean> {
+  if (!delayProfile) return false;
+  if (!results.some((r) => !isEligibleForDelay(parseReleaseTitle(r.title).quality, cutoff, r, delayProfile))) return false;
+  return (await choose(results, null)) !== null;
+}
+
+/** How a search that grabbed nothing ended, for the backoff: "skipped" when it says nothing about the
+ * target (no indexer answered, or nothing could be sent to a client), "held" when the delay profile
+ * alone holds a release back, "none" when the target really has nothing to grab. `searched` is what
+ * searchAllIndexers returned, `candidates` the releases that were judged (a season search keeps packs only). */
+async function noGrabVerdict(o: {
+  searched: SearchResult[];
+  candidates: SearchResult[];
+  indexers: Indexer[];
+  type: string;
+  usable: DownloadClient[];
+  cutoff: string;
+  delayProfile: DelayProfile | null;
+  choose: (remaining: SearchResult[], delay: DelayProfile | null) => Promise<ChosenResult | null>;
+}): Promise<"none" | "held" | "skipped"> {
+  if (reachOf(o.searched, o.indexers, o.type) !== "answered") return "skipped";
+  if (o.candidates.length > 0 && o.candidates.every((r) => !pickClientForProtocol(o.usable, r.protocol))) return "skipped";
+  return (await isHeldByDelay(o.candidates, o.cutoff, o.delayProfile, o.choose)) ? "held" : "none";
+}
+
+/** Notes how an automatic search of a target ended, for the backoff (searchBackoff.ts). A release the
+ * delay profile holds back wakes the target: it is found again at the next cycle, not after a wait. */
+async function recordAutoSearchResult(table: LeafTable, id: number, result: GrabResult): Promise<void> {
+  if (result === "grabbed") await recordLeafOutcome(table, id, true);
+  else if (result === "none") await recordLeafOutcome(table, id, false);
+  else if (result === "held") await wakeLeaf(table, id);
+}
+
+/** The same for the search of a season for a pack. `automatic` is false for the admin's own search, which
+ * does not count against the automatic backoff. */
+async function recordSeasonResult(mediaItemId: number, season: number, result: GrabResult, automatic: boolean): Promise<void> {
+  if (result === "grabbed") await recordSeasonSearch(mediaItemId, season, true);
+  else if (result === "none" && automatic) await recordSeasonSearch(mediaItemId, season, false);
+  else if (result === "held") await wakeSeason(mediaItemId, season);
+}
+
+/** The season pack guards for a search of a show's episode or season (undefined for anything else). */
+export function packContextFor(item: MediaItem, plan: SearchPlan): PackContext | undefined {
+  if (getMediaTypeConfig(item.type).shape !== "episodic" || plan.hints.season == null) return undefined;
+  return { item, season: plan.hints.season, episodes: () => loadPackEpisodes(item.id) };
+}
+
+/** A show with packs to look for: a series or anime that is not a daily show. */
+export function packsPossibleFor(item: MediaItem): boolean {
+  return (item.type === "series" || item.type === "anime") && item.seriesType !== "daily";
+}
+
+/** The wanted episodes of a show by season: the aired season, the scene's number for it (what a
+ * release calls it) and the episodes' ids. */
+export interface SeasonGroup {
+  aired: number;
+  scene: number;
+  ids: number[];
+}
+
+export function seasonGroupsOf(episodes: { id: number; season_number: number; scene_season_number: number | null }[]): SeasonGroup[] {
+  const groups = new Map<string, SeasonGroup>();
+  for (const ep of episodes) {
+    const scene = ep.scene_season_number ?? ep.season_number;
+    const key = `${ep.season_number}:${scene}`;
+    const group = groups.get(key) ?? { aired: ep.season_number, scene, ids: [] };
+    group.ids.push(ep.id);
+    groups.set(key, group);
+  }
+  return Array.from(groups.values());
+}
+
+/** Whether a pack for the season could pass the pack guards at all (it has aired in full, none of it
+ * is unmonitored, and enough of it is wanted): if not, searching for one is wasted requests. */
+async function seasonCouldHoldPack(item: MediaItem, group: SeasonGroup, cutoff: string): Promise<boolean> {
+  const episodes = await loadPackEpisodes(item.id);
+  return judgeSeasonPack({ parsed: { episodeRange: null }, season: group.scene, episodes, item, packQuality: cutoff, cutoff }).ok;
+}
+
+/** Whether any of the episodes still has no queued download covering it. */
+async function anyUncovered(itemId: number, episodeIds: number[]): Promise<boolean> {
+  for (const id of episodeIds) if (!(await isAlreadyQueued(itemId, id, null))) return true;
+  return false;
+}
+
 /**
  * For each monitored, fileless target (movie / episode / album / book), search and grab the best release.
  *
@@ -1420,6 +1594,8 @@ export async function runAutoSearch(signal?: AbortSignal) {
   // cycle's pool at once instead of only one item's.
   let seq = 0;
   const candidates: AutoSearchCandidate[] = [];
+  /** Each show's wanted episodes, due or not: the season searches below look at the season as a whole. */
+  const wantedByShow = new Map<number, { item: MediaItem; episodes: any[] }>();
   for (const item of monitoredItems) {
     // Cheap to check even though neither ever actually fires mid-discovery today (this map starts
     // empty and nothing populates it until the processing loop below runs) — it's a guard against
@@ -1428,12 +1604,16 @@ export async function runAutoSearch(signal?: AbortSignal) {
     if (signal?.aborted || noClientReachable()) break;
     const shape = getMediaTypeConfig(item.type).shape;
     if (shape === "single") {
+      // A target the last few searches found nothing for waits (searchBackoff.ts).
+      if (!item.hasFile && !leafDue({ auto_search_misses: item.autoSearchMisses, last_auto_searched_at: item.lastAutoSearchedAt }, item.releaseDate)) continue;
       candidates.push({ item, shape, lastSearchedAt: item.lastAutoSearchedAt ?? null, seq: seq++ });
     } else if (shape === "episodic") {
       const episodes = (await db
-        .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND monitored = 1 AND has_file = 0")
+        .prepare("SELECT * FROM episodes WHERE media_item_id = ? AND monitored = 1 AND has_file = 0 ORDER BY season_number, episode_number")
         .all(item.id)) as any[];
+      if (episodes.length > 0) wantedByShow.set(item.id, { item, episodes });
       for (const episode of episodes) {
+        if (!leafDue(episode, episode.air_date)) continue;
         candidates.push({ item, shape, episode, lastSearchedAt: episode.last_auto_searched_at ?? null, seq: seq++ });
       }
     } else {
@@ -1442,6 +1622,7 @@ export async function runAutoSearch(signal?: AbortSignal) {
         .prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND monitored = 1 AND has_file = 0")
         .all(item.id)) as any[];
       for (const subItem of subItems) {
+        if (!leafDue(subItem, subItem.release_date)) continue;
         candidates.push({ item, shape, subItem, lastSearchedAt: subItem.last_auto_searched_at ?? null, seq: seq++ });
       }
     }
@@ -1521,8 +1702,9 @@ export async function runAutoSearch(signal?: AbortSignal) {
     identity: TargetIdentity | null,
     episodeId: number | null,
     subItemId: number | null,
-    name: TargetName | null
-  ) => {
+    name: TargetName | null,
+    pack?: PackContext
+  ): Promise<GrabResult> => {
     const usable = directBudget.usableClients().filter((c) => !unavailable.has(c.id));
     // Reserves (and, if the grab doesn't pan out, gives back) the direct-download budget
     // synchronously around the actual grab, rather than checking `usable` once up front and
@@ -1541,35 +1723,36 @@ export async function runAutoSearch(signal?: AbortSignal) {
         throw err;
       }
     };
+    const choose = (remaining: SearchResult[], delay: DelayProfile | null) =>
+      chooseBestResult(
+        remaining,
+        ctx.allowedQualities,
+        ctx.cutoff,
+        item.qualityProfileId,
+        ctx.minFormatScore,
+        target,
+        ctx.blocklisted,
+        item.type,
+        delay,
+        identity,
+        item.id,
+        { clients: usable, name, indexers, label: item.title, pack }
+      );
     let outcome: Awaited<ReturnType<typeof grabBestRelease>>;
     try {
-      outcome = await grabBestRelease(
-        results,
-        usable,
-        (remaining) =>
-          chooseBestResult(
-            remaining,
-            ctx.allowedQualities,
-            ctx.cutoff,
-            item.qualityProfileId,
-            ctx.minFormatScore,
-            target,
-            ctx.blocklisted,
-            item.type,
-            ctx.delayProfile,
-            identity,
-            item.id,
-            { clients: usable, name, indexers, label: item.title }
-          ),
-        send
-      );
+      outcome = await grabBestRelease(results, usable, (remaining) => choose(remaining, ctx.delayProfile), send);
     } catch (err) {
-      if (noteUnavailableClient(err, unavailable)) return;
+      if (noteUnavailableClient(err, unavailable)) return "skipped";
       throw err;
     }
-    if (!outcome && results.length > 0 && results.every((r) => !pickClientForProtocol(clients, r.protocol))) {
+    if (!outcome && results.length > 0 && results.every((r) => !pickClientForProtocol(usable, r.protocol))) {
       log.warn(`[scheduler] ${whyNothingGrabbed(results, clients, usable, undefined)}, skipping "${item.title}"`);
+      return "skipped";
     }
+    if (!outcome) {
+      return noGrabVerdict({ searched: results, candidates: results, indexers, type: item.type, usable, cutoff: ctx.cutoff, delayProfile: ctx.delayProfile, choose });
+    }
+    return outcome.grabbed ? "grabbed" : "skipped";
   };
 
   /** For an item with an undated episode: which episodes of it are known to have aired (searchPlan.airedFrontierOf). */
@@ -1589,12 +1772,15 @@ export async function runAutoSearch(signal?: AbortSignal) {
       log.info(`[scheduler] skipping "${item.title}": not yet available per its minimum-availability setting`);
       return;
     }
+    if (noIndexerAvailable(indexers, item.type)) return;
     if (!reserveSearchSlot()) return;
     const plan = await singlePlanFor(item);
     const identity = targetIdentityOf(item);
     const results = await searchAllIndexers(indexers, plan.query, item.type, false, plan.ids, searchHintsOf(plan));
-    await stampAutoSearched("media_items", item.id);
-    await grabBestFor(item, ctx, results, null, identity, null, null, { title: item.title });
+    // A search no indexer answered leaves the target as it was: it is the next to be searched, and its wait does not grow.
+    if (reachOf(results, indexers, item.type) !== "unreached") await stampAutoSearched("media_items", item.id);
+    const result = await grabBestFor(item, ctx, results, null, identity, null, null, { title: item.title });
+    await recordAutoSearchResult("media_items", item.id, result);
   }
 
   async function searchEpisode(item: MediaItem, ctx: AutoSearchItemContext, ep: any): Promise<void> {
@@ -1605,6 +1791,7 @@ export async function runAutoSearch(signal?: AbortSignal) {
     // daily show's with no date to search by. Only the date portion is compared (not time-of-day)
     // since an air date is stored as a bare date with no timezone/time — "today" should still search.
     if (episodeNotAired(item, ep, undefined, ep.air_date ? undefined : await airedFrontier(item.id))) return;
+    if (noIndexerAvailable(indexers, item.type)) return;
     if (!reserveSearchSlot()) return;
     // The plan has the scene-numbered (TheXEM) season/episode in the QUERY when known — that's the
     // numbering a scene-mapped show's releases actually use — and in the target too, with the aired
@@ -1612,10 +1799,11 @@ export async function runAutoSearch(signal?: AbortSignal) {
     // releaseMatchesEpisode).
     const plan = await episodePlanFor(item, ep);
     const results = await searchAllIndexers(indexers, plan.query, item.type, false, plan.ids, searchHintsOf(plan));
-    await stampAutoSearched("episodes", ep.id);
+    if (reachOf(results, indexers, item.type) !== "unreached") await stampAutoSearched("episodes", ep.id);
     // The series' own identity and title go along so the identity gate can tell another show's
     // same-numbered episode (a remake, a similarly named show) from this one.
-    await grabBestFor(item, ctx, results, plan.target, targetIdentityOf(item), ep.id, null, { title: item.title });
+    const result = await grabBestFor(item, ctx, results, plan.target, targetIdentityOf(item), ep.id, null, { title: item.title }, packContextFor(item, plan));
+    await recordAutoSearchResult("episodes", ep.id, result);
   }
 
   async function searchSubItem(item: MediaItem, ctx: AutoSearchItemContext, sub: any): Promise<void> {
@@ -1656,15 +1844,47 @@ export async function runAutoSearch(signal?: AbortSignal) {
       return;
     }
 
+    if (noIndexerAvailable(indexers, item.type)) return;
     if (!reserveSearchSlot()) return;
     const plan = subItemPlanFor(item, sub);
     const results = await searchAllIndexers(indexers, plan.query, item.type, false, undefined, searchHintsOf(plan));
-    await stampAutoSearched("sub_items", sub.id);
-    await grabBestFor(item, ctx, results, null, null, null, sub.id, {
+    if (reachOf(results, indexers, item.type) !== "unreached") await stampAutoSearched("sub_items", sub.id);
+    const result = await grabBestFor(item, ctx, results, null, null, null, sub.id, {
       title: sub.title,
       parentTitle: item.title,
       siblingTitles: await siblingTitlesOf(item, sub.id),
     });
+    await recordAutoSearchResult("sub_items", sub.id, result);
+  }
+
+  // Season packs. A finished season with two or more of its episodes wanted is searched once for a
+  // pack before any of its episodes is searched alone: one request set instead of one per episode,
+  // and a pack is often all that is left of an old season. A pack that fills the season is queued,
+  // and the episodes it covers are then skipped below (isAlreadyQueued); the rest are searched
+  // alone as usual. A season that has not finished airing, or has unmonitored episodes, or has too
+  // few wanted for a pack to pass the guards (seasonPacks.ts) is not searched for a pack at all.
+  const seasonEnv: BulkSearchContext = { indexers, clients, delayProfiles, directBudget, unavailable, automatic: true };
+  for (const { item, episodes } of wantedByShow.values()) {
+    if (signal?.aborted || noClientReachable() || searchedCount >= cap) break;
+    if (!packsPossibleFor(item)) continue;
+    for (const group of seasonGroupsOf(episodes)) {
+      if (signal?.aborted || searchedCount >= cap) break;
+      if (group.ids.length < 2) continue;
+      try {
+        const ctx = await getItemContext(item);
+        if (ctx.overQuota) break;
+        // The backoff is kept per season number as a release calls it (the query "Show S02"), not as it aired.
+        if (!(await seasonSearchDue(item.id, group.scene))) continue;
+        if (!(await seasonCouldHoldPack(item, group, ctx.cutoff))) continue;
+        if (!(await anyUncovered(item.id, group.ids))) continue;
+        if (noIndexerAvailable(indexers, item.type)) continue;
+        if (!reserveSearchSlot()) break;
+        const found = await searchAndGrabSeason(item, group, null, seasonEnv);
+        await recordSeasonResult(item.id, group.scene, found.result, true);
+      } catch (err) {
+        log.warn(`[scheduler] season search failed for "${item.title}" S${group.aired}:`, (err as Error).message);
+      }
+    }
   }
 
   // The concurrency-3 burst throttle still applies, now across this cycle's whole selected
@@ -1761,9 +1981,12 @@ interface BulkSearchContext {
   directBudget: DirectDownloadBudget;
   /** Clients found unavailable earlier in this run (see noteUnavailableClient), with why. */
   unavailable: Map<number, string>;
+  /** A run the scheduler started (the auto-upgrade job), not one the admin asked for: it stamps what
+   * it searches and keeps to the backoff (searchBackoff.ts). */
+  automatic?: boolean;
 }
 
-function isBelowCutoff(quality: string | null, cutoff: string): boolean {
+export function isBelowCutoff(quality: string | null, cutoff: string): boolean {
   const rank = qualityRank(quality);
   return rank >= 0 && rank < qualityRank(cutoff);
 }
@@ -1771,7 +1994,7 @@ function isBelowCutoff(quality: string | null, cutoff: string): boolean {
 /** Sonarr/Radarr's "existing file meets cutoff": with lower tiers filtered out, the profile's best
  * pick is whatever allowed tier lies above the cutoff, so an upgrade search would otherwise replace
  * a file that's already good enough with, say, a 70 GB remux. */
-function meetsCutoff(quality: string | null, cutoff: string): boolean {
+export function meetsCutoff(quality: string | null, cutoff: string): boolean {
   const cutoffRank = qualityRank(cutoff);
   return cutoffRank >= 0 && qualityRank(quality) >= cutoffRank;
 }
@@ -1805,13 +2028,123 @@ async function searchableChildrenOf(item: MediaItem, cutoff: string): Promise<{ 
     .map((s) => ({ subItemId: s.id }));
 }
 
+/**
+ * One search for a pack of a season. Only a full-season (or ranged) pack of that season is taken from
+ * its results; a single-episode release it turns up is left to the searches of that episode. The
+ * pack passes the pack guards (seasonPacks.ts), the identity gate and the profile like any release,
+ * and is recorded against the season (the importer fills every episode of it that is wanted).
+ * `upgradeFromRank` is set when what is wanted of the season is an upgrade of files on disk.
+ */
+async function searchAndGrabSeason(
+  item: MediaItem,
+  seasons: { aired: number; scene: number },
+  upgradeFromRank: number | null,
+  ctx: BulkSearchContext
+): Promise<{ result: GrabResult; error?: string }> {
+  if (ctx.clients.length > 0 && ctx.clients.every((c) => ctx.unavailable.has(c.id))) {
+    return { result: "skipped", error: Array.from(ctx.unavailable.values()).join("; ") };
+  }
+  const profile = await getQualityProfile(item.qualityProfileId);
+  const plan = await seasonPlanFor(item, seasons.scene);
+  const blocklisted = await getBlocklistedTitles(item.id);
+  const delayProfile = pickDelayProfile(ctx.delayProfiles, await tagIdsForMediaItem(item.id));
+  const found = await searchAllIndexers(ctx.indexers, plan.query, item.type, false, plan.ids, { ...searchHintsOf(plan), includeFeeds: !ctx.automatic });
+  const packs = found.filter((r) => {
+    const parsed = parseReleaseTitle(r.title);
+    return parsed.isFullSeason && (parsed.seasonNumber == null || parsed.seasonNumber === seasons.scene);
+  });
+  const usable = ctx.directBudget.usableClients().filter((c) => !ctx.unavailable.has(c.id));
+  const cutoff = profile?.cutoff ?? "";
+  const choose = (remaining: SearchResult[], delay: DelayProfile | null) =>
+    chooseBestResult(
+      remaining,
+      profile?.allowedQualities ?? [],
+      cutoff,
+      item.qualityProfileId,
+      profile?.minFormatScore ?? 0,
+      null,
+      blocklisted,
+      item.type,
+      delay,
+      targetIdentityOf(item),
+      item.id,
+      {
+        clients: usable,
+        upgradeFromRank,
+        name: { title: item.title },
+        indexers: ctx.indexers,
+        label: `${item.title} S${String(seasons.scene).padStart(2, "0")}`,
+        pack: packContextFor(item, plan),
+      }
+    );
+  let outcome: Awaited<ReturnType<typeof grabBestRelease>>;
+  try {
+    outcome = await grabBestRelease(
+      packs,
+      usable,
+      (remaining) => choose(remaining, delayProfile),
+      (client, chosen) => grab(client, item, null, null, chosen, 0, seasons.aired, "auto")
+    );
+  } catch (err) {
+    if (!noteUnavailableClient(err, ctx.unavailable)) throw err;
+    return { result: "skipped", error: (err as Error).message };
+  }
+  if (!outcome) {
+    return {
+      result: await noGrabVerdict({ searched: found, candidates: packs, indexers: ctx.indexers, type: item.type, usable, cutoff, delayProfile, choose }),
+    };
+  }
+  if (!outcome.grabbed) return { result: "skipped" };
+  ctx.directBudget.consume(outcome.client);
+  return { result: "grabbed" };
+}
+
+/**
+ * The season searches that come before the searches of single episodes: for each season of the show
+ * that two or more of `episodeIds` belong to and that could hold a pack (seasonCouldHoldPack),
+ * one search for a pack. Returns how many were made. A pack that is grabbed is queued against the
+ * season, so the episodes it covers are skipped by the searches that follow (isAlreadyQueued).
+ */
+async function searchSeasonsFirst(item: MediaItem, episodeIds: number[], ctx: BulkSearchContext): Promise<{ searches: number; grabbed: number }> {
+  if (!packsPossibleFor(item) || episodeIds.length < 2) return { searches: 0, grabbed: 0 };
+  const rows = (await db
+    .prepare(`SELECT id, season_number, scene_season_number, has_file, quality FROM episodes WHERE media_item_id = ? AND id IN (${episodeIds.map(() => "?").join(", ")})`)
+    .all(item.id, ...episodeIds)) as { id: number; season_number: number; scene_season_number: number | null; has_file: number; quality: string | null }[];
+  const cutoff = (await getQualityProfile(item.qualityProfileId))?.cutoff ?? "";
+  let searches = 0;
+  let grabbed = 0;
+  for (const group of seasonGroupsOf(rows)) {
+    if (group.ids.length < 2) continue;
+    if (ctx.automatic && !(await seasonSearchDue(item.id, group.scene))) continue;
+    if (!(await seasonCouldHoldPack(item, group, cutoff))) continue;
+    if (!(await anyUncovered(item.id, group.ids))) continue;
+    if (ctx.automatic && noIndexerAvailable(ctx.indexers, item.type)) continue;
+    // What is wanted of the season is an upgrade when every one of its episodes has a file: the pack has to beat the worst of them.
+    const groupRows = rows.filter((r) => group.ids.includes(r.id));
+    const upgradeFromRank = groupRows.every((r) => Number(r.has_file)) ? Math.min(...groupRows.map((r) => qualityRank(r.quality))) : null;
+    try {
+      const found = await searchAndGrabSeason(item, group, upgradeFromRank, ctx);
+      searches++;
+      if (found.result === "grabbed") grabbed++;
+      await recordSeasonResult(item.id, group.scene, found.result, !!ctx.automatic);
+    } catch (err) {
+      log.warn(`[scheduler] season search failed for "${item.title}" S${group.aired}:`, (err as Error).message);
+    }
+  }
+  return { searches, grabbed };
+}
+
 async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: BulkSearchContext): Promise<{ grabbed: boolean; error?: string }> {
   const episodeId = t.episodeId ?? null;
   const subItemId = t.subItemId ?? null;
+  // A download already covers it (a pack grabbed for a sibling a moment ago): no search is made for it.
+  if (await isAlreadyQueued(item.id, episodeId, subItemId)) return { grabbed: false, error: "Already queued" };
   const profile = await getQualityProfile(item.qualityProfileId);
   const allowedQualities = profile?.allowedQualities ?? [];
   const cutoff = profile?.cutoff ?? "";
   const minFormatScore = profile?.minFormatScore ?? 0;
+  const leafTable: LeafTable = episodeId ? "episodes" : subItemId ? "sub_items" : "media_items";
+  const leafId = episodeId ?? subItemId ?? item.id;
 
   let plan: SearchPlan;
   let episodeTarget: ReleaseTarget | null = null;
@@ -1868,42 +2201,63 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
   }
   const blocklisted = await getBlocklistedTitles(item.id);
   const delayProfile = pickDelayProfile(ctx.delayProfiles, await tagIdsForMediaItem(item.id));
-  const searchResults = await searchAllIndexers(ctx.indexers, plan.query, item.type, false, plan.ids, searchHintsOf(plan));
+  if (ctx.automatic && noIndexerAvailable(ctx.indexers, item.type)) return { grabbed: false, error: "No indexer can be searched right now" };
+  const searchResults = await searchAllIndexers(ctx.indexers, plan.query, item.type, false, plan.ids, { ...searchHintsOf(plan), includeFeeds: !ctx.automatic });
+  if (ctx.automatic && reachOf(searchResults, ctx.indexers, item.type) !== "unreached") await stampAutoSearched(leafTable, leafId);
   const usable = ctx.directBudget.usableClients().filter((c) => !ctx.unavailable.has(c.id));
+  const choose = (remaining: SearchResult[], delay: DelayProfile | null) =>
+    chooseBestResult(
+      remaining,
+      allowedQualities,
+      cutoff,
+      item.qualityProfileId,
+      minFormatScore,
+      episodeTarget,
+      blocklisted,
+      item.type,
+      delay,
+      identity,
+      item.id,
+      {
+        clients: usable,
+        upgradeFromRank: upgradeFrom === undefined ? null : qualityRank(upgradeFrom),
+        name,
+        indexers: ctx.indexers,
+        label: item.title,
+        pack: packContextFor(item, plan),
+      }
+    );
   let outcome: Awaited<ReturnType<typeof grabBestRelease>>;
   try {
     outcome = await grabBestRelease(
       searchResults,
       usable,
-      (remaining) =>
-        chooseBestResult(
-          remaining,
-          allowedQualities,
-          cutoff,
-          item.qualityProfileId,
-          minFormatScore,
-          episodeTarget,
-          blocklisted,
-          item.type,
-          delayProfile,
-          identity,
-          item.id,
-          {
-            clients: usable,
-            upgradeFromRank: upgradeFrom === undefined ? null : qualityRank(upgradeFrom),
-            name,
-            indexers: ctx.indexers,
-            label: item.title,
-          }
-        ),
+      (remaining) => choose(remaining, delayProfile),
       (client, chosen) => grab(client, item, episodeId, subItemId, chosen)
     );
   } catch (err) {
     if (!noteUnavailableClient(err, ctx.unavailable)) throw err;
     return { grabbed: false, error: (err as Error).message };
   }
-  if (!outcome) return { grabbed: false, error: whyNothingGrabbed(searchResults, ctx.clients, usable, upgradeFrom, ctx.unavailable) };
+  if (!outcome) {
+    // Nothing fit to grab counts against the target only in the scheduler's own runs, and only when an indexer answered.
+    if (ctx.automatic) {
+      const verdict = await noGrabVerdict({
+        searched: searchResults,
+        candidates: searchResults,
+        indexers: ctx.indexers,
+        type: item.type,
+        usable,
+        cutoff,
+        delayProfile,
+        choose,
+      });
+      await recordAutoSearchResult(leafTable, leafId, verdict);
+    }
+    return { grabbed: false, error: whyNothingGrabbed(searchResults, ctx.clients, usable, upgradeFrom, ctx.unavailable) };
+  }
   if (!outcome.grabbed) return { grabbed: false, error: "Already queued" };
+  await recordLeafOutcome(leafTable, leafId, true);
   ctx.directBudget.consume(outcome.client);
   return { grabbed: true };
 }
@@ -1912,7 +2266,7 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
  * of targets and run on demand — backs the Library/Missing pages' "bulk search" action. Ignores
  * `monitored`/`hasFile` on the target itself (the caller already chose specifically what to search
  * for), except that a target with a file only ever takes an upgrade. */
-export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise<BulkSearchResult[]> {
+export async function searchAndGrabTargets(targets: BulkSearchTarget[], opts: { automatic?: boolean } = {}): Promise<BulkSearchResult[]> {
   const clients = await rowsToDownloadClients();
   const ctx: BulkSearchContext = {
     indexers: await rowsToIndexers(),
@@ -1920,9 +2274,24 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
     delayProfiles: await loadDelayProfiles(),
     directBudget: await directDownloadBudget(clients),
     unavailable: new Map(),
+    automatic: opts.automatic,
   };
   const results: BulkSearchResult[] = [];
   let childSearchesLeft = MAX_EXPANDED_CHILD_SEARCHES;
+
+  // Episodes of one season among the explicit targets (the Missing page's selection, the
+  // auto-upgrade job's candidates) are looked for as a pack first, as the auto search does.
+  const episodesByShow = new Map<number, number[]>();
+  for (const t of targets) if (t.episodeId) episodesByShow.set(t.mediaItemId, [...(episodesByShow.get(t.mediaItemId) ?? []), t.episodeId]);
+  for (const [mediaItemId, episodeIds] of episodesByShow) {
+    if (episodeIds.length < 2) continue;
+    try {
+      const itemRow = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId)) as any;
+      if (itemRow) await searchSeasonsFirst(mediaItemFromRow(itemRow) as MediaItem, episodeIds, ctx);
+    } catch (err) {
+      log.warn("[scheduler] season search for the selected episodes failed:", (err as Error).message);
+    }
+  }
 
   for (const t of targets) {
     try {
@@ -1952,6 +2321,21 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[]): Promise
       let grabbedCount = 0;
       let notReached = 0;
       const problems = new Set<string>();
+      // A show's wanted episodes are looked for as packs, season by season, before one by one:
+      // each search is counted as a search, a pack grabbed as a grab, and the episodes it covers are not searched again.
+      const seasons = await searchSeasonsFirst(
+        item,
+        children.flatMap((c) => (c.episodeId ? [c.episodeId] : [])),
+        ctx
+      );
+      childSearchesLeft -= seasons.searches;
+      searchedCount += seasons.searches;
+      grabbedCount += seasons.grabbed;
+      if (seasons.grabbed > 0) {
+        for (let i = children.length - 1; i >= 0; i--) {
+          if (await isAlreadyQueued(item.id, children[i].episodeId ?? null, children[i].subItemId ?? null)) children.splice(i, 1);
+        }
+      }
       for (const child of children) {
         // A season pack grabbed for an earlier episode covers its siblings: searching them anyway
         // spends indexer queries (and query limits) on grabs that are then refused as queued.
@@ -2025,7 +2409,23 @@ export async function runAutoUpgrade(): Promise<void> {
     });
   }
   if (targets.length === 0) return;
-  const results = await searchAndGrabTargets(targets);
+  // The same limits as the auto search: not those a few searches in a row found nothing for, the
+  // longest unsearched first, and no more than a cycle's worth.
+  const state = new Map<BulkSearchTarget, string>();
+  const due: BulkSearchTarget[] = [];
+  for (const t of targets) {
+    const table = t.episodeId ? "episodes" : t.subItemId ? "sub_items" : "media_items";
+    const row = (await db
+      .prepare(`SELECT last_auto_searched_at, auto_search_misses, ${t.episodeId ? "air_date" : "release_date"} AS reference FROM ${table} WHERE id = ?`)
+      .get(t.episodeId ?? t.subItemId ?? t.mediaItemId)) as { last_auto_searched_at: string | null; auto_search_misses: number | null; reference: string | null } | undefined;
+    if (row && !leafDue(row, row.reference)) continue;
+    state.set(t, row?.last_auto_searched_at ?? "");
+    due.push(t);
+  }
+  const cap = config.autoSearchMaxPerCycle > 0 ? config.autoSearchMaxPerCycle : Infinity;
+  const batch = due.sort((a, b) => (state.get(a)! < state.get(b)! ? -1 : state.get(a)! > state.get(b)! ? 1 : 0)).slice(0, cap);
+  if (batch.length === 0) return;
+  const results = await searchAndGrabTargets(batch, { automatic: true });
   const grabbed = results.filter((r) => r.grabbed).length;
   if (grabbed > 0) log.info(`[scheduler] auto-upgrade: grabbed ${grabbed} of ${candidates.length} upgrade candidate(s)`);
 }
@@ -2272,6 +2672,7 @@ export async function retryFailedGrab(
     let identity: TargetIdentity | null = null;
     let name: TargetName | null = null;
     let seasonPack: number | null = null;
+    let releaseSeason: number | null = null;
     let seasonEpisodes: number[] | null = null;
     let plan: SearchPlan;
     if (match.episodeId) {
@@ -2296,7 +2697,9 @@ export async function retryFailedGrab(
       // the same episode(s) — a still-airing season often has no full pack to offer yet.
       const failed = parseReleaseTitle(match.title);
       if (!failed.isFullSeason && failed.episodeNumbers?.length) seasonEpisodes = failed.episodeNumbers;
-      plan = await seasonPlanFor(item, seasonPack, seasonEpisodes ? seasonEpisodes[0] : null);
+      // The queue row has the aired season; a replacement calls its season by the scene's number, as the failed release did.
+      releaseSeason = failed.seasonNumber ?? seasonPack;
+      plan = await seasonPlanFor(item, releaseSeason, seasonEpisodes ? seasonEpisodes[0] : null);
       // The season filter below only checks the season number: without the identity gate another
       // show's "S02.COMPLETE" would replace the failed pack.
       identity = targetIdentityOf(item);
@@ -2324,7 +2727,8 @@ export async function retryFailedGrab(
     }
 
     const indexers = await rowsToIndexers();
-    const searchResults = await searchAllIndexers(indexers, plan.query, item.type, false, plan.ids, searchHintsOf(plan));
+    // A retry is a search the RSS sync will not repeat: the plain feeds are looked through too.
+    const searchResults = await searchAllIndexers(indexers, plan.query, item.type, false, plan.ids, { ...searchHintsOf(plan), includeFeeds: true });
     // A season-search grab's replacement has to be a full pack of that same season (or cover the
     // same episodes): with no target, chooseBestResult would accept any release of the show, which
     // the importer can't place.
@@ -2333,7 +2737,7 @@ export async function retryFailedGrab(
         ? searchResults
         : searchResults.filter((r) => {
             const parsed = parseReleaseTitle(r.title);
-            if (parsed.seasonNumber !== seasonPack) return false;
+            if (parsed.seasonNumber !== releaseSeason) return false;
             const range = parsed.episodeRange;
             if (parsed.isFullSeason) return !range || (!!seasonEpisodes && seasonEpisodes.every((e) => e >= range[0] && e <= range[1]));
             return !!seasonEpisodes && seasonEpisodes.every((e) => parsed.episodeNumbers?.includes(e));
@@ -2357,7 +2761,7 @@ export async function retryFailedGrab(
           delayProfile,
           identity,
           item.id,
-          { clients, upgradeFromRank: onDisk === undefined ? null : qualityRank(onDisk), name, indexers, label: mediaTitle }
+          { clients, upgradeFromRank: onDisk === undefined ? null : qualityRank(onDisk), name, indexers, label: mediaTitle, pack: packContextFor(item, plan) }
         ),
       (client, chosen) =>
         grab(client, item, match.episodeId, match.subItemId, chosen, match.retryCount + (releaseAtFault ? 1 : 0), seasonPack, "retry")
@@ -2992,6 +3396,21 @@ export function startScheduler() {
     defaultSchedule: autoSearchSchedule,
     run: (signal) => runAutoSearch(signal),
   });
+
+  // What is new on the indexers (rssSync.ts): each one's newest releases, matched to what is wanted.
+  // Loaded when it runs: rssSync.ts takes its grab and search helpers from this file.
+  if (config.rssSyncIntervalMinutes > 0) {
+    registerJob({
+      key: "rssSync",
+      name: "RSS Sync",
+      scheduleType: "cron",
+      defaultSchedule: autoSearchCronSchedule(config.rssSyncIntervalMinutes),
+      run: async (signal) => {
+        const { runRssSync } = await import("./rssSync.js");
+        await runRssSync(signal);
+      },
+    });
+  }
 
   // Alternate titles for the identity gate (releaseAliases.ts): asks the provider once per item,
   // rate-limited; nightly for items added since, and once shortly after startup for the backlog.

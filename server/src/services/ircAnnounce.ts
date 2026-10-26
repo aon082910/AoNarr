@@ -13,6 +13,7 @@ import { computeAbsoluteEpisodeNumber } from "./importer.js";
 import { usesQualityTiers } from "./quality.js";
 import { aliasTitlesByItem, resolveReleaseItemInLibrary } from "./releaseAliases.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
+import { wakeLeaf } from "./searchBackoff.js";
 import type { DownloadClient, SearchResult } from "../types/index.js";
 
 export interface IrcFeedRow {
@@ -221,6 +222,8 @@ async function tryGrabMatch(
 
   if (await delayProfileHoldsBack(item.id, feed.protocol, quality, tiered ? profile?.cutoff ?? null : null)) {
     log.info(`[irc:${feed.name}] not grabbing "${releaseTitle}" for "${item.title}": held back by its delay profile`);
+    // The scheduled search grabs it once it has aged, so the target must be due for one at the next cycle.
+    await wakeLeaf(episodeId ? "episodes" : subItemId ? "sub_items" : "media_items", episodeId ?? subItemId ?? item.id);
     return false;
   }
 

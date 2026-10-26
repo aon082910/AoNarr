@@ -4,6 +4,7 @@ import { getSetting } from "./settingsStore.js";
 import { log } from "./logger.js";
 import { encryptValue } from "./encryption.js";
 import { indexerApiError } from "./indexerClient.js";
+import { resetSearchBackoff } from "./searchBackoff.js";
 import { disableUnsyncedDuplicates, mediaTypesFromCategoryIds, parseIndexerConfig, syncedMediaTypes, withSyncFields } from "./prowlarrSync.js";
 
 interface JackettIndexer {
@@ -69,6 +70,8 @@ export async function syncFromJackett(): Promise<{ synced: number; error?: strin
   }
 
   let synced = 0;
+  // A new indexer, or one that now covers other media types, can find what the others could not.
+  let reach = false;
   for (const idx of indexers) {
     try {
       const url = `${jackettUrl}/api/v2.0/indexers/${encodeURIComponent(idx.id)}/results/torznab`;
@@ -94,16 +97,19 @@ export async function syncFromJackett(): Promise<{ synced: number; error?: strin
           existing.id
         );
         await disableUnsyncedDuplicates({ id: existing.id, url, enabled: !!Number(existing.enabled) }, "jackettId", "jackettSync");
+        if (mediaTypes !== existing.media_types) reach = true;
       } else {
         await db
           .prepare("INSERT INTO indexers (name, protocol, url, api_key, media_types, enabled, config) VALUES (?, 'torznab', ?, ?, ?, 1, ?)")
           .run(idx.name, url, encryptedApiKey, mediaTypesFromCategoryIds(idx.categoryIds), JSON.stringify({ syncedMediaTypes: mediaTypesFromCategoryIds(idx.categoryIds), jackettId: idx.id }));
+        reach = true;
       }
       synced++;
     } catch (err) {
       log.warn(`[jackettSync] failed to sync indexer "${idx.name}":`, (err as Error).message);
     }
   }
+  if (reach) await resetSearchBackoff();
 
   return { synced };
 }

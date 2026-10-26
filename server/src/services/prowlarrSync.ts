@@ -3,6 +3,7 @@ import { getSetting } from "./settingsStore.js";
 import { log } from "./logger.js";
 import { encryptValue } from "./encryption.js";
 import { DEFAULT_INDEXER_MEDIA_TYPES } from "./indexerClient.js";
+import { resetSearchBackoff } from "./searchBackoff.js";
 import { mediaTypesForCategories } from "./indexerCategories.js";
 
 interface ProwlarrIndexer {
@@ -129,6 +130,8 @@ export async function syncFromProwlarr(): Promise<{ synced: number; error?: stri
   }
 
   let synced = 0;
+  // A new or newly enabled indexer, or one that now covers other media types, can find what the others could not.
+  let reach = false;
   for (const idx of indexers) {
     try {
       const protocol = idx.protocol === "usenet" ? "newznab" : "torznab";
@@ -163,6 +166,7 @@ export async function syncFromProwlarr(): Promise<{ synced: number; error?: stri
         }
         const enabled = mirrorEnabled ? prowlarrEnabled : !!Number(existing.enabled);
         await disableUnsyncedDuplicates({ id: existing.id, url, enabled }, "prowlarrId", "prowlarrSync");
+        if (mediaTypes !== existing.media_types || (mirrorEnabled && prowlarrEnabled && !Number(existing.enabled))) reach = true;
       } else {
         await db
           .prepare("INSERT INTO indexers (name, protocol, url, api_key, media_types, enabled, config) VALUES (?, ?, ?, ?, ?, ?, ?)")
@@ -175,12 +179,14 @@ export async function syncFromProwlarr(): Promise<{ synced: number; error?: stri
             prowlarrEnabled ? 1 : 0,
             JSON.stringify({ prowlarrEnabled, syncedMediaTypes: mediaTypesFromCategoryIds(categoryIds), prowlarrId: idx.id })
           );
+        reach = true;
       }
       synced++;
     } catch (err) {
       log.warn(`[prowlarrSync] failed to sync indexer "${idx.name}":`, (err as Error).message);
     }
   }
+  if (reach) await resetSearchBackoff();
 
   return { synced };
 }

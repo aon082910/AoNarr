@@ -8,6 +8,7 @@ import { getDownloadClientAdapter, testDownloadClientConnection } from "../servi
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { encryptValue } from "../services/encryption.js";
 import { notifyQueueChanged } from "../services/realtime.js";
+import { resetSearchBackoff } from "../services/searchBackoff.js";
 
 export const downloadClientsRouter = Router();
 downloadClientsRouter.use(requireAdmin);
@@ -61,6 +62,8 @@ downloadClientsRouter.post(
         downloadTypes: downloadTypes ? JSON.stringify(downloadTypes) : null,
       });
     const row = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(result.lastInsertRowid);
+    // A client for a new protocol makes releases grabbable that no search could use until now.
+    await resetSearchBackoff();
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "download_client_added", `${b.name} (${b.type})`);
     res.status(201).json(downloadClientFromRow(row));
@@ -116,6 +119,7 @@ downloadClientsRouter.patch(
     if (sets.length > 0) {
       values.push(req.params.id);
       await db.prepare(`UPDATE download_clients SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+      await resetSearchBackoff();
     }
     const row = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Download client not found");

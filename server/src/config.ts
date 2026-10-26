@@ -28,6 +28,9 @@ export const config = {
   // forever, with no limit at all.
   autoSearchMaxPerCycle: Number(process.env.AONARR_AUTO_SEARCH_MAX_PER_CYCLE ?? 500),
   queuePollIntervalSeconds: Number(process.env.AONARR_QUEUE_POLL_SECONDS ?? 20),
+  // How often the RSS sync (services/rssSync.ts) reads each indexer's list of newest releases, in
+  // minutes; 0 turns it off (and plain RSS indexers are then searched like any other again).
+  rssSyncIntervalMinutes: Number(process.env.AONARR_RSS_SYNC_INTERVAL_MINUTES ?? 15),
   // Baked in at image build time (see Dockerfile --build-arg) so the update checker can tell
   // "this running container" apart from "what's currently on Docker Hub" for the same tag.
   buildTime: process.env.AONARR_BUILD_TIME ?? null,

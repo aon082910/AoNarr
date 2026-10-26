@@ -132,6 +132,9 @@ searchRouter.get(
     let targetAbsoluteEpisode: number | null = null;
     let targetSceneIndex: SceneIndex | undefined;
     let targetAirDate: string | null = null;
+    /** The other plans a season search runs: a scene may have split one aired season into several. */
+    const furtherPlans: SearchPlan[] = [];
+    let sceneSeasons: Set<number> | null = null;
 
     const episodeId = req.query.episodeId as string | undefined;
     const subItemId = req.query.subItemId as string | undefined;
@@ -156,7 +159,16 @@ searchRouter.get(
       // Season-only (no specific episode) — surfaces full-season pack releases, which a
       // per-episode query wouldn't reliably match against.
       targetSeason = Number(seasonNumberParam);
-      plan = await seasonPlanFor(item, targetSeason);
+      // Every season number a release may call this season by: the scene's (TheXEM) where the show has one.
+      const rows = (await db
+        .prepare("SELECT DISTINCT scene_season_number FROM episodes WHERE media_item_id = ? AND season_number = ?")
+        .all(item.id, targetSeason)) as { scene_season_number: number | null }[];
+      // Sorted here, not by the database (which puts NULL first or last by driver): the lowest is the main query.
+      const scenes = Array.from(new Set(rows.map((r) => (r.scene_season_number == null ? targetSeason! : Number(r.scene_season_number))))).sort((a, b) => a - b);
+      if (scenes.length === 0) scenes.push(targetSeason);
+      sceneSeasons = new Set([targetSeason, ...scenes]);
+      plan = await seasonPlanFor(item, scenes[0]);
+      for (const scene of scenes.slice(1)) furtherPlans.push(await seasonPlanFor(item, scene));
       slskdQuery = plan.query;
     } else if (subItemId) {
       const sub = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId)) as any;
@@ -176,6 +188,18 @@ searchRouter.get(
       indexerFromRow
     );
     const rawResults = await searchAllIndexers(indexers as any, query, item.type as any, true, plan.ids, searchHintsOf(plan));
+    if (furtherPlans.length > 0) {
+      // The queries of a season a scene splits overlap (a pack named by both): a release is listed once.
+      const seen = new Set(rawResults.map((r) => `${r.indexerId ?? r.indexerName}:${r.downloadUrl || `${r.title}:${r.size}`}`));
+      for (const further of furtherPlans) {
+        for (const r of await searchAllIndexers(indexers as any, further.query, item.type as any, true, further.ids, searchHintsOf(further))) {
+          const key = `${r.indexerId ?? r.indexerName}:${r.downloadUrl || `${r.title}:${r.size}`}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          rawResults.push(r);
+        }
+      }
+    }
 
     // Soulseek has no Torznab-style indexer — a configured, enabled slskd client is queried
     // directly instead and its results merged in alongside the indexer ones. Music-shaped
@@ -222,7 +246,9 @@ searchRouter.get(
           : targetSeason !== null && targetEpisode !== null
             ? releaseMatchesEpisode(parsed, targetSeason, targetEpisode, targetSceneSeason, targetSceneEpisode, targetAbsoluteEpisode, targetSceneIndex)
             : targetSeason !== null
-              ? parsed.seasonNumber === targetSeason
+              ? sceneSeasons
+                ? parsed.seasonNumber != null && sceneSeasons.has(parsed.seasonNumber)
+                : parsed.seasonNumber === targetSeason
               : true;
       const verdict = identityTarget ? releaseIdentifiesTarget(r, parsed, identityTarget) : null;
       const size = knownReleaseSize(r.size);

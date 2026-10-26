@@ -48,6 +48,7 @@ export function mediaItemFromRow(row: any) {
     sizeBytes: row.size_bytes == null ? null : Number(row.size_bytes),
     studio: row.studio,
     lastAutoSearchedAt: row.last_auto_searched_at,
+    autoSearchMisses: row.auto_search_misses == null ? 0 : Number(row.auto_search_misses),
   };
 }
 

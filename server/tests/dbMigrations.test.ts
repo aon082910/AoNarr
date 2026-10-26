@@ -45,7 +45,13 @@ describe.skipIf(isPostgres)("SQLite: upgrading a database created by an older sc
     const legacySchema = schema
       .replace(`'${NEW_DEFAULT}'`, `'${OLD_SCHEMA_DEFAULT}'`)
       .replace(/(download_path TEXT),\r?\n[\s\S]*?grab_source TEXT\r?\n/, "$1\n")
-      .replace(/(exclude_genres TEXT,)\r?\n\s*root_folder_id INTEGER REFERENCES root_folders\(id\) ON DELETE SET NULL,\r?\n/, "$1\n");
+      .replace(/(exclude_genres TEXT,)\r?\n\s*root_folder_id INTEGER REFERENCES root_folders\(id\) ON DELETE SET NULL,\r?\n/, "$1\n")
+      // ...and from before the search backoff and the RSS sync kept their state.
+      .replace(/^[ \t]*auto_search_misses INTEGER NOT NULL DEFAULT 0,[^\n]*\n/gm, "")
+      .replace(/CREATE TABLE IF NOT EXISTS (season_searches|rss_sync_state) \([^;]*\);/g, "");
+    expect(legacySchema).not.toContain("auto_search_misses");
+    expect(legacySchema).not.toContain("season_searches");
+    expect(legacySchema).not.toContain("rss_sync_state");
     expect(legacySchema).not.toContain("import_started_at");
     expect(legacySchema).not.toContain("grab_source"); // match_type is also an FTS column, so it can't be the sentinel
     expect(legacySchema.match(/CREATE TABLE IF NOT EXISTS import_lists \([^;]*\);/)?.[0]).not.toContain("root_folder_id");
@@ -161,6 +167,16 @@ describe.skipIf(isPostgres)("SQLite: upgrading a database created by an older sc
     const cols = (sqlite.prepare("PRAGMA table_info(irc_feeds)").all() as { name: string }[]).map((c) => c.name);
     expect(cols).toContain("announcers");
     expect(sqlite.prepare("SELECT announcers FROM irc_feeds WHERE name = 'Old Feed'").get()).toEqual({ announcers: null });
+  });
+
+  it("adds the search backoff columns and the state tables, leaving every existing row not backed off", () => {
+    for (const table of ["media_items", "episodes", "sub_items"]) {
+      const cols = (sqlite.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+      expect(cols).toContain("auto_search_misses");
+    }
+    expect(sqlite.prepare("SELECT auto_search_misses FROM media_items WHERE title = 'Old Movie'").get()).toEqual({ auto_search_misses: 0 });
+    const tables = (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((t) => t.name);
+    expect(tables).toEqual(expect.arrayContaining(["season_searches", "rss_sync_state"]));
   });
 
   describe("missing root folder backfill", () => {
@@ -291,6 +307,29 @@ describe.runIf(isPostgres)("Postgres: upgrading columns created by an older sche
     await db.prepare("UPDATE import_lists SET root_folder_id = ? WHERE id = ?").run(folder, listId);
     await db.prepare("DELETE FROM root_folders WHERE id = ?").run(folder);
     expect(await db.prepare("SELECT root_folder_id FROM import_lists WHERE id = ?").get(listId)).toEqual({ root_folder_id: null });
+  });
+
+  it("adds the search backoff columns and state tables to a database created before them", async () => {
+    const { migratePostgresSchema } = await import("../src/db/postgresSchema.js");
+    const columnsOf = async (table: string) =>
+      ((await db
+        .prepare("SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ?")
+        .all(table)) as { column_name: string }[]).map((c) => c.column_name);
+    const tableExists = async (table: string) =>
+      !!(await db.prepare("SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?").get(table));
+    const itemId = (await db.prepare("INSERT INTO media_items (type, title, sort_title) VALUES ('movie', 'Backed Off', 'backed off')").run()).lastInsertRowid;
+    await db.exec(
+      "ALTER TABLE media_items DROP COLUMN auto_search_misses; ALTER TABLE episodes DROP COLUMN auto_search_misses; ALTER TABLE sub_items DROP COLUMN auto_search_misses; DROP TABLE season_searches; DROP TABLE rss_sync_state"
+    );
+    expect(await columnsOf("episodes")).not.toContain("auto_search_misses");
+    expect(await tableExists("season_searches")).toBe(false);
+
+    await migratePostgresSchema(db);
+
+    for (const table of ["media_items", "episodes", "sub_items"]) expect(await columnsOf(table)).toContain("auto_search_misses");
+    expect(await db.prepare("SELECT auto_search_misses FROM media_items WHERE id = ?").get(itemId)).toEqual({ auto_search_misses: 0 });
+    expect(await tableExists("season_searches")).toBe(true);
+    expect(await tableExists("rss_sync_state")).toBe(true);
   });
 
   it("fills a missing item's root folder at startup only when its type has exactly one", async () => {

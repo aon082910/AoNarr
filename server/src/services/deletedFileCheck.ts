@@ -186,7 +186,7 @@ export async function checkForDeletedFiles(): Promise<{ checked: number; missing
     if (fs.existsSync(row.path) || isOffline(row.path)) continue;
     const result = await db
       .prepare(
-        `UPDATE media_items SET has_file = 0, path = NULL, size_bytes = NULL, media_info = NULL${unmonitor ? ", monitored = 0" : ""} WHERE id = ? AND path = ?`
+        `UPDATE media_items SET has_file = 0, path = NULL, size_bytes = NULL, media_info = NULL, auto_search_misses = 0${unmonitor ? ", monitored = 0" : ""} WHERE id = ? AND path = ?`
       )
       .run(row.id, row.path);
     if (result.changes > 0) missing++;
@@ -200,7 +200,7 @@ export async function checkForDeletedFiles(): Promise<{ checked: number; missing
     if (fs.existsSync(row.file_path) || isOffline(row.file_path)) continue;
     const result = await db
       .prepare(
-        `UPDATE episodes SET has_file = 0, file_path = NULL, size_bytes = NULL, media_info = NULL${unmonitor ? ", monitored = 0" : ""} WHERE id = ? AND file_path = ?`
+        `UPDATE episodes SET has_file = 0, file_path = NULL, size_bytes = NULL, media_info = NULL, auto_search_misses = 0${unmonitor ? ", monitored = 0" : ""} WHERE id = ? AND file_path = ?`
       )
       .run(row.id, row.file_path);
     if (result.changes > 0) missing++;
@@ -214,7 +214,7 @@ export async function checkForDeletedFiles(): Promise<{ checked: number; missing
     if (fs.existsSync(row.file_path) || isOffline(row.file_path)) continue;
     const result = await db
       .prepare(
-        `UPDATE sub_items SET has_file = 0, file_path = NULL, size_bytes = NULL, media_info = NULL${unmonitor ? ", monitored = 0" : ""} WHERE id = ? AND file_path = ?`
+        `UPDATE sub_items SET has_file = 0, file_path = NULL, size_bytes = NULL, media_info = NULL, auto_search_misses = 0${unmonitor ? ", monitored = 0" : ""} WHERE id = ? AND file_path = ?`
       )
       .run(row.id, row.file_path);
     if (result.changes > 0) missing++;

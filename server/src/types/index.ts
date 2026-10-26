@@ -39,6 +39,8 @@ export interface MediaItem {
   /** Single-shape items only (movies/ROMs/adult) — when runAutoSearch last actually searched this
    * item, null if never. See scheduler.ts's per-cycle cap and oldest-searched-first ordering. */
   lastAutoSearchedAt?: string | null;
+  /** Automatic searches in a row that grabbed nothing for this item (single-shape items only) — see services/searchBackoff.ts. */
+  autoSearchMisses?: number;
 }
 
 export interface Episode {
