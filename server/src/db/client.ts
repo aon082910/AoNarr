@@ -90,6 +90,8 @@ ensureColumn("episodes", "scene_season_number", "scene_season_number INTEGER");
 ensureColumn("episodes", "scene_episode_number", "scene_episode_number INTEGER");
 ensureColumn("indexers", "query_limit_per_hour", "query_limit_per_hour INTEGER");
 ensureColumn("episodes", "absolute_episode_number", "absolute_episode_number INTEGER");
+ensureColumn("episodes", "scene_absolute_number", "scene_absolute_number INTEGER");
+ensureColumn("episodes", "scene_unverified", "scene_unverified INTEGER NOT NULL DEFAULT 0");
 ensureColumn("root_folders", "min_free_space_gb", "min_free_space_gb INTEGER");
 ensureColumn("import_lists", "require_review", "require_review INTEGER NOT NULL DEFAULT 0");
 ensureColumn("root_folders", "name", "name TEXT");

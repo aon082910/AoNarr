@@ -105,6 +105,51 @@ describe("syncSceneNumbering", () => {
     expect(await sceneNumbers(showId, 5, 1)).toEqual({ scene_season_number: 1, scene_episode_number: 1 });
   });
 
+  it("stores the scene's running number and uses it as the episode's absolute number (Round 12, I10)", async () => {
+    const { syncSceneNumbering } = await import("../src/services/sceneNumbering.js");
+    const { computeAbsoluteEpisodeNumber } = await import("../src/services/importer.js");
+    const showId = await insertSeries("anime", "Scene Absolute Show", { tvdb: "117" });
+    await insertEpisode(showId, 1, 1);
+    await insertEpisode(showId, 1, 2);
+    mockXemResponse({
+      result: "success",
+      data: [{ scene: { season: 2, episode: 1, absolute: 26 }, tvdb: { season: 1, episode: 1 } }],
+    });
+
+    expect(await syncSceneNumbering(showId)).toEqual({ updated: 1 });
+    const row = (await db.prepare("SELECT scene_absolute_number FROM episodes WHERE media_item_id = ? AND season_number = 1 AND episode_number = 1").get(showId)) as any;
+    expect(Number(row.scene_absolute_number)).toBe(26);
+    expect(await computeAbsoluteEpisodeNumber(showId, 1, 1)).toBe(26);
+    // An episode TheXEM does not map is still counted.
+    expect(await computeAbsoluteEpisodeNumber(showId, 1, 2)).toBe(2);
+    // A later list that drops the number clears it.
+    mockXemResponse({ result: "success", data: [{ scene: { season: 2, episode: 1 }, tvdb: { season: 1, episode: 1 } }] });
+    await syncSceneNumbering(showId);
+    expect(await computeAbsoluteEpisodeNumber(showId, 1, 1)).toBe(1);
+  });
+
+  it("marks the numbers carried forward past the last mapping as unverified, and clears the mark when TheXEM lists them", async () => {
+    const { syncSceneNumbering } = await import("../src/services/sceneNumbering.js");
+    const showId = await insertSeries("series", "Carried Show", { tvdb: "118" });
+    for (const [e, air] of [[26, "2024-01-01"], [27, "2024-02-01"]] as const) {
+      await db.prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, monitored, has_file, air_date) VALUES (?, 1, ?, 1, 0, ?)").run(showId, e, air);
+    }
+    mockXemResponse({ result: "success", data: [{ scene: { season: 2, episode: 13 }, tvdb: { season: 1, episode: 26 } }] });
+    await syncSceneNumbering(showId);
+    const flag = async (e: number) => Number(((await db.prepare("SELECT scene_unverified FROM episodes WHERE media_item_id = ? AND episode_number = ?").get(showId, e)) as any).scene_unverified);
+    expect([await flag(26), await flag(27)]).toEqual([0, 1]);
+    expect(await sceneNumbers(showId, 1, 27)).toEqual({ scene_season_number: 2, scene_episode_number: 14 });
+    mockXemResponse({
+      result: "success",
+      data: [
+        { scene: { season: 2, episode: 13 }, tvdb: { season: 1, episode: 26 } },
+        { scene: { season: 2, episode: 14 }, tvdb: { season: 1, episode: 27 } },
+      ],
+    });
+    await syncSceneNumbering(showId);
+    expect([await flag(26), await flag(27)]).toEqual([0, 0]);
+  });
+
   it("falls back to scene_2 when a primary scene mapping isn't present", async () => {
     const { syncSceneNumbering } = await import("../src/services/sceneNumbering.js");
     const showId = await insertSeries("anime", "Scene2 Show", { tvdb: "115" });
