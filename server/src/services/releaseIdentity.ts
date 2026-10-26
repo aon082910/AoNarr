@@ -68,12 +68,11 @@ export interface IdentityRelease {
  * appear, as whole words, inside the release's title. Every other type needs the title itself. */
 const CONTAINMENT_TYPES = new Set(["sports", "ppv", "course", "adult", "video"]);
 
-/** Types the bare `strictReleaseIdentity` setting never takes past `log`: the containment types'
- * corpus is still being gathered, and anime's episode numbering is not modelled yet (each AniList
- * season is its own item numbered from 1, so the gate cannot tell a sequel's episode 5 from the
- * first season's; MATCHING_ACCURACY_PLAN.md Round 12). An explicit `strictReleaseIdentity.<type>`
- * still enforces. */
-const LOG_CAPPED_TYPES = new Set([...CONTAINMENT_TYPES, "anime"]);
+/** Types the bare `strictReleaseIdentity` setting never takes past `log`. Empty since the owner chose
+ * `enforce` for every type (2026-10-26): the containment types' corpus and anime's numbering (Round 12
+ * models AniList seasons) are no longer held back. Add a type here to cap it again; an explicit
+ * `strictReleaseIdentity.<type>` setting always wins. */
+const LOG_CAPPED_TYPES = new Set<string>();
 
 /** Match types from the strongest evidence to the weakest. Library-wide resolution keeps only the
  * best rank among the items a release names (Sonarr tries the exact clean title before any looser
@@ -88,8 +87,11 @@ export const IDENTITY_RANK: Record<IdentityMatchType, number> = {
   none: 6,
 };
 
-const DEFAULT_MODE: IdentityMode = "log";
 const MODES = new Set<string>(["off", "log", "enforce"]);
+/** What a type with no setting does: `enforce` (the owner's choice, 2026-10-26). The environment variable
+ * AONARR_STRICT_IDENTITY_DEFAULT (off|log|enforce) changes it without a settings row, and the test config sets
+ * it to `log` so suites that hand the gate arbitrary release names are not refused. */
+const defaultMode = (): IdentityMode => modeOrNull(process.env.AONARR_STRICT_IDENTITY_DEFAULT ?? null) ?? "enforce";
 
 function modeOrNull(raw: string | null): IdentityMode | null {
   const value = raw?.trim().toLowerCase() ?? "";
@@ -97,12 +99,12 @@ function modeOrNull(raw: string | null): IdentityMode | null {
 }
 
 /** The gate's mode for a media type: settings key `strictReleaseIdentity.<type>`, else the bare
- * `strictReleaseIdentity` default for every type, else `log`. An empty or unrecognised value at
+ * `strictReleaseIdentity` default for every type, else `enforce`. An empty or unrecognised value at
  * either level counts as unset (the settings API stores "" to clear a key). */
 export function identityModeFor(type: string): IdentityMode {
   const perType = modeOrNull(getSetting(`strictReleaseIdentity.${type}`));
   if (perType) return perType;
-  const global = modeOrNull(getSetting("strictReleaseIdentity")) ?? DEFAULT_MODE;
+  const global = modeOrNull(getSetting("strictReleaseIdentity")) ?? defaultMode();
   return global === "enforce" && LOG_CAPPED_TYPES.has(type) ? "log" : global;
 }
 
