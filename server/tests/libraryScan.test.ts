@@ -559,6 +559,32 @@ describe("scanAndImportLibrary — series (episodic shape)", () => {
     expect(((await db.prepare("SELECT COUNT(*) AS n FROM media_items WHERE type = 'anime'").get()) as any).n).toBe(1);
   });
 
+  it("counts the episodes for a file whose episode has no stored absolute number (a Refresh added it)", async () => {
+    const folder = await insertRootFolder("anime");
+    const showId = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, year, monitored, has_file, status) VALUES ('anime','Late Added Show','late added show',2020,1,0,'missing')`).run())
+        .lastInsertRowid
+    );
+    const insertEp = async (episode: number, absolute: number | null) =>
+      Number(
+        (
+          await db
+            .prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, absolute_episode_number, monitored, has_file) VALUES (?, 1, ?, ?, 1, 0)")
+            .run(showId, episode, absolute)
+        ).lastInsertRowid
+      );
+    await insertEp(1, 1);
+    await insertEp(2, 2);
+    await insertEp(3, null);
+    const ep4 = await insertEp(4, null);
+    const filePath = writeFile(path.join(folder.path, "Late Added Show"), "[SubsPlease] Late Added Show - 04 (1080p) [ABCD1236].mkv");
+
+    const result = await scanAndImportLibrary("anime");
+
+    expect(result).toMatchObject({ matched: 1 });
+    expect((await db.prepare("SELECT * FROM episodes WHERE id = ?").get(ep4)) as any).toMatchObject({ has_file: 1, file_path: filePath });
+  });
+
   it("won't put an absolute-numbered file in a season folder whose season is not where that number falls", async () => {
     const folder = await insertRootFolder("anime");
     const showId = Number((await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('anime','Some Show','some show',1,0,'missing')`).run()).lastInsertRowid);

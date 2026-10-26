@@ -289,7 +289,17 @@ async function episodeFromList(mediaItemId: number, parsed: ParsedRelease): Prom
           .all(mediaItemId, parsed.absoluteEpisode)
       : []
   ) as { season_number: number; episode_number: number }[];
-  return rows.length === 1 ? { season: rows[0].season_number, episode: rows[0].episode_number } : null;
+  if (rows.length === 1) return { season: rows[0].season_number, episode: rows[0].episode_number };
+  // Only an episode some code path numbered has the stored column (the grab, IRC and import paths count
+  // the rows instead): with none stored, the Nth regular episode in order is the one, as computeAbsoluteEpisodeNumber counts.
+  if (!parsed.airDate && parsed.absoluteEpisode != null && rows.length === 0) {
+    const nth = (await db
+      .prepare("SELECT season_number, episode_number, absolute_episode_number FROM episodes WHERE media_item_id = ? AND season_number > 0 ORDER BY season_number, episode_number LIMIT 1 OFFSET ?")
+      .get(mediaItemId, parsed.absoluteEpisode - 1)) as { season_number: number; episode_number: number; absolute_episode_number: number | null } | undefined;
+    // An episode that carries its own stored number is found by it above; one with none is the Nth by count.
+    if (nth && nth.absolute_episode_number == null) return { season: nth.season_number, episode: nth.episode_number };
+  }
+  return null;
 }
 
 /** Walks up from a file's own directory to the direct child of its library root — the folder that
