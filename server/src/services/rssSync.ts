@@ -26,7 +26,6 @@ import {
   grab,
   grabBestRelease,
   isAlreadyQueued,
-  isBelowCutoff,
   isHeldByDelay,
   isReleaseAvailableForSearch,
   loadDelayProfiles,
@@ -100,18 +99,15 @@ async function loadWanted(upgrades: boolean): Promise<Wanted> {
   const items = ((await db.prepare("SELECT * FROM media_items WHERE monitored = 1").all()) as any[])
     .map(mediaItemFromRow)
     .filter((item) => usesQualityTiers(item.type)) as MediaItem[];
-  const cutoffs = new Map<number | null, string>();
-  const cutoffOf = async (item: MediaItem) => {
-    if (!cutoffs.has(item.qualityProfileId)) cutoffs.set(item.qualityProfileId, (await getQualityProfile(item.qualityProfileId))?.cutoff ?? "");
-    return cutoffs.get(item.qualityProfileId)!;
-  };
 
   const showsById = new Map<number, MediaItem>();
   for (const item of items) {
     const shape = getMediaTypeConfig(item.type).shape;
     if (shape === "single") {
       const missing = !item.hasFile && isReleaseAvailableForSearch(item);
-      if (missing || (upgrades && item.hasFile && isBelowCutoff(item.quality ?? null, await cutoffOf(item)))) {
+      // With upgrades on a film that has its file stays wanted: a later revision of the file's own release, or a
+      // release adding custom-format score, can still replace it even at the cutoff (decide() judges that).
+      if (missing || (upgrades && item.hasFile)) {
         wanted.singles.push(item);
         wanted.types.add(item.type);
       }
@@ -131,7 +127,6 @@ async function loadWanted(upgrades: boolean): Promise<Wanted> {
     for (const row of rows) {
       const show = showsById.get(row.media_item_id);
       if (!show) continue;
-      if (Number(row.has_file) && !isBelowCutoff(row.quality ?? null, await cutoffOf(show))) continue;
       let frontier: Map<number, number> | undefined;
       if (!row.air_date) {
         if (!frontiers.has(show.id)) frontiers.set(show.id, await airedFrontierFor(show.id, today));
