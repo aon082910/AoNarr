@@ -42,6 +42,7 @@ import {
 import { looseTitlesMatch, normalizeForMatch, pickVerifiedProviderHit, sameTitleIgnoringQualifier, titlesMatch } from "./titleMatch.js";
 import { syncPrimaryTitle } from "./releaseAliases.js";
 import { refreshProviderAliases } from "./aliasBackfill.js";
+import { applyAnilistSeasonToEpisodes } from "./anilistSeasons.js";
 export { normalizeForMatch, pickVerifiedProviderHit, sameTitleIgnoringQualifier, titlesMatch };
 
 /** What a file's guessed title and year say about a type's existing items: the one it belongs to, the
@@ -2458,6 +2459,8 @@ export async function mergeEpisodesIntoItem(
   if (onlyRecentOnceTracked && added > 0) {
     log.info(`[libraryScan] media item ${mediaItemId}: added ${added} episode(s) from its provider, ${monitoredAdded} of them monitored`);
   }
+  // A sequel's new rows are numbered like its older ones (anilistSeasons.ts): offline, and a no-op for any other show.
+  if (added > 0) await applyAnilistSeasonToEpisodes(mediaItemId).catch(() => 0);
   return added;
 }
 

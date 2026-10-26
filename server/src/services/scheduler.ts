@@ -38,6 +38,7 @@ import {
   type SearchPlan,
 } from "./searchPlan.js";
 import { backfillProviderAliases } from "./aliasBackfill.js";
+import { backfillAnilistSeasons } from "./anilistSeasons.js";
 import {
   knownReleaseSize,
   pickBestAllowedQuality,
@@ -3556,6 +3557,21 @@ export function startScheduler() {
   setTimeout(() => {
     runJobNow("aliasBackfill");
   }, 2 * 60_000).unref();
+
+  // Which season of its show each AniList anime is (anilistSeasons.ts): read once per entry, nightly for
+  // entries added since and once shortly after startup for the backlog.
+  registerJob({
+    key: "anilistSeasons",
+    name: "Anime Seasons",
+    scheduleType: "cron",
+    defaultSchedule: "40 4 * * *",
+    run: async (signal) => {
+      await backfillAnilistSeasons(signal);
+    },
+  });
+  setTimeout(() => {
+    runJobNow("anilistSeasons");
+  }, 4 * 60_000).unref();
 
   // Awaited by every poll (a manual "run now" included), so none starts before it's done.
   const interruptedImportsHandedBack = resumeInterruptedImports().catch((err) =>

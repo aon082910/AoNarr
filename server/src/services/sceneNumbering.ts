@@ -3,6 +3,7 @@ import { log } from "./logger.js";
 import { typeKeysByShape } from "./mediaTypes.js";
 import { getSetting } from "./settingsStore.js";
 import type { SceneIndex } from "./releaseParser.js";
+import { seasonContextOf } from "./anilistSeasons.js";
 
 interface XemEntry {
   scene?: { season: number; episode: number };
@@ -26,7 +27,15 @@ export async function sceneIndexFor(mediaItemId: number): Promise<SceneIndex | u
     )
     .all(mediaItemId)) as { season_number: number; episode_number: number; scene_season_number: number; scene_episode_number: number }[];
   if (rows.length === 0) return undefined;
-  return new Map(rows.map((r) => [`${r.scene_season_number}:${r.scene_episode_number}`, `${r.season_number}:${r.episode_number}`]));
+  const index = new Map(rows.map((r) => [`${r.scene_season_number}:${r.scene_episode_number}`, `${r.season_number}:${r.episode_number}`]));
+  // A sequel's rows (AniList lists each season as its own entry, anilistSeasons.ts) are numbered season 1 by
+  // the provider and season N by the scene. Season 1's own numbering names another entry's episodes, never
+  // these: "Show.S01E05" is not the sequel's fifth episode, so the aired numbers count for none of its rows.
+  const item = (await db.prepare("SELECT extra_metadata FROM media_items WHERE id = ?").get(mediaItemId)) as { extra_metadata: string | null } | undefined;
+  if ((seasonContextOf(item?.extra_metadata)?.ordinal ?? 1) > 1) {
+    for (const r of rows) index.set(`${r.season_number}:${r.episode_number}`, "anilist-season:0");
+  }
+  return index;
 }
 
 interface EpisodeRow {

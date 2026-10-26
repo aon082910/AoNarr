@@ -1123,7 +1123,7 @@ export function releaseMatchesEpisode(
     // A pack names a season, and an episode that has scene numbers is in its scene season: "Show.S01" holds
     // the scene's S01 episodes only, not the aired S01E05 that the scene calls S02E01 (Sonarr's
     // GetEpisodesBySceneSeason). The aired season is not tried.
-    if (parsed.isFullSeason && !parsed.episodeNumbers) return false;
+    if (parsed.isFullSeason && parsed.seasonNumber != null && !parsed.episodeNumbers) return false;
   }
   if (matchesSeasonEpisode(parsed, seasonNumber, episodeNumber)) {
     const aired = `${seasonNumber}:${episodeNumber}`;
