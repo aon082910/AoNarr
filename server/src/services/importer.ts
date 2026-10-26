@@ -2101,7 +2101,8 @@ const BARE_EPISODE = /^(?:e(?:p(?:isode)?)?[\s._-]*)?0*(\d{1,3})(?=$|[\s._\-)\]]
 
 /**
  * Maps each file of a season pack to this season's episode rows. A file's own SxxEyy / 1x01 (or an
- * E-marker under a "Season NN" folder) comes first; then an air date (a daily show's
+ * E-marker under a "Season NN" folder) comes first, read in the scene's numbering where the show has one
+ * (TheXEM: the pack's "S02E01" is the aired S01E05) and in the aired numbering otherwise; then an air date (a daily show's
  * "Show.2024.01.15"); then an anime batch's "Show - 13" — absolute numbering when every such file of
  * the pack falls in this season's absolute range, the season's own numbering when every one fits
  * that instead; then, directly inside a folder named for this season ("Show.S01.1080p"), a name
@@ -2109,7 +2110,7 @@ const BARE_EPISODE = /^(?:e(?:p(?:isode)?)?[\s._-]*)?0*(\d{1,3})(?=$|[\s._\-)\]]
  * so the pack never imported and its season stayed blocked. An episode two files map to goes to the
  * one matched the earlier way (then the first); the other stays in the download and counts as unmatched.
  */
-async function planSeasonPackFiles(
+export async function planSeasonPackFiles(
   files: string[],
   episodes: any[],
   itemId: number,
@@ -2117,6 +2118,11 @@ async function planSeasonPackFiles(
   itemTitle: string
 ): Promise<{ plans: { src: string; episodes: any[] }[]; unmatchedCount: number }> {
   const byNumber = new Map<number, any>(episodes.map((e) => [Number(e.episode_number), e]));
+  // The season's episodes by the scene's numbers, for a show TheXEM maps: scene numbering comes first.
+  const bySceneKey = new Map<string, any>();
+  for (const e of episodes) {
+    if (e.scene_season_number != null && e.scene_episode_number != null) bySceneKey.set(`${e.scene_season_number}:${e.scene_episode_number}`, e);
+  }
   // Numbered the way computeAbsoluteEpisodeNumber counts: every episode of the earlier seasons, specials excluded.
   const byAbsolute = new Map<number, any>();
   if (seasonNumber > 0) {
@@ -2130,7 +2136,7 @@ async function planSeasonPackFiles(
     [...episodes].sort((a, b) => Number(a.episode_number) - Number(b.episode_number)).forEach((e, i) => byAbsolute.set(before + i + 1, e));
   }
 
-  type ParsedFile = { src: string; rank: number; numbers?: number[]; otherSeason?: boolean; airDate?: string; absolute?: number; bare?: number };
+  type ParsedFile = { src: string; rank: number; numbers?: number[]; season?: number | null; otherSeason?: boolean; airDate?: string; absolute?: number; bare?: number };
   const parsedFiles: ParsedFile[] = files.map((src) => {
     const base = withoutVersionTag(path.basename(src, path.extname(src)));
     const folder = path.basename(path.dirname(src));
@@ -2138,9 +2144,11 @@ async function planSeasonPackFiles(
     // Another season's file (the next season's opener in a multi-season pack) is not placed, but it
     // is an episode file the download still holds, so it counts as unmatched and keeps the data.
     if (detected.episodes.length > 0) {
-      const foreignSeason = detected.season !== null && detected.season !== seasonNumber;
+      // A season that is the scene's name for some of this season's episodes is not another season's.
+      const sceneNamed = detected.season !== null && detected.episodes.some((n) => bySceneKey.has(`${detected.season}:${n}`));
+      const foreignSeason = detected.season !== null && detected.season !== seasonNumber && !sceneNamed;
       // Specials (S00) bundled into a pack are left in place without keeping the data, as before.
-      return { src, rank: 1, numbers: foreignSeason ? [] : detected.episodes, otherSeason: foreignSeason && detected.season! > 0 };
+      return { src, rank: 1, numbers: foreignSeason ? [] : detected.episodes, season: detected.season, otherSeason: foreignSeason && detected.season! > 0 };
     }
     const own = parseReleaseTitle(base);
     if (own.airDate) return { src, rank: 2, airDate: own.airDate };
@@ -2160,7 +2168,9 @@ async function planSeasonPackFiles(
     let targets: any[] = [];
     let isEpisodeFile = true;
     if (p.numbers) {
-      targets = p.numbers.map((n) => byNumber.get(n)).filter((e) => !!e);
+      targets = p.numbers
+        .map((n) => (p.season != null ? bySceneKey.get(`${p.season}:${n}`) : undefined) ?? (p.season == null || p.season === seasonNumber ? byNumber.get(n) : undefined))
+        .filter((e) => !!e);
       isEpisodeFile = p.numbers.length > 0 || !!p.otherSeason;
     } else if (p.airDate) {
       const sameDay = episodes.filter((e) => String(e.air_date ?? "").slice(0, 10) === p.airDate);

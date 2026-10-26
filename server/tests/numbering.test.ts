@@ -95,3 +95,35 @@ describe("a daily show's release may be numbered (Round 12, I17)", () => {
     expect(await choose("Late.Night.S2024E124.1080p.WEB-DL-GRP")).toBeNull();
   });
 });
+
+describe("a pack's files are placed by the scene's numbering first (Round 12, I9)", () => {
+  it("puts the scene's S02E01 on the aired S01E05, and leaves another season's file unmatched", async () => {
+    const { planSeasonPackFiles } = await import("../src/services/importer.js");
+    const ep = (n: number, scene: [number, number] | null) => ({
+      id: n,
+      episode_number: n,
+      season_number: 1,
+      scene_season_number: scene?.[0] ?? null,
+      scene_episode_number: scene?.[1] ?? null,
+      air_date: null,
+    });
+    const episodes = [ep(1, [1, 1]), ep(2, [1, 2]), ep(3, [1, 3]), ep(4, [1, 4]), ep(5, [2, 1]), ep(6, [2, 2])];
+    const plan = await planSeasonPackFiles(
+      ["/dl/Show.S01.1080p/Show.S01E02.mkv", "/dl/Show.S01.1080p/Show.S02E01.mkv", "/dl/Show.S01.1080p/Show.S02E02.mkv", "/dl/Show.S01.1080p/Show.S03E01.mkv"],
+      episodes,
+      1,
+      1,
+      "Show"
+    );
+    const placed = Object.fromEntries(plan.plans.map((p) => [p.src.split("/").pop(), p.episodes.map((e: any) => e.episode_number)]));
+    expect(placed).toEqual({ "Show.S01E02.mkv": [2], "Show.S02E01.mkv": [5], "Show.S02E02.mkv": [6] });
+    expect(plan.unmatchedCount).toBe(1);
+  });
+
+  it("keeps reading the aired numbers for a show with no scene numbering", async () => {
+    const { planSeasonPackFiles } = await import("../src/services/importer.js");
+    const episodes = [1, 2].map((n) => ({ id: n, episode_number: n, season_number: 1, scene_season_number: null, scene_episode_number: null, air_date: null }));
+    const plan = await planSeasonPackFiles(["/dl/Show.S01/Show.S01E02.mkv"], episodes, 1, 1, "Show");
+    expect(plan.plans.map((p) => p.episodes.map((e: any) => e.episode_number))).toEqual([[2]]);
+  });
+});
