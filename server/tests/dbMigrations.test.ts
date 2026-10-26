@@ -44,15 +44,25 @@ describe.skipIf(isPostgres)("SQLite: upgrading a database created by an older sc
     // Also from before queue rows recorded their imports and import lists had a root folder.
     const legacySchema = schema
       .replace(`'${NEW_DEFAULT}'`, `'${OLD_SCHEMA_DEFAULT}'`)
-      .replace(/(download_path TEXT),\r?\n[\s\S]*?grab_source TEXT\r?\n/, "$1\n")
+      .replace(/(download_path TEXT),\r?\n[\s\S]*?info_hash TEXT\r?\n/, "$1\n")
       .replace(/(exclude_genres TEXT,)\r?\n\s*root_folder_id INTEGER REFERENCES root_folders\(id\) ON DELETE SET NULL,\r?\n/, "$1\n")
       // ...and from before the search backoff and the RSS sync kept their state.
       .replace(/^[ \t]*auto_search_misses INTEGER NOT NULL DEFAULT 0,[^\n]*\n/gm, "")
-      .replace(/CREATE TABLE IF NOT EXISTS (season_searches|rss_sync_state) \([^;]*\);/g, "");
+      .replace(/CREATE TABLE IF NOT EXISTS (season_searches|rss_sync_state) \([^;]*\);/g, "")
+      // ...and from before Round 11's decision-engine columns and its held-release table.
+      .replace(/(order_index INTEGER NOT NULL DEFAULT 0),\r?\n\s*preferred_protocol[\s\S]*?minimum_bypass_format_score INTEGER NOT NULL DEFAULT 0\r?\n/, "$1\n")
+      .replace(/(max_size_gb REAL),\r?\n\s*prefer_cutoff_quality[^\n]*\r?\n/, "$1\n")
+      .replace(/^[ \t]*minimum_seeders INTEGER[^\n]*\n/m, "")
+      .replace(/(created_at TEXT NOT NULL DEFAULT \(datetime\('now'\)\)),\r?\n\s*protocol TEXT,[\s\S]*?info_hash TEXT\r?\n/, "$1\n")
+      .replace(/CREATE TABLE IF NOT EXISTS pending_releases \([^;]*\);/, "")
+      .replace(/CREATE INDEX IF NOT EXISTS idx_pending_releases_leaf[^;]*;/, "");
     expect(legacySchema).not.toContain("auto_search_misses");
     expect(legacySchema).not.toContain("season_searches");
     expect(legacySchema).not.toContain("rss_sync_state");
     expect(legacySchema).not.toContain("import_started_at");
+    for (const sentinel of ["preferred_protocol", "prefer_cutoff_quality", "minimum_seeders", "pending_releases", "bypass_if_above_format_score", "publish_date", "info_hash"]) {
+      expect(legacySchema, sentinel).not.toContain(sentinel);
+    }
     expect(legacySchema).not.toContain("grab_source"); // match_type is also an FTS column, so it can't be the sentinel
     expect(legacySchema.match(/CREATE TABLE IF NOT EXISTS import_lists \([^;]*\);/)?.[0]).not.toContain("root_folder_id");
     legacy.exec(legacySchema);
@@ -127,6 +137,19 @@ describe.skipIf(isPostgres)("SQLite: upgrading a database created by an older sc
     sqlite.prepare("DELETE FROM indexers WHERE id = 1").run();
     expect(sqlite.prepare("SELECT indexer_id FROM queue").get()).toEqual({ indexer_id: null });
     expect((sqlite.prepare("SELECT COUNT(*) AS c FROM indexer_health").get() as { c: number }).c).toBe(0);
+  });
+
+  it("adds the decision-engine columns and the held-release table to an older database, keeping its rows", () => {
+    const columns = (table: string) => (sqlite.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+    expect(columns("delay_profiles")).toEqual(expect.arrayContaining(["preferred_protocol", "bypass_if_above_format_score", "minimum_bypass_format_score"]));
+    expect(columns("quality_profiles")).toContain("prefer_cutoff_quality");
+    expect(columns("indexers")).toContain("minimum_seeders");
+    expect(columns("queue")).toEqual(expect.arrayContaining(["protocol", "publish_date", "info_hash"]));
+    expect(columns("blocklist")).toEqual(expect.arrayContaining(["protocol", "size", "publish_date", "info_hash"]));
+    expect(columns("pending_releases")).toContain("pending_key");
+    // The old blocklist row has no protocol, so it blocks by name as it always did.
+    expect(sqlite.prepare("SELECT release_title, protocol, info_hash FROM blocklist").get()).toEqual({ release_title: "Old.Movie.CAM", protocol: null, info_hash: null });
+    expect(sqlite.prepare("SELECT prefer_cutoff_quality FROM quality_profiles LIMIT 1").get()).toBeDefined();
   });
 
   it("runs only once, so a list an admin later sets to an old default's value is kept", () => {
