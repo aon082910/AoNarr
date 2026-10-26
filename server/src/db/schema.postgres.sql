@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS quality_profiles (
   allowed_qualities TEXT NOT NULL, -- JSON array, worst -> best
   cutoff TEXT NOT NULL,
   min_format_score INTEGER NOT NULL DEFAULT 0,
-  max_size_gb REAL
+  max_size_gb REAL,
+  prefer_cutoff_quality INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS media_items (
@@ -135,6 +136,7 @@ CREATE TABLE IF NOT EXISTS indexers (
   media_types TEXT NOT NULL DEFAULT 'movie,series,anime,sports,ppv,artist,author,audiobook,comic,manga,rom,course,adult',
   enabled INTEGER NOT NULL DEFAULT 1,
   priority INTEGER NOT NULL DEFAULT 25,
+  minimum_seeders INTEGER NOT NULL DEFAULT 0,
   config TEXT -- JSON blob, protocol-specific (e.g. DDL's JSON-field mapping); unused by torznab/newznab/rss
 );
 
@@ -312,7 +314,8 @@ CREATE TABLE IF NOT EXISTS delay_profiles (
   usenet_delay_minutes INTEGER NOT NULL DEFAULT 0,
   torrent_delay_minutes INTEGER NOT NULL DEFAULT 0,
   bypass_if_highest_quality INTEGER NOT NULL DEFAULT 0,
-  order_index INTEGER NOT NULL DEFAULT 0
+  order_index INTEGER NOT NULL DEFAULT 0,
+  preferred_protocol TEXT NOT NULL DEFAULT 'none'
 );
 
 -- User-defined release-title patterns (regex) that score releases up/down during grabbing,
@@ -579,7 +582,11 @@ CREATE TABLE IF NOT EXISTS blocklist (
   release_title TEXT NOT NULL,
   indexer_id INTEGER REFERENCES indexers(id) ON DELETE SET NULL,
   reason TEXT,
-  created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+  created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
+  protocol TEXT,
+  size BIGINT,
+  publish_date TEXT,
+  info_hash TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_blocklist_media_item_id ON blocklist(media_item_id);
 

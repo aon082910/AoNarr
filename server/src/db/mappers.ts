@@ -127,6 +127,7 @@ export function indexerFromRow(row: any) {
     mediaTypes: row.media_types,
     enabled: row.enabled,
     priority: row.priority,
+    minimumSeeders: row.minimum_seeders == null ? 0 : Number(row.minimum_seeders),
     config: row.config,
     useFlareSolverr: row.use_flaresolverr,
     queryLimitPerHour: row.query_limit_per_hour,
@@ -159,6 +160,7 @@ export function qualityProfileFromRow(row: any) {
     cutoff: row.cutoff,
     minFormatScore: row.min_format_score,
     maxSizeGb: row.max_size_gb,
+    preferCutoffQuality: row.prefer_cutoff_quality == null ? true : !!Number(row.prefer_cutoff_quality),
   };
 }
 
@@ -235,6 +237,7 @@ export function delayProfileFromRow(row: any) {
     usenetDelayMinutes: row.usenet_delay_minutes,
     torrentDelayMinutes: row.torrent_delay_minutes,
     bypassIfHighestQuality: !!row.bypass_if_highest_quality,
+    preferredProtocol: row.preferred_protocol === "usenet" || row.preferred_protocol === "torrent" ? row.preferred_protocol : "none",
     orderIndex: row.order_index,
   };
 }

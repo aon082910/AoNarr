@@ -8,6 +8,24 @@ import { resetSearchBackoff } from "../services/searchBackoff.js";
 export const qualityProfilesRouter = Router();
 qualityProfilesRouter.use(requireAdmin);
 
+/** A profile's allowed qualities must be a list of names, and its cutoff one of them: a cutoff outside
+ * the list can never be met, so the quality picker and every upgrade check read it wrongly. */
+function validateProfile(allowedQualities: unknown, cutoff: unknown): void {
+  if (!Array.isArray(allowedQualities) || allowedQualities.some((q) => typeof q !== "string" || q === "")) {
+    throw new HttpError(400, "allowedQualities must be a list of quality names");
+  }
+  if (typeof cutoff !== "string" || cutoff === "") throw new HttpError(400, "cutoff is required");
+  if (allowedQualities.length > 0 && !allowedQualities.includes(cutoff)) {
+    throw new HttpError(400, `The cutoff "${cutoff}" must be one of the allowed qualities`);
+  }
+}
+
+function formatScore(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isInteger(n)) throw new HttpError(400, "minFormatScore must be a whole number");
+  return n;
+}
+
 qualityProfilesRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
@@ -23,10 +41,18 @@ qualityProfilesRouter.post(
     if (!b.name || !Array.isArray(b.allowedQualities) || !b.cutoff) {
       throw new HttpError(400, "name, allowedQualities (array) and cutoff are required");
     }
+    validateProfile(b.allowedQualities, b.cutoff);
     const maxSizeGb = b.maxSizeGb === undefined || b.maxSizeGb === null || b.maxSizeGb === "" ? null : Number(b.maxSizeGb);
     const result = await db
-      .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff, max_size_gb) VALUES (?, ?, ?, ?)")
-      .run(b.name, JSON.stringify(b.allowedQualities), b.cutoff, maxSizeGb);
+      .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff, max_size_gb, min_format_score, prefer_cutoff_quality) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(
+        b.name,
+        JSON.stringify(b.allowedQualities),
+        b.cutoff,
+        maxSizeGb,
+        b.minFormatScore === undefined || b.minFormatScore === null ? 0 : formatScore(b.minFormatScore),
+        b.preferCutoffQuality === false ? 0 : 1
+      );
     const row = await db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(qualityProfileFromRow(row));
   })
@@ -38,6 +64,14 @@ qualityProfilesRouter.patch(
     const b = req.body ?? {};
     const sets: string[] = [];
     const values: any[] = [];
+    if (b.allowedQualities !== undefined || b.cutoff !== undefined) {
+      // Judged as the profile will read after the change.
+      const existing = (await db.prepare("SELECT allowed_qualities, cutoff FROM quality_profiles WHERE id = ?").get(req.params.id)) as
+        | { allowed_qualities: string; cutoff: string }
+        | undefined;
+      if (!existing) throw new HttpError(404, "Quality profile not found");
+      validateProfile(b.allowedQualities ?? JSON.parse(existing.allowed_qualities), b.cutoff ?? existing.cutoff);
+    }
     if (b.name !== undefined) {
       sets.push("name = ?");
       values.push(b.name);
@@ -52,7 +86,11 @@ qualityProfilesRouter.patch(
     }
     if (b.minFormatScore !== undefined) {
       sets.push("min_format_score = ?");
-      values.push(b.minFormatScore);
+      values.push(formatScore(b.minFormatScore));
+    }
+    if (b.preferCutoffQuality !== undefined) {
+      sets.push("prefer_cutoff_quality = ?");
+      values.push(b.preferCutoffQuality ? 1 : 0);
     }
     if (b.maxSizeGb !== undefined) {
       sets.push("max_size_gb = ?");

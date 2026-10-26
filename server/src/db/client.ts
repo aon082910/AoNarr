@@ -154,6 +154,16 @@ ensureColumn("sub_items", "auto_search_misses", "auto_search_misses INTEGER NOT 
 // "Different Match" (routes/media.ts) has somewhere to store what it fetches; nothing wrote to
 // this column before that feature existed, so every existing row starts NULL.
 ensureColumn("sub_items", "overview", "overview TEXT");
+// Round 11 (decision-engine parity): which protocol wins between equal releases, whether a quality
+// profile caps its pick at the cutoff, an indexer's minimum seeders, and what a blocklist row knows
+// about the release it blocks (protocol, size, publish date, info hash).
+ensureColumn("delay_profiles", "preferred_protocol", "preferred_protocol TEXT NOT NULL DEFAULT 'none'");
+ensureColumn("quality_profiles", "prefer_cutoff_quality", "prefer_cutoff_quality INTEGER NOT NULL DEFAULT 1");
+ensureColumn("indexers", "minimum_seeders", "minimum_seeders INTEGER NOT NULL DEFAULT 0");
+ensureColumn("blocklist", "protocol", "protocol TEXT");
+ensureColumn("blocklist", "size", "size INTEGER");
+ensureColumn("blocklist", "publish_date", "publish_date TEXT");
+ensureColumn("blocklist", "info_hash", "info_hash TEXT");
 
 /**
  * One-time transition marker for the course/adult "collection"/"single" -> "episodic" shape change

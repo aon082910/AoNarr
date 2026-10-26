@@ -17,6 +17,9 @@ import type { QueueStatusUpdate } from "./downloadClient.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import { identityModeFor, releaseIdentifiesTarget, type IdentityMode, type IdentityVerdict } from "./releaseIdentity.js";
 import { releaseRejection } from "./releaseRejections.js";
+import { applyDelayProfile, type DelayProfile } from "./delayHold.js";
+import { availabilityRejection } from "./releaseAvailability.js";
+import { compareUsenetAge, comparePeers, largerIsBetterKey, normalizePreferredProtocol, protocolPreferenceKey } from "./releaseRanking.js";
 import { aliasTitlesFor, identityContextFor } from "./releaseAliases.js";
 import { childNumberOf, volumeYearOf } from "./searchQueries.js";
 import { judgeSeasonPack, loadPackEpisodes, packSettings, type PackEpisode } from "./seasonPacks.js";
@@ -196,13 +199,7 @@ export async function getQualityProfile(id: number | null) {
   return row ? qualityProfileFromRow(row) : null;
 }
 
-export interface DelayProfile {
-  enableUsenet: boolean;
-  enableTorrent: boolean;
-  usenetDelayMinutes: number;
-  torrentDelayMinutes: number;
-  bypassIfHighestQuality: boolean;
-}
+export type { DelayProfile } from "./delayHold.js";
 
 /** Every configured delay profile, tag-scoped ones first in their saved order, the untagged
  * default (if any) last — so `pickDelayProfile` can just take the first match. Fetched once per
@@ -217,6 +214,7 @@ export async function loadDelayProfiles(): Promise<{ tagId: number | null; profi
       usenetDelayMinutes: row.usenet_delay_minutes,
       torrentDelayMinutes: row.torrent_delay_minutes,
       bypassIfHighestQuality: !!row.bypass_if_highest_quality,
+      preferredProtocol: normalizePreferredProtocol(row.preferred_protocol),
     },
   }));
 }
@@ -236,26 +234,6 @@ export async function tagIdsForMediaItem(mediaItemId: number): Promise<number[]>
     tag_id: number;
   }[];
   return rows.map((r) => r.tag_id);
-}
-
-/** Gates an automatic (never manual — see the search.ts route's own direct grab) candidate on its
- * configured delay profile: a release younger than its protocol's delay isn't eligible yet, unless
- * that protocol is disabled outright for the profile (never eligible), or bypassIfHighestQuality
- * lets an already-cutoff-quality release through immediately. A release with no publishDate (some
- * indexers omit it) can't have its age judged, so it's let through rather than blocked forever. */
-export function isEligibleForDelay(quality: string, cutoff: string, result: SearchResult, profile: DelayProfile | null): boolean {
-  if (!profile) return true;
-  const protocol = result.protocol;
-  if (protocol !== "torrent" && protocol !== "usenet") return true; // http/slskd aren't protocol-gated
-  if (protocol === "torrent" && !profile.enableTorrent) return false;
-  if (protocol === "usenet" && !profile.enableUsenet) return false;
-  const delayMinutes = protocol === "torrent" ? profile.torrentDelayMinutes : profile.usenetDelayMinutes;
-  if (delayMinutes <= 0) return true;
-  if (profile.bypassIfHighestQuality && cutoff && quality === cutoff) return true;
-  if (!result.publishDate) return true;
-  const publishedAt = new Date(result.publishDate).getTime();
-  if (isNaN(publishedAt)) return true;
-  return (Date.now() - publishedAt) / 60_000 >= delayMinutes;
 }
 
 export async function isAlreadyQueued(mediaItemId: number, episodeId: number | null, subItemId: number | null): Promise<boolean> {
@@ -423,8 +401,15 @@ export interface ChooseOptions {
   /** Overrides the identity gate's configured mode (settings `strictReleaseIdentity[.<type>]`)
    * for this call; tests use it to exercise `enforce` and `log` without seeding settings. */
   identityMode?: IdentityMode;
-  /** Indexer priorities (lower is preferred), a ranking key for types with no quality tiers. */
-  indexers?: Pick<Indexer, "id" | "priority">[];
+  /** Indexer priorities (lower is preferred, ranked after the preferred protocol and before seeders)
+   * and each indexer's minimum seeders for a torrent. */
+  indexers?: (Pick<Indexer, "id" | "priority"> & { minimumSeeders?: number })[];
+  /** The admin ran this search themselves (the bulk "Search selected"): the delay profile's delay
+   * does not apply, as in Sonarr. Its protocol switches still do. */
+  userInvoked?: boolean;
+  /** Overrides quality_profiles.prefer_cutoff_quality for this call (true = never pick a quality
+   * above the cutoff while one at or below it is on offer). Omitted = the profile's own setting. */
+  preferCutoffQuality?: boolean;
   /** Human-readable "media title" (plus episode/season where relevant) for this call's log lines
    * only — has no effect on matching/scoring. Omitted = log lines drop the "for ..." suffix. */
   label?: string | null;
@@ -698,15 +683,25 @@ function namesMainTitle(releaseTitle: string, name: TargetName): boolean {
   return false;
 }
 
+/** Whether a quality profile caps its pick at the cutoff (quality_profiles.prefer_cutoff_quality, on by
+ * default and for a call with no profile). */
+async function preferCutoffQualityFor(qualityProfileId: number | null): Promise<boolean> {
+  if (!qualityProfileId) return true;
+  const row = (await db.prepare("SELECT prefer_cutoff_quality FROM quality_profiles WHERE id = ?").get(qualityProfileId)) as
+    | { prefer_cutoff_quality: number | boolean | null }
+    | undefined;
+  return row?.prefer_cutoff_quality == null ? true : !!Number(row.prefer_cutoff_quality);
+}
+
 /** Quality tiers in the order the profile prefers them: pickBestAllowedQuality's choice first,
  * then its choice among what's left, and so on. */
-function tierPreference(qualities: string[], allowedQualities: string[], cutoff: string): string[] {
+function tierPreference(qualities: string[], allowedQualities: string[], cutoff: string, capAtCutoff: boolean): string[] {
   const remaining = Array.from(new Set(qualities));
   const order: string[] = [];
   while (remaining.length > 0) {
     const next =
       allowedQualities.length > 0
-        ? pickBestAllowedQuality(remaining, allowedQualities, cutoff)
+        ? pickBestAllowedQuality(remaining, allowedQualities, cutoff, capAtCutoff)
         : [...remaining].sort((a, b) => qualityRank(b) - qualityRank(a))[0];
     if (!next) break;
     order.push(next);
@@ -751,6 +746,9 @@ export async function chooseBestResult(
     allowedQualities = [];
     cutoff = "";
   }
+  const preferCutoffQuality = options.preferCutoffQuality ?? (await preferCutoffQualityFor(qualityProfileId));
+
+  const minimumSeedersById = new Map((options.indexers ?? []).map((i) => [i.id, i.minimumSeeders ?? 0]));
 
   // Radarr/Sonarr-style per-release rejection reasons — each filter below is unchanged logic,
   // just with a log.info added on the reject path so a search's container-log trail shows why
@@ -788,12 +786,10 @@ export async function chooseBestResult(
       }
       return true;
     })
-    .filter(({ result, parsed }) => {
-      if (!isEligibleForDelay(parsed.quality, cutoff, result, delayProfile)) {
-        log.info(`[scheduler] rejected "${result.title}": not yet eligible under the configured delay profile`);
-        return false;
-      }
-      return true;
+    .filter(({ result }) => {
+      const reason = availabilityRejection(result, minimumSeedersById);
+      if (reason) log.info(`[scheduler] rejected "${result.title}": ${reason}`);
+      return !reason;
     });
 
   const episodeFiltered = !target
@@ -913,6 +909,26 @@ export async function chooseBestResult(
     return null;
   }
 
+  // The delay profile judges the releases that are otherwise fit to grab, so the oldest of them
+  // shows whether the wait for a better one has run out (see applyDelayProfile).
+  const delay = applyDelayProfile(
+    relevant,
+    delayProfile,
+    { cutoff, allowedQualities, preferCutoffQuality, userInvoked: !!options.userInvoked },
+    ({ parsed }) => parsed.quality
+  );
+  for (const { result } of delay.disabled) {
+    log.info(`[scheduler] rejected "${result.title}": its protocol (${result.protocol}) is turned off in the delay profile`);
+  }
+  for (const { result } of delay.held) {
+    log.info(`[scheduler] rejected "${result.title}": not yet eligible under the configured delay profile`);
+  }
+  if (delay.kept.length === 0) {
+    log.info(`[scheduler] no eligible releases among ${results.length} result(s)${forLabel}`);
+    return null;
+  }
+  const eligible = delay.kept;
+
   // The tier comes from releases that survived every rejection: picked first, one oversized or
   // must-not-matched release at the top tier left nothing to grab even with the next tier on offer.
   // Tiers are scored best first, stopping at the first with a survivor — scoring a release costs
@@ -923,7 +939,7 @@ export async function chooseBestResult(
   // trilogy), so it comes after every release naming the whole title.
   const unseeded = (c: { result: SearchResult }) => c.result.protocol === "torrent" && c.result.seeders === 0;
   const pools = [false, true].flatMap((mainOnly) => {
-    const named = relevant.filter((c) => namesMainTitleOnly.has(c.result) === mainOnly);
+    const named = eligible.filter((c) => namesMainTitleOnly.has(c.result) === mainOnly);
     return [named.filter((c) => !unseeded(c)), named.filter(unseeded)];
   });
   let candidates: {
@@ -934,7 +950,7 @@ export async function chooseBestResult(
     totalScore: number;
   }[] = [];
   for (const pool of pools) {
-    const tiers: (string | null)[] = tiered ? tierPreference(pool.map((c) => c.parsed.quality), allowedQualities, cutoff) : [null];
+    const tiers: (string | null)[] = tiered ? tierPreference(pool.map((c) => c.parsed.quality), allowedQualities, cutoff, preferCutoffQuality) : [null];
     for (const tier of tiers) {
       const inTier = tier === null ? pool : pool.filter((c) => c.parsed.quality === tier);
       candidates = (
@@ -961,7 +977,7 @@ export async function chooseBestResult(
     if (candidates.length > 0) break;
   }
   if (candidates.length === 0) {
-    log.info(`[scheduler] ${relevant.length} eligible release(s)${forLabel}, but none met the minimum format score`);
+    log.info(`[scheduler] ${eligible.length} eligible release(s)${forLabel}, but none met the minimum format score`);
     return null;
   }
 
@@ -973,27 +989,38 @@ export async function chooseBestResult(
     await Promise.all(Array.from(releaseGroups).map(async (g) => [g, await getGroupReputation(g)] as const))
   );
 
-  // With no quality to rank by, the admin's indexer priority (lower first) comes before seeders and
-  // then the newer release — usenet and DDL results have no seeders to tell them apart. Video types
-  // keep their established order.
+  // After the format score and the identity tier, as in Sonarr/Radarr's DownloadDecisionComparer: the
+  // delay profile's preferred protocol, the admin's indexer priority (lower first), then peers of a
+  // torrent against another torrent (log10 buckets; a usenet result has none to compare) and the age
+  // of an NZB against another NZB. Types with no quality tier take the raw seeder count and then the
+  // newer release, as before. Last come the release group's record and the size: the one closest to
+  // the quality's preferred size, else the larger.
   const priorityById = new Map((options.indexers ?? []).map((i) => [i.id, i.priority]));
-  const priorityOf = (c: { result: SearchResult }) =>
-    tiered ? 0 : priorityById.get(c.result.indexerId ?? -1) ?? DEFAULT_INDEXER_PRIORITY;
+  const priorityOf = (c: { result: SearchResult }) => priorityById.get(c.result.indexerId ?? -1) ?? DEFAULT_INDEXER_PRIORITY;
+  const preferredProtocol = delayProfile?.preferredProtocol ?? "none";
   const publishedAt = (c: { result: SearchResult }) => {
     const at = !tiered && c.result.publishDate ? Date.parse(c.result.publishDate) : NaN;
     return Number.isFinite(at) ? at : 0;
   };
+  const bothTorrents = (a: SearchResult, b: SearchResult) => a.protocol === "torrent" && b.protocol === "torrent";
+  const now = Date.now();
 
   candidates.sort(
     (a, b) =>
       b.totalScore - a.totalScore ||
       b.matchTier - a.matchTier ||
+      protocolPreferenceKey(preferredProtocol, b.result.protocol) - protocolPreferenceKey(preferredProtocol, a.result.protocol) ||
       priorityOf(a) - priorityOf(b) ||
-      (b.result.seeders ?? 0) - (a.result.seeders ?? 0) ||
+      (tiered
+        ? comparePeers(a.result, b.result) || compareUsenetAge(a.result, b.result, now)
+        : bothTorrents(a.result, b.result)
+        ? (b.result.seeders ?? 0) - (a.result.seeders ?? 0)
+        : 0) ||
       publishedAt(b) - publishedAt(a) ||
       (reputationByGroup.get(parseReleaseTitle(b.result.title).releaseGroup) ?? 0.5) -
         (reputationByGroup.get(parseReleaseTitle(a.result.title).releaseGroup) ?? 0.5) ||
-      preferredSizeDistance(a.quality, a.size) - preferredSizeDistance(b.quality, b.size)
+      preferredSizeDistance(a.quality, a.size) - preferredSizeDistance(b.quality, b.size) ||
+      (tiered ? largerIsBetterKey(b.size) - largerIsBetterKey(a.size) : 0)
   );
   const winner = candidates[0];
   if (winner) {
@@ -1459,8 +1486,9 @@ export async function isHeldByDelay(
   delayProfile: DelayProfile | null,
   choose: (remaining: SearchResult[], delay: DelayProfile | null) => Promise<ChosenResult | null>
 ): Promise<boolean> {
+  // Called only after a search that grabbed nothing: it was the delay if the same releases would have
+  // been grabbed without it.
   if (!delayProfile) return false;
-  if (!results.some((r) => !isEligibleForDelay(parseReleaseTitle(r.title).quality, cutoff, r, delayProfile))) return false;
   return (await choose(results, null)) !== null;
 }
 
@@ -2075,6 +2103,7 @@ async function searchAndGrabSeason(
         indexers: ctx.indexers,
         label: `${item.title} S${String(seasons.scene).padStart(2, "0")}`,
         pack: packContextFor(item, plan),
+        userInvoked: !ctx.automatic,
       }
     );
   let outcome: Awaited<ReturnType<typeof grabBestRelease>>;
@@ -2225,6 +2254,7 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
         indexers: ctx.indexers,
         label: item.title,
         pack: packContextFor(item, plan),
+        userInvoked: !ctx.automatic,
       }
     );
   let outcome: Awaited<ReturnType<typeof grabBestRelease>>;

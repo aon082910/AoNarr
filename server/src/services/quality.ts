@@ -202,12 +202,14 @@ export function sizeWithinQualityBounds(qualityName: string | null, sizeBytes: n
  * Picks the best candidate quality allowed by a profile: the highest-ranked quality that is
  * both in the profile's allowed list and at or below the cutoff. If nothing meets the cutoff,
  * falls back to the best allowed quality available among the candidates (still an upgrade path,
- * just short of ideal) rather than grabbing nothing.
+ * just short of ideal) rather than grabbing nothing. With `capAtCutoff` off (the profile's
+ * prefer_cutoff_quality flag) the cutoff only stops upgrades and the best allowed quality wins.
  */
 export function pickBestAllowedQuality(
   candidateQualities: string[],
   allowedQualities: string[],
-  cutoff: string
+  cutoff: string,
+  capAtCutoff = true
 ): string | null {
   const cutoffRank = qualityRank(cutoff);
   const allowedSet = new Set(allowedQualities);
@@ -218,6 +220,8 @@ export function pickBestAllowedQuality(
 
   if (eligible.length === 0) return null;
 
+  // A profile that does not cap at the cutoff takes the best allowed quality on offer, as Sonarr/Radarr do.
+  if (!capAtCutoff) return eligible[0];
   const atOrBelowCutoff = eligible.filter((q) => qualityRank(q) <= cutoffRank);
   return atOrBelowCutoff[0] ?? eligible[0];
 }

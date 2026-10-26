@@ -51,6 +51,14 @@ indexersRouter.post(
   })
 );
 
+/** A whole number of 0 or more (0 = no minimum); undefined when the field was not sent. */
+function minimumSeeders(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0 || n > 2147483647) throw new HttpError(400, "minimumSeeders must be a whole number of 0 or more");
+  return n;
+}
+
 indexersRouter.post(
   "/",
   asyncHandler(async (req, res) => {
@@ -59,8 +67,8 @@ indexersRouter.post(
 
     const result = await db
       .prepare(
-        `INSERT INTO indexers (name, protocol, url, api_key, categories, media_types, enabled, priority, config, use_flaresolverr, query_limit_per_hour)
-         VALUES (@name, @protocol, @url, @apiKey, @categories, @mediaTypes, @enabled, @priority, @config, @useFlareSolverr, @queryLimitPerHour)`
+        `INSERT INTO indexers (name, protocol, url, api_key, categories, media_types, enabled, priority, minimum_seeders, config, use_flaresolverr, query_limit_per_hour)
+         VALUES (@name, @protocol, @url, @apiKey, @categories, @mediaTypes, @enabled, @priority, @minimumSeeders, @config, @useFlareSolverr, @queryLimitPerHour)`
       )
       .run({
         name: b.name,
@@ -71,6 +79,7 @@ indexersRouter.post(
         mediaTypes: b.mediaTypes ?? DEFAULT_INDEXER_MEDIA_TYPES,
         enabled: b.enabled === false ? 0 : 1,
         priority: b.priority ?? 25,
+        minimumSeeders: minimumSeeders(b.minimumSeeders) ?? 0,
         config: b.config ? JSON.stringify(b.config) : null,
         useFlareSolverr: b.useFlareSolverr ? 1 : 0,
         queryLimitPerHour: b.queryLimitPerHour ?? null,
@@ -98,9 +107,11 @@ indexersRouter.patch(
       mediaTypes: "media_types",
       enabled: "enabled",
       priority: "priority",
+      minimumSeeders: "minimum_seeders",
       useFlareSolverr: "use_flaresolverr",
       queryLimitPerHour: "query_limit_per_hour",
     };
+    if (b.minimumSeeders !== undefined) b.minimumSeeders = minimumSeeders(b.minimumSeeders) ?? 0;
     const booleanKeys = new Set(["enabled", "useFlareSolverr"]);
     const secretKeys = new Set(["apiKey"]);
     const sets: string[] = [];
