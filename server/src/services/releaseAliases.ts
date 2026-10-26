@@ -124,6 +124,8 @@ export async function replaceXemAliases(mediaItemId: number, aliases: XemAlias[]
   const own = cleanTitle(item.title);
   return db.transaction(async () => {
     await db.prepare("DELETE FROM media_item_titles WHERE media_item_id = ? AND source = 'xem_alias'").run(mediaItemId);
+    // A season a provider's title took from an earlier list is read afresh from this one.
+    await db.prepare("UPDATE media_item_titles SET season_number = NULL WHERE media_item_id = ? AND source IN ('tmdb_alt', 'anilist_synonym')").run(mediaItemId);
     let stored = 0;
     const seen = new Set<string>();
     // A name for a season is kept before the same name for the whole show: it says more.
@@ -134,13 +136,23 @@ export async function replaceXemAliases(mediaItemId: number, aliases: XemAlias[]
       const result = await db
         .prepare(
           `INSERT INTO media_item_titles (media_item_id, title, clean_title, source, season_number) VALUES (?, ?, ?, 'xem_alias', ?)
-           ON CONFLICT (media_item_id, clean_title) DO NOTHING`
+           ON CONFLICT (media_item_id, clean_title) DO UPDATE SET season_number = excluded.season_number
+           WHERE media_item_titles.source IN ('tmdb_alt', 'anilist_synonym') AND media_item_titles.season_number IS NULL`
         )
         .run(mediaItemId, alias.title, clean, alias.season);
       stored += result.changes;
     }
     return stored;
   });
+}
+
+/** How many episodes each season of the item lists, for applyAliasSeason. */
+export async function seasonEpisodeCounts(mediaItemId: number): Promise<Map<number, number>> {
+  const rows = (await db.prepare("SELECT season_number, COUNT(*) AS c FROM episodes WHERE media_item_id = ? GROUP BY season_number").all(mediaItemId)) as {
+    season_number: number | string;
+    c: number | string;
+  }[];
+  return new Map(rows.map((r) => [Number(r.season_number), Number(r.c)]));
 }
 
 /** The seasons the item's names stand for: cleanTitle -> season, for the rows that carry one. */
@@ -158,11 +170,16 @@ export async function aliasSeasonsFor(mediaItemId: number): Promise<Map<string, 
  */
 export function applyAliasSeason<T extends Pick<ParsedRelease, "title" | "seasonNumber" | "episodeNumbers" | "absoluteEpisode" | "isFullSeason">>(
   parsed: T,
-  aliasSeasons: ReadonlyMap<string, number>
+  aliasSeasons: ReadonlyMap<string, number>,
+  episodeCounts?: ReadonlyMap<number, number>
 ): T {
   if (aliasSeasons.size === 0 || parsed.seasonNumber != null || parsed.episodeNumbers != null || parsed.isFullSeason || parsed.absoluteEpisode == null) return parsed;
   const season = aliasSeasons.get(cleanTitle(parsed.title));
   if (season === undefined) return parsed;
+  // A number past the season's last episode counts on from an earlier season (a group that keeps absolute
+  // numbering under the cour's title): it is no episode of this season.
+  const listed = episodeCounts?.get(season);
+  if (listed !== undefined && parsed.absoluteEpisode > listed) return parsed;
   return { ...parsed, seasonNumber: season, episodeNumbers: [parsed.absoluteEpisode] };
 }
 

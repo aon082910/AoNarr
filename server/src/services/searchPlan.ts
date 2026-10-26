@@ -202,7 +202,9 @@ function subItemHints(item: Pick<MediaItem, "type" | "title">, subTitle: string)
     return album ? { artist: item.title, album } : {};
   }
   if (item.type === "author") {
-    const bookTitle = plain(subTitle.split(/\s*:\s*/)[0]);
+    // A title with a subtitle is searched by text: the title alone would find the author's other books of that name.
+    if (/:/.test(plain(subTitle))) return {};
+    const bookTitle = plain(subTitle);
     return bookTitle ? { author: item.title, bookTitle } : {};
   }
   return {};

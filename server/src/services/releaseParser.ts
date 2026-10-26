@@ -218,6 +218,13 @@ const MINI_SERIES_PART = /[ .-](?:part|pt)[ .]*0*(\d{1,2})[ .]*(?:of|\/)[ .]*0*(
 // Read only from a television source name with no year, so a film called "Room 237" or "Fahrenheit 451" is spared.
 const THREE_DIGIT_EPISODE = /[ .-]([1-9])(\d{2})(?=[ .-]|$)/;
 const TELEVISION_SOURCE = /\b(?:HDTV|PDTV|DSR|SDTV|TVRip)\b/i;
+// What a three-digit number after is not an episode: a codec ("H.264", "x.265", "DD 5.1"), or the number of a sports
+// event ("UFC.246.McGregor.vs.Cowboy.HDTV", "WWE.Raw", "Fight Night 150").
+const CODEC_BEFORE_NUMBER = /(?:^|[ .-])(?:h|x|dd|ddp|ac|aac|dts|avc|hevc)[ .-]?$/i;
+const EVENT_WORD_BEFORE_NUMBER = /\b(?:UFC|WWE|WCW|NXT|AEW|ROH|NFL|NBA|NHL|MLB|MMA|Bellator|PFL|Fight[ .]Night|WrestleMania|Raw|SmackDown|Impact|Nitro|Pride|Strikeforce|ONE|Cage[ .]Warriors?|Glory|Wrestling)\b/i;
+// A mini-series' part is a video release; an audiobook or music "Part 1 of 12" is not.
+const VIDEO_RELEASE_WORD = /\b(?:HDTV|PDTV|SDTV|DSR|WEB-?DL|WEBRip|BluRay|BDRip|BRRip|DVDRip|XviD|x26[45]|h26[45]|HEVC|AVC|\d{3,4}[pi]|480p|720p|1080p|2160p)\b/i;
+const AUDIO_RELEASE_WORD = /\b(?:MP3|M4B|M4A|FLAC|AAC|OGG|Audiobook|Unabridged|Abridged|Audible|EPUB|MOBI|PDF)\b/i;
 const FILM_SOURCE = /\b(?:BluRay|BDRip|BRRip|REMUX|DVDRip|DVDSCR|CAM|HDCAM|TS|TC|WEB-?DL|WEBRip)\b/i;
 // "[Shark-Raws] Series Title #957".
 const ABSOLUTE_HASH_FORM = /(?:^|\s)#0*(\d{1,4})(?![\da-z])/;
@@ -1062,7 +1069,7 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
   // "Show.Name.Part.2.of.6": a mini-series' episode, in its one season.
   if (seasonNumber === null && episodeNumbers === null && !isFullSeason && !seasonPart && !seasonExtra && !airDate) {
     const mini = title.match(MINI_SERIES_PART);
-    if (mini && Number(mini[1]) >= 1 && Number(mini[1]) <= Number(mini[2])) {
+    if (mini && Number(mini[1]) >= 1 && Number(mini[1]) <= Number(mini[2]) && VIDEO_RELEASE_WORD.test(title) && !AUDIO_RELEASE_WORD.test(title)) {
       seasonNumber = 1;
       episodeNumbers = [Number(mini[1])];
       markerIndex = mini.index ?? null;
@@ -1110,7 +1117,13 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
     const hasYear = /\b(?:19|20)\d{2}\b/.test(title);
     if (three && three.index !== undefined && three.index > 0 && !hasYear && TELEVISION_SOURCE.test(title) && !FILM_SOURCE.test(title) && Number(three[2]) >= 1) {
       // A resolution or codec is no episode: "720" before "p"/"i" is skipped by the separator the pattern needs.
-      if (![480, 576, 720].includes(Number(three[1] + three[2])) && hasTitleToken(title, titleStart(title), three.index)) {
+      const before = title.slice(0, three.index);
+      if (
+        ![480, 576, 720].includes(Number(three[1] + three[2])) &&
+        !CODEC_BEFORE_NUMBER.test(before) &&
+        !EVENT_WORD_BEFORE_NUMBER.test(before) &&
+        hasTitleToken(title, titleStart(title), three.index)
+      ) {
         seasonNumber = Number(three[1]);
         episodeNumbers = [Number(three[2])];
         markerIndex = three.index;

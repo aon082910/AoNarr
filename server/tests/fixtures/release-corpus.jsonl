@@ -258,3 +258,7 @@
 {"title": "Room.237.2012.1080p.BluRay.x264-GRP", "kind": "release", "expect": {"season": null, "episodes": null, "title": "Room 237", "year": 2012}}
 {"title": "Fahrenheit.451.1080p.BluRay.x264-GRP", "kind": "release", "expect": {"season": null, "episodes": null, "title": "Fahrenheit 451"}}
 {"title": "Show.Name.720.HDTV-GRP", "kind": "release", "expect": {"season": null, "episodes": null}}
+{"title": "Documentary.Name.HDTV.H.264-GRP", "kind": "release", "expect": {"season": null, "episodes": null}}
+{"title": "Documentary.Name.HDTV.H.265-GRP", "kind": "release", "expect": {"season": null, "episodes": null}}
+{"title": "UFC.246.McGregor.vs.Cowboy.HDTV.x264-GRP", "kind": "release", "expect": {"season": null, "episodes": null}}
+{"title": "Book.Title.Part.1.of.12.MP3-GRP", "kind": "release", "expect": {"season": null, "episodes": null}}

@@ -178,7 +178,8 @@ function cacheKey(indexerId: number, query: string, mediaType: MediaType, extern
   const datePart = hints?.airDate ? `:d${hints.airDate}` : "";
   const absolutePart = hints?.absolute != null ? `:a${hints.absolute}` : "";
   const titlePart = hints?.queryTitle ? `:t${hints.queryTitle.toLowerCase()}` : "";
-  return `${indexerId}:${mediaType}:${query.toLowerCase()}${idPart}${numberPart}${datePart}${absolutePart}${titlePart}${hints?.skipTyped ? ":text" : ""}`;
+  const fieldsPart = hints?.artist || hints?.author ? `:f${(hints.artist ?? hints.author ?? "").toLowerCase()}|${(hints.album ?? hints.bookTitle ?? "").toLowerCase()}` : "";
+  return `${indexerId}:${mediaType}:${query.toLowerCase()}${idPart}${numberPart}${datePart}${absolutePart}${titlePart}${fieldsPart}${hints?.skipTyped ? ":text" : ""}`;
 }
 
 /**

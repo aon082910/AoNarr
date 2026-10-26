@@ -109,4 +109,23 @@ describe("TheXEM names (Round 12, I16)", () => {
     await xem.syncXemNames(id, "267440");
     expect((await choose())?.result).toBe(release);
   });
+
+  it("puts a season on the title a provider already gave the show, and takes it off again", async () => {
+    const id = await insertShow("Shingeki no Kyojin", null);
+    await aliases.storeAliases(id, ["Shingeki no Kyojin: The Final Season"], "anilist_synonym");
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => NAMES }) as any));
+    await xem.syncXemNames(id, "267440");
+    expect((await aliases.aliasSeasonsFor(id)).get(aliases.cleanTitle("Shingeki no Kyojin: The Final Season"))).toBe(4);
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ result: "success", data: { "5": { us: ["Attack on Titan S5"] } } }) }) as any));
+    await xem.syncXemNames(id, "267440");
+    expect((await aliases.aliasSeasonsFor(id)).has(aliases.cleanTitle("Shingeki no Kyojin: The Final Season"))).toBe(false);
+  });
+
+  it("does not read a number past the season's last episode as its episode", () => {
+    const seasons = new Map([[aliases.cleanTitle("Jujutsu Kaisen 2nd Season"), 2]]);
+    const parsed = parseReleaseTitle("[Grp] Jujutsu Kaisen 2nd Season - 30 [1080p]");
+    expect(aliases.applyAliasSeason(parsed, seasons, new Map([[2, 23]]))).toBe(parsed);
+    expect(aliases.applyAliasSeason(parsed, seasons, new Map([[2, 47]])).seasonNumber).toBe(2);
+    expect(aliases.applyAliasSeason(parsed, seasons).seasonNumber).toBe(2);
+  });
 });

@@ -125,7 +125,9 @@ describe("subItemPlanFor", () => {
 
   it("carries the fields of a typed music or book search", async () => {
     const author = await insertItem("author", "Brandon Sanderson");
-    expect(plans.subItemPlanFor(author, { title: "Mistborn: The Final Empire (Mistborn, #1)" }).hints).toEqual({ author: "Brandon Sanderson", bookTitle: "Mistborn" });
+    // A title with a subtitle is searched by text only: the title alone would find the author's other books of that name.
+    expect(plans.subItemPlanFor(author, { title: "Mistborn: The Final Empire (Mistborn, #1)" }).hints).toEqual({});
+    expect(plans.subItemPlanFor(author, { title: "Elantris (Elantris, #1)" }).hints).toEqual({ author: "Brandon Sanderson", bookTitle: "Elantris" });
     const artist = await insertItem("artist", "Queen");
     expect(plans.subItemPlanFor(artist, { title: "Greatest Hits (Remastered)" }).hints).toEqual({ artist: "Queen", album: "Greatest Hits" });
     const comic = await insertItem("comic", "Saga");

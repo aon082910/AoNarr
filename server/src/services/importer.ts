@@ -30,7 +30,7 @@ import { removeQueueItemDownload } from "./downloadClient.js";
 import { syncSubtitleToVideo } from "./subtitleSync.js";
 import { DEFAULT_SHAPE_TEMPLATES, DEFAULT_TRACK_TEMPLATE, providerIdVars, renderTemplate } from "./naming.js";
 import { effectiveShape, getMediaTypeConfig, isProbeableFile, type MediaShape } from "./mediaTypes.js";
-import { qualityRank, usesQualityTiers } from "./quality.js";
+import { groupedRank, parseQualityGroups, usesQualityTiers, type QualityGroups } from "./quality.js";
 import { releaseRecordFor } from "./fileRelease.js";
 import { propersMode, revisionUpgrade } from "./upgradeRules.js";
 import { getSetting } from "./settingsStore.js";
@@ -1144,11 +1144,26 @@ async function markParentHasFile(itemId: number): Promise<void> {
 /** Whether a file of `quality` may replace a child's existing file of `existingQuality`: only a
  * strictly better-ranked quality, the same bar the search side holds an upgrade grab to, and never
  * for a type with no quality tiers to upgrade by. */
-function isQualityUpgrade(type: MediaType, quality: string | null, existingQuality: string | null, newTitle?: string | null, existingTitle?: string | null): boolean {
+function isQualityUpgrade(
+  type: MediaType,
+  quality: string | null,
+  existingQuality: string | null,
+  newTitle?: string | null,
+  existingTitle?: string | null,
+  groups?: QualityGroups
+): boolean {
   if (!usesQualityTiers(type)) return false;
-  if (qualityRank(quality) > qualityRank(existingQuality)) return true;
+  // Qualities the profile treats as one tier rank alike.
+  if (groupedRank(quality, groups) > groupedRank(existingQuality, groups)) return true;
   // The same quality: a later revision of the file's own release (a REPACK of its group, a PROPER) replaces it.
-  return qualityRank(quality) === qualityRank(existingQuality) && !!newTitle && revisionUpgrade(propersMode(), existingTitle ?? null, newTitle);
+  return groupedRank(quality, groups) === groupedRank(existingQuality, groups) && !!newTitle && revisionUpgrade(propersMode(), existingTitle ?? null, newTitle);
+}
+
+/** The groups of qualities the item's profile treats as one tier. */
+async function qualityGroupsOfProfile(profileId: number | null | undefined): Promise<QualityGroups> {
+  if (!profileId) return [];
+  const row = (await db.prepare("SELECT quality_groups FROM quality_profiles WHERE id = ?").get(profileId)) as { quality_groups: string | null } | undefined;
+  return parseQualityGroups(row?.quality_groups);
 }
 
 export class ImportSkippedError extends Error {}
@@ -2308,8 +2323,9 @@ export async function placeSeasonPackFiles(params: {
   let unmatchedCount = planned.unmatchedCount + identityRejected;
 
   let notUpgradedCount = 0;
+  const groups = await qualityGroupsOfProfile(item.qualityProfileId);
   const toPlace = planned.plans.filter(({ src, episodes: targets }) => {
-    const better = targets.find((e) => Number(e.has_file) && !isQualityUpgrade(item.type, quality, e.quality, releaseTitle, e.file_release_title));
+    const better = targets.find((e) => Number(e.has_file) && !isQualityUpgrade(item.type, quality, e.quality, releaseTitle, e.file_release_title, groups));
     if (!better) return true;
     log.info(
       `[importer] left "${path.basename(src)}" in the download: "${quality ?? "unknown"}" is not an upgrade over episode ${better.episode_number}'s "${better.quality ?? "unknown"}" file`
@@ -2603,7 +2619,7 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
       const epRow = (await db.prepare("SELECT episode_number, has_file, quality, file_release_title FROM episodes WHERE id = ?").get(queueItem.episodeId)) as
         | { episode_number: number; has_file: number; quality: string | null; file_release_title: string | null }
         | undefined;
-      if (epRow && Number(epRow.has_file) && !isQualityUpgrade(item.type, quality, epRow.quality, queueItem.title, epRow.file_release_title)) {
+      if (epRow && Number(epRow.has_file) && !isQualityUpgrade(item.type, quality, epRow.quality, queueItem.title, epRow.file_release_title, await qualityGroupsOfProfile(item.qualityProfileId))) {
         throw new ImportSkippedError(
           `Not an upgrade: episode ${epRow.episode_number} already has a "${epRow.quality ?? "unknown"}" file, and this download is "${quality ?? "unknown"}"`
         );

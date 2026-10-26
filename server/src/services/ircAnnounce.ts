@@ -11,7 +11,7 @@ import { getBlocklistedTitles } from "./blocklist.js";
 import { downloadClientFromRow, mediaItemFromRow, qualityProfileFromRow } from "../db/mappers.js";
 import { grab, isAlreadyQueued, isReleaseAvailableForSearch, pickClientForProtocol, type ChosenResult } from "./scheduler.js";
 import { computeAbsoluteEpisodeNumber } from "./importer.js";
-import { usesQualityTiers } from "./quality.js";
+import { parseQualityGroups, sameQualityGroup, usesQualityTiers, type QualityGroups } from "./quality.js";
 import { aliasTitlesByItem, resolveReleaseItemInLibrary } from "./releaseAliases.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
 import { wakeLeaf } from "./searchBackoff.js";
@@ -164,8 +164,9 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
   // A season pack must pass the same guards as a pack found by a search (aired, monitored, enough wanted).
   let packEpisodes: PackEpisode[] | null = null;
   const packSettingsNow = packSettings();
-  const profileRow = show.qualityProfileId ? await db.prepare("SELECT cutoff FROM quality_profiles WHERE id = ?").get(show.qualityProfileId) : null;
+  const profileRow = show.qualityProfileId ? await db.prepare("SELECT cutoff, quality_groups FROM quality_profiles WHERE id = ?").get(show.qualityProfileId) : null;
   const packCutoff = (profileRow as { cutoff?: string } | null)?.cutoff ?? "";
+  const packGroups = parseQualityGroups((profileRow as { quality_groups?: string | null } | null)?.quality_groups);
   for (const ep of episodes) {
     if (ep.parent_id !== show.id) continue;
     const absoluteEpisode = show.type === "anime" || wantsAbsolute ? await computeAbsoluteEpisodeNumber(show.id, ep.season_number, ep.episode_number) : null;
@@ -180,6 +181,7 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
         item: show,
         packQuality: parsed.quality,
         cutoff: packCutoff,
+        qualityGroups: packGroups,
         settings: packSettingsNow,
       });
       if (!verdict.ok) {
@@ -203,7 +205,8 @@ async function delayProfileHoldsBack(
   mediaItemId: number,
   protocol: IrcFeedRow["protocol"],
   quality: string,
-  cutoff: string | null
+  cutoff: string | null,
+  groups: QualityGroups = []
 ): Promise<boolean> {
   const profile = (await db
     .prepare(
@@ -226,7 +229,7 @@ async function delayProfileHoldsBack(
   if (protocol === "torrent" ? !profile.enable_torrent : !profile.enable_usenet) return true;
   const delayMinutes = Number(protocol === "torrent" ? profile.torrent_delay_minutes : profile.usenet_delay_minutes) || 0;
   if (delayMinutes <= 0) return false;
-  return !(profile.bypass_if_highest_quality && cutoff && quality === cutoff);
+  return !(profile.bypass_if_highest_quality && cutoff && sameQualityGroup(quality, cutoff, groups));
 }
 
 async function tryGrabMatch(
@@ -256,7 +259,7 @@ async function tryGrabMatch(
     return false;
   }
 
-  if (await delayProfileHoldsBack(item.id, feed.protocol, quality, tiered ? profile?.cutoff ?? null : null)) {
+  if (await delayProfileHoldsBack(item.id, feed.protocol, quality, tiered ? profile?.cutoff ?? null : null, profile?.qualityGroups)) {
     log.info(`[irc:${feed.name}] not grabbing "${releaseTitle}" for "${item.title}": held back by its delay profile`);
     // The scheduled search grabs it once it has aged, so the target must be due for one at the next cycle.
     await wakeLeaf(episodeId ? "episodes" : subItemId ? "sub_items" : "media_items", episodeId ?? subItemId ?? item.id);
