@@ -209,10 +209,15 @@ customFormatsRouter.post(
       throw new HttpError(400, "Doesn't look like a TRaSH-Guides/Radarr/Sonarr custom format export");
     }
 
-    const { groups, skipped } = translateTrashFormat(trash);
+    const app = b.app === "radarr" || b.app === "sonarr" ? b.app : undefined;
+    const { groups, skipped } = translateTrashFormat(trash, app);
 
     if (groups.length === 0) {
-      throw new HttpError(400, "None of this format's conditions are supported (only title/release-group/size/resolution specs translate)");
+      throw new HttpError(400, "None of this format's conditions are supported (title, release group, edition, size and resolution translate; source, release type, quality modifier and indexer flag too when the app is given)");
+    }
+    // A format that lost a condition scores releases it was never meant to; storing it is the admin's explicit choice.
+    if (skipped.length > 0 && b.allowPartial !== true) {
+      throw new HttpError(400, `These condition types can't be matched and would be dropped: ${skipped.join(", ")}. Send allowPartial: true to import the rest anyway.`);
     }
 
     const result = await db

@@ -2320,7 +2320,7 @@ describe("chooseBestResult — rejections, tiers and protocols", () => {
     expect((await choose([divide, multiply, plus, subtract], { title: "−", parentTitle: "Ed Sheeran" }))?.result).toBe(subtract);
   });
 
-  it("ranks by indexer priority, then seeders, then the newer release for a type with no quality tiers", async () => {
+  it("ranks by indexer priority, then seeders, then the newer release (priority first for every type)", async () => {
     const indexers = [
       { id: 1, priority: 50 },
       { id: 2, priority: 10 },
@@ -2336,11 +2336,11 @@ describe("chooseBestResult — rejections, tiers and protocols", () => {
     const newer = fakeResult({ title: "Author - Book (2010) [EPUB]", protocol: "usenet", seeders: null, publishDate: "2024-01-01T00:00:00Z", downloadUrl: "https://newer" });
     expect((await chooseBestResult([older, newer], [], "", null, 0, null, new Set(), "author", null, null, null, { name: book }))?.result.downloadUrl).toBe("https://newer");
 
-    // A video type keeps ranking by seeders.
+    // A video type ranks by the indexer priority too (Round 11, D7), ahead of seeders.
     const movieLow = fakeResult({ title: "Movie.2020.1080p.WEB-DL-GRP", indexerId: 1, seeders: 900, downloadUrl: "https://movie-low" });
     const movieHigh = fakeResult({ title: "Movie.2020.1080p.WEB-DL-GRP", indexerId: 2, seeders: 1, downloadUrl: "https://movie-high" });
     expect((await chooseBestResult([movieLow, movieHigh], [], "", null, 0, null, new Set(), "movie", null, null, null, { indexers }))?.result.downloadUrl).toBe(
-      "https://movie-low"
+      "https://movie-high"
     );
   });
 

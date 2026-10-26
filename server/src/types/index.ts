@@ -178,6 +178,10 @@ export interface QueueItem {
   matchType?: string | null;
   /** What grabbed it: 'auto' (scheduled/bulk search), 'interactive' (manual search), 'irc', 'retry'. */
   grabSource?: string | null;
+  /** The release's protocol, publish date and info hash as grabbed: what a blocklist row needs to block that release. */
+  protocol?: string | null;
+  publishDate?: string | null;
+  infoHash?: string | null;
 }
 
 export interface HistoryEvent {

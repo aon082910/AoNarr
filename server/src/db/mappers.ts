@@ -200,6 +200,9 @@ export function queueItemFromRow(row: any) {
     importSkippedReason: row.import_skipped_reason ?? null,
     matchType: row.match_type ?? null,
     grabSource: row.grab_source ?? null,
+    protocol: row.protocol ?? null,
+    publishDate: row.publish_date ?? null,
+    infoHash: row.info_hash ?? null,
   };
 }
 

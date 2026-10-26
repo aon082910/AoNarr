@@ -217,7 +217,11 @@ CREATE TABLE IF NOT EXISTS queue (
   -- 'alias', 'title-main', 'title-noyear', 'none') and what grabbed it ('auto', 'interactive',
   -- 'irc', 'retry'). NULL on rows from before the identity gate, or for types it doesn't judge.
   match_type TEXT,
-  grab_source TEXT
+  grab_source TEXT,
+  -- What the release was, kept so "Remove and Blocklist" can block that release and not just its name.
+  protocol TEXT,
+  publish_date TEXT,
+  info_hash TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_queue_media_item_id ON queue(media_item_id);
 CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);

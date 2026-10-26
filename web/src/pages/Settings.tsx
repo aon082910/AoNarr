@@ -286,7 +286,7 @@ function TrashSyncResultSummary({ label, result }: { label: string; result: Tras
           <li key={i}>{name}</li>
         ))}
       </TrashSyncNameList>
-      <TrashSyncNameList title="Partially unsupported (synced with these condition types skipped)" count={result.partiallyUnsupported.length}>
+      <TrashSyncNameList title="Partially unsupported (not synced: these condition types can't be matched)" count={result.partiallyUnsupported.length}>
         {result.partiallyUnsupported.map((p, i) => (
           <li key={i}>
             {p.name}: {p.skipped.join(", ")}

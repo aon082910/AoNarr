@@ -143,6 +143,9 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE blocklist ADD COLUMN IF NOT EXISTS size BIGINT`,
   `ALTER TABLE blocklist ADD COLUMN IF NOT EXISTS publish_date TEXT`,
   `ALTER TABLE blocklist ADD COLUMN IF NOT EXISTS info_hash TEXT`,
+  `ALTER TABLE queue ADD COLUMN IF NOT EXISTS protocol TEXT`,
+  `ALTER TABLE queue ADD COLUMN IF NOT EXISTS publish_date TEXT`,
+  `ALTER TABLE queue ADD COLUMN IF NOT EXISTS info_hash TEXT`,
 ];
 
 /**

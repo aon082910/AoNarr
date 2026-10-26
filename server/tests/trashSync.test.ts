@@ -109,8 +109,10 @@ describe("syncTrashFormats", () => {
       failed: [{ name: "Persist Manual", error: expect.stringContaining("already uses this name") }],
       error: null,
     });
-    expect(stored!.added).toBe(2);
+    // A format that lost a condition (the language) is reported but not stored.
+    expect(stored!.added).toBe(1);
     expect(stored!.partiallyUnsupported[0].skipped.length).toBeGreaterThan(0);
+    expect(await db.prepare("SELECT id FROM custom_formats WHERE trash_id = 'persist-partial'").get()).toBeUndefined();
 
     // The settings write is fire-and-forget, so wait for the row rather than assuming it landed.
     await vi.waitFor(async () => {

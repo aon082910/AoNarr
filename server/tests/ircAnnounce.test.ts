@@ -674,3 +674,39 @@ describe("handleAnnounce — which show an announce names (matching Round 8)", (
     expect(grab).toHaveBeenCalledTimes(1);
   });
 });
+
+
+describe("handleAnnounce — Round 11 decisions", () => {
+  it("does not grab a film that is not out yet by its minimum availability (D19)", async () => {
+    await insertTorrentClient();
+    const profileId = await insertProfile();
+    const id = await insertMovie("Leaked Future Movie", profileId, 2031);
+    await db.prepare("UPDATE media_items SET minimum_availability = 'inCinemas', release_date = '2031-06-01' WHERE id = ?").run(id);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Leaked Future Movie 2031 1080p WEBDL"));
+    expect(grab).not.toHaveBeenCalled();
+
+    await db.prepare("UPDATE media_items SET release_date = '2001-06-01' WHERE id = ?").run(id);
+    await handleAnnounce(FEED, announceText("Leaked Future Movie 2031 1080p WEBDL"));
+    expect(grab).toHaveBeenCalledTimes(1);
+  });
+
+  it("a usenet blocklist entry does not block the same name announced as a torrent (D13)", async () => {
+    await insertTorrentClient();
+    const profileId = await insertProfile();
+    const id = await insertMovie("Protocol Scoped Movie", profileId, 2021);
+    const title = "Protocol Scoped Movie 2021 1080p WEBDL";
+    await db.prepare("INSERT INTO blocklist (media_item_id, release_title, protocol) VALUES (?, ?, 'usenet')").run(id, title);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText(title));
+    expect(grab).toHaveBeenCalledTimes(1);
+
+    await db.prepare("DELETE FROM blocklist WHERE media_item_id = ?").run(id);
+    await db.prepare("INSERT INTO blocklist (media_item_id, release_title, protocol) VALUES (?, ?, 'torrent')").run(id, title);
+    grab.mockClear();
+    await handleAnnounce(FEED, announceText(title));
+    expect(grab).not.toHaveBeenCalled();
+  });
+});

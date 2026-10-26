@@ -619,7 +619,7 @@ async function fetchStarrCustomFormats(
   app: StarrFormatApp
 ): Promise<{ raw: TrashCustomFormat & { id: number }; translated: { groups: any[]; skipped: string[] } }[]> {
   const list = (await starrGet(baseUrl, apiKey, "customformat", STARR_FORMAT_APP_VERSION[app])) as (TrashCustomFormat & { id: number })[];
-  return list.filter((cf) => cf.name && Array.isArray(cf.specifications)).map((raw) => ({ raw, translated: translateTrashFormat(raw) }));
+  return list.filter((cf) => cf.name && Array.isArray(cf.specifications)).map((raw) => ({ raw, translated: translateTrashFormat(raw, app === "whisparr" ? undefined : app) }));
 }
 
 /** What the admin sees before committing to an import — every format the instance has, whether
@@ -629,7 +629,7 @@ export async function previewStarrCustomFormats(baseUrl: string, apiKey: string,
   return items.map(({ raw, translated }) => ({
     sourceId: raw.id,
     name: raw.name,
-    translatable: translated.groups.length > 0,
+    translatable: translated.groups.length > 0 && translated.skipped.length === 0,
     skipped: translated.skipped,
   }));
 }
@@ -659,6 +659,11 @@ export async function importStarrCustomFormats(
   for (const { raw, translated } of wanted) {
     if (translated.groups.length === 0) {
       result.skipped.push({ name: raw.name, reason: "none of its conditions are supported" });
+      continue;
+    }
+    if (translated.skipped.length > 0) {
+      // Importing it without those conditions would score releases it was never meant to.
+      result.skipped.push({ name: raw.name, reason: `has conditions AoNarr cannot match: ${translated.skipped.join(", ")}` });
       continue;
     }
     try {

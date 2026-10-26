@@ -196,7 +196,10 @@ CREATE TABLE IF NOT EXISTS queue (
   import_skipped_reason TEXT,
   import_resume_state INTEGER NOT NULL DEFAULT 0,
   match_type TEXT,
-  grab_source TEXT
+  grab_source TEXT,
+  protocol TEXT,
+  publish_date TEXT,
+  info_hash TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_queue_media_item_id ON queue(media_item_id);
 CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);

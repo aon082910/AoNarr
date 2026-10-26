@@ -203,12 +203,17 @@ async function runTrashSync(app: "radarr" | "sonarr", result: TrashSyncResult): 
       continue;
     }
     try {
-      const { groups, skipped } = translateTrashFormat(trash);
+      const { groups, skipped } = translateTrashFormat(trash, app);
       if (groups.length === 0) {
         result.unsupported.push(trash.name);
         continue;
       }
-      if (skipped.length > 0) result.partiallyUnsupported.push({ name: trash.name, skipped });
+      // A format that lost a condition would score releases it was never meant to: not stored (an
+      // already synced copy is left as it is).
+      if (skipped.length > 0) {
+        result.partiallyUnsupported.push({ name: trash.name, skipped });
+        continue;
+      }
 
       const existing = (await db.prepare("SELECT id, name FROM custom_formats WHERE trash_id = ?").get(trash.trash_id)) as
         | { id: number; name: string }

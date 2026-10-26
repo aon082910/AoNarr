@@ -8,6 +8,7 @@ import { getDownloadClientAdapter, removeQueueItemDownload, withQueueImportLock 
 import { importQueueItem, listDownloadedFileCandidates } from "../services/importer.js";
 import { isJobRunning, listJobs } from "../services/jobRegistry.js";
 import { clampLimit, clampOffset } from "../services/mediaQuery.js";
+import { addToBlocklist } from "../services/blocklist.js";
 import { notifyQueueChanged, registerQueueStreamClient, unregisterQueueStreamClient } from "../services/realtime.js";
 import { markQueueImportFailed, markQueueImportStarted } from "../services/scheduler.js";
 import { getSetting } from "../services/settingsStore.js";
@@ -126,9 +127,16 @@ activityRouter.delete(
       }
 
       if (req.query.blocklist === "1") {
-        await db
-          .prepare("INSERT INTO blocklist (media_item_id, release_title, indexer_id, reason) VALUES (?, ?, ?, ?)")
-          .run(queueRow.media_item_id, queueRow.title, queueRow.indexer_id, "Removed from queue by admin");
+        await addToBlocklist({
+          mediaItemId: queueRow.media_item_id,
+          releaseTitle: queueRow.title,
+          indexerId: queueRow.indexer_id,
+          reason: "Removed from queue by admin",
+          protocol: queueRow.protocol,
+          size: queueRow.size,
+          publishDate: queueRow.publish_date,
+          infoHash: queueRow.info_hash,
+        });
       }
 
       if (req.query.removeFromClient !== "0" && queueRow.download_client_id && queueRow.download_id) {

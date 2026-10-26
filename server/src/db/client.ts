@@ -164,6 +164,9 @@ ensureColumn("blocklist", "protocol", "protocol TEXT");
 ensureColumn("blocklist", "size", "size INTEGER");
 ensureColumn("blocklist", "publish_date", "publish_date TEXT");
 ensureColumn("blocklist", "info_hash", "info_hash TEXT");
+ensureColumn("queue", "protocol", "protocol TEXT");
+ensureColumn("queue", "publish_date", "publish_date TEXT");
+ensureColumn("queue", "info_hash", "info_hash TEXT");
 
 /**
  * One-time transition marker for the course/adult "collection"/"single" -> "episodic" shape change

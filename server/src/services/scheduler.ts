@@ -19,6 +19,8 @@ import { identityModeFor, releaseIdentifiesTarget, type IdentityMode, type Ident
 import { releaseRejection } from "./releaseRejections.js";
 import { applyDelayProfile, type DelayProfile } from "./delayHold.js";
 import { availabilityRejection } from "./releaseAvailability.js";
+import { releaseRuntimeMinutes, runtimeContextFor } from "./releaseRuntime.js";
+import { exceedsFreeSpace, freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReserveBytes } from "./freeSpace.js";
 import { compareUsenetAge, comparePeers, largerIsBetterKey, normalizePreferredProtocol, protocolPreferenceKey } from "./releaseRanking.js";
 import { aliasTitlesFor, identityContextFor } from "./releaseAliases.js";
 import { childNumberOf, volumeYearOf } from "./searchQueries.js";
@@ -85,7 +87,8 @@ export async function runSeedGoalCleanup(): Promise<void> {
 import { setSetting } from "./settingsStore.js";
 import { notifyQueueChanged } from "./realtime.js";
 import { runAutoArchival } from "./archival.js";
-import { getBlocklistedTitles } from "./blocklist.js";
+import { addToBlocklist, getBlocklistedTitles } from "./blocklist.js";
+import { isBlockedRelease } from "./blocklistMatch.js";
 import { runTraktSync } from "./traktSync.js";
 import { runPlexWatchlistSync } from "./plexWatchlistSync.js";
 import { runAllImportLists } from "./importLists.js";
@@ -749,13 +752,16 @@ export async function chooseBestResult(
   const preferCutoffQuality = options.preferCutoffQuality ?? (await preferCutoffQualityFor(qualityProfileId));
 
   const minimumSeedersById = new Map((options.indexers ?? []).map((i) => [i.id, i.minimumSeeders ?? 0]));
+  // Free space on the item's root folder, read once per call: a release that would not fit is not worth downloading.
+  const freeBytes = freeSpaceCheckEnabled() ? await freeBytesForItem(mediaItemId) : null;
+  const reserveBytes = freeSpaceReserveBytes();
 
   // Radarr/Sonarr-style per-release rejection reasons — each filter below is unchanged logic,
   // just with a log.info added on the reject path so a search's container-log trail shows why
   // every candidate that didn't make it was dropped, not just the final survivor count.
   const withParsed = results
     .filter((r) => {
-      if (blocklisted.has(r.title)) {
+      if (isBlockedRelease(blocklisted, r)) {
         log.info(`[scheduler] rejected "${r.title}": blocklisted`);
         return false;
       }
@@ -786,8 +792,12 @@ export async function chooseBestResult(
       }
       return true;
     })
-    .filter(({ result }) => {
-      const reason = availabilityRejection(result, minimumSeedersById);
+    .filter(({ result, size }) => {
+      const reason =
+        availabilityRejection(result, minimumSeedersById) ??
+        (exceedsFreeSpace(size, freeBytes, reserveBytes)
+          ? `it is ${Math.round((size ?? 0) / 1e9)} GB, more than the ${Math.max(0, Math.round((freeBytes! - reserveBytes) / 1e9))} GB free on the root folder`
+          : null);
       if (reason) log.info(`[scheduler] rejected "${result.title}": ${reason}`);
       return !reason;
     });
@@ -868,6 +878,9 @@ export async function chooseBestResult(
   }
 
   const allowed = new Set(allowedQualities);
+  // With size limits written per minute, a release is judged by its size per minute of the video it holds.
+  const runtimeContext = await runtimeContextFor(mediaItemId, mediaType);
+  const runtimeOf = (parsed: Parameters<typeof releaseRuntimeMinutes>[0]) => (runtimeContext ? releaseRuntimeMinutes(parsed, runtimeContext) : null);
   const namesMainTitleOnly = new Set<SearchResult>();
   const relevant = packFiltered.filter(({ result, parsed, size }) => {
     if (!tiered) {
@@ -898,7 +911,7 @@ export async function chooseBestResult(
     }
     // Drop releases whose size doesn't fit their claimed quality's configured size range — usually
     // a mislabeled or fake release (e.g. a 200MB file claiming to be 1080p).
-    if (!sizeWithinQualityBounds(parsed.quality, size)) {
+    if (!sizeWithinQualityBounds(parsed.quality, size, runtimeOf(parsed))) {
       log.info(`[scheduler] rejected "${result.title}": size doesn't fit this quality's configured size range`);
       return false;
     }
@@ -946,6 +959,7 @@ export async function chooseBestResult(
     result: SearchResult;
     size: number | null;
     quality: string;
+    runtime: number | null;
     matchTier: number;
     totalScore: number;
   }[] = [];
@@ -959,6 +973,7 @@ export async function chooseBestResult(
             result,
             size,
             quality: parsed.quality,
+            runtime: runtimeOf(parsed),
             matchTier: matchTierFor(result, identity),
             ...(await scoreRelease(
               result.title,
@@ -1019,7 +1034,7 @@ export async function chooseBestResult(
       publishedAt(b) - publishedAt(a) ||
       (reputationByGroup.get(parseReleaseTitle(b.result.title).releaseGroup) ?? 0.5) -
         (reputationByGroup.get(parseReleaseTitle(a.result.title).releaseGroup) ?? 0.5) ||
-      preferredSizeDistance(a.quality, a.size) - preferredSizeDistance(b.quality, b.size) ||
+      preferredSizeDistance(a.quality, a.size, a.runtime) - preferredSizeDistance(b.quality, b.size, b.runtime) ||
       (tiered ? largerIsBetterKey(b.size) - largerIsBetterKey(a.size) : 0)
   );
   const winner = candidates[0];
@@ -1149,10 +1164,27 @@ export async function grab(
     const size = Number.isFinite(best.size) ? Math.round(best.size) : null;
     await db
       .prepare(
-        `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, indexer_id, download_client_id, download_id, size, quality, status, retry_count, match_type, grab_source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`
+        `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, indexer_id, download_client_id, download_id, size, quality, status, retry_count, match_type, grab_source, protocol, publish_date, info_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)`
       )
-      .run(mediaItem.id, episodeId, subItemId, packSeason, best.title, best.indexerId, client.id, downloadId, size, quality, retryCount, chosen.identity?.matchType ?? null, source);
+      .run(
+        mediaItem.id,
+        episodeId,
+        subItemId,
+        packSeason,
+        best.title,
+        best.indexerId,
+        client.id,
+        downloadId,
+        size,
+        quality,
+        retryCount,
+        chosen.identity?.matchType ?? null,
+        source,
+        best.protocol,
+        best.publishDate ?? null,
+        best.infoHash ?? null
+      );
 
     await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
       mediaItem.id,
@@ -2658,12 +2690,16 @@ export async function retryFailedGrab(
   const mediaTitle = mediaRow?.title ?? match.title;
 
   if (recordFailure || (releaseAtFault && !(await getBlocklistedTitles(match.mediaItemId)).has(match.title))) {
-    await db.prepare("INSERT INTO blocklist (media_item_id, release_title, indexer_id, reason) VALUES (?, ?, ?, ?)").run(
-      match.mediaItemId,
-      match.title,
-      match.indexerId,
-      reason
-    );
+    await addToBlocklist({
+      mediaItemId: match.mediaItemId,
+      releaseTitle: match.title,
+      indexerId: match.indexerId,
+      reason,
+      protocol: match.protocol,
+      size: match.size,
+      publishDate: match.publishDate,
+      infoHash: match.infoHash,
+    });
   }
   await db.prepare("INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'failed', ?)").run(
     match.mediaItemId,
