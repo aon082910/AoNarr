@@ -29,6 +29,57 @@ export async function sceneIndexFor(mediaItemId: number): Promise<SceneIndex | u
   return new Map(rows.map((r) => [`${r.scene_season_number}:${r.scene_episode_number}`, `${r.season_number}:${r.episode_number}`]));
 }
 
+interface EpisodeRow {
+  season_number: number;
+  episode_number: number;
+  air_date?: string | null;
+}
+
+export interface SceneNumber {
+  season: number;
+  episode: number;
+}
+
+/**
+ * TheXEM numbers episodes by TVDB's order, and AoNarr's episode rows are TVDB's only when TVDB listed them:
+ * with a TMDB id too, the rows come from TMDB (the first provider that is asked), whose seasons are split
+ * differently for some shows (American Dad!, long-running anime). A mapping that names an episode the rows do
+ * not have is for another numbering, and written onto them it would put a scene number on the wrong episode.
+ */
+export function xemAlignsWithRows(rows: EpisodeRow[], wanted: ReadonlyMap<string, SceneNumber>): boolean {
+  const have = new Set(rows.map((r) => `${r.season_number}:${r.episode_number}`));
+  for (const key of wanted.keys()) if (!have.has(key)) return false;
+  return true;
+}
+
+/**
+ * Episodes newer than the last one TheXEM lists carry its last offset forward (Sonarr's
+ * XemService.ExtrapolateMappings): a show whose TVDB S01E14-E26 are scene S02E01-E13 and whose E27 TheXEM has
+ * not added yet is searched as S02E14, not S01E27. Only a season with a shifted last mapping is extended
+ * (an unshifted one needs nothing), and only an episode that aired after the last mapped one: an older
+ * episode TheXEM dropped from the map was dropped on purpose. Returns the extra entries.
+ */
+export function extrapolateSceneNumbers(rows: EpisodeRow[], wanted: ReadonlyMap<string, SceneNumber>): Map<string, SceneNumber> {
+  const extra = new Map<string, SceneNumber>();
+  const airDateOf = new Map(rows.map((r) => [`${r.season_number}:${r.episode_number}`, r.air_date ?? null]));
+  const lastBySeason = new Map<number, { episode: number; scene: SceneNumber; airDate: string | null }>();
+  for (const [key, scene] of wanted) {
+    const [season, episode] = key.split(":").map(Number);
+    const last = lastBySeason.get(season);
+    if (!last || episode > last.episode) lastBySeason.set(season, { episode, scene, airDate: airDateOf.get(key) ?? null });
+  }
+  for (const row of rows) {
+    const key = `${row.season_number}:${row.episode_number}`;
+    const last = lastBySeason.get(row.season_number);
+    if (wanted.has(key) || !last || row.episode_number <= last.episode) continue;
+    if (!row.air_date || !last.airDate || row.air_date <= last.airDate) continue;
+    const shifted = last.scene.season !== row.season_number || last.scene.episode !== last.episode;
+    if (!shifted) continue;
+    extra.set(key, { season: last.scene.season, episode: last.scene.episode + (row.episode_number - last.episode) });
+  }
+  return extra;
+}
+
 /**
  * Sonarr's TheXEM (thexem.info) scene-numbering integration — some shows (mostly anime, some
  * long-running series with production-order/broadcast-order mismatches) are released by scene
@@ -77,8 +128,14 @@ export async function syncSceneNumbering(mediaItemId: number): Promise<{ updated
     if (scene && entry.tvdb) wanted.set(`${entry.tvdb.season}:${entry.tvdb.episode}`, scene);
   }
   const rows = (await db
-    .prepare("SELECT id, season_number, episode_number, scene_season_number, scene_episode_number FROM episodes WHERE media_item_id = ?")
-    .all(mediaItemId)) as { id: number; season_number: number; episode_number: number; scene_season_number: number | null; scene_episode_number: number | null }[];
+    .prepare("SELECT id, season_number, episode_number, scene_season_number, scene_episode_number, air_date FROM episodes WHERE media_item_id = ?")
+    .all(mediaItemId)) as { id: number; season_number: number; episode_number: number; scene_season_number: number | null; scene_episode_number: number | null; air_date: string | null }[];
+  // Rows that may be TMDB's are numbered like TVDB's only if the mapping fits them.
+  if (externalIds.tmdb && !xemAlignsWithRows(rows, wanted)) {
+    log.info(`[sceneNumbering] "${mediaRow.title}": TheXEM's TVDB numbering does not fit this show's TMDB episode list; scene numbering left as it was`);
+    return { updated: 0 };
+  }
+  for (const [key, scene] of extrapolateSceneNumbers(rows, wanted)) wanted.set(key, scene);
   let updated = 0;
   await db.transaction(async () => {
     for (const row of rows) {
