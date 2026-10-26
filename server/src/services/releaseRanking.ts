@@ -17,6 +17,14 @@ export function protocolPreferenceKey(preferred: PreferredProtocol, protocol: Se
   return preferred !== "none" && protocol === preferred ? 1 : 0;
 }
 
+/** Releases of different protocols are never compared by peers or age, so the protocol is a key of its own
+ * ahead of those: without it the order would depend on which releases are compared (A beats B on size, B
+ * beats C on size, C beats A on seeders). Lower sorts first; torrents first keeps the order of a
+ * default install, where a seeded torrent has always beaten an NZB. */
+export function protocolGroup(protocol: SearchResult["protocol"]): number {
+  return protocol === "torrent" ? 0 : protocol === "usenet" ? 1 : protocol === "http" ? 2 : 3;
+}
+
 /** Radarr/Sonarr compare peers as Math.Round(Math.Log10(n)), so 45 and 60 seeders tie. */
 export function peerBucket(count: number | null | undefined): number {
   return count != null && count > 0 ? Math.round(Math.log10(count)) : 0;

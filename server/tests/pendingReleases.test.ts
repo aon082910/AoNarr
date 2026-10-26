@@ -127,7 +127,7 @@ describe("runPendingReleases", () => {
     const young = release({ publishDate: ago(30) });
     const choose = async (remaining: any[], delay: unknown) => (delay ? null : { result: remaining[0], quality: "WEBDL-1080p" });
     const kept: any[] = [];
-    const held = await sched.isHeldByDelay([young], "WEBDL-1080p", { preferredProtocol: "none" } as any, choose as any, async (r) => {
+    const held = await sched.isHeldByDelay([young], "WEBDL-1080p", { preferredProtocol: "none", enableUsenet: true, enableTorrent: true, usenetDelayMinutes: 0, torrentDelayMinutes: 120 } as any, choose as any, async (r) => {
       kept.push(r);
     });
     expect(held).toBe(true);

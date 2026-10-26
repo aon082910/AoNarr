@@ -19,7 +19,7 @@ import { scoreRelease } from "../services/customFormatScoring.js";
 import { log } from "../services/logger.js";
 import { knownReleaseSize, qualityRank, sizeWithinQualityBounds, usesQualityTiers } from "../services/quality.js";
 import { releaseRuntimeMinutes, runtimeContextFor } from "../services/releaseRuntime.js";
-import { compareUsenetAge, comparePeers, protocolPreferenceKey } from "../services/releaseRanking.js";
+import { compareUsenetAge, comparePeers, protocolGroup, protocolPreferenceKey } from "../services/releaseRanking.js";
 import { getBlocklistedTitles, isBlocklisted } from "../services/blocklist.js";
 import { isBlockedRelease } from "../services/blocklistMatch.js";
 import {
@@ -361,6 +361,7 @@ searchRouter.get(
         b.matchTier - a.matchTier ||
         protocolPreferenceKey(preferredProtocol, b.protocol) - protocolPreferenceKey(preferredProtocol, a.protocol) ||
         priorityOf(a) - priorityOf(b) ||
+        protocolGroup(a.protocol) - protocolGroup(b.protocol) ||
         comparePeers(a, b) ||
         compareUsenetAge(a, b) ||
         (a.protocol === "torrent" && b.protocol === "torrent" ? (b.seeders ?? 0) - (a.seeders ?? 0) : 0)

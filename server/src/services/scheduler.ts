@@ -22,7 +22,7 @@ import { availabilityRejection } from "./releaseAvailability.js";
 import { releaseRuntimeMinutes, runtimeContextFor } from "./releaseRuntime.js";
 import { recordPending } from "./pendingStore.js";
 import { exceedsFreeSpace, freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReserveBytes } from "./freeSpace.js";
-import { compareUsenetAge, comparePeers, largerIsBetterKey, normalizePreferredProtocol, protocolPreferenceKey } from "./releaseRanking.js";
+import { compareUsenetAge, comparePeers, largerIsBetterKey, normalizePreferredProtocol, protocolGroup, protocolPreferenceKey } from "./releaseRanking.js";
 import { aliasTitlesFor, identityContextFor } from "./releaseAliases.js";
 import { childNumberOf, volumeYearOf } from "./searchQueries.js";
 import { judgeSeasonPack, loadPackEpisodes, packSettings, type PackEpisode } from "./seasonPacks.js";
@@ -927,11 +927,15 @@ export async function chooseBestResult(
 
   // The delay profile judges the releases that are otherwise fit to grab, so the oldest of them
   // shows whether the wait for a better one has run out (see applyDelayProfile).
-  const delay = applyDelayProfile(
+  const delay = await applyDelayProfile(
     relevant,
     delayProfile,
     { cutoff, allowedQualities, preferCutoffQuality, userInvoked: !!options.userInvoked },
-    ({ parsed }) => parsed.quality
+    ({ parsed }) => parsed.quality,
+    async ({ result, size }) => {
+      const scored = await scoreRelease(result.title, size, qualityProfileId, mediaType, result.downloadVolumeFactor ?? null, mediaItemId, result.indexerId ?? null);
+      return !scored.rejected && scored.totalScore >= minFormatScore;
+    }
   );
   // A held release scoring at or above the profile's bypass score is not held after all.
   if (delayProfile?.bypassIfAboveFormatScore && delay.held.length > 0) {
@@ -1047,6 +1051,7 @@ export async function chooseBestResult(
       b.matchTier - a.matchTier ||
       protocolPreferenceKey(preferredProtocol, b.result.protocol) - protocolPreferenceKey(preferredProtocol, a.result.protocol) ||
       priorityOf(a) - priorityOf(b) ||
+      protocolGroup(a.result.protocol) - protocolGroup(b.result.protocol) ||
       (tiered
         ? comparePeers(a.result, b.result) || compareUsenetAge(a.result, b.result, now)
         : bothTorrents(a.result, b.result)
@@ -1544,8 +1549,15 @@ export async function isHeldByDelay(
   // Called only after a search that grabbed nothing: it was the delay if the same releases would have
   // been grabbed without it.
   if (!delayProfile) return false;
+  // Nothing was held unless some release is on a protocol the profile switches off or has a delay to wait out.
+  const gated = (r: SearchResult) =>
+    (r.protocol === "torrent" && (!delayProfile.enableTorrent || delayProfile.torrentDelayMinutes > 0)) ||
+    (r.protocol === "usenet" && (!delayProfile.enableUsenet || delayProfile.usenetDelayMinutes > 0));
+  if (!results.some(gated)) return false;
   const chosen = await choose(results, null);
-  if (chosen && onHeld) await onHeld(chosen.result);
+  // A release on a switched-off protocol is never grabbed, so there is nothing to wait for.
+  const waiting = chosen !== null && gated(chosen.result) && !(chosen.result.protocol === "torrent" ? !delayProfile.enableTorrent : chosen.result.protocol === "usenet" && !delayProfile.enableUsenet);
+  if (chosen && waiting && onHeld) await onHeld(chosen.result);
   return chosen !== null;
 }
 

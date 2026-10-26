@@ -105,12 +105,22 @@ describe("chooseBestResult — which of equal releases wins (D6, D7, D17)", () =
     expect((await choose([usenet, torrent], { delay: delayProfile({ preferredProtocol: "torrent" }) }))?.result).toBe(torrent);
   });
 
-  it("D6: with no preferred protocol, seeders do not rank a torrent above an NZB", async () => {
+  it("D6: with no preferred protocol, a torrent is ranked ahead of an NZB as on main, in whatever order they arrive", async () => {
     const torrent = release({ seeders: 900 });
     const usenet = nzb();
-    // Equal on every key: the first in the list stays first.
-    expect((await choose([usenet, torrent]))?.result).toBe(usenet);
+    expect((await choose([usenet, torrent]))?.result).toBe(torrent);
     expect((await choose([torrent, usenet]))?.result).toBe(torrent);
+  });
+
+  it("the winner does not depend on the order the indexers answered in (the order is a consistent one)", async () => {
+    // A beats C on peers, B beats A on size, C beats B on size: only a protocol key keeps that from looping.
+    const a = release({ seeders: 1000, size: 4_000_000_000 });
+    const b = nzb({ size: 6_000_000_000 });
+    const c = release({ seeders: 10, size: 8_000_000_000 });
+    const perms = [[a, b, c], [a, c, b], [b, a, c], [b, c, a], [c, a, b], [c, b, a]];
+    const winners = await Promise.all(perms.map(async (p) => (await choose(p))?.result));
+    expect(new Set(winners).size).toBe(1);
+    expect(winners[0]).toBe(a);
   });
 
   it("D7: indexer priority decides between the same quality on a video type, ahead of seeders", async () => {
@@ -382,5 +392,104 @@ describe("chooseBestResult — the delay bypass by custom-format score (D8e)", (
     const patched = await request(app).patch(`/api/delay-profiles/${made.body.id}`).set("X-Api-Key", apiKey).send({ minimumBypassFormatScore: -50 });
     expect(patched.body.minimumBypassFormatScore).toBe(-50);
     expect((await request(app).patch(`/api/delay-profiles/${made.body.id}`).set("X-Api-Key", apiKey).send({ minimumBypassFormatScore: "abc" })).status).toBe(400);
+  });
+});
+
+
+describe("review fixes (Round 11)", () => {
+  it("an old blocklist row without a protocol still blocks the same title from another indexer", async () => {
+    const { entryBlocksResult } = await import("../src/services/blocklistMatch.js");
+    const legacy = { releaseTitle: "Movie.2020.1080p.WEB-DL-GRP", protocol: null, indexerId: 1, size: null, publishDate: null, infoHash: null };
+    expect(entryBlocksResult(legacy, release({ title: "Movie.2020.1080p.WEB-DL-GRP", indexerId: 2 }))).toBe(true);
+    const recent = { ...legacy, protocol: "torrent" };
+    expect(entryBlocksResult(recent, release({ title: "Movie.2020.1080p.WEB-DL-GRP", indexerId: 2 }))).toBe(false);
+  });
+
+  it("matches the same NZB to within a couple of minutes and megabytes", async () => {
+    const { entryBlocksResult } = await import("../src/services/blocklistMatch.js");
+    const date = "2026-10-01T10:00:00.000Z";
+    const row = { releaseTitle: "Movie.NZB", protocol: "usenet", indexerId: null, size: 4_000_000_000, publishDate: date, infoHash: null };
+    expect(entryBlocksResult(row, nzb({ title: "Movie.NZB", publishDate: "2026-10-01T10:01:30.000Z" }))).toBe(true);
+    expect(entryBlocksResult(row, nzb({ title: "Movie.NZB", publishDate: "2026-10-01T10:10:00.000Z" }))).toBe(false);
+    const noDate = { ...row, publishDate: null };
+    expect(entryBlocksResult(noDate, nzb({ title: "Movie.NZB", publishDate: null, size: 4_001_000_000 }))).toBe(true);
+    expect(entryBlocksResult(noDate, nzb({ title: "Movie.NZB", publishDate: null, size: 4_100_000_000 }))).toBe(false);
+  });
+
+  const delay = (over: Record<string, unknown> = {}) => delayProfile({ torrentDelayMinutes: 120, usenetDelayMinutes: 60, ...over });
+
+  it("an old release on a switched-off protocol does not end the wait for a fresh one", async () => {
+    const oldTorrent = release({ publishDate: ago(180) });
+    const freshNzb = nzb({ publishDate: ago(10) });
+    expect(await choose([oldTorrent, freshNzb], { delay: delay({ enableTorrent: false }) })).toBeNull();
+    expect((await choose([freshNzb], { delay: delay({ enableTorrent: false, usenetDelayMinutes: 0 }) }))?.result).toBe(freshNzb);
+  });
+
+  it("an old release that scores under the minimum does not end the wait either", async () => {
+    const profileId = Number(
+      (await db.prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff) VALUES (?, ?, 'WEBDL-1080p')").run(`Min ${Math.random()}`, JSON.stringify(ANY)))
+        .lastInsertRowid
+    );
+    const formatId = Number(
+      (await db.prepare("INSERT INTO custom_formats (name, patterns) VALUES (?, ?)").run(`Bad ${Math.random()}`, JSON.stringify([{ type: "releaseGroup", patterns: ["^BADGRP$"], negate: false }])))
+        .lastInsertRowid
+    );
+    await db.prepare("INSERT INTO quality_profile_format_scores (quality_profile_id, custom_format_id, score) VALUES (?, ?, -10000)").run(profileId, formatId);
+    const oldBad = release({ title: "Some.Movie.2020.1080p.WEB-DL.x264-BADGRP", publishDate: ago(300) });
+    const freshGood = release({ title: "Some.Movie.2020.1080p.WEB-DL.x264-GOODGRP", publishDate: ago(20) });
+    expect(await sched.chooseBestResult([oldBad, freshGood], ANY, "WEBDL-1080p", profileId, 0, null, new Set(), "movie", delay())).toBeNull();
+    const oldGood = release({ title: "Some.Movie.2020.1080p.WEB-DL.x264-OLDGOOD", publishDate: ago(300) });
+    // A release that can be grabbed and is past the delay ends the wait: both go through.
+    const both = await sched.chooseBestResult([oldGood, freshGood], ANY, "WEBDL-1080p", profileId, 0, null, new Set(), "movie", delay());
+    expect([oldGood, freshGood]).toContain(both?.result);
+  });
+
+  it("a torrent nobody seeds does not end the wait", async () => {
+    const dead = release({ seeders: 0, publishDate: ago(300) });
+    const fresh = release({ publishDate: ago(20) });
+    // The dead one is past the delay itself (so it can still be the last resort), but it frees nothing else.
+    expect((await choose([dead, fresh], { delay: delay() }))?.result).toBe(dead);
+    expect(await choose([fresh], { delay: delay() })).toBeNull();
+  });
+
+  it("the quality bypass needs a cutoff on the quality ladder", async () => {
+    const sd = release({ title: "Some.Movie.2020.480p.WEB-DL.x264-GRP", publishDate: ago(5) });
+    const best = await choose([sd], { allowed: [], cutoff: "Renamed-1080p", delay: delay({ bypassIfHighestQuality: true }) });
+    expect(best).toBeNull();
+  });
+
+  it("a profile saved with a cutoff outside its list can still have its allowed list edited", async () => {
+    const id = Number(
+      (await db.prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff) VALUES (?, ?, 'WEBDL-2160p')").run(`Legacy ${Math.random()}`, JSON.stringify(["WEBDL-720p", "WEBDL-1080p"])))
+        .lastInsertRowid
+    );
+    const patch = (body: object) => request(app).patch(`/api/quality-profiles/${id}`).set("X-Api-Key", apiKey).send(body);
+    expect((await patch({ allowedQualities: ["WEBDL-1080p"] })).status).toBe(200);
+    expect((await patch({ cutoff: "Remux-2160p" })).status).toBe(400);
+    expect((await patch({ allowedQualities: "nope" })).status).toBe(400);
+  });
+
+  it("isHeldByDelay does not run a second decision when no release is gated by the profile", async () => {
+    let calls = 0;
+    const choosing = async (remaining: any[]) => {
+      calls++;
+      return { result: remaining[0], quality: "WEBDL-1080p" } as any;
+    };
+    const zero = delay({ torrentDelayMinutes: 0, usenetDelayMinutes: 0 });
+    expect(await sched.isHeldByDelay([release()], "WEBDL-1080p", zero, choosing)).toBe(false);
+    expect(calls).toBe(0);
+  });
+
+  it("a release on a switched-off protocol is not kept as pending", async () => {
+    const kept: any[] = [];
+    const choosing = async (remaining: any[], d: unknown) => (d ? null : ({ result: remaining[0], quality: "WEBDL-1080p" } as any));
+    await sched.isHeldByDelay([release()], "WEBDL-1080p", delay({ enableTorrent: false }), choosing, async (r) => {
+      kept.push(r);
+    });
+    expect(kept).toHaveLength(0);
+    await sched.isHeldByDelay([release()], "WEBDL-1080p", delay(), choosing, async (r) => {
+      kept.push(r);
+    });
+    expect(kept).toHaveLength(1);
   });
 });

@@ -7,12 +7,12 @@ import type { SearchResult } from "../types/index.js";
  * - a torrent is matched by info hash when both sides have one, and otherwise by title (ignoring
  *   case) on the same indexer;
  * - a usenet post (or any other result) is matched by title (ignoring case), and then by publish
- *   date, or by size where a side has no date;
+ *   date (within two minutes), or by size (within 2 MB) where a side has no date;
  * - a row that recorded a protocol never blocks a result of another one: a failed torrent from a
  *   stalled tracker does not block the healthy NZB of the same name.
  *
- * A row from before these details were kept has only a title (and often an indexer), so it blocks
- * a result of the same name, whatever its protocol.
+ * A row from before these details were kept has only a title (and often an indexer): it blocks a
+ * result of the same name on any protocol and any indexer, as it always has.
  */
 
 export interface BlocklistEntry {
@@ -24,10 +24,14 @@ export interface BlocklistEntry {
   infoHash: string | null;
 }
 
+const SAME_POST_SECONDS = 120;
+const SAME_POST_BYTES = 2 * 1024 * 1024;
+
+/** The same post to the minute or two: indexers round or shift a usenet post's date. */
 function sameInstant(a: string, b: string): boolean {
   const x = Date.parse(a);
   const y = Date.parse(b);
-  return Number.isFinite(x) && Number.isFinite(y) ? x === y : a === b;
+  return Number.isFinite(x) && Number.isFinite(y) ? Math.abs(x - y) <= SAME_POST_SECONDS * 1000 : a === b;
 }
 
 /** Whether the blocklist entry is this search result. */
@@ -37,12 +41,15 @@ export function entryBlocksResult(entry: BlocklistEntry, result: Pick<SearchResu
   if (result.protocol === "torrent") {
     if (entry.infoHash && result.infoHash) return entry.infoHash.toLowerCase() === result.infoHash.toLowerCase();
     if (entry.releaseTitle.toLowerCase() !== result.title.toLowerCase()) return false;
+    // A row that knows its protocol is a recent one: its torrent is the one on its own indexer. An older row
+    // knows only the name and keeps blocking that name everywhere.
+    if (!entry.protocol) return true;
     return entry.indexerId == null || result.indexerId == null || entry.indexerId === result.indexerId;
   }
 
   if (entry.releaseTitle.toLowerCase() !== result.title.toLowerCase()) return false;
   if (entry.publishDate && result.publishDate) return sameInstant(entry.publishDate, result.publishDate);
-  if (entry.size && result.size) return entry.size === result.size;
+  if (entry.size && result.size) return Math.abs(entry.size - result.size) <= SAME_POST_BYTES;
   return true;
 }
 

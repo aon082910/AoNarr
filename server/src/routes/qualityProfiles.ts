@@ -70,7 +70,13 @@ qualityProfilesRouter.patch(
         | { allowed_qualities: string; cutoff: string }
         | undefined;
       if (!existing) throw new HttpError(404, "Quality profile not found");
-      validateProfile(b.allowedQualities ?? JSON.parse(existing.allowed_qualities), b.cutoff ?? existing.cutoff);
+      const before = JSON.parse(existing.allowed_qualities) as string[];
+      const wasValid = before.length === 0 || before.includes(existing.cutoff);
+      // A profile saved before the cutoff was checked may already name one outside its list: editing the
+      // list alone must still be possible, so it is judged only when the request sets the cutoff or the
+      // profile was valid until now.
+      if (b.cutoff !== undefined || wasValid) validateProfile(b.allowedQualities ?? before, b.cutoff ?? existing.cutoff);
+      else if (!Array.isArray(b.allowedQualities) || b.allowedQualities.some((q: unknown) => typeof q !== "string" || q === "")) throw new HttpError(400, "allowedQualities must be a list of quality names");
     }
     if (b.name !== undefined) {
       sets.push("name = ?");

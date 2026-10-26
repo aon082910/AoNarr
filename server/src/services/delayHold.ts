@@ -50,10 +50,12 @@ export interface DelayOutcome<T> {
 
 /** The best quality the profile would grab: its cutoff when it caps there, else its highest allowed one. */
 export function bestGrabbableQuality(ctx: Pick<DelayContext, "cutoff" | "allowedQualities" | "preferCutoffQuality">): string | null {
-  if (ctx.preferCutoffQuality && ctx.cutoff) return ctx.cutoff;
+  // A cutoff that is not on the quality ladder (a renamed quality) has no rank to compare with: it would
+  // rank every release at or above it.
+  if (ctx.preferCutoffQuality && ctx.cutoff && qualityRank(ctx.cutoff) >= 0) return ctx.cutoff;
   const allowed = ctx.allowedQualities.filter((q) => qualityRank(q) >= 0);
   if (allowed.length > 0) return [...allowed].sort((a, b) => qualityRank(b) - qualityRank(a))[0];
-  return ctx.cutoff || null;
+  return null;
 }
 
 function delayMinutesFor(profile: DelayProfile, protocol: SearchResult["protocol"]): number {
@@ -78,12 +80,15 @@ function ageMinutes(result: SearchResult, now: number): number | null {
  * - Once the oldest release on offer is past the delay, every one of them goes through: the wait
  *   was for a better release to appear, and the older one has already had it.
  */
-export function applyDelayProfile<T extends { result: SearchResult }>(
+export async function applyDelayProfile<T extends { result: SearchResult }>(
   items: T[],
   profile: DelayProfile | null,
   ctx: DelayContext,
-  qualityOf: (item: T) => string
-): DelayOutcome<T> {
+  qualityOf: (item: T) => string,
+  /** Whether a release could be grabbed at all (it passes the minimum format score, is not rejected by a
+   * release profile): only such a release can show that the wait is over. Omitted = every release can. */
+  couldBeGrabbed?: (item: T) => Promise<boolean>
+): Promise<DelayOutcome<T>> {
   const outcome: DelayOutcome<T> = { kept: [], disabled: [], held: [] };
   if (!profile) {
     outcome.kept = items;
@@ -91,10 +96,29 @@ export function applyDelayProfile<T extends { result: SearchResult }>(
   }
   const now = ctx.now ?? Date.now();
   const best = profile.bypassIfHighestQuality ? bestGrabbableQuality(ctx) : null;
-  const oldest = items.reduce((max, { result }) => {
-    const age = result.protocol === "torrent" || result.protocol === "usenet" ? ageMinutes(result, now) : null;
-    return age != null && age > max ? age : max;
-  }, -Infinity);
+  // The oldest release that can still be grabbed, found only when a younger release needs it: a torrent
+  // nobody seeds, a protocol turned off, or a release scoring under the profile's minimum never ends a wait.
+  let oldestAge: number | undefined;
+  const oldestGrabbable = async (): Promise<number> => {
+    if (oldestAge !== undefined) return oldestAge;
+    const aged = items
+      .map((item) => ({ item, age: item.result.protocol === "torrent" || item.result.protocol === "usenet" ? ageMinutes(item.result, now) : null }))
+      .filter(({ item, age }) => {
+        if (age == null) return false;
+        const { protocol, seeders } = item.result;
+        if (protocol === "torrent" ? !profile.enableTorrent : !profile.enableUsenet) return false;
+        return !(protocol === "torrent" && seeders === 0);
+      })
+      .sort((a, b) => (b.age as number) - (a.age as number));
+    oldestAge = -Infinity;
+    for (const { item, age } of aged) {
+      if (!couldBeGrabbed || (await couldBeGrabbed(item))) {
+        oldestAge = age as number;
+        break;
+      }
+    }
+    return oldestAge;
+  };
 
   for (const item of items) {
     const { result } = item;
@@ -117,7 +141,7 @@ export function applyDelayProfile<T extends { result: SearchResult }>(
       continue;
     }
     const age = ageMinutes(result, now);
-    if (age == null || age >= delay || oldest >= delay) outcome.kept.push(item);
+    if (age == null || age >= delay || (await oldestGrabbable()) >= delay) outcome.kept.push(item);
     else outcome.held.push(item);
   }
   return outcome;
