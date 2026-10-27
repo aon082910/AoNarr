@@ -3,7 +3,33 @@ import { log } from "./logger.js";
 import { parseReleaseTitle, type ReleaseFlag } from "./releaseParser.js";
 import { usesQualityTiers } from "./quality.js";
 
-export type IndexerFlag = "freeleech" | "halfleech";
+export type IndexerFlag = "freeleech" | "halfleech" | "doubleupload" | "internal" | "scene";
+
+/** What an indexer reported about a release besides its name: Torznab's volume factors and `tag` attributes. */
+export interface IndexerInfo {
+  downloadVolumeFactor?: number | null;
+  uploadVolumeFactor?: number | null;
+  tags?: string[];
+}
+
+/** The indexer-reported flags of a search result, in the shape the scoring reads. */
+export function indexerInfoOf(result: { downloadVolumeFactor?: number | null; uploadVolumeFactor?: number | null; indexerTags?: string[] }): IndexerInfo {
+  return { downloadVolumeFactor: result.downloadVolumeFactor ?? null, uploadVolumeFactor: result.uploadVolumeFactor ?? null, tags: result.indexerTags ?? [] };
+}
+
+/** The flags an indexer's attributes add up to; null when it reported nothing at all (unknown, not "no flags"). */
+function indexerFlagsOf(info: number | null | IndexerInfo): Set<IndexerFlag> | null {
+  const i: IndexerInfo = typeof info === "number" ? { downloadVolumeFactor: info } : info ?? {};
+  const tags = (i.tags ?? []).map((t) => t.toLowerCase());
+  if (i.downloadVolumeFactor == null && i.uploadVolumeFactor == null && tags.length === 0) return null;
+  const flags = new Set<IndexerFlag>();
+  if (i.downloadVolumeFactor === 0 || tags.includes("freeleech")) flags.add("freeleech");
+  if (i.downloadVolumeFactor === 0.5 || tags.includes("halfleech")) flags.add("halfleech");
+  if ((i.uploadVolumeFactor ?? 0) >= 2 || tags.includes("doubleupload")) flags.add("doubleupload");
+  if (tags.includes("internal")) flags.add("internal");
+  if (tags.includes("scene")) flags.add("scene");
+  return flags;
+}
 
 export type QualityModifier = "regional" | "screener" | "rawhd" | "brdisk";
 export type ReleaseTypeCondition = "single" | "multi" | "seasonPack";
@@ -31,7 +57,7 @@ export interface ConditionGroup {
   minYear?: number | null; // year conditions: inclusive lower bound
   maxYear?: number | null; // year conditions: inclusive upper bound
   flags?: ReleaseFlag[]; // releaseFlags conditions: any of proper/repack/extended/unrated/directorscut/imax
-  indexerFlags?: IndexerFlag[]; // indexerFlag conditions: any of freeleech/halfleech (from Torznab's downloadvolumefactor)
+  indexerFlags?: IndexerFlag[]; // indexerFlag conditions: any of freeleech/halfleech/doubleupload/internal/scene (Torznab's volume factors and tags)
   qualityModifiers?: QualityModifier[]; // qualityModifier conditions: any of regional/screener/rawhd/brdisk
   releaseTypes?: ReleaseTypeCondition[]; // releaseType conditions: any of single/multi/seasonPack
   negate: boolean; // if true, the group passes when it would otherwise NOT
@@ -105,14 +131,14 @@ function testTerm(term: string, text: string): boolean {
  *   non-episodic release (movie, album, book) never passes.
  * Every type inverts under `negate` (e.g. "must not contain x265", "must not be French").
  */
-function groupPasses(group: ConditionGroup, title: string, sizeBytes: number | null, downloadVolumeFactor: number | null): boolean {
+function groupPasses(group: ConditionGroup, title: string, sizeBytes: number | null, downloadVolumeFactor: number | null | IndexerInfo): boolean {
   if (group.type === "indexerFlag") {
-    // Unknown status (indexer didn't report downloadvolumefactor at all) never matches — a "must
-    // be freeleech" condition should exclude a release whose freeleech status is simply unknown,
-    // not treat "unknown" as satisfying it.
-    if (downloadVolumeFactor == null) return group.negate ? true : false;
-    const detected: IndexerFlag | null = downloadVolumeFactor === 0 ? "freeleech" : downloadVolumeFactor === 0.5 ? "halfleech" : null;
-    const anyMatch = detected != null && (group.indexerFlags ?? []).includes(detected);
+    // Unknown status (the indexer reported no volume factor and no tag) never matches — a "must be freeleech"
+    // condition should exclude a release whose freeleech status is simply unknown, not treat "unknown" as
+    // satisfying it.
+    const flags = indexerFlagsOf(downloadVolumeFactor);
+    if (flags == null) return group.negate ? true : false;
+    const anyMatch = (group.indexerFlags ?? []).some((f) => flags.has(f));
     return group.negate ? !anyMatch : anyMatch;
   }
 
@@ -195,7 +221,7 @@ export function formatMatches(
   groups: ConditionGroup[],
   title: string,
   sizeBytes: number | null = null,
-  downloadVolumeFactor: number | null = null
+  downloadVolumeFactor: number | null | IndexerInfo = null
 ): boolean {
   if (groups.length === 0) return false;
   return groups.every((g) => groupPasses(g, title, sizeBytes, downloadVolumeFactor));
@@ -325,7 +351,7 @@ export async function scoreRelease(
   releaseSizeBytes: number | null,
   qualityProfileId: number | null,
   mediaType: string | null = null,
-  downloadVolumeFactor: number | null = null,
+  downloadVolumeFactor: number | null | IndexerInfo = null,
   mediaItemId: number | null = null,
   indexerId: number | null = null
 ): Promise<ReleaseScore> {

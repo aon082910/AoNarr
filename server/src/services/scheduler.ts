@@ -55,7 +55,7 @@ import {
   usesQualityTiers,
   type QualityGroups,
 } from "./quality.js";
-import { scoreRelease } from "./customFormatScoring.js";
+import { indexerInfoOf, scoreRelease } from "./customFormatScoring.js";
 import { getMediaTypeConfig, MEDIA_TYPES } from "./mediaTypes.js";
 import {
   downloadClientFromRow,
@@ -1046,7 +1046,7 @@ export async function chooseBestResult(
     { cutoff, allowedQualities, qualityGroups, preferCutoffQuality, userInvoked: !!options.userInvoked },
     ({ parsed }) => parsed.quality,
     async ({ result, size }) => {
-      const scored = await scoreRelease(result.title, size, qualityProfileId, mediaType, result.downloadVolumeFactor ?? null, mediaItemId, result.indexerId ?? null);
+      const scored = await scoreRelease(result.title, size, qualityProfileId, mediaType, indexerInfoOf(result), mediaItemId, result.indexerId ?? null);
       return !scored.rejected && scored.totalScore >= minFormatScore;
     }
   );
@@ -1058,7 +1058,7 @@ export async function chooseBestResult(
         held.size,
         qualityProfileId,
         mediaType,
-        held.result.downloadVolumeFactor ?? null,
+        indexerInfoOf(held.result),
         mediaItemId,
         held.result.indexerId ?? null
       );
@@ -1120,7 +1120,7 @@ export async function chooseBestResult(
               size,
               qualityProfileId,
               mediaType,
-              result.downloadVolumeFactor ?? null,
+              indexerInfoOf(result),
               mediaItemId,
               result.indexerId ?? null
             )),

@@ -1530,6 +1530,9 @@ class BlackholeAdapter implements DownloadClientAdapter {
  * how that pair rides through AoNarr's existing "grab posts a downloadUrl back" contract without
  * needing a special case throughout the rest of the search/grab pipeline.
  */
+/** slskd's downloads directory per client, read once in a while: it changes with its configuration, not per poll. */
+const SLSKD_DOWNLOADS_DIRECTORY = new Map<string, { dir: string | null; at: number }>();
+
 class SlskdAdapter implements DownloadClientAdapter {
   private baseUrl(client: DownloadClient): string {
     const scheme = client.useSsl ? "https" : "http";
@@ -1569,6 +1572,28 @@ class SlskdAdapter implements DownloadClientAdapter {
     return { downloadId: `${username} ${filename}` };
   }
 
+  /** The folder slskd saves downloads in (its own `directories.downloads` option), or null when it will not say. */
+  private async downloadsDirectory(client: DownloadClient): Promise<string | null> {
+    const key = `${client.id}:${client.host}:${client.port}`;
+    const known = SLSKD_DOWNLOADS_DIRECTORY.get(key);
+    if (known && Date.now() - known.at < 10 * 60 * 1000) return known.dir;
+    const dir = await this.fetchDownloadsDirectory(client);
+    SLSKD_DOWNLOADS_DIRECTORY.set(key, { dir, at: Date.now() });
+    return dir;
+  }
+
+  private async fetchDownloadsDirectory(client: DownloadClient): Promise<string | null> {
+    try {
+      const res = await apiFetch(`${this.baseUrl(client)}/api/v0/options`, { headers: this.headers(client) });
+      if (!res.ok) return null;
+      const options = (await res.json()) as { directories?: { downloads?: unknown } };
+      const dir = options?.directories?.downloads;
+      return typeof dir === "string" && dir.trim() ? dir.trim().replace(/[\\/]+$/, "") : null;
+    } catch {
+      return null;
+    }
+  }
+
   async getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
     const wanted = new Set(downloadIds);
     const res = await apiFetch(`${this.baseUrl(client)}/api/v0/transfers/downloads`, { headers: this.headers(client) });
@@ -1599,8 +1624,12 @@ class SlskdAdapter implements DownloadClientAdapter {
       const total = tracks.reduce((sum, f) => sum + (Number(f.size) || 0), 0);
       const moved = tracks.reduce((sum, f) => sum + Math.min(Number(f.bytesTransferred) || 0, Number(f.size) || 0), 0);
       const stalled = !done && !failed && states.every((state) => state === "Queued, Remotely" || state === "Requested");
+      // slskd saves a folder under the name of the remote folder, in its downloads directory.
+      const downloads = await this.downloadsDirectory(client);
+      const folderName = folder.directory.split(/[\\/]/).filter(Boolean).pop();
       updates.push({
         downloadId: id,
+        ...(downloads && folderName ? { remotePath: `${downloads}${downloads.includes("\\") && !downloads.includes("/") ? "\\" : "/"}${folderName}` } : {}),
         progress: done ? 1 : total > 0 ? Math.min(moved / total, 1) : 0,
         status: failed ? "failed" : done ? "completed" : "downloading",
         ...(stalled ? { stalled: true } : {}),
