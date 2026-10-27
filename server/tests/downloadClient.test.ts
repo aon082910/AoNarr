@@ -1841,6 +1841,79 @@ describe("SlskdAdapter", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("/transfers/downloads/someuser");
   });
 
+  it("addDownload enqueues every track of a folder in one request and tracks the folder as one download", async () => {
+    const { encodeSlskdFolderUrl, slskdFolderDownloadId } = await import("../src/services/soulseek.js");
+    const fetchMock = vi.fn().mockResolvedValue(ok({}));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = await insertClient({ type: "slskd", api_key: "key" });
+    const folder = { username: "peer", directory: "Music\\Artist\\Album", files: [{ filename: "Music\\Artist\\Album\\01.flac", size: 10 }, { filename: "Music\\Artist\\Album\\02.flac", size: 20 }] };
+
+    const result = await adapter().addDownload(client, encodeSlskdFolderUrl(folder));
+
+    expect(result.downloadId).toBe(slskdFolderDownloadId(folder));
+    expect(fetchMock.mock.calls[0][0]).toContain("/transfers/downloads/peer");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(folder.files);
+  });
+
+  it("addDownload fails a folder when slskd could not enqueue all its tracks", async () => {
+    const { encodeSlskdFolderUrl } = await import("../src/services/soulseek.js");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ok({ enqueued: [{}], failed: [{ filename: "02.flac", reason: "no" }] })));
+    const client = await insertClient({ type: "slskd", api_key: "key" });
+    const folder = { username: "peer", directory: "Music\\Album", files: [{ filename: "Music\\Album\\01.flac", size: 1 }, { filename: "Music\\Album\\02.flac", size: 1 }] };
+
+    await expect(adapter().addDownload(client, encodeSlskdFolderUrl(folder))).rejects.toThrow(/could not enqueue 1 of the 2 tracks/);
+  });
+
+  it("getStatus counts only the files of the folder itself, not a sibling folder with a longer name", async () => {
+    const { slskdFolderDownloadId } = await import("../src/services/soulseek.js");
+    const folder = { username: "peer", directory: "Music\\OK Computer", files: [{ filename: "", size: 0 }, { filename: "", size: 0 }] };
+    const id = slskdFolderDownloadId(folder);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        ok([
+          {
+            username: "peer",
+            directories: [
+              {
+                files: [
+                  { filename: "Music\\OK Computer\\01.flac", state: "Completed, Succeeded", size: 100, bytesTransferred: 100 },
+                  { filename: "Music\\OK Computer OKNOTOK\\01.flac", state: "Completed, Succeeded", size: 100, bytesTransferred: 100 },
+                  { filename: "Music\\OK Computer OKNOTOK\\02.flac", state: "Completed, Succeeded", size: 100, bytesTransferred: 100 },
+                ],
+              },
+            ],
+          },
+        ])
+      )
+    );
+    expect((await adapter().getStatus({} as any, [id]))[0]).toMatchObject({ status: "downloading" });
+  });
+
+  it("getStatus sums a folder's tracks: downloading while any is, completed when all are, failed when one is", async () => {
+    const { slskdFolderDownloadId } = await import("../src/services/soulseek.js");
+    const folder = { username: "peer", directory: "Music\\Artist\\Album", files: [{ filename: "", size: 0 }, { filename: "", size: 0 }] };
+    const id = slskdFolderDownloadId(folder);
+    const files = (states: [string, number][]) =>
+      ok([{ username: "peer", directories: [{ files: states.map(([state, bytes], i) => ({ filename: `Music\\Artist\\Album\\0${i + 1}.flac`, state, size: 100, bytesTransferred: bytes })) }] }]);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(files([["Completed, Succeeded", 100], ["InProgress", 50]])));
+    expect(await adapter().getStatus({} as any, [id])).toEqual([{ downloadId: id, progress: 0.75, status: "downloading" }]);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(files([["Completed, Succeeded", 100], ["Completed, Succeeded", 100]])));
+    expect(await adapter().getStatus({} as any, [id])).toEqual([{ downloadId: id, progress: 1, status: "completed" }]);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(files([["Completed, Succeeded", 100], ["Completed, Rejected", 0]])));
+    expect((await adapter().getStatus({} as any, [id]))[0]).toMatchObject({ status: "failed" });
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(files([["Queued, Remotely", 0], ["Requested", 0]])));
+    expect((await adapter().getStatus({} as any, [id]))[0]).toMatchObject({ status: "downloading", stalled: true });
+
+    // Not all the tracks have shown up in slskd yet: not done, even when those that have are.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(files([["Completed, Succeeded", 100]])));
+    expect((await adapter().getStatus({} as any, [id]))[0]).toMatchObject({ status: "downloading" });
+  });
+
   it("getStatus matches transfers by username+filename and maps slskd's state strings", async () => {
     vi.stubGlobal(
       "fetch",

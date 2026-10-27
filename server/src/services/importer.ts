@@ -31,6 +31,7 @@ import { syncSubtitleToVideo } from "./subtitleSync.js";
 import { DEFAULT_SHAPE_TEMPLATES, DEFAULT_TRACK_TEMPLATE, providerIdVars, renderTemplate } from "./naming.js";
 import { effectiveShape, getMediaTypeConfig, isProbeableFile, type MediaShape } from "./mediaTypes.js";
 import { groupedRank, parseQualityGroups, usesQualityTiers, type QualityGroups } from "./quality.js";
+import { romSetCompanions } from "./romSets.js";
 import { releaseRecordFor } from "./fileRelease.js";
 import { propersMode, revisionUpgrade } from "./upgradeRules.js";
 import { getSetting } from "./settingsStore.js";
@@ -1540,7 +1541,17 @@ export async function placeFile(params: {
     }
   }
 
+  // A disc game's sheet brings the tracks it names, under their own names (the sheet refers to them by name).
+  const romTracks = item.type === "rom" ? romSetCompanions(sourceFile) : [];
+  // The tracks keep their names, so one that is already there (another game's, in a shared folder) is never overwritten.
+  for (const track of romTracks) {
+    const target = path.join(path.dirname(destPath), path.basename(track));
+    if (fs.existsSync(target)) {
+      throw new ImportSkippedError(`"${target}" already exists — not overwriting it with a track of "${path.basename(sourceFile)}"`);
+    }
+  }
   await moveFile(sourceFile, destPath);
+  for (const track of romTracks) await moveFile(track, path.join(path.dirname(destPath), path.basename(track)));
   for (const key of claimKeys) batchClaims?.add(key);
 
   if (VIDEO_EXTENSIONS.has(ext.toLowerCase()) && (shape === "single" || shape === "episodic")) {
@@ -1919,6 +1930,17 @@ export async function placeAlbumFiles(params: {
       throw new ImportSkippedError(`"${dest}" is already another library entry's file — not importing "${subRow.title}" over it`);
     }
   }
+  // An album that already has its files is replaced only by a release that holds all of them: a smaller one would leave
+  // the tracks it lacks in the old format beside the new ones, with the album marked complete.
+  if (!onlyAnchor && subRow.has_file) {
+    const hadTracks = tracks.filter((t) => Number(t.has_file)).length;
+    const matched = new Set(toPlace.filter((p) => p.track).map((p) => p.track.id)).size;
+    if (hadTracks > 1 && matched < hadTracks) {
+      throw new ImportSkippedError(
+        `"${subRow.title}" already has ${hadTracks} track file(s) and this download matches only ${matched} of them — not replacing the album with part of it`
+      );
+    }
+  }
   const claimKeysOf = (p: { track: any; dest: string }) => [`dest:${destKey(p.dest)}`, ...(p.track ? [`track:${p.track.id}`] : [])];
   for (const p of toPlace) {
     if (batchClaims && claimKeysOf(p).some((key) => batchClaims.has(key))) {
@@ -2001,14 +2023,11 @@ export async function placeAlbumFiles(params: {
   // One file added to an album is not the album's size: the whole folder's is.
   const sizeBytes = movedCount === 0 ? null : onlyAnchor ? mediaBytesUnder(destFolder, typeConfig.extensions) : totalMovedBytes;
 
-  await db.prepare("UPDATE sub_items SET has_file = ?, file_path = ?, quality = ?, media_info = ?, size_bytes = ? WHERE id = ?").run(
-    movedCount > 0 ? 1 : 0,
-    destFolder,
-    quality,
-    mediaInfo ? JSON.stringify(mediaInfo) : null,
-    sizeBytes,
-    subItemId
-  );
+  // The release the files came from goes on the album with them (a later format upgrade is judged against it); a
+  // hand-picked file is of no known release.
+  await db
+    .prepare("UPDATE sub_items SET has_file = ?, file_path = ?, quality = ?, media_info = ?, size_bytes = ?, file_release_title = ? WHERE id = ?")
+    .run(movedCount > 0 ? 1 : 0, destFolder, quality, mediaInfo ? JSON.stringify(mediaInfo) : null, sizeBytes, onlyAnchor ? null : releaseTitle ?? null, subItemId);
   if (movedCount > 0) await markParentHasFile(item.id);
   // After the row updates: a file any row still points at is never recycled.
   await recycleReplacedFiles(replacedPaths, placedPaths, item);

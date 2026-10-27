@@ -2679,6 +2679,21 @@ export default function MediaDetail() {
                           other title
                         </span>
                       )}
+                      {r.nameOk === false && (
+                        <span className="badge danger" style={{ marginLeft: 6 }} title={r.nameReason ?? undefined}>
+                          other title
+                        </span>
+                      )}
+                      {r.revisionLabel && (
+                        <span className="badge" style={{ marginLeft: 6 }} title="A later revision of a release">
+                          {r.revisionLabel}
+                        </span>
+                      )}
+                      {r.upgrade && (
+                        <span className={`badge ${r.upgrade === "yes" ? "ok" : ""}`} style={{ marginLeft: 6 }} title={r.upgrade === "yes" ? "Would replace the file you have" : "Would not replace the file you have"}>
+                          {r.upgrade === "yes" ? "upgrade" : "no upgrade"}
+                        </span>
+                      )}
                       {r.blocklisted && (
                         <span className="badge danger" style={{ marginLeft: 6 }}>
                           blocklisted

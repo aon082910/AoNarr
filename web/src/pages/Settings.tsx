@@ -2203,6 +2203,15 @@ export default function Settings() {
                       {label}
                     </label>
                   ))}
+                  <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      style={{ width: "auto" }}
+                      checked={settings.nonVideoUpgrades === "1"}
+                      onChange={(e) => saveSetting("nonVideoUpgrades", e.target.checked ? "1" : "0")}
+                    />
+                    Replace an album, book, audiobook or comic with a better format of it (lossless over lossy, epub over pdf, cbz over cbr) when auto-upgrade is on. The old files go to the recycle bin.
+                  </label>
                   {numbers.map(([key, label, fallback, placeholder]) => (
                     <div key={key}>
                       <label htmlFor={`settings-${key}`}>{label}</label>

@@ -61,11 +61,11 @@ const AUDIO_EXT = [".mp3", ".flac", ".m4a", ".ogg", ".wav", ".opus", ".aac", ".a
 const BOOK_EXT = [".epub", ".mobi", ".pdf", ".azw3", ".m4b"];
 const AUDIOBOOK_EXT = [".m4b", ".mp3", ".m4a", ".flac", ".ogg", ".opus", ".aac"];
 const COMIC_EXT = [".cbz", ".cbr", ".pdf"];
-// Multi-file dumps (.bin with its .cue, .gdi with its tracks) are left for a manual import, and Mega Drive's ".md"
-// is left out: it is also Markdown.
+// A disc game is imported by its .cue or .gdi sheet, which brings the .bin tracks it names (romSets.ts), so the tracks
+// are not listed; Mega Drive's ".md" is left out because it is also Markdown.
 const ROM_EXT = [
   ".zip", ".7z", ".nes", ".sfc", ".smc", ".gba", ".gbc", ".gb", ".n64", ".z64", ".v64", ".nds", ".3ds", ".iso", ".chd",
-  ".cso", ".pbp", ".wbfs", ".rvz", ".wad", ".gcm", ".nsp", ".xci", ".gen", ".smd", ".sms", ".gg", ".pce", ".a26", ".a78",
+  ".cue", ".gdi", ".cso", ".pbp", ".wbfs", ".rvz", ".wad", ".gcm", ".nsp", ".xci", ".gen", ".smd", ".sms", ".gg", ".pce", ".a26", ".a78",
 ];
 
 /** Extensions ffprobe can actually read (real video/audio containers) — used to skip pointlessly

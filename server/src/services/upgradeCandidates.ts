@@ -1,5 +1,7 @@
 import { db } from "../db/index.js";
 import { groupedRank, parseQualityGroups, usesQualityTiers, type QualityGroups } from "./quality.js";
+import { formatUpgradeFloor } from "./nonVideoMatch.js";
+import { getSetting } from "./settingsStore.js";
 
 export interface UpgradeCandidate {
   mediaItemId: number;
@@ -180,6 +182,28 @@ async function findUpgradeCandidatesUncached(): Promise<UpgradeCandidate[]> {
         currentQuality: s.quality,
         cutoff: profile.cutoff,
         profileName: profile.name,
+      });
+    }
+  }
+
+  // Albums, books and issues whose file is in a format a better one could replace (opt-in, setting nonVideoUpgrades).
+  if (getSetting("nonVideoUpgrades") === "1") {
+    const files = (await db
+      .prepare(
+        `SELECT s.id, s.title AS "subTitle", s.file_release_title, m.id AS "mediaItemId", m.type, m.title
+         FROM sub_items s JOIN media_items m ON m.id = s.media_item_id
+         WHERE s.has_file = 1 AND s.monitored = 1 AND m.monitored = 1 AND s.file_release_title IS NOT NULL`
+      )
+      .all()) as { id: number; subTitle: string; file_release_title: string; mediaItemId: number; type: string; title: string }[];
+    for (const s of files) {
+      if (formatUpgradeFloor(s.type, s.file_release_title) === null) continue;
+      candidates.push({
+        mediaItemId: s.mediaItemId,
+        subItemId: s.id,
+        target: `${s.title} - ${s.subTitle}`,
+        currentQuality: "Unknown",
+        cutoff: "best format",
+        profileName: "format",
       });
     }
   }

@@ -708,6 +708,69 @@ describe("placeFile — single shape (movie)", () => {
   });
 });
 
+describe("placeFile — a disc game's cue sheet brings its tracks", () => {
+  it("moves the .bin tracks a .cue names beside it, under their own names", async () => {
+    const folder = await insertRootFolder("rom");
+    const rom = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('rom','Disc Game','disc game',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    const cue = writeDownloadFile(
+      path.join("Disc Game (USA)", "Disc Game (USA).cue"),
+      'FILE "Disc Game (USA) (Track 1).bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\nFILE "Disc Game (USA) (Track 2).bin" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n'
+    );
+    const track1 = writeDownloadFile(path.join("Disc Game (USA)", "Disc Game (USA) (Track 1).bin"), "data");
+    const track2 = writeDownloadFile(path.join("Disc Game (USA)", "Disc Game (USA) (Track 2).bin"), "audio");
+    const other = writeDownloadFile(path.join("Disc Game (USA)", "Other Game.bin"), "not named by the sheet");
+
+    const placed = await placeFile({ itemId: rom, episodeId: null, subItemId: null, sourceFile: cue, quality: null });
+
+    const dir = path.dirname(placed.destPath);
+    expect(fs.existsSync(placed.destPath)).toBe(true);
+    expect(fs.existsSync(path.join(dir, "Disc Game (USA) (Track 1).bin"))).toBe(true);
+    expect(fs.existsSync(path.join(dir, "Disc Game (USA) (Track 2).bin"))).toBe(true);
+    expect(fs.existsSync(track1) || fs.existsSync(track2)).toBe(false);
+    // A file the sheet does not name stays where it was.
+    expect(fs.existsSync(other)).toBe(true);
+    expect(fs.existsSync(path.join(dir, "Other Game.bin"))).toBe(false);
+  });
+});
+
+describe("placeFile — a cue sheet's tracks, edge cases", () => {
+  async function insertRom(): Promise<{ rom: number; folder: any }> {
+    const folder = await insertRootFolder("rom");
+    const rom = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('rom','Edge Game','edge game',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    return { rom, folder };
+  }
+
+  it("finds a track the sheet names in another case", async () => {
+    const { rom } = await insertRom();
+    const cue = writeDownloadFile(path.join("Edge Game", "Edge Game.cue"), 'FILE "Edge Game.bin" BINARY\n');
+    writeDownloadFile(path.join("Edge Game", "EDGE GAME.BIN"), "data");
+
+    const placed = await placeFile({ itemId: rom, episodeId: null, subItemId: null, sourceFile: cue, quality: null });
+
+    expect(fs.readdirSync(path.dirname(placed.destPath)).some((n) => n === "EDGE GAME.BIN")).toBe(true);
+  });
+
+  it("never overwrites a file of the same name already in the destination folder", async () => {
+    const { rom } = await insertRom();
+    const first = writeDownloadFile(path.join("First", "Edge Game.cue"), 'FILE "Track 01.bin" BINARY\n');
+    writeDownloadFile(path.join("First", "Track 01.bin"), "first");
+    const placed = await placeFile({ itemId: rom, episodeId: null, subItemId: null, sourceFile: first, quality: null });
+    expect(fs.readFileSync(path.join(path.dirname(placed.destPath), "Track 01.bin"), "utf8")).toBe("first");
+
+    const second = writeDownloadFile(path.join("Second", "Edge Game.cue"), 'FILE "Track 01.bin" BINARY\n');
+    const other = writeDownloadFile(path.join("Second", "Track 01.bin"), "second");
+    await expect(placeFile({ itemId: rom, episodeId: null, subItemId: null, sourceFile: second, quality: null })).rejects.toThrow(/already exists/);
+    expect(fs.existsSync(other)).toBe(true);
+    expect(fs.readFileSync(path.join(path.dirname(placed.destPath), "Track 01.bin"), "utf8")).toBe("first");
+  });
+});
+
 describe("placeFile — episodic shape (series)", () => {
   async function insertShowWithEpisode(folderId: number, opts: { season?: number; episode?: number; hasFile?: boolean } = {}) {
     const showId = Number(
@@ -1600,6 +1663,33 @@ describe("placeAlbumFiles", () => {
 
     await expect(placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: anchor, quality: null })).rejects.toThrow(/several albums/);
     expect(fs.existsSync(anchor)).toBe(true);
+  });
+
+  it("records the release an album came from, and refuses to replace a complete album with part of one", async () => {
+    const folder = await insertRootFolder("artist");
+    const { artistId, albumId } = await insertArtistAlbum(folder.id);
+    for (const n of [1, 2, 3]) await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, ?, ?)").run(albumId, n, `Track ${n}`);
+    const first = writeDownloadFile(path.join("Some.Album.MP3", "01 - Track 1.mp3"));
+    writeDownloadFile(path.join("Some.Album.MP3", "02 - Track 2.mp3"));
+    writeDownloadFile(path.join("Some.Album.MP3", "03 - Track 3.mp3"));
+    await placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: first, quality: null, releaseTitle: "Some Artist - Some Album [MP3 320]" });
+    const album = (await db.prepare("SELECT has_file, file_release_title FROM sub_items WHERE id = ?").get(albumId)) as any;
+    expect(Number(album.has_file)).toBe(1);
+    expect(album.file_release_title).toBe("Some Artist - Some Album [MP3 320]");
+
+    // A lossless download of two of the three tracks must not replace it.
+    const flac = writeDownloadFile(path.join("Some.Album.FLAC", "01 - Track 1.flac"));
+    writeDownloadFile(path.join("Some.Album.FLAC", "02 - Track 2.flac"));
+    await expect(
+      placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: flac, quality: null, releaseTitle: "Some Artist - Some Album [FLAC]" })
+    ).rejects.toThrow(/not replacing the album with part of it/);
+    expect(fs.existsSync(flac)).toBe(true);
+    expect(((await db.prepare("SELECT file_release_title FROM sub_items WHERE id = ?").get(albumId)) as any).file_release_title).toBe("Some Artist - Some Album [MP3 320]");
+
+    // The whole album replaces it.
+    writeDownloadFile(path.join("Some.Album.FLAC", "03 - Track 3.flac"));
+    await placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: flac, quality: null, releaseTitle: "Some Artist - Some Album [FLAC]" });
+    expect(((await db.prepare("SELECT file_release_title FROM sub_items WHERE id = ?").get(albumId)) as any).file_release_title).toBe("Some Artist - Some Album [FLAC]");
   });
 
   it("keeps an unmatched file's original filename (no track list fetched yet)", async () => {

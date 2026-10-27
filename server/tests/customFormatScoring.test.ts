@@ -189,6 +189,25 @@ describe("scoreRelease (DB-backed custom formats + release profiles)", () => {
     expect(match?.score).toBe(0);
   });
 
+  it("scores a music or book release only by a format that names its type, never by an unscoped video one (N30)", async () => {
+    const { scoreRelease } = await import("../src/services/customFormatScoring.js");
+    const unscoped = await db
+      .prepare("INSERT INTO custom_formats (name, patterns) VALUES ('UnscopedFlac', ?)")
+      .run(JSON.stringify([{ type: "title", patterns: ["FLAC"], negate: false }]));
+    const music = await db
+      .prepare("INSERT INTO custom_formats (name, patterns, media_types) VALUES ('MusicFlac', ?, ?)")
+      .run(JSON.stringify([{ type: "title", patterns: ["FLAC"], negate: false }]), JSON.stringify(["artist"]));
+    for (const id of [unscoped.lastInsertRowid, music.lastInsertRowid]) {
+      await db.prepare("INSERT INTO quality_profile_format_scores (quality_profile_id, custom_format_id, score) VALUES (?, ?, 40)").run(qualityProfileId, Number(id));
+    }
+    const album = await scoreRelease("Queen - Greatest Hits [FLAC]", null, qualityProfileId, "artist");
+    expect(album.matches.map((m) => m.name)).toEqual(["MusicFlac"]);
+    // A video release still gets the unscoped one.
+    const video = await scoreRelease("Movie.2023.FLAC.1080p-GROUP", null, qualityProfileId, "movie");
+    expect(video.matches.map((m) => m.name)).toContain("UnscopedFlac");
+    expect(video.matches.map((m) => m.name)).not.toContain("MusicFlac");
+  });
+
   it("skips a format restricted to media types that don't include this release's type", async () => {
     const { scoreRelease } = await import("../src/services/customFormatScoring.js");
     await db

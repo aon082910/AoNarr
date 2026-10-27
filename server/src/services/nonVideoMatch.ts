@@ -9,6 +9,18 @@
  * Pure: it is asked after scheduler.ts's looser containment test has passed, and can only refuse.
  */
 
+/**
+ * A title without the edition a provider tacks on after a dash or colon ("Thriller - Remastered", "Rumours: Deluxe
+ * Edition", "Abbey Road - 2019 Mix"): the release for the plain album is the one wanted, and a release of the
+ * edition names the plain title as well. A title that is nothing but the suffix is left alone.
+ */
+export function editionlessTitle(title: string): string {
+  const stripped = title
+    .replace(/\s*[-–:]\s*(?:\d{4}\s+)?(?:(?:the\s+)?(?:\d+(?:st|nd|rd|th)\s+)?(?:anniversary|deluxe|remaster(?:ed)?|expanded|special|collector'?s|super deluxe|limited|bonus|reissue|extended|mono|stereo|digital|explicit|clean|legacy|platinum)(?:\s+(?:version|edition|mix|tracks?|mastered))*(?:\s+\d{4})?)\s*$/i, "")
+    .trim();
+  return stripped.length > 0 ? stripped : title;
+}
+
 export interface NonVideoName {
   title: string;
   parentTitle?: string | null;
@@ -436,6 +448,24 @@ export function nonVideoRejection(releaseTitle: string, name: NonVideoName, medi
     default:
       return null;
   }
+}
+
+/** Types whose files can be replaced by a better format of the same album, book or issue (N24). ROMs have no ladder. */
+// (Not audiobooks: a chapter-by-chapter download and a single .m4b do not replace each other file for file.)
+const FORMAT_UPGRADE_TYPES = new Set(["artist", "author", "comic", "manga"]);
+/** How much better (by nonVideoPreference) a release must be than the file's to replace it: lossy to lossless, mobi or
+ * pdf to epub, cbr or pdf to cbz; never a bitrate step or an equal format. */
+export const FORMAT_UPGRADE_STEP = 20;
+const BEST_FORMAT_PREFERENCE = 100;
+
+/**
+ * The preference of the file an album, book or issue has, when a better format is worth searching for: null when
+ * the type has no ladder, the release it came from is unknown, or it is already the best format.
+ */
+export function formatUpgradeFloor(mediaType: string, fileReleaseTitle: string | null | undefined): number | null {
+  if (!FORMAT_UPGRADE_TYPES.has(mediaType) || !fileReleaseTitle) return null;
+  const preference = nonVideoPreference(fileReleaseTitle, mediaType);
+  return preference + FORMAT_UPGRADE_STEP > BEST_FORMAT_PREFERENCE + 5 ? null : preference;
 }
 
 /**

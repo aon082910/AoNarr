@@ -1,6 +1,6 @@
 import { db } from "../db/index.js";
 import { log } from "./logger.js";
-import { getMediaTypeConfig } from "./mediaTypes.js";
+import { getMediaTypeConfig, MEDIA_TYPES } from "./mediaTypes.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import { judgeSeasonPack, loadPackEpisodes, packSettings, type PackEpisode } from "./seasonPacks.js";
 import { releaseRejection } from "./releaseRejections.js";
@@ -9,7 +9,23 @@ import { guessTitleFromText, titlesMatch } from "./libraryScan.js";
 import { scoreRelease } from "./customFormatScoring.js";
 import { getBlocklistedTitles } from "./blocklist.js";
 import { downloadClientFromRow, mediaItemFromRow, qualityProfileFromRow } from "../db/mappers.js";
-import { grab, isAlreadyQueued, isReleaseAvailableForSearch, pickClientForProtocol, type ChosenResult } from "./scheduler.js";
+import {
+  chooseBestResult,
+  existingFileQuality,
+  grab,
+  isAlreadyQueued,
+  isNotYetReleased,
+  isReleaseAvailableForSearch,
+  pickClientForProtocol,
+  siblingTitlesOf,
+  yearFieldsOf,
+  type ChosenResult,
+} from "./scheduler.js";
+import { identityKey } from "./releaseIdentity.js";
+import { editionlessTitle } from "./nonVideoMatch.js";
+import { existingFileRecord } from "./fileRelease.js";
+import { judgeUpgrade, propersMode, upgradeProfileOf } from "./upgradeRules.js";
+import { getSetting } from "./settingsStore.js";
 import { computeAbsoluteEpisodeNumber } from "./importer.js";
 import { parseQualityGroups, sameQualityGroup, usesQualityTiers, type QualityGroups } from "./quality.js";
 import { aliasSeasonsFor, aliasTitlesByItem, applyAliasSeason, resolveReleaseItemInLibrary, seasonEpisodeCounts } from "./releaseAliases.js";
@@ -76,7 +92,10 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
 
   // An announce is unsolicited: which item it names is decided library-wide, with aliases, and two
   // items both claiming it is a reason to grab nothing (Sonarr's MultipleSeriesFoundException).
-  const singleItems = ((await db.prepare("SELECT * FROM media_items WHERE monitored = 1 AND has_file = 0").all()) as any[])
+  // With auto-upgrade on (the switch the RSS sync and the upgrade job share) an item that has its file is a candidate too:
+  // tryGrabMatch grabs the release only when it would replace the file by the profile's upgrade rules.
+  const upgradesOn = getSetting("autoUpgradeEnabled") === "1";
+  const singleItems = ((await db.prepare(`SELECT * FROM media_items WHERE monitored = 1${upgradesOn ? "" : " AND has_file = 0"}`).all()) as any[])
     .map(mediaItemFromRow)
     .filter((item) => getMediaTypeConfig(item.type).shape === "single")
     // A film not out yet by its minimum availability is not grabbed from an announce either (a leak or a
@@ -120,6 +139,10 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
     if (grabbed) return; // one announce maps to at most one grab
   }
 
+  // An album, book, audiobook, comic issue or manga chapter: the wanted sub-items of the library that the name could be
+  // (N29). The scheduled search's own name test says which one it is.
+  if (!episodeShaped && (await grabSubItemAnnounce(feed, releaseTitle, downloadUrl, parsed.quality, targetClient))) return;
+
   // An episode announce is numbered SxxEyy, by absolute number ("[Group] Show - 25"), by air date, or is a
   // pack of a season: all of them are mapped to the episodes they hold, as the RSS sync does.
   const numbered =
@@ -134,7 +157,7 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
       `SELECT e.*, m.id AS parent_id, m.type AS parent_type, m.title AS parent_title, m.year AS parent_year, m.external_ids AS parent_external_ids,
               m.quality_profile_id AS parent_quality_profile_id, m.root_folder_id AS parent_root_folder_id, m.extra_metadata AS parent_extra_metadata
        FROM episodes e JOIN media_items m ON m.id = e.media_item_id
-       WHERE e.monitored = 1 AND e.has_file = 0 AND m.monitored = 1`
+       WHERE e.monitored = 1${upgradesOn ? "" : " AND e.has_file = 0"} AND m.monitored = 1`
     )
     .all()) as any[];
   const parentOf = (ep: any) =>
@@ -199,6 +222,66 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
   }
 }
 
+/** Types an announce can name a sub-item of: collections with no quality tiers that are searched on indexers. */
+function announceCollectionTypes(): string[] {
+  return Object.values(MEDIA_TYPES)
+    .filter((t) => t.shape === "collection" && !usesQualityTiers(t.key) && t.key !== "video" && t.key !== "podcast")
+    .map((t) => t.key);
+}
+
+/**
+ * Whether the announce names a wanted album, book, comic issue or manga chapter, and if so grabs it. The parent (artist,
+ * author, series) has to be named in the release, a cheap test that keeps most of the library out; then each of its
+ * missing monitored sub-items is asked the way a search asks it, by chooseBestResult's name test on this one release.
+ */
+async function grabSubItemAnnounce(feed: IrcFeedRow, releaseTitle: string, downloadUrl: string, quality: string, targetClient: DownloadClient): Promise<boolean> {
+  const types = announceCollectionTypes();
+  if (types.length === 0) return false;
+  const releaseKey = ` ${identityKey(releaseTitle)} `;
+  const parents = ((await db.prepare(`SELECT * FROM media_items WHERE monitored = 1 AND type IN (${types.map(() => "?").join(",")})`).all(...types)) as any[])
+    .map(mediaItemFromRow)
+    .filter((item) => {
+      const key = identityKey(item.title);
+      return key.length > 0 && releaseKey.includes(` ${key} `);
+    });
+  const result: SearchResult = {
+    indexerId: null,
+    indexerName: `irc:${feed.name}`,
+    title: releaseTitle,
+    size: 0,
+    seeders: null,
+    leechers: null,
+    publishDate: new Date().toISOString(),
+    downloadUrl,
+    protocol: feed.protocol,
+    category: null,
+  };
+  for (const parent of parents) {
+    const subItems = ((await db.prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND monitored = 1 AND has_file = 0 ORDER BY id").all(parent.id)) as any[]).sort(
+      // "Rumours" before "Rumours: Deluxe Edition": a release of the plain album names both once the edition is stripped.
+      (a, b) => Number(editionlessTitle(a.title) !== a.title) - Number(editionlessTitle(b.title) !== b.title)
+    );
+    for (const sub of subItems) {
+      // An album or book not out yet is not grabbed from an announce either.
+      if (["artist", "author", "audiobook"].includes(parent.type) && isNotYetReleased(sub.release_date)) continue;
+      const name = {
+        title: sub.title,
+        parentTitle: parent.title,
+        siblingTitles: await siblingTitlesOf(parent, sub.id),
+        ...(await yearFieldsOf(parent, sub)),
+      };
+      const named = await chooseBestResult([result], [], "", null, 0, null, new Set(), parent.type, null, null, parent.id, { name });
+      if (!named) continue;
+      const grabbed = await serializeForTarget(`sub:${sub.id}`, async () => {
+        if (await isAlreadyQueued(parent.id, null, sub.id)) return false;
+        return tryGrabMatch(parent, null, sub.id, releaseTitle, downloadUrl, quality, feed, targetClient);
+      });
+      if (grabbed) return true; // one announce maps to at most one grab
+    }
+  }
+  return false;
+}
+
 /** The item's delay profile, picked the way the scheduled search picks it: the first tag-scoped
  * profile matching one of its tags (in saved order), else the untagged default. An announce is
  * seconds old, so any positive delay holds it back (the scheduled search grabs the release once it
@@ -252,6 +335,11 @@ async function tryGrabMatch(
   const allowedQualities = tiered ? profile?.allowedQualities ?? [] : [];
   if (allowedQualities.length > 0 && !allowedQualities.includes(quality)) return false;
 
+  // A target that has its file is replaced only by a real upgrade, with auto-upgrade on and the profile allowing it.
+  const onDisk = await existingFileQuality(item, episodeId, subItemId);
+  const existingFile = onDisk === undefined ? null : await existingFileRecord(item, episodeId, subItemId);
+  if (onDisk !== undefined && (!tiered || !existingFile || getSetting("autoUpgradeEnabled") !== "1")) return false;
+
   const blocklisted = await getBlocklistedTitles(item.id);
   // An announce carries only a name and the feed's protocol: no hash, date or size to compare.
   if (blocklisted.blocks({ title: releaseTitle, protocol: feed.protocol, indexerId: null, size: 0, publishDate: null, infoHash: null })) return false;
@@ -269,7 +357,11 @@ async function tryGrabMatch(
   }
 
   const { totalScore, rejected } = await scoreRelease(releaseTitle, null, item.qualityProfileId, item.type, null, item.id);
-  if (rejected || totalScore < (profile?.minFormatScore ?? 0)) return false;
+  if (rejected || totalScore < (tiered ? profile?.minFormatScore ?? 0 : 0)) return false;
+  if (existingFile) {
+    const verdict = judgeUpgrade(upgradeProfileOf(profile), propersMode(), existingFile, { quality, title: releaseTitle, score: totalScore });
+    if (verdict !== "yes") return false;
+  }
 
   const result: SearchResult = {
     indexerId: null,

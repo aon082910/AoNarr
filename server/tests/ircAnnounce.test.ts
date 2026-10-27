@@ -777,3 +777,132 @@ describe("handleAnnounce — episodes named by absolute number, air date or the 
     expect(grab).not.toHaveBeenCalled();
   });
 });
+
+describe("handleAnnounce — albums, books and comics (N29)", () => {
+  async function insertCollection(type: string, title: string): Promise<number> {
+    return Number(
+      (
+        await db
+          .prepare("INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES (?, ?, ?, 1, 0, 'unknown')")
+          .run(type, title, title.toLowerCase())
+      ).lastInsertRowid
+    );
+  }
+  async function insertSub(itemId: number, title: string, releaseDate: string | null = null): Promise<number> {
+    return Number(
+      (await db.prepare("INSERT INTO sub_items (media_item_id, title, release_date, monitored, has_file) VALUES (?, ?, ?, 1, 0)").run(itemId, title, releaseDate)).lastInsertRowid
+    );
+  }
+
+  it("grabs a wanted album that the announce names, and no other album of the artist", async () => {
+    await insertTorrentClient();
+    const artist = await insertCollection("artist", "Announce Band");
+    await insertSub(artist, "First Record");
+    const wanted = await insertSub(artist, "Second Record");
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Announce Band - Second Record (2019) [FLAC]"));
+
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect(grab.mock.calls[0][3]).toBe(wanted);
+  });
+
+  it("refuses another artist's album of the same name, a live album, and an album not out yet", async () => {
+    await insertTorrentClient();
+    const artist = await insertCollection("artist", "Announce Duo");
+    await insertSub(artist, "Hits");
+    await insertSub(artist, "Future Record", "2999-01-01");
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Some Other Band - Hits (2001) [FLAC]"));
+    await handleAnnounce(FEED, announceText("Announce Duo - Hits Live (2005) [FLAC]"));
+    await handleAnnounce(FEED, announceText("Announce Duo - Future Record [FLAC]"));
+    expect(grab).not.toHaveBeenCalled();
+  });
+
+  it("grabs a comic issue by its number, and a book by its title", async () => {
+    await insertTorrentClient();
+    const series = await insertCollection("comic", "Announce Saga");
+    await insertSub(series, "#11 - Chapter Eleven");
+    const issue = await insertSub(series, "#12 - Chapter Twelve");
+    grab.mockClear();
+    await handleAnnounce(FEED, announceText("Announce Saga 012 (2013) (Digital)"));
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect(grab.mock.calls[0][3]).toBe(issue);
+
+    const author = await insertCollection("author", "Announce Writer");
+    const book = await insertSub(author, "The Wanted Book");
+    await insertSub(author, "The Wanted Book Two");
+    grab.mockClear();
+    await handleAnnounce(FEED, announceText("Announce Writer - The Wanted Book (2020) [EPUB]"));
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect(grab.mock.calls[0][3]).toBe(book);
+  });
+});
+
+describe("handleAnnounce — upgrades of a file already on disk", () => {
+  async function movieWithFile(title: string, quality: string, releaseTitle: string): Promise<number> {
+    const profile = Number(
+      (
+        await db
+          .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff) VALUES (?, ?, 'Bluray-1080p')")
+          .run(`Upg-${Math.random()}`, JSON.stringify(["WEBDL-720p", "WEBDL-1080p", "Bluray-1080p"]))
+      ).lastInsertRowid
+    );
+    const id = await insertMovie(title, profile, 2020);
+    await db.prepare("UPDATE media_items SET has_file = 1, quality = ?, file_release_title = ? WHERE id = ?").run(quality, releaseTitle, id);
+    return id;
+  }
+
+  it("grabs a better quality for a file below the cutoff when auto-upgrade is on, and nothing when it is off", async () => {
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    await insertTorrentClient();
+    await movieWithFile("Announce Upgrade Movie", "WEBDL-1080p", "Announce.Upgrade.Movie.2020.1080p.WEB-DL-GRPA");
+    grab.mockClear();
+    setSetting("autoUpgradeEnabled", "0");
+    await handleAnnounce(FEED, announceText("Announce Upgrade Movie 2020 1080p BluRay x264-GRPB"));
+    expect(grab).not.toHaveBeenCalled();
+
+    setSetting("autoUpgradeEnabled", "1");
+    try {
+      await handleAnnounce(FEED, announceText("Announce Upgrade Movie 2020 720p WEB-DL x264-GRPB"));
+      expect(grab).not.toHaveBeenCalled(); // not better than the file
+      await handleAnnounce(FEED, announceText("Announce Upgrade Movie 2020 1080p BluRay x264-GRPB"));
+      expect(grab).toHaveBeenCalledTimes(1);
+    } finally {
+      setSetting("autoUpgradeEnabled", "0");
+    }
+  });
+
+  it("does not replace a file that already meets the cutoff", async () => {
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    await insertTorrentClient();
+    await movieWithFile("Announce Done Movie", "Bluray-1080p", "Announce.Done.Movie.2020.1080p.BluRay-GRPA");
+    grab.mockClear();
+    setSetting("autoUpgradeEnabled", "1");
+    try {
+      await handleAnnounce(FEED, announceText("Announce Done Movie 2020 1080p BluRay x264-GRPB"));
+      expect(grab).not.toHaveBeenCalled();
+    } finally {
+      setSetting("autoUpgradeEnabled", "0");
+    }
+  });
+});
+
+describe("handleAnnounce — a plain album before its edition (N26)", () => {
+  it("grabs the plain album when both it and a deluxe edition of it are wanted", async () => {
+    await insertTorrentClient();
+    const artist = Number(
+      (await db.prepare("INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('artist','Edition Band','edition band',1,0,'unknown')").run())
+        .lastInsertRowid
+    );
+    // The edition has the lower id; the plain album is the one to take.
+    await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file) VALUES (?, 'Rumours - Deluxe Edition', 1, 0)").run(artist);
+    const plain = Number((await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file) VALUES (?, 'Rumours', 1, 0)").run(artist)).lastInsertRowid);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Edition Band - Rumours (1977) [FLAC]"));
+
+    expect(grab.mock.calls[0][3]).toBe(plain);
+  });
+});

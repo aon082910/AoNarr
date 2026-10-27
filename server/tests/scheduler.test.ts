@@ -4607,6 +4607,111 @@ describe("Round 14: choosing among releases of a music, book or ROM title", () =
   });
 });
 
+describe("N24: a better format replaces the file of an album, a book or an issue", () => {
+  async function albumWithFile(releaseTitle: string | null): Promise<{ artistId: number; albumId: number }> {
+    const artistId = Number(
+      (await db.prepare("INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('artist','Queen','queen',1,1,'downloaded')").run()).lastInsertRowid
+    );
+    const albumId = Number(
+      (
+        await db
+          .prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, quality, file_release_title) VALUES (?, 'Greatest Hits', 1, 1, 'Unknown', ?)")
+          .run(artistId, releaseTitle)
+      ).lastInsertRowid
+    );
+    return { artistId, albumId };
+  }
+
+  it("takes a lossless release for a lossy file when the setting is on, and nothing when it is off", async () => {
+    await insertClient();
+    const adapter = fakeAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    const { artistId, albumId } = await albumWithFile("Queen - Greatest Hits (1981) [MP3 320]");
+    searchAllIndexers.mockResolvedValue([fakeResult({ title: "Queen - Greatest Hits (1981) [FLAC]" })]);
+
+    const [off] = await searchAndGrabTargets([{ mediaItemId: artistId, subItemId: albumId }]);
+    expect(off.grabbed).toBe(false);
+    expect(off.error).toMatch(/no quality to upgrade by/);
+
+    setSetting("nonVideoUpgrades", "1");
+    try {
+      const [on] = await searchAndGrabTargets([{ mediaItemId: artistId, subItemId: albumId }]);
+      expect(on).toMatchObject({ grabbed: true });
+      expect(adapter.addDownload).toHaveBeenCalledTimes(1);
+    } finally {
+      setSetting("nonVideoUpgrades", "");
+    }
+  });
+
+  it("refuses an equal or a lower format, a file already in the best format and a file whose release is unknown", async () => {
+    await insertClient();
+    getDownloadClientAdapter.mockReturnValue(fakeAdapter());
+    setSetting("nonVideoUpgrades", "1");
+    try {
+      const lossy = await albumWithFile("Queen - Greatest Hits (1981) [MP3 320]");
+      searchAllIndexers.mockResolvedValue([fakeResult({ title: "Queen - Greatest Hits (1981) [MP3 320]" }), fakeResult({ title: "Queen - Greatest Hits (1981) [MP3 128]" })]);
+      const [same] = await searchAndGrabTargets([{ mediaItemId: lossy.artistId, subItemId: lossy.albumId }]);
+      expect(same.grabbed).toBe(false);
+
+      const best = await albumWithFile("Queen - Greatest Hits (1981) [FLAC]");
+      searchAllIndexers.mockResolvedValue([fakeResult({ title: "Queen - Greatest Hits (1981) [FLAC 24-96]" })]);
+      const [already] = await searchAndGrabTargets([{ mediaItemId: best.artistId, subItemId: best.albumId }]);
+      expect(already.error).toMatch(/no quality to upgrade by/);
+
+      const unknown = await albumWithFile(null);
+      searchAllIndexers.mockResolvedValue([fakeResult({ title: "Queen - Greatest Hits (1981) [FLAC]" })]);
+      const [nothing] = await searchAndGrabTargets([{ mediaItemId: unknown.artistId, subItemId: unknown.albumId }]);
+      expect(nothing.error).toMatch(/no quality to upgrade by/);
+    } finally {
+      setSetting("nonVideoUpgrades", "");
+    }
+  });
+
+  it("lists such files as upgrade candidates only with the setting on, never the best format", async () => {
+    const { findUpgradeCandidates, clearUpgradeCandidatesCache } = await vi.importActual<typeof import("../src/services/upgradeCandidates.js")>("../src/services/upgradeCandidates.js");
+    const lossy = await albumWithFile("Queen - Greatest Hits (1981) [MP3 320]");
+    await albumWithFile("Queen - Greatest Hits (1981) [FLAC]");
+    clearUpgradeCandidatesCache();
+    expect((await findUpgradeCandidates()).filter((c) => c.subItemId)).toEqual([]);
+    setSetting("nonVideoUpgrades", "1");
+    try {
+      clearUpgradeCandidatesCache();
+      const found = (await findUpgradeCandidates()).filter((c) => c.subItemId);
+      expect(found.map((c) => c.subItemId)).toEqual([lossy.albumId]);
+    } finally {
+      setSetting("nonVideoUpgrades", "");
+      clearUpgradeCandidatesCache();
+    }
+  });
+});
+
+describe("the minimum format score is a video setting (N30)", () => {
+  it("does not stop an album from being grabbed for want of a score no format of its type can give", async () => {
+    const profile = Number(
+      (
+        await db
+          .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff, min_format_score) VALUES (?, ?, 'WEBDL-1080p', 10)")
+          .run(`Min-${Math.random()}`, JSON.stringify(["WEBDL-1080p"]))
+      ).lastInsertRowid
+    );
+    const album = fakeResult({ title: "Queen - Greatest Hits (1981) [FLAC]" });
+    const chosen = await chooseBestResult([album], [], "", profile, 10, null, new Set(), "artist", null, null, null, { name: { title: "Greatest Hits", parentTitle: "Queen" } });
+    expect(chosen?.result).toBe(album);
+  });
+});
+
+describe("N26: a wanted title that carries a provider's edition", () => {
+  it("takes the plain album's release for 'Thriller - Remastered' and its own edition's release too", async () => {
+    const choose = (results: any[]) =>
+      chooseBestResult(results, [], "", null, 0, null, new Set(), "artist", null, null, null, { name: { title: "Thriller - Remastered", parentTitle: "Michael Jackson" } });
+    const plain = fakeResult({ title: "Michael Jackson - Thriller (1982) [FLAC]" });
+    const edition = fakeResult({ title: "Michael Jackson - Thriller (Remastered) [FLAC]" });
+    expect((await choose([plain]))?.result).toBe(plain);
+    expect((await choose([edition]))?.result).toBe(edition);
+    expect(await choose([fakeResult({ title: "Michael Jackson - Bad (1987) [FLAC]" })])).toBeNull();
+  });
+});
+
 describe("Round 14: an album or book not yet out", () => {
   it("is not yet released until its date has passed, a year or month alone only once the whole of it has", async () => {
     const { isNotYetReleased } = await import("../src/services/scheduler.js");

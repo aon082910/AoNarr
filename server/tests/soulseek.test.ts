@@ -5,11 +5,15 @@ import { setupTestDb } from "./helpers/testDb.js";
 let encodeSlskdDownloadUrl: (typeof import("../src/services/soulseek.js"))["encodeSlskdDownloadUrl"];
 let decodeSlskdDownloadUrl: (typeof import("../src/services/soulseek.js"))["decodeSlskdDownloadUrl"];
 let searchSlskd: (typeof import("../src/services/soulseek.js"))["searchSlskd"];
+let decodeSlskdFolderUrl: (typeof import("../src/services/soulseek.js"))["decodeSlskdFolderUrl"];
+let encodeSlskdFolderUrl: (typeof import("../src/services/soulseek.js"))["encodeSlskdFolderUrl"];
+let slskdFolderDownloadId: (typeof import("../src/services/soulseek.js"))["slskdFolderDownloadId"];
+let parseSlskdFolderDownloadId: (typeof import("../src/services/soulseek.js"))["parseSlskdFolderDownloadId"];
 
 beforeAll(async () => {
   // soulseek.ts imports logger.js, which touches config.js/db/index.js transitively.
   await setupTestDb();
-  ({ encodeSlskdDownloadUrl, decodeSlskdDownloadUrl, searchSlskd } = await import("../src/services/soulseek.js"));
+  ({ encodeSlskdDownloadUrl, decodeSlskdDownloadUrl, searchSlskd, decodeSlskdFolderUrl, encodeSlskdFolderUrl, slskdFolderDownloadId, parseSlskdFolderDownloadId } = await import("../src/services/soulseek.js"));
 });
 
 afterEach(() => {
@@ -194,5 +198,76 @@ describe("searchSlskd", () => {
     await vi.advanceTimersByTimeAsync(1500);
 
     await assertion;
+  });
+});
+
+describe("a shared folder is one result (N17)", () => {
+  const stubSearch = (responses: unknown[]) => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, options?: any) => {
+        if (options?.method === "POST") return { ok: true, json: async () => ({ id: "s1" }) };
+        if (url.endsWith("/responses")) return { ok: true, json: async () => responses };
+        return { ok: true, json: async () => ({ isComplete: true }) };
+      })
+    );
+  };
+
+  it("groups the tracks of a folder into one release named by its last two folders, with the format and the folder's size", async () => {
+    stubSearch([
+      {
+        username: "peerA",
+        files: [
+          { filename: "@@peerA\\Music\\Queen\\Greatest Hits (1981)\\01 Another One Bites the Dust.flac", size: 30_000_000 },
+          { filename: "@@peerA\\Music\\Queen\\Greatest Hits (1981)\\02 Bohemian Rhapsody.flac", size: 40_000_000 },
+          { filename: "@@peerA\\Music\\Queen\\Greatest Hits (1981)\\cover.jpg", size: 100_000 },
+          { filename: "@@peerA\\Music\\Singles\\Lonely Track.mp3", size: 5_000_000 },
+        ],
+      },
+    ]);
+    const promise = searchSlskd(fakeClient(), "queen greatest hits");
+    await vi.advanceTimersByTimeAsync(3500);
+    const results = await promise;
+
+    const folder = results.find((r) => r.title.startsWith("Queen"))!;
+    expect(folder.title).toBe("Queen - Greatest Hits (1981) [FLAC]");
+    expect(folder.size).toBe(70_000_000);
+    const decoded = decodeSlskdFolderUrl(folder.downloadUrl)!;
+    expect(decoded.username).toBe("peerA");
+    expect(decoded.directory).toBe("@@peerA\\Music\\Queen\\Greatest Hits (1981)");
+    expect(decoded.files.map((f) => f.size)).toEqual([30_000_000, 40_000_000]);
+    // The picture is not asked for, and a lone track stays a single file.
+    expect(decoded.files.every((f) => f.filename.endsWith(".flac"))).toBe(true);
+    const single = results.find((r) => r.title === "Lonely Track.mp3")!;
+    expect(decodeSlskdFolderUrl(single.downloadUrl)).toBeNull();
+    expect(decodeSlskdDownloadUrl(single.downloadUrl).filename).toBe("@@peerA\\Music\\Singles\\Lonely Track.mp3");
+  });
+
+  it("tags an MP3 folder with its bitrate when all the tracks share one", async () => {
+    stubSearch([
+      {
+        username: "peerB",
+        files: [
+          { filename: "Music/Album One/01.mp3", size: 1, bitRate: 320 },
+          { filename: "Music/Album One/02.mp3", size: 1, bitRate: 320 },
+          { filename: "Music/Album Two/01.mp3", size: 1, bitRate: 320 },
+          { filename: "Music/Album Two/02.mp3", size: 1, bitRate: 192 },
+        ],
+      },
+    ]);
+    const promise = searchSlskd(fakeClient(), "album");
+    await vi.advanceTimersByTimeAsync(3500);
+    expect((await promise).map((r) => r.title)).toEqual(["Music - Album One [MP3 320]", "Music - Album Two [MP3]"]);
+  });
+
+  it("round-trips a folder url and refuses one that is not a folder", () => {
+    const folder = { username: "cool user", directory: "Music\\Café (Live)", files: [{ filename: "Music\\Café (Live)\\01 é.flac", size: 9 }] };
+    expect(decodeSlskdFolderUrl(encodeSlskdFolderUrl(folder))).toEqual(folder);
+    expect(decodeSlskdFolderUrl(encodeSlskdDownloadUrl("u", "f.mp3", 1))).toBeNull();
+    expect(decodeSlskdFolderUrl("not a url")).toBeNull();
+    const id = slskdFolderDownloadId(folder);
+    expect(parseSlskdFolderDownloadId(id)).toEqual({ username: "cool user", directory: "Music\\Café (Live)", count: 1 });
+    expect(parseSlskdFolderDownloadId("someuser song.mp3")).toBeNull();
   });
 });
