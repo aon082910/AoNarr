@@ -609,6 +609,15 @@ function releaseNameMatch(releaseTitle: string, name: TargetName, mediaType: str
   return refusal ? null : verdict;
 }
 
+/**
+ * Whether a release names the wanted album, book, comic issue or ROM, and if not why (interactive search shows it).
+ * The same two tests an automatic search applies: the looser containment one, then the stricter "stands on its own".
+ */
+export function releaseNameVerdict(releaseTitle: string, name: TargetName, mediaType: string): { ok: boolean; reason: string | null } {
+  if (releaseNameMatch(releaseTitle, name, mediaType) !== null) return { ok: true, reason: null };
+  return { ok: false, reason: nonVideoRejection(releaseTitle, name, mediaType) ?? `its title does not match "${name.title}"` };
+}
+
 /** The words of the series a book's title names in its bracket ("(Mistborn, #2)" -> mistborn). */
 function seriesTokensOf(title: string): string[] {
   const m = title.match(/\(([^)]*?)(?:,?\s*#?\d+[\d.]*)?\)/);

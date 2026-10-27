@@ -463,6 +463,13 @@ export interface SearchResult {
   alsoOnIndexers?: string[];
   /** The one release an automatic search of this target would grab. */
   wouldAutoGrab?: boolean;
+  /** An album / book / comic search: whether the release names the sub-item, and why not. */
+  nameOk?: boolean;
+  nameReason?: string | null;
+  /** Whether the release would replace the file the target already has (null when it has none). */
+  upgrade?: "yes" | "no" | null;
+  /** PROPER / REPACK / v2 and the like. */
+  revisionLabel?: string | null;
   infoHash?: string | null;
 }
 

@@ -41,6 +41,9 @@ import { searchSlskd } from "../services/soulseek.js";
 import { getMediaTypeConfig } from "../services/mediaTypes.js";
 import { pickClientForProtocol, searchAndGrabTargets, type BulkSearchTarget } from "../services/scheduler.js";
 import { computeAbsoluteEpisodeNumber } from "../services/importer.js";
+import { existingFileRecord } from "../services/fileRelease.js";
+import { judgeUpgrade, propersMode, upgradeProfileOf } from "../services/upgradeRules.js";
+import { getQualityProfile, releaseNameVerdict, siblingTitlesOf, yearFieldsOf, type TargetName } from "../services/scheduler.js";
 import type { SearchResult } from "../types/index.js";
 
 export const searchRouter = Router();
@@ -59,6 +62,15 @@ searchRouter.post(
     res.json(results);
   })
 );
+
+/** "PROPER", "REPACK", "v2", "REAL PROPER" for a release's revision, null for the original. */
+function revisionLabelOf(revision: ReturnType<typeof parseReleaseTitle>["revision"]): string | null {
+  if (!revision || (revision.version <= 1 && revision.real === 0)) return null;
+  const parts: string[] = [];
+  if (revision.real > 0) parts.push("REAL");
+  parts.push(revision.isRepack ? "REPACK" : revision.version >= 2 ? "PROPER / v" + revision.version : "");
+  return parts.filter(Boolean).join(" ") || null;
+}
 
 export interface AnnotatedSearchResult extends SearchResult {
   parsedQuality: string;
@@ -90,6 +102,14 @@ export interface AnnotatedSearchResult extends SearchResult {
   wouldAutoGrab: boolean;
   rejected: boolean;
   rejectReason?: string;
+  /** For an album, book or comic issue search: whether the release names the sub-item, and why not (N18). */
+  nameOk: boolean;
+  nameReason: string | null;
+  /** For a target that already has a file: whether this release would replace it ("yes" / "no"), by the rules of
+   * upgradeRules.ts (quality below the cutoff, a later revision, a format-score gain). Null when there is no file. */
+  upgrade: "yes" | "no" | null;
+  /** PROPER / REPACK / v2 and the like, as the parser reads it. */
+  revisionLabel: string | null;
   /** Other indexers that also carry what looks like this exact same release (same normalized
    * title + exact size) — collapsed into the best-ranked copy instead of showing N separate rows
    * for what's really one release someone happened to post to multiple trackers. */
@@ -153,6 +173,7 @@ searchRouter.get(
     /** The other plans a season search runs: a scene may have split one aired season into several. */
     const furtherPlans: SearchPlan[] = [];
     let sceneSeasons: Set<number> | null = null;
+    let subName: TargetName | null = null;
 
     const episodeId = req.query.episodeId as string | undefined;
     const subItemId = req.query.subItemId as string | undefined;
@@ -193,6 +214,7 @@ searchRouter.get(
       if (!sub) throw new HttpError(404, "Sub-item not found");
       plan = subItemPlanFor(item, sub);
       slskdQuery = `${item.title} ${sub.title}`;
+      subName = { title: sub.title, parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, sub.id), ...(await yearFieldsOf(item, sub)) };
     } else {
       // Only meaningful for the plain whole-item search (no episode/season/sub-item target) — an
       // episodic/collection search already confirms identity via season/episode/sub-item title
@@ -291,6 +313,17 @@ searchRouter.get(
         )?.result ?? null;
     }
     const runtimeContext = await runtimeContextFor(item.id, item.type);
+    // The file the target already has and the profile's upgrade rules, for the "would replace it" label.
+    const existingForUpgrade =
+      tiered && !seasonNumberParam && !subItemId
+        ? await existingFileRecord(item, episodeId ? Number(episodeId) : null, null)
+        : null;
+    const upgradeProfile = existingForUpgrade ? upgradeProfileOf(item.qualityProfileId ? await getQualityProfile(item.qualityProfileId) : null) : null;
+    const revisionMode = propersMode();
+    const nameFields = (title: string) => {
+      const verdict = subName && !tiered ? releaseNameVerdict(title, subName, item.type) : { ok: true, reason: null };
+      return { nameOk: verdict.ok, nameReason: verdict.reason };
+    };
     const annotated: AnnotatedSearchResult[] = await Promise.all(rawResults.map(async (r) => {
       const parsed = parseReleaseTitle(r.title);
       const matchesTarget =
@@ -334,6 +367,14 @@ searchRouter.get(
         parsedTitle: parsed.title,
         blocklisted: isBlockedRelease(blocklisted, r),
         wouldAutoGrab: autoPick === r,
+        ...nameFields(r.title),
+        upgrade:
+          existingForUpgrade && upgradeProfile
+            ? judgeUpgrade(upgradeProfile, revisionMode, existingForUpgrade, { quality: parsed.quality, title: r.title, score: totalScore }) === "yes"
+              ? "yes"
+              : "no"
+            : null,
+        revisionLabel: revisionLabelOf(parsed.revision),
         rejected: rejected || parsed.rejected || !!refusal,
         rejectReason: parsed.rejected ? "The release name is a hash, so there is no title to check it against" : refusal ? refusal.reason : rejectReason,
       };
@@ -353,6 +394,7 @@ searchRouter.get(
       (a, b) =>
         Number(b.matchesTarget) - Number(a.matchesTarget) ||
         Number(b.identityOk) - Number(a.identityOk) ||
+        Number(b.nameOk) - Number(a.nameOk) ||
         Number(b.allowedByProfile) - Number(a.allowedByProfile) ||
         Number(a.rejected) - Number(b.rejected) ||
         Number(a.blocklisted) - Number(b.blocklisted) ||

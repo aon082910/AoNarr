@@ -132,6 +132,59 @@ describe("GET /api/search/:mediaItemId — the order is what an automatic search
   });
 });
 
+describe("GET /api/search/:mediaItemId — name and upgrade verdicts (N18, D4)", () => {
+  it("says whether each release names the album searched for, and why not", async () => {
+    const artistId = await insertItem("artist", "Queen");
+    const subId = Number((await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file) VALUES (?, 'Greatest Hits', 1, 0)").run(artistId)).lastInsertRowid);
+    searchAllIndexers.mockResolvedValue([
+      release({ title: "Queen - Greatest Hits (1981) [FLAC]", downloadUrl: "magnet:?xt=urn:btih:a" }),
+      release({ title: "Queen - Greatest Hits Live (2005) [FLAC]", downloadUrl: "magnet:?xt=urn:btih:b" }),
+      release({ title: "ABBA - Greatest Hits (1975) [FLAC]", downloadUrl: "magnet:?xt=urn:btih:c" }),
+    ]);
+
+    const res = await request(app).get(`/api/search/${artistId}?subItemId=${subId}`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(200);
+    const byTitle = Object.fromEntries(res.body.map((r: any) => [r.title, r]));
+    expect(byTitle["Queen - Greatest Hits (1981) [FLAC]"]).toMatchObject({ nameOk: true, nameReason: null });
+    expect(byTitle["Queen - Greatest Hits Live (2005) [FLAC]"].nameOk).toBe(false);
+    expect(byTitle["Queen - Greatest Hits Live (2005) [FLAC]"].nameReason).toMatch(/live/i);
+    expect(byTitle["ABBA - Greatest Hits (1975) [FLAC]"].nameOk).toBe(false);
+    // The ones that name it come first.
+    expect(res.body[0].title).toBe("Queen - Greatest Hits (1981) [FLAC]");
+  });
+
+  it("says whether a release would replace the file the movie has, and shows a PROPER", async () => {
+    const profileId = Number(
+      (
+        await db
+          .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff) VALUES (?, ?, ?)")
+          .run(`Upg ${Math.random()}`, JSON.stringify(["WEBDL-720p", "WEBDL-1080p", "Bluray-1080p"]), "Bluray-1080p")
+      ).lastInsertRowid
+    );
+    const movieId = await insertItem("movie", "Movie", profileId);
+    await db.prepare("UPDATE media_items SET has_file = 1, quality = 'WEBDL-1080p', file_release_title = 'Movie.2020.1080p.WEB-DL-GRPA' WHERE id = ?").run(movieId);
+    searchAllIndexers.mockResolvedValue([
+      release({ title: "Movie.2020.1080p.BluRay-GRPB", downloadUrl: "magnet:?xt=urn:btih:a" }),
+      release({ title: "Movie.2020.720p.WEB-DL-GRPB", downloadUrl: "magnet:?xt=urn:btih:b" }),
+      release({ title: "Movie.2020.PROPER.1080p.WEB-DL-GRPC", downloadUrl: "magnet:?xt=urn:btih:c" }),
+    ]);
+
+    const res = await request(app).get(`/api/search/${movieId}`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(200);
+    const byTitle = Object.fromEntries(res.body.map((r: any) => [r.title, r]));
+    expect(byTitle["Movie.2020.1080p.BluRay-GRPB"].upgrade).toBe("yes");
+    expect(byTitle["Movie.2020.720p.WEB-DL-GRPB"].upgrade).toBe("no");
+    expect(byTitle["Movie.2020.PROPER.1080p.WEB-DL-GRPC"]).toMatchObject({ upgrade: "yes", revisionLabel: "PROPER / v2" });
+    expect(byTitle["Movie.2020.1080p.BluRay-GRPB"].revisionLabel).toBeNull();
+    // A movie with no file has nothing to replace.
+    const empty = await insertItem("movie", "Empty Movie", profileId);
+    const none = await request(app).get(`/api/search/${empty}`).set("X-Api-Key", apiKey);
+    expect(none.body.every((r: any) => r.upgrade === null)).toBe(true);
+  });
+});
+
 describe("GET /api/search/:mediaItemId — what the indexers are asked", () => {
   async function insertShow(title: string, externalIds: Record<string, string>): Promise<number> {
     const id = await insertItem("series", title);
