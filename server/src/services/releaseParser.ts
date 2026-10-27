@@ -431,7 +431,7 @@ const SOURCE_SCREENER = /\b(?:screener|(?:dvd|bd)-?scr(?:eener)?|scr)\b/i;
 const DISC_ENCODE_WORDS = /\b(?:(?<!HD[._ -]|HD)DVD|BDRip|720p|MKV|XviD|WMV|d3g|(?:BD)?REMUX|[xh][-_. ]?26[45])\b/i;
 const DISC_BLURAY_WORD = /\b(?:Blu[-_. ]?ray|BD|HD[-_. ]?DVD)\b/i;
 const DISC_STRUCTURE_WORD = /\b(?:AVC|HEVC|VC[-_. ]?1|MVC|MPEG[-_. ]?2|BDMV|ISO)\b/i;
-const DISC_NAMED = /\b(?:3D[-_. ]?BD|BR[-_. ]?DISK|Full[-_. ]?Blu[-_. ]?ray|(?:BD|UHD)[-_. ]?(?:25|50|66|100|ISO)|UNTOUCHED)\b|\bDis[ck][-_. ]?\d+[-_. ].*Blu[-_. ]?ray/i;
+const DISC_NAMED = /\b(?:3D[-_. ]?BD|BR[-_. ]?DISK|BDMV|VIDEO[-_. ]?TS|Full[-_. ]?Blu[-_. ]?ray|(?:BD|UHD)[-_. ]?(?:25|50|66|100|ISO)|UNTOUCHED)\b|\bDis[ck][-_. ]?\d+[-_. ].*Blu[-_. ]?ray/i;
 const DISC_COMPLETE = /\b(?:COMPLETE|Dis[ck])\b/i;
 // A language written in the name: German, French and other scene groups write "AVC" for an x264
 // re-encode ("German.DL.1080p.BluRay.AVC", "MULTi.1080p.BluRay.AVC"), which Radarr grades as a
@@ -525,6 +525,8 @@ const TRAILING_RANGE_END = /\d-(?:E?\d{1,3}(?:v\d)?|\d{3,4}[pi])$/i;
 const LEADING_BRACKET_GROUP = /^\[([^\]]+)\]/;
 // The CRC32 a fansub release ends with ("... (1080p) [ABCD1234]").
 const FANSUB_HASH = /\[[0-9a-f]{8}\]$/i;
+// A tracker or site group written in brackets at the end ("...x264-[YTS.MX]", "Movie (2020) [1080p] [BluRay] [YTS.MX]").
+const TRAILING_BRACKET_GROUP = /(?:-\s*)?\[([^\]]{2,24})\]\s*$/;
 // Numbers, years, format/quality/source, language, content-kind and platform words that also lead
 // titles ("[FLAC] Artist - Album", "[MP3 320]", "[VOSTFR] Show - 05") — none of them names a group.
 const NON_GROUP_WORD =
@@ -600,6 +602,19 @@ function detectReleaseGroup(title: string): string | null {
   // Only a fansub-shaped title leads with its group; music, book and tracker titles lead with a
   // format, language or site tag ("[FLAC] Artist - Album", "[www.site.org] Movie"). A year after
   // " - " ("Compilation - 2020") is a release date, not an episode number.
+  // The group of a video release that closes with it in brackets, when the name has no leading fansub group.
+  if (!LEADING_BRACKET_GROUP.test(trimmed) && (VIDEO_MARKER.test(trimmed) || /\bS\d{1,2}[ ._-]*E\d/i.test(trimmed))) {
+    const closing = trimmed.match(TRAILING_BRACKET_GROUP)?.[1].trim();
+    if (
+      closing &&
+      !FANSUB_HASH.test(trimmed) &&
+      !isNonGroupTag(closing) &&
+      !/^(?:\d+(?:\.\d+)?|\d{3,4}[pi]|4k|8k|www\..*|https?:.*)$/i.test(closing) &&
+      /[A-Za-z]/.test(closing)
+    ) {
+      return closing;
+    }
+  }
   const episodeNumbered = [...trimmed.matchAll(ABSOLUTE_EPISODE_ALL)].some((m) => !YEAR_SHAPED.test(m[1]));
   // Music and book titles never carry a season-numbered episode or a CRC32.
   // A season-less episode range ("[Group] Show - 01-04 [1080p]") is fansub numbering too.

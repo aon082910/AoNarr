@@ -262,3 +262,8 @@
 {"title": "Documentary.Name.HDTV.H.265-GRP", "kind": "release", "expect": {"season": null, "episodes": null}}
 {"title": "UFC.246.McGregor.vs.Cowboy.HDTV.x264-GRP", "kind": "release", "expect": {"season": null, "episodes": null}}
 {"title": "Book.Title.Part.1.of.12.MP3-GRP", "kind": "release", "expect": {"season": null, "episodes": null}}
+{"title": "Movie.2020.1080p.BluRay.x264.AAC5.1-[YTS.MX]", "kind": "release", "expect": {"group": "YTS.MX", "quality": "Bluray-1080p"}}
+{"title": "Movie (2020) [1080p] [BluRay] [5.1] [YTS.MX]", "kind": "release", "expect": {"group": "YTS.MX", "quality": "Bluray-1080p"}}
+{"title": "Show.S01E01.720p.HDTV.x264-[eztv]", "kind": "release", "expect": {"group": null, "season": 1, "episodes": [1]}}
+{"title": "Movie (2020) [1080p] [BluRay] [5.1]", "kind": "release", "expect": {"group": null}}
+{"title": "Movie.2020.BDMV.1080p-GRP", "kind": "release", "expect": {"quality": "Unknown", "group": "GRP"}}
