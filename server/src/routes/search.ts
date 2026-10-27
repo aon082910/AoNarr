@@ -15,7 +15,7 @@ import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode, type S
 import { sceneIndexFor } from "../services/sceneNumbering.js";
 import { notifyGrabbed } from "../services/notifications.js";
 import { notifyQueueChanged } from "../services/realtime.js";
-import { scoreRelease } from "../services/customFormatScoring.js";
+import { indexerInfoOf, scoreRelease } from "../services/customFormatScoring.js";
 import { log } from "../services/logger.js";
 import { knownReleaseSize, qualityRank, sizeWithinQualityBounds, usesQualityTiers } from "../services/quality.js";
 import { releaseRuntimeMinutes, runtimeContextFor } from "../services/releaseRuntime.js";
@@ -348,7 +348,7 @@ searchRouter.get(
         size,
         item.qualityProfileId,
         item.type,
-        r.downloadVolumeFactor ?? null,
+        indexerInfoOf(r),
         item.id,
         r.indexerId ?? null
       );

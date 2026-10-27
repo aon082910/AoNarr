@@ -113,6 +113,22 @@ describe("formatMatches (pure condition-group evaluation)", () => {
     expect(formatMatches(groups, "Movie.2023.1080p-GROUP", null, null)).toBe(false); // unknown never matches
   });
 
+  it("reads internal, scene and double upload from an indexer's tags and upload factor, and treats a release with no report as unknown", async () => {
+    const { formatMatches, indexerInfoOf } = await import("../src/services/customFormatScoring.js");
+    const internal = [{ type: "indexerFlag" as const, indexerFlags: ["internal" as const], negate: false }];
+    const double = [{ type: "indexerFlag" as const, indexerFlags: ["doubleupload" as const], negate: false }];
+    const notScene = [{ type: "indexerFlag" as const, indexerFlags: ["scene" as const], negate: true }];
+    expect(formatMatches(internal, "x", null, indexerInfoOf({ indexerTags: ["internal", "freeleech"] }))).toBe(true);
+    expect(formatMatches(internal, "x", null, indexerInfoOf({ indexerTags: ["scene"] }))).toBe(false);
+    expect(formatMatches(double, "x", null, indexerInfoOf({ uploadVolumeFactor: 2 }))).toBe(true);
+    expect(formatMatches(double, "x", null, indexerInfoOf({ uploadVolumeFactor: 1, downloadVolumeFactor: 1 }))).toBe(false);
+    expect(formatMatches(internal, "x", null, indexerInfoOf({}))).toBe(false);
+    expect(formatMatches(notScene, "x", null, indexerInfoOf({ indexerTags: ["scene"] }))).toBe(false);
+    expect(formatMatches(notScene, "x", null, indexerInfoOf({ indexerTags: ["internal"] }))).toBe(true);
+    // The old plain number still means the download volume factor.
+    expect(formatMatches([{ type: "indexerFlag" as const, indexerFlags: ["freeleech" as const], negate: false }], "x", null, 0)).toBe(true);
+  });
+
   it("negated indexerFlag matches when unknown (negate flips 'never matches' too)", async () => {
     const { formatMatches } = await import("../src/services/customFormatScoring.js");
     const groups = [{ type: "indexerFlag" as const, indexerFlags: ["freeleech" as const], negate: true }];
