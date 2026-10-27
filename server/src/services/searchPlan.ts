@@ -173,13 +173,31 @@ export async function seasonPlanFor(item: MediaItem, season: number, episode: nu
   };
 }
 
+/** The name of the System group (library_groups) a ROM sits under, or null: "Nintendo Entertainment System". */
+async function systemNameOf(item: MediaItem): Promise<string | null> {
+  let groupId = (item as MediaItem & { groupId?: number | null }).groupId ?? null;
+  for (let depth = 0; groupId != null && depth < 6; depth++) {
+    const group = (await db.prepare("SELECT kind, name, parent_group_id FROM library_groups WHERE id = ?").get(groupId)) as
+      | { kind: string; name: string; parent_group_id: number | null }
+      | undefined;
+    if (!group) return null;
+    if (group.kind === "system") return group.name;
+    groupId = group.parent_group_id;
+  }
+  return null;
+}
+
 /** The search for an item that is one release: a film ("Title 2021") or a ROM ("Title"). */
 export async function singlePlanFor(item: MediaItem): Promise<SearchPlan> {
   const query = singleItemQuery(item.type, item.title, item.year);
   const suffix = item.type === "rom" || !item.year ? "" : ` ${item.year}`;
+  // A ROM is also asked for with its system ("Title Nintendo Entertainment System"): a title on its own finds the other
+  // platforms' releases of the same game first, and the system narrows the indexer's answer to its own.
+  const system = item.type === "rom" ? await systemNameOf(item) : null;
+  const systemQuery = system ? [`${query} ${cleanSceneTitle(system)}`] : [];
   return {
     query,
-    alternateQueries: alternatesFor(query, await otherTitleQueries(item, suffix)),
+    alternateQueries: alternatesFor(query, [...(await otherTitleQueries(item, suffix)), ...systemQuery]),
     ids: parseIds(item),
     hints: {},
     target: null,

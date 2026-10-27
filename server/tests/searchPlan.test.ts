@@ -114,6 +114,22 @@ describe("singlePlanFor", () => {
     const rom = await insertItem("rom", "Super Mario Bros.", { year: 1985, ids: { rawg: "1" } });
     expect((await plans.singlePlanFor(rom)).query).toBe("Super Mario Bros");
   });
+
+  it("also asks for a ROM with its system, found up the group tree", async () => {
+    const rom = await insertItem("rom", "Super Mario Bros.", { year: 1985 });
+    const system = Number((await db.prepare("INSERT INTO library_groups (media_type, kind, name, sort_name) VALUES ('rom', 'system', 'Nintendo Entertainment System', 'nintendo entertainment system')").run()).lastInsertRowid);
+    const maker = Number(
+      (await db.prepare("INSERT INTO library_groups (media_type, kind, name, sort_name, parent_group_id) VALUES ('rom', 'maker', 'Nintendo', 'nintendo', ?)").run(system)).lastInsertRowid
+    );
+    await db.prepare("UPDATE media_items SET group_id = ? WHERE id = ?").run(maker, rom.id);
+    const grouped = mediaItemFromRow(await db.prepare("SELECT * FROM media_items WHERE id = ?").get(rom.id));
+    const plan = await plans.singlePlanFor(grouped);
+    expect(plan.query).toBe("Super Mario Bros");
+    expect(plan.alternateQueries).toContain("Super Mario Bros Nintendo Entertainment System");
+    // A ROM under no system has no such alternate.
+    const loose = await insertItem("rom", "Tetris");
+    expect((await plans.singlePlanFor(loose)).alternateQueries.some((q: string) => /Nintendo/.test(q))).toBe(false);
+  });
 });
 
 describe("subItemPlanFor", () => {
