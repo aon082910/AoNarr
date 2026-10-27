@@ -11,6 +11,7 @@ import { getBlocklistedTitles } from "./blocklist.js";
 import { downloadClientFromRow, mediaItemFromRow, qualityProfileFromRow } from "../db/mappers.js";
 import {
   chooseBestResult,
+  existingFileQuality,
   grab,
   isAlreadyQueued,
   isNotYetReleased,
@@ -21,6 +22,9 @@ import {
   type ChosenResult,
 } from "./scheduler.js";
 import { identityKey } from "./releaseIdentity.js";
+import { existingFileRecord } from "./fileRelease.js";
+import { judgeUpgrade, propersMode, upgradeProfileOf } from "./upgradeRules.js";
+import { getSetting } from "./settingsStore.js";
 import { computeAbsoluteEpisodeNumber } from "./importer.js";
 import { parseQualityGroups, sameQualityGroup, usesQualityTiers, type QualityGroups } from "./quality.js";
 import { aliasSeasonsFor, aliasTitlesByItem, applyAliasSeason, resolveReleaseItemInLibrary, seasonEpisodeCounts } from "./releaseAliases.js";
@@ -87,7 +91,10 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
 
   // An announce is unsolicited: which item it names is decided library-wide, with aliases, and two
   // items both claiming it is a reason to grab nothing (Sonarr's MultipleSeriesFoundException).
-  const singleItems = ((await db.prepare("SELECT * FROM media_items WHERE monitored = 1 AND has_file = 0").all()) as any[])
+  // With auto-upgrade on (the switch the RSS sync and the upgrade job share) an item that has its file is a candidate too:
+  // tryGrabMatch grabs the release only when it would replace the file by the profile's upgrade rules.
+  const upgradesOn = getSetting("autoUpgradeEnabled") === "1";
+  const singleItems = ((await db.prepare(`SELECT * FROM media_items WHERE monitored = 1${upgradesOn ? "" : " AND has_file = 0"}`).all()) as any[])
     .map(mediaItemFromRow)
     .filter((item) => getMediaTypeConfig(item.type).shape === "single")
     // A film not out yet by its minimum availability is not grabbed from an announce either (a leak or a
@@ -149,7 +156,7 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
       `SELECT e.*, m.id AS parent_id, m.type AS parent_type, m.title AS parent_title, m.year AS parent_year, m.external_ids AS parent_external_ids,
               m.quality_profile_id AS parent_quality_profile_id, m.root_folder_id AS parent_root_folder_id, m.extra_metadata AS parent_extra_metadata
        FROM episodes e JOIN media_items m ON m.id = e.media_item_id
-       WHERE e.monitored = 1 AND e.has_file = 0 AND m.monitored = 1`
+       WHERE e.monitored = 1${upgradesOn ? "" : " AND e.has_file = 0"} AND m.monitored = 1`
     )
     .all()) as any[];
   const parentOf = (ep: any) =>
@@ -324,6 +331,11 @@ async function tryGrabMatch(
   const allowedQualities = tiered ? profile?.allowedQualities ?? [] : [];
   if (allowedQualities.length > 0 && !allowedQualities.includes(quality)) return false;
 
+  // A target that has its file is replaced only by a real upgrade, with auto-upgrade on and the profile allowing it.
+  const onDisk = await existingFileQuality(item, episodeId, subItemId);
+  const existingFile = onDisk === undefined ? null : await existingFileRecord(item, episodeId, subItemId);
+  if (onDisk !== undefined && (!tiered || !existingFile || getSetting("autoUpgradeEnabled") !== "1")) return false;
+
   const blocklisted = await getBlocklistedTitles(item.id);
   // An announce carries only a name and the feed's protocol: no hash, date or size to compare.
   if (blocklisted.blocks({ title: releaseTitle, protocol: feed.protocol, indexerId: null, size: 0, publishDate: null, infoHash: null })) return false;
@@ -342,6 +354,10 @@ async function tryGrabMatch(
 
   const { totalScore, rejected } = await scoreRelease(releaseTitle, null, item.qualityProfileId, item.type, null, item.id);
   if (rejected || totalScore < (profile?.minFormatScore ?? 0)) return false;
+  if (existingFile) {
+    const verdict = judgeUpgrade(upgradeProfileOf(profile), propersMode(), existingFile, { quality, title: releaseTitle, score: totalScore });
+    if (verdict !== "yes") return false;
+  }
 
   const result: SearchResult = {
     indexerId: null,

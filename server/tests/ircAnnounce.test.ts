@@ -839,3 +839,52 @@ describe("handleAnnounce — albums, books and comics (N29)", () => {
     expect(grab.mock.calls[0][3]).toBe(book);
   });
 });
+
+describe("handleAnnounce — upgrades of a file already on disk", () => {
+  async function movieWithFile(title: string, quality: string, releaseTitle: string): Promise<number> {
+    const profile = Number(
+      (
+        await db
+          .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff) VALUES (?, ?, 'Bluray-1080p')")
+          .run(`Upg-${Math.random()}`, JSON.stringify(["WEBDL-720p", "WEBDL-1080p", "Bluray-1080p"]))
+      ).lastInsertRowid
+    );
+    const id = await insertMovie(title, profile, 2020);
+    await db.prepare("UPDATE media_items SET has_file = 1, quality = ?, file_release_title = ? WHERE id = ?").run(quality, releaseTitle, id);
+    return id;
+  }
+
+  it("grabs a better quality for a file below the cutoff when auto-upgrade is on, and nothing when it is off", async () => {
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    await insertTorrentClient();
+    await movieWithFile("Announce Upgrade Movie", "WEBDL-1080p", "Announce.Upgrade.Movie.2020.1080p.WEB-DL-GRPA");
+    grab.mockClear();
+    setSetting("autoUpgradeEnabled", "0");
+    await handleAnnounce(FEED, announceText("Announce Upgrade Movie 2020 1080p BluRay x264-GRPB"));
+    expect(grab).not.toHaveBeenCalled();
+
+    setSetting("autoUpgradeEnabled", "1");
+    try {
+      await handleAnnounce(FEED, announceText("Announce Upgrade Movie 2020 720p WEB-DL x264-GRPB"));
+      expect(grab).not.toHaveBeenCalled(); // not better than the file
+      await handleAnnounce(FEED, announceText("Announce Upgrade Movie 2020 1080p BluRay x264-GRPB"));
+      expect(grab).toHaveBeenCalledTimes(1);
+    } finally {
+      setSetting("autoUpgradeEnabled", "0");
+    }
+  });
+
+  it("does not replace a file that already meets the cutoff", async () => {
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    await insertTorrentClient();
+    await movieWithFile("Announce Done Movie", "Bluray-1080p", "Announce.Done.Movie.2020.1080p.BluRay-GRPA");
+    grab.mockClear();
+    setSetting("autoUpgradeEnabled", "1");
+    try {
+      await handleAnnounce(FEED, announceText("Announce Done Movie 2020 1080p BluRay x264-GRPB"));
+      expect(grab).not.toHaveBeenCalled();
+    } finally {
+      setSetting("autoUpgradeEnabled", "0");
+    }
+  });
+});
