@@ -42,6 +42,7 @@ import { getMediaTypeConfig } from "../services/mediaTypes.js";
 import { pickClientForProtocol, searchAndGrabTargets, type BulkSearchTarget } from "../services/scheduler.js";
 import { computeAbsoluteEpisodeNumber } from "../services/importer.js";
 import { existingFileRecord } from "../services/fileRelease.js";
+import { editionlessTitle } from "../services/nonVideoMatch.js";
 import { judgeUpgrade, propersMode, upgradeProfileOf } from "../services/upgradeRules.js";
 import { getQualityProfile, releaseNameVerdict, siblingTitlesOf, yearFieldsOf, type TargetName } from "../services/scheduler.js";
 import type { SearchResult } from "../types/index.js";
@@ -214,7 +215,7 @@ searchRouter.get(
       if (!sub) throw new HttpError(404, "Sub-item not found");
       plan = subItemPlanFor(item, sub);
       slskdQuery = `${item.title} ${sub.title}`;
-      subName = { title: sub.title, parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, sub.id), ...(await yearFieldsOf(item, sub)) };
+      subName = { title: editionlessTitle(sub.title), parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, sub.id), ...(await yearFieldsOf(item, sub)) };
     } else {
       // Only meaningful for the plain whole-item search (no episode/season/sub-item target) — an
       // episodic/collection search already confirms identity via season/episode/sub-item title

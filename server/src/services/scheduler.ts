@@ -1127,7 +1127,7 @@ export async function chooseBestResult(
           }))
         )
       )
-        .filter((c) => c.totalScore >= minFormatScore && !c.rejected)
+        .filter((c) => c.totalScore >= (tiered ? minFormatScore : 0) && !c.rejected)
         // A same-quality release is an upgrade by its score only when it adds enough to the file's.
         .filter(
           (c) =>

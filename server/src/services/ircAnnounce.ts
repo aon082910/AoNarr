@@ -22,6 +22,7 @@ import {
   type ChosenResult,
 } from "./scheduler.js";
 import { identityKey } from "./releaseIdentity.js";
+import { editionlessTitle } from "./nonVideoMatch.js";
 import { existingFileRecord } from "./fileRelease.js";
 import { judgeUpgrade, propersMode, upgradeProfileOf } from "./upgradeRules.js";
 import { getSetting } from "./settingsStore.js";
@@ -140,7 +141,7 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
 
   // An album, book, audiobook, comic issue or manga chapter: the wanted sub-items of the library that the name could be
   // (N29). The scheduled search's own name test says which one it is.
-  if (await grabSubItemAnnounce(feed, releaseTitle, downloadUrl, parsed.quality, targetClient)) return;
+  if (!episodeShaped && (await grabSubItemAnnounce(feed, releaseTitle, downloadUrl, parsed.quality, targetClient))) return;
 
   // An episode announce is numbered SxxEyy, by absolute number ("[Group] Show - 25"), by air date, or is a
   // pack of a season: all of them are mapped to the episodes they hold, as the RSS sync does.
@@ -256,7 +257,10 @@ async function grabSubItemAnnounce(feed: IrcFeedRow, releaseTitle: string, downl
     category: null,
   };
   for (const parent of parents) {
-    const subItems = (await db.prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND monitored = 1 AND has_file = 0 ORDER BY id").all(parent.id)) as any[];
+    const subItems = ((await db.prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND monitored = 1 AND has_file = 0 ORDER BY id").all(parent.id)) as any[]).sort(
+      // "Rumours" before "Rumours: Deluxe Edition": a release of the plain album names both once the edition is stripped.
+      (a, b) => Number(editionlessTitle(a.title) !== a.title) - Number(editionlessTitle(b.title) !== b.title)
+    );
     for (const sub of subItems) {
       // An album or book not out yet is not grabbed from an announce either.
       if (["artist", "author", "audiobook"].includes(parent.type) && isNotYetReleased(sub.release_date)) continue;
@@ -353,7 +357,7 @@ async function tryGrabMatch(
   }
 
   const { totalScore, rejected } = await scoreRelease(releaseTitle, null, item.qualityProfileId, item.type, null, item.id);
-  if (rejected || totalScore < (profile?.minFormatScore ?? 0)) return false;
+  if (rejected || totalScore < (tiered ? profile?.minFormatScore ?? 0 : 0)) return false;
   if (existingFile) {
     const verdict = judgeUpgrade(upgradeProfileOf(profile), propersMode(), existingFile, { quality, title: releaseTitle, score: totalScore });
     if (verdict !== "yes") return false;

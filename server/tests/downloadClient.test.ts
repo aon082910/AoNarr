@@ -1855,6 +1855,41 @@ describe("SlskdAdapter", () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(folder.files);
   });
 
+  it("addDownload fails a folder when slskd could not enqueue all its tracks", async () => {
+    const { encodeSlskdFolderUrl } = await import("../src/services/soulseek.js");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ok({ enqueued: [{}], failed: [{ filename: "02.flac", reason: "no" }] })));
+    const client = await insertClient({ type: "slskd", api_key: "key" });
+    const folder = { username: "peer", directory: "Music\\Album", files: [{ filename: "Music\\Album\\01.flac", size: 1 }, { filename: "Music\\Album\\02.flac", size: 1 }] };
+
+    await expect(adapter().addDownload(client, encodeSlskdFolderUrl(folder))).rejects.toThrow(/could not enqueue 1 of the 2 tracks/);
+  });
+
+  it("getStatus counts only the files of the folder itself, not a sibling folder with a longer name", async () => {
+    const { slskdFolderDownloadId } = await import("../src/services/soulseek.js");
+    const folder = { username: "peer", directory: "Music\\OK Computer", files: [{ filename: "", size: 0 }, { filename: "", size: 0 }] };
+    const id = slskdFolderDownloadId(folder);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        ok([
+          {
+            username: "peer",
+            directories: [
+              {
+                files: [
+                  { filename: "Music\\OK Computer\\01.flac", state: "Completed, Succeeded", size: 100, bytesTransferred: 100 },
+                  { filename: "Music\\OK Computer OKNOTOK\\01.flac", state: "Completed, Succeeded", size: 100, bytesTransferred: 100 },
+                  { filename: "Music\\OK Computer OKNOTOK\\02.flac", state: "Completed, Succeeded", size: 100, bytesTransferred: 100 },
+                ],
+              },
+            ],
+          },
+        ])
+      )
+    );
+    expect((await adapter().getStatus({} as any, [id]))[0]).toMatchObject({ status: "downloading" });
+  });
+
   it("getStatus sums a folder's tracks: downloading while any is, completed when all are, failed when one is", async () => {
     const { slskdFolderDownloadId } = await import("../src/services/soulseek.js");
     const folder = { username: "peer", directory: "Music\\Artist\\Album", files: [{ filename: "", size: 0 }, { filename: "", size: 0 }] };

@@ -4685,6 +4685,21 @@ describe("N24: a better format replaces the file of an album, a book or an issue
   });
 });
 
+describe("the minimum format score is a video setting (N30)", () => {
+  it("does not stop an album from being grabbed for want of a score no format of its type can give", async () => {
+    const profile = Number(
+      (
+        await db
+          .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff, min_format_score) VALUES (?, ?, 'WEBDL-1080p', 10)")
+          .run(`Min-${Math.random()}`, JSON.stringify(["WEBDL-1080p"]))
+      ).lastInsertRowid
+    );
+    const album = fakeResult({ title: "Queen - Greatest Hits (1981) [FLAC]" });
+    const chosen = await chooseBestResult([album], [], "", profile, 10, null, new Set(), "artist", null, null, null, { name: { title: "Greatest Hits", parentTitle: "Queen" } });
+    expect(chosen?.result).toBe(album);
+  });
+});
+
 describe("N26: a wanted title that carries a provider's edition", () => {
   it("takes the plain album's release for 'Thriller - Remastered' and its own edition's release too", async () => {
     const choose = (results: any[]) =>

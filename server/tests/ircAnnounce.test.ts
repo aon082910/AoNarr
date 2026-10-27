@@ -888,3 +888,21 @@ describe("handleAnnounce — upgrades of a file already on disk", () => {
     }
   });
 });
+
+describe("handleAnnounce — a plain album before its edition (N26)", () => {
+  it("grabs the plain album when both it and a deluxe edition of it are wanted", async () => {
+    await insertTorrentClient();
+    const artist = Number(
+      (await db.prepare("INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('artist','Edition Band','edition band',1,0,'unknown')").run())
+        .lastInsertRowid
+    );
+    // The edition has the lower id; the plain album is the one to take.
+    await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file) VALUES (?, 'Rumours - Deluxe Edition', 1, 0)").run(artist);
+    const plain = Number((await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file) VALUES (?, 'Rumours', 1, 0)").run(artist)).lastInsertRowid);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Edition Band - Rumours (1977) [FLAC]"));
+
+    expect(grab.mock.calls[0][3]).toBe(plain);
+  });
+});

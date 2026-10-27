@@ -451,7 +451,8 @@ export function nonVideoRejection(releaseTitle: string, name: NonVideoName, medi
 }
 
 /** Types whose files can be replaced by a better format of the same album, book or issue (N24). ROMs have no ladder. */
-const FORMAT_UPGRADE_TYPES = new Set(["artist", "author", "audiobook", "comic", "manga"]);
+// (Not audiobooks: a chapter-by-chapter download and a single .m4b do not replace each other file for file.)
+const FORMAT_UPGRADE_TYPES = new Set(["artist", "author", "comic", "manga"]);
 /** How much better (by nonVideoPreference) a release must be than the file's to replace it: lossy to lossless, mobi or
  * pdf to epub, cbr or pdf to cbz; never a bitrate step or an equal format. */
 export const FORMAT_UPGRADE_STEP = 20;

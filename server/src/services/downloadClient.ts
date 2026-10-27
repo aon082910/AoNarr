@@ -1550,6 +1550,11 @@ class SlskdAdapter implements DownloadClientAdapter {
         body: JSON.stringify(folder.files.map((f) => ({ filename: f.filename, size: f.size }))),
       });
       if (!res.ok) throw new Error(`slskd enqueue failed: HTTP ${res.status}`);
+      // slskd answers 2xx even when some of the files could not be enqueued: a folder missing tracks is no album.
+      const answer = (await res.json().catch(() => null)) as { failed?: unknown[] } | null;
+      if (Array.isArray(answer?.failed) && answer!.failed!.length > 0) {
+        throw new Error(`slskd could not enqueue ${answer!.failed!.length} of the ${folder.files.length} tracks`);
+      }
       return { downloadId: slskdFolderDownloadId(folder) };
     }
     const { username, filename, size } = decodeSlskdDownloadUrl(downloadUrl);
@@ -1579,7 +1584,13 @@ class SlskdAdapter implements DownloadClientAdapter {
       const tracks: any[] = [];
       for (const u of users) {
         if (u.username !== folder.username) continue;
-        for (const dir of u.directories ?? []) for (const f of dir.files ?? []) if (String(f.filename ?? "").startsWith(prefix)) tracks.push(f);
+        // Files of the folder itself: a sibling folder that begins with the same name is another album.
+        for (const dir of u.directories ?? []) {
+          for (const f of dir.files ?? []) {
+            const name = String(f.filename ?? "");
+            if (name.startsWith(prefix + "\\") || name.startsWith(prefix + "/")) tracks.push(f);
+          }
+        }
       }
       if (tracks.length === 0) continue;
       const states = tracks.map((f) => String(f.state ?? ""));

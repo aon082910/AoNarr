@@ -37,8 +37,14 @@ export function romSetCompanions(sheetPath: string): string[] {
   const found: string[] = [];
   for (const name of trackNamesOf(text, extension)) {
     if (name !== path.basename(name)) continue; // a path out of the sheet's folder is no companion
-    const file = path.join(dir, name);
-    if (file !== sheetPath && fs.existsSync(file) && fs.statSync(file).isFile()) found.push(file);
+    let file = path.join(dir, name);
+    if (!fs.existsSync(file)) {
+      // Sheets are often written on a system that ignores case: "Game.bin" for a "game.BIN" on disk.
+      const actual = fs.readdirSync(dir).find((entry) => entry.toLowerCase() === name.toLowerCase());
+      if (!actual) continue;
+      file = path.join(dir, actual);
+    }
+    if (file !== sheetPath && fs.statSync(file).isFile()) found.push(file);
   }
   return found;
 }
