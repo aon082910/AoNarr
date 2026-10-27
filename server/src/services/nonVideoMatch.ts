@@ -450,6 +450,23 @@ export function nonVideoRejection(releaseTitle: string, name: NonVideoName, medi
   }
 }
 
+/** Types whose files can be replaced by a better format of the same album, book or issue (N24). ROMs have no ladder. */
+const FORMAT_UPGRADE_TYPES = new Set(["artist", "author", "audiobook", "comic", "manga"]);
+/** How much better (by nonVideoPreference) a release must be than the file's to replace it: lossy to lossless, mobi or
+ * pdf to epub, cbr or pdf to cbz; never a bitrate step or an equal format. */
+export const FORMAT_UPGRADE_STEP = 20;
+const BEST_FORMAT_PREFERENCE = 100;
+
+/**
+ * The preference of the file an album, book or issue has, when a better format is worth searching for: null when
+ * the type has no ladder, the release it came from is unknown, or it is already the best format.
+ */
+export function formatUpgradeFloor(mediaType: string, fileReleaseTitle: string | null | undefined): number | null {
+  if (!FORMAT_UPGRADE_TYPES.has(mediaType) || !fileReleaseTitle) return null;
+  const preference = nonVideoPreference(fileReleaseTitle, mediaType);
+  return preference + FORMAT_UPGRADE_STEP > BEST_FORMAT_PREFERENCE + 5 ? null : preference;
+}
+
 /**
  * How much better one release of a title is than another of the same, for the types with no quality tiers:
  * the lossless rip over the lossy one, the ebook format a reader opens everywhere, the ROM dump in the

@@ -23,7 +23,7 @@ import { releaseRuntimeMinutes, runtimeContextFor } from "./releaseRuntime.js";
 import { recordPending } from "./pendingStore.js";
 import { compareRevisions, formatCutoffNotMet, judgeUpgrade, propersMode, upgradeProfileOf, type ExistingFile, type UpgradeProfile } from "./upgradeRules.js";
 import { existingFileRecord } from "./fileRelease.js";
-import { editionlessTitle, nonVideoPreference, nonVideoRejection } from "./nonVideoMatch.js";
+import { editionlessTitle, FORMAT_UPGRADE_STEP, formatUpgradeFloor, nonVideoPreference, nonVideoRejection } from "./nonVideoMatch.js";
 import { exceedsFreeSpace, freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReserveBytes } from "./freeSpace.js";
 import { compareUsenetAge, comparePeers, largerIsBetterKey, normalizePreferredProtocol, protocolGroup, protocolPreferenceKey } from "./releaseRanking.js";
 import { aliasSeasonsFor, aliasTitlesFor, applyAliasSeason, identityContextFor, seasonEpisodeCounts } from "./releaseAliases.js";
@@ -463,6 +463,9 @@ export interface ChooseOptions {
   preferCutoffQuality?: boolean;
   /** Qualities the profile treats as one tier; read from the quality profile when omitted. */
   qualityGroups?: QualityGroups;
+  /** An album, book or issue that has a file: the format preference of that file (nonVideoMatch.ts). Only a release a
+   * format step better than it is taken, so the file is replaced by a better format and never by an equal one. */
+  nonVideoUpgradeFrom?: number;
   /** Human-readable "media title" (plus episode/season where relevant) for this call's log lines
    * only — has no effect on matching/scoring. Omitted = log lines drop the "for ..." suffix. */
   label?: string | null;
@@ -990,6 +993,10 @@ export async function chooseBestResult(
       const match = releaseNameMatch(result.title, name, mediaType);
       if (match === "main") namesMainTitleOnly.add(result);
       if (match === null) log.info(`[scheduler] rejected "${result.title}": title doesn't match "${name.title}"`);
+      if (match !== null && options.nonVideoUpgradeFrom != null && nonVideoPreference(result.title, mediaType) < options.nonVideoUpgradeFrom + FORMAT_UPGRADE_STEP) {
+        log.info(`[scheduler] rejected "${result.title}": its format is no better than the file's`);
+        return false;
+      }
       return match !== null;
     }
     if (identityMode !== "off" && identityTarget) {
@@ -2414,7 +2421,13 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
   const onDisk = await existingFileQuality(item, episodeId, subItemId);
   const upgradeFrom = onDisk !== undefined ? onDisk : t.upgradeFromQuality ?? undefined;
   const direct = sub ? directSourceFor(item, sub) : null;
-  if (upgradeFrom !== undefined && (direct || !usesQualityTiers(item.type))) {
+  // An album, book or issue is replaced only by a better format (lossless over lossy, epub over pdf), when the admin
+  // asked for it and the release the file came from is known (N24).
+  let nonVideoFrom: number | null = null;
+  if (upgradeFrom !== undefined && !direct && !usesQualityTiers(item.type) && getSetting("nonVideoUpgrades") === "1") {
+    nonVideoFrom = formatUpgradeFloor(item.type, (await existingFileRecord(item, episodeId, subItemId))?.releaseTitle);
+  }
+  if (upgradeFrom !== undefined && (direct || !usesQualityTiers(item.type)) && nonVideoFrom === null) {
     return { grabbed: false, error: "Already has a file, and this media type has no quality to upgrade by" };
   }
   // A file at the quality cutoff is still worth a search while its custom-format score is under the format cutoff.
@@ -2466,8 +2479,9 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
       item.id,
       {
         clients: usable,
-        upgradeFromRank: upgradeFrom === undefined ? null : qualityRank(upgradeFrom),
-        existing: existingFile ? { file: existingFile, profile: upgradeProfile } : undefined,
+        upgradeFromRank: upgradeFrom === undefined || nonVideoFrom !== null ? null : qualityRank(upgradeFrom),
+        existing: existingFile && nonVideoFrom === null ? { file: existingFile, profile: upgradeProfile } : undefined,
+        ...(nonVideoFrom !== null ? { nonVideoUpgradeFrom: nonVideoFrom } : {}),
         name,
         indexers: ctx.indexers,
         label: item.title,
