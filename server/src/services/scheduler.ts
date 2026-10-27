@@ -23,7 +23,7 @@ import { releaseRuntimeMinutes, runtimeContextFor } from "./releaseRuntime.js";
 import { recordPending } from "./pendingStore.js";
 import { compareRevisions, formatCutoffNotMet, judgeUpgrade, propersMode, upgradeProfileOf, type ExistingFile, type UpgradeProfile } from "./upgradeRules.js";
 import { existingFileRecord } from "./fileRelease.js";
-import { nonVideoPreference, nonVideoRejection } from "./nonVideoMatch.js";
+import { editionlessTitle, nonVideoPreference, nonVideoRejection } from "./nonVideoMatch.js";
 import { exceedsFreeSpace, freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReserveBytes } from "./freeSpace.js";
 import { compareUsenetAge, comparePeers, largerIsBetterKey, normalizePreferredProtocol, protocolGroup, protocolPreferenceKey } from "./releaseRanking.js";
 import { aliasSeasonsFor, aliasTitlesFor, applyAliasSeason, identityContextFor, seasonEpisodeCounts } from "./releaseAliases.js";
@@ -815,7 +815,10 @@ export async function chooseBestResult(
   mediaItemId: number | null = null,
   options: ChooseOptions = {}
 ): Promise<ChosenResult | null> {
-  const { clients, upgradeFromRank = null, name = null, label = null, existing = null } = options;
+  const { clients, upgradeFromRank = null, name: wantedName = null, label = null, existing = null } = options;
+  // The edition a provider adds to a title ("Thriller - Remastered") is not in the plain album's releases (N26).
+  const name =
+    wantedName && (mediaType === "artist" || mediaType === "author" || mediaType === "audiobook") ? { ...wantedName, title: editionlessTitle(wantedName.title) } : wantedName;
   const revisionMode = propersMode();
   // Same-quality releases that could still replace the file by their custom-format score, which is only known
   // once they are scored.

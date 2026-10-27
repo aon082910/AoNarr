@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { comicNumbersOf, nonVideoPreference, nonVideoRejection, romTitleOf } from "../src/services/nonVideoMatch.js";
+import { comicNumbersOf, editionlessTitle, nonVideoPreference, nonVideoRejection, romTitleOf } from "../src/services/nonVideoMatch.js";
 
 const reject = (release: string, name: { title: string; parentTitle?: string; siblingTitles?: string[] }, type: string) => nonVideoRejection(release, name, type);
 
@@ -273,5 +273,19 @@ describe("real-world names the first draft refused (Round 14 review)", () => {
     taken("author", dune, ["Frank Herbert - Dune 01 - Dune", "Dune 1965 Gollancz epub", "Frank Herbert - Dune MOBI+EPUB"]);
     taken("author", { title: "The Hunger Games", parentTitle: "Suzanne Collins" }, ["Suzanne Collins - Hunger Games 1 - The Hunger Games"]);
     taken("audiobook", { title: "Project Hail Mary", parentTitle: "Andy Weir" }, ["Andy Weir - Project Hail Mary 2021 Ray Porter m4b", "Andy Weir - Project Hail Mary audiobook 128k"]);
+  });
+});
+
+describe("the edition a provider adds to a title (N26)", () => {
+  it("strips a trailing edition and nothing else", () => {
+    expect(editionlessTitle("Thriller - Remastered")).toBe("Thriller");
+    expect(editionlessTitle("Rumours: Deluxe Edition")).toBe("Rumours");
+    expect(editionlessTitle("Abbey Road - 2019 Mix")).toBe("Abbey Road - 2019 Mix");
+    expect(editionlessTitle("Nevermind - 30th Anniversary Edition")).toBe("Nevermind");
+    expect(editionlessTitle("Greatest Hits - Remastered 2011")).toBe("Greatest Hits");
+    expect(editionlessTitle("Deluxe")).toBe("Deluxe");
+    expect(editionlessTitle("Live - Deluxe")).toBe("Live");
+    expect(editionlessTitle("Dune")).toBe("Dune");
+    expect(editionlessTitle("Master of Puppets")).toBe("Master of Puppets");
   });
 });

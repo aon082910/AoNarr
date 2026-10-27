@@ -1,6 +1,6 @@
 import { db } from "../db/index.js";
 import { log } from "./logger.js";
-import { getMediaTypeConfig } from "./mediaTypes.js";
+import { getMediaTypeConfig, MEDIA_TYPES } from "./mediaTypes.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import { judgeSeasonPack, loadPackEpisodes, packSettings, type PackEpisode } from "./seasonPacks.js";
 import { releaseRejection } from "./releaseRejections.js";
@@ -9,7 +9,18 @@ import { guessTitleFromText, titlesMatch } from "./libraryScan.js";
 import { scoreRelease } from "./customFormatScoring.js";
 import { getBlocklistedTitles } from "./blocklist.js";
 import { downloadClientFromRow, mediaItemFromRow, qualityProfileFromRow } from "../db/mappers.js";
-import { grab, isAlreadyQueued, isReleaseAvailableForSearch, pickClientForProtocol, type ChosenResult } from "./scheduler.js";
+import {
+  chooseBestResult,
+  grab,
+  isAlreadyQueued,
+  isNotYetReleased,
+  isReleaseAvailableForSearch,
+  pickClientForProtocol,
+  siblingTitlesOf,
+  yearFieldsOf,
+  type ChosenResult,
+} from "./scheduler.js";
+import { identityKey } from "./releaseIdentity.js";
 import { computeAbsoluteEpisodeNumber } from "./importer.js";
 import { parseQualityGroups, sameQualityGroup, usesQualityTiers, type QualityGroups } from "./quality.js";
 import { aliasSeasonsFor, aliasTitlesByItem, applyAliasSeason, resolveReleaseItemInLibrary, seasonEpisodeCounts } from "./releaseAliases.js";
@@ -120,6 +131,10 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
     if (grabbed) return; // one announce maps to at most one grab
   }
 
+  // An album, book, audiobook, comic issue or manga chapter: the wanted sub-items of the library that the name could be
+  // (N29). The scheduled search's own name test says which one it is.
+  if (await grabSubItemAnnounce(feed, releaseTitle, downloadUrl, parsed.quality, targetClient)) return;
+
   // An episode announce is numbered SxxEyy, by absolute number ("[Group] Show - 25"), by air date, or is a
   // pack of a season: all of them are mapped to the episodes they hold, as the RSS sync does.
   const numbered =
@@ -197,6 +212,63 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
     });
     if (grabbed) return;
   }
+}
+
+/** Types an announce can name a sub-item of: collections with no quality tiers that are searched on indexers. */
+function announceCollectionTypes(): string[] {
+  return Object.values(MEDIA_TYPES)
+    .filter((t) => t.shape === "collection" && !usesQualityTiers(t.key) && t.key !== "video" && t.key !== "podcast")
+    .map((t) => t.key);
+}
+
+/**
+ * Whether the announce names a wanted album, book, comic issue or manga chapter, and if so grabs it. The parent (artist,
+ * author, series) has to be named in the release, a cheap test that keeps most of the library out; then each of its
+ * missing monitored sub-items is asked the way a search asks it, by chooseBestResult's name test on this one release.
+ */
+async function grabSubItemAnnounce(feed: IrcFeedRow, releaseTitle: string, downloadUrl: string, quality: string, targetClient: DownloadClient): Promise<boolean> {
+  const types = announceCollectionTypes();
+  if (types.length === 0) return false;
+  const releaseKey = ` ${identityKey(releaseTitle)} `;
+  const parents = ((await db.prepare(`SELECT * FROM media_items WHERE monitored = 1 AND type IN (${types.map(() => "?").join(",")})`).all(...types)) as any[])
+    .map(mediaItemFromRow)
+    .filter((item) => {
+      const key = identityKey(item.title);
+      return key.length > 0 && releaseKey.includes(` ${key} `);
+    });
+  const result: SearchResult = {
+    indexerId: null,
+    indexerName: `irc:${feed.name}`,
+    title: releaseTitle,
+    size: 0,
+    seeders: null,
+    leechers: null,
+    publishDate: new Date().toISOString(),
+    downloadUrl,
+    protocol: feed.protocol,
+    category: null,
+  };
+  for (const parent of parents) {
+    const subItems = (await db.prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND monitored = 1 AND has_file = 0 ORDER BY id").all(parent.id)) as any[];
+    for (const sub of subItems) {
+      // An album or book not out yet is not grabbed from an announce either.
+      if (["artist", "author", "audiobook"].includes(parent.type) && isNotYetReleased(sub.release_date)) continue;
+      const name = {
+        title: sub.title,
+        parentTitle: parent.title,
+        siblingTitles: await siblingTitlesOf(parent, sub.id),
+        ...(await yearFieldsOf(parent, sub)),
+      };
+      const named = await chooseBestResult([result], [], "", null, 0, null, new Set(), parent.type, null, null, parent.id, { name });
+      if (!named) continue;
+      const grabbed = await serializeForTarget(`sub:${sub.id}`, async () => {
+        if (await isAlreadyQueued(parent.id, null, sub.id)) return false;
+        return tryGrabMatch(parent, null, sub.id, releaseTitle, downloadUrl, quality, feed, targetClient);
+      });
+      if (grabbed) return true; // one announce maps to at most one grab
+    }
+  }
+  return false;
 }
 
 /** The item's delay profile, picked the way the scheduled search picks it: the first tag-scoped

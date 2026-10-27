@@ -777,3 +777,65 @@ describe("handleAnnounce — episodes named by absolute number, air date or the 
     expect(grab).not.toHaveBeenCalled();
   });
 });
+
+describe("handleAnnounce — albums, books and comics (N29)", () => {
+  async function insertCollection(type: string, title: string): Promise<number> {
+    return Number(
+      (
+        await db
+          .prepare("INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES (?, ?, ?, 1, 0, 'unknown')")
+          .run(type, title, title.toLowerCase())
+      ).lastInsertRowid
+    );
+  }
+  async function insertSub(itemId: number, title: string, releaseDate: string | null = null): Promise<number> {
+    return Number(
+      (await db.prepare("INSERT INTO sub_items (media_item_id, title, release_date, monitored, has_file) VALUES (?, ?, ?, 1, 0)").run(itemId, title, releaseDate)).lastInsertRowid
+    );
+  }
+
+  it("grabs a wanted album that the announce names, and no other album of the artist", async () => {
+    await insertTorrentClient();
+    const artist = await insertCollection("artist", "Announce Band");
+    await insertSub(artist, "First Record");
+    const wanted = await insertSub(artist, "Second Record");
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Announce Band - Second Record (2019) [FLAC]"));
+
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect(grab.mock.calls[0][3]).toBe(wanted);
+  });
+
+  it("refuses another artist's album of the same name, a live album, and an album not out yet", async () => {
+    await insertTorrentClient();
+    const artist = await insertCollection("artist", "Announce Duo");
+    await insertSub(artist, "Hits");
+    await insertSub(artist, "Future Record", "2999-01-01");
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Some Other Band - Hits (2001) [FLAC]"));
+    await handleAnnounce(FEED, announceText("Announce Duo - Hits Live (2005) [FLAC]"));
+    await handleAnnounce(FEED, announceText("Announce Duo - Future Record [FLAC]"));
+    expect(grab).not.toHaveBeenCalled();
+  });
+
+  it("grabs a comic issue by its number, and a book by its title", async () => {
+    await insertTorrentClient();
+    const series = await insertCollection("comic", "Announce Saga");
+    await insertSub(series, "#11 - Chapter Eleven");
+    const issue = await insertSub(series, "#12 - Chapter Twelve");
+    grab.mockClear();
+    await handleAnnounce(FEED, announceText("Announce Saga 012 (2013) (Digital)"));
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect(grab.mock.calls[0][3]).toBe(issue);
+
+    const author = await insertCollection("author", "Announce Writer");
+    const book = await insertSub(author, "The Wanted Book");
+    await insertSub(author, "The Wanted Book Two");
+    grab.mockClear();
+    await handleAnnounce(FEED, announceText("Announce Writer - The Wanted Book (2020) [EPUB]"));
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect(grab.mock.calls[0][3]).toBe(book);
+  });
+});

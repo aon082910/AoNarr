@@ -1,6 +1,7 @@
 import { db } from "../db/index.js";
 import { log } from "./logger.js";
 import { parseReleaseTitle, type ReleaseFlag } from "./releaseParser.js";
+import { usesQualityTiers } from "./quality.js";
 
 export type IndexerFlag = "freeleech" | "halfleech";
 
@@ -337,8 +338,8 @@ export async function scoreRelease(
   const matches: CustomFormatMatch[] = [];
 
   for (const format of formats) {
+    let restrictedTo: string[] = [];
     if (mediaType && format.media_types) {
-      let restrictedTo: string[];
       try {
         restrictedTo = JSON.parse(format.media_types);
       } catch {
@@ -346,6 +347,9 @@ export async function scoreRelease(
       }
       if (restrictedTo.length > 0 && !restrictedTo.includes(mediaType)) continue;
     }
+    // A format scoped to no type is a video format (resolution, source, codec conditions): it does not score a
+    // music, book, comic or ROM release, which has none of those. A type named by the format still gets it.
+    if (mediaType && restrictedTo.length === 0 && !usesQualityTiers(mediaType)) continue;
 
     let groups: ConditionGroup[];
     try {

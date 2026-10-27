@@ -9,6 +9,18 @@
  * Pure: it is asked after scheduler.ts's looser containment test has passed, and can only refuse.
  */
 
+/**
+ * A title without the edition a provider tacks on after a dash or colon ("Thriller - Remastered", "Rumours: Deluxe
+ * Edition", "Abbey Road - 2019 Mix"): the release for the plain album is the one wanted, and a release of the
+ * edition names the plain title as well. A title that is nothing but the suffix is left alone.
+ */
+export function editionlessTitle(title: string): string {
+  const stripped = title
+    .replace(/\s*[-–:]\s*(?:\d{4}\s+)?(?:(?:the\s+)?(?:\d+(?:st|nd|rd|th)\s+)?(?:anniversary|deluxe|remaster(?:ed)?|expanded|special|collector'?s|super deluxe|limited|bonus|reissue|extended|mono|stereo|digital|explicit|clean|legacy|platinum)(?:\s+(?:version|edition|mix|tracks?|mastered))*(?:\s+\d{4})?)\s*$/i, "")
+    .trim();
+  return stripped.length > 0 ? stripped : title;
+}
+
 export interface NonVideoName {
   title: string;
   parentTitle?: string | null;

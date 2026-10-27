@@ -4607,6 +4607,18 @@ describe("Round 14: choosing among releases of a music, book or ROM title", () =
   });
 });
 
+describe("N26: a wanted title that carries a provider's edition", () => {
+  it("takes the plain album's release for 'Thriller - Remastered' and its own edition's release too", async () => {
+    const choose = (results: any[]) =>
+      chooseBestResult(results, [], "", null, 0, null, new Set(), "artist", null, null, null, { name: { title: "Thriller - Remastered", parentTitle: "Michael Jackson" } });
+    const plain = fakeResult({ title: "Michael Jackson - Thriller (1982) [FLAC]" });
+    const edition = fakeResult({ title: "Michael Jackson - Thriller (Remastered) [FLAC]" });
+    expect((await choose([plain]))?.result).toBe(plain);
+    expect((await choose([edition]))?.result).toBe(edition);
+    expect(await choose([fakeResult({ title: "Michael Jackson - Bad (1987) [FLAC]" })])).toBeNull();
+  });
+});
+
 describe("Round 14: an album or book not yet out", () => {
   it("is not yet released until its date has passed, a year or month alone only once the whole of it has", async () => {
     const { isNotYetReleased } = await import("../src/services/scheduler.js");
