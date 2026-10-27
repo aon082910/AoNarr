@@ -36,6 +36,76 @@ export function decodeSlskdDownloadUrl(downloadUrl: string): { username: string;
   return { username, filename, size };
 }
 
+/** A shared folder as one download: the user, the folder's path and the files in it (name and size). */
+export interface SlskdFolder {
+  username: string;
+  directory: string;
+  files: { filename: string; size: number }[];
+}
+
+export function encodeSlskdFolderUrl(folder: SlskdFolder): string {
+  const files = Buffer.from(JSON.stringify(folder.files.map((f) => [f.filename, f.size]))).toString("base64url");
+  return `slskd://${encodeURIComponent(folder.username)}/${encodeURIComponent(folder.directory)}?folder=1&files=${files}`;
+}
+
+/** The folder a `slskd://` URL names, or null for a URL that names a single file. */
+export function decodeSlskdFolderUrl(downloadUrl: string): SlskdFolder | null {
+  let url: URL;
+  try {
+    url = new URL(downloadUrl);
+  } catch {
+    return null;
+  }
+  if (url.searchParams.get("folder") !== "1") return null;
+  const username = decodeURIComponent(url.hostname);
+  const directory = decodeURIComponent(url.pathname.replace(/^\//, ""));
+  let files: { filename: string; size: number }[] = [];
+  try {
+    const parsed = JSON.parse(Buffer.from(url.searchParams.get("files") ?? "", "base64url").toString("utf8")) as [string, number][];
+    files = parsed.filter((f) => Array.isArray(f) && typeof f[0] === "string").map(([filename, size]) => ({ filename, size: Number(size) || 0 }));
+  } catch {
+    return null;
+  }
+  if (!username || !directory || files.length === 0) return null;
+  return { username, directory, files };
+}
+
+/** Separates the parts of a folder download's id, which no file name holds. */
+const FOLDER_ID_SEPARATOR = "\u001f";
+
+/** The id a folder download is tracked by: user, folder and how many files were asked for. */
+export function slskdFolderDownloadId(folder: SlskdFolder): string {
+  return ["slskd-folder", folder.username, folder.directory, String(folder.files.length)].join(FOLDER_ID_SEPARATOR);
+}
+
+export function parseSlskdFolderDownloadId(downloadId: string): { username: string; directory: string; count: number } | null {
+  const parts = downloadId.split(FOLDER_ID_SEPARATOR);
+  if (parts.length !== 4 || parts[0] !== "slskd-folder") return null;
+  return { username: parts[1], directory: parts[2], count: Number(parts[3]) || 0 };
+}
+
+const AUDIO_FILE = /\.(?:flac|mp3|m4a|ogg|opus|wav|aac|wma|ape|wv|aiff?|alac|dsf)$/i;
+const directoryOf = (filename: string): string => {
+  const at = Math.max(filename.lastIndexOf("/"), filename.lastIndexOf("\\"));
+  return at < 0 ? "" : filename.slice(0, at);
+};
+
+/** "Artist - Album" out of the last two folders of a shared path, the way a release is named. */
+function folderTitle(directory: string): string {
+  const parts = directory.split(/[/\\]/).filter(Boolean);
+  return parts.slice(-2).join(" - ");
+}
+
+/** The format of a folder of tracks as a release name tag: "[FLAC]", "[MP3 320]", "[MP3]" for mixed bitrates. */
+function folderFormatTag(files: SlskdSearchFile[]): string {
+  const extensions = new Set(files.map((f) => (f.filename.match(/\.([a-z0-9]+)$/i)?.[1] ?? "").toUpperCase()));
+  if (extensions.size !== 1) return "";
+  const [extension] = Array.from(extensions);
+  if (extension !== "MP3") return ` [${extension}]`;
+  const rates = new Set(files.map((f) => f.bitRate).filter((r): r is number => typeof r === "number" && r > 0));
+  return rates.size === 1 ? ` [MP3 ${Array.from(rates)[0]}]` : " [MP3]";
+}
+
 interface SlskdSearchFile {
   filename: string;
   size: number;
@@ -84,7 +154,34 @@ export async function searchSlskd(client: DownloadClient, query: string): Promis
 
   const results: SearchResult[] = [];
   for (const r of responses) {
+    // Two or more tracks of one shared folder are one release, the album (Soulseek shares albums folder by folder):
+    // its title is the folder, its size the folder's and grabbing it asks for every track.
+    const byDirectory = new Map<string, SlskdSearchFile[]>();
     for (const f of r.files) {
+      if (!AUDIO_FILE.test(f.filename)) continue;
+      const directory = directoryOf(f.filename);
+      if (!directory) continue;
+      byDirectory.set(directory, [...(byDirectory.get(directory) ?? []), f]);
+    }
+    const grouped = new Set<SlskdSearchFile>();
+    for (const [directory, files] of byDirectory) {
+      if (files.length < 2) continue;
+      for (const f of files) grouped.add(f);
+      results.push({
+        indexerId: null,
+        indexerName: `Soulseek (${r.username})`,
+        title: `${folderTitle(directory)}${folderFormatTag(files)}`,
+        size: files.reduce((sum, f) => sum + (f.size || 0), 0),
+        seeders: null,
+        leechers: null,
+        publishDate: null,
+        downloadUrl: encodeSlskdFolderUrl({ username: r.username, directory, files: files.map((f) => ({ filename: f.filename, size: f.size })) }),
+        protocol: "slskd",
+        category: null,
+      });
+    }
+    for (const f of r.files) {
+      if (grouped.has(f)) continue;
       results.push({
         indexerId: null,
         indexerName: `Soulseek (${r.username})`,

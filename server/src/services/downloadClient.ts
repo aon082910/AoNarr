@@ -9,7 +9,7 @@ import { downloadClientFromRow } from "../db/mappers.js";
 import type { DownloadClient, QueueItem, SearchResult } from "../types/index.js";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { decodeSlskdDownloadUrl } from "./soulseek.js";
+import { decodeSlskdDownloadUrl, decodeSlskdFolderUrl, parseSlskdFolderDownloadId, slskdFolderDownloadId } from "./soulseek.js";
 import { getSetting } from "./settingsStore.js";
 import { MEDIA_TYPES } from "./mediaTypes.js";
 
@@ -1541,6 +1541,17 @@ class SlskdAdapter implements DownloadClientAdapter {
   }
 
   async addDownload(client: DownloadClient, downloadUrl: string): Promise<GrabResult> {
+    // A whole shared folder: every track is enqueued at once, and the folder is tracked as one download.
+    const folder = decodeSlskdFolderUrl(downloadUrl);
+    if (folder) {
+      const res = await apiFetch(`${this.baseUrl(client)}/api/v0/transfers/downloads/${encodeURIComponent(folder.username)}`, {
+        method: "POST",
+        headers: { ...this.headers(client), "Content-Type": "application/json" },
+        body: JSON.stringify(folder.files.map((f) => ({ filename: f.filename, size: f.size }))),
+      });
+      if (!res.ok) throw new Error(`slskd enqueue failed: HTTP ${res.status}`);
+      return { downloadId: slskdFolderDownloadId(folder) };
+    }
     const { username, filename, size } = decodeSlskdDownloadUrl(downloadUrl);
     const res = await apiFetch(`${this.baseUrl(client)}/api/v0/transfers/downloads/${encodeURIComponent(username)}`, {
       method: "POST",
@@ -1560,6 +1571,30 @@ class SlskdAdapter implements DownloadClientAdapter {
     const users = (await res.json()) as { username: string; directories?: { files?: any[] }[] }[];
 
     const updates: QueueStatusUpdate[] = [];
+    // A folder download is the sum of its tracks: done when all of them are, failed when any is.
+    for (const id of downloadIds) {
+      const folder = parseSlskdFolderDownloadId(id);
+      if (!folder) continue;
+      const prefix = folder.directory;
+      const tracks: any[] = [];
+      for (const u of users) {
+        if (u.username !== folder.username) continue;
+        for (const dir of u.directories ?? []) for (const f of dir.files ?? []) if (String(f.filename ?? "").startsWith(prefix)) tracks.push(f);
+      }
+      if (tracks.length === 0) continue;
+      const states = tracks.map((f) => String(f.state ?? ""));
+      const failed = states.some((state) => /Errored|Cancelled|Rejected|TimedOut|Aborted/.test(state) || (state.includes("Completed") && !state.includes("Succeeded")));
+      const done = states.every((state) => state.includes("Succeeded")) && tracks.length >= folder.count;
+      const total = tracks.reduce((sum, f) => sum + (Number(f.size) || 0), 0);
+      const moved = tracks.reduce((sum, f) => sum + Math.min(Number(f.bytesTransferred) || 0, Number(f.size) || 0), 0);
+      const stalled = !done && !failed && states.every((state) => state === "Queued, Remotely" || state === "Requested");
+      updates.push({
+        downloadId: id,
+        progress: done ? 1 : total > 0 ? Math.min(moved / total, 1) : 0,
+        status: failed ? "failed" : done ? "completed" : "downloading",
+        ...(stalled ? { stalled: true } : {}),
+      });
+    }
     for (const u of users) {
       for (const dir of u.directories ?? []) {
         for (const f of dir.files ?? []) {
