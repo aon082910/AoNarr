@@ -9,6 +9,7 @@ import { mediaItemFromRow } from "../db/mappers.js";
 import { fetchRecentReleases, rssFeedGroups, type RssMarker } from "./indexerClient.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode, type ParsedRelease } from "./releaseParser.js";
 import { aliasTitlesByItem, resolveReleaseItemInLibrary } from "./releaseAliases.js";
+import { identityKey } from "./releaseIdentity.js";
 import { sceneIndexFor } from "./sceneNumbering.js";
 import { computeAbsoluteEpisodeNumber } from "./importer.js";
 import { getBlocklistedTitles } from "./blocklist.js";
@@ -20,6 +21,10 @@ import { airedFrontierFor, episodeNotAired, episodePlanFor, seasonPlanFor } from
 import { recordLeafOutcome, recordSeasonSearch, wakeLeaf, wakeSeason } from "./searchBackoff.js";
 import {
   chooseBestResult,
+  type TargetName,
+  isNotYetReleased,
+  siblingTitlesOf,
+  yearFieldsOf,
   directDownloadBudget,
   existingFileQuality,
   getQualityProfile,
@@ -91,11 +96,13 @@ interface Wanted {
   shows: MediaItem[];
   /** Each show's wanted episodes: monitored, aired, missing (or below the cutoff, with upgrades on). */
   episodes: Map<number, any[]>;
+  /** The artists, authors, series and the like with a missing monitored sub-item (an album, book, issue), by id. */
+  collections: Map<number, { item: MediaItem; subs: any[] }>;
   types: Set<MediaType>;
 }
 
 async function loadWanted(upgrades: boolean): Promise<Wanted> {
-  const wanted: Wanted = { singles: [], shows: [], episodes: new Map(), types: new Set() };
+  const wanted: Wanted = { singles: [], shows: [], episodes: new Map(), collections: new Map(), types: new Set() };
   const items = ((await db.prepare("SELECT * FROM media_items WHERE monitored = 1").all()) as any[])
     .map(mediaItemFromRow)
     .filter((item) => usesQualityTiers(item.type)) as MediaItem[];
@@ -140,6 +147,18 @@ async function loadWanted(upgrades: boolean): Promise<Wanted> {
     }
     for (const id of wanted.episodes.keys()) wanted.shows.push(showsById.get(id)!);
   }
+  // Albums, books, audiobooks, comic issues and manga chapters that are missing (not the ones not out yet).
+  const collections = ((await db.prepare("SELECT * FROM media_items WHERE monitored = 1").all()) as any[])
+    .map(mediaItemFromRow)
+    .filter((item) => !usesQualityTiers(item.type) && getMediaTypeConfig(item.type).shape === "collection" && !["video", "podcast"].includes(item.type)) as MediaItem[];
+  for (const item of collections) {
+    const subs = ((await db.prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND monitored = 1 AND has_file = 0 ORDER BY id").all(item.id)) as any[]).filter(
+      (sub) => !(["artist", "author", "audiobook"].includes(item.type) && isNotYetReleased(sub.release_date))
+    );
+    if (subs.length === 0) continue;
+    wanted.collections.set(item.id, { item, subs });
+    wanted.types.add(item.type);
+  }
   return wanted;
 }
 
@@ -147,6 +166,7 @@ async function loadWanted(upgrades: boolean): Promise<Wanted> {
 type Group =
   | { kind: "single"; key: string; item: MediaItem; releases: SearchResult[] }
   | { kind: "episode"; key: string; item: MediaItem; ep: any; releases: SearchResult[] }
+  | { kind: "sub"; key: string; item: MediaItem; sub: any; releases: SearchResult[] }
   | { kind: "season"; key: string; item: MediaItem; season: SeasonGroup; episodes: any[]; releases: SearchResult[] };
 
 export interface RssSyncSummary {
@@ -263,6 +283,21 @@ async function matchReleases(releases: SearchResult[], wanted: Wanted): Promise<
     if (parsed.rejected || !parsed.title) continue;
     const episodeShaped = parsed.seasonNumber != null || (parsed.episodeNumbers?.length ?? 0) > 0 || parsed.isFullSeason || !!parsed.airDate || parsed.absoluteEpisode != null;
 
+    // An album, book or comic issue that the name could be: the parent is named in the release and the sub-item passes the
+    // name tests of a search (chooseBestResult on this one release).
+    if (wanted.collections.size > 0 && parsed.seasonNumber == null && !(parsed.episodeNumbers?.length ?? 0) && !parsed.isFullSeason && !parsed.airDate) {
+      const releaseKey = ` ${identityKey(release.title)} `;
+      for (const { item, subs } of wanted.collections.values()) {
+        const key = identityKey(item.title);
+        if (!key || !releaseKey.includes(` ${key} `)) continue;
+        for (const sub of subs) {
+          const name = { title: sub.title, parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, sub.id), ...(await yearFieldsOf(item, sub)) };
+          const named = await chooseBestResult([release], [], "", null, 0, null, new Set(), item.type, null, null, item.id, { name });
+          if (named) add({ kind: "sub", key: `sub:${sub.id}`, item, sub, releases: [release] });
+        }
+      }
+    }
+
     if (!episodeShaped) {
       const candidates = wanted.singles.filter((item) => parsed.titleYear != null || parsed.year == null || item.year == null || Math.abs(parsed.year - item.year) <= 1);
       const resolved = await resolveReleaseItemInLibrary({ title: release.title }, parsed, candidates, aliasesOf);
@@ -332,6 +367,7 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
 
   let episodeId: number | null = null;
   let seasonNumber: number | null = null;
+  let subItemName: TargetName | null = null;
   let target = null as Awaited<ReturnType<typeof episodePlanFor>>["target"];
   let pack: ReturnType<typeof packContextFor>;
   let upgradeFromRank: number | null = null;
@@ -359,6 +395,10 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
     if (await isAlreadyQueued(item.id, null, null)) return "skipped";
     const onDisk = await existingFileQuality(item, null, null);
     if (onDisk !== undefined && !(await considerUpgrade(onDisk, null))) return "skipped";
+  } else if (group.kind === "sub") {
+    // A missing album, book or issue: a search's name tests judge it, and nothing is on disk to upgrade.
+    if (await isAlreadyQueued(item.id, null, group.sub.id)) return "skipped";
+    subItemName = { title: group.sub.title, parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, group.sub.id), ...(await yearFieldsOf(item, group.sub)) };
   } else if (group.kind === "episode") {
     episodeId = group.ep.id;
     if (await isAlreadyQueued(item.id, group.ep.id, null)) return "skipped";
@@ -397,7 +437,7 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
       delay,
       targetIdentityOf(item),
       item.id,
-      { clients: usable, upgradeFromRank, existing, name: { title: item.title }, indexers: env.indexers, label: item.title, pack }
+      { clients: usable, upgradeFromRank, existing, name: subItemName ?? { title: item.title }, indexers: env.indexers, label: item.title, pack }
     );
   let outcome: Awaited<ReturnType<typeof grabBestRelease>>;
   try {
@@ -405,7 +445,7 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
       results,
       usable,
       (remaining) => choose(remaining, delayProfile),
-      (client, chosen) => grab(client, item, episodeId, null, chosen, 0, seasonNumber, "rss")
+      (client, chosen) => grab(client, item, episodeId, group.kind === "sub" ? group.sub.id : null, chosen, 0, seasonNumber, "rss")
     );
   } catch (err) {
     if (noteUnavailableClient(err, env.unavailable)) return "unavailable";
@@ -413,13 +453,21 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
   }
   if (!outcome) {
     // Held back by the delay profile alone: the same releases, with no delay, would have been grabbed.
-    const leaf = group.kind === "episode" ? ({ table: "episodes", id: group.ep.id } as const) : group.kind === "single" ? ({ table: "media_items", id: item.id } as const) : null;
+    const leaf =
+      group.kind === "episode"
+        ? ({ table: "episodes", id: group.ep.id } as const)
+        : group.kind === "sub"
+        ? ({ table: "sub_items", id: group.sub.id } as const)
+        : group.kind === "single"
+        ? ({ table: "media_items", id: item.id } as const)
+        : null;
     return (await isHeldByDelay(results, cutoff, delayProfile, choose, leaf ? (release) => recordPending(leaf.table, leaf.id, item.id, release) : undefined)) ? "held" : "none";
   }
   if (!outcome.grabbed) return "skipped";
   env.grabbedUrls.add(outcome.chosen.result.downloadUrl);
   env.directBudget.consume(outcome.client);
   if (group.kind === "season") await recordSeasonSearch(item.id, group.season.scene, true);
+  else if (group.kind === "sub") await recordLeafOutcome("sub_items", group.sub.id, true);
   else await recordLeafOutcome(group.kind === "episode" ? "episodes" : "media_items", group.kind === "episode" ? group.ep.id : item.id, true);
   return "grabbed";
 }
@@ -428,5 +476,6 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
 async function wake(group: Group): Promise<void> {
   if (group.kind === "single") await wakeLeaf("media_items", group.item.id);
   else if (group.kind === "episode") await wakeLeaf("episodes", group.ep.id);
+  else if (group.kind === "sub") await wakeLeaf("sub_items", group.sub.id);
   else await wakeSeason(group.item.id, group.season.scene);
 }

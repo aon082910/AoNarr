@@ -33,7 +33,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  for (const t of ["history", "blocklist", "queue", "delay_profiles", "episodes", "media_items", "download_clients", "indexers"]) {
+  for (const t of ["history", "blocklist", "queue", "delay_profiles", "episodes", "sub_items", "media_items", "download_clients", "indexers"]) {
     await db.prepare(`DELETE FROM ${t}`).run();
   }
   fetchRecentReleases.mockReset().mockResolvedValue({ results: [], newest: null });
@@ -519,5 +519,53 @@ describe("runRssSync — after the Round 10 review", () => {
     expect((await queueRows()).map((r) => r.season_number)).toEqual([1, 1]);
     const seasons = (await db.prepare("SELECT season_number FROM season_searches WHERE media_item_id = ? ORDER BY season_number").all(showId)) as any[];
     expect(seasons.map((r) => Number(r.season_number))).toEqual([2, 3]);
+  });
+});
+
+describe("runRssSync — albums, books and comic issues (Round 18)", () => {
+  async function insertParent(type: string, title: string): Promise<number> {
+    return Number(
+      (await db.prepare("INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES (?, ?, ?, 1, 0, 'missing')").run(type, title, title.toLowerCase()))
+        .lastInsertRowid
+    );
+  }
+  async function insertSub(parent: number, title: string, releaseDate: string | null = null): Promise<number> {
+    return Number(
+      (await db.prepare("INSERT INTO sub_items (media_item_id, title, release_date, monitored, has_file) VALUES (?, ?, ?, 1, 0)").run(parent, title, releaseDate)).lastInsertRowid
+    );
+  }
+  const subRows = async (): Promise<any[]> => (await db.prepare("SELECT media_item_id, sub_item_id, title, grab_source FROM queue ORDER BY id").all()) as any[];
+
+  it("grabs the wanted album a feed lists, as an RSS grab, and no other album of the artist", async () => {
+    await insertClient();
+    const indexerId = await insertIndexer({ mediaTypes: "artist,author,comic" });
+    const artist = await insertParent("artist", "Feed Band");
+    await insertSub(artist, "First Record");
+    const wanted = await insertSub(artist, "Second Record");
+    const release1 = release("Feed Band - Second Record (2019) [FLAC]", indexerId, { downloadUrl: "magnet:?xt=second" });
+    const release2 = release("Feed Band - Second Record Live (2020) [FLAC]", indexerId, { downloadUrl: "magnet:?xt=live" });
+    const release3 = release("Another Band - Second Record (2019) [FLAC]", indexerId, { downloadUrl: "magnet:?xt=other" });
+    feeds({ "3000": [release1, release2, release3] });
+
+    const summary = await runRssSync();
+
+    expect(summary.grabbed).toBe(1);
+    expect(await subRows()).toEqual([{ media_item_id: artist, sub_item_id: wanted, title: release1.title, grab_source: "rss" }]);
+  });
+
+  it("leaves an album that is not out yet, and a comic issue with another number", async () => {
+    await insertClient();
+    const indexerId = await insertIndexer({ mediaTypes: "artist,author,comic" });
+    const artist = await insertParent("artist", "Future Band");
+    await insertSub(artist, "Coming Record", "2999-01-01");
+    const series = await insertParent("comic", "Feed Saga");
+    await insertSub(series, "#12 - Chapter Twelve");
+    feeds({
+      "3000": [release("Future Band - Coming Record [FLAC]", indexerId, { downloadUrl: "magnet:?xt=future" })],
+      "7030": [release("Feed Saga 011 (2013) (Digital)", indexerId, { downloadUrl: "magnet:?xt=eleven" })],
+    });
+
+    expect((await runRssSync()).grabbed).toBe(0);
+    expect(await subRows()).toEqual([]);
   });
 });
