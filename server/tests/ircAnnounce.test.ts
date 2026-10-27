@@ -906,3 +906,20 @@ describe("handleAnnounce — a plain album before its edition (N26)", () => {
     expect(grab.mock.calls[0][3]).toBe(plain);
   });
 });
+
+describe("handleAnnounce — only the shows a release names are read", () => {
+  it("still grabs for a show whose title carries a region qualifier the release leaves off, and ignores an unrelated show", async () => {
+    await insertTorrentClient();
+    const profile = await insertProfile({ allowedQualities: ["HDTV-720p"] });
+    const quiet = await insertShow("Quiet Neighbours Show", profile);
+    await insertEpisode(quiet, 1, 1);
+    const wanted = await insertShow("Prefilter Show (US)", profile);
+    const ep = await insertEpisode(wanted, 1, 1);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("Prefilter.Show.S01E01.720p.HDTV.x264-GRP"));
+
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect(grab.mock.calls[0][2]).toBe(ep);
+  });
+});

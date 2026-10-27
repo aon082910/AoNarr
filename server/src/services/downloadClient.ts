@@ -1569,6 +1569,19 @@ class SlskdAdapter implements DownloadClientAdapter {
     return { downloadId: `${username} ${filename}` };
   }
 
+  /** The folder slskd saves downloads in (its own `directories.downloads` option), or null when it will not say. */
+  private async downloadsDirectory(client: DownloadClient): Promise<string | null> {
+    try {
+      const res = await apiFetch(`${this.baseUrl(client)}/api/v0/options`, { headers: this.headers(client) });
+      if (!res.ok) return null;
+      const options = (await res.json()) as { directories?: { downloads?: unknown } };
+      const dir = options?.directories?.downloads;
+      return typeof dir === "string" && dir.trim() ? dir.trim().replace(/[\\/]+$/, "") : null;
+    } catch {
+      return null;
+    }
+  }
+
   async getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
     const wanted = new Set(downloadIds);
     const res = await apiFetch(`${this.baseUrl(client)}/api/v0/transfers/downloads`, { headers: this.headers(client) });
@@ -1599,8 +1612,12 @@ class SlskdAdapter implements DownloadClientAdapter {
       const total = tracks.reduce((sum, f) => sum + (Number(f.size) || 0), 0);
       const moved = tracks.reduce((sum, f) => sum + Math.min(Number(f.bytesTransferred) || 0, Number(f.size) || 0), 0);
       const stalled = !done && !failed && states.every((state) => state === "Queued, Remotely" || state === "Requested");
+      // slskd saves a folder under the name of the remote folder, in its downloads directory.
+      const downloads = await this.downloadsDirectory(client);
+      const folderName = folder.directory.split(/[\\/]/).filter(Boolean).pop();
       updates.push({
         downloadId: id,
+        ...(downloads && folderName ? { remotePath: `${downloads}${downloads.includes("\\") && !downloads.includes("/") ? "\\" : "/"}${folderName}` } : {}),
         progress: done ? 1 : total > 0 ? Math.min(moved / total, 1) : 0,
         status: failed ? "failed" : done ? "completed" : "downloading",
         ...(stalled ? { stalled: true } : {}),

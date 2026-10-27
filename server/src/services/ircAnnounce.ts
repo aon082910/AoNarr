@@ -152,14 +152,18 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
     !!parsed.absoluteRange ||
     !!parsed.airDate;
   if (!numbered) return;
+  // Only the shows whose name (or an alias) has all its words in the release are read for episodes: the library holds
+  // thousands of them, and every announce would otherwise load them all.
+  const candidateShows = await showsNamedIn(releaseTitle);
+  if (candidateShows.length === 0) return;
   const episodes = (await db
     .prepare(
       `SELECT e.*, m.id AS parent_id, m.type AS parent_type, m.title AS parent_title, m.year AS parent_year, m.external_ids AS parent_external_ids,
               m.quality_profile_id AS parent_quality_profile_id, m.root_folder_id AS parent_root_folder_id, m.extra_metadata AS parent_extra_metadata
        FROM episodes e JOIN media_items m ON m.id = e.media_item_id
-       WHERE e.monitored = 1${upgradesOn ? "" : " AND e.has_file = 0"} AND m.monitored = 1`
+       WHERE e.monitored = 1${upgradesOn ? "" : " AND e.has_file = 0"} AND m.monitored = 1 AND m.id IN (${candidateShows.map(() => "?").join(",")})`
     )
-    .all()) as any[];
+    .all(...candidateShows)) as any[];
   const parentOf = (ep: any) =>
     mediaItemFromRow({
       id: ep.parent_id,
@@ -220,6 +224,25 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
     });
     if (grabbed) return;
   }
+}
+
+const NAME_STOPWORDS = new Set(["a", "an", "the", "and", "or", "of"]);
+
+/** The ids of the monitored shows (episodic items) that the release could name: every word of the show's title, or
+ * of one of its alternate titles, is in the release. A superset of what library-wide resolution then picks from. */
+async function showsNamedIn(releaseTitle: string): Promise<number[]> {
+  const released = new Set(identityKey(releaseTitle).split(" ").filter(Boolean));
+  const shows = ((await db.prepare("SELECT id, type, title FROM media_items WHERE monitored = 1").all()) as { id: number; type: string; title: string }[]).filter(
+    (m) => getMediaTypeConfig(m.type).shape === "episodic"
+  );
+  if (shows.length === 0) return [];
+  const aliases = await aliasTitlesByItem(shows.map((m) => m.id));
+  const named = (title: string) => {
+    // Without a closing qualifier: "The Office (US)" is named by a release that says only "The Office".
+    const words = identityKey(title.replace(/\s*\([^)]*\)\s*$/, "")).split(" ").filter((w) => w && !NAME_STOPWORDS.has(w));
+    return words.length > 0 && words.every((w) => released.has(w));
+  };
+  return shows.filter((m) => named(m.title) || (aliases.get(m.id) ?? []).some(named)).map((m) => m.id);
 }
 
 /** Types an announce can name a sub-item of: collections with no quality tiers that are searched on indexers. */

@@ -1864,6 +1864,22 @@ describe("SlskdAdapter", () => {
     await expect(adapter().addDownload(client, encodeSlskdFolderUrl(folder))).rejects.toThrow(/could not enqueue 1 of the 2 tracks/);
   });
 
+  it("getStatus reports where slskd saves a folder, from its downloads directory option", async () => {
+    const { slskdFolderDownloadId } = await import("../src/services/soulseek.js");
+    const folder = { username: "peer", directory: "@@peer/Music/Queen/Greatest Hits (1981)", files: [{ filename: "", size: 0 }] };
+    const id = slskdFolderDownloadId(folder);
+    const transfers = [{ username: "peer", directories: [{ files: [{ filename: folder.directory + "/01.flac", state: "Completed, Succeeded", size: 10, bytesTransferred: 10 }] }] }];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => (String(url).endsWith("/options") ? ok({ directories: { downloads: "/downloads/slskd/" } }) : ok(transfers)))
+    );
+    expect(await adapter().getStatus({} as any, [id])).toEqual([{ downloadId: id, remotePath: "/downloads/slskd/Greatest Hits (1981)", progress: 1, status: "completed" }]);
+
+    // An slskd that will not say leaves the path out (the importer then searches by title as before).
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (String(url).endsWith("/options") ? { ok: false, status: 401, json: async () => ({}) } : ok(transfers))));
+    expect((await adapter().getStatus({} as any, [id]))[0]).not.toHaveProperty("remotePath");
+  });
+
   it("getStatus counts only the files of the folder itself, not a sibling folder with a longer name", async () => {
     const { slskdFolderDownloadId } = await import("../src/services/soulseek.js");
     const folder = { username: "peer", directory: "Music\\OK Computer", files: [{ filename: "", size: 0 }, { filename: "", size: 0 }] };
