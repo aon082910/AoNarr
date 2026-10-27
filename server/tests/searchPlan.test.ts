@@ -125,10 +125,11 @@ describe("singlePlanFor", () => {
     const grouped = mediaItemFromRow(await db.prepare("SELECT * FROM media_items WHERE id = ?").get(rom.id));
     const plan = await plans.singlePlanFor(grouped);
     expect(plan.query).toBe("Super Mario Bros");
-    expect(plan.alternateQueries).toContain("Super Mario Bros Nintendo Entertainment System");
+    // Asked beside the main query, not only when that finds nothing: the title alone finds other platforms' releases first.
+    expect(plan.alsoQueries).toEqual(["Super Mario Bros Nintendo Entertainment System"]);
     // A ROM under no system has no such alternate.
     const loose = await insertItem("rom", "Tetris");
-    expect((await plans.singlePlanFor(loose)).alternateQueries.some((q: string) => /Nintendo/.test(q))).toBe(false);
+    expect((await plans.singlePlanFor(loose)).alsoQueries ?? []).toEqual([]);
   });
 });
 

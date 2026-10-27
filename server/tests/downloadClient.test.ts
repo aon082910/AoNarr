@@ -1873,11 +1873,13 @@ describe("SlskdAdapter", () => {
       "fetch",
       vi.fn(async (url: string) => (String(url).endsWith("/options") ? ok({ directories: { downloads: "/downloads/slskd/" } }) : ok(transfers)))
     );
-    expect(await adapter().getStatus({} as any, [id])).toEqual([{ downloadId: id, remotePath: "/downloads/slskd/Greatest Hits (1981)", progress: 1, status: "completed" }]);
+    expect(await adapter().getStatus({ id: 71, host: "slskd-a", port: 5030 } as any, [id])).toEqual([
+      { downloadId: id, remotePath: "/downloads/slskd/Greatest Hits (1981)", progress: 1, status: "completed" },
+    ]);
 
     // An slskd that will not say leaves the path out (the importer then searches by title as before).
     vi.stubGlobal("fetch", vi.fn(async (url: string) => (String(url).endsWith("/options") ? { ok: false, status: 401, json: async () => ({}) } : ok(transfers))));
-    expect((await adapter().getStatus({} as any, [id]))[0]).not.toHaveProperty("remotePath");
+    expect((await adapter().getStatus({ id: 72, host: "slskd-b", port: 5030 } as any, [id]))[0]).not.toHaveProperty("remotePath");
   });
 
   it("getStatus counts only the files of the folder itself, not a sibling folder with a longer name", async () => {

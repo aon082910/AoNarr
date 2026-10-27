@@ -553,6 +553,20 @@ describe("runRssSync — albums, books and comic issues (Round 18)", () => {
     expect(await subRows()).toEqual([{ media_item_id: artist, sub_item_id: wanted, title: release1.title, grab_source: "rss" }]);
   });
 
+  it("takes the plain album, not its deluxe edition, for a release that names both, and grabs one sub-item per release", async () => {
+    await insertClient();
+    const indexerId = await insertIndexer({ mediaTypes: "artist,author,comic" });
+    const artist = await insertParent("artist", "Edition Feed Band");
+    await insertSub(artist, "Rumours - Deluxe Edition");
+    const plain = await insertSub(artist, "Rumours");
+    feeds({ "3000": [release("Edition Feed Band - Rumours (1977) [FLAC]", indexerId, { downloadUrl: "magnet:?xt=rumours" })] });
+
+    const summary = await runRssSync();
+
+    expect(summary.grabbed).toBe(1);
+    expect((await subRows()).map((r) => r.sub_item_id)).toEqual([plain]);
+  });
+
   it("leaves an album that is not out yet, and a comic issue with another number", async () => {
     await insertClient();
     const indexerId = await insertIndexer({ mediaTypes: "artist,author,comic" });

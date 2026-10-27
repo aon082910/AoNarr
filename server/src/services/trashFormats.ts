@@ -31,8 +31,8 @@ const SOURCE_VALUES: Record<TrashApp, Record<number, string[]>> = {
 const QUALITY_MODIFIER_VALUES: Record<number, string> = { 1: "regional", 2: "screener", 3: "rawhd", 4: "brdisk" };
 /** Sonarr's ReleaseTypeSpecification. */
 const RELEASE_TYPE_VALUES: Record<number, string> = { 1: "single", 2: "multi", 3: "seasonPack" };
-/** IndexerFlagSpecification is a bit flag in both apps; only the two they share and AoNarr scores. */
-const INDEXER_FLAG_VALUES: Record<number, string> = { 1: "freeleech", 2: "halfleech" };
+/** IndexerFlagSpecification is a bit flag in both apps; the ones AoNarr scores (4 double upload, 8 internal, 16 scene). */
+const INDEXER_FLAG_VALUES: Record<number, string> = { 1: "freeleech", 2: "halfleech", 4: "doubleupload", 8: "internal", 16: "scene" };
 
 /** TRaSH sizes are in GiB (1024 cubed bytes); AoNarr's size conditions are in decimal megabytes. */
 const MB_PER_GIB = 1073.741824;

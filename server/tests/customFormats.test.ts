@@ -20,6 +20,20 @@ describe("POST /api/custom-formats — validateAndNormalizeGroups", () => {
     ({ app, apiKey, db } = await setupTestDb());
   });
 
+  it("accepts the indexer flags internal, scene and doubleupload", async () => {
+    const res = await request(app)
+      .post("/api/custom-formats")
+      .set("X-Api-Key", apiKey)
+      .send({ name: "Internal CF", conditionGroups: [{ type: "indexerFlag", indexerFlags: ["internal", "scene", "doubleupload"], negate: false }] });
+    expect(res.status).toBe(201);
+    expect(res.body.conditionGroups).toEqual([{ type: "indexerFlag", indexerFlags: ["internal", "scene", "doubleupload"], negate: false }]);
+    const bad = await request(app)
+      .post("/api/custom-formats")
+      .set("X-Api-Key", apiKey)
+      .send({ name: "Bad flag", conditionGroups: [{ type: "indexerFlag", indexerFlags: ["nuked"], negate: false }] });
+    expect(bad.status).toBe(400);
+  });
+
   it("accepts and round-trips an edition condition group unchanged", async () => {
     const res = await request(app)
       .post("/api/custom-formats")

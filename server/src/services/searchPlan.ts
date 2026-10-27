@@ -197,7 +197,8 @@ export async function singlePlanFor(item: MediaItem): Promise<SearchPlan> {
   const systemQuery = system ? [`${query} ${cleanSceneTitle(system)}`] : [];
   return {
     query,
-    alternateQueries: alternatesFor(query, [...(await otherTitleQueries(item, suffix)), ...systemQuery]),
+    alternateQueries: alternatesFor(query, await otherTitleQueries(item, suffix)),
+    ...(systemQuery.length > 0 ? { alsoQueries: systemQuery } : {}),
     ids: parseIds(item),
     hints: {},
     target: null,

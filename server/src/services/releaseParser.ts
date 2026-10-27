@@ -526,7 +526,9 @@ const LEADING_BRACKET_GROUP = /^\[([^\]]+)\]/;
 // The CRC32 a fansub release ends with ("... (1080p) [ABCD1234]").
 const FANSUB_HASH = /\[[0-9a-f]{8}\]$/i;
 // A tracker or site group written in brackets at the end ("...x264-[YTS.MX]", "Movie (2020) [1080p] [BluRay] [YTS.MX]").
-const TRAILING_BRACKET_GROUP = /(?:-\s*)?\[([^\]]{2,24})\]\s*$/;
+const TRAILING_BRACKET_GROUP = /(-\s*)?\[([^\]]{2,24})\]\s*$/;
+// Tags that close a name in brackets and are not a group.
+const BRACKET_TAG_NOT_GROUP = /^(?:remastered|extended|complete|atmos|uncut|unrated|dual|multi|proper|repack|hdr10?\+?|dv|\d+bit|sdr|imax|season\s*\d+|dd\+?\d.*|ddp?\d.*|aac\d.*|ac3|dts.*|truehd.*|subbed|dubbed|subs?)$/i;
 // Numbers, years, format/quality/source, language, content-kind and platform words that also lead
 // titles ("[FLAC] Artist - Album", "[MP3 320]", "[VOSTFR] Show - 05") — none of them names a group.
 const NON_GROUP_WORD =
@@ -604,9 +606,16 @@ function detectReleaseGroup(title: string): string | null {
   // " - " ("Compilation - 2020") is a release date, not an episode number.
   // The group of a video release that closes with it in brackets, when the name has no leading fansub group.
   if (!LEADING_BRACKET_GROUP.test(trimmed) && (VIDEO_MARKER.test(trimmed) || /\bS\d{1,2}[ ._-]*E\d/i.test(trimmed))) {
-    const closing = trimmed.match(TRAILING_BRACKET_GROUP)?.[1].trim();
+    const closingMatch = trimmed.match(TRAILING_BRACKET_GROUP);
+    const closing = closingMatch?.[2].trim();
+    // "x264-[YTS.MX]" names its group; a bare closing bracket does so only as a single word or site name ("[YTS.MX]"), and
+    // only when the name has no group of its own before it ("Title-GRP [YTS.MX]" is GRP's).
+    const hyphenated = !!closingMatch?.[1];
+    const bareOk = !!closing && /^[A-Za-z][A-Za-z0-9.]*$/.test(closing) && !RELEASE_GROUP.test(trimmed.replace(TRAILING_BRACKET_GROUP, "").trimEnd());
     if (
       closing &&
+      (hyphenated || bareOk) &&
+      !BRACKET_TAG_NOT_GROUP.test(closing) &&
       !FANSUB_HASH.test(trimmed) &&
       !isNonGroupTag(closing) &&
       !/^(?:\d+(?:\.\d+)?|\d{3,4}[pi]|4k|8k|www\..*|https?:.*)$/i.test(closing) &&

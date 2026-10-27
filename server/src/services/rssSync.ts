@@ -10,6 +10,7 @@ import { fetchRecentReleases, rssFeedGroups, type RssMarker } from "./indexerCli
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode, type ParsedRelease } from "./releaseParser.js";
 import { aliasTitlesByItem, resolveReleaseItemInLibrary } from "./releaseAliases.js";
 import { identityKey } from "./releaseIdentity.js";
+import { editionlessTitle } from "./nonVideoMatch.js";
 import { sceneIndexFor } from "./sceneNumbering.js";
 import { computeAbsoluteEpisodeNumber } from "./importer.js";
 import { getBlocklistedTitles } from "./blocklist.js";
@@ -151,13 +152,24 @@ async function loadWanted(upgrades: boolean): Promise<Wanted> {
   const collections = ((await db.prepare("SELECT * FROM media_items WHERE monitored = 1").all()) as any[])
     .map(mediaItemFromRow)
     .filter((item) => !usesQualityTiers(item.type) && getMediaTypeConfig(item.type).shape === "collection" && !["video", "podcast"].includes(item.type)) as MediaItem[];
-  for (const item of collections) {
-    const subs = ((await db.prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND monitored = 1 AND has_file = 0 ORDER BY id").all(item.id)) as any[]).filter(
-      (sub) => !(["artist", "author", "audiobook"].includes(item.type) && isNotYetReleased(sub.release_date))
-    );
-    if (subs.length === 0) continue;
-    wanted.collections.set(item.id, { item, subs });
-    wanted.types.add(item.type);
+  // One query for every collection's missing sub-items (a plain album before an edition of it, so a release names the plain one).
+  if (collections.length > 0) {
+    const rows = (await db
+      .prepare(
+        `SELECT s.* FROM sub_items s JOIN media_items m ON m.id = s.media_item_id
+         WHERE s.monitored = 1 AND s.has_file = 0 AND m.monitored = 1 AND m.id IN (${collections.map(() => "?").join(",")}) ORDER BY s.id`
+      )
+      .all(...collections.map((c) => c.id))) as any[];
+    const byItem = new Map<number, any[]>();
+    for (const row of rows) byItem.set(row.media_item_id, [...(byItem.get(row.media_item_id) ?? []), row]);
+    for (const item of collections) {
+      const subs = (byItem.get(item.id) ?? [])
+        .filter((sub) => !(["artist", "author", "audiobook"].includes(item.type) && isNotYetReleased(sub.release_date)))
+        .sort((a, b) => Number(editionlessTitle(a.title) !== a.title) - Number(editionlessTitle(b.title) !== b.title));
+      if (subs.length === 0) continue;
+      wanted.collections.set(item.id, { item, subs });
+      wanted.types.add(item.type);
+    }
   }
   return wanted;
 }
@@ -287,13 +299,26 @@ async function matchReleases(releases: SearchResult[], wanted: Wanted): Promise<
     // name tests of a search (chooseBestResult on this one release).
     if (wanted.collections.size > 0 && parsed.seasonNumber == null && !(parsed.episodeNumbers?.length ?? 0) && !parsed.isFullSeason && !parsed.airDate) {
       const releaseKey = ` ${identityKey(release.title)} `;
+      const released = new Set(releaseKey.split(" ").filter(Boolean));
+      let matchedSub = false;
       for (const { item, subs } of wanted.collections.values()) {
+        if (matchedSub) break; // one release maps to at most one sub-item
         const key = identityKey(item.title);
         if (!key || !releaseKey.includes(` ${key} `)) continue;
         for (const sub of subs) {
+          // A cheap cut before the full name test: an album or book is named by (the main part of) its title, so all of
+          // those words are in the release; a comic issue or chapter is named by its number and is left to the full test.
+          if (["artist", "author", "audiobook"].includes(item.type)) {
+            const words = identityKey(editionlessTitle(sub.title).split(/\s*:\s*/)[0].replace(/\([^)]*\)|\[[^\]]*\]/g, " ")).split(" ").filter((w) => w.length > 0);
+            if (words.length > 0 && !words.every((w) => released.has(w) || ["a", "an", "the", "of", "and"].includes(w))) continue;
+          }
           const name = { title: sub.title, parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, sub.id), ...(await yearFieldsOf(item, sub)) };
           const named = await chooseBestResult([release], [], "", null, 0, null, new Set(), item.type, null, null, item.id, { name });
-          if (named) add({ kind: "sub", key: `sub:${sub.id}`, item, sub, releases: [release] });
+          if (named) {
+            add({ kind: "sub", key: `sub:${sub.id}`, item, sub, releases: [release] });
+            matchedSub = true;
+            break;
+          }
         }
       }
     }

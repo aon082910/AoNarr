@@ -266,6 +266,12 @@ describe("translateTrashFormat — Source, Release Type, Quality Modifier and In
     expect(translateTrashFormat({ name: "Free", specifications: [spec("IndexerFlagSpecification", 1)] }, "radarr").groups).toEqual([
       { type: "indexerFlag", indexerFlags: ["freeleech"], negate: false },
     ]);
+    expect(translateTrashFormat({ name: "Internal", specifications: [spec("IndexerFlagSpecification", 8)] }, "radarr").groups).toEqual([
+      { type: "indexerFlag", indexerFlags: ["internal"], negate: false },
+    ]);
+    expect(translateTrashFormat({ name: "Scene", specifications: [spec("IndexerFlagSpecification", 16)] }, "sonarr").groups).toEqual([
+      { type: "indexerFlag", indexerFlags: ["scene"], negate: false },
+    ]);
     expect(translateTrashFormat({ name: "Internal", specifications: [spec("IndexerFlagSpecification", 32)] }, "radarr")).toEqual({
       groups: [],
       skipped: ["IndexerFlagSpecification"],

@@ -1530,6 +1530,9 @@ class BlackholeAdapter implements DownloadClientAdapter {
  * how that pair rides through AoNarr's existing "grab posts a downloadUrl back" contract without
  * needing a special case throughout the rest of the search/grab pipeline.
  */
+/** slskd's downloads directory per client, read once in a while: it changes with its configuration, not per poll. */
+const SLSKD_DOWNLOADS_DIRECTORY = new Map<string, { dir: string | null; at: number }>();
+
 class SlskdAdapter implements DownloadClientAdapter {
   private baseUrl(client: DownloadClient): string {
     const scheme = client.useSsl ? "https" : "http";
@@ -1571,6 +1574,15 @@ class SlskdAdapter implements DownloadClientAdapter {
 
   /** The folder slskd saves downloads in (its own `directories.downloads` option), or null when it will not say. */
   private async downloadsDirectory(client: DownloadClient): Promise<string | null> {
+    const key = `${client.id}:${client.host}:${client.port}`;
+    const known = SLSKD_DOWNLOADS_DIRECTORY.get(key);
+    if (known && Date.now() - known.at < 10 * 60 * 1000) return known.dir;
+    const dir = await this.fetchDownloadsDirectory(client);
+    SLSKD_DOWNLOADS_DIRECTORY.set(key, { dir, at: Date.now() });
+    return dir;
+  }
+
+  private async fetchDownloadsDirectory(client: DownloadClient): Promise<string | null> {
     try {
       const res = await apiFetch(`${this.baseUrl(client)}/api/v0/options`, { headers: this.headers(client) });
       if (!res.ok) return null;

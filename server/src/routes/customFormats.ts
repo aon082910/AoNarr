@@ -28,7 +28,7 @@ const VALID_PATTERN_LANGUAGES = new Set([
 const VALID_SOURCES = new Set(["remux", "bluray", "webdl", "webrip", "hdtv", "dvd", "cam", "telesync", "telecine", "workprint"]);
 const VALID_RESOLUTIONS = new Set(["2160p", "1080p", "720p", "576p", "480p"]);
 const VALID_FLAGS = new Set(["proper", "repack", "extended", "unrated", "directorscut", "imax"]);
-const VALID_INDEXER_FLAGS = new Set(["freeleech", "halfleech"]);
+const VALID_INDEXER_FLAGS = new Set(["freeleech", "halfleech", "doubleupload", "internal", "scene"]);
 const VALID_QUALITY_MODIFIERS = new Set(["regional", "screener", "rawhd", "brdisk"]);
 const VALID_RELEASE_TYPES = new Set(["single", "multi", "seasonpack"]);
 

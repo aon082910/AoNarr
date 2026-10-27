@@ -364,3 +364,5 @@
 {"title":"Movie.Title.2019.PDTV.XviD-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"SD","group":"GRP"}}
 {"title":"Movie.Title.2019.1080p.Remux.AVC-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Remux-1080p","source":"Remux","resolution":"1080p","group":"GRP"}}
 {"title":"Movie.Title.2019.BD25-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Unknown","group":"GRP","rawDisc":true}}
+{"title": "Movie.2020.1080p.WEB-DL.x264 [Remastered]", "kind": "release", "expect": {"group": null}}
+{"title": "Movie.2020.1080p.WEB-DL.DDP5.1.x264-GRP [YTS.MX]", "kind": "release", "expect": {"group": null}}

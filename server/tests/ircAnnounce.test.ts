@@ -922,4 +922,17 @@ describe("handleAnnounce — only the shows a release names are read", () => {
     expect(grab).toHaveBeenCalledTimes(1);
     expect(grab.mock.calls[0][2]).toBe(ep);
   });
+
+  it("still reads a show whose dotted title the release writes run together", async () => {
+    await insertTorrentClient();
+    const profile = await insertProfile({ allowedQualities: ["HDTV-720p"] });
+    const swat = await insertShow("S.W.A.T.", profile);
+    const ep = await insertEpisode(swat, 1, 1);
+    grab.mockClear();
+
+    await handleAnnounce(FEED, announceText("SWAT.S01E01.720p.HDTV.x264-GRP"));
+
+    expect(grab).toHaveBeenCalledTimes(1);
+    expect(grab.mock.calls[0][2]).toBe(ep);
+  });
 });
