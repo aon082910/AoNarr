@@ -31,6 +31,7 @@ import { syncSubtitleToVideo } from "./subtitleSync.js";
 import { DEFAULT_SHAPE_TEMPLATES, DEFAULT_TRACK_TEMPLATE, providerIdVars, renderTemplate } from "./naming.js";
 import { effectiveShape, getMediaTypeConfig, isProbeableFile, type MediaShape } from "./mediaTypes.js";
 import { groupedRank, parseQualityGroups, usesQualityTiers, type QualityGroups } from "./quality.js";
+import { romSetCompanions } from "./romSets.js";
 import { releaseRecordFor } from "./fileRelease.js";
 import { propersMode, revisionUpgrade } from "./upgradeRules.js";
 import { getSetting } from "./settingsStore.js";
@@ -1540,7 +1541,10 @@ export async function placeFile(params: {
     }
   }
 
+  // A disc game's sheet brings the tracks it names, under their own names (the sheet refers to them by name).
+  const romTracks = item.type === "rom" ? romSetCompanions(sourceFile) : [];
   await moveFile(sourceFile, destPath);
+  for (const track of romTracks) await moveFile(track, path.join(path.dirname(destPath), path.basename(track)));
   for (const key of claimKeys) batchClaims?.add(key);
 
   if (VIDEO_EXTENSIONS.has(ext.toLowerCase()) && (shape === "single" || shape === "episodic")) {

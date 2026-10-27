@@ -708,6 +708,34 @@ describe("placeFile — single shape (movie)", () => {
   });
 });
 
+describe("placeFile — a disc game's cue sheet brings its tracks", () => {
+  it("moves the .bin tracks a .cue names beside it, under their own names", async () => {
+    const folder = await insertRootFolder("rom");
+    const rom = Number(
+      (await db.prepare(`INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('rom','Disc Game','disc game',?,1,0,'missing')`).run(folder.id))
+        .lastInsertRowid
+    );
+    const cue = writeDownloadFile(
+      path.join("Disc Game (USA)", "Disc Game (USA).cue"),
+      'FILE "Disc Game (USA) (Track 1).bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\nFILE "Disc Game (USA) (Track 2).bin" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n'
+    );
+    const track1 = writeDownloadFile(path.join("Disc Game (USA)", "Disc Game (USA) (Track 1).bin"), "data");
+    const track2 = writeDownloadFile(path.join("Disc Game (USA)", "Disc Game (USA) (Track 2).bin"), "audio");
+    const other = writeDownloadFile(path.join("Disc Game (USA)", "Other Game.bin"), "not named by the sheet");
+
+    const placed = await placeFile({ itemId: rom, episodeId: null, subItemId: null, sourceFile: cue, quality: null });
+
+    const dir = path.dirname(placed.destPath);
+    expect(fs.existsSync(placed.destPath)).toBe(true);
+    expect(fs.existsSync(path.join(dir, "Disc Game (USA) (Track 1).bin"))).toBe(true);
+    expect(fs.existsSync(path.join(dir, "Disc Game (USA) (Track 2).bin"))).toBe(true);
+    expect(fs.existsSync(track1) || fs.existsSync(track2)).toBe(false);
+    // A file the sheet does not name stays where it was.
+    expect(fs.existsSync(other)).toBe(true);
+    expect(fs.existsSync(path.join(dir, "Other Game.bin"))).toBe(false);
+  });
+});
+
 describe("placeFile — episodic shape (series)", () => {
   async function insertShowWithEpisode(folderId: number, opts: { season?: number; episode?: number; hasFile?: boolean } = {}) {
     const showId = Number(
