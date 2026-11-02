@@ -330,7 +330,7 @@ describe("scanAndImportLibrary — movie (single shape)", () => {
     await db
       .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, path, status) VALUES ('movie','Dune','dune',1,1,?,'downloaded')`)
       .run(originalPath);
-    writeFile(folder.path, "Dune.2021.EXTRA.SAMPLE.mkv");
+    writeFile(folder.path, "Dune.2021.EXTRA.CUT.mkv");
 
     const result = await scanAndImportLibrary("movie");
 
@@ -2856,5 +2856,74 @@ describe("convertLibraryToEpisodic", () => {
 
   it("rejects a type Convert to Episodic doesn't support", async () => {
     await expect(convertLibraryToEpisodic("movie")).rejects.toThrow();
+  });
+});
+
+// Round 19 (backend parity audit MM3): extras, trailers, samples and recycle folders are not titles.
+describe("scanAndImportLibrary — files that are not a title's own (MM3)", () => {
+  it("imports only the movie from a Plex/Synology-shaped root", async () => {
+    const folder = await insertRootFolder("movie");
+    const movieFolder = path.join(folder.path, "Inception (2010)");
+    const moviePath = writeFile(movieFolder, "Inception (2010).mkv");
+    writeFile(movieFolder, "Inception (2010)-trailer.mp4");
+    writeFile(movieFolder, "inception-sample.mkv");
+    writeFile(path.join(movieFolder, "Extras"), "Making of Inception.mkv");
+    writeFile(path.join(movieFolder, "Featurettes"), "Dream Within a Dream.mkv");
+    writeFile(path.join(folder.path, "@eaDir", "Inception"), "SYNOPHOTO_FILM_M.mkv");
+    writeFile(path.join(folder.path, "#recycle"), "Deleted Movie.mkv");
+    writeFile(path.join(folder.path, ".recycle"), "Old Movie.mkv");
+    writeFile(path.join(folder.path, "Plex Versions", "Optimized for TV"), "Inception (2010).mkv");
+
+    const result = await scanAndImportLibrary("movie");
+
+    expect(result).toMatchObject({ matched: 0, created: 1 });
+    const rows = (await db.prepare("SELECT title, year, path FROM media_items WHERE type='movie'").all()) as any[];
+    expect(rows).toEqual([{ title: "Inception", year: 2010, path: moviePath }]);
+  });
+
+  it("skips the recycle bin when it sits inside a root folder", async () => {
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    const folder = await insertRootFolder("movie");
+    const bin = path.join(folder.path, "my-recycle-bin");
+    setSetting("recycleBinDir", bin);
+    try {
+      writeFile(path.join(bin, "movie"), "1700000000000-abcd1234-Some Movie (2020).mkv");
+      const kept = writeFile(folder.path, "Real Movie (2021).mkv");
+
+      await scanAndImportLibrary("movie");
+
+      const rows = (await db.prepare("SELECT title, path FROM media_items WHERE type='movie'").all()) as any[];
+      expect(rows).toEqual([{ title: "Real Movie", path: kept }]);
+    } finally {
+      setSetting("recycleBinDir", "");
+    }
+  });
+
+  it("keeps episodes whose titles end in Scene, Short or Other, and shows called Extras or Shorts", async () => {
+    const folder = await insertRootFolder("series");
+    writeFile(path.join(folder.path, "Law and Order", "Season 01"), "Law and Order - S01E04 - Crime Scene.mkv");
+    writeFile(path.join(folder.path, "Frasier", "Season 02"), "Frasier - S02E04 - The Other.mkv");
+    writeFile(path.join(folder.path, "Extras", "Season 01"), "Extras - S01E01 - Kate and Andy.mkv");
+    writeFile(path.join(folder.path, "Shorts", "Season 01"), "Shorts - S01E01 - First.mkv");
+    // These are a show's extras and stay out.
+    writeFile(path.join(folder.path, "Frasier", "Extras"), "Frasier - S02E05 - Bloopers.mkv");
+    writeFile(path.join(folder.path, "Frasier", "Season 02"), "Frasier - S02E04-trailer.mkv");
+
+    await scanAndImportLibrary("series");
+
+    const shows = (await db.prepare("SELECT title FROM media_items WHERE type='series' ORDER BY title").all()) as any[];
+    expect(shows.map((s) => s.title)).toEqual(["Extras", "Frasier", "Law and Order", "Shorts"]);
+    const episodes = (await db.prepare("SELECT COUNT(*) AS c FROM episodes").get()) as any;
+    expect(Number(episodes.c)).toBe(4);
+  });
+
+  it("keeps an import's temporary files out of the library", async () => {
+    const folder = await insertRootFolder("movie");
+    writeFile(folder.path, ".aonarr-tmp-0123abcd-9f8e7d6c5b4a.mkv");
+    writeFile(folder.path, ".aonarr-old-feedbeef.mkv");
+
+    const result = await scanAndImportLibrary("movie");
+
+    expect(result).toMatchObject({ created: 0 });
   });
 });

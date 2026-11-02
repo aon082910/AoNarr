@@ -54,7 +54,7 @@ describe("POST /api/media/bulk/delete", () => {
   });
 
   it("recycles each item's file when deleteFiles is set, via the shared deleteMediaItemCascade helper", async () => {
-    recycleFile.mockReset().mockResolvedValue(undefined);
+    recycleFile.mockReset().mockResolvedValue(true);
     const id1 = await insertMovie("Bulk Delete With File", { has_file: 1, path: "/movies/one.mkv" });
 
     const res = await request(app)
@@ -85,6 +85,7 @@ describe("POST /api/media/bulk/delete", () => {
       }
       const row = await db.prepare("SELECT id FROM media_items WHERE id = ?").get(id1);
       seen.push({ rowGone: !row, nestedTxError });
+      return true;
     });
     id1 = await insertMovie("Bulk Delete Deferred Recycle One", { has_file: 1, path: "/movies/deferred-one.mkv" });
     const id2 = await insertMovie("Bulk Delete Deferred Recycle Two", { has_file: 1, path: "/movies/deferred-two.mkv" });
@@ -105,7 +106,7 @@ describe("POST /api/media/bulk/delete", () => {
 
   // SQLite-only trigger syntax; the transactional behavior under test is the route's, not the driver's.
   it.skipIf(process.env.AONARR_DATABASE_DRIVER === "postgres")("doesn't touch any file when the delete transaction rolls back", async () => {
-    recycleFile.mockReset().mockResolvedValue(undefined);
+    recycleFile.mockReset().mockResolvedValue(true);
     const id1 = await insertMovie("Bulk Delete Rollback", { has_file: 1, path: "/movies/rollback.mkv" });
     const id2 = await insertMovie("Bulk Delete Rollback Boom", { has_file: 1, path: "/movies/boom.mkv" });
     await db.exec(
@@ -137,6 +138,56 @@ describe("POST /api/media/bulk/delete", () => {
     expect(res.status).toBe(200);
     const excluded = await db.prepare("SELECT * FROM import_exclusions WHERE title = ?").get("Bulk Delete With Exclusion");
     expect(excluded).toBeTruthy();
+  });
+
+  it("reports a file the recycle bin could not take instead of saying everything was recycled (MM4)", async () => {
+    recycleFile.mockReset().mockResolvedValue(false);
+    const id1 = await insertMovie("Bulk Delete Bin Full", { has_file: 1, path: "/movies/bin-full.mkv" });
+
+    const res = await request(app)
+      .post("/api/media/bulk/delete")
+      .set("X-Api-Key", apiKey)
+      .send({ mediaItemIds: [id1], deleteFiles: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ deleted: 1, skipped: 0, notRecycled: ["/movies/bin-full.mkv"], notRecycledCount: 1 });
+  });
+
+  it("removes nothing when the recycle bin folder cannot be written, before any row is deleted", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    recycleFile.mockReset().mockResolvedValue(true);
+    const blocker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-bulk-bin-")), "not-a-folder");
+    fs.writeFileSync(blocker, "a regular file where the bin's folder would go");
+    setSetting("recycleBinDir", blocker);
+    try {
+      const id1 = await insertMovie("Bulk Delete Unwritable Bin", { has_file: 1, path: "/movies/unwritable.mkv" });
+
+      const res = await request(app)
+        .post("/api/media/bulk/delete")
+        .set("X-Api-Key", apiKey)
+        .send({ mediaItemIds: [id1], deleteFiles: true });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error ?? res.body.message).toMatch(/not writable/);
+      expect(await db.prepare("SELECT id FROM media_items WHERE id = ?").get(id1)).toBeTruthy();
+      expect(recycleFile).not.toHaveBeenCalled();
+    } finally {
+      setSetting("recycleBinDir", "");
+    }
+  });
+
+  it("keeps a single item, and adds no exclusion, when the recycle bin cannot take its file", async () => {
+    recycleFile.mockReset().mockResolvedValue(false);
+    const id1 = await insertMovie("Single Delete Bin Full", { has_file: 1, path: "/movies/single-full.mkv" });
+
+    const res = await request(app).delete(`/api/media/${id1}?deleteFiles=1&addExclusion=1`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(409);
+    expect(await db.prepare("SELECT id FROM media_items WHERE id = ?").get(id1)).toBeTruthy();
+    expect(await db.prepare("SELECT id FROM import_exclusions WHERE title = ?").get("Single Delete Bin Full")).toBeUndefined();
   });
 
   it("requires a non-empty mediaItemIds array", async () => {

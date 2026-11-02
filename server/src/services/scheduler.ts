@@ -69,7 +69,7 @@ import { notifyFailed, notifyGrabbed, notifyHealthIssue, notifyManualInteraction
 import { checkForUpdate } from "./updateCheck.js";
 import { checkIndexerHealth } from "./indexerClient.js";
 import { sceneIndexFor, syncAllSceneNumbering } from "./sceneNumbering.js";
-import { checkForDeletedFiles } from "./deletedFileCheck.js";
+import { runDeletedFileCheckJob } from "./deletedFileJob.js";
 
 /** Radarr/Sonarr-style seed-goal cleanup — removes a torrent from every enabled download client
  * that supports it (qBittorrent) once it's met a configured ratio and/or seed-time goal. Both
@@ -3968,9 +3968,7 @@ export function startScheduler() {
     name: "Deleted File Check",
     scheduleType: "cron",
     defaultSchedule: "0 3 * * *",
-    run: async () => {
-      await checkForDeletedFiles();
-    },
+    run: (signal) => runDeletedFileCheckJob(signal),
   });
 
   registerJob({

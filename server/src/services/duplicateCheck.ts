@@ -578,7 +578,8 @@ export async function mergeMediaItems(
       log.info(`[duplicateCheck] kept "${r.path}" instead of recycling it: "${keeper.title}" still uses it`);
       continue;
     }
-    await recycleFile(r.path, r.type, r.title, null).catch(() => {});
+    const recycled = await recycleFile(r.path, r.type, r.title, null).catch(() => false);
+    if (!recycled) log.warn(`[duplicateCheck] couldn't move "${r.path}" to the recycle bin; it was left in place beside "${keeper.title}"`);
   }
 
   log.info(`[duplicateCheck] merged ${merged} duplicate(s) of "${keeper.title}" into item ${keeperId}`);

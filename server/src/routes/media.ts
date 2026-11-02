@@ -59,7 +59,7 @@ import {
   ADDITIONAL_PROVIDER_IDS_KEY,
 } from "../services/libraryScan.js";
 import { notifyGrabbed } from "../services/notifications.js";
-import { recycleFile } from "../services/recycleBin.js";
+import { recycleBinProblem, recycleFile } from "../services/recycleBin.js";
 import {
   buildCalibreOpf,
   buildJson,
@@ -209,6 +209,17 @@ mediaRouter.post(
     // db.transaction() throw for that whole time (and a rollback can't un-move a file). By then the
     // rows are gone, so the recycle_bin entries get a null media_item_id — what ON DELETE SET NULL
     // leaves them with anyway.
+    // Asked before any row is removed: a recycle bin that cannot take the files (read-only, no space)
+    // refuses the batch, rather than deleting the rows and leaving the files for the next scan to re-add.
+    if (deleteFiles) {
+      const wanted: string[] = [];
+      for (const id of mediaItemIds) {
+        const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(id)) as any;
+        if (row) wanted.push(...(await filesOfItem(row)));
+      }
+      const problem = await recycleBinProblem(wanted);
+      if (problem) throw new HttpError(409, `Nothing was removed: ${problem}`);
+    }
     let deleted = 0;
     const toRecycle: { row: any; files: string[] }[] = [];
     await db.transaction(async () => {
@@ -220,15 +231,26 @@ mediaRouter.post(
         deleted++;
       }
     });
+    // The rows are gone by now, so a file the recycle bin couldn't take (full or read-only bin disk)
+    // is reported rather than silently left behind.
+    const notRecycled: string[] = [];
     for (const { row, files } of toRecycle) {
-      for (const file of files) await recycleFile(file, row.type, row.title, null);
+      for (const file of files) if (!(await recycleFile(file, row.type, row.title, null))) notRecycled.push(file);
+    }
+    if (notRecycled.length > 0) {
+      log.warn(`[media] bulk remove: ${notRecycled.length} file(s) could not be moved to the recycle bin and were left in place; first: ${notRecycled[0]}`);
     }
 
     if (deleted > 0) {
       const actor = auditActor(req);
-      logAuditEvent(actor.userId, actor.username, "media_deleted", `${deleted} item(s) via bulk remove${deleteFiles ? " — files recycled" : ""}`);
+      logAuditEvent(
+        actor.userId,
+        actor.username,
+        "media_deleted",
+        `${deleted} item(s) via bulk remove${deleteFiles ? (notRecycled.length > 0 ? ` — files recycled, ${notRecycled.length} left in place` : " — files recycled") : ""}`
+      );
     }
-    res.json({ deleted, skipped: mediaItemIds.length - deleted });
+    res.json({ deleted, skipped: mediaItemIds.length - deleted, ...(notRecycled.length > 0 ? { notRecycled: notRecycled.slice(0, 20), notRecycledCount: notRecycled.length } : {}) });
   })
 );
 
@@ -1998,22 +2020,39 @@ export async function deleteMediaItemCascade(
   addExclusion = false,
   options: { deferRecycle?: boolean } = {}
 ): Promise<string[]> {
+  const files = deleteFiles ? await filesOfItem(row) : [];
+  if (!options.deferRecycle && files.length > 0) {
+    // Asked first, so a bin that cannot take the files refuses the delete before the first file moves.
+    const problem = await recycleBinProblem(files);
+    if (problem) throw new HttpError(409, `"${row.title}" was not removed: ${problem}`);
+    // A file the bin still couldn't take stays where it is, so the item stays too: dropping the row
+    // would leave an untracked file for the next library scan to re-import.
+    const stuck: string[] = [];
+    for (const file of files) if (!(await recycleFile(file, row.type, row.title, row.id))) stuck.push(file);
+    if (stuck.length > 0) {
+      throw new HttpError(
+        409,
+        `Couldn't move ${stuck.length} file(s) to the recycle bin (is it full or read-only?), so "${row.title}" was not removed. First file: ${stuck[0]}`
+      );
+    }
+  }
+  // After the files: a delete that was refused above leaves no exclusion behind for an item that still exists.
   if (addExclusion) await addImportExclusion(row);
-  const files: string[] = [];
-  if (deleteFiles) {
-    if (row.path) files.push(row.path);
-    const children = (
-      (await db.prepare("SELECT file_path FROM episodes WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id)) as any[]
-    ).concat(
-      (await db.prepare("SELECT file_path FROM sub_items WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id)) as any[]
-    );
-    for (const child of children) files.push(child.file_path);
-  }
-  if (!options.deferRecycle) {
-    for (const file of files) await recycleFile(file, row.type, row.title, row.id);
-  }
   await db.prepare("DELETE FROM media_items WHERE id = ?").run(row.id);
   return options.deferRecycle ? files : [];
+}
+
+/** The library files an item owns, its own and its episodes' and sub-items': what "delete with files" recycles. */
+async function filesOfItem(row: any): Promise<string[]> {
+  const files: string[] = [];
+  if (row.path) files.push(row.path);
+  const children = (
+    (await db.prepare("SELECT file_path FROM episodes WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id)) as any[]
+  ).concat(
+    (await db.prepare("SELECT file_path FROM sub_items WHERE media_item_id = ? AND file_path IS NOT NULL").all(row.id)) as any[]
+  );
+  for (const child of children) files.push(child.file_path);
+  return files;
 }
 
 mediaRouter.delete(

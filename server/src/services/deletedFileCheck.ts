@@ -161,10 +161,24 @@ export async function createOfflineStorageCheck(logTag: string): Promise<(filePa
  * auto-re-searched for (opt-in, since some admins want AoNarr to immediately try to redownload a
  * file that went missing, not give up on it).
  */
-export async function checkForDeletedFiles(): Promise<{ checked: number; missing: number }> {
-  const unmonitor = getSetting("unmonitorDeletedFiles") === "1";
+export interface ClearedFileRows {
+  mediaItems: number[];
+  episodes: number[];
+  subItems: number[];
+}
+
+/**
+ * `holdUnmonitor`: leave `monitored` alone for now and report the rows cleared, so a caller that is
+ * about to look for files that only moved (the nightly job scans the library right after) can
+ * unmonitor just the ones still missing afterwards (unmonitorStillMissing).
+ */
+export async function checkForDeletedFiles(
+  options: { holdUnmonitor?: boolean } = {}
+): Promise<{ checked: number; missing: number; cleared: ClearedFileRows }> {
+  const unmonitor = getSetting("unmonitorDeletedFiles") === "1" && !options.holdUnmonitor;
   let checked = 0;
   let missing = 0;
+  const cleared: ClearedFileRows = { mediaItems: [], episodes: [], subItems: [] };
 
   // An unmounted/offline share (NAS reboot, dropped SMB/NFS, a stopped rclone/Zurg mount) looks
   // exactly like "every file in it was deleted". Sonarr/Radarr skip a root folder that's missing
@@ -189,7 +203,10 @@ export async function checkForDeletedFiles(): Promise<{ checked: number; missing
         `UPDATE media_items SET has_file = 0, path = NULL, size_bytes = NULL, media_info = NULL, auto_search_misses = 0${unmonitor ? ", monitored = 0" : ""} WHERE id = ? AND path = ?`
       )
       .run(row.id, row.path);
-    if (result.changes > 0) missing++;
+    if (result.changes > 0) {
+      missing++;
+      cleared.mediaItems.push(row.id);
+    }
   }
 
   const episodes = (await db
@@ -203,7 +220,10 @@ export async function checkForDeletedFiles(): Promise<{ checked: number; missing
         `UPDATE episodes SET has_file = 0, file_path = NULL, size_bytes = NULL, media_info = NULL, auto_search_misses = 0${unmonitor ? ", monitored = 0" : ""} WHERE id = ? AND file_path = ?`
       )
       .run(row.id, row.file_path);
-    if (result.changes > 0) missing++;
+    if (result.changes > 0) {
+      missing++;
+      cleared.episodes.push(row.id);
+    }
   }
 
   const subItems = (await db
@@ -217,7 +237,10 @@ export async function checkForDeletedFiles(): Promise<{ checked: number; missing
         `UPDATE sub_items SET has_file = 0, file_path = NULL, size_bytes = NULL, media_info = NULL, auto_search_misses = 0${unmonitor ? ", monitored = 0" : ""} WHERE id = ? AND file_path = ?`
       )
       .run(row.id, row.file_path);
-    if (result.changes > 0) missing++;
+    if (result.changes > 0) {
+      missing++;
+      cleared.subItems.push(row.id);
+    }
   }
 
   // A parent whose every episode/sub-item file just vanished must stop claiming has_file = 1
@@ -238,5 +261,27 @@ export async function checkForDeletedFiles(): Promise<{ checked: number; missing
       `[deletedFileCheck] found ${missing} file(s) no longer on disk out of ${checked} checked${unmonitor ? " — unmonitored" : ""}`
     );
   }
-  return { checked, missing };
+  return { checked, missing, cleared };
+}
+
+/** The "Unmonitor Deleted" half of checkForDeletedFiles, for rows it cleared with `holdUnmonitor`: only
+ * those that still have no file now (a file that merely moved was re-linked by the scan in between). */
+export async function unmonitorStillMissing(cleared: ClearedFileRows): Promise<number> {
+  if (getSetting("unmonitorDeletedFiles") !== "1") return 0;
+  let changed = 0;
+  const groups: [string, number[]][] = [
+    ["media_items", cleared.mediaItems],
+    ["episodes", cleared.episodes],
+    ["sub_items", cleared.subItems],
+  ];
+  for (const [table, ids] of groups) {
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      const result = await db
+        .prepare(`UPDATE ${table} SET monitored = 0 WHERE has_file = 0 AND monitored = 1 AND id IN (${chunk.map(() => "?").join(",")})`)
+        .run(...chunk);
+      changed += result.changes;
+    }
+  }
+  return changed;
 }

@@ -35,6 +35,8 @@ import {
   isOsMetadataEntry,
   type SidecarMetadata,
 } from "./sidecarMetadata.js";
+import { isExcludedFile, isExcludedFolder, scanFilterFor, type ScanFilter } from "./scanExclusions.js";
+import { recycleBinDirectory } from "./recycleBin.js";
 
 // Title normalization/comparison moved to titleMatch.ts so the release identity gate and the
 // scheduler can share it without this module's metadata/ffprobe imports; re-exported so existing
@@ -372,7 +374,7 @@ function guessSeriesTitle(parentDir: string, filenameBase: string): string {
   return guessShowTitleFromFolder(parentDir);
 }
 
-function walkForExtensions(dir: string, extensions: string[], knownPaths: Set<string>, out: string[]): void {
+function walkForExtensions(dir: string, extensions: string[], knownPaths: Set<string>, out: string[], filter?: ScanFilter, depth = 0): void {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -383,8 +385,10 @@ function walkForExtensions(dir: string, extensions: string[], knownPaths: Set<st
     if (isOsMetadataEntry(entry.name)) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      walkForExtensions(full, extensions, knownPaths, out);
+      if (filter && isExcludedFolder(entry.name, full, filter, depth)) continue;
+      walkForExtensions(full, extensions, knownPaths, out, filter, depth + 1);
     } else if (extensions.includes(path.extname(entry.name).toLowerCase()) && !knownPaths.has(full)) {
+      if (filter && isExcludedFile(entry.name, filter)) continue;
       out.push(full);
     }
   }
@@ -971,9 +975,10 @@ async function scanAndImportLibraryInner(
   // (see guessShowTitleFromFolder). Looked up here rather than by string prefix against the folder
   // list, which picked /data/music for a file under /data/music-lossless.
   const fileRootFolders = new Map<string, (typeof folders)[number]>();
+  const scanFilter = scanFilterFor(type, [recycleBinDirectory()]);
   for (const folder of folders) {
     const folderFiles: string[] = [];
-    walkForExtensions(folder.path, typeConfig.extensions, knownPaths, folderFiles);
+    walkForExtensions(folder.path, typeConfig.extensions, knownPaths, folderFiles, scanFilter);
     for (const f of folderFiles) fileRootFolders.set(f, folder);
     files.push(...folderFiles);
   }

@@ -493,3 +493,117 @@ describe("recycleFile with the recycle bin disabled", () => {
     setSetting("recycleBinEnabled", "1");
   });
 });
+
+// Round 19 (backend parity audit MM4): a bin that cannot take a file must never turn into a permanent delete.
+describe("recycleFile — a bin that can't take the file (MM4)", () => {
+  async function newFile(content: string): Promise<string> {
+    const src = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-src-")), "movie.mkv");
+    fs.writeFileSync(src, content);
+    return src;
+  }
+
+  it("leaves the file where it is, and says so, when the bin's folder can't be created", async () => {
+    const { recycleFile } = await import("../src/services/recycleBin.js");
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    const blocker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-blocked-bin-")), "not-a-folder");
+    fs.writeFileSync(blocker, "x"); // a regular file where the bin's folder would go
+    setSetting("recycleBinDir", blocker);
+    try {
+      const src = await newFile("irreplaceable");
+
+      expect(await recycleFile(src, "movie", "Movie", null)).toBe(false);
+
+      expect(fs.readFileSync(src, "utf-8")).toBe("irreplaceable");
+      expect(await db.prepare("SELECT * FROM recycle_bin WHERE original_path = ?").get(src)).toBeUndefined();
+    } finally {
+      setSetting("recycleBinDir", recycleBinDir);
+    }
+  });
+
+  it("leaves the file where it is when the bin's disk is full", async () => {
+    const { recycleFile } = await import("../src/services/recycleBin.js");
+    const src = await newFile("irreplaceable");
+    vi.spyOn(fsp, "rename").mockRejectedValueOnce(Object.assign(new Error("no space left on device"), { code: "ENOSPC" }));
+
+    expect(await recycleFile(src, "movie", "Movie", null)).toBe(false);
+
+    expect(fs.readFileSync(src, "utf-8")).toBe("irreplaceable");
+    expect(await db.prepare("SELECT * FROM recycle_bin WHERE original_path = ?").get(src)).toBeUndefined();
+  });
+
+  it("leaves the file where it is when the bin is read-only for this user", async () => {
+    const { recycleFile } = await import("../src/services/recycleBin.js");
+    const src = await newFile("irreplaceable");
+    vi.spyOn(fsp, "rename").mockRejectedValueOnce(Object.assign(new Error("permission denied"), { code: "EACCES" }));
+
+    expect(await recycleFile(src, "movie", "Movie", null)).toBe(false);
+
+    expect(fs.existsSync(src)).toBe(true);
+  });
+});
+
+describe("recycleFile — long names and the bin's own limits (Round 19 review)", () => {
+  it("recycles a file whose name is near the filesystem limit, cutting the bin's copy of the name to fit", async () => {
+    const { recycleFile } = await import("../src/services/recycleBin.js");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-long-"));
+    const src = path.join(dir, `${"a".repeat(235)}.mkv`); // 239 bytes: fine for the library, 23 more with the bin's prefix is not
+    fs.writeFileSync(src, "long name");
+
+    expect(await recycleFile(src, "movie", "Long", null)).toBe(true);
+
+    expect(fs.existsSync(src)).toBe(false);
+    const row = (await db.prepare("SELECT * FROM recycle_bin WHERE original_path = ?").get(src)) as any;
+    expect(Buffer.byteLength(path.basename(row.recycle_path))).toBeLessThanOrEqual(255);
+    expect(path.extname(row.recycle_path)).toBe(".mkv");
+    expect(fs.readFileSync(row.recycle_path, "utf-8")).toBe("long name");
+  });
+
+  it("leaves no stray copy in the bin when a cross-device move copied the file but could not remove the original", async () => {
+    const { recycleFile } = await import("../src/services/recycleBin.js");
+    const src = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-src-")), "readonly-source.mkv");
+    fs.writeFileSync(src, "stays put");
+    vi.spyOn(fsp, "rename").mockRejectedValueOnce(Object.assign(new Error("cross-device link"), { code: "EXDEV" }));
+    vi.spyOn(fsp, "rm").mockRejectedValueOnce(Object.assign(new Error("read-only file system"), { code: "EROFS" }));
+
+    expect(await recycleFile(src, "movie", "Readonly", null)).toBe(false);
+
+    expect(fs.readFileSync(src, "utf-8")).toBe("stays put");
+    const binFiles = fs.existsSync(path.join(recycleBinDir, "movie")) ? fs.readdirSync(path.join(recycleBinDir, "movie")) : [];
+    expect(binFiles.filter((name) => name.endsWith("readonly-source.mkv"))).toEqual([]);
+  });
+});
+
+describe("recycleBinProblem", () => {
+  it("is null for a writable bin, whatever is asked of it", async () => {
+    const { recycleBinProblem } = await import("../src/services/recycleBin.js");
+    const src = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-src-")), "movie.mkv");
+    fs.writeFileSync(src, "x");
+
+    expect(await recycleBinProblem([src])).toBeNull();
+    expect(await recycleBinProblem([])).toBeNull();
+  });
+
+  it("names the problem when the bin's folder cannot be written", async () => {
+    const { recycleBinProblem } = await import("../src/services/recycleBin.js");
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    const blocker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-blocked-bin-")), "not-a-folder");
+    fs.writeFileSync(blocker, "x");
+    setSetting("recycleBinDir", blocker);
+    try {
+      expect(await recycleBinProblem(["/some/file.mkv"])).toMatch(/not writable/);
+    } finally {
+      setSetting("recycleBinDir", recycleBinDir);
+    }
+  });
+
+  it("is null when the bin is switched off: a delete is then meant to be permanent", async () => {
+    const { recycleBinProblem } = await import("../src/services/recycleBin.js");
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    setSetting("recycleBinEnabled", "0");
+    try {
+      expect(await recycleBinProblem(["/some/file.mkv"])).toBeNull();
+    } finally {
+      setSetting("recycleBinEnabled", "1");
+    }
+  });
+});

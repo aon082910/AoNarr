@@ -85,7 +85,7 @@ async function moveOrDelete(
     // "Permanently delete" here means "don't keep an archive copy" — it still goes through the
     // recycle bin (unless that's disabled instance-wide), since the whole point of a recycle bin
     // is catching exactly this kind of automated deletion.
-    if (!(await recycleFile(filePath, mediaType, title, mediaItemId))) throw new Error("couldn't remove the file (its storage may be offline)");
+    if (!(await recycleFile(filePath, mediaType, title, mediaItemId))) throw new Error("couldn't remove the file (its storage may be offline, or the recycle bin is full or not writable)");
     return;
   }
   const dest = await archiveDestination(filePath, archiveFolder);

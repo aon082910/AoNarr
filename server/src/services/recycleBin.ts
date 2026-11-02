@@ -7,9 +7,15 @@ import { nowOffsetExpr } from "../db/asyncDb.js";
 import { config } from "../config.js";
 import { getSetting } from "./settingsStore.js";
 import { log } from "./logger.js";
+import { fitFileName } from "./pathNames.js";
 
 function recycleBinRoot(): string {
   return getSetting("recycleBinDir") || path.join(config.configDir, "recycle-bin");
+}
+
+/** Where recycled files go; the library scan skips it when it sits inside a root folder. */
+export function recycleBinDirectory(): string {
+  return recycleBinRoot();
 }
 
 export function isRecycleBinEnabled(): boolean {
@@ -28,15 +34,49 @@ async function entryExists(p: string): Promise<boolean> {
   }
 }
 
-/** Errors that mean the file or its storage can't be reached, where deleting "instead" would
- * either do nothing or destroy what an outage only made look broken. */
-const UNREACHABLE_CODES = new Set(["ENOENT", "ENOTCONN", "EIO", "ESTALE", "EHOSTDOWN"]);
+/**
+ * Whether the recycle bin could take `files` right now, as a reason when it could not (null when it
+ * can, or when the bin is off and a delete is meant to be permanent). A delete that must not
+ * half-happen asks first: the bin folder must be writable, and the files that live on another
+ * filesystem than the bin (which are copied, not renamed) must fit in its free space.
+ */
+export async function recycleBinProblem(files: string[]): Promise<string | null> {
+  if (!isRecycleBinEnabled() || files.length === 0) return null;
+  const root = recycleBinRoot();
+  try {
+    await fsp.mkdir(root, { recursive: true });
+    const probe = path.join(root, `.write-test-${crypto.randomBytes(4).toString("hex")}`);
+    await fsp.writeFile(probe, "x");
+    await fsp.rm(probe, { force: true });
+  } catch (err) {
+    return `the recycle bin folder "${root}" is not writable (${(err as Error).message})`;
+  }
+  try {
+    const binDevice = (await fsp.stat(root)).dev;
+    let needed = 0;
+    for (const file of files) {
+      const stat = await fsp.stat(file).catch(() => null);
+      if (stat && stat.dev !== binDevice) needed += stat.size;
+    }
+    if (needed > 0) {
+      const fsStat = await fsp.statfs(root);
+      const free = Number(fsStat.bavail) * Number(fsStat.bsize);
+      if (free < needed) {
+        return `the recycle bin has ${Math.round(free / 1e9)}GB free and ${Math.round(needed / 1e9)}GB would go into it`;
+      }
+    }
+  } catch {
+    // Can't read the space: not a reason to refuse; recycleFile reports a real failure.
+  }
+  return null;
+}
 
 /** Moves a file into the recycle bin (type-namespaced, original filename kept) instead of
- * deleting it outright, and records enough to restore it later. Falls back to a plain delete if
- * the recycle bin is disabled or the move itself fails — never throws, since this runs inline
- * with delete/merge flows that shouldn't be blocked by a housekeeping feature. Resolves to whether
- * `filePath` is gone afterwards; a file that can't be reached (a dead mount) is left alone.
+ * deleting it outright, and records enough to restore it later. Deletes outright only when the
+ * recycle bin is disabled; if the move itself fails (full or unwritable bin, an unreachable mount)
+ * the file is left where it is — never throws, since this runs inline with delete/merge flows that
+ * shouldn't be blocked by a housekeeping feature. Resolves to whether `filePath` is gone
+ * afterwards, so a caller that must not proceed without the file out of the way can tell.
  *
  * Uses moveFileAsync (below), not a synchronous rename/copy — this used to call fs.copyFileSync
  * directly, which blocks Node's entire single-threaded event loop for as long as an EXDEV
@@ -72,28 +112,26 @@ export async function recycleFile(filePath: string, mediaType: string, title: st
     size = 0;
   }
 
-  let dest: string;
+  let dest = "";
   try {
     const destDir = path.join(recycleBinRoot(), mediaType);
     await fsp.mkdir(destDir, { recursive: true });
     // A random component too, not just the millisecond: deleting an item recycles its files in a
     // tight loop, and two same-named files ("Lesson 1/video.mp4", "Lesson 2/video.mp4") recycled in
     // the same millisecond used to land on the same destination — rename()/cp() replace silently,
-    // so the first file was destroyed while both recycle_bin rows pointed at the second.
-    dest = path.join(destDir, `${Date.now()}-${crypto.randomBytes(4).toString("hex")}-${path.basename(filePath)}`);
+    // so the first file was destroyed while both recycle_bin rows pointed at the second. The name is
+    // cut to fit when the prefix would push a long library name past the filesystem's limit.
+    dest = path.join(destDir, fitFileName(`${Date.now()}-${crypto.randomBytes(4).toString("hex")}-`, path.basename(filePath)));
     await moveFileAsync(filePath, dest);
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code && UNREACHABLE_CODES.has(code)) {
-      log.warn(`[recycleBin] failed to recycle "${filePath}", leaving it in place:`, (err as Error).message);
-    } else {
-      log.warn(`[recycleBin] failed to recycle "${filePath}", deleting instead:`, (err as Error).message);
-      try {
-        await fsp.rm(filePath, { recursive: true, force: true });
-      } catch {
-        // already gone
-      }
-    }
+    // Whatever the reason (a full or read-only bin disk, a permission error, an unreachable mount),
+    // the file stays where it is: a bin that "can't take" a file is not the user choosing to delete
+    // it, and the callers (delete, upgrade replace, archive, corrupt-media flows) all treat `false`
+    // as "not gone". Only a disabled bin, the user's explicit choice, deletes outright (above).
+    log.warn(`[recycleBin] failed to recycle "${filePath}", leaving it in place:`, (err as Error).message);
+    // A cross-device move that copied the file but could not remove the source (a read-only mount)
+    // leaves a full copy in the bin with no row to find it by; every retry would add another.
+    if (dest && (await entryExists(filePath))) await fsp.rm(dest, { recursive: true, force: true }).catch(() => {});
     return !(await entryExists(filePath));
   }
 
