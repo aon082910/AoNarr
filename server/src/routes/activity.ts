@@ -10,7 +10,7 @@ import { isJobRunning, listJobs } from "../services/jobRegistry.js";
 import { clampLimit, clampOffset } from "../services/mediaQuery.js";
 import { addToBlocklist } from "../services/blocklist.js";
 import { notifyQueueChanged, registerQueueStreamClient, unregisterQueueStreamClient } from "../services/realtime.js";
-import { markQueueImportFailed, markQueueImportStarted } from "../services/scheduler.js";
+import { markQueueImportFailed, markQueueImportStarted, queueClientNote } from "../services/scheduler.js";
 import { getSetting } from "../services/settingsStore.js";
 
 export const activityRouter = Router();
@@ -25,7 +25,9 @@ activityRouter.get(
     // id breaks added_at ties (one-second resolution, so a bulk search adds many rows per second):
     // Postgres orders tied rows differently from one page request to the next.
     const rows = await db.prepare("SELECT * FROM queue ORDER BY added_at DESC, id DESC LIMIT ? OFFSET ?").all(limit, offset);
-    res.json({ items: rows.map(queueItemFromRow), total: Number(total) });
+    // clientNote: what the download client says beyond the progress (paused, waiting its turn, or a warning
+    // such as a full download folder), when it says anything.
+    res.json({ items: rows.map((row) => ({ ...queueItemFromRow(row), clientNote: queueClientNote(Number((row as { id: number }).id)) })), total: Number(total) });
   })
 );
 

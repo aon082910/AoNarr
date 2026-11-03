@@ -271,7 +271,7 @@ async function grabSubItemAnnounce(feed: IrcFeedRow, releaseTitle: string, downl
     size: 0,
     seeders: null,
     leechers: null,
-    publishDate: new Date().toISOString(),
+    publishDate: null, // the announce's own time is not the post's date; blocklist entries match on size and title instead
     downloadUrl,
     protocol: feed.protocol,
     category: null,
@@ -390,7 +390,7 @@ async function tryGrabMatch(
     size: 0,
     seeders: null,
     leechers: null,
-    publishDate: new Date().toISOString(),
+    publishDate: null, // the announce's own time is not the post's date; blocklist entries match on size and title instead
     downloadUrl,
     protocol: feed.protocol,
     category: null,

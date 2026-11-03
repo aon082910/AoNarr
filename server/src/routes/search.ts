@@ -10,11 +10,8 @@ import {
 } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { searchAllIndexers } from "../services/indexerClient.js";
-import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode, type SceneIndex } from "../services/releaseParser.js";
 import { sceneIndexFor } from "../services/sceneNumbering.js";
-import { notifyGrabbed } from "../services/notifications.js";
-import { notifyQueueChanged } from "../services/realtime.js";
 import { indexerInfoOf, scoreRelease } from "../services/customFormatScoring.js";
 import { log } from "../services/logger.js";
 import { knownReleaseSize, qualityRank, sizeWithinQualityBounds, usesQualityTiers } from "../services/quality.js";
@@ -39,7 +36,15 @@ import { releaseRejection } from "../services/releaseRejections.js";
 import { aliasTitlesFor, identityContextFor, identityTargetFor } from "../services/releaseAliases.js";
 import { searchSlskd } from "../services/soulseek.js";
 import { getMediaTypeConfig } from "../services/mediaTypes.js";
-import { pickClientForProtocol, searchAndGrabTargets, type BulkSearchTarget } from "../services/scheduler.js";
+import {
+  DownloadClientUnavailableError,
+  DuplicateGrabError,
+  grab as grabRelease,
+  pickClientForProtocol,
+  ReleaseRefusedError,
+  searchAndGrabTargets,
+  type BulkSearchTarget,
+} from "../services/scheduler.js";
 import { computeAbsoluteEpisodeNumber } from "../services/importer.js";
 import { existingFileRecord } from "../services/fileRelease.js";
 import { editionlessTitle } from "../services/nonVideoMatch.js";
@@ -474,52 +479,66 @@ searchRouter.post(
     }
     const client = downloadClientFromRow(clientRow) as any;
 
-    const adapter = getDownloadClientAdapter(client.type);
-    const grab = await adapter.addDownload(client, b.downloadUrl, client.category, b.title, protocol);
-    // queue.size is BIGINT: Postgres rejects a fractional size after the client already took the download.
-    const size = b.size == null || !Number.isFinite(Number(b.size)) ? null : Math.round(Number(b.size));
-    const quality = parsedTitle.quality;
-    // A full-season pack grabbed for one episode is recorded against its season too, so the rest of
-    // that season counts as queued (see scheduler.ts isAlreadyQueued) and the importer places it all.
-    let seasonNumber: number | null = b.episodeId ? null : (b.seasonNumber ?? null);
-    if (b.episodeId && parsedTitle.isFullSeason) {
-      const ep = (await db.prepare("SELECT season_number FROM episodes WHERE id = ?").get(b.episodeId)) as { season_number: number } | undefined;
-      if (ep && (parsedTitle.seasonNumber == null || parsedTitle.seasonNumber === ep.season_number)) seasonNumber = ep.season_number;
+    // The same release already on its way for this target: a double click or a second admin would
+    // otherwise send it to the client twice (two NZB downloads, two rows to import).
+    const releaseTitle = String(b.title ?? "Unknown release");
+    const sameRelease = await db
+      .prepare(
+        `SELECT id FROM queue WHERE media_item_id = ? AND title = ? AND status IN ('queued', 'downloading', 'completed')
+         AND COALESCE(episode_id, 0) = ? AND COALESCE(sub_item_id, 0) = ? LIMIT 1`
+      )
+      .get(item.id, releaseTitle, Number(b.episodeId) || 0, Number(b.subItemId) || 0);
+    if (sameRelease && !b.force) {
+      throw new HttpError(409, `"${releaseTitle}" is already in the queue for this item.`);
     }
 
-    const result = await db
-      .prepare(
-        `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, indexer_id, download_client_id, download_id, size, quality, status, match_type, grab_source, protocol, publish_date, info_hash)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, 'interactive', ?, ?, ?)`
-      )
-      .run(
-        req.params.mediaItemId,
+    // Through the same grab() as the automatic paths: one grab at a time per item, the client's
+    // refusal and unavailability told apart, and a download another row already tracks refused. The
+    // admin may still add a different release while one is queued (allowCovered).
+    const searchResult = {
+      ...b,
+      indexerId: b.indexerId ?? null,
+      indexerName: typeof b.indexerName === "string" ? b.indexerName : "",
+      title: releaseTitle,
+      // NaN, not 0, for an unknown size: grab() stores it as NULL, as the interactive grab always did.
+      size: b.size == null || !Number.isFinite(Number(b.size)) ? Number.NaN : Number(b.size),
+      seeders: b.seeders ?? null,
+      leechers: b.leechers ?? null,
+      publishDate: typeof b.publishDate === "string" ? b.publishDate : null,
+      downloadUrl: b.downloadUrl,
+      protocol,
+      category: b.category ?? null,
+      infoHash: typeof b.infoHash === "string" ? b.infoHash : null,
+    } as SearchResult;
+    // A full-season pack grabbed for one episode is recorded against its season too (grab() does it), so
+    // the rest of that season counts as queued and the importer places it all.
+    const seasonNumber: number | null = b.episodeId ? null : (b.seasonNumber ?? null);
+    let grabbed: boolean;
+    try {
+      grabbed = await grabRelease(
+        client,
+        item,
         b.episodeId ?? null,
         b.subItemId ?? null,
+        { result: searchResult, quality: parsedTitle.quality, identity: verdict },
+        0,
         seasonNumber,
-        b.title ?? "Unknown release",
-        b.indexerId ?? null,
-        client.id,
-        grab.downloadId,
-        size,
-        quality,
-        verdict?.matchType ?? null,
-        protocol,
-        typeof b.publishDate === "string" ? b.publishDate : null,
-        typeof b.infoHash === "string" ? b.infoHash : null
+        "interactive",
+        { allowCovered: true, refuseSameRelease: !b.force }
       );
+    } catch (err) {
+      // The messages quote the indexer's or client's own words, which can carry a URL with an API key.
+      const withoutUrls = (message: string) => message.replace(/\b(?:[a-z][a-z0-9+.-]*:\/\/|magnet:\?)\S*/gi, "<link>");
+      if (err instanceof DuplicateGrabError) throw new HttpError(409, err.message);
+      if (err instanceof ReleaseRefusedError) throw new HttpError(502, `This release could not be added: ${withoutUrls(err.message)}`);
+      if (err instanceof DownloadClientUnavailableError) throw new HttpError(503, withoutUrls(err.message));
+      throw err;
+    }
+    if (!grabbed) throw new HttpError(409, "The download client already has this download for another entry.");
 
-    await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
-      req.params.mediaItemId,
-      JSON.stringify(b)
-    );
-
-    notifyGrabbed(item.title, b.title ?? "Unknown release").catch((err) =>
-      log.warn("[search] notification failed:", err.message)
-    );
-    notifyQueueChanged();
-
-    const queueRow = await db.prepare("SELECT * FROM queue WHERE id = ?").get(result.lastInsertRowid);
+    const queueRow = await db
+      .prepare("SELECT * FROM queue WHERE media_item_id = ? AND title = ? AND download_client_id = ? ORDER BY id DESC LIMIT 1")
+      .get(item.id, releaseTitle, client.id);
     res.status(201).json(queueItemFromRow(queueRow));
   })
 );

@@ -64,7 +64,7 @@ import {
   qualityProfileFromRow,
   queueItemFromRow,
 } from "../db/mappers.js";
-import { importQueueItem, ImportSkippedError } from "./importer.js";
+import { downloadsFolderHasEntries, importQueueItem, ImportSkippedError, ReleaseFaultError } from "./importer.js";
 import { notifyFailed, notifyGrabbed, notifyHealthIssue, notifyManualInteractionRequired, notifyUpdateAvailable } from "./notifications.js";
 import { checkForUpdate } from "./updateCheck.js";
 import { checkIndexerHealth } from "./indexerClient.js";
@@ -1217,6 +1217,13 @@ export function isNotYetReleased(releaseDate: string | null | undefined, now: Da
  * before anything was downloaded, so trying another release can't download the target twice. */
 export class ReleaseRefusedError extends Error {}
 
+/** The admin sent a release that is already in the queue for the same target. */
+export class DuplicateGrabError extends Error {
+  constructor(title: string) {
+    super(`"${title}" is already in the queue for this item.`);
+  }
+}
+
 /** The download client itself failed — unreachable, timed out, or refusing AoNarr's credentials — so
  * every other release sent to it would fail the same way. */
 export class DownloadClientUnavailableError extends Error {
@@ -1287,11 +1294,25 @@ export async function grab(
   chosen: ChosenResult,
   retryCount = 0,
   seasonNumber: number | null = null,
-  source: GrabSource = "auto"
+  source: GrabSource = "auto",
+  /** `allowCovered`: the admin chose this release by hand, so a queued download that already covers the
+   * target does not stop it (the other checks do). */
+  options: { allowCovered?: boolean; refuseSameRelease?: boolean } = {}
 ): Promise<boolean> {
   return serializeForItem(mediaItem.id, async () => {
     const { result: best, quality } = chosen;
-    if ((episodeId || subItemId || seasonNumber == null) && (await isAlreadyQueued(mediaItem.id, episodeId, subItemId))) {
+    // The same release already on its way for this target: checked here, inside the per-item chain, so two
+    // clicks that arrive together cannot both pass it before either has been recorded.
+    if (options.refuseSameRelease) {
+      const same = await db
+        .prepare(
+          `SELECT id FROM queue WHERE media_item_id = ? AND title = ? AND status IN ('queued', 'downloading', 'completed')
+           AND COALESCE(episode_id, 0) = ? AND COALESCE(sub_item_id, 0) = ? LIMIT 1`
+        )
+        .get(mediaItem.id, best.title, episodeId ?? 0, subItemId ?? 0);
+      if (same) throw new DuplicateGrabError(best.title);
+    }
+    if (!options.allowCovered && (episodeId || subItemId || seasonNumber == null) && (await isAlreadyQueued(mediaItem.id, episodeId, subItemId))) {
       log.info(`[scheduler] not grabbing "${best.title}" for "${mediaItem.title}": a queued download already covers it`);
       return false;
     }
@@ -1358,7 +1379,15 @@ export async function grab(
       JSON.stringify(best)
     );
 
-    await notifyGrabbed(mediaItem.title, best.title);
+    // A manual grab answers at once; waiting for a webhook that never answers held the response (and every other
+    // grab for the item) for the notification timeout.
+    if (source === "interactive") {
+      void Promise.resolve()
+        .then(() => notifyGrabbed(mediaItem.title, best.title))
+        .catch((e) => log.warn("[scheduler] notification failed:", e.message));
+    } else {
+      await notifyGrabbed(mediaItem.title, best.title);
+    }
     notifyQueueChanged();
     log.info(`[scheduler] grabbed "${best.title}" for "${mediaItem.title}"`);
     return true;
@@ -2899,7 +2928,9 @@ export async function retryFailedGrab(
       protocol: match.protocol,
       size: match.size,
       publishDate: match.publishDate,
-      infoHash: match.infoHash,
+      // The hash the client resolved for the torrent stands in when the indexer gave none (many proxies
+      // don't): the same torrent from another indexer or under another title is then blocked too.
+      infoHash: match.infoHash ?? (match.protocol === "torrent" && /^[0-9a-f]{40}$/i.test(match.downloadId ?? "") ? match.downloadId!.toLowerCase() : null),
     });
   }
   await db.prepare("INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'failed', ?)").run(
@@ -3096,6 +3127,51 @@ function trackStalledFlag(queueId: number, flagged: boolean): void {
   else if (!stalledSince.has(queueId)) stalledSince.set(queueId, Date.now());
 }
 
+/** What a client says about an active row beyond its progress: held paused or queued, or a warning that
+ * is the client's own (a full disk), with when it was first seen. In memory like the stalled flags: a
+ * restart loses it, and the next poll sets it again. */
+interface ClientNote {
+  paused: boolean;
+  warning: string | null;
+  since: number;
+  notified: boolean;
+}
+const clientNotes = new Map<number, ClientNote>();
+/** A warning that outlasts this long is put in front of the admin once; the download is still kept. */
+const CLIENT_WARNING_NOTIFY_MS = 24 * 3_600_000;
+
+function trackClientNote(match: QueueItem, status: PolledStatus): void {
+  const paused = status.status === "downloading" && status.paused === true;
+  const warning = status.status === "downloading" && status.warning ? status.warning : null;
+  if (!paused && !warning) {
+    clientNotes.delete(match.id);
+    return;
+  }
+  const previous = clientNotes.get(match.id);
+  if (warning && previous?.warning !== warning) {
+    log.warn(`[scheduler] "${match.title}": ${warning}; the download is kept, not failed or blocklisted`);
+  }
+  const note: ClientNote = {
+    paused,
+    warning,
+    since: previous && previous.warning === warning && previous.paused === paused ? previous.since : Date.now(),
+    notified: previous && previous.warning === warning ? previous.notified : false,
+  };
+  clientNotes.set(match.id, note);
+  if (warning && !note.notified && Date.now() - note.since >= CLIENT_WARNING_NOTIFY_MS) {
+    note.notified = true;
+    notifyManualInteractionRequired(match.title, `${warning} (for over a day)`).catch((e) => log.warn("[scheduler] notification failed:", e.message));
+  }
+}
+
+/** What the client reports about a queue row beyond its progress, for the Activity page: "paused" or
+ * "queued" while the client holds it, or the client's warning. Null for a row nothing is wrong with. */
+export function queueClientNote(queueId: number): string | null {
+  const note = clientNotes.get(queueId);
+  if (!note) return null;
+  return note.warning ?? (note.paused ? "Paused or waiting its turn at the download client" : null);
+}
+
 /** queue.import_resume_state: whether the one automatic retry of an import a restart cut off is
  * still to come (resumeInterruptedImports). A Manual import running is never retried that way: the
  * automatic importer would pick its own file and quality rather than the ones the admin chose. */
@@ -3117,7 +3193,12 @@ const MANUAL_INTERRUPTED_REASON = "Manual import was interrupted by a restart �
  */
 /** `keepForManual`: the row had already been left for a manual import before a restart cut off a
  * retry of it, so a failure goes back to waiting for the admin instead of blocklisting the release. */
-async function importCompletedDownload(match: QueueItem, sharedDownloadImported: boolean, keepForManual = false): Promise<boolean> {
+async function importCompletedDownload(
+  match: QueueItem,
+  sharedDownloadImported: boolean,
+  keepForManual = false,
+  retryNote = "retried after a restart"
+): Promise<boolean> {
   let imported = false;
   const ran = await withQueueImportLock(match.id, async () => {
     try {
@@ -3126,14 +3207,23 @@ async function importCompletedDownload(match: QueueItem, sharedDownloadImported:
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const skipped = err instanceof ImportSkippedError;
-      if (skipped || sharedDownloadImported || keepForManual || (await isLibrarySideImportError(err))) {
-        // Left 'completed' for a manual import; pruneOldFailedQueueItems clears it if nobody acts.
+      // Only a fault of the release itself fails it, blocklists it and grabs another: nothing importable
+      // in its folder, or its source gone at the client. Anything else (a flaky share, a timeout, a
+      // placement bug, a database error) is not the release's: the completed download stays and waits for
+      // a manual import, as in Sonarr's import-blocked state, instead of burning a good release.
+      // A source that is gone only counts while the downloads folder itself is there: an unmounted or empty
+      // share makes every download look gone.
+      const sourceGone = (err as NodeJS.ErrnoException)?.code === "ENOENT" && !(await isLibrarySideImportError(err)) && downloadsFolderHasEntries();
+      const releaseFault = err instanceof ReleaseFaultError || sourceGone;
+      if (skipped || sharedDownloadImported || keepForManual || !releaseFault) {
+        // Left 'completed' for a manual import. A reason that is not a release's or a policy's (the generic
+        // "Couldn't place the file") is retried a few times by retryTransientParkedImports.
         const reason = skipped
           ? message
           : sharedDownloadImported
           ? `Another queue entry for the same download was already imported: ${message}`
           : keepForManual && match.importSkippedReason
-          ? `${match.importSkippedReason} (retried after a restart: ${message})`
+          ? `${match.importSkippedReason.split(" (retried")[0]} (${retryNote}: ${message})`
           : `Couldn't place the file: ${message}`;
         log.info(`[scheduler] import skipped for "${match.title}": ${reason}`);
         await db.prepare("UPDATE queue SET import_started_at = NULL, import_skipped_reason = ? WHERE id = ?").run(reason, match.id);
@@ -3226,6 +3316,53 @@ export async function resumeInterruptedImports(): Promise<void> {
   if (resumed.changes > 0 || leftForAdmin > 0) notifyQueueChanged();
 }
 
+/** When a parked import was last tried again by retryTransientParkedImports, and how many times. */
+const parkedRetries = new Map<number, { attempts: number; nextAt: number }>();
+/** The waits before the automatic retries of an import that hit an unexpected error: a flaky share or a
+ * timeout usually clears in minutes. After the last one the row stays parked for the admin. */
+const PARKED_RETRY_DELAYS_MS = [15 * 60_000, 60 * 60_000, 6 * 3_600_000];
+
+/**
+ * A completed download whose import hit an unexpected error is parked for a manual import (importCompletedDownload).
+ * That error was most often transient (EIO, ESTALE or a timeout on a network share), and a parked row holds its
+ * target from every search, so it is tried again after 15 minutes, an hour and six hours. A skip with a reason of
+ * its own (not an upgrade, identity mismatch, no root folder) is deterministic and is left to the admin.
+ */
+async function retryTransientParkedImports(): Promise<void> {
+  const rows = (
+    (await db
+      .prepare("SELECT * FROM queue WHERE status = 'completed' AND import_started_at IS NULL AND import_skipped_reason LIKE ? ORDER BY id")
+      .all("Couldn't place the file:%")) as any[]
+  ).map(queueItemFromRow) as QueueItem[];
+  const parkedIds = new Set(rows.map((r) => r.id));
+  for (const id of parkedRetries.keys()) if (!parkedIds.has(id)) parkedRetries.delete(id);
+  for (const match of rows) {
+    const entry = parkedRetries.get(match.id);
+    if (!entry) {
+      parkedRetries.set(match.id, { attempts: 0, nextAt: Date.now() + PARKED_RETRY_DELAYS_MS[0] });
+      continue;
+    }
+    if (Date.now() < entry.nextAt) continue;
+    if (entry.attempts >= PARKED_RETRY_DELAYS_MS.length) {
+      entry.nextAt = Number.POSITIVE_INFINITY;
+      notifyManualInteractionRequired(match.title, `${match.importSkippedReason} (automatic retries used up; import it by hand)`).catch((e) =>
+        log.warn("[scheduler] notification failed:", e.message)
+      );
+      continue;
+    }
+    entry.attempts += 1;
+    // After the last try the next poll says the retries are used up (and is the only one that does).
+    entry.nextAt = Date.now() + (PARKED_RETRY_DELAYS_MS[entry.attempts] ?? 0);
+    const claimed = await db
+      .prepare(`UPDATE queue SET import_started_at = ${nowExpr(db)} WHERE id = ? AND status = 'completed' AND import_started_at IS NULL`)
+      .run(match.id);
+    if (claimed.changes === 0) continue;
+    notifyQueueChanged();
+    log.info(`[scheduler] retrying the parked import of "${match.title}" (try ${entry.attempts} of ${PARKED_RETRY_DELAYS_MS.length})`);
+    await importCompletedDownload(match, false, true, "retried automatically");
+  }
+}
+
 /** Imports the rows resumeInterruptedImports handed back, through the same path as a download its
  * client has just reported complete; claiming each first makes this its one automatic retry. */
 async function resumePendingImports(): Promise<void> {
@@ -3261,6 +3398,11 @@ export async function pollQueue() {
   } catch (err) {
     log.warn("[scheduler] retrying interrupted imports failed:", (err as Error).message);
   }
+  try {
+    await retryTransientParkedImports();
+  } catch (err) {
+    log.warn("[scheduler] retrying parked imports failed:", (err as Error).message);
+  }
 
   const clients = await rowsToDownloadClients();
   const active = (
@@ -3268,6 +3410,7 @@ export async function pollQueue() {
   ).map(queueItemFromRow) as QueueItem[];
   const activeIds = new Set(active.map((q) => q.id));
   for (const id of stalledSince.keys()) if (!activeIds.has(id)) stalledSince.delete(id);
+  for (const id of clientNotes.keys()) if (!activeIds.has(id)) clientNotes.delete(id);
   if (active.length === 0) return;
 
   const polled = clients
@@ -3340,6 +3483,7 @@ async function applyClientStatuses(client: DownloadClient, relevant: QueueItem[]
             .run(status.status, ...pathArgs, match.id);
       if (updated.changes === 0) continue;
       trackStalledFlag(match.id, status.status === "downloading" && !progressChanged && status.stalled === true);
+      trackClientNote(match, status);
       notifyQueueChanged();
 
       // Download-monitor visibility, Radarr/Sonarr-style: one line for "started downloading" and
@@ -3360,7 +3504,7 @@ async function applyClientStatuses(client: DownloadClient, relevant: QueueItem[]
           // whatever partial file the lost job left).
           await retryFailedGrab(match, status.failureReason, { releaseAtFault: false });
         } else if (releaseFailureRecorded) {
-          await retryFailedGrab(match, "Download failed at the download client", { failureRecorded: true });
+          await retryFailedGrab(match, status.failureReason ?? "Download failed at the download client", { failureRecorded: true });
         } else {
           // A client-level failure (the download itself died — a bad torrent, a failed usenet
           // repair) means there's no completed data worth keeping around, unlike an import-level
@@ -3371,7 +3515,7 @@ async function applyClientStatuses(client: DownloadClient, relevant: QueueItem[]
           if (getSetting("removeFailedDownloads") !== "0") {
             await removeQueueItemDownload(match, true);
           }
-          await retryFailedGrab(match, "Download failed at the download client");
+          await retryFailedGrab(match, status.failureReason ?? "Download failed at the download client");
         }
       }
     }
@@ -3467,13 +3611,20 @@ export async function cleanupStalledDownloads(): Promise<void> {
     })
   );
   const stalled: QueueItem[] = [];
+  const noBlame = new Set<number>();
+  const blackholeCandidates: QueueItem[] = [];
   const toConfirm = new Map<number, QueueItem[]>();
   for (const q of candidates) {
     const client = q.downloadClientId != null ? clientsById.get(q.downloadClientId) : undefined;
     // Orphaned since failOrphanedDownloads ran: the next run takes it.
     if (!client || !q.downloadId) continue;
-    // A blackhole can never report progress, and a disabled client isn't asked.
-    if (client.type === "blackhole" || !client.enabled) continue;
+    // A blackhole reports no progress; a release that never turns up in the downloads folder is dealt
+    // with below. A disabled client isn't asked.
+    if (client.type === "blackhole") {
+      if (client.enabled) blackholeCandidates.push(q);
+      continue;
+    }
+    if (!client.enabled) continue;
     toConfirm.set(client.id, [...(toConfirm.get(client.id) ?? []), q]);
   }
   for (const [clientId, clientRows] of toConfirm) {
@@ -3495,6 +3646,14 @@ export async function cleanupStalledDownloads(): Promise<void> {
           stalledSince.delete(q.id);
           continue;
         }
+        // Paused by the user or waiting its turn in the client's queue, or held up by a problem that is
+        // the client's own (a full disk): healthy as far as the release goes, and deleting its partial
+        // data and blocklisting it would only burn a good release. It resumes by itself, or the admin
+        // sees the warning.
+        if (status.paused || status.warning) {
+          stalledSince.delete(q.id);
+          continue;
+        }
         // Adapters also report a download still waiting its turn in the client's own queue
         // (qBittorrent queuedDL, SABnzbd "Queued" or paused) as downloading at 0%, so a download that
         // never progressed only counts once the client itself has flagged it as active but getting
@@ -3507,9 +3666,14 @@ export async function cleanupStalledDownloads(): Promise<void> {
           if (since === undefined || Date.now() - since < thresholdHours * 3_600_000) continue;
         }
       }
+      // The client no longer lists a download it had warned about (SABnzbd purged its history, or a retried
+      // job got a new id): nothing to wait for, and the warning is the client's, not the release's.
+      if (!status && clientNotes.get(q.id)?.warning) noBlame.add(Number(q.id));
       stalled.push(q);
     }
   }
+
+  await expireBlackholeReleases(blackholeCandidates);
 
   // Rows sharing one download are one failure of its release: removed at the client and held
   // against its group once, while each row's target is still searched again.
@@ -3522,6 +3686,12 @@ export async function cleanupStalledDownloads(): Promise<void> {
     if (moved.changes === 0) continue;
     stalledSince.delete(item.id);
     notifyQueueChanged();
+    if (noBlame.has(Number(item.id))) {
+      clientNotes.delete(item.id);
+      await retryFailedGrab(item, "The download client no longer lists this download (after a warning of its own)", { releaseAtFault: false });
+      log.info(`[scheduler] cleaned up the vanished download "${item.title}" without blame`);
+      continue;
+    }
     const reason = `Stalled: no progress for over ${thresholdHours}h`;
     const downloadKey = item.downloadId ? `${item.downloadClientId}:${item.downloadId}` : null;
     if (downloadKey && failedDownloads.has(downloadKey)) {
@@ -3542,16 +3712,51 @@ export async function cleanupStalledDownloads(): Promise<void> {
   }
 }
 
+/** How long a Blackhole release may sit in the watch folder before its output is looked for no more. */
+function blackholeTimeoutHours(): number {
+  return Math.max(1, parseInt(getSetting("blackholeTimeoutHours") ?? "168", 10) || 168);
+}
+
+/**
+ * A Blackhole release whose output never appeared in the downloads folder for a week (the external
+ * client never took the file, or writes elsewhere) would hold its target from every search for ever.
+ * It is marked failed so the admin sees it and can import by hand, with no blocklist entry and no
+ * replacement grab: nothing says the release was bad, and the same release would be chosen again.
+ */
+async function expireBlackholeReleases(rows: QueueItem[]): Promise<void> {
+  const cutoff = Date.now() - blackholeTimeoutHours() * 3_600_000;
+  for (const q of rows) {
+    const added = q.addedAt ? Date.parse(q.addedAt.replace(" ", "T") + "Z") : NaN;
+    if (!Number.isFinite(added) || added > cutoff) continue;
+    const moved = await db
+      .prepare(`UPDATE queue SET status = 'failed', updated_at = ${nowExpr(db)} WHERE id = ? AND status IN ('queued', 'downloading')`)
+      .run(q.id);
+    if (moved.changes === 0) continue;
+    notifyQueueChanged();
+    const reason = `Nothing named like this release appeared in the downloads folder within ${blackholeTimeoutHours()}h of the watch-folder drop`;
+    await db.prepare("INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'failed', ?)").run(q.mediaItemId, JSON.stringify({ title: q.title, reason }));
+    await notifyFailed(q.title, reason);
+    log.info(`[scheduler] expired blackhole release "${q.title}": ${reason}`);
+  }
+}
+
 /** A queue row at status='failed' stays visible on purpose — Retry import / Manual import... /
  * Remove all need something to act on — but if nobody ever does, it would otherwise sit there
  * forever, right back to the same "queue never clears out" problem this whole cleanup pass exists
  * to fix. Prunes any 'failed' row untouched for over a week; its own 'failed' history entry (see
  * retryFailedGrab) already recorded the permanent record, so nothing is lost by dropping the row.
- * A 'completed' row whose import was skipped (pollQueue) waits for a manual import the same way,
- * and holds its target from every search while it does, so it goes on the same terms. */
+ * A 'completed' row whose import was skipped (pollQueue) waits for a manual import and holds its target
+ * from every search while it does; it is never pruned (Sonarr keeps an import-blocked item until the admin
+ * acts), and one parked for an unexpected error is retried a few times first (retryTransientParkedImports). */
 export async function pruneOldFailedQueueItems(): Promise<void> {
   const stale = (await db
-    .prepare(`SELECT id FROM queue WHERE status IN ('failed', 'completed') AND updated_at <= ${nowOffsetHoursExpr(db, -24 * 7)}`)
+    // A completed row waiting for a manual import (import_skipped_reason set) is never pruned, as
+    // Sonarr keeps an import-blocked item until the admin acts: dropping it after a week freed its
+    // target, and the same release was grabbed again.
+    .prepare(
+      `SELECT id FROM queue WHERE status IN ('failed', 'completed') AND NOT (status = 'completed' AND import_skipped_reason IS NOT NULL)
+       AND updated_at <= ${nowOffsetHoursExpr(db, -24 * 7)}`
+    )
     .all()) as { id: number }[];
   if (stale.length === 0) return;
   await db.prepare(`DELETE FROM queue WHERE id IN (${stale.map(() => "?").join(",")})`).run(...stale.map((s) => s.id));

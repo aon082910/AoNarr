@@ -572,3 +572,135 @@ describe("GET /api/search/:mediaItemId — one release found by two queries of a
     expect(res.body).toHaveLength(1);
   });
 });
+
+// Round 20 (backend parity audit SR6, DL20): a manual grab goes through grab()'s guards.
+describe("POST /api/search/:mediaItemId/grab — the guards of every other grab (Round 20)", () => {
+  it("refuses the same release twice for one target, sending it to the client once", async () => {
+    await insertTorrentClient();
+    const movieId = await insertItem("movie", "Movie");
+    const adapter = { addDownload: vi.fn(async (_c: unknown, url: string) => ({ downloadId: `id-${url}` })), getStatus: vi.fn(async () => []) };
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    const body = { title: "Movie.2020.1080p.WEB-DL-GRP", downloadUrl: "magnet:?xt=urn:btih:one", protocol: "torrent" };
+
+    const first = await request(app).post(`/api/search/${movieId}/grab`).set("X-Api-Key", apiKey).send(body);
+    const second = await request(app).post(`/api/search/${movieId}/grab`).set("X-Api-Key", apiKey).send(body);
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(409);
+    expect(second.body.error ?? second.body.message).toMatch(/already in the queue/);
+    expect(adapter.addDownload).toHaveBeenCalledTimes(1);
+    const rows = (await db.prepare("SELECT id FROM queue WHERE media_item_id = ?").all(movieId)) as unknown[];
+    expect(rows).toHaveLength(1);
+  });
+
+  it("still takes a different release for a target that is already queued, as the admin chose it", async () => {
+    await insertTorrentClient();
+    const movieId = await insertItem("movie", "Movie");
+    const send = (title: string, url: string) =>
+      request(app).post(`/api/search/${movieId}/grab`).set("X-Api-Key", apiKey).send({ title, downloadUrl: url, protocol: "torrent" });
+
+    expect((await send("Movie.2020.1080p.WEB-DL-AAA", "magnet:?xt=urn:btih:aaa")).status).toBe(201);
+    expect((await send("Movie.2020.720p.WEB-DL-BBB", "magnet:?xt=urn:btih:bbb")).status).toBe(201);
+  });
+
+  it("answers 409 when the client says it already has this download for another entry", async () => {
+    await insertTorrentClient();
+    const first = await insertItem("movie", "Movie");
+    const other = await insertItem("movie", "Another Movie");
+    const adapter = { addDownload: vi.fn(async () => ({ downloadId: "same-hash" })), getStatus: vi.fn(async () => []) };
+    getDownloadClientAdapter.mockReturnValue(adapter);
+
+    const a = await request(app).post(`/api/search/${first}/grab`).set("X-Api-Key", apiKey).send({ title: "Movie.2020.1080p-GRP", downloadUrl: "magnet:?xt=urn:btih:x", protocol: "torrent" });
+    const b = await request(app).post(`/api/search/${other}/grab`).set("X-Api-Key", apiKey).send({ title: "Movie.2020.1080p-GRP2", downloadUrl: "magnet:?xt=urn:btih:y", protocol: "torrent" });
+
+    expect(a.status).toBe(201);
+    expect(b.status).toBe(409);
+    expect((await db.prepare("SELECT id FROM queue WHERE media_item_id = ?").all(other)) as unknown[]).toHaveLength(0);
+  });
+
+  it("answers 502 with the client's reason when it refuses the release, and queues nothing", async () => {
+    await insertTorrentClient();
+    const movieId = await insertItem("movie", "Movie");
+    getDownloadClientAdapter.mockReturnValue({
+      addDownload: vi.fn(async () => {
+        throw new Error('qBittorrent did not add the torrent (it answered "Fails.")');
+      }),
+      getStatus: vi.fn(async () => []),
+    });
+
+    const res = await request(app).post(`/api/search/${movieId}/grab`).set("X-Api-Key", apiKey).send({ title: "Movie.2020.1080p-GRP", downloadUrl: "http://indexer/dead.torrent", protocol: "torrent" });
+
+    expect(res.status).toBe(502);
+    expect(res.body.error ?? res.body.message).toMatch(/could not be added.*did not add the torrent/);
+    expect((await db.prepare("SELECT id FROM queue WHERE media_item_id = ?").all(movieId)) as unknown[]).toHaveLength(0);
+  });
+
+  it("answers 503 when the download client itself is unreachable", async () => {
+    await insertTorrentClient();
+    const movieId = await insertItem("movie", "Movie");
+    getDownloadClientAdapter.mockReturnValue({
+      addDownload: vi.fn(async () => {
+        throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } });
+      }),
+      getStatus: vi.fn(async () => []),
+    });
+
+    const res = await request(app).post(`/api/search/${movieId}/grab`).set("X-Api-Key", apiKey).send({ title: "Movie.2020.1080p-GRP", downloadUrl: "magnet:?xt=urn:btih:x", protocol: "torrent" });
+
+    expect(res.status).toBe(503);
+    expect(res.body.error ?? res.body.message).toMatch(/unavailable/);
+  });
+});
+
+describe("POST /api/search/:mediaItemId/grab — two clicks at once (Round 20 review)", () => {
+  it("sends the release to the client once when the same grab arrives twice together", async () => {
+    await insertTorrentClient();
+    const movieId = await insertItem("movie", "Movie");
+    let adds = 0;
+    const adapter = {
+      addDownload: vi.fn(async () => {
+        adds++;
+        await new Promise((resolve) => setTimeout(resolve, 40)); // a client that takes a moment, as a real one does
+        return { downloadId: `job-${adds}` }; // a usenet client gives every add its own id
+      }),
+      getStatus: vi.fn(async () => []),
+    };
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    const body = { title: "Movie.2020.1080p.WEB-DL-GRP", downloadUrl: "http://indexer/dl?id=1", protocol: "torrent" };
+
+    const [a, b] = await Promise.all([
+      request(app).post(`/api/search/${movieId}/grab`).set("X-Api-Key", apiKey).send(body),
+      request(app).post(`/api/search/${movieId}/grab`).set("X-Api-Key", apiKey).send(body),
+    ]);
+
+    expect([a.status, b.status].sort()).toEqual([201, 409]);
+    expect(adapter.addDownload).toHaveBeenCalledTimes(1);
+    expect((await db.prepare("SELECT id FROM queue WHERE media_item_id = ?").all(movieId)) as unknown[]).toHaveLength(1);
+  });
+
+  it("does not put a link with an API key in the error it answers", async () => {
+    await insertTorrentClient();
+    const movieId = await insertItem("movie", "Movie");
+    getDownloadClientAdapter.mockReturnValue({
+      addDownload: vi.fn(async () => {
+        throw new Error('Too many redirects resolving download URL "http://indexer/api?t=get&apikey=SECRET-KEY"');
+      }),
+      getStatus: vi.fn(async () => []),
+    });
+
+    const res = await request(app).post(`/api/search/${movieId}/grab`).set("X-Api-Key", apiKey).send({ title: "Movie.2020.1080p-GRP", downloadUrl: "http://indexer/dl", protocol: "torrent" });
+
+    expect(JSON.stringify(res.body)).not.toContain("SECRET-KEY");
+  });
+
+  it("stores no size for a release whose size the indexer did not give", async () => {
+    await insertTorrentClient();
+    const movieId = await insertItem("movie", "Movie");
+
+    const res = await request(app).post(`/api/search/${movieId}/grab`).set("X-Api-Key", apiKey).send({ title: "Movie.2020.1080p-GRP", downloadUrl: "magnet:?xt=urn:btih:nosize", protocol: "torrent" });
+
+    expect(res.status).toBe(201);
+    const row = (await db.prepare("SELECT size FROM queue WHERE media_item_id = ?").get(movieId)) as { size: number | null };
+    expect(row.size).toBeNull();
+  });
+});

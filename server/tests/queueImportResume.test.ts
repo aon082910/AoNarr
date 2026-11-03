@@ -44,12 +44,13 @@ vi.mock("../src/services/jobRegistry.js", async (importOriginal) => ({
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let scheduler: typeof import("../src/services/scheduler.js");
 let ImportSkippedError: (typeof import("../src/services/importer.js"))["ImportSkippedError"];
+let ReleaseFaultError: (typeof import("../src/services/importer.js"))["ReleaseFaultError"];
 let nowExpr: (typeof import("../src/db/asyncDb.js"))["nowExpr"];
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
   scheduler = await import("../src/services/scheduler.js");
-  ({ ImportSkippedError } = await import("../src/services/importer.js"));
+  ({ ImportSkippedError, ReleaseFaultError } = await import("../src/services/importer.js"));
   ({ nowExpr } = await import("../src/db/asyncDb.js"));
 });
 
@@ -234,7 +235,7 @@ describe("queue imports cut off by a restart", () => {
   it("clears the mark when an import fails, so the failed row is never resumed", async () => {
     const clientId = await insertClient();
     const id = await insertQueueRow(clientId, "downloading", "dl-fail");
-    importQueueItem.mockRejectedValue(new Error("No matching file found in downloads directory"));
+    importQueueItem.mockRejectedValue(new ReleaseFaultError("No matching file found in downloads directory"));
 
     await scheduler.pollQueue();
 

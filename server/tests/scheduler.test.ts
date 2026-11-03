@@ -108,6 +108,8 @@ let checkHealthAndNotify: (typeof import("../src/services/scheduler.js"))["check
 let runSeedGoalCleanup: (typeof import("../src/services/scheduler.js"))["runSeedGoalCleanup"];
 let startScheduler: (typeof import("../src/services/scheduler.js"))["startScheduler"];
 let ImportSkippedError: (typeof import("../src/services/importer.js"))["ImportSkippedError"];
+let ReleaseFaultError: (typeof import("../src/services/importer.js"))["ReleaseFaultError"];
+let queueClientNote: (typeof import("../src/services/scheduler.js"))["queueClientNote"];
 let chooseBestResult: (typeof import("../src/services/scheduler.js"))["chooseBestResult"];
 let matchTierFor: (typeof import("../src/services/scheduler.js"))["matchTierFor"];
 let autoSearchCronSchedule: (typeof import("../src/services/scheduler.js"))["autoSearchCronSchedule"];
@@ -118,8 +120,9 @@ beforeAll(async () => {
   ({ config } = await import("../src/config.js"));
   DEFAULT_AUTO_SEARCH_MAX_PER_CYCLE = config.autoSearchMaxPerCycle;
   ({ setSetting } = await import("../src/services/settingsStore.js"));
-  ({ ImportSkippedError } = await import("../src/services/importer.js"));
+  ({ ImportSkippedError, ReleaseFaultError } = await import("../src/services/importer.js"));
   ({
+    queueClientNote,
     isAlreadyQueued,
     grab,
     pickClientForProtocol,
@@ -1384,10 +1387,10 @@ describe("pollQueue", () => {
     expect(searchAllIndexers).not.toHaveBeenCalled(); // no retry attempted
   });
 
-  it("marks failed and retries when import fails for a real (non-skip) reason", async () => {
+  it("marks failed and retries when the import finds nothing of the release (the release's own fault)", async () => {
     const client = await insertClient();
     getDownloadClientAdapter.mockReturnValue(fakeAdapter({ getStatus: vi.fn().mockResolvedValue([{ downloadId: "dl-1", progress: 1, status: "completed" }]) }));
-    importQueueItem.mockRejectedValue(new Error("disk full"));
+    importQueueItem.mockRejectedValue(new ReleaseFaultError('No matching file found in downloads directory for "Some Release"'));
     searchAllIndexers.mockResolvedValue([]); // retry search comes up empty -> notifies instead of re-grabbing
     const { id } = await insertQueueItem(client.id);
 
@@ -4725,5 +4728,348 @@ describe("Round 14: an album or book not yet out", () => {
     expect(isNotYetReleased("2026", now)).toBe(false);
     expect(isNotYetReleased(null, now)).toBe(false);
     expect(isNotYetReleased("sometime", now)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 20: a client's own problems are not the release's, and only the release's fault fails an import
+// (backend parity audit DL2, DL3, DL4, DL6, DL8, DL11, DL15)
+// ---------------------------------------------------------------------------
+
+describe("Round 20 — paused downloads and client warnings are kept, not failed", () => {
+  async function insertStuckRow(clientId: number, download = "dl-1", hoursAgo = 8) {
+    const movie = await insertMovie({ title: `Movie ${Math.random()}`, sort_title: "x" });
+    const result = await db
+      .prepare(
+        `INSERT INTO queue (media_item_id, title, download_client_id, download_id, status, progress, last_progress_at) VALUES (?, 'Some.Release.2020.1080p-GRP', ?, ?, 'downloading', 0.3, ${nowOffsetHoursExpr(db, -hoursAgo)})`
+      )
+      .run(movie.id, clientId, download);
+    return { id: Number(result.lastInsertRowid), mediaItemId: movie.id };
+  }
+
+  it("leaves a paused or queued download alone however long its progress has not moved", async () => {
+    const client = await insertClient();
+    getDownloadClientAdapter.mockReturnValue(
+      fakeAdapter({ getStatus: vi.fn().mockResolvedValue([{ downloadId: "dl-1", progress: 0.3, status: "downloading", paused: true }]) })
+    );
+    const { id, mediaItemId } = await insertStuckRow(client.id);
+
+    await cleanupStalledDownloads();
+
+    expect(await queueStatus(id)).toBe("downloading");
+    expect(removeQueueItemDownload).not.toHaveBeenCalled();
+    expect(await blocklistedTitles(mediaItemId)).toEqual([]);
+    expect(notifyFailed).not.toHaveBeenCalled();
+  });
+
+  it("leaves a download alone while the client reports a warning of its own", async () => {
+    const client = await insertClient();
+    getDownloadClientAdapter.mockReturnValue(
+      fakeAdapter({ getStatus: vi.fn().mockResolvedValue([{ downloadId: "dl-1", progress: 0.3, status: "downloading", warning: "qBittorrent reports an error" }]) })
+    );
+    const { id, mediaItemId } = await insertStuckRow(client.id);
+
+    await cleanupStalledDownloads();
+
+    expect(await queueStatus(id)).toBe("downloading");
+    expect(await blocklistedTitles(mediaItemId)).toEqual([]);
+  });
+
+  it("still fails a download that is running but has made no progress (the stall clock is for those)", async () => {
+    const client = await insertClient();
+    getDownloadClientAdapter.mockReturnValue(
+      fakeAdapter({ getStatus: vi.fn().mockResolvedValue([{ downloadId: "dl-1", progress: 0.3, status: "downloading" }]) })
+    );
+    searchAllIndexers.mockResolvedValue([]);
+    const { id } = await insertStuckRow(client.id);
+
+    await cleanupStalledDownloads();
+
+    expect(await queueStatus(id)).toBe("failed");
+  });
+
+  it("keeps a warned download through the poll, shows the warning, and clears it once the client stops saying it", async () => {
+    const client = await insertClient();
+    const getStatus = vi.fn().mockResolvedValue([{ downloadId: "dl-1", progress: 0.3, status: "downloading", warning: "SABnzbd: Unpacking failed, write error or disk is full?" }]);
+    getDownloadClientAdapter.mockReturnValue(fakeAdapter({ getStatus }));
+    const { id, mediaItemId } = await insertStuckRow(client.id, "dl-1", 0);
+
+    await pollQueue();
+
+    expect(await queueStatus(id)).toBe("downloading");
+    expect(queueClientNote(id)).toBe("SABnzbd: Unpacking failed, write error or disk is full?");
+    expect(removeQueueItemDownload).not.toHaveBeenCalled();
+    expect(await blocklistedTitles(mediaItemId)).toEqual([]);
+    expect(searchAllIndexers).not.toHaveBeenCalled();
+
+    getStatus.mockResolvedValue([{ downloadId: "dl-1", progress: 0.4, status: "downloading" }]);
+    await pollQueue();
+    expect(queueClientNote(id)).toBeNull();
+  });
+
+  it("notes a paused download for the Activity page without treating it as a problem", async () => {
+    const client = await insertClient();
+    getDownloadClientAdapter.mockReturnValue(
+      fakeAdapter({ getStatus: vi.fn().mockResolvedValue([{ downloadId: "dl-1", progress: 0.3, status: "downloading", paused: true }]) })
+    );
+    const { id } = await insertStuckRow(client.id, "dl-1", 0);
+
+    await pollQueue();
+
+    expect(queueClientNote(id)).toMatch(/paused/i);
+    expect(await queueStatus(id)).toBe("downloading");
+  });
+
+  it("blocklists a release the client failed with the client's own words as the reason", async () => {
+    const client = await insertClient();
+    getDownloadClientAdapter.mockReturnValue(
+      fakeAdapter({ getStatus: vi.fn().mockResolvedValue([{ downloadId: "dl-1", progress: 1, status: "failed", failureReason: "SABnzbd: Aborted, cannot be completed" }]) })
+    );
+    searchAllIndexers.mockResolvedValue([]);
+    const { mediaItemId } = await insertStuckRow(client.id, "dl-1", 0);
+
+    await pollQueue();
+
+    const row = (await db.prepare("SELECT reason FROM blocklist WHERE media_item_id = ?").get(mediaItemId)) as { reason: string };
+    expect(row.reason).toBe("SABnzbd: Aborted, cannot be completed");
+  });
+});
+
+describe("Round 20 — a Blackhole release that never appears ages out without blame (DL3)", () => {
+  it("fails a week-old Blackhole row without blocklisting its release or searching again, and leaves a younger one", async () => {
+    const client = await insertClient({ type: "blackhole" });
+    const movie = await insertMovie({ title: "Black Hole Movie", sort_title: "x" });
+    const young = await insertMovie({ title: "Young Hole Movie", sort_title: "y" });
+    const insert = async (mediaItemId: number, hoursAgo: number) =>
+      Number(
+        (
+          await db
+            .prepare(
+              `INSERT INTO queue (media_item_id, title, download_client_id, download_id, status, progress, added_at) VALUES (?, 'Release.BH', ?, 'uuid|Release.BH', 'downloading', 0, ${nowOffsetHoursExpr(db, -hoursAgo)})`
+            )
+            .run(mediaItemId, client.id)
+        ).lastInsertRowid
+      );
+    const oldId = await insert(movie.id, 24 * 8);
+    const youngId = await insert(young.id, 24);
+
+    await cleanupStalledDownloads();
+
+    expect(await queueStatus(oldId)).toBe("failed");
+    expect(await queueStatus(youngId)).toBe("downloading");
+    expect(await blocklistedTitles(movie.id)).toEqual([]);
+    expect(searchAllIndexers).not.toHaveBeenCalled();
+    expect(notifyFailed).toHaveBeenCalledTimes(1);
+    const history = (await db.prepare("SELECT data FROM history WHERE media_item_id = ? AND event_type = 'failed'").get(movie.id)) as { data: string };
+    expect(history.data).toMatch(/downloads folder/);
+  });
+});
+
+describe("Round 20 — only the release's own fault fails an import (DL8)", () => {
+  async function completedRow(clientId: number) {
+    const movie = await insertMovie({ title: `Movie ${Math.random()}`, sort_title: "x" });
+    const result = await db
+      .prepare("INSERT INTO queue (media_item_id, title, download_client_id, download_id, status, progress) VALUES (?, 'Some.Release.2020', ?, 'dl-1', 'downloading', 0)")
+      .run(movie.id, clientId);
+    return { id: Number(result.lastInsertRowid), mediaItemId: movie.id };
+  }
+  const finished = () => fakeAdapter({ getStatus: vi.fn().mockResolvedValue([{ downloadId: "dl-1", progress: 1, status: "completed" }]) });
+
+  it("leaves a completed download for a manual import when the import hits a flaky share, instead of blocklisting the release", async () => {
+    const client = await insertClient();
+    getDownloadClientAdapter.mockReturnValue(finished());
+    importQueueItem.mockRejectedValue(Object.assign(new Error("EIO: i/o error, rename"), { code: "EIO", path: "/downloads/x.mkv", dest: "/media/x.mkv" }));
+    const { id, mediaItemId } = await completedRow(client.id);
+
+    await pollQueue();
+
+    const row = (await db.prepare("SELECT status, import_skipped_reason FROM queue WHERE id = ?").get(id)) as any;
+    expect(row.status).toBe("completed");
+    expect(row.import_skipped_reason).toMatch(/Couldn't place the file: EIO/);
+    expect(await blocklistedTitles(mediaItemId)).toEqual([]);
+    expect(searchAllIndexers).not.toHaveBeenCalled();
+    expect(notifyManualInteractionRequired).toHaveBeenCalledTimes(1);
+  });
+
+  it("parks a plain unexpected error the same way", async () => {
+    const client = await insertClient();
+    getDownloadClientAdapter.mockReturnValue(finished());
+    importQueueItem.mockRejectedValue(new Error("SQLITE_BUSY: database is locked"));
+    const { id, mediaItemId } = await completedRow(client.id);
+
+    await pollQueue();
+
+    expect(await queueStatus(id)).toBe("completed");
+    expect(await blocklistedTitles(mediaItemId)).toEqual([]);
+  });
+
+  it("still fails the release when its source is gone at the client", async () => {
+    const client = await insertClient();
+    getDownloadClientAdapter.mockReturnValue(finished());
+    importQueueItem.mockRejectedValue(Object.assign(new Error("ENOENT: no such file or directory, rename"), { code: "ENOENT", path: "/downloads/gone.mkv", dest: "/media/x.mkv" }));
+    searchAllIndexers.mockResolvedValue([]);
+    const { id } = await completedRow(client.id);
+
+    await pollQueue();
+
+    expect(await queueStatus(id)).toBe("failed");
+  });
+});
+
+describe("Round 20 — import-blocked rows stay, and the torrent's own hash is blocklisted (DL11, DL15)", () => {
+  it("does not prune a completed row that is waiting for a manual import, however old", async () => {
+    const movie = await insertMovie();
+    const old = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    const waiting = Number((await db.prepare("INSERT INTO queue (media_item_id, title, status, import_skipped_reason, updated_at) VALUES (?, 'x', 'completed', 'not an upgrade', ?)").run(movie.id, old)).lastInsertRowid);
+    const forgotten = Number((await db.prepare("INSERT INTO queue (media_item_id, title, status, updated_at) VALUES (?, 'y', 'completed', ?)").run(movie.id, old)).lastInsertRowid);
+
+    await pruneOldFailedQueueItems();
+
+    expect(await db.prepare("SELECT id FROM queue WHERE id = ?").get(waiting)).toBeTruthy();
+    expect(await db.prepare("SELECT id FROM queue WHERE id = ?").get(forgotten)).toBeUndefined();
+  });
+
+  it("blocklists the hash the client resolved when the indexer gave none", async () => {
+    const movie = await insertMovie();
+    searchAllIndexers.mockResolvedValue([]);
+
+    await retryFailedGrab(
+      {
+        id: 1,
+        mediaItemId: movie.id,
+        title: "Bad.Release",
+        episodeId: null,
+        subItemId: null,
+        retryCount: 0,
+        protocol: "torrent",
+        downloadId: "C12FE1C06BBA254A9DC9F519B335AA7C1367A88A",
+        infoHash: null,
+      } as any,
+      "stalled"
+    );
+
+    const row = (await db.prepare("SELECT info_hash FROM blocklist WHERE media_item_id = ?").get(movie.id)) as { info_hash: string };
+    expect(row.info_hash).toBe("c12fe1c06bba254a9dc9f519b335aa7c1367a88a");
+  });
+
+  it("keeps the indexer's hash when it gave one", async () => {
+    const movie = await insertMovie();
+    searchAllIndexers.mockResolvedValue([]);
+
+    await retryFailedGrab(
+      { id: 1, mediaItemId: movie.id, title: "Bad.Release", episodeId: null, subItemId: null, retryCount: 0, protocol: "torrent", downloadId: "a".repeat(40), infoHash: "b".repeat(40) } as any,
+      "stalled"
+    );
+
+    const row = (await db.prepare("SELECT info_hash FROM blocklist WHERE media_item_id = ?").get(movie.id)) as { info_hash: string };
+    expect(row.info_hash).toBe("b".repeat(40));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 20 review follow-ups: a parked import is retried a few times; a vanished warned download is not blamed
+// ---------------------------------------------------------------------------
+
+describe("Round 20 — a parked import is retried automatically a few times (DL8)", () => {
+  async function parkedRow() {
+    const movie = await insertMovie({ title: `Parked ${Math.random()}`, sort_title: "x" });
+    const result = await db
+      .prepare(
+        "INSERT INTO queue (media_item_id, title, download_id, status, progress, import_skipped_reason) VALUES (?, 'Parked.Release.2020', 'dl-parked', 'completed', 1, 'Couldn''t place the file: EIO: i/o error')"
+      )
+      .run(movie.id);
+    return { id: Number(result.lastInsertRowid), mediaItemId: movie.id };
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("imports it again after the first wait, and the row is gone once that works", async () => {
+    const { id } = await parkedRow();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date());
+
+    await pollQueue(); // sees the parked row and schedules the first retry
+    expect(importQueueItem).not.toHaveBeenCalled();
+
+    vi.setSystemTime(new Date(Date.now() + 16 * 60_000));
+    importQueueItem.mockImplementation(async (queueId: number) => {
+      await db.prepare("DELETE FROM queue WHERE id = ?").run(queueId);
+    });
+    await pollQueue();
+
+    expect(importQueueItem).toHaveBeenCalledTimes(1);
+    expect(await db.prepare("SELECT id FROM queue WHERE id = ?").get(id)).toBeUndefined();
+  });
+
+  it("tries three times at growing intervals, keeps one note on the row, then tells the admin it gave up", async () => {
+    const { id, mediaItemId } = await parkedRow();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date());
+    importQueueItem.mockRejectedValue(Object.assign(new Error("EIO: i/o error again"), { code: "EIO", path: "/downloads/x", dest: "/media/x" }));
+
+    await pollQueue();
+    for (const minutes of [16, 61, 361]) {
+      vi.setSystemTime(new Date(Date.now() + minutes * 60_000));
+      await pollQueue();
+    }
+    expect(importQueueItem).toHaveBeenCalledTimes(3);
+
+    vi.setSystemTime(new Date(Date.now() + 24 * 3_600_000));
+    notifyManualInteractionRequired.mockClear();
+    await pollQueue();
+    await pollQueue();
+
+    expect(importQueueItem).toHaveBeenCalledTimes(3); // no fourth try
+    expect(notifyManualInteractionRequired).toHaveBeenCalledTimes(1);
+    expect(notifyManualInteractionRequired.mock.calls[0][1]).toMatch(/automatic retries used up/);
+    const row = (await db.prepare("SELECT status, import_skipped_reason FROM queue WHERE id = ?").get(id)) as any;
+    expect(row.status).toBe("completed");
+    expect(row.import_skipped_reason).toMatch(/^Couldn't place the file: EIO: i\/o error \(retried automatically: EIO: i\/o error again\)$/);
+    expect(await blocklistedTitles(mediaItemId)).toEqual([]);
+  });
+
+  it("leaves a row parked for a reason of its own to the admin", async () => {
+    const movie = await insertMovie({ title: "Policy Parked", sort_title: "x" });
+    await db
+      .prepare("INSERT INTO queue (media_item_id, title, download_id, status, progress, import_skipped_reason) VALUES (?, 'Policy.Release', 'dl-p', 'completed', 1, 'Not an upgrade: the library has Remux-2160p')")
+      .run(movie.id);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date());
+
+    await pollQueue();
+    vi.setSystemTime(new Date(Date.now() + 24 * 3_600_000));
+    await pollQueue();
+
+    expect(importQueueItem).not.toHaveBeenCalled();
+  });
+});
+
+describe("Round 20 — a warned download that vanished at the client is cleaned up without blame (DL4)", () => {
+  it("fails it without blocklisting its release once the client no longer lists it", async () => {
+    const client = await insertClient();
+    const movie = await insertMovie({ title: `Vanished ${Math.random()}`, sort_title: "x" });
+    const id = Number(
+      (
+        await db
+          .prepare(
+            `INSERT INTO queue (media_item_id, title, download_client_id, download_id, status, progress, last_progress_at) VALUES (?, 'Vanished.Release.2020', ?, 'dl-gone', 'downloading', 0.5, ${nowExpr(db)})`
+          )
+          .run(movie.id, client.id)
+      ).lastInsertRowid
+    );
+    const getStatus = vi.fn().mockResolvedValue([{ downloadId: "dl-gone", progress: 0.5, status: "downloading", warning: "SABnzbd: Unpacking failed, write error or disk is full?" }]);
+    getDownloadClientAdapter.mockReturnValue(fakeAdapter({ getStatus }));
+    await pollQueue(); // the warning is noted
+    expect(queueClientNote(id)).toMatch(/disk is full/);
+
+    await db.prepare(`UPDATE queue SET last_progress_at = ${nowOffsetHoursExpr(db, -8)} WHERE id = ?`).run(id);
+    getStatus.mockResolvedValue([]); // SABnzbd purged it from its history
+    searchAllIndexers.mockResolvedValue([]);
+    await cleanupStalledDownloads();
+
+    expect(await queueStatus(id)).toBe("failed");
+    expect(await blocklistedTitles(movie.id)).toEqual([]);
   });
 });

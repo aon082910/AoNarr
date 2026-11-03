@@ -31,8 +31,10 @@ vi.mock("../src/services/archiveExtract.js", async (importOriginal) => ({
 }));
 
 const removeQueueItemDownload = vi.fn();
+const markDownloadImported = vi.fn();
 vi.mock("../src/services/downloadClient.js", () => ({
   removeQueueItemDownload: (...args: unknown[]) => removeQueueItemDownload(...args),
+  markDownloadImported: (...args: unknown[]) => markDownloadImported(...args),
 }));
 
 const syncSubtitleToVideo = vi.fn();
@@ -149,6 +151,7 @@ beforeEach(async () => {
   writeAudioTags.mockReset();
   unpackDownloadedArchives.mockReset().mockResolvedValue({ extracted: [], failed: [] });
   removeQueueItemDownload.mockReset().mockResolvedValue(undefined);
+  markDownloadImported.mockReset().mockResolvedValue(undefined);
   syncSubtitleToVideo.mockReset().mockResolvedValue(false);
   convertComicImagesBestEffort.mockReset().mockResolvedValue(undefined);
   probeMediaInfo.mockReset().mockResolvedValue(null);
@@ -4729,5 +4732,89 @@ describe("Round 19 — multi-file imports and the recycle bin (review follow-ups
 
     expect(findDownloadedFile("Some Movie 2020", "movie")).toBeNull();
     expect(listDownloadedFileCandidates("movie").map((c) => c.path)).toContain(failed);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 20 review follow-ups: what AoNarr cannot see is not the release's fault; hardlinked torrents are tagged
+// ---------------------------------------------------------------------------
+
+describe("Round 20 — a download AoNarr cannot see does not fail the release (DL8)", () => {
+  async function queueRow(mediaItemId: number, downloadPath: string | null) {
+    const result = await db
+      .prepare(`INSERT INTO queue (media_item_id, title, quality, download_path, status) VALUES (?, 'The.Matrix.1999.1080p.WEB-GRP', NULL, ?, 'downloaded')`)
+      .run(mediaItemId, downloadPath);
+    return Number(result.lastInsertRowid);
+  }
+
+  it("parks the row for a manual import when the client's folder is not there for AoNarr (a mount or mapping problem)", async () => {
+    const { ReleaseFaultError } = await import("../src/services/importer.js");
+    const folder = await insertRootFolder("movie");
+    const movie = await insertMovie({ root_folder_id: folder.id });
+    const queueId = await queueRow(movie.id, path.join(downloadsDir, "not-visible-here"));
+
+    const err = await importQueueItem(queueId).catch((e) => e);
+
+    expect(err).toBeInstanceOf(ImportSkippedError);
+    expect(err).not.toBeInstanceOf(ReleaseFaultError);
+    expect(err.message).toMatch(/cannot see.*Remote Path Mappings/);
+  });
+
+  it("parks the row when the client's folder is there but empty", async () => {
+    const folder = await insertRootFolder("movie");
+    const movie = await insertMovie({ root_folder_id: folder.id });
+    const empty = path.join(downloadsDir, "The.Matrix.1999.1080p.WEB-GRP");
+    fs.mkdirSync(empty, { recursive: true });
+    const queueId = await queueRow(movie.id, empty);
+
+    const err = await importQueueItem(queueId).catch((e) => e);
+
+    expect(err).toBeInstanceOf(ImportSkippedError);
+    expect(err.message).toMatch(/nothing is in it/);
+  });
+
+  it("still blames the release when its folder holds files and none of them is importable", async () => {
+    const { ReleaseFaultError } = await import("../src/services/importer.js");
+    const folder = await insertRootFolder("movie");
+    const movie = await insertMovie({ root_folder_id: folder.id });
+    const dir = path.join(downloadsDir, "The.Matrix.1999.1080p.WEB-GRP");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "readme.nfo"), "no video here");
+    const queueId = await queueRow(movie.id, dir);
+
+    const err = await importQueueItem(queueId).catch((e) => e);
+
+    expect(err).toBeInstanceOf(ReleaseFaultError);
+  });
+});
+
+describe("Round 20 — a hardlink-imported torrent is marked so its data can go after seeding (DL6)", () => {
+  async function importMovieAs(strategy: string) {
+    setSetting("importStrategy", strategy);
+    const folder = await insertRootFolder("movie");
+    const movie = await insertMovie({ root_folder_id: folder.id });
+    const dir = path.join(downloadsDir, "The.Matrix.1999.1080p.WEB-GRP");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "The.Matrix.1999.1080p.WEB-GRP.mkv"), "the film");
+    const result = await db
+      .prepare("INSERT INTO queue (media_item_id, title, download_id, download_path, status) VALUES (?, 'The.Matrix.1999.1080p.WEB-GRP', ?, ?, 'downloaded')")
+      .run(movie.id, "a".repeat(40), dir);
+    await importQueueItem(Number(result.lastInsertRowid));
+  }
+
+  it("marks the download after a complete hardlink import, and leaves it in the client", async () => {
+    await importMovieAs("hardlink");
+    expect(markDownloadImported).toHaveBeenCalledTimes(1);
+    expect(removeQueueItemDownload).not.toHaveBeenCalled();
+  });
+
+  it("marks nothing after a move import", async () => {
+    await importMovieAs("move");
+    expect(markDownloadImported).not.toHaveBeenCalled();
+  });
+
+  it("marks nothing after a symlink import: the library points at that data", async () => {
+    await importMovieAs("symlink");
+    expect(markDownloadImported).not.toHaveBeenCalled();
   });
 });

@@ -26,7 +26,7 @@ import {
   type CustomSubtitleProviderConfig,
 } from "./subtitleClient.js";
 import { archiveDestinationFor, isArchiveFile, unpackDownloadedArchives } from "./archiveExtract.js";
-import { removeQueueItemDownload } from "./downloadClient.js";
+import { markDownloadImported, removeQueueItemDownload } from "./downloadClient.js";
 import { syncSubtitleToVideo } from "./subtitleSync.js";
 import { DEFAULT_SHAPE_TEMPLATES, DEFAULT_TRACK_TEMPLATE, providerIdVars, renderTemplate } from "./naming.js";
 import { effectiveShape, getMediaTypeConfig, isProbeableFile, type MediaShape } from "./mediaTypes.js";
@@ -1311,6 +1311,44 @@ async function qualityGroupsOfProfile(profileId: number | null | undefined): Pro
 }
 
 export class ImportSkippedError extends Error {}
+
+/** The release itself is at fault: nothing importable in the folder the client reported, or no file of
+ * it found at all. The only import failure that fails the download, blocklists the release and grabs
+ * another (scheduler.ts importCompletedDownload); every other error leaves the completed download for a
+ * manual import. */
+export class ReleaseFaultError extends Error {}
+
+/** Whether the downloads folder shows anything at all: false for an unmounted share or an unreadable folder. */
+export function downloadsFolderHasEntries(): boolean {
+  try {
+    return fs.readdirSync(config.downloadsDir).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether there is any file under `dir` (a few levels down): false for a missing, empty or unreadable folder. */
+function folderHasAnyFile(dir: string | null | undefined): boolean {
+  if (!dir) return false;
+  const visit = (d: string, depth: number): boolean => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) return true;
+      if (depth < 4 && visit(path.join(d, entry.name), depth + 1)) return true;
+    }
+    return false;
+  };
+  try {
+    return fs.statSync(dir).isFile() || visit(dir, 0);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Sonarr/Radarr's import-time "not an upgrade" check, as far as a downgrade goes: an automatic import
@@ -2875,9 +2913,25 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
     // A reported folder with no importable file in it (another show's episode, a sample alone, no
     // media at all) is the release's fault: it fails like any other bad release and is retried.
     if (locateReason === "nothing-in-reported-folder") {
-      throw new Error(`No matching file found in the download's folder for "${queueItem.title}" (the rest of the downloads directory is not searched)`);
+      // A reported folder with no file in it at all is a mount or mapping problem, not a bad release.
+      if (!folderHasAnyFile(queueItem.downloadPath)) {
+        throw new ImportSkippedError(
+          `The download client reports "${queueItem.downloadPath}", but nothing is in it as AoNarr sees it — check the download folder mount and the Remote Path Mappings; left for a manual import`
+        );
+      }
+      throw new ReleaseFaultError(`No matching file found in the download's folder for "${queueItem.title}" (the rest of the downloads directory is not searched)`);
     }
-    throw new Error(`No matching file found in downloads directory for "${queueItem.title}"`);
+    // The client's path is not there for AoNarr, or the downloads folder is empty: it cannot see the
+    // download, which says nothing against the release.
+    if (queueItem.downloadPath && !fs.existsSync(queueItem.downloadPath)) {
+      throw new ImportSkippedError(
+        `The download client reports "${queueItem.downloadPath}", which AoNarr cannot see — check the download folder mount and the Remote Path Mappings; left for a manual import`
+      );
+    }
+    if (!downloadsFolderHasEntries()) {
+      throw new ImportSkippedError("The downloads folder is empty or unreadable — check that it is mounted; left for a manual import");
+    }
+    throw new ReleaseFaultError(`No matching file found in downloads directory for "${queueItem.title}"`);
   }
 
   // Interactive-Import-style override: the admin's own explicit choice on the Activity page's
@@ -3004,6 +3058,11 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
   // private tracker) and left Seed Goal Cleanup nothing to act on.
   if (getSetting("removeCompletedDownloads") !== "0" && strategyDeletesSourceData()) {
     await removeQueueItemDownload(queueItem, !leftFilesBehind);
+  } else if (getSetting("importStrategy") === "hardlink" && !leftFilesBehind) {
+    // Everything of the download is now in the library by hardlink (or, across filesystems, as a copy): the
+    // client marks it, and Seed Goal Cleanup may delete its data when seeding is over. Any other torrent
+    // keeps its data, because it may hold the only copy.
+    await markDownloadImported(queueItem);
   }
   if (!leftFilesBehind) cleanupDownloadSourceFolder(releaseDir, ctx);
 }

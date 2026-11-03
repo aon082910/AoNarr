@@ -540,7 +540,8 @@ describe("QBittorrentAdapter", () => {
     expect(updates).toEqual([
       { downloadId: "h1", progress: 1, status: "completed", remotePath: "/data/movie/movie.mkv" },
       { downloadId: "h2", progress: 0.5, status: "downloading", remotePath: undefined },
-      { downloadId: "h3", progress: 0, status: "failed", remotePath: undefined },
+      // An error torrent is the client's problem (a full download folder), not the release's: kept, with a warning.
+      { downloadId: "h3", progress: 0, status: "downloading", remotePath: undefined, warning: expect.stringMatching(/error/i) },
     ]);
   });
 
@@ -713,7 +714,7 @@ describe("SabnzbdAdapter", () => {
     // could not reach a loopback indexer, which `mode=addurl` needs it to.
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, status: 200, arrayBuffer: async () => Buffer.from("<nzb>release</nzb>") })
+      .mockResolvedValueOnce({ ok: true, status: 200, arrayBuffer: async () => Buffer.from("<nzb><file subject=\"a\"/>release</nzb>") })
       .mockResolvedValueOnce(ok({ nzo_ids: ["SABnzbd_nzo_123"] }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -732,13 +733,13 @@ describe("SabnzbdAdapter", () => {
     expect(form.get("cat")).toBe("tv");
     const file = form.get("name") as File;
     expect(file.name).toBe("Show.S01E01.720p-GRP.nzb");
-    expect(await file.text()).toBe("<nzb>release</nzb>");
+    expect(await file.text()).toBe("<nzb><file subject=\"a\"/>release</nzb>");
   });
 
   it("addDownload names an upload with no release title \"release.nzb\", sends no category when there is none, and refuses a magnet link", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, status: 200, arrayBuffer: async () => Buffer.from("<nzb/>") })
+      .mockResolvedValueOnce({ ok: true, status: 200, arrayBuffer: async () => Buffer.from("<nzb><file/></nzb>") })
       .mockResolvedValueOnce(ok({ nzo_ids: ["SABnzbd_nzo_9"] }));
     vi.stubGlobal("fetch", fetchMock);
     const client = await insertClient({ type: "sabnzbd" });
@@ -760,7 +761,13 @@ describe("SabnzbdAdapter", () => {
   });
 
   it("addDownload throws on SABnzbd's HTTP-200 key rejection instead of recording a job that doesn't exist", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ok({ status: false, error: "API Key Incorrect" })));
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({ ok: true, status: 200, arrayBuffer: async () => Buffer.from("<nzb><file/></nzb>") })
+        .mockResolvedValueOnce(ok({ status: false, error: "API Key Incorrect" }))
+    );
 
     await expect(adapter().addDownload(await insertClient({ type: "sabnzbd" }), "http://indexer/nzb", null)).rejects.toThrow("API Key Incorrect");
   });
@@ -1799,7 +1806,7 @@ describe("BlackholeAdapter", () => {
   });
 
   it("sniffs XML content and writes a .nzb file instead of .torrent", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, arrayBuffer: async () => Buffer.from("<?xml version=\"1.0\"?><nzb></nzb>") }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, arrayBuffer: async () => Buffer.from("<?xml version=\"1.0\"?><nzb><file/></nzb>") }));
 
     await adapter().addDownload({ host: downloadsDir } as any, "https://indexer/release.nzb", null, "NZB Release");
 
@@ -2020,5 +2027,362 @@ describe("SlskdAdapter", () => {
     );
 
     expect(await adapter().getStatus({} as any, ["someuser wanted.mp3"])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 20: a client's own problems are not the release's (DL2, DL3, DL4, DL7, DL23)
+// ---------------------------------------------------------------------------
+
+describe("Round 20 — qBittorrent states and add answers", () => {
+  const adapter = () => getDownloadClientAdapter("qbittorrent");
+  const loginRoute = { test: (u: string) => u.includes("/auth/login"), response: ok({}, { headers: new Headers({ "set-cookie": "SID=abc; Path=/" }) }) };
+  const torrent = (state: string, progress: number, hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") => ({ hash, state, progress, name: "Some.Release", tags: "aonarr" });
+
+  async function statusOf(state: string, progress = 0.4) {
+    vi.stubGlobal("fetch", routedFetch([loginRoute, { test: (u) => u.includes("/torrents/info"), response: ok([torrent(state, progress)]) }]));
+    const [update] = await adapter().getStatus(await insertClient({ type: "qbittorrent" }), []);
+    return update;
+  }
+
+  it.each(["pausedDL", "stoppedDL", "queuedDL"])("reports a %s torrent as paused, still downloading", async (state) => {
+    const update = await statusOf(state);
+    expect(update).toMatchObject({ status: "downloading", paused: true });
+    expect(update.warning).toBeUndefined();
+  });
+
+  it("reports an actively downloading torrent as neither paused nor warned", async () => {
+    const update = await statusOf("downloading");
+    expect(update.paused).toBeUndefined();
+    expect(update.warning).toBeUndefined();
+  });
+
+  it("reports an error torrent as a warning, not a failure (a full download folder says nothing against the release)", async () => {
+    const update = await statusOf("error");
+    expect(update.status).toBe("downloading");
+    expect(update.warning).toMatch(/error/i);
+  });
+
+  it("reports missing files as a warning too", async () => {
+    const update = await statusOf("missingFiles", 0.4);
+    expect(update.status).toBe("downloading");
+    expect(update.warning).toMatch(/missing/i);
+  });
+
+  it("refuses a torrent qBittorrent answered \"Fails.\" to, instead of waiting for a tag that never appears", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([loginRoute, { test: (u) => u.includes("/torrents/add"), response: { ok: true, status: 200, text: async () => "Fails.", json: async () => ({}) } }])
+    );
+
+    await expect(adapter().addDownload(await insertClient({ type: "qbittorrent" }), "http://indexer/dead.torrent", null)).rejects.toThrow(/did not add the torrent/);
+  });
+
+  it("still accepts \"Ok.\"", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([loginRoute, { test: (u) => u.includes("/torrents/add"), response: { ok: true, status: 200, text: async () => "Ok.", json: async () => ({}) } }])
+    );
+
+    const result = await adapter().addDownload(await insertClient({ type: "qbittorrent" }), "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a", null);
+
+    expect(result.downloadId).toBe("c12fe1c06bba254a9dc9f519b335aa7c1367a88a");
+  });
+});
+
+describe("Round 20 — SABnzbd states, failures and add answers", () => {
+  const adapter = () => getDownloadClientAdapter("sabnzbd");
+  const NZB = "<?xml version=\"1.0\"?><nzb xmlns=\"http://www.newzbin.com/DTD/2003/nzb\"><file poster=\"a\" subject=\"b\"><segments><segment>x</segment></segments></file></nzb>";
+  const queueUrl = (u: string) => u.includes("mode=queue");
+  const historyUrl = (u: string) => u.includes("mode=history");
+
+  it("refuses an upload SABnzbd accepted but gave no job id for, instead of tracking the release URL", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce({ ok: true, status: 200, arrayBuffer: async () => Buffer.from(NZB) }).mockResolvedValueOnce(ok({ status: true, nzo_ids: [] }))
+    );
+
+    await expect(adapter().addDownload(await insertClient({ type: "sabnzbd", api_key: "k" }), "http://indexer/dl?apikey=SECRET", "tv", "Show.S01E01")).rejects.toThrow(/no job id/);
+  });
+
+  it("refuses an indexer's rate-limit document handed over as the NZB, without calling SABnzbd", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, arrayBuffer: async () => Buffer.from('<?xml version="1.0"?><error code="429" description="Request limit reached"/>') });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(adapter().addDownload(await insertClient({ type: "sabnzbd" }), "http://indexer/dl", null)).rejects.toThrow(/error 429: Request limit reached/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses an HTML page and an NZB with no files", async () => {
+    const client = await insertClient({ type: "sabnzbd" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, arrayBuffer: async () => Buffer.from("<html><body>Please log in</body></html>") }));
+    await expect(adapter().addDownload(client, "http://indexer/dl", null)).rejects.toThrow(/not an NZB/);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, arrayBuffer: async () => Buffer.from("<nzb></nzb>") }));
+    await expect(adapter().addDownload(client, "http://indexer/dl", null)).rejects.toThrow(/lists no files/);
+  });
+
+  it("reports a paused or queued job as paused", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        {
+          test: queueUrl,
+          response: ok({
+            queue: {
+              slots: [
+                { nzo_id: "p", status: "Paused", percentage: "40" },
+                { nzo_id: "q", status: "Queued", percentage: "0" },
+                { nzo_id: "d", status: "Downloading", percentage: "10" },
+              ],
+            },
+          }),
+        },
+      ])
+    );
+
+    const updates = await adapter().getStatus(await insertClient({ type: "sabnzbd" }), ["p", "q", "d"]);
+
+    expect(updates.find((u) => u.downloadId === "p")).toMatchObject({ status: "downloading", paused: true });
+    expect(updates.find((u) => u.downloadId === "q")).toMatchObject({ status: "downloading", paused: true });
+    expect(updates.find((u) => u.downloadId === "d")?.paused).toBeUndefined();
+  });
+
+  it("keeps a job that failed because the disk is full as a warning, with SABnzbd's message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: queueUrl, response: ok({ queue: { slots: [] } }) },
+        { test: historyUrl, response: ok({ history: { slots: [{ nzo_id: "full", status: "Failed", fail_message: "Unpacking failed, write error or disk is full?" }] } }) },
+      ])
+    );
+
+    const [update] = await adapter().getStatus(await insertClient({ type: "sabnzbd" }), ["full"]);
+
+    expect(update).toMatchObject({ downloadId: "full", status: "downloading" });
+    expect(update.warning).toBe("SABnzbd: Unpacking failed, write error or disk is full?");
+  });
+
+  it("fails a job SABnzbd marked failed for the NZB's own reason, and keeps the reason", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: queueUrl, response: ok({ queue: { slots: [] } }) },
+        { test: historyUrl, response: ok({ history: { slots: [{ nzo_id: "bad", status: "Failed", fail_message: "Aborted, cannot be completed" }] } }) },
+      ])
+    );
+
+    const [update] = await adapter().getStatus(await insertClient({ type: "sabnzbd" }), ["bad"]);
+
+    expect(update).toMatchObject({ downloadId: "bad", status: "failed", failureReason: "SABnzbd: Aborted, cannot be completed" });
+  });
+});
+
+describe("Round 20 — a Blackhole release completes when its output shows up (DL3)", () => {
+  const adapter = () => getDownloadClientAdapter("blackhole");
+  const made: string[] = [];
+
+  afterEach(() => {
+    for (const p of made.splice(0)) fs.rmSync(p, { recursive: true, force: true });
+  });
+
+  function output(name: string, ageMs: number, files: Record<string, string> = { "movie.mkv": "x" }): string {
+    const dir = path.join(config.downloadsDir, name);
+    fs.mkdirSync(dir, { recursive: true });
+    made.push(dir);
+    for (const [file, content] of Object.entries(files)) {
+      const p = path.join(dir, file);
+      fs.writeFileSync(p, content);
+      const t = new Date(Date.now() - ageMs);
+      fs.utimesSync(p, t, t);
+    }
+    const t = new Date(Date.now() - ageMs);
+    fs.utimesSync(dir, t, t);
+    return dir;
+  }
+
+  it("keeps the release's name in the id it returns, beside the watch-folder drop", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, arrayBuffer: async () => Buffer.from("<?xml version=\"1.0\"?><nzb><file/></nzb>") }));
+
+    const { downloadId } = await adapter().addDownload({ host: downloadsDir } as any, "https://indexer/release.nzb", null, "Some Show S01E01 1080p");
+
+    expect(downloadId).toMatch(/^[0-9a-f-]{36}\|Some Show S01E01 1080p$/);
+    expect(fs.readdirSync(downloadsDir)).toContain("Some Show S01E01 1080p.nzb");
+  });
+
+  it("reports downloading while nothing of that name is in the downloads folder", async () => {
+    const [update] = await adapter().getStatus({} as any, ["uuid|Nothing Here 2020"]);
+    expect(update).toMatchObject({ status: "downloading", progress: 0 });
+  });
+
+  it("reports completed, with the path, once the output has been still for a minute", async () => {
+    const dir = output("Blackhole Done 2020 1080p", 10 * 60_000);
+
+    const [update] = await adapter().getStatus({} as any, ["uuid|Blackhole Done 2020 1080p"]);
+
+    expect(update).toMatchObject({ status: "completed", progress: 1, remotePath: dir });
+  });
+
+  it("reports downloading while the output is still being written, or a partial file is in it", async () => {
+    output("Blackhole Fresh 2020", 1_000);
+    output("Blackhole Partial 2020", 10 * 60_000, { "movie.mkv.part": "x" });
+
+    const updates = await adapter().getStatus({} as any, ["a|Blackhole Fresh 2020", "b|Blackhole Partial 2020"]);
+
+    expect(updates.map((u) => u.status)).toEqual(["downloading", "downloading"]);
+  });
+
+  it("matches a single-file output named after the release", async () => {
+    const file = path.join(config.downloadsDir, "Blackhole Single 2020.mkv");
+    fs.writeFileSync(file, "x");
+    made.push(file);
+    const old = new Date(Date.now() - 10 * 60_000);
+    fs.utimesSync(file, old, old);
+
+    const [update] = await adapter().getStatus({} as any, ["uuid|Blackhole Single 2020"]);
+
+    expect(update).toMatchObject({ status: "completed", remotePath: file });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 20 review follow-ups for the adapters
+// ---------------------------------------------------------------------------
+
+describe("Round 20 — qBittorrent: a torrent it already holds, and the hardlink tag", () => {
+  const adapter = () => getDownloadClientAdapter("qbittorrent");
+  const HASH = "c12fe1c06bba254a9dc9f519b335aa7c1367a88a";
+  const loginRoute = { test: (u: string) => u.includes("/auth/login"), response: ok({}, { headers: new Headers({ "set-cookie": "SID=abc; Path=/" }) }) };
+  const failsRoute = { test: (u: string) => u.includes("/torrents/add"), response: { ok: true, status: 200, text: async () => "Fails.", json: async () => ({}) } };
+
+  it("tracks a magnet it answered \"Fails.\" to when the torrent is already in the client, instead of refusing the release", async () => {
+    vi.stubGlobal("fetch", routedFetch([loginRoute, failsRoute, { test: (u) => u.includes("/torrents/info"), response: ok([{ hash: HASH }]) }]));
+
+    const result = await adapter().addDownload(await insertClient({ type: "qbittorrent" }), `magnet:?xt=urn:btih:${HASH}&dn=x`, null);
+
+    expect(result.downloadId).toBe(HASH);
+  });
+
+  it("refuses a magnet it answered \"Fails.\" to when the torrent is not in the client", async () => {
+    vi.stubGlobal("fetch", routedFetch([loginRoute, failsRoute, { test: (u) => u.includes("/torrents/info"), response: ok([]) }]));
+
+    await expect(adapter().addDownload(await insertClient({ type: "qbittorrent" }), `magnet:?xt=urn:btih:${HASH}&dn=x`, null)).rejects.toThrow(/did not add the torrent/);
+  });
+
+  it.each(["checkingDL", "checkingResumeData", "allocating", "moving"])("treats %s as busy, not stuck", async (state) => {
+    vi.stubGlobal("fetch", routedFetch([loginRoute, { test: (u) => u.includes("/torrents/info"), response: ok([{ hash: "h", state, progress: 0.4, name: "x", tags: "aonarr" }]) }]));
+    const [update] = await adapter().getStatus(await insertClient({ type: "qbittorrent" }), []);
+    expect(update).toMatchObject({ status: "downloading", paused: true });
+  });
+
+  it("tags a torrent as imported (markImported)", async () => {
+    const fetchMock = routedFetch([loginRoute, { test: (u) => u.includes("/torrents/addTags"), response: ok({}) }]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await adapter().markImported!(await insertClient({ type: "qbittorrent" }), HASH);
+
+    const call = fetchMock.mock.calls.find((c) => String(c[0]).includes("/torrents/addTags"))!;
+    expect(call[1].body.get("hashes")).toBe(HASH);
+    expect(call[1].body.get("tags")).toBe("aonarr-imported");
+  });
+
+  it("deletes the data of a seeded torrent only when AoNarr tagged it as imported, and keeps every other torrent's data", async () => {
+    const torrents = [
+      { hash: "tagged", state: "stalledUP", ratio: 3, seeding_time: 0, tags: "aonarr,aonarr-imported", category: "" },
+      { hash: "untagged", state: "stalledUP", ratio: 3, seeding_time: 0, tags: "aonarr", category: "" },
+      { hash: "usersown", state: "uploading", ratio: 3, seeding_time: 0, tags: "", category: "movies" },
+      { hash: "notyet", state: "stalledUP", ratio: 0.1, seeding_time: 0, tags: "aonarr,aonarr-imported", category: "" },
+    ];
+    const fetchMock = routedFetch([
+      loginRoute,
+      { test: (u) => u.includes("/torrents/info"), response: ok(torrents) },
+      { test: (u) => u.includes("/torrents/delete"), response: ok({}) },
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const removed = await adapter().removeSeededTorrents!(await insertClient({ type: "qbittorrent", category: "movies" }), 1, null);
+
+    expect(removed).toBe(3);
+    const deletes = fetchMock.mock.calls
+      .filter((c) => String(c[0]).includes("/torrents/delete"))
+      .map((c) => ({ hashes: c[1].body.get("hashes"), deleteFiles: c[1].body.get("deleteFiles") }));
+    expect(deletes).toContainEqual({ hashes: "tagged", deleteFiles: "true" });
+    expect(deletes).toContainEqual({ hashes: "untagged|usersown", deleteFiles: "false" });
+  });
+});
+
+describe("Round 20 — NZB checks are the indexer's answer, not the client's login", () => {
+  const NZB_ERROR = Buffer.from('<?xml version="1.0"?><error code="100" description="Invalid API Key"/>');
+
+  it("marks an indexer's error document as a release fetch failure, so it is not mistaken for the client's own login failing", async () => {
+    const { validateNzb } = await import("../src/services/downloadClient.js");
+    expect(() => validateNzb(NZB_ERROR)).toThrow(/^Failed to fetch release: .*error 100: Invalid API Key/);
+    expect(() => validateNzb(Buffer.from("<html></html>"))).toThrow(/^Failed to fetch release:/);
+    expect(() => validateNzb(Buffer.from("<nzb></nzb>"))).toThrow(/^Failed to fetch release:/);
+  });
+
+  it("accepts a real NZB, with a byte-order mark, a long head, and a file on its own line", async () => {
+    const { validateNzb } = await import("../src/services/downloadClient.js");
+    const head = `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE nzb PUBLIC "-//newzBin//DTD NZB 1.1//EN" "http://www.newzbin.com/DTD/nzb/nzb-1.1.dtd">\n<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">\n<head><meta type="x">${"y".repeat(3000)}</meta></head>\n`;
+    expect(() => validateNzb(Buffer.from(`﻿${head}<file poster="a" date="1" subject="s">\n<segments/></file></nzb>`))).not.toThrow();
+  });
+
+  it("treats a SABnzbd unpack failure about a file name too long or not creatable as the environment's", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u.includes("mode=queue"), response: ok({ queue: { slots: [] } }) },
+        { test: (u) => u.includes("mode=history"), response: ok({ history: { slots: [{ nzo_id: "long", status: "Failed", fail_message: "Unpacking failed, unable to create file: name too long" }] } }) },
+      ])
+    );
+
+    const [update] = await getDownloadClientAdapter("sabnzbd").getStatus(await insertClient({ type: "sabnzbd" }), ["long"]);
+
+    expect(update).toMatchObject({ status: "downloading" });
+    expect(update.warning).toMatch(/name too long/);
+  });
+});
+
+describe("Round 20 — Blackhole output: folders first, never our own drop or a sidecar", () => {
+  const adapter = () => getDownloadClientAdapter("blackhole");
+  const made: string[] = [];
+  afterEach(() => {
+    for (const p of made.splice(0)) fs.rmSync(p, { recursive: true, force: true });
+  });
+  function file(name: string, ageMs = 20 * 60_000): string {
+    const p = path.join(config.downloadsDir, name);
+    fs.writeFileSync(p, "x");
+    made.push(p);
+    const t = new Date(Date.now() - ageMs);
+    fs.utimesSync(p, t, t);
+    return p;
+  }
+
+  it("does not take the release's own .nzb drop (a watch folder that is the downloads folder) for its output", async () => {
+    file("Blackhole Drop 2020.nzb");
+
+    const [update] = await adapter().getStatus({} as any, ["uuid|Blackhole Drop 2020"]);
+
+    expect(update).toMatchObject({ status: "downloading", progress: 0 });
+  });
+
+  it("takes the video, not the .jpg or .nfo that shares its name", async () => {
+    file("Blackhole Sidecar 2020.jpg");
+    file("Blackhole Sidecar 2020.nfo");
+    const video = file("Blackhole Sidecar 2020.mkv");
+
+    const [update] = await adapter().getStatus({} as any, ["uuid|Blackhole Sidecar 2020"]);
+
+    expect(update).toMatchObject({ status: "completed", remotePath: video });
+  });
+
+  it("does not call an output complete until it has been still for five minutes", async () => {
+    file("Blackhole Quiet 2020.mkv", 2 * 60_000);
+
+    const [update] = await adapter().getStatus({} as any, ["uuid|Blackhole Quiet 2020"]);
+
+    expect(update.status).toBe("downloading");
   });
 });

@@ -76,6 +76,16 @@ export interface QueueStatusUpdate {
    * no metadata). Never set for a download waiting its turn in the client's own queue, paused, or
    * being checked — those are healthy, just not running yet. */
   stalled?: boolean;
+  /** True when the client holds this download paused or waiting for its turn (qBittorrent paused,
+   * stopped or queued; a SABnzbd job paused or queued). It is healthy and its age says nothing: the
+   * stalled-download clock must not run on it, and it is never failed or blocklisted for it. */
+  paused?: boolean;
+  /** Set on a "downloading" update when the client reports a problem that is the client's or its
+   * environment's, not the release's: a torrent in qBittorrent's error state or with missing files, a
+   * SABnzbd job that failed because the disk is full or not writable. Sonarr/Radarr treat these as
+   * warnings too: the download is kept (nothing deleted, nothing blocklisted, no group failure) and the
+   * message is shown, because another release would fail the same way. */
+  warning?: string;
   /** Set on a "failed" update when the adapter knows why. DOWNLOAD_INTERRUPTED_REASON means the
    * download was cut off by an AoNarr restart, not rejected at the client: the release did nothing
    * wrong, so it should be retried without being blocklisted. */
@@ -120,6 +130,10 @@ export interface DownloadClientAdapter {
    * seeding forever unless the client's own ratio-limit settings happen to be configured
    * separately. Only meaningful for backends that actually seed. */
   removeSeededTorrents?(client: DownloadClient, ratioGoal: number | null, seedTimeGoalMinutes: number | null): Promise<number>;
+  /** Marks a download AoNarr has fully imported by hardlink (or by a copy where a hardlink was not possible),
+   * so the client holds nothing the library does not also hold: its data may be deleted once seeding is
+   * over. Optional: only a torrent client with tags has anything to mark. */
+  markImported?(client: DownloadClient, downloadId: string): Promise<void>;
   /** Removes one finished (or dead) download from the client itself — called once AoNarr is done
    * with it, either because it imported successfully or because it failed at the client and won't
    * be retried from that same task. `deleteFiles` also removes the client's own copy of the data;
@@ -278,6 +292,8 @@ export async function testDownloadClientConnection(client: DownloadClient): Prom
 }
 
 const QBIT_TAG = "aonarr";
+/** Set on a torrent once AoNarr has imported all of it by hardlink: its data is then safe to delete after seeding. */
+const QBIT_IMPORTED_TAG = "aonarr-imported";
 const QBIT_PENDING_TAG_PREFIX = "aonarr-pending-";
 
 /** States in which a torrent can already report progress 1 while its data isn't ready to import:
@@ -289,6 +305,22 @@ const QBIT_UNSETTLED_STATES = new Set(["moving", "checkingUP", "checkingDL", "ch
 /** Started and allowed to run, but getting nothing: no metadata from any peer yet, or no peer
  * sending data. queuedDL (waiting for a slot) and the paused/checking states are not stalled. */
 const QBIT_STALLED_STATES = new Set(["metaDL", "forcedMetaDL", "stalledDL"]);
+
+/** Held by the user, waiting its turn in qBittorrent's own queue, or busy checking or moving its data: not a
+ * download that has gone wrong, and its age says nothing. */
+const QBIT_PAUSED_STATES = new Set(["pausedDL", "stoppedDL", "queuedDL", "checkingDL", "checkingResumeData", "allocating", "moving"]);
+
+/** qBittorrent's own words for a torrent it can't run: the download folder is full or unwritable, or the
+ * files it was using are gone. Whatever the release, another one would meet the same. */
+const QBIT_WARNING_STATES: Record<string, string> = {
+  error: "qBittorrent reports an error for this torrent (often a full or unwritable download folder); check the client",
+  missingFiles: "qBittorrent reports that this torrent's files are missing; check the client",
+};
+
+/** SABnzbd's reasons for a failed job that are the disk's, not the NZB's ("Unpacking failed, write error
+ * or disk is full?" and its relatives). */
+const SABNZBD_ENVIRONMENT_FAILURE =
+  /write error|disk is full|no space left|out of (?:disk )?space|permission denied|read-only file system|cannot create|unable to create|name too long|not enough (?:disk )?space/i;
 
 function base32ToHex(value: string): string {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -391,6 +423,17 @@ class QBittorrentAdapter implements DownloadClientAdapter {
     return magnetInfoHash(downloadId) ?? downloadId;
   }
 
+  private async hasTorrent(client: DownloadClient, hash: string): Promise<boolean> {
+    try {
+      const res = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/info?hashes=${encodeURIComponent(hash)}`);
+      if (!res.ok) return false;
+      const torrents = (await res.json()) as unknown;
+      return Array.isArray(torrents) && torrents.length > 0;
+    } catch {
+      return false;
+    }
+  }
+
   async addDownload(client: DownloadClient, downloadUrl: string, category: string | null): Promise<GrabResult> {
     const knownHash = magnetInfoHash(downloadUrl);
     const pendingTag = knownHash ? null : `${QBIT_PENDING_TAG_PREFIX}${crypto.randomBytes(6).toString("hex")}`;
@@ -399,6 +442,20 @@ class QBittorrentAdapter implements DownloadClientAdapter {
 
     const res = await this.postForm(client, "torrents/add", form);
     if (!res.ok) throw new Error(`qBittorrent add failed: HTTP ${res.status}`);
+    // Older builds answer HTTP 200 with the body "Fails." when the link or file could not be added.
+    // Taking that as success left a row waiting for a tag that never appeared, failed 30 minutes later.
+    let answer = "";
+    try {
+      answer = await res.text();
+    } catch {
+      // No readable body (a stub, an empty answer): the HTTP status was all there was to go on.
+    }
+    if (/^\s*fails\.?\s*$/i.test(answer)) {
+      // Builds before 5.3 also answer "Fails." for a torrent they already hold: that one is tracked, as a
+      // duplicate add was before this check, instead of the next-best release being downloaded beside it.
+      if (knownHash && (await this.hasTorrent(client, knownHash))) return { downloadId: knownHash };
+      throw new Error("qBittorrent did not add the torrent (it answered \"Fails.\": a dead link, an unsupported file, or one it already has)");
+    }
     if (knownHash) return { downloadId: knownHash };
 
     for (let attempt = 0; attempt < 8; attempt++) {
@@ -424,12 +481,16 @@ class QBittorrentAdapter implements DownloadClientAdapter {
     // hash a magnet's btih carries (and so a queue row keyed by it) only shows up as infohash_v1.
     const byV1Hash = new Map<string, QueueStatusUpdate>();
     for (const t of torrents) {
-      const status = t.progress >= 1 && !QBIT_UNSETTLED_STATES.has(t.state) ? "completed" : t.state === "error" ? "failed" : "downloading";
+      // An "error" torrent is no longer failed: the error is the client's (a full disk), not the
+      // release's, so deleting it and blocklisting the release would only burn the next ones too.
+      const status = t.progress >= 1 && !QBIT_UNSETTLED_STATES.has(t.state) ? "completed" : "downloading";
       const update: QueueStatusUpdate = {
         downloadId: t.hash,
         progress: t.progress ?? 0,
         status,
         ...(status === "downloading" && QBIT_STALLED_STATES.has(t.state) ? { stalled: true } : {}),
+        ...(status === "downloading" && QBIT_PAUSED_STATES.has(t.state) ? { paused: true } : {}),
+        ...(status === "downloading" && QBIT_WARNING_STATES[t.state] ? { warning: QBIT_WARNING_STATES[t.state] } : {}),
         // content_path (API v2.8.4+) points straight at the torrent's actual file/folder; save_path
         // is only the download root it was saved under. Older qBittorrent builds lack content_path
         // entirely, so fall back to save_path rather than reporting no path at all.
@@ -520,13 +581,32 @@ class QBittorrentAdapter implements DownloadClientAdapter {
     });
     if (eligible.length === 0) return 0;
 
-    const removeRes = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/delete`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ hashes: eligible.map((t) => t.hash).join("|"), deleteFiles: "false" }),
-    });
-    if (!removeRes.ok) throw new Error(`qBittorrent torrents/delete failed: HTTP ${removeRes.status}`);
+    // The data goes only with a torrent AoNarr imported by hardlink and tagged for it (markImported): the
+    // library then holds the same bytes under its own link, or a copy. Any other torrent (one waiting for a
+    // manual import, one mid-import, one the user added to the category, one imported by symlink) may hold
+    // the only copy: it leaves the client with its data kept.
+    const hasTag = (t: any, tag: string) =>
+      String(t.tags ?? "")
+        .split(",")
+        .map((s: string) => s.trim())
+        .includes(tag);
+    const withData = eligible.filter((t) => hasTag(t, QBIT_IMPORTED_TAG));
+    const withoutData = eligible.filter((t) => !hasTag(t, QBIT_IMPORTED_TAG));
+    for (const [group, deleteFiles] of [[withData, true], [withoutData, false]] as const) {
+      if (group.length === 0) continue;
+      const removeRes = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ hashes: group.map((t) => t.hash).join("|"), deleteFiles: deleteFiles ? "true" : "false" }),
+      });
+      if (!removeRes.ok) throw new Error(`qBittorrent torrents/delete failed: HTTP ${removeRes.status}`);
+    }
     return eligible.length;
+  }
+
+  async markImported(client: DownloadClient, downloadId: string): Promise<void> {
+    const res = await this.postForm(client, "torrents/addTags", { hashes: await this.resolveHash(client, downloadId), tags: QBIT_IMPORTED_TAG });
+    if (!res.ok) throw new Error(`qBittorrent torrents/addTags failed: HTTP ${res.status}`);
   }
 
   async removeDownload(client: DownloadClient, downloadId: string, deleteFiles: boolean): Promise<void> {
@@ -536,6 +616,26 @@ class QBittorrentAdapter implements DownloadClientAdapter {
     });
     if (!res.ok) throw new Error(`qBittorrent torrents/delete failed: HTTP ${res.status}`);
   }
+}
+
+/**
+ * Refuses what is not an NZB before a client or a watch folder gets it, as Sonarr's NzbValidationService
+ * does: an indexer answers a download it will not serve (a rate limit, a bad key, a login page) with an
+ * HTTP 200 document, and handing that on made a job that fails in the client, or garbage in the watch
+ * folder, and left the indexer unaware. The error is a release refusal: the next release is tried.
+ */
+export function validateNzb(bytes: Buffer): void {
+  const head = bytes.subarray(0, 8192).toString("utf-8");
+  const error = /<error\b([^>]*)>/i.exec(head);
+  if (error) {
+    const code = /code="([^"]*)"/i.exec(error[1])?.[1];
+    const description = /description="([^"]*)"/i.exec(error[1])?.[1];
+    // "Failed to fetch release:" marks it as the indexer's answer, so an "Invalid API Key" in it is not
+    // taken for the download client's login failing (isClientLevelError).
+    throw new Error(`Failed to fetch release: the indexer answered the NZB download with an error${code ? ` ${code}` : ""}${description ? `: ${description}` : ""}`);
+  }
+  if (!/<nzb[\s>]/i.test(head)) throw new Error("Failed to fetch release: the indexer's answer to the NZB download is not an NZB file");
+  if (bytes.indexOf("<file") < 0) throw new Error("Failed to fetch release: the NZB the indexer returned lists no files");
 }
 
 /** SABnzbd adapter. */
@@ -554,6 +654,7 @@ class SabnzbdAdapter implements DownloadClientAdapter {
     // this is not specific to any one backend.
     const source = await resolveDownloadSource(downloadUrl);
     if (source.kind === "magnet") throw new Error("SABnzbd cannot accept a magnet link");
+    validateNzb(source.bytes);
 
     const url = new URL(`${baseUrl(client)}/api`);
     url.searchParams.set("apikey", client.apiKey ?? "");
@@ -571,7 +672,10 @@ class SabnzbdAdapter implements DownloadClientAdapter {
     // A rejected key comes back as HTTP 200 {status: false, error}; taking that as a grab would
     // leave a queue row polling for a job SABnzbd never created.
     if (body?.error || body?.status === false) throw new Error(`SABnzbd add failed: ${body.error ?? "rejected"}`);
-    const downloadId = body?.nzo_ids?.[0] ?? downloadUrl;
+    // Without a job id nothing was added. Tracking the row by the release URL (which carries the
+    // indexer's API key) left it polling for a job that never existed, then blocklisted the release.
+    const downloadId = body?.nzo_ids?.[0];
+    if (!downloadId) throw new Error("SABnzbd accepted the upload but returned no job id, so the NZB was not added");
     return { downloadId };
   }
 
@@ -606,6 +710,8 @@ class SabnzbdAdapter implements DownloadClientAdapter {
         downloadId: s.nzo_id,
         progress: s.percentage ? Number(s.percentage) / 100 : 0,
         status: s.status === "Failed" ? "failed" : "downloading",
+        // A job the user paused, or one waiting for its turn, is healthy; its age says nothing.
+        ...(s.status === "Paused" || s.status === "Queued" || s.status === "Propagating" ? { paused: true } : {}),
       });
     }
 
@@ -630,10 +736,18 @@ class SabnzbdAdapter implements DownloadClientAdapter {
             updates.push({ downloadId: h.nzo_id, progress: 0.99, status: "downloading" });
             continue;
           }
+          const failMessage = typeof h.fail_message === "string" ? h.fail_message.trim() : "";
+          // A job that failed because the disk is full or not writable is the environment's failure, not
+          // the NZB's: kept, with the message, rather than deleted and the release blocklisted.
+          if (h.status === "Failed" && SABNZBD_ENVIRONMENT_FAILURE.test(failMessage)) {
+            updates.push({ downloadId: h.nzo_id, progress: 0.99, status: "downloading", warning: `SABnzbd: ${failMessage}` });
+            continue;
+          }
           updates.push({
             downloadId: h.nzo_id,
             progress: 1,
             status: h.status === "Failed" ? "failed" : "completed",
+            ...(h.status === "Failed" && failMessage ? { failureReason: `SABnzbd: ${failMessage}` } : {}),
             // "storage" is the final on-disk path of the completed job, in SABnzbd's own
             // filesystem namespace — absent on a failed job (nothing was ever finished/moved).
             remotePath: h.storage || undefined,
@@ -1488,33 +1602,114 @@ class AllDebridAdapter implements DownloadClientAdapter {
  * (XML → `.nzb`, otherwise `.torrent`) since the shared adapter interface doesn't carry the result's
  * protocol through to here.
  *
- * This is fire-and-forget by design, same as the real thing: AoNarr has no way to ask an unknown
- * external client how a download is progressing, so getStatus can't report real progress or ever
- * return "completed" — the queue entry just stays "downloading" until removed by hand. Point the
- * client's own completed-download output at one of AoNarr's root folders to actually get files
- * into the library; this only handles getting the release TO the client.
+ * AoNarr has no way to ask an unknown external client how a download is progressing, so there is no
+ * real progress. It finds the result instead: configure the client to move COMPLETED downloads into
+ * AoNarr's downloads folder (the same expectation Sonarr's Blackhole clients have of their completed
+ * folder), named after the release. getStatus then reports the release complete once that entry has
+ * been still for five minutes and holds no partial file, and the normal import takes it. A release
+ * that never shows up there is failed after `blackholeTimeoutHours` (default 168), without blame.
  */
 class BlackholeAdapter implements DownloadClientAdapter {
   async addDownload(client: DownloadClient, downloadUrl: string, _category: string | null, releaseTitle?: string): Promise<GrabResult> {
     if (!client.host) throw new Error("Blackhole client has no watch folder path configured");
     fs.mkdirSync(client.host, { recursive: true });
-    const downloadId = crypto.randomUUID();
-    const base = sanitizeFilename(releaseTitle || downloadId);
+    const uuid = crypto.randomUUID();
+    const base = sanitizeFilename(releaseTitle || uuid);
+    // The name rides in the id, because the only way to tell this download is done is to find what the
+    // external client wrote under that name in the downloads folder (see getStatus).
+    const downloadId = `${uuid}${BLACKHOLE_ID_SEPARATOR}${base}`;
 
     const source = await resolveDownloadSource(downloadUrl);
     if (source.kind === "magnet") {
       fs.writeFileSync(path.join(client.host, `${base}.magnet`), source.uri, "utf-8");
     } else {
       const looksLikeNzb = source.bytes.subarray(0, 20).toString("utf-8").trimStart().startsWith("<");
+      if (looksLikeNzb) validateNzb(source.bytes);
       fs.writeFileSync(path.join(client.host, `${base}${looksLikeNzb ? ".nzb" : ".torrent"}`), source.bytes);
     }
 
     return { downloadId };
   }
 
+  /**
+   * A watch folder has no API to ask. What the external client downloads is expected in AoNarr's
+   * downloads folder, named after the release, and only once it is complete (as Sonarr's Torrent/Usenet
+   * Blackhole expect the client's completed folder): once an entry of that name is there and nothing in it
+   * has changed for five minutes and nothing is still a partial file, the download is complete, reported with the
+   * path found so the normal import takes it. Before that it reads as downloading. An id from before
+   * the name was kept in it can't be looked up and stays downloading (it ages out instead, see
+   * cleanupStalledDownloads).
+   */
   async getStatus(_client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
-    return downloadIds.map((id) => ({ downloadId: id, progress: 0, status: "downloading" }));
+    return downloadIds.map((id) => {
+      const at = id.indexOf(BLACKHOLE_ID_SEPARATOR);
+      const found = at > 0 ? findBlackholeOutput(id.slice(at + 1)) : null;
+      if (!found) return { downloadId: id, progress: 0, status: "downloading" as const };
+      if (found.partial || Date.now() - found.newestMtimeMs < BLACKHOLE_SETTLE_MS) {
+        return { downloadId: id, progress: 0.99, status: "downloading" as const, remotePath: found.path };
+      }
+      return { downloadId: id, progress: 1, status: "completed" as const, remotePath: found.path };
+    });
   }
+}
+
+const BLACKHOLE_ID_SEPARATOR = "|";
+/** Nothing in the output may have changed for this long before it counts as complete. */
+const BLACKHOLE_SETTLE_MS = 5 * 60_000;
+/** What a watch folder holds itself or an external client writes beside a release: never the release. */
+const BLACKHOLE_NON_OUTPUT = /\.(?:nzb|torrent|magnet|added|queued|loaded|nfo|jpg|jpeg|png|txt|sfv|srr|srt)$/i;
+const PARTIAL_FILE = /\.(?:part|!qb|!ut|crdownload|aria2|tmp|downloading)$/i;
+
+function comparableName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/** The entry in the downloads folder a Blackhole release was written to: a file or folder named after
+ * the release (a file's extension aside), with the newest change time inside it and whether any
+ * partial file is still there. */
+export function findBlackholeOutput(releaseName: string): { path: string; newestMtimeMs: number; partial: boolean } | null {
+  const wanted = comparableName(releaseName);
+  if (!wanted) return null;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(config.downloadsDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  // A folder first, else a file that is not a drop of ours or a sidecar (an .nzb in the watch folder when
+  // that is the downloads folder, a .jpg or .nfo beside the video).
+  const named = entries.filter((entry) => {
+    const stem = entry.isDirectory() ? entry.name : path.basename(entry.name, path.extname(entry.name));
+    return comparableName(stem) === wanted && (entry.isDirectory() || !BLACKHOLE_NON_OUTPUT.test(entry.name));
+  });
+  named.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()));
+  for (const entry of named.slice(0, 1)) {
+    const full = path.join(config.downloadsDir, entry.name);
+    let newest = 0;
+    let partial = false;
+    const visit = (p: string, depth: number) => {
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(p);
+      } catch {
+        return;
+      }
+      newest = Math.max(newest, stat.mtimeMs);
+      if (PARTIAL_FILE.test(p)) partial = true;
+      if (stat.isDirectory() && depth < 3) {
+        let names: string[] = [];
+        try {
+          names = fs.readdirSync(p);
+        } catch {
+          // unreadable: treated as having nothing more in it
+        }
+        for (const name of names.slice(0, 2000)) visit(path.join(p, name), depth + 1);
+      }
+    };
+    visit(full, 0);
+    return { path: full, newestMtimeMs: newest, partial };
+  }
+  return null;
 }
 
 /**
@@ -1738,6 +1933,20 @@ export async function removeQueueItemDownload(queueItem: Pick<QueueItem, "downlo
     await adapter.removeDownload(client, queueItem.downloadId, deleteFiles);
   } catch (err) {
     log.warn(`[downloadClient] failed to remove completed download for "${queueItem.title}" from its client:`, (err as Error).message);
+  }
+}
+
+/** Marks a queue row's download as fully imported (see DownloadClientAdapter.markImported). Never throws. */
+export async function markDownloadImported(queueItem: Pick<QueueItem, "downloadClientId" | "downloadId" | "title">): Promise<void> {
+  if (!queueItem.downloadClientId || !queueItem.downloadId) return;
+  try {
+    const clientRow = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(queueItem.downloadClientId);
+    if (!clientRow) return;
+    const client = downloadClientFromRow(clientRow as any);
+    const adapter = getDownloadClientAdapter(client.type);
+    if (adapter.markImported) await adapter.markImported(client, queueItem.downloadId);
+  } catch (err) {
+    log.warn(`[downloadClient] couldn't mark "${queueItem.title}" as imported at its client:`, (err as Error).message);
   }
 }
 
