@@ -48,8 +48,14 @@ export interface SearchPlan {
   target: ReleaseTarget | null;
 }
 
-export function searchHintsOf(plan: SearchPlan): SearchHints {
-  return { ...plan.hints, alternateQueries: plan.alternateQueries, ...(plan.alsoQueries?.length ? { alsoQueries: plan.alsoQueries } : {}) };
+/** `itemId` is the title searched for: an indexer scoped to tags is asked only about titles that carry one of them. */
+export function searchHintsOf(plan: SearchPlan, itemId?: number): SearchHints {
+  return {
+    ...plan.hints,
+    alternateQueries: plan.alternateQueries,
+    ...(plan.alsoQueries?.length ? { alsoQueries: plan.alsoQueries } : {}),
+    ...(itemId != null ? { itemId } : {}),
+  };
 }
 
 function parseIds(item: Pick<MediaItem, "externalIds">): Record<string, string> {

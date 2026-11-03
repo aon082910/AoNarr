@@ -213,6 +213,7 @@ const TABLES_WITHOUT_ID = new Set([
   "season_searches",
   "rss_sync_state",
   "indexer_status",
+  "import_list_entries",
 ]);
 
 function withReturningId(sql: string): string {

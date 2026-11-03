@@ -5,7 +5,7 @@ import GroupPicker from "../components/GroupPicker.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
-import type { LibraryGroup, MediaItem, MediaType, MetadataSearchResult, QualityProfile, RootFolder } from "../types.js";
+import type { LibraryGroup, MediaItem, MediaType, MetadataProfile, MetadataSearchResult, QualityProfile, RootFolder, Tag } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 import { displayableImageUrl } from "../utils/artwork.js";
 import { CalendarIcon, ClockIcon, StarIcon, BriefcaseIcon } from "../components/NavIcons.js";
@@ -32,6 +32,27 @@ const MONITOR_STRATEGY_LABELS: Record<MonitorStrategy, string> = {
 // nothing telling the user that. The full set stays meaningful for a possible future "change
 // monitoring" control on an already-added series, where existing/missing episode state is real.
 const ADD_MONITOR_STRATEGIES: MonitorStrategy[] = ["all", "future", "recent", "firstSeason", "latestSeason", "pilot", "none"];
+
+type CollectionMonitor = "all" | "future" | "first" | "latest" | "none";
+
+/** Lidarr's and Readarr's Monitor choice for an artist's albums or an author's books. As with the
+ * episodes above, "missing" and "existing" come out as "all" and "none" on a brand new add. */
+const COLLECTION_MONITOR_LABELS: Record<CollectionMonitor, string> = {
+  all: "All items",
+  future: "Future items",
+  first: "First item only",
+  latest: "Latest item only",
+  none: "None",
+};
+
+type NewItemMonitor = "" | "all" | "new" | "none";
+
+const NEW_ITEM_LABELS: Record<NewItemMonitor, string> = {
+  "": "Root folder default",
+  all: "Monitor all new items",
+  new: "Monitor only items newer than what exists",
+  none: "Do not monitor new items",
+};
 
 /** What AddMedia.tsx (or GlobalSearch.tsx's "Add new" results) hands off via router navigation
  * state once a candidate has been found — `manual` marks best-effort/user-supplied data (a plain
@@ -65,7 +86,14 @@ export default function AddPreview() {
   const [submitting, setSubmitting] = useState(false);
   const [groupId, setGroupId] = useState<number | null>(null);
   const [groupChain, setGroupChain] = useState<(number | null)[] | undefined>(state?.initialGroupChain);
-  const [monitorStrategy, setMonitorStrategy] = useState<MonitorStrategy>("all");
+  // "" leaves the Monitor choice to the root folder's default (the server applies it).
+  const [monitorStrategy, setMonitorStrategy] = useState<MonitorStrategy | "">("");
+  const [collectionMonitor, setCollectionMonitor] = useState<CollectionMonitor | "">("");
+  const [monitorNewItems, setMonitorNewItems] = useState<NewItemMonitor>("");
+  const [metadataProfiles, setMetadataProfiles] = useState<MetadataProfile[]>([]);
+  const [metadataProfileId, setMetadataProfileId] = useState<number | "">("");
+  const [allTags, setAllTags] = useState<Tag[]>([]);
+  const [tagIds, setTagIds] = useState<number[]>([]);
   const [romDetailsLoading, setRomDetailsLoading] = useState(false);
 
   const activeTypeInfo = mediaTypes.find((t) => t.key === state?.type);
@@ -80,6 +108,8 @@ export default function AddPreview() {
       setProfiles(p);
       if (p.length > 0) setQualityProfileId(p[0].id);
     });
+    api.get<MetadataProfile[]>("/metadata-profiles").then(setMetadataProfiles).catch(() => undefined);
+    api.get<Tag[]>("/tags").then(setAllTags).catch(() => undefined);
   }, []);
 
   async function findOrCreateGroup(
@@ -151,7 +181,11 @@ export default function AddPreview() {
         monitored: 1,
         confirmDuplicate,
         groupId,
-        monitorStrategy: activeTypeInfo?.shape === "episodic" ? monitorStrategy : undefined,
+        // "" leaves the choice to the root folder's default (server side).
+        monitorStrategy: activeTypeInfo?.shape === "episodic" ? monitorStrategy || undefined : activeTypeInfo?.shape === "collection" && collectionMonitor ? collectionMonitor : undefined,
+        monitorNewItems: monitorNewItems || undefined,
+        metadataProfileId: metadataProfileId || undefined,
+        tagIds: tagIds.length > 0 ? tagIds : undefined,
         ...(!manual && {
           releaseDate: result.releaseDate ?? null,
           backdropUrl: result.backdropUrl ?? null,
@@ -254,7 +288,17 @@ export default function AddPreview() {
         )}
 
         <label htmlFor="addpreview-root-folder">Root folder</label>
-        <select id="addpreview-root-folder" value={rootFolderId} onChange={(e) => setRootFolderId(e.target.value ? Number(e.target.value) : "")}>
+        <select
+          id="addpreview-root-folder"
+          value={rootFolderId}
+          onChange={(e) => {
+            const id = e.target.value ? Number(e.target.value) : "";
+            setRootFolderId(id);
+            // The folder's own default quality profile, when it has one, is where the choice starts.
+            const folderProfile = foldersForType.find((f) => f.id === id)?.defaultQualityProfileId;
+            if (folderProfile && profiles.some((p) => p.id === folderProfile)) setQualityProfileId(folderProfile);
+          }}
+        >
           <option value="">Auto (most free space)</option>
           {foldersForType.map((f) => (
             <option key={f.id} value={f.id}>
@@ -276,7 +320,8 @@ export default function AddPreview() {
         {activeTypeInfo?.shape === "episodic" && (
           <>
             <label htmlFor="addpreview-monitor">Monitor</label>
-            <select id="addpreview-monitor" value={monitorStrategy} onChange={(e) => setMonitorStrategy(e.target.value as MonitorStrategy)}>
+            <select id="addpreview-monitor" value={monitorStrategy} onChange={(e) => setMonitorStrategy(e.target.value as MonitorStrategy | "")}>
+              <option value="">Root folder default (All Episodes if none)</option>
               {ADD_MONITOR_STRATEGIES.map((key) => (
                 <option key={key} value={key}>
                   {MONITOR_STRATEGY_LABELS[key]}
@@ -284,6 +329,63 @@ export default function AddPreview() {
               ))}
             </select>
           </>
+        )}
+
+        {activeTypeInfo?.shape === "collection" && (
+          <>
+            <label htmlFor="addpreview-collection-monitor">Monitor</label>
+            <select id="addpreview-collection-monitor" value={collectionMonitor} onChange={(e) => setCollectionMonitor(e.target.value as CollectionMonitor | "")}>
+              <option value="">Root folder default</option>
+              {(Object.keys(COLLECTION_MONITOR_LABELS) as CollectionMonitor[]).map((key) => (
+                <option key={key} value={key}>
+                  {COLLECTION_MONITOR_LABELS[key]}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
+
+        {(activeTypeInfo?.shape === "episodic" || activeTypeInfo?.shape === "collection") && (
+          <>
+            <label htmlFor="addpreview-monitor-new">Monitor new items</label>
+            <select id="addpreview-monitor-new" value={monitorNewItems} onChange={(e) => setMonitorNewItems(e.target.value as NewItemMonitor)}>
+              {(Object.keys(NEW_ITEM_LABELS) as NewItemMonitor[]).map((key) => (
+                <option key={key || "default"} value={key}>
+                  {NEW_ITEM_LABELS[key]}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
+
+        {(type === "artist" || type === "author") && metadataProfiles.length > 0 && (
+          <>
+            <label htmlFor="addpreview-metadata-profile">Metadata profile</label>
+            <select id="addpreview-metadata-profile" value={metadataProfileId} onChange={(e) => setMetadataProfileId(e.target.value ? Number(e.target.value) : "")}>
+              <option value="">Root folder default</option>
+              {metadataProfiles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
+
+        {allTags.length > 0 && (
+          <fieldset style={{ border: "none", padding: 0, margin: "8px 0" }}>
+            <legend style={{ fontSize: "0.85rem", color: "var(--muted)" }}>Tags</legend>
+            {allTags.map((tag) => (
+              <label key={tag.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={tagIds.includes(tag.id)}
+                  onChange={(e) => setTagIds((prev) => (e.target.checked ? [...prev, tag.id] : prev.filter((id) => id !== tag.id)))}
+                />
+                {tag.name}
+              </label>
+            ))}
+          </fieldset>
         )}
 
         <button type="button" onClick={() => doImport(false)} disabled={submitting || !title.trim()}>

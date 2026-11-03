@@ -25,6 +25,15 @@ CREATE TABLE IF NOT EXISTS quality_profiles (
   quality_groups TEXT NOT NULL DEFAULT '[]'
 );
 
+CREATE TABLE IF NOT EXISTS metadata_profiles (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  primary_types TEXT NOT NULL DEFAULT '["album"]',
+  excluded_secondary_types TEXT NOT NULL DEFAULT '[]',
+  skip_missing_date INTEGER NOT NULL DEFAULT 0,
+  skip_sets INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS media_items (
   id SERIAL PRIMARY KEY,
   type TEXT NOT NULL,
@@ -503,6 +512,12 @@ CREATE TABLE IF NOT EXISTS import_lists (
   exclude_genres TEXT,
   root_folder_id INTEGER REFERENCES root_folders(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+);
+
+CREATE TABLE IF NOT EXISTS import_list_entries (
+  list_id INTEGER NOT NULL REFERENCES import_lists(id) ON DELETE CASCADE,
+  entry_key TEXT NOT NULL,
+  PRIMARY KEY (list_id, entry_key)
 );
 
 -- A title that Watchlist Import or an Import List's recurring sync couldn't confidently match to

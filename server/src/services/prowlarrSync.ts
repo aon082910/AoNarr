@@ -169,7 +169,8 @@ export async function syncFromProwlarr(): Promise<{ synced: number; error?: stri
         if (mediaTypes !== existing.media_types || (mirrorEnabled && prowlarrEnabled && !Number(existing.enabled))) reach = true;
       } else {
         await db
-          .prepare("INSERT INTO indexers (name, protocol, url, api_key, media_types, enabled, config) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          // A new torrent indexer starts at one seeder, as Sonarr and Radarr start it.
+          .prepare("INSERT INTO indexers (name, protocol, url, api_key, media_types, enabled, config, minimum_seeders) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
           .run(
             idx.name,
             protocol,
@@ -177,7 +178,8 @@ export async function syncFromProwlarr(): Promise<{ synced: number; error?: stri
             encryptedApiKey,
             mediaTypesFromCategoryIds(categoryIds),
             prowlarrEnabled ? 1 : 0,
-            JSON.stringify({ prowlarrEnabled, syncedMediaTypes: mediaTypesFromCategoryIds(categoryIds), prowlarrId: idx.id })
+            JSON.stringify({ prowlarrEnabled, syncedMediaTypes: mediaTypesFromCategoryIds(categoryIds), prowlarrId: idx.id }),
+            protocol === "torznab" ? 1 : 0
           );
         reach = true;
       }

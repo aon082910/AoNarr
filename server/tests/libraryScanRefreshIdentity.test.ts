@@ -157,7 +157,7 @@ describe("Refresh of an item whose other-provider ids were merged in before they
 
     await refreshOneMediaItem(artistId);
 
-    expect(fetchArtistAlbumsFor).toHaveBeenCalledWith({ deezer: "1" });
+    expect(fetchArtistAlbumsFor).toHaveBeenCalledWith({ deezer: "1" }, null);
     expect(fetchArtistAlbumsFor).not.toHaveBeenCalledWith(expect.objectContaining({ musicbrainz: "b10bbbfc" }));
   });
 

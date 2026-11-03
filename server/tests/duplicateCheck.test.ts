@@ -8,7 +8,13 @@ import { nowExpr } from "../src/db/asyncDb.js";
 const recycleFile = vi.fn().mockResolvedValue(undefined);
 vi.mock("../src/services/recycleBin.js", () => ({ recycleFile: (...args: unknown[]) => recycleFile(...args) }));
 const notifyDuplicatesFound = vi.fn().mockResolvedValue(undefined);
-vi.mock("../src/services/notifications.js", () => ({ notifyDuplicatesFound: (...args: unknown[]) => notifyDuplicatesFound(...args) }));
+vi.mock("../src/services/notifications.js", () => ({
+  notifyDuplicatesFound: (...args: unknown[]) => notifyDuplicatesFound(...args),
+  notifyAdded: vi.fn().mockResolvedValue(undefined),
+  notifyDeleted: vi.fn().mockResolvedValue(undefined),
+  notifyFileDeleted: vi.fn().mockResolvedValue(undefined),
+  notifyRenamed: vi.fn().mockResolvedValue(undefined),
+}));
 
 afterEach(() => {
   vi.clearAllMocks();

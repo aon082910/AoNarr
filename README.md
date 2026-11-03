@@ -358,6 +358,17 @@ one book.
   on the Activity page with when they become ready, and can be grabbed at once or forgotten. The queue shows
   time left, remaining size, the client's state (paused, stalled, a warning of its own) and why a download
   failed. The History feed says whether a release was picked by hand, and over a rejection.
+- **Monitoring, profiles, lists and tags** — an import list can add titles unmonitored or with a Monitor choice (future
+  only, first or latest season or album, none), start a search at once, apply its own minimum availability and tags, and
+  clean up a title that left the list (log, unmonitor, remove, remove with files; never a protected title, and never
+  most of the list at once). A title keeps a "Monitor new items" choice for episodes, albums and books a refresh finds
+  later. Artists and authors take a metadata profile (release types listed, extras left out, box sets skipped) from
+  the title, its root folder or an instance default. Root folders carry defaults for what is added into them, and
+  their minimum free space now pauses grabs. Indexers can be limited to RSS, automatic or interactive search, have their
+  own seed goals and download client (and start at one seeder), and indexers, download clients and lists can be
+  scoped to tags. A quality profile can ask for a language. Authentication can be disabled for local addresses only,
+  and the metrics page can need a token. Notifications gain ntfy, Gotify and the added, deleted, renamed and
+  file-deleted events.
 - **Media management** — a title added while its file is already on disk is linked in the background (Sonarr
   and Radarr scan after an add; `scanOnAdd`). A show keeps the folder of its first import (or the folder its
   files are already in) when its title changes, and "Move Folder" moves the whole folder on purpose. Deleting a

@@ -122,6 +122,11 @@ export interface MediaItem {
   physicalReleaseDate?: string | null;
   minimumAvailability: "announced" | "inCinemas" | "released" | null;
   seriesType: "standard" | "daily" | null;
+  /** What a refresh does with an episode, album or book the provider lists later: all, none or new. Null: the earlier behavior. */
+  monitorNewItems?: "all" | "none" | "new" | null;
+  metadataProfileId?: number | null;
+  /** The import list that added the title. */
+  sourceListId?: number | null;
   backdropUrl: string | null;
   rating: number | null;
   runtimeMinutes: number | null;
@@ -144,6 +149,16 @@ export interface Indexer {
   queryLimitPerHour: number | null;
   /** Torrents with fewer seeders than this are rejected (0 = no minimum). */
   minimumSeeders?: number;
+  /** Used only for a title that carries one of these tags; empty = every title. */
+  tagIds?: number[];
+  enableRss?: 0 | 1;
+  enableAutomaticSearch?: 0 | 1;
+  enableInteractiveSearch?: 0 | 1;
+  /** Seed goals for this indexer's torrents; null uses the global goal. */
+  seedRatio?: number | null;
+  seedTimeMinutes?: number | null;
+  /** The download client this indexer's releases go to; null picks one by protocol. */
+  downloadClientId?: number | null;
   health?: IndexerHealth;
 }
 
@@ -174,6 +189,18 @@ export interface DownloadClient {
    * only debrid provider here that caches both torrents and Usenet. Null means unconfigured (falls
    * back to torrent-only). */
   downloadTypes: string[] | null;
+  /** Used only for a title that carries one of these tags; empty = every title. */
+  tagIds?: number[];
+}
+
+export interface MetadataProfile {
+  id: number;
+  name: string;
+  primaryTypes: string[];
+  excludedSecondaryTypes: string[];
+  skipMissingDate: boolean;
+  skipSets: boolean;
+  isDefault?: boolean;
 }
 
 export interface QualityProfile {
@@ -193,6 +220,8 @@ export interface QualityProfile {
   minUpgradeFormatScore?: number;
   /** Lists of qualities the profile treats as one tier: none is an upgrade over another, the format score decides. */
   qualityGroups?: string[][];
+  /** The language a release must be in; null accepts every language. */
+  language?: string | null;
 }
 
 export interface RootFolder {
@@ -206,6 +235,12 @@ export interface RootFolder {
   quotaPercent?: number | null;
   pauseGrabsAtQuota?: 0 | 1;
   minFreeSpaceGb?: number | null;
+  /** What is added into the folder starts from these. */
+  defaultQualityProfileId?: number | null;
+  defaultMetadataProfileId?: number | null;
+  defaultMonitor?: string | null;
+  defaultMonitorNewItems?: "all" | "none" | "new" | null;
+  defaultTagIds?: number[];
 }
 
 export interface Quality {

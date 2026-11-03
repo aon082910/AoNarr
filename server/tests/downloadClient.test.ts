@@ -2445,3 +2445,71 @@ describe("healthNotes — settings that delete or move a download before AoNarr 
     expect(await getDownloadClientAdapter("sabnzbd").healthNotes!(await insertClient({ type: "sabnzbd", api_key: "k" }))).toEqual([]);
   });
 });
+
+describe("an indexer's own seed goal (Round 26, ST11)", () => {
+  const adapter = () => getDownloadClientAdapter("qbittorrent");
+  const loginRoute = { test: (u: string) => u.includes("/auth/login"), response: ok({}, { headers: new Headers({ "set-cookie": "SID=abc; Path=/" }) }) };
+
+  it("records the goal on the torrent as a tag, and reads it back", async () => {
+    const { seedGoalTag, parseSeedGoalTag } = await import("../src/services/downloadClient.js");
+    expect(seedGoalTag({ ratio: 1.5, minutes: 4320 })).toBe("aonarr-seed:1.5:4320");
+    expect(seedGoalTag({ ratio: null, minutes: 60 })).toBe("aonarr-seed::60");
+    expect(seedGoalTag({ ratio: null, minutes: null })).toBeNull();
+    expect(seedGoalTag(null)).toBeNull();
+    expect(parseSeedGoalTag("aonarr,aonarr-seed:1.5:4320,aonarr-imported")).toEqual({ ratio: 1.5, minutes: 4320 });
+    expect(parseSeedGoalTag("aonarr-seed::60")).toEqual({ ratio: null, minutes: 60 });
+    expect(parseSeedGoalTag("aonarr,aonarr-imported")).toBeNull();
+  });
+
+  it("markImported adds the goal tag beside the imported tag, and only the goal tag when the data is not safe to delete", async () => {
+    const fetchMock = routedFetch([loginRoute, { test: (u) => u.includes("/torrents/addTags"), response: ok({}) }]);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = await insertClient({ type: "qbittorrent" });
+    const hash = "a".repeat(40);
+
+    await adapter().markImported!(client, hash, { ratio: 1, minutes: 4320 });
+    await adapter().markImported!(client, hash, { ratio: 1, minutes: null }, false);
+    await adapter().markImported!(client, hash, null, false);
+
+    const calls = fetchMock.mock.calls.filter((c) => String(c[0]).includes("/torrents/addTags"));
+    expect(calls.map((c) => c[1].body.get("tags"))).toEqual(["aonarr-imported,aonarr-seed:1:4320", "aonarr-seed:1:"]);
+  });
+
+  it("holds a torrent to its indexer's goal over the global one, field by field", async () => {
+    const torrents = [
+      // The tracker wants ratio 1.0: 0.6 is past the global 0.5 but not its own goal.
+      { hash: "held", state: "stalledUP", ratio: 0.6, seeding_time: 0, tags: "aonarr,aonarr-imported,aonarr-seed:1:" },
+      { hash: "met", state: "stalledUP", ratio: 1.2, seeding_time: 0, tags: "aonarr,aonarr-imported,aonarr-seed:1:" },
+      // No goal of its own: the global ratio applies.
+      { hash: "global", state: "stalledUP", ratio: 0.6, seeding_time: 0, tags: "aonarr,aonarr-imported" },
+      // A time goal of its own (72 h) leaves the ratio to the global goal.
+      { hash: "timeheld", state: "stalledUP", ratio: 0.1, seeding_time: 3600, tags: "aonarr,aonarr-imported,aonarr-seed::4320" },
+      { hash: "timemet", state: "stalledUP", ratio: 0.1, seeding_time: 4320 * 60, tags: "aonarr,aonarr-imported,aonarr-seed::4320" },
+    ];
+    const fetchMock = routedFetch([
+      loginRoute,
+      { test: (u) => u.includes("/torrents/info"), response: ok(torrents) },
+      { test: (u) => u.includes("/torrents/delete"), response: ok({}) },
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const removed = await adapter().removeSeededTorrents!(await insertClient({ type: "qbittorrent" }), 0.5, null);
+
+    const gone = fetchMock.mock.calls
+      .filter((c) => String(c[0]).includes("/torrents/delete"))
+      .flatMap((c) => String(c[1].body.get("hashes")).split("|"))
+      .sort();
+    expect(gone).toEqual(["global", "met", "timemet"]);
+    expect(removed).toBe(3);
+  });
+
+  it("with no global goal, a torrent with its own goal is still cleaned up when it is met", async () => {
+    const fetchMock = routedFetch([
+      loginRoute,
+      { test: (u) => u.includes("/torrents/info"), response: ok([{ hash: "met", state: "stalledUP", ratio: 2, seeding_time: 0, tags: "aonarr,aonarr-seed:1:" }, { hash: "plain", state: "stalledUP", ratio: 9, seeding_time: 0, tags: "aonarr" }]) },
+      { test: (u) => u.includes("/torrents/delete"), response: ok({}) },
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await adapter().removeSeededTorrents!(await insertClient({ type: "qbittorrent" }), null, null)).toBe(1);
+  });
+});

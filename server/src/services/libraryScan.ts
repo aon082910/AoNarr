@@ -23,6 +23,8 @@ import {
   type MetadataEpisode,
   type MetadataSearchResult,
 } from "./metadata.js";
+import { monitorNewItemsOf, newSubItemMonitored } from "./monitorModes.js";
+import { resolveMetadataProfile } from "./metadataProfiles.js";
 import { log } from "./logger.js";
 import { startBackgroundJob, updateBackgroundJob, incrementBackgroundJobDone, finishBackgroundJob, isBackgroundJobRunning } from "./backgroundJobs.js";
 import {
@@ -2440,7 +2442,18 @@ export async function mergeEpisodesIntoItem(
     if (norm && !existingByTitle.has(norm)) existingByTitle.set(norm, e);
   }
   const tracksRegularEpisodes = existing.some((e) => Number(e.season_number) !== 0);
-  const monitorNew = newEpisodeMonitor(episodes, existing, monitored, onlyRecentOnceTracked && tracksRegularEpisodes);
+  // The item's own "Monitor New Items" choice, for episodes listed after the first sync: none monitors
+  // none, all monitors every new regular episode, new only what is upcoming or just aired. Unset keeps
+  // the earlier behavior. The first list of an item is the Add's, so the choice does not apply to it.
+  const newItemMode = tracksRegularEpisodes ? await monitorNewItemsOf(mediaItemId) : null;
+  // "None" is about new seasons, as in Sonarr: an episode that is upcoming or just aired in a season the show already
+  // tracks is still wanted, or a show set to none would stop downloading its own airing season.
+  const trackedSeasons = new Set(existing.map((e) => Number(e.season_number)));
+  const recentOnly = newEpisodeMonitor(episodes, existing, monitored, true);
+  const monitorNew =
+    newItemMode === "none"
+      ? (ep: MetadataEpisode) => trackedSeasons.has(ep.seasonNumber) && recentOnly(ep)
+      : newEpisodeMonitor(episodes, existing, monitored, newItemMode === "all" ? false : newItemMode === "new" ? true : onlyRecentOnceTracked && tracksRegularEpisodes);
   let added = 0;
   let monitoredAdded = 0;
   for (const ep of filtered) {
@@ -2516,6 +2529,12 @@ function newEpisodeMonitor(
 // Scan & Import's own "Episode N".
 const PLACEHOLDER_EPISODE_TITLE = /^(?:Episode \d+|TBA|TBD|TBC|To Be Announced)$/i;
 
+/** The latest release date among the albums or books an item already has. */
+function latestReleaseDate(items: { release_date: string | null }[]): string | null {
+  const dates = items.map((i) => i.release_date).filter((d): d is string => !!d);
+  return dates.length > 0 ? dates.reduce((a, b) => (String(a) >= String(b) ? a : b)) : null;
+}
+
 async function syncMissingChildren(
   mediaItemId: number,
   typeConfig: ReturnType<typeof getMediaTypeConfig>,
@@ -2532,38 +2551,60 @@ async function syncMissingChildren(
   }
 
   if (typeConfig.shape === "collection" && typeConfig.multiFilePerChild) {
-    const result = await fetchArtistAlbumsFor(externalIds).catch(() => null);
+    const itemRow = (await db.prepare("SELECT metadata_profile_id, root_folder_id FROM media_items WHERE id = ?").get(mediaItemId)) as any;
+    const profile = itemRow ? await resolveMetadataProfile(itemRow) : null;
+    const result = await fetchArtistAlbumsFor(externalIds, profile).catch(() => null);
     if (!result || result.albums.length === 0) return 0;
-    const existing = (await db.prepare("SELECT title FROM sub_items WHERE media_item_id = ?").all(mediaItemId)) as { title: string }[];
+    const existing = (await db.prepare("SELECT title, release_date FROM sub_items WHERE media_item_id = ?").all(mediaItemId)) as {
+      title: string;
+      release_date: string | null;
+    }[];
     const known = new Set(existing.map((s) => s.title));
+    const monitorMode = existing.length > 0 ? await monitorNewItemsOf(mediaItemId) : null;
+    const latestKnown = latestReleaseDate(existing);
     let added = 0;
     for (const album of result.albums) {
       if (!album.title || known.has(album.title)) continue;
       await db
         .prepare(
           `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored, poster_url)
-           VALUES (?, ?, ?, ?, ?, 1, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
         )
-        .run(mediaItemId, album.title, album.releaseDate, album.externalId ?? null, result.provider, album.posterUrl ?? null);
+        .run(
+          mediaItemId,
+          album.title,
+          album.releaseDate,
+          album.externalId ?? null,
+          result.provider,
+          newSubItemMonitored(monitorMode, album.releaseDate, latestKnown) ? 1 : 0,
+          album.posterUrl ?? null
+        );
       added++;
     }
     return added;
   }
 
   if (typeConfig.shape === "collection") {
-    const result = await fetchCollectionChildrenFor(externalIds).catch(() => ({ provider: null, children: [] }));
+    const itemRow = (await db.prepare("SELECT metadata_profile_id, root_folder_id FROM media_items WHERE id = ?").get(mediaItemId)) as any;
+    const profile = itemRow ? await resolveMetadataProfile(itemRow) : null;
+    const result = await fetchCollectionChildrenFor(externalIds, profile).catch(() => ({ provider: null, children: [] }));
     if (result.children.length === 0) return 0;
-    const existing = (await db.prepare("SELECT title FROM sub_items WHERE media_item_id = ?").all(mediaItemId)) as { title: string }[];
+    const existing = (await db.prepare("SELECT title, release_date FROM sub_items WHERE media_item_id = ?").all(mediaItemId)) as {
+      title: string;
+      release_date: string | null;
+    }[];
     const known = new Set(existing.map((s) => s.title));
+    const monitorMode = existing.length > 0 ? await monitorNewItemsOf(mediaItemId) : null;
+    const latestKnown = latestReleaseDate(existing);
     let added = 0;
     for (const child of result.children) {
       if (!child.title || known.has(child.title)) continue;
       await db
         .prepare(
           `INSERT INTO sub_items (media_item_id, title, release_date, external_id, external_provider, monitored)
-           VALUES (?, ?, ?, ?, ?, 1)`
+           VALUES (?, ?, ?, ?, ?, ?)`
         )
-        .run(mediaItemId, child.title, child.releaseDate, child.externalId ?? null, result.provider);
+        .run(mediaItemId, child.title, child.releaseDate, child.externalId ?? null, result.provider, newSubItemMonitored(monitorMode, child.releaseDate, latestKnown) ? 1 : 0);
       added++;
     }
     return added;

@@ -25,6 +25,21 @@ CREATE TABLE IF NOT EXISTS quality_profiles (
   quality_groups TEXT NOT NULL DEFAULT '[]' -- JSON list of lists of quality names the profile treats as one tier
 );
 
+-- Lidarr/Readarr-style metadata profile: which of an artist's release groups, or an author's works,
+-- AoNarr lists at all. A music profile keeps the release groups whose primary type is listed in
+-- primary_types and drops those carrying a secondary type listed in excluded_secondary_types; a book
+-- profile can skip works without a date and box sets. An item uses its own profile, else its root
+-- folder's default, else the setting defaultMetadataProfileId, else none: the global musicAlbumTypes
+-- setting, as before profiles existed.
+CREATE TABLE IF NOT EXISTS metadata_profiles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  primary_types TEXT NOT NULL DEFAULT '["album"]', -- JSON list: album, ep, single, broadcast, other
+  excluded_secondary_types TEXT NOT NULL DEFAULT '[]', -- JSON list: live, compilation, soundtrack, remix, dj-mix, demo, ...
+  skip_missing_date INTEGER NOT NULL DEFAULT 0, -- books: drop a work with no publication date
+  skip_sets INTEGER NOT NULL DEFAULT 0 -- books: drop box sets, omnibuses and collections
+);
+
 CREATE TABLE IF NOT EXISTS media_items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   type TEXT NOT NULL,
@@ -553,6 +568,15 @@ CREATE TABLE IF NOT EXISTS import_lists (
   exclude_genres TEXT,
   root_folder_id INTEGER REFERENCES root_folders(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- What each import list held at its last sync, as the keys itemListKeys() (services/importLists.ts) reads off a
+-- title: "<type>:tmdb:<id>", "<type>:imdb:<id>" or "artist:name:<name>". A list's clean-up leaves alone a title
+-- that another enabled list still holds, and refuses to act on a list that has shrunk to less than half.
+CREATE TABLE IF NOT EXISTS import_list_entries (
+  list_id INTEGER NOT NULL REFERENCES import_lists(id) ON DELETE CASCADE,
+  entry_key TEXT NOT NULL,
+  PRIMARY KEY (list_id, entry_key)
 );
 
 -- A title that Watchlist Import or an Import List's recurring sync couldn't confidently match to

@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import { scopeAllows } from "./tagScope.js";
+import { languageRejection } from "./profileLanguage.js";
 import path from "node:path";
 import { log } from "./logger.js";
 import { db } from "../db/index.js";
@@ -80,7 +82,9 @@ import { runDeletedFileCheckJob } from "./deletedFileJob.js";
 export async function runSeedGoalCleanup(): Promise<void> {
   const ratioGoal = parseFloat(getSetting("torrentSeedRatioGoal") ?? "") || null;
   const seedTimeGoalHours = parseFloat(getSetting("torrentSeedTimeGoalHours") ?? "") || null;
-  if (ratioGoal === null && seedTimeGoalHours === null) return;
+  // An indexer can carry its own goal, which is recorded on its torrents (see markDownloadImported): the job runs for it too.
+  const indexerGoal = await db.prepare("SELECT 1 AS ok FROM indexers WHERE seed_ratio IS NOT NULL OR seed_time_minutes IS NOT NULL LIMIT 1").get();
+  if (ratioGoal === null && seedTimeGoalHours === null && !indexerGoal) return;
 
   const clients = await rowsToDownloadClients();
   let totalRemoved = 0;
@@ -859,10 +863,17 @@ export async function chooseBestResult(
   const aliasSeasons = tiered && mediaItemId != null ? await aliasSeasonsFor(mediaItemId) : new Map<string, number>();
   const aliasSeasonCounts = aliasSeasons.size > 0 && mediaItemId != null ? await seasonEpisodeCounts(mediaItemId) : undefined;
   const qualityGroups = options.qualityGroups ?? (tiered ? await qualityGroupsFor(qualityProfileId) : []);
+  // The profile's wanted language (Radarr): a release named in another language is not taken.
+  const wantedLanguage =
+    tiered && qualityProfileId
+      ? (((await db.prepare("SELECT language FROM quality_profiles WHERE id = ?").get(qualityProfileId)) as { language: string | null } | undefined)?.language ?? null)
+      : null;
   // The rank of what is on disk, as the profile reads it (a group ranks as its best member).
   const upgradeFromGroupRank = upgradeFromRank === null ? null : groupRankOfRank(upgradeFromRank, qualityGroups);
 
   const minimumSeedersById = new Map((options.indexers ?? []).map((i) => [i.id, i.minimumSeeders ?? 0]));
+  // A download client scoped to tags takes only titles carrying one of them: a release no allowed client can take is not a candidate.
+  const titleTags = clients && mediaItemId != null ? await tagIdsForMediaItem(mediaItemId) : undefined;
   // Free space on the item's root folder, read once per call: a release that would not fit is not worth downloading.
   const freeBytes = freeSpaceCheckEnabled() ? await freeBytesForItem(mediaItemId) : null;
   const reserveBytes = freeSpaceReserveBytes();
@@ -879,7 +890,7 @@ export async function chooseBestResult(
       return true;
     })
     .filter((r) => {
-      if (clients && pickClientForProtocol(clients, r.protocol) === null) {
+      if (clients && pickClientForProtocol(clients, r.protocol, { itemTags: titleTags }) === null) {
         log.info(`[scheduler] rejected "${r.title}": no configured download client handles its protocol (${r.protocol})`);
         return false;
       }
@@ -1046,6 +1057,11 @@ export async function chooseBestResult(
     // a mislabeled or fake release (e.g. a 200MB file claiming to be 1080p).
     if (!sizeWithinQualityBounds(parsed.quality, size, runtimeOf(parsed))) {
       log.info(`[scheduler] rejected "${result.title}": size doesn't fit this quality's configured size range`);
+      return false;
+    }
+    const wrongLanguage = languageRejection(wantedLanguage, parsed.languages);
+    if (wrongLanguage) {
+      log.info(`[scheduler] rejected "${result.title}": ${wrongLanguage}`);
       return false;
     }
     return true;
@@ -1425,7 +1441,12 @@ const MULTI_PROTOCOL_DEBRID_TYPES = new Set(["torbox"]);
  * considered a match when its own `downloadTypes` setting includes this protocol — unconfigured
  * (null) keeps the historical torrent-only default so existing setups are unaffected until an
  * admin opts a client into Usenet from Settings -> Download Clients. */
-export function pickClientForProtocol(clients: DownloadClient[], protocol: SearchResult["protocol"]): DownloadClient | null {
+export function pickClientForProtocol(
+  clients: DownloadClient[],
+  protocol: SearchResult["protocol"],
+  /** `clientId`: the client the release's indexer is set to use. `itemTags`: the tags of the title it is for. */
+  prefer: { clientId?: number | null; itemTags?: number[] } = {}
+): DownloadClient | null {
   const typesForProtocol: Record<string, string[]> = {
     torrent: ["qbittorrent", "realdebrid", "alldebrid", "torbox", "blackhole"],
     usenet: ["sabnzbd", "torbox", "blackhole"],
@@ -1441,6 +1462,17 @@ export function pickClientForProtocol(clients: DownloadClient[], protocol: Searc
   // Ranked by the preference order above, then by id — never by list order, which comes from an
   // unordered SELECT that Postgres reshuffles after any UPDATE, moving grabs to another client.
   matching.sort((a, b) => preferred.indexOf(a.type) - preferred.indexOf(b.type) || a.id - b.id);
+  // The client the indexer names is the one used, when it can take this protocol.
+  const named = prefer.clientId != null ? matching.find((c) => c.id === prefer.clientId) : undefined;
+  if (named) return named;
+  // A client scoped to tags takes only titles carrying one of them, and wins over an unscoped client for those; an unscoped client takes the rest.
+  if (prefer.itemTags) {
+    const scoped = matching.filter((c) => (c.tagIds?.length ?? 0) > 0);
+    const forTitle = scoped.find((c) => scopeAllows(c.tagIds, prefer.itemTags!));
+    if (forTitle) return forTitle;
+    const unscoped = matching.filter((c) => (c.tagIds?.length ?? 0) === 0);
+    return unscoped[0] ?? null;
+  }
   return matching[0] ?? null;
 }
 
@@ -1551,14 +1583,25 @@ export async function grabBestRelease(
   results: SearchResult[],
   clients: DownloadClient[],
   choose: (results: SearchResult[]) => Promise<ChosenResult | null>,
-  send: (client: DownloadClient, chosen: ChosenResult) => Promise<boolean>
+  send: (client: DownloadClient, chosen: ChosenResult) => Promise<boolean>,
+  /** The title grabbed for and the indexers searched: the client is chosen by the indexer's own client and by the title's tags. */
+  scope?: { itemId: number; indexers?: Pick<Indexer, "id" | "downloadClientId">[] }
 ): Promise<{ chosen: ChosenResult; client: DownloadClient; grabbed: boolean } | null> {
   let remaining = results;
   let refusal: ReleaseRefusedError | null = null;
+  const itemTags = scope ? await tagIdsForMediaItem(scope.itemId) : [];
   for (let attempt = 0; attempt < MAX_RELEASES_TRIED; attempt++) {
     const chosen = await choose(remaining);
-    const client = chosen ? pickClientForProtocol(clients, chosen.result.protocol) : null;
-    if (!chosen || !client) break;
+    const indexerClient = scope?.indexers?.find((i) => i.id === chosen?.result.indexerId)?.downloadClientId ?? null;
+    if (!chosen) break;
+    const client = pickClientForProtocol(clients, chosen.result.protocol, { clientId: indexerClient, itemTags });
+    if (!client) {
+      // No client may take this protocol for this title (every one is scoped to other tags): the other protocols are still worth a try.
+      const left = remaining.filter((r) => r.protocol !== chosen.result.protocol);
+      if (left.length === remaining.length || left.length === 0) break;
+      remaining = left;
+      continue;
+    }
     try {
       return { chosen, client, grabbed: await send(client, chosen) };
     } catch (err) {
@@ -1952,7 +1995,7 @@ export async function runAutoSearch(signal?: AbortSignal) {
     if (!ctx) {
       ctx = (async (): Promise<AutoSearchItemContext> => {
         if (await isRootFolderOverQuota(item.rootFolderId)) {
-          log.info(`[scheduler] skipping "${item.title}": its root folder is at/over its configured quota`);
+          log.info(`[scheduler] skipping "${item.title}": its root folder is at/over its configured quota or below its minimum free space`);
           return {
             allowedQualities: [],
             cutoff: "",
@@ -2032,7 +2075,7 @@ export async function runAutoSearch(signal?: AbortSignal) {
       );
     let outcome: Awaited<ReturnType<typeof grabBestRelease>>;
     try {
-      outcome = await grabBestRelease(results, usable, (remaining) => choose(remaining, ctx.delayProfile), send);
+      outcome = await grabBestRelease(results, usable, (remaining) => choose(remaining, ctx.delayProfile), send, { itemId: item.id, indexers });
     } catch (err) {
       if (noteUnavailableClient(err, unavailable)) return "skipped";
       throw err;
@@ -2068,7 +2111,7 @@ export async function runAutoSearch(signal?: AbortSignal) {
     if (!reserveSearchSlot()) return;
     const plan = await singlePlanFor(item);
     const identity = targetIdentityOf(item);
-    const results = await searchAllIndexers(indexers, plan.query, item.type, false, plan.ids, searchHintsOf(plan));
+    const results = await searchAllIndexers(indexers, plan.query, item.type, false, plan.ids, searchHintsOf(plan, item.id));
     // A search no indexer answered leaves the target as it was: it is the next to be searched, and its wait does not grow.
     if (reachOf(results, indexers, item.type) !== "unreached") await stampAutoSearched("media_items", item.id);
     const result = await grabBestFor(item, ctx, results, null, identity, null, null, { title: item.title });
@@ -2090,7 +2133,7 @@ export async function runAutoSearch(signal?: AbortSignal) {
     // numbering as the fallback for a release that doesn't follow the scene convention (see
     // releaseMatchesEpisode).
     const plan = await episodePlanFor(item, ep);
-    const results = await searchAllIndexers(indexers, plan.query, item.type, false, plan.ids, searchHintsOf(plan));
+    const results = await searchAllIndexers(indexers, plan.query, item.type, false, plan.ids, searchHintsOf(plan, item.id));
     if (reachOf(results, indexers, item.type) !== "unreached") await stampAutoSearched("episodes", ep.id);
     // The series' own identity and title go along so the identity gate can tell another show's
     // same-numbered episode (a remake, a similarly named show) from this one.
@@ -2139,7 +2182,7 @@ export async function runAutoSearch(signal?: AbortSignal) {
     if (noIndexerAvailable(indexers, item.type)) return;
     if (!reserveSearchSlot()) return;
     const plan = subItemPlanFor(item, sub);
-    const results = await searchAllIndexers(indexers, plan.query, item.type, false, undefined, searchHintsOf(plan));
+    const results = await searchAllIndexers(indexers, plan.query, item.type, false, undefined, searchHintsOf(plan, item.id));
     if (reachOf(results, indexers, item.type) !== "unreached") await stampAutoSearched("sub_items", sub.id);
     const result = await grabBestFor(item, ctx, results, null, null, null, sub.id, {
       title: sub.title,
@@ -2341,7 +2384,7 @@ async function searchAndGrabSeason(
   const plan = await seasonPlanFor(item, seasons.scene);
   const blocklisted = await getBlocklistedTitles(item.id);
   const delayProfile = pickDelayProfile(ctx.delayProfiles, await tagIdsForMediaItem(item.id));
-  const found = await searchAllIndexers(ctx.indexers, plan.query, item.type, false, plan.ids, { ...searchHintsOf(plan), includeFeeds: !ctx.automatic });
+  const found = await searchAllIndexers(ctx.indexers, plan.query, item.type, false, plan.ids, { ...searchHintsOf(plan, item.id), includeFeeds: !ctx.automatic });
   const packs = found.filter((r) => {
     const parsed = parseReleaseTitle(r.title);
     return parsed.isFullSeason && (parsed.seasonNumber == null || parsed.seasonNumber === seasons.scene);
@@ -2378,7 +2421,8 @@ async function searchAndGrabSeason(
       packs,
       usable,
       (remaining) => choose(remaining, delayProfile),
-      (client, chosen) => grab(client, item, null, null, chosen, 0, seasons.aired, "auto")
+      (client, chosen) => grab(client, item, null, null, chosen, 0, seasons.aired, "auto"),
+      { itemId: item.id, indexers: ctx.indexers }
     );
   } catch (err) {
     if (!noteUnavailableClient(err, ctx.unavailable)) throw err;
@@ -2512,7 +2556,7 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
   const blocklisted = await getBlocklistedTitles(item.id);
   const delayProfile = pickDelayProfile(ctx.delayProfiles, await tagIdsForMediaItem(item.id));
   if (ctx.automatic && noIndexerAvailable(ctx.indexers, item.type)) return { grabbed: false, error: "No indexer can be searched right now" };
-  const searchResults = await searchAllIndexers(ctx.indexers, plan.query, item.type, false, plan.ids, { ...searchHintsOf(plan), includeFeeds: !ctx.automatic });
+  const searchResults = await searchAllIndexers(ctx.indexers, plan.query, item.type, false, plan.ids, { ...searchHintsOf(plan, item.id), includeFeeds: !ctx.automatic });
   if (ctx.automatic && reachOf(searchResults, ctx.indexers, item.type) !== "unreached") await stampAutoSearched(leafTable, leafId);
   const usable = ctx.directBudget.usableClients().filter((c) => !ctx.unavailable.has(c.id));
   const choose = (remaining: SearchResult[], delay: DelayProfile | null) =>
@@ -2546,7 +2590,8 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
       searchResults,
       usable,
       (remaining) => choose(remaining, delayProfile),
-      (client, chosen) => grab(client, item, episodeId, subItemId, chosen)
+      (client, chosen) => grab(client, item, episodeId, subItemId, chosen),
+      { itemId: item.id, indexers: ctx.indexers }
     );
   } catch (err) {
     if (!noteUnavailableClient(err, ctx.unavailable)) throw err;
@@ -2982,7 +3027,7 @@ export async function retryFailedGrab(
       return;
     }
     if (await isRootFolderOverQuota(item.rootFolderId)) {
-      await notifyFailed(mediaTitle, `${reason} (not retried: its root folder is at its configured quota)`);
+      await notifyFailed(mediaTitle, `${reason} (not retried: its root folder is at its configured quota or below its minimum free space)`);
       return;
     }
     const profile = await getQualityProfile(item.qualityProfileId);
@@ -3048,7 +3093,7 @@ export async function retryFailedGrab(
 
     const indexers = await rowsToIndexers();
     // A retry is a search the RSS sync will not repeat: the plain feeds are looked through too.
-    const searchResults = await searchAllIndexers(indexers, plan.query, item.type, false, plan.ids, { ...searchHintsOf(plan), includeFeeds: true });
+    const searchResults = await searchAllIndexers(indexers, plan.query, item.type, false, plan.ids, { ...searchHintsOf(plan, item.id), includeFeeds: true });
     // A season-search grab's replacement has to be a full pack of that same season (or cover the
     // same episodes): with no target, chooseBestResult would accept any release of the show, which
     // the importer can't place.
@@ -3084,7 +3129,8 @@ export async function retryFailedGrab(
           { clients, upgradeFromRank: onDisk === undefined ? null : qualityRank(onDisk), name, indexers, label: mediaTitle, pack: packContextFor(item, plan) }
         ),
       (client, chosen) =>
-        grab(client, item, match.episodeId, match.subItemId, chosen, match.retryCount + (releaseAtFault ? 1 : 0), seasonPack, "retry")
+        grab(client, item, match.episodeId, match.subItemId, chosen, match.retryCount + (releaseAtFault ? 1 : 0), seasonPack, "retry"),
+      { itemId: item.id, indexers }
     );
     if (!outcome) {
       const why = whyNothingGrabbed(results, clients, clients, onDisk);

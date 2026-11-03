@@ -2,6 +2,7 @@
 
 import { decryptValue } from "../services/encryption.js";
 import { parseQualityGroups } from "../services/qualityGroups.js";
+import { parseTagIds } from "../services/tagScope.js";
 
 /** decryptValue() already returns a value unchanged if it isn't in the encrypted format, so this
  * is safe to call on a column that predates encryption-at-rest support for it — just needs the
@@ -41,6 +42,9 @@ export function mediaItemFromRow(row: any) {
     minimumAvailability: row.minimum_availability,
     seriesType: row.series_type,
     libraryFolder: row.library_folder ?? null,
+    monitorNewItems: row.monitor_new_items ?? null,
+    metadataProfileId: row.metadata_profile_id == null ? null : Number(row.metadata_profile_id),
+    sourceListId: row.source_list_id == null ? null : Number(row.source_list_id),
     backdropUrl: row.backdrop_url,
     rating: row.rating,
     runtimeMinutes: row.runtime_minutes,
@@ -130,6 +134,13 @@ export function indexerFromRow(row: any) {
     enabled: row.enabled,
     priority: row.priority,
     minimumSeeders: row.minimum_seeders == null ? 0 : Number(row.minimum_seeders),
+    tagIds: parseTagIds(row.tag_ids),
+    enableRss: row.enable_rss == null ? 1 : Number(row.enable_rss),
+    enableAutomaticSearch: row.enable_automatic_search == null ? 1 : Number(row.enable_automatic_search),
+    enableInteractiveSearch: row.enable_interactive_search == null ? 1 : Number(row.enable_interactive_search),
+    seedRatio: row.seed_ratio == null ? null : Number(row.seed_ratio),
+    seedTimeMinutes: row.seed_time_minutes == null ? null : Number(row.seed_time_minutes),
+    downloadClientId: row.download_client_id == null ? null : Number(row.download_client_id),
     config: row.config,
     useFlareSolverr: row.use_flaresolverr,
     queryLimitPerHour: row.query_limit_per_hour,
@@ -151,6 +162,7 @@ export function downloadClientFromRow(row: any) {
     enabled: row.enabled,
     audioOnly: row.audio_only,
     downloadTypes: row.download_types ? JSON.parse(row.download_types) : null,
+    tagIds: parseTagIds(row.tag_ids),
   };
 }
 
@@ -167,6 +179,7 @@ export function qualityProfileFromRow(row: any) {
     cutoffFormatScore: Number(row.cutoff_format_score ?? 0),
     minUpgradeFormatScore: row.min_upgrade_format_score == null ? 1 : Number(row.min_upgrade_format_score),
     qualityGroups: parseQualityGroups(row.quality_groups),
+    language: row.language ?? null,
   };
 }
 
@@ -180,6 +193,11 @@ export function rootFolderFromRow(row: any) {
     quotaPercent: row.quota_percent,
     pauseGrabsAtQuota: row.pause_grabs_at_quota,
     minFreeSpaceGb: row.min_free_space_gb,
+    defaultQualityProfileId: row.default_quality_profile_id == null ? null : Number(row.default_quality_profile_id),
+    defaultMetadataProfileId: row.default_metadata_profile_id == null ? null : Number(row.default_metadata_profile_id),
+    defaultMonitor: row.default_monitor ?? null,
+    defaultMonitorNewItems: row.default_monitor_new_items ?? null,
+    defaultTagIds: parseTagIds(row.default_tag_ids),
   };
 }
 

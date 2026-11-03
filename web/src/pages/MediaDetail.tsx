@@ -8,6 +8,7 @@ import SearchMatchModal, { type MetadataSearchResult } from "../components/Searc
 import RenamePreviewModal from "../components/RenamePreviewModal.js";
 import type { LibraryGroup } from "../types.js";
 import { useAuth } from "../context/AuthContext.js";
+import ItemProfileControls from "../components/ItemProfileControls.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import {
@@ -2263,6 +2264,7 @@ export default function MediaDetail() {
                 </select>
               </>
             )}
+            <ItemProfileControls item={item} shape={shape ?? ""} onChange={(changed) => patchItem(item.id, (prev) => ({ ...prev, ...changed }))} />
             <button type="submit" disabled={savingMetadata}>
               {savingMetadata ? "Saving..." : "Save metadata"}
             </button>

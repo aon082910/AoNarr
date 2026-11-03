@@ -11,6 +11,7 @@ import { isKnownSettingKey, settingValueProblem, suggestSettingKey } from "../se
 import { sendTestNotification } from "../services/notifications.js";
 import { fetchWatchedFiles, getMediaServerConfig } from "../services/mediaServer.js";
 import { checkRateLimit, recordFailure, recordSuccess } from "../services/rateLimiter.js";
+import { normalizeProfileLanguage } from "../services/profileLanguage.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 
 export const settingsRouter = Router();
@@ -144,7 +145,7 @@ settingsRouter.get(
     const qualities = await db.prepare("SELECT name, rank, min_size_mb, max_size_mb, preferred_size_mb FROM qualities ORDER BY rank").all();
     const profiles = (await db
       .prepare(
-        "SELECT name, allowed_qualities, cutoff, min_format_score, max_size_gb, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups FROM quality_profiles"
+        "SELECT name, allowed_qualities, cutoff, min_format_score, max_size_gb, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups, language FROM quality_profiles"
       )
       .all()) as any[];
     const formats = (await db.prepare("SELECT id, name, patterns, media_types FROM custom_formats").all()) as any[];
@@ -216,6 +217,7 @@ settingsRouter.get(
         cutoffFormatScore: Number(p.cutoff_format_score ?? 0),
         minUpgradeFormatScore: p.min_upgrade_format_score == null ? 1 : Number(p.min_upgrade_format_score),
         qualityGroups: parseQualityGroups(p.quality_groups),
+        language: p.language ?? null,
       })),
       customFormats: formats.map((f) => ({
         name: f.name,
@@ -298,14 +300,15 @@ settingsRouter.post(
       for (const p of b.qualityProfiles ?? []) {
         await db
           .prepare(
-            `INSERT INTO quality_profiles (name, allowed_qualities, cutoff, min_format_score, max_size_gb, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups)
-             VALUES (@name, @allowedQualities, @cutoff, @minFormatScore, @maxSizeGb, @preferCutoffQuality, COALESCE(@upgradeAllowed, 1), COALESCE(@cutoffFormatScore, 0), COALESCE(@minUpgradeFormatScore, 1), COALESCE(@qualityGroups, '[]'))
+            `INSERT INTO quality_profiles (name, allowed_qualities, cutoff, min_format_score, max_size_gb, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups, language)
+             VALUES (@name, @allowedQualities, @cutoff, @minFormatScore, @maxSizeGb, @preferCutoffQuality, COALESCE(@upgradeAllowed, 1), COALESCE(@cutoffFormatScore, 0), COALESCE(@minUpgradeFormatScore, 1), COALESCE(@qualityGroups, '[]'), @language)
              ON CONFLICT(name) DO UPDATE SET allowed_qualities = excluded.allowed_qualities,
                cutoff = excluded.cutoff, min_format_score = excluded.min_format_score, max_size_gb = excluded.max_size_gb,
                prefer_cutoff_quality = excluded.prefer_cutoff_quality, upgrade_allowed = COALESCE(@upgradeAllowed, quality_profiles.upgrade_allowed),
                cutoff_format_score = COALESCE(@cutoffFormatScore, quality_profiles.cutoff_format_score),
                min_upgrade_format_score = COALESCE(@minUpgradeFormatScore, quality_profiles.min_upgrade_format_score),
-               quality_groups = COALESCE(@qualityGroups, quality_profiles.quality_groups)`
+               quality_groups = COALESCE(@qualityGroups, quality_profiles.quality_groups),
+               language = CASE WHEN @languageSent = 1 THEN @language ELSE quality_profiles.language END`
           )
           .run({
             ...p,
@@ -319,6 +322,9 @@ settingsRouter.post(
             cutoffFormatScore: p.cutoffFormatScore === undefined || p.cutoffFormatScore === null || !Number.isInteger(Number(p.cutoffFormatScore)) ? null : Number(p.cutoffFormatScore),
             minUpgradeFormatScore: p.minUpgradeFormatScore === undefined || p.minUpgradeFormatScore === null || !Number.isInteger(Number(p.minUpgradeFormatScore)) ? null : Number(p.minUpgradeFormatScore),
             qualityGroups: p.qualityGroups === undefined ? null : JSON.stringify(parseQualityGroups(p.qualityGroups)),
+            // A backup from before profiles had a language leaves the profile's own language alone.
+            language: normalizeProfileLanguage(p.language),
+            languageSent: p.language === undefined ? 0 : 1,
           });
         profilesImported++;
       }

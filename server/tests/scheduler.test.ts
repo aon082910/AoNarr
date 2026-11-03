@@ -51,6 +51,10 @@ vi.mock("../src/services/notifications.js", () => ({
   notifyHealthRestored: (...args: unknown[]) => notifyHealthRestored(...args),
   notifyManualInteractionRequired: (...args: unknown[]) => notifyManualInteractionRequired(...args),
   notifyUpdateAvailable: (...args: unknown[]) => notifyUpdateAvailable(...args),
+  notifyAdded: vi.fn().mockResolvedValue(undefined),
+  notifyDeleted: vi.fn().mockResolvedValue(undefined),
+  notifyFileDeleted: vi.fn().mockResolvedValue(undefined),
+  notifyRenamed: vi.fn().mockResolvedValue(undefined),
 }));
 
 const checkForUpdate = vi.fn();

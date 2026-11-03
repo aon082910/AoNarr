@@ -46,6 +46,19 @@ export function clientIp(req: Request): string {
   return peer;
 }
 
+/**
+ * Whether the request comes from the local network, for the "disabled for local addresses" setting.
+ * The client address must be private, and when a proxy in front forwarded the request the whole
+ * X-Forwarded-For chain must be private too: a reverse proxy on the LAN would otherwise make every
+ * visitor from the internet look local.
+ */
+export function isLocalRequest(req: Request): boolean {
+  if (!isPrivateAddress(clientIp(req))) return false;
+  const forwarded = req.header("X-Forwarded-For");
+  if (forwarded && forwarded.split(",").some((address) => !isPrivateAddress(address.trim()))) return false;
+  return true;
+}
+
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
@@ -57,14 +70,17 @@ declare global {
 
 /** How a request authenticated — kept so it can be checked again later (a stream ticket redeemed,
  * a long-lived stream still open) rather than trusted for as long as the connection lives. */
-type Credential = { kind: "open" } | { kind: "apiKey"; key: string } | { kind: "session"; token: string };
+type Credential = { kind: "open"; local?: boolean } | { kind: "apiKey"; key: string } | { kind: "session"; token: string };
 
 const requestCredentials = new WeakMap<Request, Credential>();
 
 /** Who `credential` authenticates as right now, or null once it no longer does (session revoked or
  * expired, user deleted or password reset, API key regenerated, authentication re-enabled). */
 async function resolveCredential(credential: Credential): Promise<AuthContext | null> {
-  if (credential.kind === "open") return getSetting("authRequired") === "0" ? { isAdmin: true } : null;
+  if (credential.kind === "open") {
+    const mode = getSetting("authRequired");
+    return mode === "0" || (mode === "local" && credential.local) ? { isAdmin: true } : null;
+  }
   if (credential.kind === "apiKey") {
     const expectedApiKey = getSetting("apiKey");
     return expectedApiKey && safeEqual(credential.key, expectedApiKey) ? { isAdmin: true } : null;
@@ -175,7 +191,8 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 
   // Radarr-style "Authentication Required: Disabled" — opt-in, for a trusted private network
   // only. Every request is treated as admin; the API key/session checks below never even run.
-  if (getSetting("authRequired") === "0") {
+  const authMode = getSetting("authRequired");
+  if (authMode === "0") {
     accept(req, res, next, { kind: "open" }, { isAdmin: true });
     return;
   }
@@ -194,6 +211,13 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       accept(req, res, next, { kind: "session", token: sessionToken }, { isAdmin: user.role === "admin", user });
       return;
     }
+  }
+
+  // "Disabled for local addresses": a request from the home network needs no login, one from outside still does.
+  // A credential that was sent and is valid came first above, so a household account that logged in keeps its own role.
+  if (authMode === "local" && isLocalRequest(req)) {
+    accept(req, res, next, { kind: "open", local: true }, { isAdmin: true });
+    return;
   }
 
   const ticket = isStreamRequest(req) && typeof req.query.ticket === "string" ? req.query.ticket : "";

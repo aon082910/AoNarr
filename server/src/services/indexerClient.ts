@@ -1,4 +1,5 @@
 import { log } from "./logger.js";
+import { scopeAllows, tagIdsOfItem } from "./tagScope.js";
 import { parseStringPromise } from "xml2js";
 import { getMediaTypeConfig, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
 import { getSetting } from "./settingsStore.js";
@@ -168,6 +169,8 @@ export interface SearchHints {
   /** Look through the plain RSS feeds too, which an automatic search leaves to the RSS sync: for a
    * search the admin asked for, or a retry, that the sync will not repeat. */
   includeFeeds?: boolean;
+  /** The title searched for. With it, an indexer scoped to tags is used only when the title carries one of them. */
+  itemId?: number;
   /** Told, for each indexer the main query was sent to, whether it answered (and its error when not). */
   onOutcome?: (outcome: IndexerSearchOutcome) => void;
   /** Aborted when whoever asked has gone away: the search stops asking further indexers and phases. */
@@ -1512,6 +1515,12 @@ async function runSearch(
   return { results, empty, answered };
 }
 
+/** Whether an indexer is switched on for this kind of search (Sonarr's Enable Automatic / Interactive Search). */
+export function indexerTakesSearch(indexer: Pick<Indexer, "enableAutomaticSearch" | "enableInteractiveSearch">, kind: "automatic" | "interactive"): boolean {
+  const flag = kind === "interactive" ? indexer.enableInteractiveSearch : indexer.enableAutomaticSearch;
+  return flag == null || Number(flag) !== 0;
+}
+
 /** The most alternate-title queries one search runs besides its main one (each is a query against
  * every indexer's hourly limit). */
 const MAX_ALTERNATE_QUERIES = 4;
@@ -1548,8 +1557,15 @@ export async function searchAllIndexers(
   // there, as Sonarr's TorrentRss is, and an automatic search leaves it out. A search the admin is
   // waiting for (bypassCache), or one that asks for the feeds, still looks through it.
   const feedsReadBySync = config.rssSyncIntervalMinutes > 0 && !bypassCache && !hints?.includeFeeds;
+  // A search the admin is waiting for (bypassCache) is an interactive one; every other search is an automatic one.
+  const itemTags = indexers.some((i) => (i.tagIds?.length ?? 0) > 0) && hints?.itemId != null ? await tagIdsOfItem(hints.itemId) : [];
   const applicable = indexers.filter(
-    (i) => i.enabled && i.mediaTypes.split(",").includes(mediaType) && !(feedsReadBySync && i.protocol === "rss")
+    (i) =>
+      i.enabled &&
+      i.mediaTypes.split(",").includes(mediaType) &&
+      !(feedsReadBySync && i.protocol === "rss") &&
+      indexerTakesSearch(i, bypassCache ? "interactive" : "automatic") &&
+      scopeAllows(i.tagIds, itemTags)
   );
   const mainHints: SearchHints | undefined = bypassCache ? { ...hints, fresh: true } : hints;
   const textOnly: SearchHints = { skipTyped: true, fresh: bypassCache, signal: hints?.signal };

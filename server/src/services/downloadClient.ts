@@ -141,7 +141,7 @@ export interface DownloadClientAdapter {
   /** Marks a download AoNarr has fully imported by hardlink (or by a copy where a hardlink was not possible),
    * so the client holds nothing the library does not also hold: its data may be deleted once seeding is
    * over. Optional: only a torrent client with tags has anything to mark. */
-  markImported?(client: DownloadClient, downloadId: string): Promise<void>;
+  markImported?(client: DownloadClient, downloadId: string, seedGoal?: SeedGoal | null, dataSafe?: boolean): Promise<void>;
   /** Removes one finished (or dead) download from the client itself — called once AoNarr is done
    * with it, either because it imported successfully or because it failed at the client and won't
    * be retried from that same task. `deleteFiles` also removes the client's own copy of the data;
@@ -302,6 +302,32 @@ export async function testDownloadClientConnection(client: DownloadClient): Prom
 const QBIT_TAG = "aonarr";
 /** Set on a torrent once AoNarr has imported all of it by hardlink: its data is then safe to delete after seeding. */
 const QBIT_IMPORTED_TAG = "aonarr-imported";
+/** A torrent from an indexer with its own seed goal carries it as a tag: "aonarr-seed:<ratio>:<minutes>", either part may be empty. */
+const QBIT_SEED_GOAL_PREFIX = "aonarr-seed:";
+
+export interface SeedGoal {
+  ratio: number | null;
+  minutes: number | null;
+}
+
+/** The tag that records an indexer's seed goal on a torrent, or null when the indexer sets none. */
+export function seedGoalTag(goal: SeedGoal | null | undefined): string | null {
+  if (!goal || (goal.ratio == null && goal.minutes == null)) return null;
+  return `${QBIT_SEED_GOAL_PREFIX}${goal.ratio ?? ""}:${goal.minutes ?? ""}`;
+}
+
+/** The seed goal a torrent's tag list records, or null when it has none. */
+export function parseSeedGoalTag(tags: string): SeedGoal | null {
+  for (const raw of tags.split(",")) {
+    const tag = raw.trim();
+    if (!tag.startsWith(QBIT_SEED_GOAL_PREFIX)) continue;
+    const [ratioText, minutesText] = tag.slice(QBIT_SEED_GOAL_PREFIX.length).split(":");
+    const ratio = ratioText ? Number(ratioText) : NaN;
+    const minutes = minutesText ? Number(minutesText) : NaN;
+    return { ratio: Number.isFinite(ratio) && ratio > 0 ? ratio : null, minutes: Number.isFinite(minutes) && minutes > 0 ? minutes : null };
+  }
+  return null;
+}
 const QBIT_PENDING_TAG_PREFIX = "aonarr-pending-";
 
 /** States in which a torrent can already report progress 1 while its data isn't ready to import:
@@ -582,7 +608,6 @@ class QBittorrentAdapter implements DownloadClientAdapter {
   }
 
   async removeSeededTorrents(client: DownloadClient, ratioGoal: number | null, seedTimeGoalMinutes: number | null): Promise<number> {
-    if (ratioGoal === null && seedTimeGoalMinutes === null) return 0;
     const res = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/info`);
     if (!res.ok) throw new Error(`qBittorrent torrents/info failed: HTTP ${res.status}`);
     const torrents = (await res.json()) as any[];
@@ -603,8 +628,12 @@ class QBittorrentAdapter implements DownloadClientAdapter {
         .includes(QBIT_TAG) || (!!client.category && t.category === client.category);
     const eligible = torrents.filter((t) => {
       if (!isOwn(t) || !seedingStates.has(t.state)) return false;
-      const ratioMet = ratioGoal !== null && (t.ratio ?? 0) >= ratioGoal;
-      const timeMet = seedTimeGoalMinutes !== null && (t.seeding_time ?? 0) / 60 >= seedTimeGoalMinutes;
+      // A torrent from an indexer with its own goal is held to it (each part falls back to the global goal when the indexer leaves it empty).
+      const own = parseSeedGoalTag(String(t.tags ?? ""));
+      const ratio = own?.ratio ?? ratioGoal;
+      const minutes = own?.minutes ?? seedTimeGoalMinutes;
+      const ratioMet = ratio !== null && (t.ratio ?? 0) >= ratio;
+      const timeMet = minutes !== null && (t.seeding_time ?? 0) / 60 >= minutes;
       return ratioMet || timeMet;
     });
     if (eligible.length === 0) return 0;
@@ -632,8 +661,11 @@ class QBittorrentAdapter implements DownloadClientAdapter {
     return eligible.length;
   }
 
-  async markImported(client: DownloadClient, downloadId: string): Promise<void> {
-    const res = await this.postForm(client, "torrents/addTags", { hashes: await this.resolveHash(client, downloadId), tags: QBIT_IMPORTED_TAG });
+  async markImported(client: DownloadClient, downloadId: string, seedGoal?: SeedGoal | null, dataSafe = true): Promise<void> {
+    // `dataSafe`: the library holds these bytes (a hardlink), so the data may go with the torrent. Without it only the seed goal is recorded.
+    const tags = [dataSafe ? QBIT_IMPORTED_TAG : null, seedGoalTag(seedGoal)].filter(Boolean).join(",");
+    if (!tags) return;
+    const res = await this.postForm(client, "torrents/addTags", { hashes: await this.resolveHash(client, downloadId), tags });
     if (!res.ok) throw new Error(`qBittorrent torrents/addTags failed: HTTP ${res.status}`);
   }
 
@@ -1987,14 +2019,21 @@ export async function removeQueueItemDownload(queueItem: Pick<QueueItem, "downlo
 }
 
 /** Marks a queue row's download as fully imported (see DownloadClientAdapter.markImported). Never throws. */
-export async function markDownloadImported(queueItem: Pick<QueueItem, "downloadClientId" | "downloadId" | "title">): Promise<void> {
+export async function markDownloadImported(queueItem: Pick<QueueItem, "downloadClientId" | "downloadId" | "title"> & { indexerId?: number | null }, dataSafe = true): Promise<void> {
   if (!queueItem.downloadClientId || !queueItem.downloadId) return;
   try {
+    // The queue row goes with the import, but the torrent keeps seeding: the indexer's own seed goal is recorded on it.
+    const indexer = queueItem.indexerId
+      ? ((await db.prepare("SELECT seed_ratio, seed_time_minutes FROM indexers WHERE id = ?").get(queueItem.indexerId)) as
+          | { seed_ratio: number | null; seed_time_minutes: number | null }
+          | undefined)
+      : undefined;
+    const seedGoal: SeedGoal | null = indexer ? { ratio: indexer.seed_ratio == null ? null : Number(indexer.seed_ratio), minutes: indexer.seed_time_minutes == null ? null : Number(indexer.seed_time_minutes) } : null;
     const clientRow = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(queueItem.downloadClientId);
     if (!clientRow) return;
     const client = downloadClientFromRow(clientRow as any);
     const adapter = getDownloadClientAdapter(client.type);
-    if (adapter.markImported) await adapter.markImported(client, queueItem.downloadId);
+    if (adapter.markImported) await adapter.markImported(client, queueItem.downloadId, seedGoal, dataSafe);
   } catch (err) {
     log.warn(`[downloadClient] couldn't mark "${queueItem.title}" as imported at its client:`, (err as Error).message);
   }

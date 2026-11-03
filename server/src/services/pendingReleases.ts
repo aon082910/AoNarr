@@ -105,7 +105,7 @@ async function judgeOne(row: PendingRow, ctx: { delayProfiles: Awaited<ReturnTyp
     );
 
   try {
-    const outcome = await grabBestRelease([row.release], usable, choose, (client, chosen) => grab(client, item, episodeId, subItemId, chosen, 0, null, "auto"));
+    const outcome = await grabBestRelease([row.release], usable, choose, (client, chosen) => grab(client, item, episodeId, subItemId, chosen, 0, null, "auto"), { itemId: item.id, indexers: ctx.indexers });
     if (outcome?.grabbed) {
       await removePending(row.id);
       await recordLeafOutcome(row.leafTable, row.leafId, true);

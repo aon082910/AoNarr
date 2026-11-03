@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
-import type { Indexer } from "../types.js";
+import type { DownloadClient, Indexer, Tag } from "../types.js";
 import { PlusCircleIcon, ZapIcon } from "../components/NavIcons.js";
 import { PencilIcon, TrashIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
@@ -46,6 +46,16 @@ export default function Indexers() {
   const [selectedTypes, setSelectedTypes] = useState<string[] | null>(null);
   const [indexerTypeKeys, setIndexerTypeKeys] = useState<string[]>([]);
   const mediaTypeInfos = useMediaTypes();
+  // What the indexer is used for (Sonarr's Enable RSS / Automatic Search / Interactive Search), its own seed goals, the client its releases go to, and the tags that scope it.
+  const [enableRss, setEnableRss] = useState(true);
+  const [enableAutomaticSearch, setEnableAutomaticSearch] = useState(true);
+  const [enableInteractiveSearch, setEnableInteractiveSearch] = useState(true);
+  const [seedRatio, setSeedRatio] = useState("");
+  const [seedTimeMinutes, setSeedTimeMinutes] = useState("");
+  const [downloadClientId, setDownloadClientId] = useState<number | "">("");
+  const [tagIds, setTagIds] = useState<number[]>([]);
+  const [allTags, setAllTags] = useState<Tag[]>([]);
+  const [clients, setClients] = useState<DownloadClient[]>([]);
 
   function load() {
     api.get<Indexer[]>("/indexers").then(setIndexers);
@@ -53,6 +63,8 @@ export default function Indexers() {
   useEffect(load, []);
   useEffect(() => {
     api.get<string[]>("/indexers/media-types").then(setIndexerTypeKeys).catch(() => {});
+    api.get<Tag[]>("/tags").then(setAllTags).catch(() => {});
+    api.get<DownloadClient[]>("/download-clients").then(setClients).catch(() => {});
   }, []);
 
   function isTypeSelected(key: string): boolean {
@@ -79,6 +91,13 @@ export default function Indexers() {
     setDownloadUrlField("downloadUrl");
     setSeedersField("");
     setPublishDateField("");
+    setEnableRss(true);
+    setEnableAutomaticSearch(true);
+    setEnableInteractiveSearch(true);
+    setSeedRatio("");
+    setSeedTimeMinutes("");
+    setDownloadClientId("");
+    setTagIds([]);
   }
 
   function openAdd() {
@@ -94,6 +113,13 @@ export default function Indexers() {
     setApiKey(i.apiKey ?? "");
     setUseFlareSolverr(!!i.useFlareSolverr);
     setSelectedTypes((i.mediaTypes ?? "").split(",").map((t) => t.trim()).filter(Boolean));
+    setEnableRss(i.enableRss !== 0);
+    setEnableAutomaticSearch(i.enableAutomaticSearch !== 0);
+    setEnableInteractiveSearch(i.enableInteractiveSearch !== 0);
+    setSeedRatio(i.seedRatio == null ? "" : String(i.seedRatio));
+    setSeedTimeMinutes(i.seedTimeMinutes == null ? "" : String(i.seedTimeMinutes));
+    setDownloadClientId(i.downloadClientId ?? "");
+    setTagIds(i.tagIds ?? []);
     let ddlConfig: Record<string, any> = {};
     try {
       ddlConfig = i.config ? JSON.parse(i.config) : {};
@@ -135,6 +161,13 @@ export default function Indexers() {
       apiKey: apiKey || null,
       config,
       useFlareSolverr,
+      enableRss,
+      enableAutomaticSearch,
+      enableInteractiveSearch,
+      seedRatio: seedRatio.trim() === "" ? null : Number(seedRatio),
+      seedTimeMinutes: seedTimeMinutes.trim() === "" ? null : Number(seedTimeMinutes),
+      downloadClientId: downloadClientId === "" ? null : downloadClientId,
+      tagIds,
       ...(selectedTypes !== null ? { mediaTypes: selectedTypes.join(",") } : {}),
     };
     try {
@@ -366,6 +399,62 @@ export default function Indexers() {
             Route requests through FlareSolverr (for indexers behind Cloudflare/bot-detection —
             needs a FlareSolverr URL configured in Settings)
           </label>
+        )}
+
+        <label id="indexers-roles-label">Use this indexer for</label>
+        <div role="group" aria-labelledby="indexers-roles-label" style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 8 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <input type="checkbox" checked={enableRss} onChange={(e) => setEnableRss(e.target.checked)} />
+            RSS sync
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <input type="checkbox" checked={enableAutomaticSearch} onChange={(e) => setEnableAutomaticSearch(e.target.checked)} />
+            Automatic search
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <input type="checkbox" checked={enableInteractiveSearch} onChange={(e) => setEnableInteractiveSearch(e.target.checked)} />
+            Interactive search
+          </label>
+        </div>
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          A strict private tracker can be limited to RSS and interactive search, so scheduled searches do not use up its API quota.
+          RSS sync reads the newest releases of an indexer's feed; it runs only when the RSS sync interval is set
+          (<code>AONARR_RSS_SYNC_INTERVAL_MINUTES</code>).
+        </p>
+
+        {protocol === "torznab" && (
+          <>
+            <label htmlFor="indexers-seed-ratio">Seed ratio goal (optional)</label>
+            <input id="indexers-seed-ratio" type="number" min="0" step="0.1" value={seedRatio} onChange={(e) => setSeedRatio(e.target.value)} placeholder="Use the global goal" />
+            <label htmlFor="indexers-seed-time">Seed time goal in minutes (optional)</label>
+            <input id="indexers-seed-time" type="number" min="0" step="1" value={seedTimeMinutes} onChange={(e) => setSeedTimeMinutes(e.target.value)} placeholder="Use the global goal" />
+          </>
+        )}
+
+        <label htmlFor="indexers-download-client">Download client</label>
+        <select id="indexers-download-client" value={downloadClientId} onChange={(e) => setDownloadClientId(e.target.value ? Number(e.target.value) : "")}>
+          <option value="">Pick by protocol</option>
+          {clients.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+
+        {allTags.length > 0 && (
+          <fieldset style={{ border: "none", padding: 0, margin: "8px 0" }}>
+            <legend style={{ fontSize: "0.85rem", color: "var(--muted)" }}>Only for titles with these tags (none ticked: every title)</legend>
+            {allTags.map((tag) => (
+              <label key={tag.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={tagIds.includes(tag.id)}
+                  onChange={(e) => setTagIds((prev) => (e.target.checked ? [...prev, tag.id] : prev.filter((id) => id !== tag.id)))}
+                />
+                {tag.name}
+              </label>
+            ))}
+          </fieldset>
         )}
 
         {mode !== "add" && (

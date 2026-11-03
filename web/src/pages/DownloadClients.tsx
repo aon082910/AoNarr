@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
-import type { DownloadClient } from "../types.js";
+import type { DownloadClient, Tag } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 import { notify } from "../utils/notify.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
@@ -58,6 +58,8 @@ export default function DownloadClients() {
   const [category, setCategory] = useState("aonarr");
   const [audioOnly, setAudioOnly] = useState(false);
   const [downloadTypes, setDownloadTypes] = useState<string[]>(["torrent"]);
+  const [tagIds, setTagIds] = useState<number[]>([]);
+  const [allTags, setAllTags] = useState<Tag[]>([]);
 
   const [mappings, setMappings] = useState<RemotePathMapping[]>([]);
   const [mappingClientId, setMappingClientId] = useState<number | "">("");
@@ -78,6 +80,7 @@ export default function DownloadClients() {
   function load() {
     api.get<DownloadClient[]>("/download-clients").then(setClients);
     api.get<RemotePathMapping[]>("/remote-path-mappings").then(setMappings);
+    api.get<Tag[]>("/tags").then(setAllTags).catch(() => undefined);
   }
   useEffect(load, []);
 
@@ -110,6 +113,7 @@ export default function DownloadClients() {
     setCategory("aonarr");
     setAudioOnly(false);
     setDownloadTypes(["torrent"]);
+    setTagIds([]);
   }
 
   function openAdd() {
@@ -129,6 +133,7 @@ export default function DownloadClients() {
     setCategory(c.category ?? "aonarr");
     setAudioOnly(!!c.audioOnly);
     setDownloadTypes(c.downloadTypes && c.downloadTypes.length > 0 ? c.downloadTypes : ["torrent"]);
+    setTagIds(c.tagIds ?? []);
     setTestResult(null);
     setMode(c.id);
   }
@@ -151,6 +156,7 @@ export default function DownloadClients() {
       // Only TorBox genuinely caches more than one protocol — everyone else always sends the
       // torrent-only default so nothing stale sticks around from before the type was switched.
       downloadTypes: type === "torbox" ? downloadTypes : ["torrent"],
+      tagIds,
     };
     try {
       if (mode === "add") {
@@ -490,6 +496,22 @@ export default function DownloadClients() {
                 <label htmlFor="downloadclients-category-13">Category</label>
                 <input id="downloadclients-category-13" value={category} onChange={(e) => setCategory(e.target.value)} />
               </>
+            )}
+
+            {allTags.length > 0 && (
+              <fieldset style={{ border: "none", padding: 0, margin: "8px 0" }}>
+                <legend style={{ fontSize: "0.85rem", color: "var(--muted)" }}>Only for titles with these tags (none ticked: every title)</legend>
+                {allTags.map((tag) => (
+                  <label key={tag.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 }}>
+                    <input
+                      type="checkbox"
+                      checked={tagIds.includes(tag.id)}
+                      onChange={(e) => setTagIds((prev) => (e.target.checked ? [...prev, tag.id] : prev.filter((id) => id !== tag.id)))}
+                    />
+                    {tag.name}
+                  </label>
+                ))}
+              </fieldset>
             )}
 
             {mode !== "add" && (

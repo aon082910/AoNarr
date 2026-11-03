@@ -3,6 +3,8 @@ import { log } from "./logger.js";
 import { getSetting } from "./settingsStore.js";
 import { fetchMovieByTmdbId } from "./metadata.js";
 import { queueScanAfterAdd } from "./scanOnAdd.js";
+import { applyRootFolderDefaults } from "./rootFolderDefaults.js";
+import { notifyAdded } from "./notifications.js";
 
 /** How long a new movie waits for TMDB before it is added without release dates. */
 const RELEASE_LOOKUP_TIMEOUT_MS = 8000;
@@ -126,6 +128,10 @@ export async function finishWantedAdd(
         createLibraryFolderSkeleton({ type: row.type as any, title: row.title, year: row.year, externalIds: row.external_ids }, root.path);
       }
     }
+    // The root folder's default profile, monitor choice and tags, for what the adder left empty.
+    await applyRootFolderDefaults(row.id);
+    notifyAdded(row.title, row.type).catch(() => undefined);
+
     // A title a list or a request adds may already be on disk. The delay lets the caller put in the episodes.
     queueScanAfterAdd(row.id, 20_000);
   } catch (err) {

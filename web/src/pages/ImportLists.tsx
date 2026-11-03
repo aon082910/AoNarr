@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { api } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
-import type { QualityProfile, RootFolder } from "../types.js";
+import type { QualityProfile, RootFolder, Tag } from "../types.js";
 import { PlusCircleIcon, RotateCcwIcon } from "../components/NavIcons.js";
 import { TrashIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
@@ -25,6 +25,61 @@ interface ImportList {
   min_rating: number | null;
   min_votes: number | null;
   exclude_genres: string | null; // JSON array
+  monitor: string;
+  monitor_new_items: string | null;
+  search_on_add: 0 | 1;
+  minimum_availability: string | null;
+  clean_level: string;
+  tag_ids: string | null; // JSON array
+}
+
+/** What a list monitors of what it adds. A movie only tells "All" and "None" apart; the rest narrow a show's episodes or an artist's albums. */
+function monitorChoices(type: ImportList["type"]): { value: string; label: string }[] {
+  const common = [
+    { value: "all", label: "All" },
+    { value: "future", label: "Future only" },
+  ];
+  const tail = [{ value: "none", label: "None (catalogue only)" }];
+  return type === "lastfm"
+    ? [...common, { value: "first", label: "First album" }, { value: "latest", label: "Latest album" }, ...tail]
+    : [...common, { value: "firstSeason", label: "First season" }, { value: "latestSeason", label: "Latest season" }, { value: "pilot", label: "Pilot only" }, ...tail];
+}
+
+const NEW_ITEM_CHOICES = [
+  { value: "", label: "Default" },
+  { value: "all", label: "Monitor all new" },
+  { value: "new", label: "Only newer than existing" },
+  { value: "none", label: "Do not monitor new" },
+];
+
+const AVAILABILITY_CHOICES = [
+  { value: "", label: "Instance default" },
+  { value: "announced", label: "Announced" },
+  { value: "inCinemas", label: "In cinemas" },
+  { value: "released", label: "Released" },
+];
+
+const CLEAN_CHOICES = [
+  { value: "disabled", label: "Do nothing" },
+  { value: "logOnly", label: "Log only" },
+  { value: "keepAndUnmonitor", label: "Keep and unmonitor" },
+  { value: "removeAndKeep", label: "Remove, keep files" },
+  { value: "removeAndDelete", label: "Remove and delete files" },
+];
+
+/** A Last.fm list is the top 50 of a ranking, so what slips out of it is never removed. */
+function cleanChoices(type: ImportList["type"]) {
+  return type === "lastfm" ? CLEAN_CHOICES.filter((c) => c.value !== "removeAndKeep" && c.value !== "removeAndDelete") : CLEAN_CHOICES;
+}
+
+function parseTagIds(json: string | null): number[] {
+  if (!json) return [];
+  try {
+    const arr = JSON.parse(json);
+    return Array.isArray(arr) ? arr.map(Number) : [];
+  } catch {
+    return [];
+  }
 }
 
 /** Last.fm's top-artists endpoint has no rating/vote/genre data to filter on — these fields are a
@@ -83,6 +138,13 @@ export default function ImportLists() {
   const [minRating, setMinRating] = useState("");
   const [minVotes, setMinVotes] = useState("");
   const [excludeGenres, setExcludeGenres] = useState("");
+  const [monitor, setMonitor] = useState("all");
+  const [monitorNewItems, setMonitorNewItems] = useState("");
+  const [searchOnAdd, setSearchOnAdd] = useState(false);
+  const [minimumAvailability, setMinimumAvailability] = useState("");
+  const [cleanLevel, setCleanLevel] = useState("disabled");
+  const [allTags, setAllTags] = useState<Tag[]>([]);
+  const [tagIds, setTagIds] = useState<number[]>([]);
   const [syncingId, setSyncingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reviewCounts, setReviewCounts] = useState<Record<number, number>>({});
@@ -100,6 +162,7 @@ export default function ImportLists() {
       if (p.length > 0) setQualityProfileId(p[0].id);
     });
     api.get<RootFolder[]>("/root-folders").then(setRootFolders);
+    api.get<Tag[]>("/tags").then(setAllTags).catch(() => undefined);
   }, []);
 
   function foldersFor(listType: ImportList["type"]): RootFolder[] {
@@ -108,6 +171,9 @@ export default function ImportLists() {
 
   function changeType(next: ImportList["type"]) {
     setType(next);
+    // The choices differ between lists of artists and of movies and shows.
+    if (!monitorChoices(next).some((c) => c.value === monitor)) setMonitor("all");
+    if (!cleanChoices(next).some((c) => c.value === cleanLevel)) setCleanLevel("disabled");
     // A folder of a type the new list doesn't add would only be refused by the server.
     if (rootFolderId !== "" && !foldersFor(next).some((f) => f.id === rootFolderId)) setRootFolderId("");
   }
@@ -126,6 +192,12 @@ export default function ImportLists() {
         minRating: minRating || null,
         minVotes: minVotes || null,
         excludeGenres: excludeGenres || null,
+        monitor,
+        monitorNewItems: monitorNewItems || null,
+        searchOnAdd,
+        minimumAvailability: minimumAvailability || null,
+        cleanLevel,
+        tagIds,
       });
     } catch (err) {
       // Refused (a root folder removed meanwhile, say): the form stays open to fix it.
@@ -138,6 +210,12 @@ export default function ImportLists() {
     setMinRating("");
     setMinVotes("");
     setExcludeGenres("");
+    setMonitor("all");
+    setMonitorNewItems("");
+    setSearchOnAdd(false);
+    setMinimumAvailability("");
+    setCleanLevel("disabled");
+    setTagIds([]);
     setShowAdd(false);
     load();
   }
@@ -157,6 +235,16 @@ export default function ImportLists() {
     setError(null);
     try {
       await api.patch(`/import-lists/${list.id}`, { rootFolderId: value ? Number(value) : null });
+    } catch (e) {
+      setError((e as Error).message);
+    }
+    load();
+  }
+
+  async function saveOption(list: ImportList, patch: Record<string, unknown>) {
+    setError(null);
+    try {
+      await api.patch(`/import-lists/${list.id}`, patch);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -268,6 +356,65 @@ export default function ImportLists() {
                 </p>
               </>
             )}
+            <label htmlFor="importlists-monitor">Monitor</label>
+            <select id="importlists-monitor" value={monitor} onChange={(e) => setMonitor(e.target.value)}>
+              {monitorChoices(type).map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+            <label htmlFor="importlists-monitor-new">Monitor new items</label>
+            <select id="importlists-monitor-new" value={monitorNewItems} onChange={(e) => setMonitorNewItems(e.target.value)}>
+              {NEW_ITEM_CHOICES.map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+            {type !== "lastfm" && (
+              <>
+                <label htmlFor="importlists-availability">Minimum availability</label>
+                <select id="importlists-availability" value={minimumAvailability} onChange={(e) => setMinimumAvailability(e.target.value)}>
+                  {AVAILABILITY_CHOICES.map((c) => (
+                    <option key={c.value} value={c.value}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+            <label className="toolbar" style={{ gap: 8 }}>
+              <input type="checkbox" checked={searchOnAdd} onChange={(e) => setSearchOnAdd(e.target.checked)} style={{ width: "auto" }} />
+              Search as soon as an item is added
+            </label>
+            <label htmlFor="importlists-clean">When an item leaves the list</label>
+            <select id="importlists-clean" value={cleanLevel} onChange={(e) => setCleanLevel(e.target.value)}>
+              {cleanChoices(type).map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+            <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+              Only items this list added are cleaned, never a protected one, and nothing is cleaned after a sync that read
+              nothing or would remove most of the list at once.
+            </p>
+            {allTags.length > 0 && (
+              <fieldset style={{ border: "none", padding: 0, margin: "8px 0" }}>
+                <legend style={{ fontSize: "0.85rem", color: "var(--muted)" }}>Tags for what it adds</legend>
+                {allTags.map((tag) => (
+                  <label key={tag.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 }}>
+                    <input
+                      type="checkbox"
+                      checked={tagIds.includes(tag.id)}
+                      onChange={(e) => setTagIds((prev) => (e.target.checked ? [...prev, tag.id] : prev.filter((id) => id !== tag.id)))}
+                    />
+                    {tag.name}
+                  </label>
+                ))}
+              </fieldset>
+            )}
             <label className="toolbar" style={{ gap: 8 }}>
               <input type="checkbox" checked={requireReview} onChange={(e) => setRequireReview(e.target.checked)} style={{ width: "auto" }} />
               Require review before adding
@@ -294,6 +441,7 @@ export default function ImportLists() {
               <th>Root folder</th>
               {listHeader("enabled", "Enabled")}
               <th>Review before add</th>
+              <th>Options</th>
               <th>Filters</th>
               {listHeader("lastSynced", "Last synced")}
               <th>Last result</th>
@@ -347,6 +495,74 @@ export default function ImportLists() {
                 </td>
                 <td>
                   <input type="checkbox" checked={!!l.require_review} onChange={() => toggleRequireReview(l)} />
+                </td>
+                <td>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 170, fontSize: "0.8rem" }}>
+                    <select value={l.monitor} onChange={(e) => saveOption(l, { monitor: e.target.value })} title="Monitor" aria-label="Monitor" style={{ fontSize: "0.8rem" }}>
+                      {monitorChoices(l.type).map((c) => (
+                        <option key={c.value} value={c.value}>
+                          Monitor: {c.label}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={l.monitor_new_items ?? ""}
+                      onChange={(e) => saveOption(l, { monitorNewItems: e.target.value || null })}
+                      title="Monitor new items"
+                      aria-label="Monitor new items"
+                      style={{ fontSize: "0.8rem" }}
+                    >
+                      {NEW_ITEM_CHOICES.map((c) => (
+                        <option key={c.value} value={c.value}>
+                          New items: {c.label}
+                        </option>
+                      ))}
+                    </select>
+                    {l.type !== "lastfm" && (
+                      <select
+                        value={l.minimum_availability ?? ""}
+                        onChange={(e) => saveOption(l, { minimumAvailability: e.target.value || null })}
+                        title="Minimum availability"
+                        aria-label="Minimum availability"
+                        style={{ fontSize: "0.8rem" }}
+                      >
+                        {AVAILABILITY_CHOICES.map((c) => (
+                          <option key={c.value} value={c.value}>
+                            Available: {c.label}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <input type="checkbox" checked={!!l.search_on_add} onChange={(e) => saveOption(l, { searchOnAdd: e.target.checked })} style={{ width: "auto" }} />
+                      Search on add
+                    </label>
+                    <select value={l.clean_level} onChange={(e) => saveOption(l, { cleanLevel: e.target.value })} title="When an item leaves the list" aria-label="Clean level" style={{ fontSize: "0.8rem" }}>
+                      {cleanChoices(l.type).map((c) => (
+                        <option key={c.value} value={c.value}>
+                          Leaves list: {c.label}
+                        </option>
+                      ))}
+                    </select>
+                    {allTags.length > 0 && (
+                      <div>
+                        {allTags.map((tag) => {
+                          const chosen = parseTagIds(l.tag_ids);
+                          return (
+                            <label key={tag.id} style={{ display: "inline-flex", alignItems: "center", gap: 3, marginRight: 8 }}>
+                              <input
+                                type="checkbox"
+                                checked={chosen.includes(tag.id)}
+                                onChange={(e) => saveOption(l, { tagIds: e.target.checked ? [...chosen, tag.id] : chosen.filter((id) => id !== tag.id) })}
+                                style={{ width: "auto" }}
+                              />
+                              {tag.name}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </td>
                 <td>
                   {listSupportsFilters(l.type) ? (

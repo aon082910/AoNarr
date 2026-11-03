@@ -11,6 +11,7 @@ import { getSetting } from "./settingsStore.js";
 import { isExcludedFile, isExcludedFolder, scanFilterFor } from "./scanExclusions.js";
 import { offlineStorageFor } from "./deletedFileCheck.js";
 import { resetSearchBackoff, wakeLeaf } from "./searchBackoff.js";
+import { notifyFileDeleted } from "./notifications.js";
 import { folderSegmentsOf, ownFolderOf } from "./libraryFolder.js";
 
 /**
@@ -285,5 +286,6 @@ export async function deleteLibraryFile(params: {
     await resetSearchBackoff(item.id);
   }
   if (getSetting("deleteEmptyFolders") === "1") await removeEmptyParents(filePath, roots);
+  notifyFileDeleted(String(item.title), path.basename(filePath)).catch(() => undefined);
   return { path: filePath, unmonitored: unmonitor };
 }

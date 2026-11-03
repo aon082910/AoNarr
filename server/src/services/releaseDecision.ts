@@ -43,6 +43,8 @@ export interface ReleaseFacts {
   /** A custom format the profile marks "must not match". */
   formatRejected: string | null;
   belowMinimumScore: string | null;
+  /** The release is in another language than the profile asks for. */
+  language: string | null;
 }
 
 export function emptyFacts(): ReleaseFacts {
@@ -63,6 +65,7 @@ export function emptyFacts(): ReleaseFacts {
     protocolOff: null,
     formatRejected: null,
     belowMinimumScore: null,
+    language: null,
   };
 }
 
@@ -88,6 +91,7 @@ export function buildRejections(f: ReleaseFacts): DecisionRejection[] {
   add("protocol-off", f.protocolOff);
   add("custom-format", f.formatRejected);
   add("minimum-score", f.belowMinimumScore);
+  add("language", f.language);
   return out;
 }
 

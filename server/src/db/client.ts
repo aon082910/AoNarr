@@ -207,6 +207,32 @@ ensureColumn("blocklist", "info_hash", "info_hash TEXT");
 ensureColumn("queue", "protocol", "protocol TEXT");
 ensureColumn("queue", "publish_date", "publish_date TEXT");
 ensureColumn("queue", "info_hash", "info_hash TEXT");
+// Round 26: monitoring, profiles, lists and tags.
+// What a refresh does with an item the provider lists after the first sync: NULL (the behavior before this existed), all, none or new.
+ensureColumn("media_items", "monitor_new_items", "monitor_new_items TEXT");
+ensureColumn("media_items", "metadata_profile_id", "metadata_profile_id INTEGER REFERENCES metadata_profiles(id) ON DELETE SET NULL");
+// The import list that added the item, which the list's clean-up pass works on.
+ensureColumn("media_items", "source_list_id", "source_list_id INTEGER REFERENCES import_lists(id) ON DELETE SET NULL");
+ensureColumn("import_lists", "monitor", "monitor TEXT NOT NULL DEFAULT 'all'");
+ensureColumn("import_lists", "monitor_new_items", "monitor_new_items TEXT");
+ensureColumn("import_lists", "search_on_add", "search_on_add INTEGER NOT NULL DEFAULT 0");
+ensureColumn("import_lists", "minimum_availability", "minimum_availability TEXT");
+ensureColumn("import_lists", "clean_level", "clean_level TEXT NOT NULL DEFAULT 'disabled'");
+ensureColumn("import_lists", "tag_ids", "tag_ids TEXT");
+ensureColumn("indexers", "tag_ids", "tag_ids TEXT");
+ensureColumn("indexers", "enable_rss", "enable_rss INTEGER NOT NULL DEFAULT 1");
+ensureColumn("indexers", "enable_automatic_search", "enable_automatic_search INTEGER NOT NULL DEFAULT 1");
+ensureColumn("indexers", "enable_interactive_search", "enable_interactive_search INTEGER NOT NULL DEFAULT 1");
+ensureColumn("indexers", "seed_ratio", "seed_ratio REAL");
+ensureColumn("indexers", "seed_time_minutes", "seed_time_minutes INTEGER");
+ensureColumn("indexers", "download_client_id", "download_client_id INTEGER REFERENCES download_clients(id) ON DELETE SET NULL");
+ensureColumn("download_clients", "tag_ids", "tag_ids TEXT");
+ensureColumn("quality_profiles", "language", "language TEXT");
+ensureColumn("root_folders", "default_quality_profile_id", "default_quality_profile_id INTEGER REFERENCES quality_profiles(id) ON DELETE SET NULL");
+ensureColumn("root_folders", "default_metadata_profile_id", "default_metadata_profile_id INTEGER REFERENCES metadata_profiles(id) ON DELETE SET NULL");
+ensureColumn("root_folders", "default_monitor", "default_monitor TEXT");
+ensureColumn("root_folders", "default_monitor_new_items", "default_monitor_new_items TEXT");
+ensureColumn("root_folders", "default_tag_ids", "default_tag_ids TEXT");
 
 /**
  * One-time transition marker for the course/adult "collection"/"single" -> "episodic" shape change

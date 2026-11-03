@@ -11,6 +11,8 @@ import { renameOneMediaItem, removeEmptyParents } from "../services/importer.js"
 import { log } from "../services/logger.js";
 import { statfsAsync } from "../services/fsAsync.js";
 import { validateNewRootFolder } from "../services/rootFolderCheck.js";
+import { isMonitorMode, isNewItemMode } from "../services/monitorModes.js";
+import { checkedTagIdsColumn } from "../services/tagScope.js";
 
 const ROOT_FOLDER_STATFS_TIMEOUT_MS = 5000;
 
@@ -89,6 +91,37 @@ rootFoldersRouter.patch(
     if (b.minFreeSpaceGb !== undefined) {
       sets.push("min_free_space_gb = ?");
       values.push(optionalWholeNumber(b.minFreeSpaceGb, "minFreeSpaceGb", MAX_INTEGER_COLUMN));
+    }
+    // What is added into the folder starts from these (see services/rootFolderDefaults.ts); null clears one.
+    for (const [field, column, table] of [
+      ["defaultQualityProfileId", "default_quality_profile_id", "quality_profiles"],
+      ["defaultMetadataProfileId", "default_metadata_profile_id", "metadata_profiles"],
+    ] as const) {
+      if (b[field] === undefined) continue;
+      const id = b[field] === null || b[field] === "" ? null : Number(b[field]);
+      if (id !== null && (!Number.isInteger(id) || !(await db.prepare(`SELECT 1 AS ok FROM ${table} WHERE id = ?`).get(id)))) {
+        throw new HttpError(400, `${field} must be an existing profile, or null`);
+      }
+      sets.push(`${column} = ?`);
+      values.push(id);
+    }
+    if (b.defaultMonitor !== undefined) {
+      if (b.defaultMonitor !== null && !isMonitorMode(b.defaultMonitor)) throw new HttpError(400, `Unknown defaultMonitor "${b.defaultMonitor}"`);
+      sets.push("default_monitor = ?");
+      values.push(b.defaultMonitor);
+    }
+    if (b.defaultMonitorNewItems !== undefined) {
+      if (b.defaultMonitorNewItems !== null && !isNewItemMode(b.defaultMonitorNewItems)) throw new HttpError(400, "defaultMonitorNewItems must be all, none or new");
+      sets.push("default_monitor_new_items = ?");
+      values.push(b.defaultMonitorNewItems);
+    }
+    if (b.defaultTagIds !== undefined) {
+      try {
+        sets.push("default_tag_ids = ?");
+        values.push((await checkedTagIdsColumn(b.defaultTagIds)) ?? null);
+      } catch (err) {
+        throw new HttpError(400, (err as Error).message);
+      }
     }
     if (sets.length > 0) {
       values.push(req.params.id);

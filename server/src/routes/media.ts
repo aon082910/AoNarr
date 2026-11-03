@@ -58,7 +58,7 @@ import {
   mergedProviderIds,
   ADDITIONAL_PROVIDER_IDS_KEY,
 } from "../services/libraryScan.js";
-import { notifyGrabbed } from "../services/notifications.js";
+import { notifyAdded, notifyDeleted, notifyGrabbed } from "../services/notifications.js";
 import { recycleBinProblem, recycleFile } from "../services/recycleBin.js";
 import {
   buildCalibreOpf,
@@ -82,6 +82,9 @@ import { CONTENT_TYPES } from "../services/rangeStream.js";
 import { resetSearchBackoff, wakeLeaf } from "../services/searchBackoff.js";
 import { deleteLibraryFile, removeLeftoverFolders, rollUpParentMissing } from "../services/fileDeletion.js";
 import { queueScanAfterAdd } from "../services/scanOnAdd.js";
+import { isNewItemMode } from "../services/monitorModes.js";
+import { applyRootFolderDefaults } from "../services/rootFolderDefaults.js";
+import { addTagsToItem, checkedTagIdsColumn } from "../services/tagScope.js";
 import type { MediaType } from "../types/index.js";
 
 export const mediaRouter = Router();
@@ -1549,6 +1552,13 @@ mediaRouter.post(
     }
 
     const rootFolderId = b.rootFolderId ?? (await autoSelectRootFolderId(b.type));
+    // Checked before the title is inserted: a refused request must not leave a half-added title behind.
+    let requestedTags: string | null;
+    try {
+      requestedTags = (await checkedTagIdsColumn(b.tagIds)) ?? null;
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
     const poster = proxiedProviderArtwork(b.posterUrl);
     const backdrop = proxiedProviderArtwork(b.backdropUrl);
     const result = await db
@@ -1587,6 +1597,10 @@ mediaRouter.post(
         contentRating: b.contentRating ?? null,
       });
 
+    // The tags the request names, then the root folder's default tags and quality profile for what it left empty.
+    if (requestedTags) await addTagsToItem(result.lastInsertRowid, JSON.parse(requestedTags));
+    await applyRootFolderDefaults(result.lastInsertRowid);
+    notifyAdded(String(b.title), String(b.type)).catch(() => undefined);
     const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(result.lastInsertRowid);
     await syncPrimaryTitle(Number(result.lastInsertRowid));
     // Provider alternate titles, best effort in the background (no TMDB key or id: none stored).
@@ -1685,6 +1699,12 @@ mediaRouter.patch(
     if (b.contentRating !== undefined && b.contentRating !== null && !CONTENT_RATING_ORDER.includes(b.contentRating)) {
       throw new HttpError(400, `Unknown content rating "${b.contentRating}"`);
     }
+    if (b.monitorNewItems !== undefined && b.monitorNewItems !== null && !isNewItemMode(b.monitorNewItems)) {
+      throw new HttpError(400, "monitorNewItems must be all, none or new");
+    }
+    if (b.metadataProfileId != null && !(await db.prepare("SELECT 1 AS ok FROM metadata_profiles WHERE id = ?").get(Number(b.metadataProfileId)))) {
+      throw new HttpError(400, "Metadata profile not found");
+    }
     // Music and audiobooks are moved between root folders by the root folder tool (Settings), as before.
     if (b.moveFiles && b.rootFolderId !== undefined && Number(b.rootFolderId) !== Number((existing as any).root_folder_id) && getMediaTypeConfig((existing as any).type).multiFilePerChild) {
       throw new HttpError(409, "Music and Audiobooks are moved to another root folder with the root folder move in Settings");
@@ -1737,6 +1757,8 @@ mediaRouter.patch(
       group_id: b.groupId,
       minimum_availability: b.minimumAvailability,
       series_type: b.seriesType,
+      monitor_new_items: b.monitorNewItems,
+      metadata_profile_id: b.metadataProfileId,
       // Lets the "Apply merge" button (MediaDetail.tsx) clear the supplemental-provider scratch
       // data (usually to {}) once it's been folded into the item's own fields, so the merge table
       // doesn't keep showing stale fetched data forever after being applied.
@@ -2052,6 +2074,7 @@ export async function deleteMediaItemCascade(
   // After the files: a delete that was refused above leaves no exclusion behind for an item that still exists.
   if (addExclusion) await addImportExclusion(row);
   await db.prepare("DELETE FROM media_items WHERE id = ?").run(row.id);
+  notifyDeleted(String(row.title), String(row.type), deleteFiles).catch(() => undefined);
   // The title's folder goes with its files (artwork, NFO, subtitles, extras), once the row no longer claims anything in it.
   if (deleteFiles && !options.deferRecycle) await removeLeftoverFolders(row, files);
   return options.deferRecycle ? files : [];

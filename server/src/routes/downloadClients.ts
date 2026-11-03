@@ -9,6 +9,7 @@ import { auditActor, logAuditEvent } from "../services/audit.js";
 import { encryptValue } from "../services/encryption.js";
 import { notifyQueueChanged } from "../services/realtime.js";
 import { resetSearchBackoff } from "../services/searchBackoff.js";
+import { checkedTagIdsColumn } from "../services/tagScope.js";
 
 export const downloadClientsRouter = Router();
 downloadClientsRouter.use(requireAdmin);
@@ -23,6 +24,15 @@ function normalizeDownloadTypes(input: unknown): string[] | null {
   if (!Array.isArray(input)) return null;
   const filtered = input.filter((v): v is string => typeof v === "string" && VALID_DOWNLOAD_TYPES.has(v));
   return filtered.length > 0 ? Array.from(new Set(filtered)) : null;
+}
+
+/** The tag scope: null for none (every title), else the JSON list. */
+async function tagScope(value: unknown): Promise<string | null | undefined> {
+  try {
+    return await checkedTagIdsColumn(value);
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
 }
 
 downloadClientsRouter.get(
@@ -41,11 +51,12 @@ downloadClientsRouter.post(
     const needsHost = b.type === "qbittorrent" || b.type === "sabnzbd" || b.type === "slskd";
     if (needsHost && (!b.host || !b.port)) throw new HttpError(400, "host and port are required for this client type");
     const downloadTypes = normalizeDownloadTypes(b.downloadTypes);
+    const tagIds = await tagScope(b.tagIds);
 
     const result = await db
       .prepare(
-        `INSERT INTO download_clients (name, type, host, port, use_ssl, username, password, api_key, category, enabled, audio_only, download_types)
-         VALUES (@name, @type, @host, @port, @useSsl, @username, @password, @apiKey, @category, @enabled, @audioOnly, @downloadTypes)`
+        `INSERT INTO download_clients (name, type, host, port, use_ssl, username, password, api_key, category, enabled, audio_only, download_types, tag_ids)
+         VALUES (@name, @type, @host, @port, @useSsl, @username, @password, @apiKey, @category, @enabled, @audioOnly, @downloadTypes, @tagIds)`
       )
       .run({
         name: b.name,
@@ -60,6 +71,7 @@ downloadClientsRouter.post(
         enabled: b.enabled === false ? 0 : 1,
         audioOnly: b.audioOnly ? 1 : 0,
         downloadTypes: downloadTypes ? JSON.stringify(downloadTypes) : null,
+        tagIds: tagIds ?? null,
       });
     const row = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(result.lastInsertRowid);
     // A client for a new protocol makes releases grabbable that no search could use until now.
@@ -87,7 +99,9 @@ downloadClientsRouter.patch(
       enabled: "enabled",
       audioOnly: "audio_only",
       downloadTypes: "download_types",
+      tagIds: "tag_ids",
     };
+    if (b.tagIds !== undefined) b.tagIds = await tagScope(b.tagIds);
     const booleanKeys = new Set(["useSsl", "enabled", "audioOnly"]);
     const sets: string[] = [];
     const values: any[] = [];

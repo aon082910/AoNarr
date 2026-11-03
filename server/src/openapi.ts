@@ -110,6 +110,27 @@ export const openApiSpec = {
       get: { summary: "List root folders (with live free/total disk space)", responses: { "200": { description: "OK" } } },
       post: { summary: "Add a root folder", responses: { "201": { description: "Created" } } },
     },
+    "/root-folders/{id}": {
+      patch: {
+        summary: "Edit a root folder: name, quota, minimum free space (grabs pause below it), and the defaults for what is added into it (quality profile, metadata profile, monitor choices, tags)",
+        responses: { "200": { description: "OK" } },
+      },
+    },
+    "/metadata-profiles": {
+      get: { summary: "List metadata profiles (which releases an artist or author lists)", responses: { "200": { description: "OK" } } },
+      post: { summary: "Create a metadata profile", responses: { "201": { description: "Created" } } },
+    },
+    "/metadata-profiles/{id}": {
+      put: { summary: "Edit a metadata profile", responses: { "200": { description: "OK" } } },
+      delete: { summary: "Delete a metadata profile (refused while a title or root folder uses it)", responses: { "204": { description: "Deleted" } } },
+    },
+    "/import-lists": {
+      get: { summary: "List import lists", responses: { "200": { description: "OK" } } },
+      post: {
+        summary: "Add an import list, with monitor, monitorNewItems, searchOnAdd, minimumAvailability, cleanLevel and tagIds",
+        responses: { "201": { description: "Created" } },
+      },
+    },
     "/requests": {
       get: { summary: "List requests (own, or all for admins)", responses: { "200": { description: "OK" } } },
       post: { summary: "Submit a request (household users only)", responses: { "201": { description: "Created" } } },

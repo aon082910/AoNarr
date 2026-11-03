@@ -18,6 +18,7 @@ export default defineConfig({
       AONARR_SEED_QUALITY_SIZES: "0",
       // A background scan after an add would outlive the test that made the item.
       AONARR_SCAN_ON_ADD: "0",
+      AONARR_SEARCH_ON_ADD: "0",
     },
     fileParallelism: false,
     // Gives each test file a fresh temp AONARR_CONFIG_DIR/AONARR_DOWNLOADS_DIR before any of its

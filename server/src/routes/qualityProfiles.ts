@@ -5,6 +5,7 @@ import { qualityProfileFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { resetSearchBackoff } from "../services/searchBackoff.js";
 import { parseQualityGroups } from "../services/qualityGroups.js";
+import { normalizeProfileLanguage, PROFILE_LANGUAGES } from "../services/profileLanguage.js";
 
 export const qualityProfilesRouter = Router();
 qualityProfilesRouter.use(requireAdmin);
@@ -40,6 +41,15 @@ function validateGroups(groups: unknown, allowedQualities: string[]): string[][]
   return parseQualityGroups(groups);
 }
 
+/** A profile's wanted language from a request: undefined when not sent, null for any, else a known language name. */
+function languageInput(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === "" || value === "any") return null;
+  const language = normalizeProfileLanguage(value);
+  if (!language) throw new HttpError(400, `language must be "any" or one of: ${PROFILE_LANGUAGES.join(", ")}`);
+  return language;
+}
+
 function formatScore(value: unknown): number {
   const n = Number(value);
   if (!Number.isInteger(n)) throw new HttpError(400, "minFormatScore must be a whole number");
@@ -63,8 +73,9 @@ qualityProfilesRouter.post(
     }
     validateProfile(b.allowedQualities, b.cutoff);
     const maxSizeGb = b.maxSizeGb === undefined || b.maxSizeGb === null || b.maxSizeGb === "" ? null : Number(b.maxSizeGb);
+    const language = languageInput(b.language);
     const result = await db
-      .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff, max_size_gb, min_format_score, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff, max_size_gb, min_format_score, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups, language) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(
         b.name,
         JSON.stringify(b.allowedQualities),
@@ -75,7 +86,8 @@ qualityProfilesRouter.post(
         b.upgradeAllowed === false ? 0 : 1,
         b.cutoffFormatScore === undefined || b.cutoffFormatScore === null ? 0 : formatScore(b.cutoffFormatScore),
         b.minUpgradeFormatScore === undefined || b.minUpgradeFormatScore === null ? 1 : formatScore(b.minUpgradeFormatScore),
-        JSON.stringify(validateGroups(b.qualityGroups, b.allowedQualities))
+        JSON.stringify(validateGroups(b.qualityGroups, b.allowedQualities)),
+        language ?? null
       );
     const row = await db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(qualityProfileFromRow(row));
@@ -149,6 +161,10 @@ qualityProfilesRouter.patch(
     if (b.preferCutoffQuality !== undefined) {
       sets.push("prefer_cutoff_quality = ?");
       values.push(b.preferCutoffQuality ? 1 : 0);
+    }
+    if (b.language !== undefined) {
+      sets.push("language = ?");
+      values.push(languageInput(b.language) ?? null);
     }
     if (b.maxSizeGb !== undefined) {
       sets.push("max_size_gb = ?");

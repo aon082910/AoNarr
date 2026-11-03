@@ -53,6 +53,8 @@ import { judgeUpgrade, propersMode, upgradeProfileOf } from "../services/upgrade
 import { getQualityProfile, releaseNameVerdict, siblingTitlesOf, yearFieldsOf, type TargetName } from "../services/scheduler.js";
 import { availabilityRejectionDetail } from "../services/releaseAvailability.js";
 import { freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReason, freeSpaceReserveBytes } from "../services/freeSpace.js";
+import { tagIdsOfItem } from "../services/tagScope.js";
+import { languageRejection } from "../services/profileLanguage.js";
 import { episodesCoveredBy, judgeSeasonPack, packSettings, type PackEpisode } from "../services/seasonPacks.js";
 import { ageMinutesOf, buildRejections, emptyFacts, indexerFlagsOf, releaseTypeOf, summarize, type DecisionRejection } from "../services/releaseDecision.js";
 import type { SearchResult } from "../types/index.js";
@@ -284,7 +286,7 @@ searchRouter.get(
         known.error = o.error;
       }
     };
-    const hintsOf = (p: SearchPlan) => ({ ...searchHintsOf(p), onOutcome: noteOutcome, signal: aborter.signal });
+    const hintsOf = (p: SearchPlan) => ({ ...searchHintsOf(p, item.id), onOutcome: noteOutcome, signal: aborter.signal });
     const rawResults = await searchAllIndexers(indexers as any, query, item.type as any, true, plan.ids, hintsOf(plan));
     if (furtherPlans.length > 0) {
       // The queries of a season a scene splits overlap (a pack named by both): a release is listed once.
@@ -322,6 +324,7 @@ searchRouter.get(
     let cutoff = "";
     let minFormatScore = 0;
     let qualityGroups: string[][] = [];
+    let wantedLanguage: string | null = null;
     if (item.qualityProfileId) {
       const profileRow = await db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(item.qualityProfileId);
       if (profileRow) {
@@ -330,10 +333,12 @@ searchRouter.get(
         cutoff = profile.cutoff;
         minFormatScore = profile.minFormatScore ?? 0;
         qualityGroups = profile.qualityGroups ?? [];
+        wantedLanguage = profile.language ?? null;
       }
     }
 
     const blocklisted = await getBlocklistedTitles(item.id);
+    const titleTags = await tagIdsOfItem(item.id);
     // Same auto-grab rules as chooseBestResult: a type with no quality tiers (music, books, ...)
     // takes any quality, and a size of 0 means the indexer didn't report one.
     const tiered = usesQualityTiers(item.type);
@@ -463,7 +468,7 @@ searchRouter.get(
       facts.hashName = parsed.rejected;
       facts.blocklisted = isBlocklisted;
       // With no client at all every release would say so; that is `downloadAllowed`, not a reason per release.
-      const clientForProtocol = pickClientForProtocol(clients, r.protocol);
+      const clientForProtocol = pickClientForProtocol(clients, r.protocol, { itemTags: titleTags });
       facts.noClientFor = clients.length > 0 && clientForProtocol === null ? r.protocol : null;
       facts.refusal = refusal;
       facts.availability = availabilityRejectionDetail(r, minimumSeedersById, now);
@@ -497,6 +502,7 @@ searchRouter.get(
         facts.notAnUpgrade = `Quality "${parsed.quality}" isn't an upgrade over what's already on disk`;
       }
       facts.size = sizeAllowed ? null : "Its size doesn't fit this quality's configured size range";
+      facts.language = tiered ? languageRejection(wantedLanguage, parsed.languages) : null;
       if (delayProfile && ((r.protocol === "torrent" && !delayProfile.enableTorrent) || (r.protocol === "usenet" && !delayProfile.enableUsenet))) {
         facts.protocolOff = `Its protocol (${r.protocol}) is turned off in the delay profile`;
       }
@@ -672,7 +678,9 @@ export async function manualGrab(mediaItemId: number | string, b: Record<string,
     } else {
       const enabled = ((await db.prepare("SELECT * FROM download_clients WHERE enabled = 1 ORDER BY id").all()) as any[]).map(downloadClientFromRow);
       if (enabled.length === 0) throw new HttpError(400, "Add and enable a download client first");
-      const picked = pickClientForProtocol(enabled as any, protocol);
+      // The client the release's indexer names, else one by the title's tags (Sonarr: tagged clients first).
+      const viaIndexer = b.indexerId ? ((await db.prepare("SELECT download_client_id FROM indexers WHERE id = ?").get(Number(b.indexerId))) as { download_client_id: number | null } | undefined) : undefined;
+      const picked = pickClientForProtocol(enabled as any, protocol, { clientId: viaIndexer?.download_client_id ?? null, itemTags: await tagIdsOfItem(item.id) });
       if (!picked) throw new HttpError(400, `No enabled download client can handle a "${protocol}" release`);
       clientRow = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(picked.id);
     }

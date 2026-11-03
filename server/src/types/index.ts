@@ -39,6 +39,11 @@ export interface MediaItem {
   /** Episodic items: the title's folder name below its root folder, fixed at the first import (or taken from the files
    * already there), so a title change does not split the show across two folders. Null until then. */
   libraryFolder: string | null;
+  /** What a refresh does with an episode, album or book the provider lists after the first sync: all, none or new (null: the behavior from before this setting). */
+  monitorNewItems: string | null;
+  metadataProfileId: number | null;
+  /** The import list that added the item. */
+  sourceListId: number | null;
   /** Single-shape items only (movies/ROMs/adult) — when runAutoSearch last actually searched this
    * item, null if never. See scheduler.ts's per-cycle cap and oldest-searched-first ordering. */
   lastAutoSearchedAt?: string | null;
@@ -99,6 +104,19 @@ export interface Indexer {
   priority: number;
   /** Torrents with fewer seeders than this are rejected (0 = no minimum). */
   minimumSeeders?: number;
+  /** Used only for an item that carries one of these tags; empty = every item. */
+  tagIds?: number[];
+  /** Read by the RSS sync. */
+  enableRss?: number;
+  /** Used by the scheduled searches. */
+  enableAutomaticSearch?: number;
+  /** Used by a search the admin starts. */
+  enableInteractiveSearch?: number;
+  /** Seed goals for torrents from this indexer; null falls back to the global goals. */
+  seedRatio?: number | null;
+  seedTimeMinutes?: number | null;
+  /** The download client this indexer's releases go to; null picks one by protocol. */
+  downloadClientId?: number | null;
   config: string | null; // JSON, protocol-specific (currently only "ddl" uses this)
   useFlareSolverr: MonitorStatus;
   queryLimitPerHour: number | null; // proactive rate cap — see indexerClient.ts's isOverQueryLimit
@@ -126,6 +144,8 @@ export interface DownloadClient {
    * which pickClientForProtocol treats as the historical torrent-only default so existing setups
    * are unaffected until an admin opts a client into another protocol. */
   downloadTypes: string[] | null;
+  /** Used only for an item that carries one of these tags; empty = every item. */
+  tagIds?: number[];
 }
 
 export interface QualityProfile {
@@ -147,12 +167,19 @@ export interface QualityProfile {
   cutoffFormatScore?: number;
   /** The least a same-quality release must add to the file's score to replace it. */
   minUpgradeFormatScore?: number;
+  /** The language a release must be in (a name from services/languages); null accepts every language. */
+  language?: string | null;
 }
 
 export interface RootFolder {
   id: number;
   path: string;
   mediaType: MediaType;
+  defaultQualityProfileId?: number | null;
+  defaultMetadataProfileId?: number | null;
+  defaultMonitor?: string | null;
+  defaultMonitorNewItems?: string | null;
+  defaultTagIds?: number[];
 }
 
 export type QueueStatus = "queued" | "downloading" | "completed" | "failed" | "importing" | "imported";

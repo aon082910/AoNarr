@@ -15,7 +15,6 @@ import {
   parseProviderUrl,
   proxyScreenscraperArtwork,
   searchMetadata,
-  upcomingEpisodes,
 } from "../services/metadata.js";
 import { insertTracksForAlbum } from "../services/importLists.js";
 import { matchAdditionalProviders } from "../services/libraryScan.js";
@@ -31,43 +30,12 @@ import { createLibraryFolderSkeleton } from "../services/importer.js";
 import { queueScanAfterAdd } from "../services/scanOnAdd.js";
 import { syncSceneNumbering } from "../services/sceneNumbering.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
+import { notifyAdded } from "../services/notifications.js";
+import { applySubItemMonitorMode, episodesToMonitor, isMonitorMode, isNewItemMode } from "../services/monitorModes.js";
+import { resolveMetadataProfileForAdd } from "../services/metadataProfiles.js";
+import { applyRootFolderDefaults, rootFolderDefaultsOf } from "../services/rootFolderDefaults.js";
+import { addTagsToItem, checkedTagIdsColumn } from "../services/tagScope.js";
 import type { MediaType } from "../types/index.js";
-
-/**
- * Sonarr's "Monitor" dropdown when adding a series — decides which of the freshly-fetched
- * episodes stay monitored (auto-searched) versus not, beyond the previous all-or-nothing. Since
- * this only ever runs against a *brand new* add (nothing downloaded yet), "Existing Episodes"
- * correctly comes out to "monitor nothing" here — there's nothing existing yet to monitor.
- */
-function episodesToMonitor(
-  episodes: { seasonNumber: number; episodeNumber: number; airDate: string | null }[],
-  strategy: string
-): Set<string> {
-  const key = (s: number, e: number) => `${s}:${e}`;
-  const realSeasons = episodes.map((e) => e.seasonNumber).filter((s) => s > 0);
-  const minSeason = realSeasons.length > 0 ? Math.min(...realSeasons) : 0;
-  const maxSeason = realSeasons.length > 0 ? Math.max(...realSeasons) : 0;
-  const today = new Date().toISOString().slice(0, 10);
-
-  switch (strategy) {
-    case "none":
-    case "existing":
-      return new Set();
-    case "future":
-      return new Set(upcomingEpisodes(episodes, today).map((e) => key(e.seasonNumber, e.episodeNumber)));
-    case "recent":
-    case "latestSeason":
-      return new Set(episodes.filter((e) => e.seasonNumber === maxSeason).map((e) => key(e.seasonNumber, e.episodeNumber)));
-    case "firstSeason":
-      return new Set(episodes.filter((e) => e.seasonNumber === minSeason).map((e) => key(e.seasonNumber, e.episodeNumber)));
-    case "pilot":
-      return new Set([key(minSeason, 1)]);
-    case "missing":
-    case "all":
-    default:
-      return new Set(episodes.map((e) => key(e.seasonNumber, e.episodeNumber)));
-  }
-}
 
 export const metadataRouter = Router();
 metadataRouter.use(requireAdmin);
@@ -194,6 +162,23 @@ metadataRouter.post(
 
     const externalIds = b.externalIds ?? {};
     const rootFolderId = b.rootFolderId ?? (await autoSelectRootFolderId(b.type));
+    const folderDefaults = await rootFolderDefaultsOf(rootFolderId);
+    // What the request does not say comes from the root folder it is added into.
+    const monitorStrategy: string | undefined = b.monitorStrategy ?? folderDefaults.monitor ?? undefined;
+    const monitorNewItems: string | null = b.monitorNewItems ?? folderDefaults.monitorNewItems ?? null;
+    if (monitorNewItems !== null && !isNewItemMode(monitorNewItems)) throw new HttpError(400, "monitorNewItems must be all, none or new");
+    if (b.monitorStrategy !== undefined && !isMonitorMode(b.monitorStrategy)) throw new HttpError(400, `Unknown monitorStrategy "${b.monitorStrategy}"`);
+    let tagIdsJson: string | null;
+    try {
+      tagIdsJson = (await checkedTagIdsColumn(b.tagIds)) ?? null;
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+    const metadataProfileId = b.metadataProfileId == null ? null : Number(b.metadataProfileId);
+    if (metadataProfileId !== null && !(await db.prepare("SELECT 1 AS ok FROM metadata_profiles WHERE id = ?").get(metadataProfileId))) {
+      throw new HttpError(400, "Metadata profile not found");
+    }
+    const metadataProfile = await resolveMetadataProfileForAdd(metadataProfileId, rootFolderId);
     // ScreenScraper artwork only loads with the admin's ScreenScraper credentials added, so it is
     // stored behind the local-artwork proxy rather than as a URL the browser fetches itself.
     const poster = typeof b.posterUrl === "string" ? proxyScreenscraperArtwork(b.posterUrl) : null;
@@ -202,8 +187,8 @@ metadataRouter.post(
     const result = await db
       .prepare(
         `INSERT INTO media_items
-         (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability, series_type, backdrop_url, rating, runtime_minutes, studio, content_rating, genres, extra_metadata, local_poster_path, local_poster_token, local_backdrop_path, local_backdrop_token)
-         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability, @seriesType, @backdropUrl, @rating, @runtimeMinutes, @studio, @contentRating, @genres, @extraMetadata, @localPosterPath, @localPosterToken, @localBackdropPath, @localBackdropToken)`
+         (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status, group_id, release_date, minimum_availability, series_type, backdrop_url, rating, runtime_minutes, studio, content_rating, genres, extra_metadata, local_poster_path, local_poster_token, local_backdrop_path, local_backdrop_token, monitor_new_items, metadata_profile_id)
+         VALUES (@type, @title, @sortTitle, @year, @overview, @posterUrl, @externalIds, @rootFolderId, @qualityProfileId, @monitored, @status, @groupId, @releaseDate, @minimumAvailability, @seriesType, @backdropUrl, @rating, @runtimeMinutes, @studio, @contentRating, @genres, @extraMetadata, @localPosterPath, @localPosterToken, @localBackdropPath, @localBackdropToken, @monitorNewItems, @metadataProfileId)`
       )
       .run({
         type: b.type,
@@ -239,10 +224,16 @@ metadataRouter.post(
         localPosterToken: poster?.token ?? null,
         localBackdropPath: backdrop?.localPath ?? null,
         localBackdropToken: backdrop?.token ?? null,
+        monitorNewItems,
+        metadataProfileId,
       });
 
     const mediaItemId = result.lastInsertRowid;
     let childCount = 0;
+    // The tags the request names, then the root folder's default tags and quality profile for what it left empty.
+    if (tagIdsJson) await addTagsToItem(mediaItemId, JSON.parse(tagIdsJson));
+    await applyRootFolderDefaults(mediaItemId);
+    notifyAdded(String(b.title), String(b.type)).catch(() => undefined);
 
     if (getSetting("createEmptyFoldersOnAdd") === "1" && rootFolderId) {
       const rootFolderRow = (await db.prepare("SELECT path FROM root_folders WHERE id = ?").get(rootFolderId)) as
@@ -288,8 +279,8 @@ metadataRouter.post(
         });
         childCount = episodes.length;
 
-        if (b.monitorStrategy && b.monitorStrategy !== "all") {
-          const keep = episodesToMonitor(episodes, b.monitorStrategy);
+        if (monitorStrategy && monitorStrategy !== "all") {
+          const keep = episodesToMonitor(episodes, monitorStrategy);
           const toUnmonitor = episodes.filter((e) => !keep.has(`${e.seasonNumber}:${e.episodeNumber}`));
           if (toUnmonitor.length > 0) {
             await db.transaction(async () => {
@@ -306,7 +297,7 @@ metadataRouter.post(
         // the series itself, same reasoning as every other post-add enrichment call in this file.
         syncSceneNumbering(Number(mediaItemId)).catch((err) => log.warn(`[metadata] scene numbering sync failed for ${b.title}:`, (err as Error).message));
       } else if (typeConfig.shape === "collection" && typeConfig.multiFilePerChild) {
-        const result = await fetchArtistAlbumsFor(externalIds);
+        const result = await fetchArtistAlbumsFor(externalIds, metadataProfile);
         if (result) {
           // A provider occasionally returns an entry with no title (a data-quality gap on their
           // end, e.g. Open Library "works" with a title-less record) — sub_items.title is NOT
@@ -328,6 +319,7 @@ metadataRouter.post(
             }
           });
           childCount = albums.length;
+          if (monitorStrategy) await applySubItemMonitorMode(mediaItemId, monitorStrategy);
 
           // Track listings are fetched one album at a time (real network calls, not something
           // that should hold a Postgres transaction's connection open for their entire duration —
@@ -342,7 +334,7 @@ metadataRouter.post(
           })().catch((err) => log.warn(`[metadata] track import failed for "${b.title}":`, (err as Error).message));
         }
       } else if (typeConfig.shape === "collection") {
-        const result = await fetchCollectionChildrenFor(externalIds);
+        const result = await fetchCollectionChildrenFor(externalIds, metadataProfile);
         const children = result.children.filter((c) => c.title);
         await db.transaction(async () => {
           for (const child of children) {
@@ -355,6 +347,7 @@ metadataRouter.post(
           }
         });
         childCount = children.length;
+        if (monitorStrategy) await applySubItemMonitorMode(mediaItemId, monitorStrategy);
       }
     } catch (err) {
       // The media item itself was created successfully; a failed child fetch (e.g. missing

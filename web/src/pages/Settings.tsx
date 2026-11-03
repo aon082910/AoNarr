@@ -5,6 +5,7 @@ import FolderPicker from "../components/FolderPicker.js";
 import NamingSetupModal from "../components/NamingSetupModal.js";
 import SettingsProviderTiles, { type SettingsProviderDef } from "../components/SettingsProviderTiles.js";
 import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
+import MetadataProfilesEditor from "../components/MetadataProfilesEditor.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type {
   BlocklistEntry,
@@ -14,6 +15,7 @@ import type {
   Indexer,
   MediaType,
   MediaTypeInfo,
+  MetadataProfile,
   Quality,
   QualityProfile,
   ReleaseProfile,
@@ -374,6 +376,28 @@ const NOTIFICATION_PROVIDERS: SettingsProviderDef[] = [
     eventsKey: "smtpEvents",
   },
   {
+    key: "ntfy",
+    label: "ntfy",
+    description: "ntfy.sh or your own ntfy server: the message goes to a topic.",
+    fields: [
+      { key: "ntfyServerUrl", label: "Server URL", placeholder: "https://ntfy.sh" },
+      { key: "ntfyTopic", label: "Topic", placeholder: "aonarr" },
+      { key: "ntfyToken", label: "Access token (only for a protected topic)", type: "password" },
+    ],
+    isConfigured: (s) => !!s.ntfyServerUrl && !!s.ntfyTopic,
+    eventsKey: "ntfyEvents",
+  },
+  {
+    key: "gotify",
+    label: "Gotify",
+    fields: [
+      { key: "gotifyServerUrl", label: "Server URL", placeholder: "https://gotify.example.com" },
+      { key: "gotifyToken", label: "Application token", type: "password" },
+    ],
+    isConfigured: (s) => !!s.gotifyServerUrl && !!s.gotifyToken,
+    eventsKey: "gotifyEvents",
+  },
+  {
     key: "matrix",
     label: "Matrix",
     fields: [
@@ -632,6 +656,7 @@ export default function Settings() {
   const mediaTypes = useMediaTypes();
   const [rootFolders, setRootFolders] = useState<RootFolder[]>([]);
   const [profiles, setProfiles] = useState<QualityProfile[]>([]);
+  const [metadataProfiles, setMetadataProfiles] = useState<MetadataProfile[]>([]);
   const [providers, setProviders] = useState<SubtitleProvider[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [settings, setSettings] = useState<Record<string, string>>({});
@@ -767,6 +792,7 @@ export default function Settings() {
     });
     api.get<SubtitleProvider[]>("/subtitles/providers").then(setProviders);
     api.get<Tag[]>("/tags").then(setTags);
+    api.get<MetadataProfile[]>("/metadata-profiles").then(setMetadataProfiles).catch(() => {});
     api.get<CustomFormat[]>("/custom-formats").then(setCustomFormats);
     api.get<TrashSyncStatus>("/custom-formats/trash-sync/status").then(setTrashSyncStatus);
     // /blocklist now returns a paginated { items, total } page instead of a bare array (see
@@ -1432,6 +1458,15 @@ export default function Settings() {
     setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, qualityGroups } : p)));
   }
 
+  async function saveProfileLanguage(profileId: number, language: string) {
+    try {
+      await api.patch(`/quality-profiles/${profileId}`, { language: language || null });
+      setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, language: language || null } : p)));
+    } catch (err) {
+      notify.error((err as Error).message);
+    }
+  }
+
   async function saveProfilePreferCutoff(profileId: number, preferCutoffQuality: boolean) {
     await api.patch(`/quality-profiles/${profileId}`, { preferCutoffQuality });
     setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, preferCutoffQuality } : p)));
@@ -1714,6 +1749,17 @@ export default function Settings() {
     load();
   }
 
+  /** What is added into the folder starts from these: a quality and metadata profile, the monitor choices and tags. */
+  async function updateFolderDefault(id: number, patch: Record<string, unknown>) {
+    try {
+      await api.patch(`/root-folders/${id}`, patch);
+      notify.success("Saved.", 1500);
+    } catch (err) {
+      notify.error((err as Error).message);
+    }
+    load();
+  }
+
   // The form's cutoff is always one of its allowed qualities, even when the remembered pick (or the
   // initial "WEBDL-1080p") was unchecked, renamed or deleted since.
   const newProfileAllowed = qualities.filter((q) => profileQualities.has(q.name)).map((q) => q.name);
@@ -1866,16 +1912,35 @@ export default function Settings() {
 
         <label htmlFor="settings-authentication-3">Authentication</label>
         <select id="settings-authentication-3"
-          value={settings.authRequired === "0" ? "0" : "1"}
+          value={settings.authRequired === "0" ? "0" : settings.authRequired === "local" ? "local" : "1"}
           onChange={(e) => saveSetting("authRequired", e.target.value)}
         >
           <option value="1">Enabled (default)</option>
+          <option value="local">Disabled for local addresses</option>
           <option value="0">Disabled — trusted network only</option>
         </select>
         <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
-          When disabled, every request is treated as an authenticated admin — no API key, session
+          "Disabled for local addresses" lets a device on your home network in without a login while a request from
+          outside still needs one. A request that a reverse proxy forwarded from a public address counts as outside, so
+          a proxy in front of AoNarr must send <code>X-Forwarded-For</code>; a proxy that hides the visitor's address
+          makes the whole internet look local. A valid login keeps its own role, but the login screen does not appear on
+          the home network, so a restricted household account needs this mode off.
+          When fully disabled, every request is treated as an authenticated admin — no API key, session
           login, or 2FA required. Only turn this off if AoNarr sits on a network you fully trust
           (e.g. behind your own VPN) and is never exposed directly to the internet.
+        </p>
+
+        <label htmlFor="settings-metrics-token">Metrics token</label>
+        <input id="settings-metrics-token"
+          type="password"
+          key={settings.metricsToken ? "metrics-token-set" : "metrics-token-empty"}
+          defaultValue={settings.metricsToken ?? ""}
+          placeholder="unset — /api/metrics is open"
+          onBlur={(e) => saveSetting("metricsToken", e.target.value)}
+        />
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+          The Prometheus page lists library counts, queue state and root-folder names, and is open by default. Set a token
+          to require it as <code>Authorization: Bearer &lt;token&gt;</code> (or <code>?token=</code>) from your scraper.
         </p>
 
         <label htmlFor="settings-allowed-cors-origins-4">Allowed CORS origins</label>
@@ -3110,6 +3175,12 @@ export default function Settings() {
             ),
           },
           {
+            key: "metadataProfiles",
+            label: "Metadata Profiles",
+            description: "Which releases an artist or author lists: release types, left-out extras, box sets",
+            render: () => <MetadataProfilesEditor />,
+          },
+          {
             key: "ytdlpExtras",
             label: "YouTube Downloads (yt-dlp)",
             description: "Download archive, SponsorBlock, and subtitle options for yt-dlp clients",
@@ -3534,7 +3605,7 @@ export default function Settings() {
                   placeholder="off"
                   onBlur={(e) => updateFolderQuota(f.id, "quotaPercent", e.target.value === "" ? null : Number(e.target.value))}
                 />
-                <label htmlFor="settings-minimum-free-space-gb-health-warning-bel-85">Minimum free space (GB) — health warning below this, independent of quota %</label>
+                <label htmlFor="settings-minimum-free-space-gb-health-warning-bel-85">Minimum free space (GB) — grabs pause and a health warning shows below this, independent of quota %</label>
                 <input id="settings-minimum-free-space-gb-health-warning-bel-85"
                   type="number"
                   defaultValue={f.minFreeSpaceGb ?? ""}
@@ -3550,6 +3621,64 @@ export default function Settings() {
                   />
                   Pause grabs at quota
                 </label>
+                <h4 style={{ margin: "12px 0 4px" }}>Defaults for what is added into this folder</h4>
+                <label htmlFor={`settings-folder-default-profile-${f.id}`}>Quality profile</label>
+                <select id={`settings-folder-default-profile-${f.id}`}
+                  value={f.defaultQualityProfileId ?? ""}
+                  onChange={(e) => updateFolderDefault(f.id, { defaultQualityProfileId: e.target.value ? Number(e.target.value) : null })}
+                >
+                  <option value="">None — the adder chooses</option>
+                  {profiles.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+                {(f.mediaType === "artist" || f.mediaType === "author") && metadataProfiles.length > 0 && (
+                  <>
+                    <label htmlFor={`settings-folder-default-metadata-${f.id}`}>Metadata profile</label>
+                    <select id={`settings-folder-default-metadata-${f.id}`}
+                      value={f.defaultMetadataProfileId ?? ""}
+                      onChange={(e) => updateFolderDefault(f.id, { defaultMetadataProfileId: e.target.value ? Number(e.target.value) : null })}
+                    >
+                      <option value="">None — the instance default</option>
+                      {metadataProfiles.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </>
+                )}
+                <label htmlFor={`settings-folder-default-new-items-${f.id}`}>Monitor new items</label>
+                <select id={`settings-folder-default-new-items-${f.id}`}
+                  value={f.defaultMonitorNewItems ?? ""}
+                  onChange={(e) => updateFolderDefault(f.id, { defaultMonitorNewItems: e.target.value || null })}
+                >
+                  <option value="">Not set</option>
+                  <option value="all">Monitor all new items</option>
+                  <option value="new">Only items newer than what exists</option>
+                  <option value="none">Do not monitor new items</option>
+                </select>
+                {tags.length > 0 && (
+                  <fieldset style={{ border: "none", padding: 0, margin: "8px 0" }}>
+                    <legend style={{ fontSize: "0.85rem", color: "var(--muted)" }}>Tags</legend>
+                    {tags.map((tag) => {
+                      const chosen = f.defaultTagIds ?? [];
+                      return (
+                        <label key={tag.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 }}>
+                          <input
+                            type="checkbox"
+                            checked={chosen.includes(tag.id)}
+                            onChange={(e) => updateFolderDefault(f.id, { defaultTagIds: e.target.checked ? [...chosen, tag.id] : chosen.filter((id) => id !== tag.id) })}
+                            style={{ width: "auto" }}
+                          />
+                          {tag.name}
+                        </label>
+                      );
+                    })}
+                  </fieldset>
+                )}
                 {rootFolders.filter((other) => other.mediaType === f.mediaType && other.id !== f.id).length > 0 && (
                   <>
                     <label htmlFor={`settings-move-root-folder-${f.id}`}>Move all files to another root folder</label>
@@ -3767,6 +3896,19 @@ export default function Settings() {
                   />
                   Allow upgrades (replace a file on disk with a better release)
                 </label>
+                <label htmlFor={`settings-profile-language-${p.id}`}>Language a release must be in (a name with no language tag counts as English)</label>
+                <select id={`settings-profile-language-${p.id}`}
+                  value={p.language ?? ""}
+                  onChange={(e) => saveProfileLanguage(p.id, e.target.value)}
+                  style={{ maxWidth: 220 }}
+                >
+                  <option value="">Any language</option>
+                  {["english", "french", "german", "italian", "spanish", "dutch", "russian", "korean", "japanese", "danish", "swedish", "norwegian", "polish", "portuguese", "hindi", "chinese"].map((l) => (
+                    <option key={l} value={l}>
+                      {l[0].toUpperCase() + l.slice(1)}
+                    </option>
+                  ))}
+                </select>
                 <label htmlFor={`settings-cutoff-format-score-${p.id}`}>Format score cutoff (0 = off): keep upgrading a file whose custom-format score is lower</label>
                 <input
                   id={`settings-cutoff-format-score-${p.id}`}

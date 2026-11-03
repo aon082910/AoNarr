@@ -19,6 +19,7 @@ import { formatCutoffNotMet, propersMode, revisionUpgrade, upgradeProfileOf, typ
 import { existingFileRecord } from "./fileRelease.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
 import { airedFrontierFor, episodeNotAired, episodePlanFor, seasonPlanFor } from "./searchPlan.js";
+import { scopeAllows } from "./tagScope.js";
 import { recordLeafOutcome, recordSeasonSearch, wakeLeaf, wakeSeason } from "./searchBackoff.js";
 import {
   chooseBestResult,
@@ -199,7 +200,7 @@ export async function runRssSync(signal?: AbortSignal): Promise<RssSyncSummary> 
   if (wanted.types.size === 0) return summary;
 
   // 1. the newest releases of every indexer's feeds
-  const indexers = (await rowsToIndexers()).filter((i) => i.enabled && (i.protocol === "torznab" || i.protocol === "newznab" || i.protocol === "rss"));
+  const indexers = (await rowsToIndexers()).filter((i) => i.enabled && Number(i.enableRss ?? 1) !== 0 && (i.protocol === "torznab" || i.protocol === "newznab" || i.protocol === "rss"));
   const releases: SearchResult[] = [];
   // Where each feed was read to. A feed does not list a release twice, so a marker is kept only once
   // the releases above it have been judged (below): a run cut short reads them again.
@@ -447,7 +448,11 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
   }
 
   const blocklisted = await getBlocklistedTitles(item.id);
-  const delayProfile = pickDelayProfile(env.delayProfiles, await tagIdsForMediaItem(item.id));
+  const itemTags = await tagIdsForMediaItem(item.id);
+  const delayProfile = pickDelayProfile(env.delayProfiles, itemTags);
+  // An indexer scoped to tags is for titles that carry one of them, as in a search.
+  results = results.filter((r) => scopeAllows(env.indexers.find((i) => i.id === r.indexerId)?.tagIds, itemTags));
+  if (results.length === 0) return "none";
   const usable = env.directBudget.usableClients().filter((c) => !env.unavailable.has(c.id));
   const choose = (remaining: SearchResult[], delay: DelayProfile | null) =>
     chooseBestResult(
@@ -470,7 +475,8 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
       results,
       usable,
       (remaining) => choose(remaining, delayProfile),
-      (client, chosen) => grab(client, item, episodeId, group.kind === "sub" ? group.sub.id : null, chosen, 0, seasonNumber, "rss")
+      (client, chosen) => grab(client, item, episodeId, group.kind === "sub" ? group.sub.id : null, chosen, 0, seasonNumber, "rss"),
+      { itemId: item.id, indexers: env.indexers }
     );
   } catch (err) {
     if (noteUnavailableClient(err, env.unavailable)) return "unavailable";

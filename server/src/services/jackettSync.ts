@@ -100,7 +100,7 @@ export async function syncFromJackett(): Promise<{ synced: number; error?: strin
         if (mediaTypes !== existing.media_types) reach = true;
       } else {
         await db
-          .prepare("INSERT INTO indexers (name, protocol, url, api_key, media_types, enabled, config) VALUES (?, 'torznab', ?, ?, ?, 1, ?)")
+          .prepare("INSERT INTO indexers (name, protocol, url, api_key, media_types, enabled, config, minimum_seeders) VALUES (?, 'torznab', ?, ?, ?, 1, ?, 1)")
           .run(idx.name, url, encryptedApiKey, mediaTypesFromCategoryIds(idx.categoryIds), JSON.stringify({ syncedMediaTypes: mediaTypesFromCategoryIds(idx.categoryIds), jackettId: idx.id }));
         reach = true;
       }

@@ -3,6 +3,7 @@ import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { tagFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
+import { parseTagIds } from "../services/tagScope.js";
 
 export const tagsRouter = Router();
 tagsRouter.use(requireAdmin);
@@ -78,9 +79,26 @@ export async function removeReleaseProfileScopeId(
 export interface TagUsage {
   delayProfiles: { id: number; label: string }[];
   releaseProfiles: { id: number; name: string }[];
+  /** Indexers, download clients and import lists scoped to the tag, and root folders that give it to new titles. */
+  indexers: { id: number; name: string }[];
+  downloadClients: { id: number; name: string }[];
+  importLists: { id: number; name: string }[];
+  rootFolders: { id: number; name: string }[];
   /** Items carrying the tag. Only a reason to refuse when the tag also sets a retention period. */
   items: number;
   retentionDays: number | null;
+}
+
+/** The rows of a table whose JSON `tag_ids`-style column lists the tag. */
+async function rowsScopedToTag(table: string, column: string, labelColumn: string, tagId: number): Promise<{ id: number; name: string }[]> {
+  const rows = (await db.prepare(`SELECT id, ${labelColumn} AS label, ${column} AS ids FROM ${table} WHERE ${column} IS NOT NULL`).all()) as {
+    id: number;
+    label: string | null;
+    ids: string;
+  }[];
+  return rows
+    .filter((r) => parseTagIds(r.ids).includes(tagId))
+    .map((r) => ({ id: Number(r.id), name: r.label ?? `#${r.id}` }));
 }
 
 /** What would change if the tag went away. Starr refuses to delete a tag that is in use. */
@@ -111,6 +129,10 @@ export async function tagUsage(tagId: number): Promise<TagUsage> {
       label: `usenet ${p.usenet_delay_minutes} min / torrent ${p.torrent_delay_minutes} min`,
     })),
     releaseProfiles: releaseProfiles.map((p) => ({ id: Number(p.id), name: p.name })),
+    indexers: await rowsScopedToTag("indexers", "tag_ids", "name", tagId),
+    downloadClients: await rowsScopedToTag("download_clients", "tag_ids", "name", tagId),
+    importLists: await rowsScopedToTag("import_lists", "tag_ids", "name", tagId),
+    rootFolders: await rowsScopedToTag("root_folders", "default_tag_ids", "COALESCE(name, path)", tagId),
     items: itemCount,
     retentionDays: tag?.retention_days == null ? null : Number(tag.retention_days),
   };
@@ -132,6 +154,10 @@ tagsRouter.delete(
       const reasons: string[] = [];
       if (usage.delayProfiles.length > 0) reasons.push(`a delay profile (${usage.delayProfiles.map((p) => p.label).join("; ")})`);
       if (usage.releaseProfiles.length > 0) reasons.push(`release profile(s) ${usage.releaseProfiles.map((p) => `"${p.name}"`).join(", ")}`);
+      if (usage.indexers.length > 0) reasons.push(`indexer(s) ${usage.indexers.map((p) => `"${p.name}"`).join(", ")}`);
+      if (usage.downloadClients.length > 0) reasons.push(`download client(s) ${usage.downloadClients.map((p) => `"${p.name}"`).join(", ")}`);
+      if (usage.importLists.length > 0) reasons.push(`import list(s) ${usage.importLists.map((p) => `"${p.name}"`).join(", ")}`);
+      if (usage.rootFolders.length > 0) reasons.push(`root folder default(s) ${usage.rootFolders.map((p) => `"${p.name}"`).join(", ")}`);
       if (usage.retentionDays != null && usage.items > 0) {
         reasons.push(
           usage.retentionDays < 0

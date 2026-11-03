@@ -40,6 +40,8 @@ export interface IrcFeedRow {
   protocol: "torrent" | "usenet";
 }
 
+import { tagIdsOfItem } from "./tagScope.js";
+
 async function rowsToDownloadClients(): Promise<DownloadClient[]> {
   return ((await db.prepare("SELECT * FROM download_clients WHERE enabled = 1").all()) as any[]).map(downloadClientFromRow);
 }
@@ -365,7 +367,7 @@ async function tryGrabMatch(
   if (blocklisted.blocks({ title: releaseTitle, protocol: feed.protocol, indexerId: null, size: 0, publishDate: null, infoHash: null })) return false;
 
   if (await isRootFolderOverQuota(item.rootFolderId)) {
-    log.info(`[irc:${feed.name}] not grabbing "${releaseTitle}" for "${item.title}": its root folder is at/over its configured quota`);
+    log.info(`[irc:${feed.name}] not grabbing "${releaseTitle}" for "${item.title}": its root folder is at/over its configured quota or below its minimum free space`);
     return false;
   }
 
@@ -396,7 +398,10 @@ async function tryGrabMatch(
     category: null,
   };
   const chosen: ChosenResult = { result, quality };
-  const grabbed = await grab(targetClient, item, episodeId, subItemId, chosen, 0, null, "irc");
+  // A client scoped to tags takes only titles carrying one of them; the one picked before the title was known may not.
+  const clientForTitle = pickClientForProtocol(await rowsToDownloadClients(), feed.protocol, { itemTags: await tagIdsOfItem(item.id) }) ?? null;
+  if (!clientForTitle) return false;
+  const grabbed = await grab(clientForTitle, item, episodeId, subItemId, chosen, 0, null, "irc");
   if (grabbed) log.info(`[irc:${feed.name}] instant-grabbed "${releaseTitle}" for "${item.title}"`);
   return grabbed;
 }

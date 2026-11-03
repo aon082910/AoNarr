@@ -9,6 +9,7 @@ import { log } from "./logger.js";
 import { getSetting } from "./settingsStore.js";
 import { MEDIA_TYPES, getMediaTypeConfig } from "./mediaTypes.js";
 import { CONTENT_RATING_ORDER } from "./contentRatings.js";
+import { filterAlbumsByProfile, filterBooksByProfile, musicbrainzTypeFilter, type MetadataProfile } from "./metadataProfiles.js";
 import type { MediaType } from "../types/index.js";
 
 /** Keeps a provider's raw certification string only if it's an exact match for this app's own
@@ -120,6 +121,10 @@ export interface MetadataSubItem {
    * is also the download source), it survives a tracking-prefix change, host migration or query
    * stamp on the enclosure, so it is the key to recognize an already-known episode by. */
   guid?: string;
+  /** A music release group's primary type (MusicBrainz: Album, EP, Single, ...), when the provider reports one. */
+  primaryType?: string | null;
+  /** A music release group's secondary types (Live, Compilation, ...), when the provider reports them. */
+  secondaryTypes?: string[];
 }
 
 export interface MetadataTrack {
@@ -913,8 +918,8 @@ function configuredAlbumTypes(): string[] {
 /** MusicBrainz allows about one request per second per client and answers faster paging with 503s. */
 const MUSICBRAINZ_PAGE_GAP_MS = 1100;
 
-async function fetchArtistAlbumsMusicbrainz(mbid: string): Promise<MetadataSubItem[]> {
-  const types = configuredAlbumTypes().join("|");
+async function fetchArtistAlbumsMusicbrainz(mbid: string, profile: MetadataProfile | null = null): Promise<MetadataSubItem[]> {
+  const types = musicbrainzTypeFilter(profile, configuredAlbumTypes());
   const groups = await collectPages<any>(20, async (page, collected) => {
     if (page > 0) await sleep(MUSICBRAINZ_PAGE_GAP_MS);
     const url = new URL("https://musicbrainz.org/ws/2/release-group");
@@ -935,6 +940,9 @@ async function fetchArtistAlbumsMusicbrainz(mbid: string): Promise<MetadataSubIt
     title: rg.title,
     releaseDate: rg["first-release-date"] || null,
     externalId: rg.id,
+    // Only what the provider sent, so an album from a source that reports no types looks as it always did.
+    ...(rg["primary-type"] ? { primaryType: String(rg["primary-type"]).toLowerCase() } : {}),
+    ...(Array.isArray(rg["secondary-types"]) && rg["secondary-types"].length > 0 ? { secondaryTypes: rg["secondary-types"].map((t: unknown) => String(t).toLowerCase()) } : {}),
   }));
 }
 
@@ -3050,9 +3058,13 @@ export async function fetchSeriesEpisodesForProvider(provider: string, id: strin
 
 /** Dispatches to the right album-list implementation; also reports which provider was used so it can be stored per-album (needed to later fetch tracks from the right API). */
 export async function fetchArtistAlbumsFor(
-  externalIds: Record<string, string>
+  externalIds: Record<string, string>,
+  profile: MetadataProfile | null = null
 ): Promise<{ provider: string; albums: MetadataSubItem[] } | null> {
-  if (externalIds.musicbrainz) return { provider: "musicbrainz", albums: await fetchArtistAlbumsMusicbrainz(externalIds.musicbrainz) };
+  if (externalIds.musicbrainz) {
+    return { provider: "musicbrainz", albums: filterAlbumsByProfile(await fetchArtistAlbumsMusicbrainz(externalIds.musicbrainz, profile), profile) };
+  }
+  // The other providers report no release types, so a profile cannot sort their albums.
   if (externalIds.deezer) return { provider: "deezer", albums: await fetchArtistAlbumsDeezer(externalIds.deezer) };
   if (externalIds.discogs) return { provider: "discogs", albums: await fetchArtistAlbumsDiscogs(externalIds.discogs) };
   if (externalIds.lastfm) return { provider: "lastfm", albums: await fetchArtistAlbumsLastfm(externalIds.lastfm) };
@@ -3065,6 +3077,16 @@ export async function fetchArtistAlbumsFor(
  * match any of these and it correctly falls through to an empty list / manual-only entry).
  */
 export async function fetchCollectionChildrenFor(
+  externalIds: Record<string, string>,
+  profile: MetadataProfile | null = null
+): Promise<{ provider: string | null; children: MetadataSubItem[] }> {
+  const listed = await fetchCollectionChildrenUnfiltered(externalIds);
+  // A profile's book rules are for books; a comic, a manga chapter or a video is never dropped by them.
+  const isBookProvider = ["openlibrary", "googlebooks", "itunes", "hardcover", "goodreads", "audible"].includes(String(listed.provider));
+  return isBookProvider ? { ...listed, children: filterBooksByProfile(listed.children, profile) } : listed;
+}
+
+async function fetchCollectionChildrenUnfiltered(
   externalIds: Record<string, string>
 ): Promise<{ provider: string | null; children: MetadataSubItem[] }> {
   if (externalIds.openlibrary) return { provider: "openlibrary", children: await fetchAuthorBooksOpenlibrary(externalIds.openlibrary) };

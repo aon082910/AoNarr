@@ -29,7 +29,7 @@ export interface SettingsProviderDef {
   eventsKey?: string;
 }
 
-const EVENT_OPTIONS: { key: string; label: string }[] = [
+const EVENT_OPTIONS: { key: string; label: string; optIn?: boolean }[] = [
   { key: "grabbed", label: "Grabbed" },
   { key: "imported", label: "Imported" },
   { key: "upgraded", label: "Upgraded" },
@@ -39,6 +39,11 @@ const EVENT_OPTIONS: { key: string; label: string }[] = [
   { key: "healthRestored", label: "Health restored" },
   { key: "manualInteractionRequired", label: "Manual interaction required" },
   { key: "updateAvailable", label: "Update available" },
+  // These arrive in bulk (a list adds a hundred titles), so a connection gets one only once it is ticked.
+  { key: "added", label: "Title added", optIn: true },
+  { key: "deleted", label: "Title deleted", optIn: true },
+  { key: "renamed", label: "Files renamed", optIn: true },
+  { key: "fileDeleted", label: "File deleted", optIn: true },
 ];
 
 /**
@@ -149,7 +154,7 @@ export default function SettingsProviderTiles({
                   // make those two indistinguishable on read, so unchecking the very last event
                   // snapped every checkbox straight back to checked.
                   const raw = settings[openProvider.eventsKey!];
-                  const enabledEvents = raw === undefined ? EVENT_OPTIONS.map((o) => o.key) : raw ? raw.split(",").map((s) => s.trim()) : [];
+                  const enabledEvents = raw === undefined ? EVENT_OPTIONS.filter((o) => !o.optIn).map((o) => o.key) : raw ? raw.split(",").map((s) => s.trim()) : [];
                   const checked = enabledEvents.includes(opt.key);
                   return (
                     <label key={opt.key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.85rem", margin: 0 }}>

@@ -90,8 +90,19 @@ export const EVENT_KEYS = [
   "healthRestored",
   "manualInteractionRequired",
   "updateAvailable",
+  "added",
+  "deleted",
+  "renamed",
+  "fileDeleted",
 ] as const;
 export type EventKey = (typeof EVENT_KEYS)[number];
+
+/**
+ * Events added after providers already existed. A connection that never saved an event list used to get
+ * "every event", which stays true for the events it knew; these arrive in bulk (a list adds a hundred
+ * titles, a rename touches a whole library), so a connection gets one only when its list names it.
+ */
+const OPT_IN_EVENTS: ReadonlySet<string> = new Set(["added", "deleted", "renamed", "fileDeleted"]);
 
 export function isEventEnabledFor(providerKey: string, event: string): boolean {
   const raw = getSetting(`${providerKey}Events`);
@@ -99,11 +110,47 @@ export function isEventEnabledFor(providerKey: string, event: string): boolean {
   // string means every event was deliberately unchecked, which must NOT also mean "every event"
   // (the empty-string split below already correctly evaluates to false for a real event key once
   // this distinguishes the two instead of treating both as falsy).
-  if (raw == null) return true;
+  if (raw == null) return !OPT_IN_EVENTS.has(event);
   return raw
     .split(",")
     .map((s) => s.trim())
     .includes(event);
+}
+
+/**
+ * A server URL the admin typed, checked without echoing it: one typed without its scheme made fetch throw an
+ * error that quoted the whole URL, and these errors land in the persistent log.
+ */
+function serverBase(server: string, name: string): string {
+  let url: URL;
+  try {
+    url = new URL(server.trim());
+  } catch {
+    throw new Error(`The ${name} server URL must start with http:// or https://`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error(`The ${name} server URL must start with http:// or https://`);
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+}
+
+/** ntfy.sh or a self-hosted ntfy: the message is the body, the title a header. A token (if the topic is protected) is sent as a bearer. */
+async function sendNtfy(server: string, topic: string, token: string, title: string, text: string): Promise<void> {
+  const url = `${serverBase(server, "ntfy")}/${encodeURIComponent(topic)}`;
+  const headers: Record<string, string> = { Title: title.replace(/[^\x20-\x7e]/g, "?") };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(url, { method: "POST", headers, body: text, signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`ntfy send to ${describeTarget(url)} failed: HTTP ${res.status}`);
+}
+
+/** Gotify: the application token travels in a header, never in the URL, so no error or log line can carry it. */
+async function sendGotify(server: string, token: string, title: string, text: string): Promise<void> {
+  const url = `${serverBase(server, "Gotify")}/message`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Gotify-Key": token },
+    body: JSON.stringify({ title, message: text, priority: 5 }),
+    signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`Gotify send to ${describeTarget(url)} failed: HTTP ${res.status}`);
 }
 
 async function fanOut(content: NotificationContent): Promise<void> {
@@ -146,6 +193,17 @@ async function fanOut(content: NotificationContent): Promise<void> {
         message: content.text,
       })
     );
+  }
+
+  const ntfyServer = getSetting("ntfyServerUrl");
+  const ntfyTopic = getSetting("ntfyTopic");
+  if (ntfyServer && ntfyTopic && isEventEnabledFor("ntfy", event)) {
+    jobs.push(sendNtfy(ntfyServer, ntfyTopic, getSetting("ntfyToken") ?? "", content.title, content.text));
+  }
+  const gotifyServer = getSetting("gotifyServerUrl");
+  const gotifyToken = getSetting("gotifyToken");
+  if (gotifyServer && gotifyToken && isEventEnabledFor("gotify", event)) {
+    jobs.push(sendGotify(gotifyServer, gotifyToken, content.title, content.text));
   }
 
   const matrixHomeserver = getSetting("matrixHomeserverUrl");
@@ -235,6 +293,10 @@ const DEFAULT_TEMPLATES = {
   healthIssue: "{summary}",
   manualInteractionRequired: "{mediaTitle}: {reason}",
   updateAvailable: "{title}",
+  added: "{mediaTitle} ({mediaType})",
+  deleted: "{mediaTitle}{filesNote}",
+  renamed: "{mediaTitle}: {count} file(s)",
+  fileDeleted: "{mediaTitle}: {fileName}",
 };
 
 /** Renders a {token}-based template from Settings, falling back to the built-in default when
@@ -312,6 +374,46 @@ export async function notifyUpdateAvailable(title: string): Promise<void> {
     text: renderTemplate("notifyTemplateUpdateAvailable", DEFAULT_TEMPLATES.updateAvailable, { title }),
     color: 0x4fbf6a,
     payload: { event: "updateAvailable", title },
+  });
+}
+
+/** Sonarr's "On Series Add" and Radarr's "On Movie Added": a title entered the library, by hand, from a list or from a request. */
+export async function notifyAdded(mediaTitle: string, mediaType: string): Promise<void> {
+  await fanOut({
+    title: "Added",
+    text: renderTemplate("notifyTemplateAdded", DEFAULT_TEMPLATES.added, { mediaTitle, mediaType }),
+    color: 0x4f8cff,
+    payload: { event: "added", mediaTitle, mediaType },
+  });
+}
+
+/** "On Series Delete" and "On Movie Delete". `deletedFiles`: the files went to the recycle bin with the title. */
+export async function notifyDeleted(mediaTitle: string, mediaType: string, deletedFiles: boolean): Promise<void> {
+  await fanOut({
+    title: "Deleted",
+    text: renderTemplate("notifyTemplateDeleted", DEFAULT_TEMPLATES.deleted, { mediaTitle, filesNote: deletedFiles ? " (files deleted too)" : "" }),
+    color: 0xe05c5c,
+    payload: { event: "deleted", mediaTitle, mediaType, deletedFiles },
+  });
+}
+
+/** "On Rename": Organize & Rename moved or renamed files of one title. */
+export async function notifyRenamed(mediaTitle: string, count: number): Promise<void> {
+  await fanOut({
+    title: "Renamed",
+    text: renderTemplate("notifyTemplateRenamed", DEFAULT_TEMPLATES.renamed, { mediaTitle, count: String(count) }),
+    color: 0x4f8cff,
+    payload: { event: "renamed", mediaTitle, count },
+  });
+}
+
+/** "On Episode File Delete" and "On Movie File Delete": one file was deleted from a title that stays in the library. */
+export async function notifyFileDeleted(mediaTitle: string, fileName: string): Promise<void> {
+  await fanOut({
+    title: "File deleted",
+    text: renderTemplate("notifyTemplateFileDeleted", DEFAULT_TEMPLATES.fileDeleted, { mediaTitle, fileName }),
+    color: 0xe0a95c,
+    payload: { event: "fileDeleted", mediaTitle, fileName },
   });
 }
 
@@ -434,6 +536,20 @@ export async function sendTestNotification(providerKey: string): Promise<void> {
         `AoNarr: ${title}`,
         text
       );
+      return;
+    }
+    case "ntfy": {
+      const server = getSetting("ntfyServerUrl");
+      const topic = getSetting("ntfyTopic");
+      if (!server || !topic) throw new Error("ntfy server URL and topic must both be set");
+      await sendNtfy(server, topic, getSetting("ntfyToken") ?? "", title, text);
+      return;
+    }
+    case "gotify": {
+      const server = getSetting("gotifyServerUrl");
+      const token = getSetting("gotifyToken");
+      if (!server || !token) throw new Error("Gotify server URL and application token must both be set");
+      await sendGotify(server, token, title, text);
       return;
     }
     case "push":

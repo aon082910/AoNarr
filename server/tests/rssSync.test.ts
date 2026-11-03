@@ -583,3 +583,34 @@ describe("runRssSync — albums, books and comic issues (Round 18)", () => {
     expect(await subRows()).toEqual([]);
   });
 });
+describe("runRssSync — indexer roles and tags (Round 26)", () => {
+  it("does not read the feed of an indexer whose RSS role is off", async () => {
+    await insertClient();
+    await insertMovie();
+    const on = await insertIndexer({ name: "Feed On" });
+    const off = await insertIndexer({ name: "Feed Off" });
+    await db.prepare("UPDATE indexers SET enable_rss = 0 WHERE id = ?").run(off);
+
+    await runRssSync();
+
+    const read = fetchRecentReleases.mock.calls.map((c) => (c[0] as { id: number }).id);
+    expect(read).toEqual([on]);
+  });
+
+  it("grabs a release of a tag-scoped indexer only for a title that carries the tag", async () => {
+    await insertClient();
+    const tagId = Number((await db.prepare("INSERT INTO tags (name) VALUES ('rss-scope')").run()).lastInsertRowid);
+    const indexerId = await insertIndexer({ name: "Scoped" });
+    await db.prepare("UPDATE indexers SET tag_ids = ? WHERE id = ?").run(JSON.stringify([tagId]), indexerId);
+    const untagged = await insertMovie({ title: "Plain Film", year: 2001 });
+    const tagged = await insertMovie({ title: "Marked Film", year: 2002 });
+    await db.prepare("INSERT INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?)").run(tagged, tagId);
+    feeds({ "2000": [release("Plain.Film.2001.1080p.WEB-DL-GRP", indexerId), release("Marked.Film.2002.1080p.WEB-DL-GRP", indexerId)] });
+
+    await runRssSync();
+
+    const grabbedFor = ((await queueRows()) as any[]).map((r) => r.media_item_id);
+    expect(grabbedFor).toEqual([tagged]);
+    expect(grabbedFor).not.toContain(untagged);
+  });
+});

@@ -8,10 +8,12 @@ import { setupTestDb } from "./helpers/testDb.js";
 const notifyImported = vi.fn();
 const notifyUpgraded = vi.fn();
 const notifyManualInteractionRequired = vi.fn();
+const notifyRenamed = vi.fn().mockResolvedValue(undefined);
 vi.mock("../src/services/notifications.js", () => ({
   notifyImported: (...args: unknown[]) => notifyImported(...args),
   notifyUpgraded: (...args: unknown[]) => notifyUpgraded(...args),
   notifyManualInteractionRequired: (...args: unknown[]) => notifyManualInteractionRequired(...args),
+  notifyRenamed: (...args: unknown[]) => notifyRenamed(...args),
 }));
 
 const writeNfoSidecar = vi.fn();

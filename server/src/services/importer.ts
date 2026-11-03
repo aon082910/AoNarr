@@ -8,7 +8,7 @@ import { db } from "../db/index.js";
 import { nowExpr } from "../db/asyncDb.js";
 import { config } from "../config.js";
 import { decryptIfSet, mediaItemFromRow, queueItemFromRow, rootFolderFromRow } from "../db/mappers.js";
-import { notifyImported, notifyManualInteractionRequired, notifyUpgraded } from "./notifications.js";
+import { notifyImported, notifyManualInteractionRequired, notifyRenamed, notifyUpgraded } from "./notifications.js";
 import { writeEpisodeNfoSidecar, writeNfoSidecar, writeTvShowNfoIfMissing } from "./metadataExport.js";
 import { writeAudioTags } from "./audioTagWriter.js";
 import { notifyQueueChanged } from "./realtime.js";
@@ -3317,6 +3317,9 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
     // client marks it, and Seed Goal Cleanup may delete its data when seeding is over. Any other torrent
     // keeps its data, because it may hold the only copy.
     await markDownloadImported(queueItem);
+  } else if (!leftFilesBehind && queueItem.indexerId && (await indexerHasSeedGoal(queueItem.indexerId))) {
+    // The torrent keeps seeding with its data kept (a copy or a symlink): only the indexer's own seed goal is recorded on it.
+    await markDownloadImported(queueItem, false);
   }
   if (!leftFilesBehind) cleanupDownloadSourceFolder(releaseDir, ctx);
 }
@@ -3601,6 +3604,8 @@ export async function renameOneMediaItem(mediaItemId: number, onlySeasonNumber?:
   const result: RenameResult = { renamed: [], errors: [], skippedMusic: 0 };
   const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId);
   if (mediaRow) await renameOneItemRow(mediaRow, result, onlySeasonNumber, dryRun);
+  // Sonarr's "On Rename": told once per title, not per file.
+  if (mediaRow && !dryRun && result.renamed.length > 0) notifyRenamed(String((mediaRow as any).title), result.renamed.length).catch(() => undefined);
   return result;
 }
 
@@ -3994,4 +3999,9 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
     result.errors.push({ title: item.title, error: (err as Error).message });
     log.warn(`[importer] rename failed for "${item.title}":`, (err as Error).message);
   }
+}
+
+/** Whether the indexer carries a seed goal of its own (see markDownloadImported). */
+async function indexerHasSeedGoal(indexerId: number): Promise<boolean> {
+  return !!(await db.prepare("SELECT 1 AS ok FROM indexers WHERE id = ? AND (seed_ratio IS NOT NULL OR seed_time_minutes IS NOT NULL)").get(indexerId));
 }

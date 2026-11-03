@@ -6,6 +6,8 @@ import { findUpgradeCandidates } from "../services/upgradeCandidates.js";
 import { rootFolderFromRow } from "../db/mappers.js";
 import { getHttpMetricsSamples } from "../services/httpMetrics.js";
 import { statfsAsync } from "../services/fsAsync.js";
+import { getSetting } from "../services/settingsStore.js";
+import { safeEqual } from "../middleware/auth.js";
 
 /** A scrape or status page must not wait out a dead mount. */
 const METRICS_STATFS_TIMEOUT_MS = 5000;
@@ -91,7 +93,19 @@ function getExpensiveGauges(): Promise<ExpensiveGauges> {
  */
 metricsRouter.get(
   "/",
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
+    // With a metrics token set, the page needs it (as `Authorization: Bearer <token>` or `?token=`) or the instance API key.
+    const required = getSetting("metricsToken");
+    if (required) {
+      const bearer = /^Bearer (.+)$/i.exec(req.header("Authorization") ?? "")?.[1] ?? (typeof req.query.token === "string" ? req.query.token : "");
+      const apiKey = getSetting("apiKey");
+      const given = req.header("X-Api-Key") ?? "";
+      const ok = (bearer && safeEqual(bearer, required)) || (apiKey && given && safeEqual(given, apiKey));
+      if (!ok) {
+        res.status(401).json({ error: "This instance requires a metrics token" });
+        return;
+      }
+    }
     const typeCounts = (await db.prepare("SELECT type, COUNT(*) AS c FROM media_items GROUP BY type").all()) as {
       type: string;
       c: number;

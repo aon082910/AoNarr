@@ -16,6 +16,10 @@ import { queueForReview } from "./importReview.js";
 import { verifyProviderHit } from "./titleMatch.js";
 import { autoSelectRootFolderId } from "./rootFolderSelect.js";
 import { finishWantedAdd } from "./addDefaults.js";
+import { addTagsToItem, parseTagIds } from "./tagScope.js";
+import { applyEpisodeMonitorMode, applySubItemMonitorMode } from "./monitorModes.js";
+import { resolveMetadataProfile } from "./metadataProfiles.js";
+import { queueSearchAfterAdd } from "./searchOnAdd.js";
 
 export interface ImportListRow {
   id: number;
@@ -33,8 +37,23 @@ export interface ImportListRow {
   min_rating: number | null;
   min_votes: number | null;
   exclude_genres: string | null; // JSON array of lowercased genre names
+  /** What the list monitors of what it adds: all, none, or a mode for a series' episodes or an artist's albums. */
+  monitor: string;
+  /** "Monitor New Items" the added titles start with (all, none, new); null leaves the title's own default. */
+  monitor_new_items: string | null;
+  /** 1: a search for the title starts as soon as the list adds it. */
+  search_on_add: number;
+  /** Overrides the instance default for the titles it adds; null uses the default. */
+  minimum_availability: string | null;
+  /** What happens to a title the list added once it is no longer on the list (see LIST_CLEAN_LEVELS). */
+  clean_level: string;
+  /** JSON list of tag ids given to every title the list adds. */
+  tag_ids: string | null;
   created_at: string;
 }
+
+/** Radarr's and Sonarr's "List Sync Level". */
+export const LIST_CLEAN_LEVELS = ["disabled", "logOnly", "keepAndUnmonitor", "removeAndKeep", "removeAndDelete"] as const;
 
 /** The media types each type of list adds items of. */
 export const IMPORT_LIST_MEDIA_TYPES: Record<ImportListRow["type"], string[]> = {
@@ -147,6 +166,53 @@ export function traktListHeaders(clientId: string): Record<string, string> {
 interface ListSyncContext {
   qualityProfileId: number | null;
   rootFolders: RootFolderPicker;
+  /** Every title the list currently holds, keyed like itemListKeys(), whether or not it was added. */
+  seen: Set<string>;
+}
+
+/** The keys under which an entry of a list is recognised: `<type>:tmdb:<id>`, `<type>:imdb:<id>`, `artist:name:<name>`. */
+export function itemListKeys(item: { type: string; title: string; external_ids: string | null }): string[] {
+  const keys: string[] = [];
+  try {
+    const ids = JSON.parse(item.external_ids ?? "{}") ?? {};
+    if (ids.tmdb) keys.push(`${item.type}:tmdb:${ids.tmdb}`);
+    if (ids.imdb) keys.push(`${item.type}:imdb:${ids.imdb}`);
+  } catch {
+    // an unreadable id list gives no id keys
+  }
+  if (item.type === "artist") keys.push(`artist:name:${item.title.toLowerCase()}`);
+  return keys;
+}
+
+/**
+ * Finishes the add of a title a list just inserted: the list's own choices go onto the row first (its
+ * source, minimum availability, monitor_new_items, tags, and whether it is monitored at all), then the
+ * common add defaults run, which read the minimum availability to decide about release dates.
+ */
+async function finishListAdd(list: ImportListRow, itemId: number | bigint | null, source: { releaseDate?: string | null } = {}): Promise<void> {
+  if (itemId == null) return;
+  await db
+    .prepare(
+      "UPDATE media_items SET source_list_id = ?, monitor_new_items = COALESCE(?, monitor_new_items), minimum_availability = COALESCE(?, minimum_availability), monitored = ? WHERE id = ?"
+    )
+    .run(list.id, list.monitor_new_items ?? null, list.minimum_availability ?? null, list.monitor === "none" ? 0 : 1, Number(itemId));
+  await addTagsToItem(itemId, parseTagIds(list.tag_ids));
+  await finishWantedAdd(itemId, source);
+}
+
+/** What happens once a list has put in a title's episodes or albums: the list's monitor choice, then its search on add. */
+async function afterListChildren(list: ImportListRow, itemId: number | bigint | null, type: string): Promise<void> {
+  if (itemId == null) return;
+  try {
+    const mode = list.monitor || "all";
+    if (mode !== "all") {
+      if (type === "series") await applyEpisodeMonitorMode(itemId, mode);
+      else if (type === "artist") await applySubItemMonitorMode(itemId, mode);
+    }
+    if (Number(list.search_on_add) && mode !== "none") queueSearchAfterAdd(itemId);
+  } catch (err) {
+    log.warn(`[importLists] list "${list.name}": could not finish the add of item ${itemId}:`, (err as Error).message);
+  }
 }
 
 /**
@@ -250,7 +316,9 @@ export async function insertTracksForAlbum(
 }
 
 async function insertArtistAlbums(mediaItemId: number | bigint | null, externalIds: Record<string, string>) {
-  const result = await fetchArtistAlbumsFor(externalIds).catch(() => null);
+  const itemRow = mediaItemId == null ? null : ((await db.prepare("SELECT metadata_profile_id, root_folder_id FROM media_items WHERE id = ?").get(Number(mediaItemId))) as any);
+  const profile = itemRow ? await resolveMetadataProfile(itemRow) : null;
+  const result = await fetchArtistAlbumsFor(externalIds, profile).catch(() => null);
   if (!result) return;
   const insertedAlbumIds: { id: number | bigint; externalId: string }[] = [];
   for (const album of result.albums) {
@@ -306,6 +374,7 @@ async function syncTraktList(list: ImportListRow, ctx: ListSyncContext): Promise
       if (entry.movie) {
         const m = entry.movie;
         const tmdbId = m.ids?.tmdb;
+        if (tmdbId) ctx.seen.add(`movie:tmdb:${tmdbId}`);
         if (!tmdbId || existingMovies.has(String(tmdbId))) continue;
         if (await isExcluded("movie", m.title, m.year ?? null, String(tmdbId), "tmdb")) continue;
         if (!passesListFilters(list, { rating: m.rating ?? null, votes: m.votes ?? null, genres: m.genres ?? null })) continue;
@@ -333,12 +402,14 @@ async function syncTraktList(list: ImportListRow, ctx: ListSyncContext): Promise
         );
         existingMovies.add(String(tmdbId));
         if (inserted) {
-          await finishWantedAdd(inserted.lastInsertRowid, { releaseDate: m.released ?? null });
+          await finishListAdd(list, inserted.lastInsertRowid, { releaseDate: m.released ?? null });
+          await afterListChildren(list, inserted.lastInsertRowid, "movie");
           added++;
         }
       } else if (entry.show) {
         const s = entry.show;
         const tmdbId = s.ids?.tmdb;
+        if (tmdbId) ctx.seen.add(`series:tmdb:${tmdbId}`);
         if (!tmdbId || existingSeries.has(String(tmdbId))) continue;
         if (await isExcluded("series", s.title, s.year ?? null, String(tmdbId), "tmdb")) continue;
         if (!passesListFilters(list, { rating: s.rating ?? null, votes: s.votes ?? null, genres: s.genres ?? null })) continue;
@@ -359,8 +430,9 @@ async function syncTraktList(list: ImportListRow, ctx: ListSyncContext): Promise
         );
         existingSeries.add(String(tmdbId));
         if (!result) continue;
-        await finishWantedAdd(result.lastInsertRowid);
+        await finishListAdd(list, result.lastInsertRowid);
         await insertSeriesEpisodes(result.lastInsertRowid, externalIds);
+        await afterListChildren(list, result.lastInsertRowid, "series");
         added++;
       }
     } catch (err) {
@@ -462,6 +534,7 @@ async function syncImdbList(list: ImportListRow, ctx: ListSyncContext): Promise<
     const titleType = (row["Title Type"] ?? "").toLowerCase();
     if (!title) continue;
     const type = titleType.includes("series") || titleType.includes("show") ? "series" : "movie";
+    if (row["Const"]) ctx.seen.add(`${type}:imdb:${row["Const"]}`);
 
     try {
       if ((await findPossibleDuplicates(type as any, title, year)).length > 0) continue;
@@ -510,15 +583,17 @@ async function syncImdbList(list: ImportListRow, ctx: ListSyncContext): Promise<
             best.year,
             best.overview,
             best.posterUrl,
-            JSON.stringify(bestIds),
+            // The list's own id for the title is kept too, so a later sync (and the clean-up) recognises it.
+            JSON.stringify(row["Const"] && !bestIds.imdb ? { ...bestIds, imdb: row["Const"] } : bestIds),
             rootFolderId,
             ctx.qualityProfileId
           );
       });
       if (!insertResult) continue;
 
-      await finishWantedAdd(insertResult.lastInsertRowid, { releaseDate: best.releaseDate ?? null });
+      await finishListAdd(list, insertResult.lastInsertRowid, { releaseDate: best.releaseDate ?? null });
       if (type === "series") await insertSeriesEpisodes(insertResult.lastInsertRowid, bestIds);
+      await afterListChildren(list, insertResult.lastInsertRowid, type);
       added++;
     } catch (err) {
       log.warn(`[importLists] IMDb list "${list.name}" failed to add "${title}":`, (err as Error).message);
@@ -564,6 +639,7 @@ async function syncLastfmList(list: ImportListRow, ctx: ListSyncContext): Promis
   for (const a of artists) {
     const title = a?.name;
     if (!title) continue;
+    ctx.seen.add(`artist:name:${String(title).toLowerCase()}`);
     try {
       if ((await findPossibleDuplicates("artist" as any, title, null)).length > 0) continue;
       if (await isExcluded("artist", title, null, a.mbid ?? "", "lastfm")) continue;
@@ -585,8 +661,9 @@ async function syncLastfmList(list: ImportListRow, ctx: ListSyncContext): Promis
           .run(title, title.toLowerCase(), JSON.stringify(externalIds), rootFolderId, ctx.qualityProfileId);
       });
       if (!insertResult) continue;
-      await finishWantedAdd(insertResult.lastInsertRowid);
+      await finishListAdd(list, insertResult.lastInsertRowid);
       await insertArtistAlbums(insertResult.lastInsertRowid, externalIds);
+      await afterListChildren(list, insertResult.lastInsertRowid, "artist");
       added++;
     } catch (err) {
       log.warn(`[importLists] Last.fm list "${list.name}" failed to add "${title}":`, (err as Error).message);
@@ -653,6 +730,7 @@ async function syncTmdbList(list: ImportListRow, ctx: ListSyncContext): Promise<
       const isTv = entry.media_type === "tv" || (!entry.media_type && entry.first_air_date);
       const tmdbId = entry.id;
       if (!tmdbId) continue;
+      ctx.seen.add(`${isTv ? "series" : "movie"}:tmdb:${tmdbId}`);
 
       if (isTv) {
         if (existingSeries.has(String(tmdbId))) continue;
@@ -680,8 +758,9 @@ async function syncTmdbList(list: ImportListRow, ctx: ListSyncContext): Promise<
         );
         existingSeries.add(String(tmdbId));
         if (!result) continue;
-        await finishWantedAdd(result.lastInsertRowid);
+        await finishListAdd(list, result.lastInsertRowid);
         await insertSeriesEpisodes(result.lastInsertRowid, externalIds);
+        await afterListChildren(list, result.lastInsertRowid, "series");
         added++;
       } else {
         if (existingMovies.has(String(tmdbId))) continue;
@@ -716,7 +795,8 @@ async function syncTmdbList(list: ImportListRow, ctx: ListSyncContext): Promise<
         );
         existingMovies.add(String(tmdbId));
         if (inserted) {
-          await finishWantedAdd(inserted.lastInsertRowid, { releaseDate: entry.release_date ?? null });
+          await finishListAdd(list, inserted.lastInsertRowid, { releaseDate: entry.release_date ?? null });
+          await afterListChildren(list, inserted.lastInsertRowid, "movie");
           added++;
         }
       }
@@ -728,6 +808,97 @@ async function syncTmdbList(list: ImportListRow, ctx: ListSyncContext): Promise<
   return added;
 }
 
+/** Replaces what a list is recorded as holding. */
+async function recordListEntries(listId: number, seen: Set<string>): Promise<void> {
+  await db.transaction(async () => {
+    await db.prepare("DELETE FROM import_list_entries WHERE list_id = ?").run(listId);
+    for (const key of seen) await db.prepare("INSERT INTO import_list_entries (list_id, entry_key) VALUES (?, ?) ON CONFLICT DO NOTHING").run(listId, key);
+  });
+}
+
+/** A clean-up that would take more than this share of the titles a list added is refused: more likely the list came back short than that it changed that much. */
+const CLEAN_REFUSE_SHARE = 0.5;
+const CLEAN_REFUSE_MIN_COUNT = 10;
+
+/**
+ * Sonarr's and Radarr's "List Sync Level": what happens to a title this list added once the list no
+ * longer holds it. Only the list that added a title cleans it, and a protected title is never touched.
+ * An entry is recognised by its tmdb or imdb id (or, for an artist, its name); a title the list added
+ * under neither is left alone. Returns how many titles were acted on.
+ */
+export async function cleanListItems(list: ImportListRow, seen: Set<string>, onWarning: (message: string) => void = () => undefined): Promise<number> {
+  const refuse = (message: string): 0 => {
+    log.warn(`[importLists] list "${list.name}": ${message}`);
+    onWarning(message);
+    return 0;
+  };
+  // A Last.fm list is the top 50 of a ranking: an artist slipping to number 51 has not left anyone's library.
+  if (list.type === "lastfm" && (list.clean_level === "removeAndKeep" || list.clean_level === "removeAndDelete")) {
+    return refuse("a Last.fm list is a ranking, so it can only log or unmonitor, never remove");
+  }
+  const items = (await db
+    .prepare("SELECT id, type, title, external_ids, monitored, protected, path FROM media_items WHERE source_list_id = ?")
+    .all(list.id)) as { id: number; type: string; title: string; external_ids: string | null; monitored: number; protected: number }[];
+
+  // An item is judged only by keys of a kind this sync produced: a sync that listed IMDb ids cannot say anything about a title kept under its TMDB id.
+  const kindOf = (key: string) => key.slice(0, key.lastIndexOf(":"));
+  const seenKinds = new Set([...seen].map(kindOf));
+  // A title another enabled list still holds stays, whichever list added it.
+  const others = (await db
+    .prepare("SELECT l.id AS id, l.type AS type, e.entry_key AS entry_key FROM import_lists l LEFT JOIN import_list_entries e ON e.list_id = l.id WHERE l.enabled = 1 AND l.id <> ?")
+    .all(list.id)) as { id: number; type: ImportListRow["type"]; entry_key: string | null }[];
+  const heldElsewhere = new Set(others.filter((o) => o.entry_key).map((o) => o.entry_key as string));
+  const listsWithEntries = new Set(others.filter((o) => o.entry_key).map((o) => Number(o.id)));
+  const itemTypes = new Set(items.map((i) => i.type));
+  // A list that has not recorded what it holds yet (never synced since this existed) could be holding any of these titles.
+  const unknown = others.filter((o) => !listsWithEntries.has(Number(o.id)) && IMPORT_LIST_MEDIA_TYPES[o.type]?.some((t) => itemTypes.has(t)));
+  if (unknown.length > 0 && list.clean_level !== "logOnly") {
+    return refuse("waiting for the other enabled lists to sync once, so a title one of them holds is not removed");
+  }
+
+  const gone = items.filter((item) => {
+    if (Number(item.protected)) return false;
+    const keys = itemListKeys(item);
+    const comparable = keys.filter((k) => seenKinds.has(kindOf(k)));
+    return comparable.length > 0 && !comparable.some((k) => seen.has(k)) && !keys.some((k) => heldElsewhere.has(k));
+  });
+  if (gone.length === 0) return 0;
+  if (list.clean_level !== "logOnly") {
+    // The list came back much shorter than last time: more likely a short answer than that many titles left.
+    const previous = Number(((await db.prepare("SELECT COUNT(*) AS c FROM import_list_entries WHERE list_id = ?").get(list.id)) as { c: number | string }).c);
+    if (previous >= 4 && seen.size < previous * CLEAN_REFUSE_SHARE) {
+      return refuse(`it came back with ${seen.size} entries after ${previous} last time; nothing was cleaned (did the list come back short?)`);
+    }
+    if (gone.length > CLEAN_REFUSE_MIN_COUNT && gone.length > items.length * CLEAN_REFUSE_SHARE) {
+      return refuse(`${gone.length} of its ${items.length} titles are no longer on it; refusing to clean that many at once (did the list come back short?)`);
+    }
+  }
+
+  let acted = 0;
+  for (const item of gone) {
+    try {
+      if (list.clean_level === "logOnly") {
+        log.info(`[importLists] list "${list.name}": "${item.title}" is no longer on the list (clean level: log only)`);
+      } else if (list.clean_level === "keepAndUnmonitor") {
+        if (!Number(item.monitored)) continue;
+        await db.prepare("UPDATE media_items SET monitored = 0 WHERE id = ?").run(item.id);
+        log.info(`[importLists] list "${list.name}": "${item.title}" is no longer on the list; unmonitored`);
+      } else if (list.clean_level === "removeAndKeep" || list.clean_level === "removeAndDelete") {
+        // Loaded here: the router pulls in most of the server, and this module is imported by it.
+        const { deleteMediaItemCascade } = await import("../routes/media.js");
+        const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(item.id);
+        if (!row) continue;
+        await deleteMediaItemCascade(row, list.clean_level === "removeAndDelete");
+        log.info(`[importLists] list "${list.name}": "${item.title}" is no longer on the list; removed${list.clean_level === "removeAndDelete" ? " with its files" : ""}`);
+      }
+      acted++;
+    } catch (err) {
+      log.warn(`[importLists] list "${list.name}": could not clean "${item.title}":`, (err as Error).message);
+    }
+  }
+  return acted;
+}
+
 /** `error`: the sync failed. `warning`: it added `added` items but skipped others. Either is also
  * stored in last_error, the list's only status column (a warning with the added count in front,
  * since the list shows last_error in place of that count). */
@@ -736,7 +907,7 @@ export async function syncImportList(list: ImportListRow): Promise<{ added: numb
     list.quality_profile_id ??
     ((await db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get()) as { id: number } | undefined)?.id ??
     null;
-  const ctx: ListSyncContext = { qualityProfileId, rootFolders: new RootFolderPicker(list.root_folder_id ?? null) };
+  const ctx: ListSyncContext = { qualityProfileId, rootFolders: new RootFolderPicker(list.root_folder_id ?? null), seen: new Set() };
 
   try {
     const added =
@@ -747,7 +918,16 @@ export async function syncImportList(list: ImportListRow): Promise<{ added: numb
           : list.type === "tmdb"
             ? await syncTmdbList(list, ctx)
             : await syncImdbList(list, ctx);
-    const warning = ctx.rootFolders.skippedSummary();
+    // A list that came back empty says nothing about what it holds, so nothing is cleaned after one.
+    const cleanWarnings: string[] = [];
+    if (list.clean_level && list.clean_level !== "disabled" && ctx.seen.size > 0) {
+      await cleanListItems(list, ctx.seen, (message) => cleanWarnings.push(`clean-up: ${message}`)).catch((err) =>
+        log.warn(`[importLists] list "${list.name}": clean-up failed:`, (err as Error).message)
+      );
+    }
+    // What the list holds now is what the next sync compares with, and what other lists' clean-ups protect.
+    if (ctx.seen.size > 0) await recordListEntries(list.id, ctx.seen);
+    const warning = [ctx.rootFolders.skippedSummary(), ...cleanWarnings].filter(Boolean).join("; ") || null;
     await db
       .prepare(`UPDATE import_lists SET last_synced_at = ${nowExpr(db)}, last_added_count = ?, last_error = ? WHERE id = ?`)
       .run(added, warning ? `Added ${added}; ${warning}` : null, list.id);

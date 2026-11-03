@@ -11,6 +11,7 @@ import { auditActor, logAuditEvent } from "../services/audit.js";
 import { encryptValue } from "../services/encryption.js";
 import { removeReleaseProfileScopeId } from "./tags.js";
 import { resetSearchBackoff } from "../services/searchBackoff.js";
+import { checkedTagIdsColumn } from "../services/tagScope.js";
 
 export const indexersRouter = Router();
 indexersRouter.use(requireAdmin);
@@ -59,16 +60,53 @@ function minimumSeeders(value: unknown): number | undefined {
   return n;
 }
 
+/** The seed goal fields: null or '' clears the goal (the global goal applies); otherwise a number of 0 or more. */
+function seedGoal(value: unknown, field: string, whole: boolean): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || (whole && !Number.isInteger(n)) || n > 2147483647) {
+    throw new HttpError(400, `${field} must be ${whole ? "a whole number" : "a number"} of 0 or more, or empty to use the global goal`);
+  }
+  return n;
+}
+
+/** The download client an indexer's releases go to: null or '' picks by protocol; otherwise an existing client. */
+async function downloadClientChoice(value: unknown): Promise<number | null | undefined> {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  const id = Number(value);
+  if (!Number.isInteger(id) || !(await db.prepare("SELECT 1 AS ok FROM download_clients WHERE id = ?").get(id))) {
+    throw new HttpError(400, "downloadClientId must be an existing download client, or empty to pick one by protocol");
+  }
+  return id;
+}
+
+/** The tag scope: null for none (every title), else the JSON list. */
+async function tagScope(value: unknown): Promise<string | null | undefined> {
+  try {
+    return await checkedTagIdsColumn(value);
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
+}
+
 indexersRouter.post(
   "/",
   asyncHandler(async (req, res) => {
     const b = req.body ?? {};
     if (!b.name || !b.protocol || !b.url) throw new HttpError(400, "name, protocol and url are required");
+    const seedRatio = seedGoal(b.seedRatio, "seedRatio", false);
+    const seedTimeMinutes = seedGoal(b.seedTimeMinutes, "seedTimeMinutes", true);
+    const downloadClientId = await downloadClientChoice(b.downloadClientId);
+    const tagIds = await tagScope(b.tagIds);
 
     const result = await db
       .prepare(
-        `INSERT INTO indexers (name, protocol, url, api_key, categories, media_types, enabled, priority, minimum_seeders, config, use_flaresolverr, query_limit_per_hour)
-         VALUES (@name, @protocol, @url, @apiKey, @categories, @mediaTypes, @enabled, @priority, @minimumSeeders, @config, @useFlareSolverr, @queryLimitPerHour)`
+        `INSERT INTO indexers (name, protocol, url, api_key, categories, media_types, enabled, priority, minimum_seeders, config, use_flaresolverr, query_limit_per_hour,
+           tag_ids, enable_rss, enable_automatic_search, enable_interactive_search, seed_ratio, seed_time_minutes, download_client_id)
+         VALUES (@name, @protocol, @url, @apiKey, @categories, @mediaTypes, @enabled, @priority, @minimumSeeders, @config, @useFlareSolverr, @queryLimitPerHour,
+           @tagIds, @enableRss, @enableAutomaticSearch, @enableInteractiveSearch, @seedRatio, @seedTimeMinutes, @downloadClientId)`
       )
       .run({
         name: b.name,
@@ -79,10 +117,18 @@ indexersRouter.post(
         mediaTypes: b.mediaTypes ?? DEFAULT_INDEXER_MEDIA_TYPES,
         enabled: b.enabled === false ? 0 : 1,
         priority: b.priority ?? 25,
-        minimumSeeders: minimumSeeders(b.minimumSeeders) ?? 0,
+        // Sonarr and Radarr start a torrent indexer at 1 seeder: a dead torrent never finishes, and holds its target until the stalled clean-up.
+        minimumSeeders: minimumSeeders(b.minimumSeeders) ?? 1,
         config: b.config ? JSON.stringify(b.config) : null,
         useFlareSolverr: b.useFlareSolverr ? 1 : 0,
         queryLimitPerHour: b.queryLimitPerHour ?? null,
+        tagIds: tagIds ?? null,
+        enableRss: b.enableRss === false || b.enableRss === 0 ? 0 : 1,
+        enableAutomaticSearch: b.enableAutomaticSearch === false || b.enableAutomaticSearch === 0 ? 0 : 1,
+        enableInteractiveSearch: b.enableInteractiveSearch === false || b.enableInteractiveSearch === 0 ? 0 : 1,
+        seedRatio: seedRatio ?? null,
+        seedTimeMinutes: seedTimeMinutes ?? null,
+        downloadClientId: downloadClientId ?? null,
       });
 
     const row = await db.prepare("SELECT * FROM indexers WHERE id = ?").get(result.lastInsertRowid);
@@ -110,9 +156,20 @@ indexersRouter.patch(
       minimumSeeders: "minimum_seeders",
       useFlareSolverr: "use_flaresolverr",
       queryLimitPerHour: "query_limit_per_hour",
+      enableRss: "enable_rss",
+      enableAutomaticSearch: "enable_automatic_search",
+      enableInteractiveSearch: "enable_interactive_search",
+      seedRatio: "seed_ratio",
+      seedTimeMinutes: "seed_time_minutes",
+      downloadClientId: "download_client_id",
+      tagIds: "tag_ids",
     };
     if (b.minimumSeeders !== undefined) b.minimumSeeders = minimumSeeders(b.minimumSeeders) ?? 0;
-    const booleanKeys = new Set(["enabled", "useFlareSolverr"]);
+    if (b.seedRatio !== undefined) b.seedRatio = seedGoal(b.seedRatio, "seedRatio", false);
+    if (b.seedTimeMinutes !== undefined) b.seedTimeMinutes = seedGoal(b.seedTimeMinutes, "seedTimeMinutes", true);
+    if (b.downloadClientId !== undefined) b.downloadClientId = await downloadClientChoice(b.downloadClientId);
+    if (b.tagIds !== undefined) b.tagIds = await tagScope(b.tagIds);
+    const booleanKeys = new Set(["enabled", "useFlareSolverr", "enableRss", "enableAutomaticSearch", "enableInteractiveSearch"]);
     const secretKeys = new Set(["apiKey"]);
     const sets: string[] = [];
     const values: any[] = [];

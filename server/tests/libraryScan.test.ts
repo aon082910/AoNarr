@@ -1459,7 +1459,7 @@ describe("refreshLibraryMetadata / refreshOneMediaItem", () => {
     expect(result).toEqual({ ok: true, childrenAdded: 1 });
     const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(id)) as any;
     expect(row).toMatchObject({ title: "John Williams", overview: "Own bio", poster_url: "own.jpg", year: null });
-    expect(fetchCollectionChildrenFor).toHaveBeenCalledWith({ goodreads: "123" });
+    expect(fetchCollectionChildrenFor).toHaveBeenCalledWith({ goodreads: "123" }, null);
   });
 
   it("regression: an already-matched item is looked up by its own id, not by a fresh title search that could drift to a different result", async () => {
@@ -1872,7 +1872,7 @@ describe("refreshLibraryMetadata / refreshOneMediaItem", () => {
 
     await refreshOneMediaItem(artistId);
 
-    expect(fetchArtistAlbumsFor).toHaveBeenCalledWith({ deezer: "1" });
+    expect(fetchArtistAlbumsFor).toHaveBeenCalledWith({ deezer: "1" }, null);
     expect(fetchArtistAlbumsFor).not.toHaveBeenCalledWith(expect.objectContaining({ musicbrainz: "b10bbbfc" }));
   });
 
@@ -1903,7 +1903,7 @@ describe("refreshLibraryMetadata / refreshOneMediaItem", () => {
 
     const result = await refreshOneMediaItem(mangaId);
 
-    expect(fetchCollectionChildrenFor).toHaveBeenCalledWith({ anilist: "105778", mangadex: "a77742b1" });
+    expect(fetchCollectionChildrenFor).toHaveBeenCalledWith({ anilist: "105778", mangadex: "a77742b1" }, null);
     expect(result.childrenAdded).toBe(2);
     const chapters = (await db.prepare("SELECT title, external_provider FROM sub_items WHERE media_item_id = ? ORDER BY title").all(mangaId)) as any[];
     expect(chapters).toEqual([
@@ -1923,7 +1923,7 @@ describe("refreshLibraryMetadata / refreshOneMediaItem", () => {
 
     await refreshOneMediaItem(authorId);
 
-    expect(fetchCollectionChildrenFor).toHaveBeenCalledWith({ audnexus: "B00G0WYW92", openlibrary: "OL7115219A" });
+    expect(fetchCollectionChildrenFor).toHaveBeenCalledWith({ audnexus: "B00G0WYW92", openlibrary: "OL7115219A" }, null);
   });
 
   it("childListProviderIds keeps a channel or playlist on its own id once a YouTube channel id is matched in", () => {

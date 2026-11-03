@@ -2,7 +2,47 @@ import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { IMPORT_LIST_MEDIA_TYPES, syncImportList, type ImportListRow } from "../services/importLists.js";
+import { IMPORT_LIST_MEDIA_TYPES, LIST_CLEAN_LEVELS, syncImportList, type ImportListRow } from "../services/importLists.js";
+import { isMonitorMode, isNewItemMode } from "../services/monitorModes.js";
+import { checkedTagIdsColumn } from "../services/tagScope.js";
+
+const MINIMUM_AVAILABILITIES = ["announced", "inCinemas", "released"];
+
+/** The list options a request body may carry, checked. Only the ones the body names are returned (column -> value). */
+async function listOptionsInput(b: any, listType: ImportListRow["type"]): Promise<Record<string, string | number | null>> {
+  const out: Record<string, string | number | null> = {};
+  if (b.monitor !== undefined) {
+    if (!isMonitorMode(b.monitor)) throw new HttpError(400, `Unknown monitor choice "${b.monitor}"`);
+    out.monitor = b.monitor;
+  }
+  if (b.monitorNewItems !== undefined) {
+    if (b.monitorNewItems !== null && !isNewItemMode(b.monitorNewItems)) throw new HttpError(400, "monitorNewItems must be all, none or new");
+    out.monitor_new_items = b.monitorNewItems;
+  }
+  if (b.searchOnAdd !== undefined) out.search_on_add = b.searchOnAdd ? 1 : 0;
+  if (b.minimumAvailability !== undefined) {
+    if (b.minimumAvailability !== null && !MINIMUM_AVAILABILITIES.includes(b.minimumAvailability)) {
+      throw new HttpError(400, `minimumAvailability must be one of: ${MINIMUM_AVAILABILITIES.join(", ")}`);
+    }
+    out.minimum_availability = b.minimumAvailability;
+  }
+  if (b.cleanLevel !== undefined) {
+    if (!(LIST_CLEAN_LEVELS as readonly string[]).includes(b.cleanLevel)) throw new HttpError(400, `cleanLevel must be one of: ${LIST_CLEAN_LEVELS.join(", ")}`);
+    // A Last.fm list is the top 50 of a ranking: leaving it is not leaving anyone's library.
+    if (listType === "lastfm" && (b.cleanLevel === "removeAndKeep" || b.cleanLevel === "removeAndDelete")) {
+      throw new HttpError(400, "A Last.fm list is a ranking, so it can log or unmonitor what drops out of it, never remove it");
+    }
+    out.clean_level = b.cleanLevel;
+  }
+  if (b.tagIds !== undefined) {
+    try {
+      out.tag_ids = (await checkedTagIdsColumn(b.tagIds)) ?? null;
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+  }
+  return out;
+}
 
 export const importListsRouter = Router();
 importListsRouter.use(requireAdmin);
@@ -55,6 +95,7 @@ importListsRouter.post(
       throw new HttpError(400, "type must be 'trakt', 'imdb', 'lastfm' or 'tmdb'");
     }
     const listRootFolderId = await rootFolderIdInput(rootFolderId, type);
+    const options = await listOptionsInput(req.body ?? {}, type);
 
     const result = await db
       .prepare(
@@ -73,6 +114,12 @@ importListsRouter.post(
         normalizeGenresInput(excludeGenres),
         listRootFolderId
       );
+    const optionColumns = Object.keys(options);
+    if (optionColumns.length > 0) {
+      await db
+        .prepare(`UPDATE import_lists SET ${optionColumns.map((c) => `${c} = ?`).join(", ")} WHERE id = ?`)
+        .run(...optionColumns.map((c) => options[c]), result.lastInsertRowid);
+    }
     const row = await db.prepare("SELECT * FROM import_lists WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(row);
   })
@@ -124,6 +171,10 @@ importListsRouter.patch(
     if (b.rootFolderId !== undefined) {
       sets.push("root_folder_id = ?");
       values.push(await rootFolderIdInput(b.rootFolderId, existing.type));
+    }
+    for (const [column, value] of Object.entries(await listOptionsInput(b, existing.type))) {
+      sets.push(`${column} = ?`);
+      values.push(value);
     }
 
     if (sets.length > 0) {
