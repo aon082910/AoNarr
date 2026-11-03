@@ -99,6 +99,8 @@ ensureColumn("sub_items", "poster_url", "poster_url TEXT");
 ensureColumn("duplicate_group_seen", "dismissed", "dismissed INTEGER NOT NULL DEFAULT 0");
 ensureColumn("media_items", "minimum_availability", "minimum_availability TEXT");
 ensureColumn("media_items", "series_type", "series_type TEXT");
+// The title's folder below its root folder, kept from the first import so a later title change never opens a second folder.
+ensureColumn("media_items", "library_folder", "library_folder TEXT");
 ensureColumn("library_groups", "logo_url", "logo_url TEXT");
 ensureColumn("sub_items", "series_name", "series_name TEXT");
 ensureColumn("sub_items", "series_position", "series_position REAL");

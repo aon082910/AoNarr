@@ -216,6 +216,23 @@ rootFoldersRouter.post(
   })
 );
 
+/**
+ * What removing a root folder would do to the items that use it: they keep their rows but lose the folder, so every
+ * import for them is skipped until they are given another. The Settings page shows the count before it asks.
+ */
+rootFoldersRouter.get(
+  "/:id/impact",
+  asyncHandler(async (req, res) => {
+    const folder = await db.prepare("SELECT id FROM root_folders WHERE id = ?").get(req.params.id);
+    if (!folder) throw new HttpError(404, "Root folder not found");
+    const items = (await db.prepare("SELECT COUNT(*) AS c FROM media_items WHERE root_folder_id = ?").get(req.params.id)) as { c: number | string };
+    const withFiles = (await db
+      .prepare("SELECT COUNT(*) AS c FROM media_items WHERE root_folder_id = ? AND has_file = 1")
+      .get(req.params.id)) as { c: number | string };
+    res.json({ itemCount: Number(items.c), itemsWithFiles: Number(withFiles.c) });
+  })
+);
+
 rootFoldersRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {

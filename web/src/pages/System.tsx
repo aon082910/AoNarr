@@ -1437,9 +1437,9 @@ export default function System() {
           Retroactively re-renames every already-imported file whose current path no longer
           matches its library type's naming template (Settings → Media Management → Naming) — for
           after you've changed a template and want existing files to catch up, not just new
-          imports. Files with no change needed are skipped; Music and Audiobooks are skipped
-          entirely since their individual track/chapter filenames are always kept as-downloaded
-          rather than templated.
+          imports. Files with no change needed are skipped; for Music and Audiobooks only the
+          album folder is moved to the template's folder, while the track/chapter filenames are
+          kept as downloaded.
         </p>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <select value={renameType} onChange={(e) => setRenameType(e.target.value)} style={{ maxWidth: 220 }}>

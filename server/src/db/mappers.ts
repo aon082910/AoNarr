@@ -40,6 +40,7 @@ export function mediaItemFromRow(row: any) {
     physicalReleaseDate: row.physical_release_date,
     minimumAvailability: row.minimum_availability,
     seriesType: row.series_type,
+    libraryFolder: row.library_folder ?? null,
     backdropUrl: row.backdrop_url,
     rating: row.rating,
     runtimeMinutes: row.runtime_minutes,

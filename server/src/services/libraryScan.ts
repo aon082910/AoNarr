@@ -910,7 +910,8 @@ export async function scanAndImportLibrary(
   signal?: AbortSignal,
   onlyTitle?: string,
   onlySeasonNumber?: number,
-  onlyMediaItemId?: number
+  onlyMediaItemId?: number,
+  linkOnly = false
 ): Promise<ScanImportResult> {
   // A per-item scan while a whole-library scan is running or queued is left to that scan, which
   // walks this item's files too. Per-item scans only queue behind each other: they're short.
@@ -927,7 +928,7 @@ export async function scanAndImportLibrary(
   const jobId = !onlyTitle ? startBackgroundJob("scan", type, `Scan & Import — ${getMediaTypeConfig(type).label}`) : null;
   let errorMessage: string | undefined;
   try {
-    return await runScanExclusively(type, () => scanAndImportLibraryInner(type, signal, onlyTitle, onlySeasonNumber, onlyMediaItemId));
+    return await runScanExclusively(type, () => scanAndImportLibraryInner(type, signal, onlyTitle, onlySeasonNumber, onlyMediaItemId, linkOnly));
   } catch (err) {
     errorMessage = (err as Error).message;
     throw err;
@@ -942,7 +943,8 @@ async function scanAndImportLibraryInner(
   signal?: AbortSignal,
   onlyTitle?: string,
   onlySeasonNumber?: number,
-  onlyMediaItemId?: number
+  onlyMediaItemId?: number,
+  linkOnly = false
 ): Promise<ScanImportResult> {
   const typeConfig = getMediaTypeConfig(type);
   const result: ScanImportResult = { matched: 0, created: 0, skipped: 0, skippedFiles: [] };
@@ -1183,6 +1185,11 @@ async function scanAndImportLibraryInner(
         }
 
         if (!seriesMatch) {
+          // A scan run to link one new title's files never creates another title.
+          if (linkOnly) {
+            result.skipped++;
+            continue;
+          }
           // No existing series to match against at all — create one, same as the single-shape
           // branch already does for movies. Otherwise a fresh TV library with nothing pre-added
           // in AoNarr yet would skip every single file with nothing to show for it.
@@ -1425,6 +1432,7 @@ async function scanAndImportLibraryInner(
         // belongs to a scan of its own root's placeholder bucket.
         if (onlyMediaItemId && wantsPlaceholder && Number(parentMatch?.id) !== onlyMediaItemId) continue;
         if (!parentMatch) {
+          if (linkOnly) continue;
           // The "Unknown Author"/"Unknown Series" bucket is never auto-searched: there's no real
           // author/series to find releases for (see isPlaceholderParent).
           const monitored = isPlaceholderParent({ type, title: parentTitle }) ? 0 : 1;
@@ -1658,6 +1666,10 @@ async function scanAndImportLibraryInner(
           match.path = filePath;
           result.matched++;
         } else {
+          if (linkOnly) {
+            result.skipped++;
+            continue;
+          }
           const folder = fileRootFolders.get(filePath);
           const insertResult = await db
             .prepare(
@@ -2360,10 +2372,10 @@ export async function refreshOneMediaItem(
  * page — scopes the whole-library scan to just this item's own title, same reasoning as
  * scanAndImportLibrary's onlyTitle param. `seasonNumber`, when given, additionally skips any file
  * that doesn't parse to that season (the season toolbar's "Scan & Import" button). */
-export async function scanAndImportOneMediaItem(mediaItemId: number, signal?: AbortSignal, seasonNumber?: number): Promise<ScanImportResult> {
+export async function scanAndImportOneMediaItem(mediaItemId: number, signal?: AbortSignal, seasonNumber?: number, linkOnly = false): Promise<ScanImportResult> {
   const item = (await db.prepare("SELECT type, title FROM media_items WHERE id = ?").get(mediaItemId)) as { type: string; title: string } | undefined;
   if (!item) return { matched: 0, created: 0, skipped: 0, skippedFiles: [] };
-  return scanAndImportLibrary(item.type, signal, item.title, seasonNumber, mediaItemId);
+  return scanAndImportLibrary(item.type, signal, item.title, seasonNumber, mediaItemId, linkOnly);
 }
 
 /** Inserts any episode/child a metadata provider lists that isn't already tracked for this item —

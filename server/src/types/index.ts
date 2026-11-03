@@ -36,6 +36,9 @@ export interface MediaItem {
   /** "daily" (talk shows, news — named/searched by air date instead of season/episode) vs
    * null/"standard" (the default). Only meaningful for "episodic"-shape types (series, anime). */
   seriesType: "standard" | "daily" | null;
+  /** Episodic items: the title's folder name below its root folder, fixed at the first import (or taken from the files
+   * already there), so a title change does not split the show across two folders. Null until then. */
+  libraryFolder: string | null;
   /** Single-shape items only (movies/ROMs/adult) — when runAutoSearch last actually searched this
    * item, null if never. See scheduler.ts's per-cycle cap and oldest-searched-first ordering. */
   lastAutoSearchedAt?: string | null;

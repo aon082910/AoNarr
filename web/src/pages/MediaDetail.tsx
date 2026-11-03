@@ -748,6 +748,44 @@ export default function MediaDetail() {
     setShowRenamePreview(true);
   }
 
+  /** Recycles the file of a single-file item (a movie) and leaves it missing; the episode page does the same for an episode. */
+  async function deleteItemFile() {
+    if (!item) return;
+    const confirmed = await confirmDialog({
+      title: "Delete file",
+      message: `Move the file of "${item.title}" to the recycle bin? It stays in the library as missing.`,
+      danger: true,
+      options: [{ key: "unmonitor", label: "Also stop monitoring it, so it is not searched for again" }],
+    });
+    if (!confirmed) return;
+    try {
+      await api.del(`/media/${item.id}/file${confirmed.values.unmonitor ? "?unmonitor=1" : ""}`);
+      notify.success("File moved to the recycle bin.");
+      load();
+    } catch (e) {
+      notify.error((e as Error).message);
+    }
+  }
+
+  /** A show keeps the folder of its first import when its title changes; this moves the whole folder to the title's name. */
+  async function moveShowFolder() {
+    if (!item) return;
+    if (
+      !(await confirmDialog({
+        title: "Move the show's folder",
+        message: `Move the whole folder of "${item.title}" (episodes, artwork, NFO) to the name its title gives it now? Media servers will see it as a new location.`,
+      }))
+    )
+      return;
+    try {
+      const moved = await api.post<{ from: string; to: string; episodesUpdated: number }>(`/media/${item.id}/move-folder`, {});
+      notify.success(moved.episodesUpdated > 0 ? `Moved to ${moved.to} (${moved.episodesUpdated} episode(s) updated).` : "The folder already has that name.");
+      load();
+    } catch (e) {
+      notify.error((e as Error).message);
+    }
+  }
+
   function onRenameDone(result: { renamed: { title: string; from: string; to: string }[]; errors: { title: string; error: string }[] }) {
     setShowRenamePreview(false);
     if (result.errors.length > 0) {
@@ -1499,9 +1537,25 @@ export default function MediaDetail() {
     if (files.length === 0) return;
     setImportingBatch(true);
     try {
+      // The warnings an automatic import would have refused on, listed per file first; Move or Copy for the whole batch.
+      const preview = await api.post<{ results: { sourcePath: string; warnings: string[] }[] }>("/import/manual/preview", { mediaItemId: item.id, files }).catch(() => null);
+      const flagged = (preview?.results ?? []).filter((r) => r.warnings.length > 0);
+      const confirmed = await confirmDialog({
+        title: "Import these files",
+        message:
+          flagged.length > 0
+            ? `${flagged.length} of ${files.length} file(s) have warnings:\n` + flagged.map((r) => `${r.sourcePath}: ${r.warnings.join("; ")}`).join("\n") + "\n\nImport them anyway?"
+            : `Import ${files.length} file(s)?`,
+        danger: flagged.length > 0,
+        options: [{ key: "copy", label: "Copy them and keep the originals where they are (default: move them)" }],
+      });
+      if (!confirmed) {
+        setImportingBatch(false);
+        return;
+      }
       const { results } = await api.post<{
         results: { sourcePath: string; ok: boolean; error?: string }[];
-      }>("/import/manual-batch", { mediaItemId: item.id, files });
+      }>("/import/manual-batch", { mediaItemId: item.id, files, ...(confirmed.values.copy ? { mode: "copy" } : {}) });
       const failed = results.filter((r) => !r.ok);
       if (failed.length === 0) {
         notify.success(`Imported ${results.length} file(s).`);
@@ -1584,9 +1638,15 @@ export default function MediaDetail() {
                 onClick={organizeItem}
                 title="Organize & Rename — move/rename this item's own file(s) to match the current naming template, same as System → Rename Files but scoped to just this item"
               />
+              {shape === "episodic" && (
+                <ToolbarButton icon={<FolderIcon />} label="Move Folder" onClick={moveShowFolder} title="Move the show's whole folder to the name its title gives it now" />
+              )}
               <ToolbarButton icon={<ClockIcon />} label="History" onClick={openHistory} title="History" />
               {shape === "single" && !!item.hasFile && (
                 <ToolbarButton icon={<AlertTriangleIcon />} label="Check Corrupt" onClick={checkCorrupt} title="Check for corruption" />
+              )}
+              {shape === "single" && !!item.hasFile && (
+                <ToolbarButton icon={<TrashIcon />} label="Delete File" onClick={deleteItemFile} danger title="Move the file to the recycle bin; the title stays as missing" />
               )}
               <ToolbarSeparator />
               <ToolbarButton icon={<PencilIcon />} label="Edit" onClick={openEditMetadata} title="Edit metadata" />

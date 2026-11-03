@@ -66,6 +66,7 @@ import {
   buildNfo,
   buildPlexMatch,
   fetchPosterBuffer,
+  isAonarrShapedNfo,
   safeFileName,
   writeNfoSidecar,
   type ExportableItem,
@@ -73,12 +74,14 @@ import {
 import { corruptReason, handleCorrupt, type CorruptAction } from "../services/corruptMediaCheck.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { getSetting } from "../services/settingsStore.js";
-import { isOrganizeRunning, renameLibraryFiles, renameOneMediaItem } from "../services/importer.js";
+import { ImportSkippedError, isOrganizeRunning, moveItemFolder, renameLibraryFiles, renameOneMediaItem } from "../services/importer.js";
 import { extractIsbnFromBookFile, fetchBookByIsbn } from "../services/bookIsbnScan.js";
 import { sendEmailWithAttachment } from "../services/smtp.js";
 import { convertSubItemToM4b, M4bConversionInProgressError } from "../services/audiobookConvert.js";
 import { CONTENT_TYPES } from "../services/rangeStream.js";
 import { resetSearchBackoff, wakeLeaf } from "../services/searchBackoff.js";
+import { deleteLibraryFile, removeLeftoverFolders, rollUpParentMissing } from "../services/fileDeletion.js";
+import { queueScanAfterAdd } from "../services/scanOnAdd.js";
 import type { MediaType } from "../types/index.js";
 
 export const mediaRouter = Router();
@@ -227,7 +230,7 @@ mediaRouter.post(
         const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(id)) as any;
         if (!row) continue;
         const files = await deleteMediaItemCascade(row, !!deleteFiles, !!addExclusion, { deferRecycle: true });
-        if (files.length > 0) toRecycle.push({ row, files });
+        if (deleteFiles) toRecycle.push({ row, files });
         deleted++;
       }
     });
@@ -235,7 +238,14 @@ mediaRouter.post(
     // is reported rather than silently left behind.
     const notRecycled: string[] = [];
     for (const { row, files } of toRecycle) {
-      for (const file of files) if (!(await recycleFile(file, row.type, row.title, null))) notRecycled.push(file);
+      let recycledAll = true;
+      for (const file of files) {
+        if (!(await recycleFile(file, row.type, row.title, null))) {
+          notRecycled.push(file);
+          recycledAll = false;
+        }
+      }
+      if (recycledAll) await removeLeftoverFolders(row, files);
     }
     if (notRecycled.length > 0) {
       log.warn(`[media] bulk remove: ${notRecycled.length} file(s) could not be moved to the recycle bin and were left in place; first: ${notRecycled[0]}`);
@@ -1584,6 +1594,7 @@ mediaRouter.post(
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "media_added", `${b.title} (${b.type})`);
     log.info(`[media] added "${b.title}"${b.year ? ` (${b.year})` : ""} to the library (${b.type})`);
+    queueScanAfterAdd(result.lastInsertRowid);
     res.status(201).json(mediaItemFromRow(row));
   })
 );
@@ -1640,20 +1651,6 @@ mediaRouter.post(
   })
 );
 
-// The only elements buildNfo writes. An existing sidecar made of nothing else is one AoNarr wrote
-// (or one no richer than it), so rewriting it loses nothing.
-const AONARR_NFO_ELEMENTS = new Set(["movie", "tvshow", "title", "year", "plot", "thumb", "uniqueid"]);
-
-function isAonarrShapedNfo(content: string): boolean {
-  const body = content
-    .replace(/<\?xml[\s\S]*?\?>/g, "")
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .trim();
-  if (!body) return true;
-  if (!/^<(movie|tvshow)[\s>]/.test(body) || !/<\/(movie|tvshow)>$/.test(body)) return false;
-  return [...body.matchAll(/<\/?([A-Za-z_][\w.:-]*)/g)].every((m) => AONARR_NFO_ELEMENTS.has(m[1].toLowerCase()));
-}
-
 /** Rewrites an item's "<basename>.nfo" after a metadata edit or rematch — only when the admin opted
  * into AoNarr-written NFOs, and never over one another tool wrote: a tinyMediaManager/Kodi/Radarr
  * NFO's cast, genres, ratings and fileinfo were replaced by AoNarr's six-field stub with no backup.
@@ -1687,6 +1684,10 @@ mediaRouter.patch(
     const b = req.body ?? {};
     if (b.contentRating !== undefined && b.contentRating !== null && !CONTENT_RATING_ORDER.includes(b.contentRating)) {
       throw new HttpError(400, `Unknown content rating "${b.contentRating}"`);
+    }
+    // Music and audiobooks are moved between root folders by the root folder tool (Settings), as before.
+    if (b.moveFiles && b.rootFolderId !== undefined && Number(b.rootFolderId) !== Number((existing as any).root_folder_id) && getMediaTypeConfig((existing as any).type).multiFilePerChild) {
+      throw new HttpError(409, "Music and Audiobooks are moved to another root folder with the root folder move in Settings");
     }
     // The record of which external ids were merged in from other providers is written only by the
     // server, often in the background after the page loaded. Taken from a client's copy, it was lost
@@ -1762,6 +1763,18 @@ mediaRouter.patch(
     if (typeof b.title === "string" && b.title !== (existing as any).title) await syncPrimaryTitle(Number(req.params.id));
     // An edit may be why a search that kept finding nothing would now find something: it starts over.
     if (sets.length > 0) await resetSearchBackoff(Number(req.params.id));
+    // Re-pointing an item at another root folder only changes where its next import goes; `moveFiles` also moves
+    // the files it already has (Sonarr asks the same when a series' path is edited).
+    let filesMoved: Awaited<ReturnType<typeof renameOneMediaItem>> | undefined;
+    if (b.moveFiles && b.rootFolderId !== undefined && Number(b.rootFolderId) !== Number((existing as any).root_folder_id)) {
+      try {
+        filesMoved = await renameOneMediaItem(Number(req.params.id));
+      } catch (err) {
+        // The root folder is the one thing this request changed for the move: put it back.
+        await db.prepare("UPDATE media_items SET root_folder_id = ? WHERE id = ?").run((existing as any).root_folder_id, req.params.id);
+        throw err;
+      }
+    }
 
     const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id)) as any;
     // Keeps a synced .nfo sidecar current when the actual metadata (not just monitored/protected/
@@ -1778,7 +1791,7 @@ mediaRouter.patch(
       }
       refreshNfoSidecar(row, externalIds);
     }
-    res.json(mediaItemFromRow(row));
+    res.json(filesMoved ? { ...mediaItemFromRow(row), filesMoved } : mediaItemFromRow(row));
   })
 );
 
@@ -2039,6 +2052,8 @@ export async function deleteMediaItemCascade(
   // After the files: a delete that was refused above leaves no exclusion behind for an item that still exists.
   if (addExclusion) await addImportExclusion(row);
   await db.prepare("DELETE FROM media_items WHERE id = ?").run(row.id);
+  // The title's folder goes with its files (artwork, NFO, subtitles, extras), once the row no longer claims anything in it.
+  if (deleteFiles && !options.deferRecycle) await removeLeftoverFolders(row, files);
   return options.deferRecycle ? files : [];
 }
 
@@ -2083,17 +2098,68 @@ function toFlag(value: unknown): 0 | 1 {
   return Number(value) > 0 ? 1 : 0;
 }
 
-/** After a child's file is marked missing: a parent with no file-bearing episode/sub-item left stops
- * claiming has_file, so it shows up in the Missing views and auto-search again. */
-async function rollUpParentMissing(mediaItemId: string): Promise<void> {
-  await db
-    .prepare(
-      `UPDATE media_items SET has_file = 0 WHERE id = ? AND has_file = 1 AND path IS NULL
-       AND NOT EXISTS (SELECT 1 FROM episodes e WHERE e.media_item_id = media_items.id AND e.has_file = 1)
-       AND NOT EXISTS (SELECT 1 FROM sub_items s WHERE s.media_item_id = media_items.id AND s.has_file = 1)`
-    )
-    .run(mediaItemId);
+/** `?unmonitor=1` / `0` on a file delete; absent means the `unmonitorDeletedFiles` setting decides. */
+function unmonitorParam(value: unknown): boolean | undefined {
+  return value === "1" || value === "true" ? true : value === "0" || value === "false" ? false : undefined;
 }
+
+/** Moves the show's whole folder to the name its current title gives (or `{ name }`), and points its episodes there. */
+mediaRouter.post(
+  "/:id/move-folder",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    try {
+      res.json(await moveItemFolder(Number(req.params.id), typeof req.body?.name === "string" ? req.body.name : undefined));
+    } catch (err) {
+      if (err instanceof ImportSkippedError) throw new HttpError(409, err.message);
+      throw err;
+    }
+  })
+);
+
+/** Recycles the one file of a movie (or any single-file item) and leaves the item as missing. */
+mediaRouter.delete(
+  "/:id/file",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const result = await deleteLibraryFile({ itemId: Number(req.params.id), kind: "item", unmonitor: unmonitorParam(req.query.unmonitor) });
+    const actor = auditActor(req);
+    logAuditEvent(actor.userId, actor.username, "media_file_deleted", result.path);
+    res.json(result);
+  })
+);
+
+mediaRouter.delete(
+  "/:id/episodes/:episodeId/file",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const result = await deleteLibraryFile({
+      itemId: Number(req.params.id),
+      kind: "episode",
+      leafId: Number(req.params.episodeId),
+      unmonitor: unmonitorParam(req.query.unmonitor),
+    });
+    const actor = auditActor(req);
+    logAuditEvent(actor.userId, actor.username, "media_file_deleted", result.path);
+    res.json(result);
+  })
+);
+
+mediaRouter.delete(
+  "/:id/subitems/:subItemId/file",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const result = await deleteLibraryFile({
+      itemId: Number(req.params.id),
+      kind: "subItem",
+      leafId: Number(req.params.subItemId),
+      unmonitor: unmonitorParam(req.query.unmonitor),
+    });
+    const actor = auditActor(req);
+    logAuditEvent(actor.userId, actor.username, "media_file_deleted", result.path);
+    res.json(result);
+  })
+);
 
 // Episodes (series)
 mediaRouter.post(

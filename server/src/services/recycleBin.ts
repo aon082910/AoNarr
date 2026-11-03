@@ -374,13 +374,13 @@ export async function purgeRecycleBinEntry(id: number): Promise<void> {
 
 /** Scheduled cleanup: purges anything older than the configured retention. */
 export async function purgeExpiredRecycleBinEntries(): Promise<void> {
-  // Distinguishes "unset" (fall back to the 30-day default) from "explicitly set to 0" (an admin
-  // opting into near-immediate purging) — a plain `parseInt(...) || 30` treated 0 as falsy and
-  // silently replaced it with the default, the opposite of what was requested.
+  // "Unset" falls back to the 30-day default; an explicit 0 turns the automatic cleanup off, as in Sonarr and Radarr
+  // (it used to be read as 1 day, so an admin who typed 0 to keep everything lost the bin overnight).
   const rawDays = getSetting("recycleBinRetentionDays");
-  const parsedDays = rawDays != null ? parseInt(rawDays, 10) : NaN;
-  const days = Math.max(1, Number.isFinite(parsedDays) ? parsedDays : 30);
+  const parsedDays = rawDays != null && rawDays.trim() !== "" ? parseInt(rawDays, 10) : NaN;
+  const days = Number.isFinite(parsedDays) && parsedDays >= 0 ? parsedDays : 30;
   await resetInterruptedRestoresOnce();
+  if (days === 0) return;
   const rows = (await db
     .prepare(`SELECT id FROM recycle_bin WHERE deleted_at <= ${nowOffsetExpr(db, -days)} AND restoring = 0`)
     .all()) as { id: number }[];

@@ -8,7 +8,7 @@ import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { MediaInfo, SearchResult } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
 import { SearchIcon, InboxIcon, AlertTriangleIcon, DownloadIcon, CpuIcon, CalendarIcon, LayersIcon, HardDriveIcon } from "../components/NavIcons.js";
-import { ArrowLeftIcon, ArrowUpIcon, FolderIcon } from "../components/ActionIcons.js";
+import { ArrowLeftIcon, ArrowUpIcon, FolderIcon, TrashIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton, ToolbarSeparator } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
@@ -141,6 +141,25 @@ export default function EpisodeDetail() {
     patchEpisode(episode.id, (prev) => ({ ...prev, hasFile: updated.hasFile, filePath: updated.filePath, quality: updated.quality }));
   }
 
+  /** Recycles the episode's file (one episode, or every one a multi-episode file covers) and leaves it missing. */
+  async function deleteFile() {
+    if (!episode) return;
+    const confirmed = await confirmDialog({
+      title: "Delete file",
+      message: "Move this episode's file to the recycle bin? The episode stays in the library as missing.",
+      danger: true,
+      options: [{ key: "unmonitor", label: "Also stop monitoring it, so it is not searched for again" }],
+    });
+    if (!confirmed) return;
+    try {
+      await api.del(`/media/${mediaId}/episodes/${episodeId}/file${confirmed.values.unmonitor ? "?unmonitor=1" : ""}`);
+      patchEpisode(episode.id, (prev) => ({ ...prev, hasFile: 0, filePath: null, quality: null, ...(confirmed.values.unmonitor ? { monitored: 0 } : {}) }));
+      notify.success("File moved to the recycle bin.");
+    } catch (e) {
+      notify.error((e as Error).message);
+    }
+  }
+
   async function browse(nextPath: string, anyFolderOverride?: boolean) {
     const anyFolder = anyFolderOverride ?? browseAnyFolder;
     let res: BrowseResponse;
@@ -186,7 +205,24 @@ export default function EpisodeDetail() {
   async function manualImport(entry: BrowseEntry) {
     setImportingPath(entry.path);
     try {
-      await api.post("/import/manual", { mediaItemId: episode?.mediaItemId, episodeId: Number(episodeId), sourcePath: entry.path });
+      // What an automatic import would have refused on, shown first; and Move or Copy for this import alone.
+      const preview = await api
+        .post<{ results: { warnings: string[] }[] }>("/import/manual/preview", { mediaItemId: episode?.mediaItemId, files: [{ sourcePath: entry.path, episodeId: Number(episodeId) }] })
+        .catch(() => null);
+      const warnings = preview?.results[0]?.warnings ?? [];
+      const confirmed = await confirmDialog({
+        title: "Import this file",
+        message: warnings.length > 0 ? `Warnings:\n- ${warnings.join("\n- ")}\n\nImport "${entry.name}" anyway?` : `Import "${entry.name}" as this episode?`,
+        danger: warnings.length > 0,
+        options: [{ key: "copy", label: "Copy it and keep the original where it is (default: move it)" }],
+      });
+      if (!confirmed) return;
+      await api.post("/import/manual", {
+        mediaItemId: episode?.mediaItemId,
+        episodeId: Number(episodeId),
+        sourcePath: entry.path,
+        ...(confirmed.values.copy ? { mode: "copy" } : {}),
+      });
       notify.success(`Imported ${entry.name}`);
       setShowImport(false);
       load();
@@ -297,6 +333,7 @@ export default function EpisodeDetail() {
                     danger
                     title="Mark as missing — removed the file yourself? This resets AoNarr's record so it searches for it again."
                   />
+                  <ToolbarButton icon={<TrashIcon />} label="Delete File" onClick={deleteFile} danger title="Move this episode's file to the recycle bin" />
                 </>
               )}
               <ToolbarSeparator />

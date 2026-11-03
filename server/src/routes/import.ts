@@ -6,7 +6,7 @@ import { config } from "../config.js";
 import { db } from "../db/index.js";
 import { mediaItemFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { placeFile } from "../services/importer.js";
+import { manualImportWarnings, placeFile, withImportStrategy } from "../services/importer.js";
 import { effectiveShape, getMediaTypeConfig } from "../services/mediaTypes.js";
 import { parseReleaseTitle } from "../services/releaseParser.js";
 import { parseNfo } from "../services/nfoParser.js";
@@ -43,6 +43,15 @@ function resolveInDownloads(relativePath: string): string {
  */
 function resolveImportSource(sourcePath: string): string {
   return path.isAbsolute(sourcePath) ? path.resolve(sourcePath) : resolveInDownloads(sourcePath);
+}
+
+/** `mode` of a manual import: absent, or one of the four strategies; anything else is a mistake worth a 400, not a silent move. */
+function importModeOf(mode: unknown): string | undefined {
+  if (mode === undefined || mode === null || mode === "") return undefined;
+  if (typeof mode !== "string" || !["move", "copy", "hardlink", "symlink"].includes(mode)) {
+    throw new HttpError(400, `mode must be one of: move, copy, hardlink, symlink`);
+  }
+  return mode;
 }
 
 /**
@@ -160,6 +169,41 @@ importRouter.post(
   })
 );
 
+/**
+ * POST /api/import/manual/preview — what importing these files would run into, without importing: per file, the
+ * warnings an automatic import would have refused on (another title, a worse quality, a rejected file type, a sample).
+ * Body: { mediaItemId, files: [{ sourcePath, episodeId?, subItemId?, quality? }] }.
+ */
+importRouter.post(
+  "/manual/preview",
+  asyncHandler(async (req, res) => {
+    const b = req.body ?? {};
+    if (!b.mediaItemId || !Array.isArray(b.files) || b.files.length === 0) {
+      throw new HttpError(400, "mediaItemId and a non-empty files array are required");
+    }
+    const results: { sourcePath: string; warnings: string[]; error?: string }[] = [];
+    for (const f of b.files) {
+      const sourcePath = String(f?.sourcePath ?? "");
+      try {
+        const sourceFile = resolveImportSource(sourcePath);
+        if (!fs.existsSync(sourceFile) || !fs.statSync(sourceFile).isFile()) throw new Error("Source file not found");
+        const quality = f.quality ?? parseReleaseTitle(path.basename(sourceFile)).quality;
+        const warnings = await manualImportWarnings({
+          itemId: Number(b.mediaItemId),
+          episodeId: f.episodeId ?? null,
+          subItemId: f.subItemId ?? null,
+          sourceFile,
+          quality,
+        });
+        results.push({ sourcePath, warnings });
+      } catch (err) {
+        results.push({ sourcePath, warnings: [], error: (err as Error).message });
+      }
+    }
+    res.json({ results });
+  })
+);
+
 /** POST /api/import/manual — assign a specific file (downloads-dir-relative, or an absolute path
  * anywhere the container can see) to a media item/episode/sub-item. */
 importRouter.post(
@@ -177,13 +221,16 @@ importRouter.post(
 
     const quality = b.quality ?? parseReleaseTitle(path.basename(sourceFile)).quality;
 
-    const result = await placeFile({
-      itemId: b.mediaItemId,
-      episodeId: b.episodeId ?? null,
-      subItemId: b.subItemId ?? null,
-      sourceFile,
-      quality,
-    });
+    // `mode`: "move", "copy", "hardlink" or "symlink" for this import alone; without it the import strategy setting decides.
+    const result = await withImportStrategy(importModeOf(b.mode), () =>
+      placeFile({
+        itemId: b.mediaItemId,
+        episodeId: b.episodeId ?? null,
+        subItemId: b.subItemId ?? null,
+        sourceFile,
+        quality,
+      })
+    );
 
     res.json(result);
   })
@@ -238,14 +285,16 @@ importRouter.post(
         if (target && mappedTargets.has(target)) throw new Error("Another file in this import is already mapped to that target");
         if (target) mappedTargets.add(target);
         const quality = f.quality ?? parseReleaseTitle(path.basename(sourceFile)).quality;
-        const result = await placeFile({
-          itemId: b.mediaItemId,
-          episodeId: f.episodeId ?? null,
-          subItemId: f.subItemId ?? null,
-          sourceFile,
-          quality,
-          batchClaims,
-        });
+        const result = await withImportStrategy(importModeOf(f.mode ?? b.mode), () =>
+          placeFile({
+            itemId: b.mediaItemId,
+            episodeId: f.episodeId ?? null,
+            subItemId: f.subItemId ?? null,
+            sourceFile,
+            quality,
+            batchClaims,
+          })
+        );
         results.push({ sourcePath, ok: true, ...result });
       } catch (err) {
         results.push({ sourcePath, ok: false, error: (err as Error).message });

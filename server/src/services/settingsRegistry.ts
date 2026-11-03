@@ -1,5 +1,6 @@
 import { SETTING_KEY_LIST } from "./settingKeyList.js";
 import { proxyUrlProblem } from "./networkAddress.js";
+import { MULTI_EPISODE_STYLES, namingTemplateProblem } from "./naming.js";
 
 /**
  * What PUT /api/settings/:key accepts. Before this, any key and any value was stored and answered 200,
@@ -74,13 +75,23 @@ const RULES: Readonly<Record<string, Rule>> = {
   housekeepingAuditDays: { wholeNumber: true, min: 0 },
   backupKeepCount: { wholeNumber: true, min: 1 },
   backupIntervalHours: { wholeNumber: true, min: 1 },
-  // 0 is accepted and read as 1 day: it is what the page allowed before.
+  // 0 turns the automatic purge off (Sonarr's meaning).
   recycleBinRetentionDays: { wholeNumber: true, min: 0 },
   usenetRetentionDays: { wholeNumber: true, min: 0 },
   usenetMinimumAgeMinutes: { wholeNumber: true, min: 0 },
   // The scheduler reads 0 as "the default", so 0 is not offered.
   stalledDownloadHours: { wholeNumber: true, min: 1 },
   maxAutoRetries: { wholeNumber: true, min: 0 },
+  namingMultiEpisodeStyle: { oneOf: MULTI_EPISODE_STYLES },
+  namingColonReplacement: { oneOf: ["delete", "dash", "spaceDash", "spaceDashSpace", "smart"] },
+  namingReplaceIllegalChars: { oneOf: ["1", "0"] },
+  scanOnAdd: { oneOf: ["1", "0"] },
+  fileDate: { oneOf: ["none", "localAirDate", "utcAirDate"] },
+  importExtraFiles: { oneOf: ["1", "0"] },
+  importProbeChecks: { oneOf: ["1", "0"] },
+  rejectDangerousFiles: { oneOf: ["1", "0"] },
+  removeFolderOnDelete: { oneOf: ["1", "0"] },
+  deleteEmptyFolders: { oneOf: ["1", "0"] },
 };
 
 /** Why the value is not acceptable for the key, or null. */
@@ -89,6 +100,11 @@ export function settingValueProblem(key: string, value: string): string | null {
   if (key === "socks5ProxyUrl") {
     const problem = proxyUrlProblem(value);
     return problem ? `"${key}" ${problem}` : null;
+  }
+  const template = /^naming([A-Z][A-Za-z]*)Template$/.exec(key);
+  if (template) {
+    const problem = namingTemplateProblem(template[1][0].toLowerCase() + template[1].slice(1), value);
+    return problem ? `"${key}": ${problem}` : null;
   }
   const rule = RULES[key];
   if (!rule) return null;

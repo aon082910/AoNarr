@@ -28,6 +28,7 @@ import { log } from "../services/logger.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { getSetting } from "../services/settingsStore.js";
 import { createLibraryFolderSkeleton } from "../services/importer.js";
+import { queueScanAfterAdd } from "../services/scanOnAdd.js";
 import { syncSceneNumbering } from "../services/sceneNumbering.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import type { MediaType } from "../types/index.js";
@@ -383,6 +384,8 @@ metadataRouter.post(
     const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId);
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "media_added", `${b.title} (${b.type})`);
+    // A title that is already on disk is linked in the background, as Sonarr and Radarr do after an add.
+    queueScanAfterAdd(mediaItemId);
     res.status(201).json({ ...mediaItemFromRow(row), childCount });
   })
 );

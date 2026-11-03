@@ -1,5 +1,6 @@
 import { log } from "./logger.js";
 import crypto from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -8,7 +9,7 @@ import { nowExpr } from "../db/asyncDb.js";
 import { config } from "../config.js";
 import { decryptIfSet, mediaItemFromRow, queueItemFromRow, rootFolderFromRow } from "../db/mappers.js";
 import { notifyImported, notifyManualInteractionRequired, notifyUpgraded } from "./notifications.js";
-import { writeNfoSidecar } from "./metadataExport.js";
+import { writeEpisodeNfoSidecar, writeNfoSidecar, writeTvShowNfoIfMissing } from "./metadataExport.js";
 import { writeAudioTags } from "./audioTagWriter.js";
 import { notifyQueueChanged } from "./realtime.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
@@ -28,7 +29,13 @@ import {
 import { archiveDestinationFor, isArchiveFile, unpackDownloadedArchives } from "./archiveExtract.js";
 import { markDownloadImported, removeQueueItemDownload } from "./downloadClient.js";
 import { syncSubtitleToVideo } from "./subtitleSync.js";
-import { DEFAULT_SHAPE_TEMPLATES, DEFAULT_TRACK_TEMPLATE, providerIdVars, renderTemplate } from "./naming.js";
+import { DEFAULT_SHAPE_TEMPLATES, DEFAULT_TRACK_TEMPLATE, episodeLabel, multiEpisodeStyleOf, ownFolderDepth, providerIdVars, releaseVars, renderTemplate, titleVars } from "./naming.js";
+import { rememberItemFolder, withItemFolder } from "./libraryFolder.js";
+import { trackedFileInside } from "./fileDeletion.js";
+import { importReserveBytes } from "./freeSpace.js";
+import { findRejectedFile, probeVerdict } from "./importChecks.js";
+import { applyFileDate } from "./fileDate.js";
+import { copyReleaseExtras } from "./importExtras.js";
 import { effectiveShape, getMediaTypeConfig, isProbeableFile, type MediaShape } from "./mediaTypes.js";
 import { groupedRank, parseQualityGroups, usesQualityTiers, type QualityGroups } from "./quality.js";
 import { romSetCompanions } from "./romSets.js";
@@ -172,10 +179,21 @@ async function tryDownloadSubtitle(videoPath: string, mediaItemId: number): Prom
  * naive illegal-character stripping. Every other Windows/most-filesystems-illegal character is
  * still stripped outright — none of them have as good a plain-text substitute. */
 function sanitizeForPath(name: string): string {
-  return name
-    .replace(/:\s*/g, " - ")
-    .replace(/[/\\*?"<>|]/g, "")
-    .trim();
+  // `namingColonReplacement`: what a colon in a title becomes. The default is the " - " AoNarr always used.
+  const colon = getSetting("namingColonReplacement");
+  const colonless =
+    colon === "delete"
+      ? name.replace(/:/g, "")
+      : colon === "dash"
+        ? name.replace(/:/g, "-")
+        : colon === "spaceDash"
+          ? name.replace(/:/g, " -")
+          : colon === "smart"
+            ? name.replace(/:\s+/g, " - ").replace(/:/g, "-")
+            : name.replace(/:\s*/g, " - ");
+  // `namingReplaceIllegalChars` = "0": keep * ? " < > | (a Linux file system takes them); a separator never stays.
+  const illegal = getSetting("namingReplaceIllegalChars") === "0" ? /[/\\]/g : /[/\\*?"<>|]/g;
+  return colonless.replace(illegal, "").trim();
 }
 
 /** One path segment that can never add, remove or climb a directory level: one that sanitizes to
@@ -248,6 +266,51 @@ function renderPathSegments(template: string, vars: Record<string, string | numb
     const reserve = isLast ? (extension ? Buffer.byteLength(extension) : DEFAULT_EXTENSION_RESERVE) : 0;
     return renderSegmentWithin(part, safeVars, MAX_NAME_BYTES - reserve, isLast);
   });
+}
+
+/** The folder a season goes in the way Sonarr names it: "Season 01", "Specials" for season 0 ({seasonFolder}). */
+function seasonFolderName(season: number): string {
+  return season === 0 ? "Specials" : `Season ${String(season).padStart(2, "0")}`;
+}
+
+/** What a template may use for the file of one or more episodes of a season. */
+function episodicNameVars(
+  item: { type: string; title: string; year: number | null; externalIds: string | null },
+  e: { season: number; numbers: number[]; absoluteEpisode: number; airDate: string | null; episodeTitle: string | null; quality: string | null; releaseTitle?: string | null }
+): Record<string, string | number> {
+  return {
+    parentTitle: item.title,
+    season: e.season,
+    // A plain number for the (overwhelmingly common) single-episode case; for a file that covers several a
+    // formatted string (`namingMultiEpisodeStyle`), which {episode:00} renders as it is.
+    episode: episodeLabel(e.numbers, multiEpisodeStyleOf(getSetting("namingMultiEpisodeStyle"))),
+    absoluteEpisode: e.absoluteEpisode,
+    airDate: e.airDate ?? "",
+    episodeTitle: e.episodeTitle ?? "",
+    year: item.year ?? "",
+    quality: e.quality ?? "",
+    seasonFolder: seasonFolderName(e.season),
+    ...titleVars("parent", item.title, item.year),
+    ...releaseVars(e.releaseTitle, e.quality),
+    ...providerIdVars(item),
+  };
+}
+
+/**
+ * An automatic import's checks of the file itself (importChecks.ts): a program or script in the download's folder, a
+ * video far shorter than the title runs, or one with no audio. Throws ImportSkippedError, so the download stays for a
+ * manual import. `checkFolder` is false for a pack, whose folder is judged once for all of it.
+ */
+async function assertFileIsWorthImporting(sourceFile: string, mediaType: string, expectedMinutes: number | null, ctx: DownloadContext, probe: boolean, checkFolder = true): Promise<void> {
+  const dir = path.dirname(sourceFile);
+  if (checkFolder && isOwnReleaseFolder(dir, ctx)) {
+    const bad = findRejectedFile(dir, mediaType);
+    if (bad) throw new ImportSkippedError(`Not importing: the download holds "${path.basename(bad)}", a file type that is rejected — left in the download for a manual import`);
+  }
+  if (probe && VIDEO_EXTENSIONS.has(path.extname(sourceFile).toLowerCase()) && isProbeableFile(sourceFile)) {
+    const reason = probeVerdict(await probeMediaInfo(sourceFile), expectedMinutes);
+    if (reason) throw new ImportSkippedError(`Not importing "${path.basename(sourceFile)}": ${reason} — left in the download for a manual import`);
+  }
 }
 
 /** Last line of defence behind the segment sanitizing above: nothing is ever placed outside its root folder. */
@@ -895,7 +958,7 @@ function applyConfiguredPermissions(targetPath: string, isDirectory: boolean): v
 async function moveFile(src: string, dest: string, forceMove = false): Promise<void> {
   const destDir = path.dirname(dest);
   makeLibraryDirectory(destDir);
-  const strategy = forceMove ? "move" : getSetting("importStrategy") ?? "move";
+  const strategy = forceMove ? "move" : currentImportStrategy();
 
   if (strategy === "symlink") {
     // Importing the library file onto its own path: replacing it with a link would unlink the only
@@ -937,6 +1000,13 @@ async function moveFile(src: string, dest: string, forceMove = false): Promise<v
     return;
   }
 
+  if (strategy === "copy") {
+    // A manual import of files the admin wants to keep where they are: a copy, the source untouched.
+    await copyIntoPlace(src, dest);
+    applyConfiguredPermissions(dest, false);
+    return;
+  }
+
   try {
     fs.renameSync(src, dest);
   } catch (err: any) {
@@ -945,6 +1015,22 @@ async function moveFile(src: string, dest: string, forceMove = false): Promise<v
     fs.unlinkSync(src);
   }
   applyConfiguredPermissions(dest, false);
+}
+
+const IMPORT_STRATEGIES = ["move", "copy", "hardlink", "symlink"] as const;
+const strategyOverride = new AsyncLocalStorage<string>();
+
+/** The import strategy for the work running now: the one a manual import asked for, else the setting. */
+function currentImportStrategy(): string {
+  return strategyOverride.getStore() ?? getSetting("importStrategy") ?? "move";
+}
+
+/**
+ * Runs `work` with a strategy of its own (Sonarr's manual import asks for Move or Copy per import). An unknown or
+ * empty strategy leaves the setting in force.
+ */
+export function withImportStrategy<T>(strategy: unknown, work: () => Promise<T>): Promise<T> {
+  return typeof strategy === "string" && (IMPORT_STRATEGIES as readonly string[]).includes(strategy) ? strategyOverride.run(strategy, work) : work();
 }
 
 const TEMP_PREFIX = ".aonarr-tmp-";
@@ -1034,7 +1120,7 @@ async function copyIntoPlace(src: string, dest: string, tempNameFor = dest): Pro
  * up the source only once the swap is done: a failed copy, a recycle bin that can't take the old
  * file, or a restart part-way leaves both the download and the library file where they were. */
 async function placeOverRecycledFile(src: string, dest: string, item: { id: number; type: MediaType; title: string }): Promise<void> {
-  const strategy = getSetting("importStrategy") ?? "move";
+  const strategy = currentImportStrategy();
   // What an earlier attempt at this file left beside it when it was killed mid-copy.
   await removeStaleImportTemps(path.dirname(dest), dest);
   const staged = tempPathNextTo(dest);
@@ -1043,11 +1129,16 @@ async function placeOverRecycledFile(src: string, dest: string, item: { id: numb
     if (strategy === "symlink") {
       await moveFile(src, staged);
     } else {
-      try {
-        fs.linkSync(src, staged);
-      } catch {
-        await copyIntoPlace(src, staged, dest);
+      let linked = false;
+      if (strategy !== "copy") {
+        try {
+          fs.linkSync(src, staged);
+          linked = true;
+        } catch {
+          // another filesystem: copied below
+        }
       }
+      if (!linked) await copyIntoPlace(src, staged, dest);
       applyConfiguredPermissions(staged, false);
     }
     if (!(await recycleFile(dest, item.type, item.title, item.id))) {
@@ -1499,6 +1590,8 @@ export function createLibraryFolderSkeleton(
       parentTitle: item.title,
       year: item.year ?? "",
       quality: "",
+      ...titleVars("", item.title, item.year),
+      ...titleVars("parent", item.title, item.year),
       ...providerIdVars({ type: item.type, externalIds: item.externalIds ?? null }),
     });
     if (segments.length === 0) return;
@@ -1610,13 +1703,22 @@ export async function placeFile(params: {
   let destChecked = false;
   // The files this import would replace, for the downgrade check (refuseDowngrade).
   let existingFiles: { quality: string | null; filePath: string | null }[] = [];
+  // The rendered path of an episodic file: its first segment is the show's folder, remembered once the file is in.
+  let folderSegments: string[] | null = null;
+  // The day the file is dated by when `fileDate` is set: the episode's air date, or a film's release date.
+  let fileDay: string | null = null;
 
   if (shape === "single") {
     if (item.hasFile) {
       replacedPaths = [item.path];
       existingFiles = [{ quality: item.quality ?? null, filePath: item.path ?? null }];
     }
-    const segments = renderPathSegments(template, { title: item.title, year: item.year ?? "", quality: quality ?? "", ...providerIdVars(item) }, ext);
+    fileDay = item.releaseDate ?? null;
+    const segments = renderPathSegments(
+      template,
+      { title: item.title, year: item.year ?? "", quality: quality ?? "", ...titleVars("", item.title, item.year), ...releaseVars(releaseTitle, quality), ...providerIdVars(item) },
+      ext
+    );
     ({ destPath, fileLabel } = resolveDest(rootFolder.path, segments, ext, sourceFile, getNamingEnabled(item.type)));
   } else if (shape === "episodic" && episodeId) {
     const epRow = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(episodeId)) as any;
@@ -1676,7 +1778,6 @@ export async function placeFile(params: {
     replacedPaths = allEpRows.filter((e: any) => e.has_file).map((e: any) => e.file_path);
     existingFiles = allEpRows.filter((e: any) => e.has_file).map((e: any) => ({ quality: e.quality ?? null, filePath: e.file_path ?? null }));
     const primaryEpisodeNumber = Math.min(...allEpRows.map((e: any) => e.episode_number));
-    const lastEpisodeNumber = Math.max(...allEpRows.map((e: any) => e.episode_number));
     const primaryEpRow = allEpRows.find((e: any) => e.episode_number === primaryEpisodeNumber);
 
     // Running count across every season up to and including this episode — what anime naming
@@ -1695,21 +1796,41 @@ export async function placeFile(params: {
           .get(epRow.media_item_id, epRow.season_number, epRow.season_number, primaryEpisodeNumber)) as { c: number }
       ).c
     );
-    const segments = renderPathSegments(template, {
-      parentTitle: item.title,
-      season: epRow.season_number,
-      episode:
-        allEpRows.length > 1
-          ? `${String(primaryEpisodeNumber).padStart(2, "0")}-${String(lastEpisodeNumber).padStart(2, "0")}`
-          : primaryEpisodeNumber,
-      absoluteEpisode,
-      airDate: primaryEpRow.air_date ?? "",
-      episodeTitle: primaryEpRow.title ?? "",
-      year: item.year ?? "",
-      quality: quality ?? "",
-      ...providerIdVars(item),
-    }, ext);
+    // An existing file that covers more episodes than this one is not replaced by it (Sonarr's SameEpisodesImportSpecification):
+    // a two-parter would end up shared between a single-episode file and a stale row. Left for a manual import.
+    if (refuseDowngrade) {
+      const ownIds = new Set(allEpRows.map((e: any) => Number(e.id)));
+      for (const existingPath of new Set(replacedPaths.filter((p): p is string => !!p))) {
+        const sharers = (await db.prepare("SELECT id FROM episodes WHERE media_item_id = ? AND file_path = ?").all(item.id, existingPath)) as { id: number }[];
+        if (sharers.some((s) => !ownIds.has(Number(s.id)))) {
+          throw new ImportSkippedError(
+            `The file already on disk ("${path.basename(existingPath)}") covers more episodes than this download — left in the download for a manual import`
+          );
+        }
+      }
+    }
+    const placedFolder = await withItemFolder(
+      item,
+      rootFolder.path,
+      renderPathSegments(
+        template,
+        episodicNameVars(item, {
+          season: epRow.season_number,
+          numbers: allEpRows.map((e: any) => Number(e.episode_number)),
+          absoluteEpisode,
+          airDate: primaryEpRow.air_date ?? null,
+          episodeTitle: primaryEpRow.title ?? null,
+          quality,
+          releaseTitle,
+        }),
+        ext
+      ),
+      template
+    );
+    const segments = placedFolder.segments;
     ({ destPath, fileLabel } = resolveDest(rootFolder.path, segments, ext, sourceFile, getNamingEnabled(item.type)));
+    folderSegments = segments.slice(0, placedFolder.folderLength);
+    fileDay = primaryEpRow.air_date ?? null;
   } else if (shape === "collection" && subItemId) {
     const subRow = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId)) as any;
     if (!subRow) throw new Error(`Sub-item ${subItemId} not found`);
@@ -1727,7 +1848,7 @@ export async function placeFile(params: {
       ext,
       sourceFile,
       getNamingEnabled(item.type),
-      providerIdVars(item)
+      { ...titleVars("parent", item.title, item.year), ...providerIdVars(item) }
     );
     let free: { destPath: string; fileLabel: string } | null = null;
     for (const candidate of candidates) {
@@ -1752,6 +1873,7 @@ export async function placeFile(params: {
   if (verify) {
     const mismatch = fileContradictsTarget(sourceFile, verify, await importTargetFor(item));
     if (mismatch) throw new ImportIdentityMismatchError(`Not importing: ${mismatch} — left in the download for a manual import`);
+    await assertFileIsWorthImporting(sourceFile, item.type, mediaRow.runtime_minutes, verify, shape === "single" || shape === "episodic");
   }
   if (refuseDowngrade) assertNotADowngrade(item.type, quality, sourceFile, existingFiles, await qualityGroupsOfProfile(item.qualityProfileId));
   const claimKeys =
@@ -1772,9 +1894,11 @@ export async function placeFile(params: {
       const stat = fs.statfsSync(rootFolder.path);
       // bavail, not bfree: the server runs unprivileged and can't write into root-reserved blocks.
       const freeBytes = stat.bavail * stat.bsize;
-      if (freeBytes < sourceSize) {
+      // Plus the reserve (Sonarr's MinimumFreeSpaceWhenImporting, or the root folder's own minimum).
+      const reserve = importReserveBytes(rootFolder.minFreeSpaceGb);
+      if (freeBytes < sourceSize + reserve) {
         throw new ImportSkippedError(
-          `Not enough free space at "${rootFolder.path}" (${Math.round(freeBytes / 1e9)}GB free, file is ${Math.round(sourceSize / 1e9)}GB) — kept for a manual import from Activity`
+          `Not enough free space at "${rootFolder.path}" (${Math.round(freeBytes / 1e9)}GB free, file is ${Math.round(sourceSize / 1e9)}GB${reserve > 0 ? `, ${Math.round(reserve / 1e6)}MB kept free` : ""}) — kept for a manual import from Activity`
         );
       }
     } catch (err) {
@@ -1822,6 +1946,16 @@ export async function placeFile(params: {
       .run(destPath, quality, sizeBytes, record.title, record.score, subItemId);
   }
   if (shape !== "single") await markParentHasFile(item.id);
+  // The show's folder is the one its first file went to: a later title change keeps using it.
+  if (folderSegments) await rememberItemFolder(item.id, folderSegments);
+  // Not on a hardlink or symlink: the date would land on the seeding source too.
+  if (currentImportStrategy() !== "hardlink" && currentImportStrategy() !== "symlink") await applyFileDate(destPath, fileDay);
+  // The subtitles that came with the release (`importExtraFiles`), named for the file, before the release folder goes.
+  if (VIDEO_EXTENSIONS.has(ext.toLowerCase()) && (shape === "single" || shape === "episodic")) {
+    await copyReleaseExtras(sourceFile, destPath).catch((err) =>
+      log.warn(`[importer] could not copy the extra files of "${path.basename(sourceFile)}":`, (err as Error).message)
+    );
+  }
   await recycleReplacedFiles(replacedPaths, [destPath, sourceFile], item);
 
   // episodeId/subItemId/quality are what duplicates.ts's repeated-import check groups on. One
@@ -1848,7 +1982,28 @@ export async function placeFile(params: {
     } catch {
       // malformed external_ids on an old row — write the sidecar without unique ids rather than skip it
     }
-    writeNfoSidecar(destPath, { type: item.type, title: item.title, year: item.year, overview: item.overview, posterUrl: item.posterUrl, externalIds });
+    // keepRicher: a better copy replacing the file must not wipe an NFO another tool wrote beside it.
+    writeNfoSidecar(destPath, { type: item.type, title: item.title, year: item.year, overview: item.overview, posterUrl: item.posterUrl, externalIds }, { keepRicher: true });
+  }
+  // The same opt-in for a show: Kodi's <episodedetails> beside the file, and the show's tvshow.nfo once.
+  if (getSetting("writeNfoOnImport") === "1" && shape === "episodic" && episodeId) {
+    const ids = (episodicRows ?? [{ id: episodeId }]).map((r) => r.id);
+    const covered = (await db
+      .prepare(`SELECT season_number, episode_number, title, air_date, overview FROM episodes WHERE id IN (${ids.map(() => "?").join(",")}) ORDER BY episode_number`)
+      .all(...ids)) as { season_number: number; episode_number: number; title: string | null; air_date: string | null; overview: string | null }[];
+    writeEpisodeNfoSidecar(
+      destPath,
+      covered.map((e) => ({ showTitle: item.title, title: e.title, season: Number(e.season_number), episode: Number(e.episode_number), aired: e.air_date, overview: e.overview }))
+    );
+    if (folderSegments && folderSegments.length >= 1) {
+      let externalIds: Record<string, string> = {};
+      try {
+        externalIds = item.externalIds ? JSON.parse(item.externalIds) : {};
+      } catch {
+        // malformed external_ids on an old row — write the show's NFO without unique ids
+      }
+      writeTvShowNfoIfMissing(path.join(rootFolder.path, ...folderSegments), { type: item.type, title: item.title, year: item.year, overview: item.overview, posterUrl: item.posterUrl, externalIds });
+    }
   }
 
   log.info(`[importer] imported "${fileLabel}" for "${item.title}"`);
@@ -1883,6 +2038,53 @@ export async function placeFile(params: {
   if (hadFileBefore) await notifyUpgraded(item.title, fileLabel, destPath);
   else await notifyImported(item.title, fileLabel, destPath);
   return { destPath, fileLabel };
+}
+
+/**
+ * What a manual import of `sourceFile` onto this target would run into, as readable warnings, without placing anything:
+ * the file names another title, would replace a better file, holds a rejected file type, or looks like a sample.
+ * An automatic import refuses on these; a manual one goes ahead, so the admin is told first (Sonarr's manual import
+ * lists each file's rejections).
+ */
+export async function manualImportWarnings(params: {
+  itemId: number;
+  episodeId?: number | null;
+  subItemId?: number | null;
+  sourceFile: string;
+  quality: string | null;
+}): Promise<string[]> {
+  const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(params.itemId);
+  if (!mediaRow) throw new Error(`Media item ${params.itemId} not found`);
+  const item = mediaItemFromRow(mediaRow);
+  const shape = effectiveShape(item);
+  const warnings: string[] = [];
+  const mismatch = fileContradictsTarget(params.sourceFile, {}, await importTargetFor(item));
+  if (mismatch) warnings.push(mismatch);
+
+  let existing: { quality: string | null; filePath: string | null }[] = [];
+  if (shape === "single" && item.hasFile) existing = [{ quality: item.quality ?? null, filePath: item.path ?? null }];
+  else if (params.episodeId) {
+    const row = (await db.prepare("SELECT quality, file_path, has_file FROM episodes WHERE id = ?").get(params.episodeId)) as any;
+    if (row?.has_file) existing = [{ quality: row.quality ?? null, filePath: row.file_path ?? null }];
+  } else if (params.subItemId) {
+    const row = (await db.prepare("SELECT quality, file_path, has_file FROM sub_items WHERE id = ?").get(params.subItemId)) as any;
+    if (row?.has_file) existing = [{ quality: row.quality ?? null, filePath: row.file_path ?? null }];
+  }
+  try {
+    assertNotADowngrade(item.type, params.quality, params.sourceFile, existing, await qualityGroupsOfProfile(item.qualityProfileId));
+  } catch (err) {
+    if (err instanceof ImportSkippedError) warnings.push(err.message.replace(/ — left in the download for a manual import$/, ""));
+    else throw err;
+  }
+  // The downloads folder itself holds every download's files: only a folder of its own says something about this file.
+  const sourceDir = path.resolve(path.dirname(params.sourceFile));
+  const bad = sourceDir === path.resolve(config.downloadsDir) ? null : findRejectedFile(sourceDir, item.type);
+  if (bad) warnings.push(`The folder holds "${path.basename(bad)}", a file type that is rejected for automatic imports`);
+  if ((shape === "single" || shape === "episodic") && VIDEO_EXTENSIONS.has(path.extname(params.sourceFile).toLowerCase()) && isProbeableFile(params.sourceFile)) {
+    const reason = probeVerdict(await probeMediaInfo(params.sourceFile), mediaRow.runtime_minutes);
+    if (reason) warnings.push(`This file: ${reason}`);
+  }
+  return warnings;
 }
 
 /** How long a post-import step (a subtitle provider's search and download) may hold the import open. */
@@ -1980,6 +2182,7 @@ export async function placeAlbumFiles(params: {
     parentTitle: item.title,
     childTitle: subRow.title,
     quality: quality ?? "",
+    ...titleVars("parent", item.title, item.year),
     ...providerIdVars(item),
   });
   const parentFolderSegments = templatedSegments.slice(0, -1);
@@ -2209,7 +2412,7 @@ export async function placeAlbumFiles(params: {
   // A manual import places just the files it was given; the rest of the folder isn't left over from it.
   if (onlyAnchor) leftInPlace = 0;
 
-  assertEnoughFreeSpaceForImport(toPlace.map((p) => p.src), rootFolder.path);
+  assertEnoughFreeSpaceForImport(toPlace.map((p) => p.src), rootFolder.path, rootFolder.minFreeSpaceGb);
 
   // Checked before anything moves, so a refusal never leaves the album half imported.
   for (const { dest } of toPlace) {
@@ -2633,15 +2836,38 @@ export async function placeSeasonPackFiles(params: {
   // show's own file of it would have taken.
   let identityRejected = 0;
   const identityTarget = verify ? await importTargetFor(item) : identityTargetOf(item);
-  const ownFiles = siblings.filter((src) => {
+  let unworthy = 0;
+  let ownFiles = siblings.filter((src) => {
     const mismatch = verify ? fileContradictsTarget(src, ctx, identityTarget) : null;
     if (!mismatch) return true;
     log.warn(`[importer] left "${path.basename(src)}" in the download: ${mismatch}`);
     identityRejected++;
     return false;
   });
+  // A dangerous file in the pack refuses all of it; a sample or a silent file is only left out.
+  if (verify && packDir) {
+    const bad = findRejectedFile(packDir, item.type);
+    if (bad) throw new ImportSkippedError(`Not importing: the download holds "${path.basename(bad)}", a file type that is rejected — left in the download for a manual import`);
+  }
+  if (verify) {
+    const kept: string[] = [];
+    for (const src of ownFiles) {
+      try {
+        await assertFileIsWorthImporting(src, item.type, mediaRow.runtime_minutes, ctx, true, false);
+        kept.push(src);
+      } catch (err) {
+        if (!(err instanceof ImportSkippedError)) throw err;
+        log.warn(`[importer] left "${path.basename(src)}" in the download: ${err.message}`);
+        unworthy++;
+      }
+    }
+    ownFiles = kept;
+  }
   if (ownFiles.length === 0 && identityRejected > 0) {
     throw new ImportIdentityMismatchError(`Not importing: every file of this download names another title than "${item.title}" — left for a manual import`);
+  }
+  if (ownFiles.length === 0 && unworthy > 0) {
+    throw new ImportSkippedError(`Not importing: every file of this download is a sample, has no audio or is too short to be the release — left for a manual import`);
   }
 
   const episodes = (await db
@@ -2649,7 +2875,7 @@ export async function placeSeasonPackFiles(params: {
     .all(itemId, seasonNumber)) as any[];
   const planned = await planSeasonPackFiles(ownFiles, episodes, itemId, seasonNumber, item.title);
   // An identity-rejected file is an episode file the download still holds.
-  let unmatchedCount = planned.unmatchedCount + identityRejected;
+  let unmatchedCount = planned.unmatchedCount + identityRejected + unworthy;
 
   let notUpgradedCount = 0;
   const groups = await qualityGroupsOfProfile(item.qualityProfileId);
@@ -2671,7 +2897,7 @@ export async function placeSeasonPackFiles(params: {
     throw new NoPackFileMatchedError(`No files in this download could be matched to a known episode of season ${seasonNumber}`);
   }
 
-  assertEnoughFreeSpaceForImport(toPlace.map((p) => p.src), rootFolder.path);
+  assertEnoughFreeSpaceForImport(toPlace.map((p) => p.src), rootFolder.path, rootFolder.minFreeSpaceGb);
 
   let importedCount = 0;
   let upgradedCount = 0;
@@ -2680,13 +2906,13 @@ export async function placeSeasonPackFiles(params: {
   const placedPaths: string[] = [];
   const packFinishing: { dest: string; ext: string; rowIds: number[] }[] = [];
   const usedDestinations = new Set<string>();
+  let packFolderSegments: string[] | null = null;
   for (const { src, episodes: targetEpisodes } of toPlace) {
     // A Sonarr-style multi-episode file within the pack (e.g. "S01E01-E02.mkv") resolves to every
     // one of this season's own episode rows it actually covers, not just the first.
     const covered = [...targetEpisodes].sort((a, b) => Number(a.episode_number) - Number(b.episode_number));
     const primary = covered[0];
     const primaryEpisodeNumber = Number(primary.episode_number);
-    const lastEpisodeNumber = Number(covered[covered.length - 1].episode_number);
 
     // Season 0 (specials) is excluded from the running count — see the identical comment in
     // placeFile() above.
@@ -2700,21 +2926,27 @@ export async function placeSeasonPackFiles(params: {
           .get(itemId, seasonNumber, seasonNumber, primaryEpisodeNumber)) as { c: number }
       ).c
     );
-    const segments = renderPathSegments(getNamingTemplate(item.type), {
-      parentTitle: item.title,
-      season: seasonNumber,
-      // A plain number for the (overwhelmingly common) single-episode case, unchanged — a
-      // pre-formatted "01-02" string for a real multi-episode file, which renderTemplate's
-      // {episode:00} token already renders as-is (its zero-pad branch only fires for numbers),
-      // so no naming-template changes are needed to support this.
-      episode: covered.length > 1 ? `${String(primaryEpisodeNumber).padStart(2, "0")}-${String(lastEpisodeNumber).padStart(2, "0")}` : primaryEpisodeNumber,
-      absoluteEpisode,
-      airDate: primary.air_date ?? "",
-      episodeTitle: primary.title ?? "",
-      year: item.year ?? "",
-      quality: quality ?? "",
-      ...providerIdVars(item),
-    }, path.extname(src));
+    const packTemplate = getNamingTemplate(item.type);
+    const placedFolder = await withItemFolder(
+      item,
+      rootFolder.path,
+      renderPathSegments(
+        packTemplate,
+        episodicNameVars(item, {
+          season: seasonNumber,
+          numbers: covered.map((e) => Number(e.episode_number)),
+          absoluteEpisode,
+          airDate: primary.air_date ?? null,
+          episodeTitle: primary.title ?? null,
+          quality,
+          releaseTitle,
+        }),
+        path.extname(src)
+      ),
+      packTemplate
+    );
+    const segments = placedFolder.segments;
+    packFolderSegments ??= segments.slice(0, placedFolder.folderLength);
     const ext = path.extname(src);
     const { destPath: dest, fileLabel } = resolveDest(rootFolder.path, segments, ext, src, getNamingEnabled(item.type));
     const destKey = path.resolve(dest).toLowerCase();
@@ -2770,10 +3002,16 @@ export async function placeSeasonPackFiles(params: {
       );
     }
     importedCount += covered.length;
+    // The same two steps as a single file's import: the air date as the file's date, the release's subtitles beside it.
+    if (currentImportStrategy() !== "hardlink" && currentImportStrategy() !== "symlink") await applyFileDate(dest, primary.air_date ?? null);
+    if (VIDEO_EXTENSIONS.has(ext.toLowerCase())) {
+      await copyReleaseExtras(src, dest).catch((err) => log.warn(`[importer] could not copy the extra files of "${path.basename(src)}":`, (err as Error).message));
+    }
     packFinishing.push({ dest, ext, rowIds: covered.map((e) => Number(e.id)) });
   }
 
   await markParentHasFile(item.id);
+  if (packFolderSegments && importedCount > 0) await rememberItemFolder(item.id, packFolderSegments);
   await recycleReplacedFiles(replacedPaths, placedPaths, item);
   // Best effort, now that every row is written: a subtitle provider that stalls cannot hold the rows back.
   for (const { dest, ext, rowIds } of packFinishing) {
@@ -3074,7 +3312,7 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
   // private tracker) and left Seed Goal Cleanup nothing to act on.
   if (getSetting("removeCompletedDownloads") !== "0" && strategyDeletesSourceData()) {
     await removeQueueItemDownload(queueItem, !leftFilesBehind);
-  } else if (getSetting("importStrategy") === "hardlink" && !leftFilesBehind) {
+  } else if (currentImportStrategy() === "hardlink" && !leftFilesBehind) {
     // Everything of the download is now in the library by hardlink (or, across filesystems, as a copy): the
     // client marks it, and Seed Goal Cleanup may delete its data when seeding is over. Any other torrent
     // keeps its data, because it may hold the only copy.
@@ -3136,8 +3374,8 @@ function isUnpackedMediaCandidate(sourceFile: string, downloadPath: string | nul
  * existing. Shared by the source-folder cleanup below and the download-client removal call, so
  * both agree on when destroying the original data is safe. */
 function strategyDeletesSourceData(): boolean {
-  const strategy = getSetting("importStrategy") ?? "move";
-  return strategy !== "hardlink" && strategy !== "symlink";
+  const strategy = currentImportStrategy();
+  return strategy !== "hardlink" && strategy !== "symlink" && strategy !== "copy";
 }
 
 /** Whether a download's folder still holds media the import didn't take — more episodes of a pack,
@@ -3248,15 +3486,16 @@ function findNonJunkFile(dir: string, root: string): string | null {
  * but for a multi-file move (a whole album, a whole season pack) — sums every source file's size
  * first so the check still runs against the operation's true total rather than being silently
  * skipped just because no single file in the batch happens to exceed free space alone. */
-function assertEnoughFreeSpaceForImport(sourceFiles: string[], rootFolderPath: string): void {
+function assertEnoughFreeSpaceForImport(sourceFiles: string[], rootFolderPath: string, rootMinFreeSpaceGb?: number | null): void {
   if (getSetting("skipFreeSpaceCheck") === "1") return;
   try {
     const totalSize = sourceFiles.reduce((sum, f) => sum + fs.statSync(f).size, 0);
     const stat = fs.statfsSync(rootFolderPath);
     const freeBytes = stat.bavail * stat.bsize; // see placeFile: root-reserved blocks aren't ours
-    if (freeBytes < totalSize) {
+    const reserve = importReserveBytes(rootMinFreeSpaceGb);
+    if (freeBytes < totalSize + reserve) {
       throw new ImportSkippedError(
-        `Not enough free space at "${rootFolderPath}" (${Math.round(freeBytes / 1e9)}GB free, ${Math.round(totalSize / 1e9)}GB needed) — kept for a manual import from Activity`
+        `Not enough free space at "${rootFolderPath}" (${Math.round(freeBytes / 1e9)}GB free, ${Math.round(totalSize / 1e9)}GB needed${reserve > 0 ? ` plus ${Math.round(reserve / 1e6)}MB kept free` : ""}) — kept for a manual import from Activity`
       );
     }
   } catch (err) {
@@ -3424,6 +3663,88 @@ function findSidecars(mediaPath: string): { file: string; suffix: string }[] {
   return sidecars;
 }
 
+/**
+ * Moves a show's folder (artwork, NFO, extras and all) to the name the naming template gives its current title, or to
+ * `newName`, and points its episodes at it. Imports and renames keep a show in one folder, so this is the explicit
+ * step for a title that changed; Sonarr's series "move files" does the same.
+ */
+export async function moveItemFolder(itemId: number, newName?: string): Promise<{ from: string; to: string; episodesUpdated: number }> {
+  const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
+  if (!mediaRow) throw new Error(`Media item ${itemId} not found`);
+  const item = mediaItemFromRow(mediaRow);
+  if (effectiveShape(item) !== "episodic") throw new ImportSkippedError("Only a show has a folder of its own to move");
+  if (!item.rootFolderId) throw new ImportSkippedError(`"${item.title}" has no root folder configured`);
+  const folderRow = await db.prepare("SELECT * FROM root_folders WHERE id = ?").get(item.rootFolderId);
+  if (!folderRow) throw new ImportSkippedError(`Root folder for "${item.title}" no longer exists`);
+  const rootFolder = rootFolderFromRow(folderRow);
+
+  const template = namingTemplateFor(item);
+  const own = ownFolderDepth(template, true);
+  if (own === 0) throw new ImportSkippedError("The naming template has no folder of the show's own");
+  const rendered = renderPathSegments(template, {
+    parentTitle: item.title,
+    season: 1,
+    episode: 1,
+    year: item.year ?? "",
+    quality: "",
+    ...titleVars("parent", item.title, item.year),
+    ...providerIdVars(item),
+  });
+  const current = await withItemFolder(item, rootFolder.path, rendered, template);
+  const currentSegments = current.segments.slice(0, current.folderLength);
+  if (currentSegments.length === 0) throw new ImportSkippedError("The show has no folder of its own yet");
+  // Only the show's own level is renamed; a category folder above it stays.
+  const targetLast = newName && newName.trim() ? safePathSegment(newName.trim()) : rendered[own - 1];
+  const targetSegments = [...currentSegments.slice(0, -1), targetLast];
+  const from = path.join(rootFolder.path, ...currentSegments);
+  const to = path.join(rootFolder.path, ...targetSegments);
+  assertInsideRoot(rootFolder.path, to);
+  if (from === to) return { from, to, episodesUpdated: 0 };
+
+  let episodesUpdated = 0;
+  if (fs.existsSync(from)) {
+    // A folder two titles share (a category folder, or a remake that always lived beside its original) is not this show's to move.
+    const allRoots = ((await db.prepare("SELECT path FROM root_folders").all()) as { path: string }[]).map((r) => path.resolve(r.path));
+    if (allRoots.some((r) => r === path.resolve(from) || r.startsWith(path.resolve(from) + path.sep))) {
+      throw new ImportSkippedError(`"${from}" is, or holds, a root folder — not moving it`);
+    }
+    const sharer = await trackedFileInside(from, item.id);
+    if (sharer) throw new ImportSkippedError(`"${sharer}" belongs to another title in "${from}" — not moving a folder two titles share`);
+    if (isOtherExistingEntry(from, to)) throw new ImportSkippedError(`"${to}" already exists — not moving the show's folder onto it`);
+    await moveAlbumFolder(from, to);
+    const episodes = (await db.prepare("SELECT id, file_path FROM episodes WHERE media_item_id = ? AND file_path IS NOT NULL").all(item.id)) as { id: number; file_path: string }[];
+    for (const ep of episodes) {
+      if (ep.file_path.startsWith(from + path.sep)) {
+        await db.prepare("UPDATE episodes SET file_path = ? WHERE id = ?").run(to + ep.file_path.slice(from.length), ep.id);
+        episodesUpdated++;
+      }
+    }
+  }
+  await db.prepare("UPDATE media_items SET library_folder = ? WHERE id = ?").run(targetSegments.join("/"), item.id);
+  return { from, to, episodesUpdated };
+}
+
+/** Moves an album folder to a new place: a rename, or a copy and removal when the root folders are on different file systems. */
+async function moveAlbumFolder(src: string, dest: string): Promise<void> {
+  makeLibraryDirectory(path.dirname(dest));
+  try {
+    await fsp.rename(src, dest);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
+    try {
+      await fsp.cp(src, dest, { recursive: true });
+    } catch (copyErr) {
+      await fsp.rm(dest, { recursive: true, force: true }).catch(() => undefined);
+      throw copyErr;
+    }
+    // The copy is complete: callers point the database at it. A source that cannot be removed is left for the admin,
+    // not undone, since a half-removed source with the copy deleted would lose files.
+    await fsp.rm(src, { recursive: true, force: true }).catch((rmErr) =>
+      log.warn(`[importer] copied "${src}" to "${dest}" but could not remove the original:`, (rmErr as Error).message)
+    );
+  }
+}
+
 /** A rename's move: the media file, then the subtitles/.nfo named for it (downloaded or written by
  * AoNarr itself — left behind, players lost them and their old folder was never cleaned up), then
  * any folder that emptied. Sidecars are best-effort; one whose new name is taken stays put. */
@@ -3467,7 +3788,19 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
     if (shape === "single") {
       if (!item.hasFile || !item.path) return;
       const ext = path.extname(item.path);
-      const segments = renderPathSegments(template, { title: item.title, year: item.year ?? "", quality: item.quality ?? "", ...providerIdVars(item) }, ext);
+      const segments = renderPathSegments(
+        template,
+        {
+          title: item.title,
+          year: item.year ?? "",
+          quality: item.quality ?? "",
+          ...titleVars("", item.title, item.year),
+          // A file the scan adopted has no recorded release: its own name stands in, so a group in it is kept.
+          ...releaseVars(mediaRow.file_release_title ?? path.basename(item.path, ext), item.quality),
+          ...providerIdVars(item),
+        },
+        ext
+      );
       const { destPath } = resolveDest(rootFolder.path, segments, ext, item.path, namingEnabled);
       if (path.resolve(destPath) === path.resolve(item.path)) return;
       const conflict = renameConflict(item.path, destPath, claimed);
@@ -3498,7 +3831,6 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
       for (const group of fileGroups.values()) {
         group.sort((a, b) => a.episode_number - b.episode_number);
         const primary = group[0];
-        const lastEpisodeNumber = group[group.length - 1].episode_number;
         const ext = path.extname(primary.file_path);
         const absoluteEpisode = Number(
           (
@@ -3510,25 +3842,32 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
               .get(item.id, primary.season_number, primary.season_number, primary.episode_number)) as { c: number }
           ).c
         );
-        const segments = renderPathSegments(template, {
-          parentTitle: item.title,
-          season: primary.season_number,
-          episode:
-            group.length > 1
-              ? `${String(primary.episode_number).padStart(2, "0")}-${String(lastEpisodeNumber).padStart(2, "0")}`
-              : primary.episode_number,
-          absoluteEpisode,
-          airDate: primary.air_date ?? "",
-          episodeTitle: primary.title ?? "",
-          year: item.year ?? "",
-          quality: primary.quality ?? "",
-          ...providerIdVars(item),
-        }, ext);
+        const segments = (
+          await withItemFolder(
+            item,
+            rootFolder.path,
+            renderPathSegments(
+              template,
+              episodicNameVars(item, {
+                season: primary.season_number,
+                numbers: group.map((g) => Number(g.episode_number)),
+                absoluteEpisode,
+                airDate: primary.air_date ?? null,
+                episodeTitle: primary.title ?? null,
+                quality: primary.quality ?? null,
+                // A file the scan adopted or imported before releases were recorded has none: its own name stands in.
+                releaseTitle: primary.file_release_title ?? path.basename(primary.file_path, ext),
+              }),
+              ext
+            ),
+            template
+          )
+        ).segments;
         const { destPath } = resolveDest(rootFolder.path, segments, ext, primary.file_path, namingEnabled);
         if (path.resolve(destPath) === path.resolve(primary.file_path)) continue;
         const label =
           group.length > 1
-            ? `${item.title} — ${primary.season_number}x${primary.episode_number}-${lastEpisodeNumber}`
+            ? `${item.title} — ${primary.season_number}x${primary.episode_number}-${group[group.length - 1].episode_number}`
             : `${item.title} — ${primary.season_number}x${primary.episode_number}`;
         const conflict = renameConflict(primary.file_path, destPath, claimed);
         if (conflict) {
@@ -3544,10 +3883,65 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
         result.renamed.push({ title: label, from: primary.file_path, to: destPath });
       }
     } else if (shape === "collection" && typeConfig.multiFilePerChild) {
-      const count = (await db.prepare("SELECT COUNT(*) AS c FROM sub_items WHERE media_item_id = ? AND has_file = 1").get(item.id)) as {
-        c: number;
-      };
-      result.skippedMusic += Number(count.c);
+      // An album (or audiobook) is a folder: the folder is moved to the one the template names, with its files as they
+      // are (a track keeps the name it was downloaded with, as at import). With naming switched off nothing is renamed.
+      const albums = (await db
+        .prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND has_file = 1 AND file_path IS NOT NULL ORDER BY id")
+        .all(item.id)) as any[];
+      if (!namingEnabled) result.skippedMusic += albums.length;
+      for (const album of albums) {
+        if (!namingEnabled) break;
+        const current = path.resolve(album.file_path);
+        // Only a folder of the album's own is moved: not a file (a single-file audiobook), not a folder that is not
+        // on disk, not the artist's or author's folder (a loose track or book beside the albums), and not a folder
+        // another album lives in. All of those stay as they are.
+        const stat = fs.existsSync(current) ? fs.statSync(current) : null;
+        const sharesFolder =
+          !!stat?.isDirectory() &&
+          albums.some((other) => other.id !== album.id && other.file_path && (path.resolve(other.file_path) === current || path.resolve(other.file_path).startsWith(current + path.sep)));
+        const isArtistFolder = path.dirname(current) === path.resolve(rootFolder.path);
+        if (!stat?.isDirectory() || sharesFolder || isArtistFolder) {
+          result.skippedMusic++;
+          continue;
+        }
+        const segments = renderPathSegments(getNamingTemplate(item.type), {
+          parentTitle: item.title,
+          childTitle: album.title,
+          quality: album.quality ?? "",
+          ...titleVars("parent", item.title, item.year),
+          ...providerIdVars(item),
+        });
+        const destPath = path.join(rootFolder.path, ...segments);
+        assertInsideRoot(rootFolder.path, destPath);
+        if (path.resolve(destPath) === current) {
+          claimed.add(current);
+          continue;
+        }
+        if (path.resolve(destPath).startsWith(current + path.sep)) {
+          result.skippedMusic++;
+          continue;
+        }
+        const label = `${item.title} — ${album.title}`;
+        const key = path.resolve(destPath);
+        if (claimed.has(key) || fs.existsSync(destPath) || (await isFolderOfAnotherChild(destPath, album.id))) {
+          result.errors.push({ title: label, error: `"${destPath}" is already taken — not moving the album folder onto it` });
+          continue;
+        }
+        claimed.add(key);
+        if (!dryRun) {
+          await moveAlbumFolder(album.file_path, destPath);
+          await db.prepare("UPDATE sub_items SET file_path = ? WHERE id = ?").run(destPath, album.id);
+          const prefix = album.file_path.replace(/[\\/]+$/, "");
+          const tracks = (await db.prepare("SELECT id, file_path FROM tracks WHERE sub_item_id = ? AND file_path IS NOT NULL").all(album.id)) as { id: number; file_path: string }[];
+          for (const track of tracks) {
+            if (track.file_path === prefix || track.file_path.startsWith(prefix + path.sep) || track.file_path.startsWith(`${prefix}/`)) {
+              await db.prepare("UPDATE tracks SET file_path = ? WHERE id = ?").run(destPath + track.file_path.slice(prefix.length), track.id);
+            }
+          }
+          removeEmptyParents(path.dirname(album.file_path), rootFolder.path);
+        }
+        result.renamed.push({ title: label, from: album.file_path, to: destPath });
+      }
     } else if (shape === "collection") {
       const subItems = (await db
         .prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND has_file = 1 AND file_path IS NOT NULL ORDER BY id")
@@ -3564,7 +3958,7 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
           ext,
           subRow.file_path,
           namingEnabled,
-          providerIdVars(item)
+          { ...titleVars("parent", item.title, item.year), ...providerIdVars(item) }
         );
         // The same choice placeFile makes: a name a same-titled sibling holds (or takes earlier in
         // this pass) passes to the next one, and a child already at one of its own names stays there.

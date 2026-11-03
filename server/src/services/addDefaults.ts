@@ -2,6 +2,7 @@ import { db } from "../db/index.js";
 import { log } from "./logger.js";
 import { getSetting } from "./settingsStore.js";
 import { fetchMovieByTmdbId } from "./metadata.js";
+import { queueScanAfterAdd } from "./scanOnAdd.js";
 
 /** How long a new movie waits for TMDB before it is added without release dates. */
 const RELEASE_LOOKUP_TIMEOUT_MS = 8000;
@@ -125,6 +126,8 @@ export async function finishWantedAdd(
         createLibraryFolderSkeleton({ type: row.type as any, title: row.title, year: row.year, externalIds: row.external_ids }, root.path);
       }
     }
+    // A title a list or a request adds may already be on disk. The delay lets the caller put in the episodes.
+    queueScanAfterAdd(row.id, 20_000);
   } catch (err) {
     log.warn(`[addDefaults] could not finish adding item ${itemId}:`, (err as Error).message);
   }

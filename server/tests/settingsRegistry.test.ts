@@ -36,7 +36,7 @@ describe("PUT /api/settings/:key refuses what nothing reads (ST18)", () => {
   it("still saves a real key, and the keys the server builds at run time", async () => {
     expect((await put("recycleBinRetentionDays", "14")).status).toBe(200);
     for (const key of ["namingMovieTemplate", "namingEnabledSeries", "discordEvents", "notifyTemplateGrabbed", "jobSchedule_libraryScan", "strictReleaseIdentity.movie", "defaultMovieProvider"]) {
-      expect((await put(key, "x")).status, key).toBe(200);
+      expect((await put(key, key === "namingMovieTemplate" ? "{title} ({year})" : "x")).status, key).toBe(200);
     }
   });
 

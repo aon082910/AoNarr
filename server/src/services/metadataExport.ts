@@ -122,12 +122,92 @@ export function safeFileName(title: string): string {
  * throws) on any filesystem error — a failed sidecar write is a nice-to-have, not something that
  * should fail the metadata edit that triggered it.
  */
-export function writeNfoSidecar(filePath: string, item: ExportableItem): void {
+export function writeNfoSidecar(filePath: string, item: ExportableItem, options: { keepRicher?: boolean } = {}): void {
   try {
-    const nfoPath = path.join(path.dirname(filePath), `${path.basename(filePath, path.extname(filePath))}.nfo`);
+    const dir = path.dirname(filePath);
+    const nfoPath = path.join(dir, `${path.basename(filePath, path.extname(filePath))}.nfo`);
+    // An import of a better copy must not replace the NFO another tool wrote (cast, genres, ratings): it only
+    // refreshes a sidecar that AoNarr wrote, or none. A movie.nfo beside the file counts too, since Kodi reads it first.
+    if (options.keepRicher && [nfoPath, path.join(dir, "movie.nfo")].some((candidate) => existingNfoIsRicher(candidate))) return;
     fs.writeFileSync(nfoPath, buildNfo(item));
   } catch (err) {
     log.warn(`[metadataExport] failed to write NFO sidecar for "${item.title}":`, (err as Error).message);
+  }
+}
+
+// The only elements AoNarr writes. An existing sidecar made of nothing else is one AoNarr wrote (or one no richer
+// than it), so rewriting it loses nothing.
+const AONARR_NFO_ELEMENTS = new Set([
+  "movie", "tvshow", "title", "year", "plot", "thumb", "uniqueid",
+  "episodedetails", "showtitle", "season", "episode", "aired",
+]);
+
+export function isAonarrShapedNfo(content: string): boolean {
+  const body = content
+    .replace(/<\?xml[\s\S]*?\?>/g, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .trim();
+  if (!body) return true;
+  if (!/^<(movie|tvshow|episodedetails)[\s>]/.test(body) || !/<\/(movie|tvshow|episodedetails)>$/.test(body)) return false;
+  return [...body.matchAll(/<\/?([A-Za-z_][\w.:-]*)/g)].every((m) => AONARR_NFO_ELEMENTS.has(m[1].toLowerCase()));
+}
+
+/** Whether a file is there and holds more than AoNarr writes: another tool's NFO. An unreadable one counts, to be safe. */
+function existingNfoIsRicher(nfoPath: string): boolean {
+  try {
+    return !isAonarrShapedNfo(fs.readFileSync(nfoPath, "utf-8"));
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== "ENOENT";
+  }
+}
+
+export interface ExportableEpisode {
+  showTitle: string;
+  title: string | null;
+  season: number;
+  episode: number;
+  aired: string | null;
+  overview: string | null;
+}
+
+/** Kodi's `<episodedetails>`, one block per episode the file covers. */
+export function buildEpisodeNfo(episodes: ExportableEpisode[]): string {
+  const blocks = episodes.map((e) =>
+    [
+      `<episodedetails>`,
+      `  <title>${escapeXml(e.title ?? `Episode ${e.episode}`)}</title>`,
+      `  <showtitle>${escapeXml(e.showTitle)}</showtitle>`,
+      `  <season>${e.season}</season>`,
+      `  <episode>${e.episode}</episode>`,
+      e.aired ? `  <aired>${escapeXml(e.aired)}</aired>` : null,
+      e.overview ? `  <plot>${escapeXml(e.overview)}</plot>` : null,
+      `</episodedetails>`,
+    ]
+      .filter(Boolean)
+      .join("\n")
+  );
+  return [`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`, ...blocks].join("\n");
+}
+
+/** `<basename>.nfo` for an episode file, unless another tool's NFO is already there. Never throws. */
+export function writeEpisodeNfoSidecar(filePath: string, episodes: ExportableEpisode[]): void {
+  try {
+    const nfoPath = path.join(path.dirname(filePath), `${path.basename(filePath, path.extname(filePath))}.nfo`);
+    if (existingNfoIsRicher(nfoPath)) return;
+    fs.writeFileSync(nfoPath, buildEpisodeNfo(episodes));
+  } catch (err) {
+    log.warn(`[metadataExport] failed to write the episode NFO for "${filePath}":`, (err as Error).message);
+  }
+}
+
+/** `tvshow.nfo` in the show's folder, only when none is there (the show's own is written once, not on every import). Never throws. */
+export function writeTvShowNfoIfMissing(folder: string, item: ExportableItem): void {
+  try {
+    const nfoPath = path.join(folder, "tvshow.nfo");
+    if (fs.existsSync(nfoPath)) return;
+    fs.writeFileSync(nfoPath, buildNfo(item));
+  } catch (err) {
+    log.warn(`[metadataExport] failed to write tvshow.nfo for "${item.title}":`, (err as Error).message);
   }
 }
 

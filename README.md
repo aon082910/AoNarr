@@ -358,6 +358,21 @@ one book.
   on the Activity page with when they become ready, and can be grabbed at once or forgotten. The queue shows
   time left, remaining size, the client's state (paused, stalled, a warning of its own) and why a download
   failed. The History feed says whether a release was picked by hand, and over a rejection.
+- **Media management** — a title added while its file is already on disk is linked in the background (Sonarr
+  and Radarr scan after an add; `scanOnAdd`). A show keeps the folder of its first import (or the folder its
+  files are already in) when its title changes, and "Move Folder" moves the whole folder on purpose. Deleting a
+  title with its files also takes its folder (artwork, NFO, subtitles, extras) unless another title's file or
+  untracked media is in it; "Delete File" recycles one episode or movie file and leaves it missing, with an
+  option to stop monitoring it. Naming templates accept Starr's token names (`{Series Title}`, `{Quality Full}`,
+  `{Release Group}`), the release's group, codec, resolution and edition, the multi-episode style and the colon
+  replacement are settings, and a template that cannot work (an episode file name without an episode token)
+  is refused on save. An automatic import leaves a download that holds a program or script, a video far
+  shorter than the title, or one with no audio; keeps the NFO another tool wrote; keeps the import's free-space
+  reserve (and the root folder's own minimum); refuses to replace a two-parter with a single episode; can
+  copy the subtitles that came with the release (`importExtraFiles`); and can date the file by its air date.
+  A manual import can copy instead of move and lists what an automatic import would have refused. The recycle
+  bin retention of 0 now keeps everything until it is emptied by hand. Organize & Rename moves an album's
+  folder (track names are kept as downloaded).
 - **CSV export of library** — an admin-only "Export CSV" button on the Library page (respecting the
   current type filter) and `GET /api/media/export.csv` download a flat CSV of the library for
   spreadsheet tracking outside the app.

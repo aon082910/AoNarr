@@ -83,8 +83,22 @@ function providerPreviewVars(metadataProviders: string[]): Record<string, string
 /** Same rendering rule the server's naming.ts uses — kept in sync deliberately so the live preview
  * here matches exactly what an actual import would produce. */
 function renderTemplate(template: string, vars: Record<string, string | number>): string {
-  return template.replace(/\{(\w+)(?::(0+))?\}/g, (_match, key: string, pad: string | undefined) => {
-    const value = vars[key];
+  // A token is read without regard to case, spaces and dashes, and Starr's common names are aliases (the server's naming.ts has the full list).
+  const aliases: Record<string, string> = {
+    seriestitle: "parentTitle",
+    movietitle: "title",
+    releaseyear: "year",
+    absolute: "absoluteEpisode",
+    qualitytitle: "quality",
+    artistname: "parentTitle",
+    albumtitle: "childTitle",
+    authorname: "parentTitle",
+    booktitle: "childTitle",
+  };
+  const keyOf = (name: string) => name.toLowerCase().replace(/[\s._-]+/g, "");
+  const byKey = new Map(Object.entries(vars).map(([k, v]) => [keyOf(k), v]));
+  return template.replace(/\{([A-Za-z][\w .-]*?)(?::(0+))?\}/g, (_match, name: string, pad: string | undefined) => {
+    const value = vars[name] ?? byKey.get(keyOf(name)) ?? byKey.get(keyOf(aliases[keyOf(name)] ?? ""));
     if (value === undefined || value === null) return "";
     if (pad && typeof value === "number") return String(value).padStart(pad.length, "0");
     return String(value);

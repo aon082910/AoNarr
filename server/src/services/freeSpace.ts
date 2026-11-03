@@ -25,6 +25,12 @@ export function freeSpaceReserveBytes(): number {
   return (Number.isFinite(mb) && mb >= 0 ? mb : DEFAULT_RESERVE_MB) * 1_000_000;
 }
 
+/** What an import keeps free below the files it places (Sonarr's MinimumFreeSpaceWhenImporting): the global reserve, or the root folder's own minimum when that is larger. */
+export function importReserveBytes(rootMinFreeSpaceGb: number | null | undefined): number {
+  const rootBytes = Number(rootMinFreeSpaceGb) > 0 ? Number(rootMinFreeSpaceGb) * 1_000_000_000 : 0;
+  return Math.max(freeSpaceReserveBytes(), rootBytes);
+}
+
 const cache = new Map<string, { at: number; freeBytes: number | null }>();
 
 /** Free bytes at a path, read at most every 30 seconds (a search can judge hundreds of releases). */

@@ -357,6 +357,8 @@ settingsRouter.post(
       // all (authRequired=0, a known apiKey, a proxy URL for all outbound traffic).
       for (const [key, value] of Object.entries(b.namingTemplates ?? {})) {
         if (!key.startsWith("naming")) continue;
+        // The same checks as saving the setting by hand: a template that cannot work is left out.
+        if (settingValueProblem(key, String(value))) continue;
         setSetting(key, String(value));
         namingImported++;
       }

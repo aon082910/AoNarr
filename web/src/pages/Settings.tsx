@@ -1669,9 +1669,14 @@ export default function Settings() {
   }
 
   async function removeFolder(id: number) {
+    // How many titles use it: without a folder their imports are skipped until they are given another.
+    const impact = await api.get<{ itemCount: number; itemsWithFiles: number }>(`/root-folders/${id}/impact`).catch(() => null);
     const confirmed = await confirmDialog({
       title: "Delete root folder",
-      message: "Delete this root folder?",
+      message:
+        impact && impact.itemCount > 0
+          ? `Delete this root folder? ${impact.itemCount} title(s) use it (${impact.itemsWithFiles} with files). Their files stay where they are, but nothing is imported for them until each is given another root folder.`
+          : "Delete this root folder?",
       danger: true,
       options: [
         {
@@ -2016,7 +2021,7 @@ export default function Settings() {
           <option value="1">Enabled</option>
           <option value="0">Disabled (delete files outright)</option>
         </select>
-        <label htmlFor="settings-retention-days-13">Retention (days)</label>
+        <label htmlFor="settings-retention-days-13">Retention (days, 0 = keep until emptied by hand)</label>
         <input id="settings-retention-days-13"
           type="number"
           style={{ maxWidth: 120 }}
@@ -3225,6 +3230,50 @@ export default function Settings() {
                 </select>
               </div>
             ),
+          },
+          {
+            key: "fileHandling",
+            label: "File Handling",
+            description: "Scan on add, folders on delete, file dates, extra files, rejected files, naming style",
+            render: () => {
+              const choice = (key: string, label: string, fallback: string, options: [string, string][]) => (
+                <>
+                  <label htmlFor={`settings-fh-${key}`}>{label}</label>
+                  <select id={`settings-fh-${key}`} key={settings[key] ?? `${key}-empty`} defaultValue={settings[key] ?? fallback} onChange={(e) => saveSetting(key, e.target.value)}>
+                    {options.map(([value, text]) => (
+                      <option key={value} value={value}>
+                        {text}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              );
+              const text = (key: string, label: string, placeholder: string) => (
+                <>
+                  <label htmlFor={`settings-fh-${key}`}>{label}</label>
+                  <input id={`settings-fh-${key}`} key={settings[key] ?? `${key}-empty`} defaultValue={settings[key] ?? ""} placeholder={placeholder} onBlur={(e) => saveSetting(key, e.target.value)} />
+                </>
+              );
+              return (
+                <div>
+                  <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                    How AoNarr treats files around an import, after Sonarr and Radarr. Nothing here changes a file that is already in the library.
+                  </p>
+                  {choice("scanOnAdd", "Scan the disk when a title is added", "1", [["1", "On: link files that are already there (default)"], ["0", "Off"]])}
+                  {choice("removeFolderOnDelete", "Delete with files also takes the title's folder", "1", [["1", "On: artwork, NFO, subtitles and extras go to the recycle bin (default)"], ["0", "Off: only the files"]])}
+                  {choice("deleteEmptyFolders", "Remove folders left empty by deleting one file", "0", [["0", "Off (default)"], ["1", "On"]])}
+                  {choice("fileDate", "Date imported files by", "none", [["none", "The download time (default)"], ["localAirDate", "The air date (local time)"], ["utcAirDate", "The air date (UTC)"]])}
+                  {choice("importExtraFiles", "Import subtitles that came with the release", "0", [["0", "Off (default)"], ["1", "On"]])}
+                  {text("importExtraFileExtensions", "Extra file extensions (comma separated)", "srt")}
+                  {choice("rejectDangerousFiles", "Leave downloads that hold a program or script", "1", [["1", "On: .exe, .bat, .scr ... (default)"], ["0", "Off"]])}
+                  {text("rejectedFileExtensions", "Also reject these extensions", "e.g. xyz, ass")}
+                  {choice("importProbeChecks", "Leave a sample or a file with no audio", "1", [["1", "On: probe the file first (default)"], ["0", "Off"]])}
+                  {choice("namingMultiEpisodeStyle", "Multi-episode file names", "range", [["range", "01-02 (default)"], ["prefixedRange", "01-E02"], ["extend", "01-02-03"], ["repeat", "01E02E03"]])}
+                  {choice("namingColonReplacement", "A colon in a title becomes", "spaceDashSpace", [["spaceDashSpace", "space dash space (default)"], ["smart", "smart"], ["dash", "dash"], ["spaceDash", "space dash"], ["delete", "nothing"]])}
+                  {choice("namingReplaceIllegalChars", "Characters a Windows share can't hold", "1", [["1", "Remove them (default)"], ["0", "Keep them (Linux file systems only)"]])}
+                </div>
+              );
+            },
           },
           {
             key: "unmonitorDeletedFiles",
